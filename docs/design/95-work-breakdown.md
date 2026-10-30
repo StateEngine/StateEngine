@@ -17,14 +17,14 @@ se-types has no separate breakdown and keeps its earlier estimate.
 | --- | ---: | ---: | --- | --- |
 | Shared types (se-types) | ~2,000 | ~2,000 | earlier estimate | Atlas DTOs moved in from se-atlas (counted once) |
 | Store (se-store) | ~9,250 | 8,800 | 95-store S01–S15 | no decision chain, no general settings in the store, live keysets for non-mail lists, six import families, no salvage, automatic migration without approval |
-| Process ownership (se-proc) | ~10,950 | 10,950 | 95-se-proc P00–P09 | three launch barriers (four on Unix terminal, macOS, uncontained); five handover outcomes; process.* operations removed; native scope unchanged |
+| Process ownership (se-proc) | ~10,950 | 11,400 | 95-se-proc P00–P09 | three launch barriers (four on Unix terminal, macOS, uncontained); five handover outcomes; process.* operations removed; +450 for the Linux scoped helper and D-Bus scope adapter (E7) |
 | Core and CLI/MCP surface | ~9,050 | 8,200 | 95-core-cli K01–K10, B01–B06 | process tools, N-1 encoders, FTS and project settings removed; owner actions added; the Atlas bridge (`ops/atlas.rs`) is owned and counted once, by Atlas A12 |
 | Host runtime and harnesses | ~8,900 + 200–350 JS | 9,050 + 200–350 JS | 95-host H01–H20 | automatic migration, readback-reconciled file operations, async commit join, version-independent stop |
 | Release and packaging | 920–1,600 | 960–1,600 | 95-release R01–R07 | one `se uninstall` path; early unsigned archives |
-| **Core product (alpha critical path)** | | **39,960–40,600 + 200–350 JS** | | |
+| **Core product (alpha critical path)** | | **40,410–41,050 + 200–350 JS** | | |
 | Atlas (after journeys and handover; Jimmy) | 6,000–9,300 | 6,000–9,300 | 95-atlas A01–A13 (A12 owns the core bridge) | standalone only, disabled by default |
 | macOS backends (Mac campaign) | ~1,350 | 1,350 | 95-se-proc P03-M, P07-M | qualified on Jimmy's borrowed Mac before alpha ships |
-| **Everything** | 48,420–52,400 | **47,310–51,250 + 200–350 JS** | | |
+| **Everything** | 48,420–52,400 | **47,760–51,700 + 200–350 JS** | | |
 
 The first reconciled overview claimed a core of ~38,500–39,700 without per-task sums behind it.
 The summed figure is about 900–1,400 lines higher: se-proc's native scope did not shrink, and the
@@ -44,7 +44,7 @@ se-store, plus SE Code's side. `forget` stays in alpha (Jimmy), about 600 lines.
 | E4 Attended Claude mail | 25 s renewal under Claude's 30 s fetch limit; mail held during a busy turn; 100 sends with zero missed wakes | **PARTIAL**: renewal and busy-turn hold PASS on Linux; the 100-send run is open; stop/revocation bound stated (Claude's fetch has no caller abort) |
 | E5 Windowed and headless Codex | stock Codex through the private-socket app-server with a viewable TUI; headless and `--listen` paths | **PASS (headless)**: Windows stdio 16/16 plus a real-turn outside-write denial 17/17, Windows local socket 26/26, Linux both transports 43/43 (0.163). The safe headless policy comes from the saved profile; Windows avoids Store PowerShell (40 §9.4). Linux windowed PASS. Attended Windows and macOS stay open |
 | E6 History import | real history imports; interrupted retries reproduce the same events; resumed conversation recalls | **PASS** for Codex on a factory slice; non-fleet history and Claude continuation pending |
-| E7 Linux containment | what ssh, Docker and WSL2 hosts actually get | Pending |
+| E7 Linux containment | what ssh, Docker and WSL2 hosts actually get | **PARTIAL**: desktop, real SSH and rootless Podman each 4/4. SSH needs a short helper inside a fresh per-launch scope over direct D-Bus (30 §2.4), with scope acquisition p95 ≤ 200 ms to be re-measured in a quiet window. Docker and WSL2 are not installed yet |
 | E8 Cold hook start | host-start versus direct write on Windows with Defender | **PASS, settled**: 100 pairs with Defender on; host-start p95 82.5 ms, direct p95 88.1 ms. A hook with no host starts the host privately and never writes directly (40 §9.3). Routing is settled; production hook latency is measured in wave 2 |
 | Lost-ACK slice | one message after a dropped reply, through CLI, IPC, MCP and the linked API | Pending |
 | E9 SE Code real server | the integration target is SE Code's Rust server, not the frozen TypeScript one | **DONE** (Alpha): `E:\rust-secode` branch dev, `crates/secode-product`, caret pins, axum `=0.8.9` |
