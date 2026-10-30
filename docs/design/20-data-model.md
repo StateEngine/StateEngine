@@ -20,6 +20,21 @@ The store reads no environment and selects no repository. The caller supplies th
 
 The compile-only declarations in `crates/se-store/src/` are the normative Rust signatures; this document explains every method's behavior. They contain types and traits, no placeholder implementation or `todo!()`/`unimplemented!()`. Shared kernel IDs, `Read`, `Page` and `Window` come from `se-types`; this crate does not mint a competing identity or completeness vocabulary. Store-domain errors preserve typed detail/remedy and are mapped exhaustively to the shared error envelope by the core/host adapter. A concrete SQLite implementation is deliberately absent until design approval. `RecordId` is a store-specific validated UUIDv7 for internal effect/import/cursor/erasure objects, not a second kernel ID namespace; process lifecycle, store, project, agent, human, session, event, message and decision identities reuse the shared types. The signatures expose no rusqlite, tokio, OS process handle, arbitrary SQL callback or unconstrained JSON event.
 
+
+The commit bridge is declared in se-core, depending on se-store and se-types;
+se-types never depends on se-store. Cx borrows the admitted se_store::Snapshot
+read port. Synchronous validation/planning returns OpStep::Commit with an
+owned se_store::AtomicBatch and a typed continuation `then`, without a held SQL
+snapshot/transaction or IO closure. On the host route, HostStore::start_writer
+yields WriterOwner, whose client submits and returns Completion: CommitWait;
+the host async task awaits that future before feeding its CommitReceipt to then.
+On the hostless route, DirectStore::append uses the same transaction engine
+synchronously under the shared runtime lease and returns CommitReceipt directly
+to the same continuation. It needs no synthetic asynchronous completion or
+wait_blocking wrapper. CommitWait::wait_blocking is CLI-only when a CLI actually
+holds that completion; it is never called on a host thread. Iris's compile-only
+consumer binds message.send and working_state.set across both receipt routes.
+
 There are four access objects:
 
 1. A factory opens/creates under an explicit role. A host holding the exclusive runtime lease can create/recover or run startup/shutdown backup; an owner CLI can bootstrap an absent store through create_direct under its shared runtime lease; supported additive migration completes automatically during sole-host startup, before a ready HostStore is returned. Opening a missing store for a reader/direct client returns measured absence; it never creates an empty database.
@@ -35,7 +50,7 @@ A revision identifies a last committed event, scoped to the same store incarnati
 
 Each event has a version-1 envelope (the closed Rust variant determines kind and schema version; a caller cannot request an unknown numeric version): stable event ID; scope; authenticated actor; optional bound session; origin store ID; door (`cli`, `mcp`, `hook`, `host`, `import`); occurrence time in UTC microseconds; database-assigned recorded time; caller idempotency key; optional cause/supersedes event IDs; and one closed `EventBody` variant. The store assigns sequence only inside the transaction; recorded wall time is sampled before BEGIN, not by an external clock call while holding a transaction. Normal batches require header actor/scope to match admitted authority. Import-only batches may preserve a different historical actor/origin after strict source-ID mapping, but their initiating owner/import identity remains on the immutable operation envelope; that historical actor never becomes current session authority. A host group contains independently atomic operation batches; one operation batch can contain several events and their expected revisions. An immutable operation envelope owns scope/actor/request-key/fingerprint and an ordered membership map, so replay and uncertain-reply retries reconstruct the original atomic membership from authority rather than a disposable lookup index.
 
-The database stores the small envelope and typed per-kind rows, **not a second serialized JSON envelope**. Long bodies have one `payloads` row referenced by their event. Recipient/disposition/decision/session/turn/process/working-state/cursor projections contain indexes and event references, never copied body text. Refs and configuration objects are bounded typed encodings; their only JSON is a versioned non-text field, not an arbitrary duplicate of the event. Readers reconstruct a typed event from its one owning representation.
+The database stores the small envelope and typed per-kind rows, **not a second serialized JSON envelope**. Long bodies have one `payloads` row referenced by their event. Recipient/disposition/decision/session/turn/process/working-state/cursor projections contain indexes and event references, never copied body text. Refs and agent profile/grant objects are bounded typed encodings; their only JSON is a versioned non-text field, not an arbitrary duplicate of the event. Readers reconstruct a typed event from its one owning representation.
 
 Strings are UTF-8 with no normalization of user text. Times are signed 64-bit Unix microseconds, with a checked supported range; sequence/revision values are positive signed 64-bit integers. Body byte counts count UTF-8 bytes, not characters. All enum tags are the stable strings below; integer discriminants in Rust are not persisted. SHA-256 fields are 32-byte blobs. Stored UUID keys are exactly 16 bytes, never SQLite row IDs. Canonical-v7 keys reconstruct their wire spelling from the typed column; legacy-v8 keys require the scoped identity dictionary. Canonical public IDs include the shared kind prefix; legacy public IDs retain their exact validated spelling through the identity dictionary. File paths are lossless platform path encodings tagged `unix-bytes` or `windows-utf16`; display strings never become an ownership proof. Native non-UTF-8 path bytes are not silently replaced.
 
@@ -47,15 +62,14 @@ All following kinds have `schema_version = 1`; changing required fields or meani
 
 | Kind | Typed body fields | Emitting operation / internal cause | Authoritative projection effect |
 | --- | --- | --- | --- |
-| `project.registered` | project ID, display name, canonical/lossless repository roots, owner ID, expected absent; safe config/profile events share its atomic batch | `project.init`; supported project import | create registry/project heads; roots cannot collide |
-| `project.updated` | project ID, complete display name/root snapshot, expected; configuration changes have their own typed event | `project.init` idempotent adoption repair | append revision; preserve ID and registration history |
+| `project.registered` | project ID, display name, canonical/lossless repository roots, owner ID, expected absent; safe agent profile/grant events share its atomic batch | `project.init`; supported project import | create registry/project heads; roots cannot collide |
+| `project.updated` | project ID, complete display name/root snapshot, expected; general settings stay in config.toml | `project.init` idempotent adoption repair | append revision; preserve ID and registration history |
 | `project.removed` | project ID, expected, stop/revocation/integration witness event refs, preserved-history facts | `project.remove` after outside effects | tombstone registration, remove active root lookup; retain history |
 | `principal.registered` | principal ID, human/agent kind, owner ID, authenticated creator ID (unknown only for import/bootstrap), display name, role, expected absent | `project.init`, `agent.create`; owner/agent import | create principal; no authority from display name |
 | `principal.renamed` | principal ID, name, expected | `agent.rename` | change lookup label, preserve ID |
 | `alias.imported` | legacy alias, target principal ID, source ref, expected absent | `store.import_node` only | add historical lookup alias; never public alias creation |
 | `profile.saved` | agent ID, provider, model, named permission profile, supported effort setting, expected | init/create/config and supported imported profiles | update saved profile, no launch claim |
 | `grant.recorded` | principal ID, typed agent-create grant/scope, active/revoked, expected | owner init/config policy; historical import | update effective explicit grant; no bootstrap from old capability |
-| `config.set` | user scope or project-scoped agent.<A> key, typed value, expected; no project settings layer | `config.set`, initial setup | update effective persisted setting; secrets disallowed |
 | `session.prepared` | session ID, agent ID, provider/native conversation ref, capture consent, generation, expected absent | `session.begin`, `agent.launch` preparation | insert prepared session; incumbent remains active |
 | `session.activated` | session ID, expected, incumbent ID/revision if replacing, process ref, recorded containment fact and binding/witness refs | witnessed launch/bind | activate atomically with incumbent terminal transition; one active per agent |
 | `session.ended` | session ID, expected, end reason, final captured-turn/cursor refs | `session.end`; observed provider termination | terminal ended state; revoke active capability projections |
@@ -73,7 +87,7 @@ All following kinds have `schema_version = 1`; changing required fields or meani
 | `decision.rejected` | decision ID, expected, reason payload | `decision.reject`; proven imported transition | terminal rejection, preserve proposal |
 | `decision.retracted` | decision ID, expected, reason payload | `decision.retract`; proven imported transition | terminal withdrawal |
 | `decision.superseded` | prior/replacement decision IDs and expected revisions, owner approval ref | `decision.supersede`; proven imported transition | replace governing decision atomically, retain statements |
-| `turn.captured` | turn ID, agent/session ID, provider, native turn ref, role, text payload, lossless source path/offset/length/hash | `session.turn`, Claude hooks, Codex app-server capture; turn import | insert turn, advance captured source cursor only with complete bytes |
+| `session.turn` | turn ID, agent/session ID, provider, native turn ref, role, text payload, lossless source path/offset/length/hash | `session.turn`, Claude hooks, Codex app-server capture; turn import | insert turn, advance captured source cursor only with complete bytes |
 | `capture.source` | source ID, session, consent, native ref, expected | bind/adopt/import | establish source without reading an account credential |
 | `capture.progress` | source ID, expected, source incarnation/digest, old/new byte offsets, last turn ID | completed capture transaction | advance monotonically only for verified same source incarnation |
 | `capture.failed` | source/session, unchanged start offset, attempted end offset, typed code/cause/retry | authenticated harness capture | durable named failure without advancing past uncaptured bytes |
@@ -105,7 +119,7 @@ Internal event kinds do not add CLI/MCP operations. Read-only `status`, `history
 
 ## SQLite schema version 1
 
-`application_id = 0x53454E47` (`SENG`), `user_version = 1`. This chapter declares 53 event kinds and 43 application tables (excluding SQLite's sqlite_sequence); counts derive from the catalogue and CREATE TABLE statements below. This DDL is a design artifact; migrations will embed the approved bytes, not execute a Markdown parser. Every `*_data` table is an immutable component of an event. `payloads` owns content; `*_data` owns per-kind facts. The `facts` object in `aux_data` is a **closed typed per-kind versioned object excluding the envelope and payload bytes**, used for lower-frequency setup/import/effect facts; hot message/turn/decision/session/process/working-state/cursor records have typed columns. A projection may duplicate a small lookup key, not user text or an entire event serialization.
+`application_id = 0x53454E47` (`SENG`), `user_version = 1`. This chapter declares 52 event kinds and 42 application tables (excluding SQLite's sqlite_sequence); counts derive from the catalogue and CREATE TABLE statements below. This DDL is a design artifact; migrations will embed the approved bytes, not execute a Markdown parser. Every `*_data` table is an immutable component of an event. `payloads` owns content; `*_data` owns per-kind facts. The `facts` object in `aux_data` is a **closed typed per-kind versioned object excluding the envelope and payload bytes**, used for lower-frequency setup/import/effect facts; hot message/turn/decision/session/process/working-state/cursor records have typed columns. A projection may duplicate a small lookup key, not user text or an entire event serialization.
 
 ```sql
 PRAGMA application_id=0x53454E47;
@@ -159,11 +173,14 @@ CREATE TABLE events(
   recorded_at_us INTEGER NOT NULL,
   cause_event_id BLOB CHECK(cause_event_id IS NULL OR length(cause_event_id)=16),
   supersedes_event_id BLOB CHECK(supersedes_event_id IS NULL OR length(supersedes_event_id)=16),
-  CHECK((writer_mode='host' AND host_generation IS NOT NULL) OR (writer_mode='direct' AND host_generation IS NULL))
+  CHECK((writer_mode='host' AND host_generation IS NOT NULL) OR (writer_mode='direct' AND host_generation IS NULL)),
+  CHECK(kind!='session.turn' OR session_id IS NOT NULL)
 ) STRICT;
 CREATE INDEX events_scope_seq ON events(project_id,seq);
 CREATE INDEX events_actor_seq ON events(project_id,actor_id,seq);
 CREATE INDEX events_session_seq ON events(project_id,session_id,seq);
+CREATE INDEX events_kind_seq ON events(project_id,kind,seq);
+CREATE INDEX events_session_kind_seq ON events(project_id,session_id,kind,seq);
 CREATE TABLE operations(
   operation_id BLOB PRIMARY KEY CHECK(length(operation_id)=16),
   scope_key BLOB NOT NULL,
@@ -379,12 +396,6 @@ CREATE TABLE grants(
   last_seq INTEGER NOT NULL REFERENCES events(seq),
   active INTEGER NOT NULL CHECK(active IN (0,1)),
   PRIMARY KEY(scope_key,principal_id,grant_key)
-) STRICT, WITHOUT ROWID;
-CREATE TABLE configuration(
-  scope_key BLOB NOT NULL,
-  key TEXT NOT NULL,
-  last_seq INTEGER NOT NULL REFERENCES events(seq),
-  PRIMARY KEY(scope_key,key)
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE sessions(
   project_id BLOB NOT NULL REFERENCES projects(project_id),
@@ -679,7 +690,27 @@ For codec 1, core streams `SEINTENT\0v1\0` plus the stable operation name and ca
 
 Store computes fingerprint = SHA256(`SEOP\0v1\0` + unambiguous admitted scope/actor encoding + static operation name + intent codec version + intent SHA256). This binds scope/actor independently of the trusted core input digest. Store still validates the entire resulting closed event batch, payload digests, references and preconditions; it does not reconstruct operation intent by hashing generated event bodies. operations.fingerprint_codec retains the supported codec identity. Same caller key/fingerprint returns original membership/stamps; different intent refuses before any planned side effects. The existing operation's codec must remain supported or return a named version refusal, never reinterpret its bytes. Erasure invalidates affected composite fingerprints so no body-derived digest remains. Keyless natural operations retain neither an intent digest nor a retry index entry; their collision/body rules are separate.
 
-#### Keyed file-only effects
+#### General settings and agent metadata
+
+config.toml is the only effective authority for general settings, resolved by
+flag > env > config.toml > default. The store has no configuration head,
+ConfigKey/ConfigValue, ConfigSet event, Snapshot.config or configuration-list
+method. General config.set (including runtime.listen_port, provider defaults,
+Atlas enablement) is the host's keyed protected-file write with sync/readback in
+STATE/receipts; it emits no SQLite mirror event or writer stamp. Manual edits
+take effect at the next settings read or restart, without replaying an old store
+value over the file. A replay returns its original result and separately reports
+current file conflict; it never overwrites a later manual edit.
+
+Agent identity/name/creator, grants including agent.<A>.can-create, and saved
+provider/model/profile revisions remain in principals/grants/profiles with their
+existing PrincipalRenamed, GrantRecorded and ProfileSaved events and exact read
+methods. config.set on those agent keys dispatches to those typed changes, not a
+second configuration authority. No project settings layer exists. Dropping the
+general-settings-only table/kind yields **42 application tables, 30 triggers and
+52 event kinds**; SQLite's internal sqlite_sequence is excluded from the count.
+
+### Keyed file-only effects
 
 Store-backed effects retain their request identity, intent and settled evidence in
 `operations` plus the existing `effect.requested` / `effect.settled` and integration
@@ -717,7 +748,7 @@ A direct client holds a **shared** OS runtime.lock for its complete transaction/
 
 WriterMode is an opaque store-owned value with a read-only WriterKind view (`Host { generation }` / `Direct`), with no public constructor, Deserialize or input field. Event and operation rows persist writer_mode, nullable host_generation and durability with CHECKs. The commit engine alone constructs new stamps from its owned lease; CLI-through-host remains Host, and request Door remains independent. History reads the persisted event stamp. Import commits new Rust envelopes with the importer's actual writer and retains Node provenance separately. Rebuild and backup restore retain valid historical stamps exactly; an invalid Rust stamp is an integrity refusal, never inferred from the restoring host. Event-log salvage is deferred. The final new recovery event gets the recovering committer's stamp.
 
-The fixed FULL set is: credential.issued, credential.activated, credential.revoked, decision.ratified, decision.rejected, decision.retracted, decision.superseded, session.activated, session.ended, session.revoked, runtime.owner, runtime.handover, project.registered, project.removed, principal.registered, grant.recorded, profile.saved, config.set, erasure.requested, turn.erased, message.erased, erasure.completed, recovery.recorded; and fresh store/header creation, recovery adoption and the migration user_version publication. Conservatively treating every profile/config event as security-sensitive avoids a caller-controlled field classifier. No untrusted durability flag exists. A mixed group takes FULL. Select/read back synchronous=FULL before BEGIN; only a successful FULL COMMIT may acknowledge those changes. Restore/read back NORMAL before the next ordinary group; failure to restore closes admission rather than silently changing the contract. NORMAL can lose several recent ordinary commits after OS failure or power loss, but acknowledged commits survive an application-process crash; FULL security revocation cannot be acknowledged before its WAL sync. Replay reports retained durability, not the current policy. This boundary must be measured against B2/write budgets rather than waived by median S1 numbers.
+The fixed FULL set is: credential.issued, credential.activated, credential.revoked, decision.ratified, decision.rejected, decision.retracted, decision.superseded, session.activated, session.ended, session.revoked, runtime.owner, runtime.handover, project.registered, project.removed, principal.registered, grant.recorded, profile.saved, erasure.requested, turn.erased, message.erased, erasure.completed, recovery.recorded; and fresh store/header creation, recovery adoption and the migration user_version publication. Conservatively treating every agent profile/grant event as security-sensitive avoids a caller-controlled field classifier. No untrusted durability flag exists. A mixed group takes FULL. Select/read back synchronous=FULL before BEGIN; only a successful FULL COMMIT may acknowledge those changes. Restore/read back NORMAL before the next ordinary group; failure to restore closes admission rather than silently changing the contract. NORMAL can lose several recent ordinary commits after OS failure or power loss, but acknowledged commits survive an application-process crash; FULL security revocation cannot be acknowledged before its WAL sync. Replay reports retained durability, not the current policy. This boundary must be measured against B2/write budgets rather than waived by median S1 numbers.
 
 ## Runtime ownership and live handover
 
@@ -857,7 +888,30 @@ An opaque page cursor encodes version, mail-window/live/history mode, store ID/i
 
 `Window` states from/to positions, returned count, byte consumption, completeness, omission reason/count if known and continuation. Row limit, bytes, deadline, unreadable row, feature unavailable and source rotation are different stop reasons. If the first full item cannot fit, return `read-budget-too-small` with the required bounded minimum; do not return a non-advancing apparently successful empty page. Previews explicitly expose body-incomplete; full `message.read` must obtain the full bounded body before core appends a read marker. Renderers clamp only at UTF-8 boundaries, never slice an encoded path as text. An exact-ID query returning no matching record is measured absence; adding a state filter can instead produce zero matches without implying the ID is absent.
 
-`Snapshot` exposes typed queries for projects/principals/profiles/config, sessions and credential hashes, messages/inbox/marks, decisions (including typed exact ID), turns/sources, internal recorded custody for status/agent control, working state, cursors/resume heads, effects/integrations, history/events, import progress and operation receipts. Shared text search is bounded over an explicitly scoped candidate stream; it reports incomplete when its scan budget ends. There is no arbitrary SQL/predicate callback API for kernel callers.
+`Snapshot` exposes typed queries for projects/principals/profiles/grants, sessions and credential hashes, messages/inbox/marks, decisions (including typed exact ID), turns/sources, internal recorded custody for status/agent control, working state, cursors/resume heads, effects/integrations, history/events, import progress and operation receipts. Shared text search is bounded over an explicitly scoped candidate stream; it reports incomplete when its scan budget ends. There is no arbitrary SQL/predicate callback API for kernel callers.
+
+### Exact capture history filters
+
+The sole captured-turn event name is `session.turn` / EventBody::SessionTurn /
+EventKind::SessionTurn in storage and wire A.14. Its envelope session_id is
+mandatory and equals the typed turn's session, including user-history imports;
+a source binding cannot be reconstructed from a display label. Suppressed
+content has no session.turn event/body and retains the separate existing
+capture.suppressed counter fact.
+
+HistoryQuery has typed session: Option<SessionId> and exact kinds: Vec<EventKind>
+in addition to agent/family/since. Empty kinds means all authorized kinds;
+unknown strings refuse in the shared codec and duplicates normalize once.
+Session, exact kind, authorized scope, high-water and since predicates are
+applied before candidate selection, count/byte/step/deadline accounting and
+limit+1. Cursor fingerprints bind every filter. A session/kind page never takes
+a broad page and post-filters it into false exhaustion. events_session_kind_seq
+supports the scoped session+kind range; events_session_seq handles session-only,
+and events_kind_seq handles scoped exact-kind ranges. Multiple kinds merge
+bounded indexed sequence streams with one shared read budget/eligible lookahead,
+not a full-history scan or unbounded per-kind materialization. EXPLAIN and the
+actual `se history --session S --kind session.turn --json` consumer must witness
+this at 1M scale, including sparse matches, unreadable rows and old windows.
 
 ### Mail windows and live keysets
 
@@ -870,7 +924,6 @@ All other mutable lists use current projections and **live keysets**. Their outp
 | List | Current scoped keyset order/index |
 | --- | --- |
 | projects / principals / sessions / recorded processes | first_seq then typed ID; projects_order / principals_order / sessions_order / processes_order |
-| configuration | scope_key, configuration key (existing primary key) |
 | decisions, including pending | latest transition last_seq then decision ID; decisions_order / decisions_state; no historical membership promise |
 | effects, including pending/offered | requested_seq then effect ID; effects_order / effects_state_order; merge the pending and offered streams |
 | integrations | last_seq then integration ID; integrations_order |
@@ -1036,7 +1089,7 @@ Section 80 owns the single startup/RSS/read/write budget table and its allocatio
 
 The storage footprint target and all process/startup/write budgets are named once in section 80. Earlier schema-only sizing (1,265.50/1,356.43 B/event canonical variants and 1,390.18 B/event under a different legacy/keyless policy) used SQLite 3.46.1, foreign_keys disabled and the older temporal/chain schema; none qualifies this reduced schema, real import overhead, full 1M composition, native platforms or backups/WAL. The read-only history spike used the complete original DDL with FKs enabled, retained exact source bytes externally, imported registered legacy identities, and independently compared text/references after interrupted retries. Its omissions and factory-history/Codex-only scope remain explicit. The revised schema needs a fresh apples-to-apples native host measurement with real body sizes, FULL decision mix and all retained metadata/index costs; no sizing or latency win is asserted from subtraction alone.
 
-Warm 1M inbox uses an indexed 50-message page with no full-history scan; section 80 supplies the sole budget table, including B9. B9 remains **FAIL/unqualified**: the retained common-window mixed-write spike measured p95 37.47 ms serial and 66.92 ms with twenty clients on Linux. It was a bounded Python batching writer, not the native Rust host or a PC qualification. E3 must split queue, append, COMMIT, restore and checkpoint/sync time and repeat the native host writer on the box and PC before attributing the regression or claiming acceptance. Queue/window tuning alone did not establish the tail. Build acceptance must measure signed native Windows with Defender, macOS and Linux; a median win does not establish the required p95/burst budgets. Checkpoint work is commit-driven on both host and direct connections via SQLite auto-checkpoint at 256 16-KiB pages (4 MiB), with TRUNCATE on clean shutdown. There is no scheduled PASSIVE worker or checkpoint timer. journal_size_limit is a reuse target, not a hard WAL cap: if non-backup pinned readers prevent checkpoint and WAL exceeds the 16 MiB high-water, reject new ordinary writes with store-backpressure, identify the pinned-reader condition, and retry only after reader release/checkpoint; never delete a live WAL. During a backup pin, defer checkpointing and keep accepting writes; at 64 MiB abort/release the backup and retry next start-of-day as specified above. A security revocation must not be silently dropped for this pressure: close agent admission and report a FULL commit failure if it cannot be persisted. A busy checkpoint reports backlog and yields; it never blocks a query indefinitely or reports a fully flushed WAL when frames remain.
+Warm 1M inbox uses an indexed 50-message page with no full-history scan; section 80 supplies the sole budget table, including B9. B9 remains **FAIL/unqualified**: the retained common-window mixed-write spike measured p95 37.47 ms serial and 66.92 ms with twenty clients on Linux. It was a bounded Python batching writer, not the native Rust host or a PC qualification. E3 must split queue, append, COMMIT, restore and checkpoint/sync time and repeat the native host writer on the box and PC before attributing the regression or claiming acceptance. Queue/window tuning alone did not establish the tail. Build acceptance must measure signed native Windows with Defender, macOS and Linux; a median win does not establish the required p95/burst budgets. Checkpoint-in-COMMIT remains a measured hypothesis rather than an approved policy change. E3 diagnostics do not replace the baseline; any proposed change requires one reviewed policy across 20/40/80/95 with its sync/queue/WAL/memory costs. Checkpoint work is commit-driven on both host and direct connections via SQLite auto-checkpoint at 256 16-KiB pages (4 MiB), with TRUNCATE on clean shutdown. There is no scheduled PASSIVE worker or checkpoint timer. journal_size_limit is a reuse target, not a hard WAL cap: if non-backup pinned readers prevent checkpoint and WAL exceeds the 16 MiB high-water, reject new ordinary writes with store-backpressure, identify the pinned-reader condition, and retry only after reader release/checkpoint; never delete a live WAL. During a backup pin, defer checkpointing and keep accepting writes; at 64 MiB abort/release the backup and retry next start-of-day as specified above. A security revocation must not be silently dropped for this pressure: close agent admission and report a FULL commit failure if it cannot be persisted. A busy checkpoint reports backlog and yields; it never blocks a query indefinitely or reports a fully flushed WAL when frames remain.
 
 The future backend uses the SE Code-compatible caret range rusqlite "0.40" (its lock currently selects 0.40.1 / libsqlite3-sys 0.38.1), with one links="sqlite3" dependency across the workspace; it adds no Tokio dependency to se-store. A patched bundled SQLite must be shared with SE Code and avoid the documented WAL-reset defect (fixed in 3.51.3, with 3.50.7 backport); dependency/link versions are workspace coordination, not a private second SQLite build. The implementation must validate `cargo tree -d`/links compatibility at integration. [SQLite synchronous semantics](https://www.sqlite.org/pragma.html#pragma_synchronous), [WAL-reset advisory](https://www.sqlite.org/wal.html#walreset).
 
@@ -1092,7 +1145,7 @@ This index binds the following declarations to the algorithms above. All methods
 | TransactionEngine.commit_group / append_atomic / apply | private common implementation seam: one outer transaction, isolated operation savepoints, exhaustive per-event apply; PreparedReceipt cannot escape as durable success before COMMIT |
 | Snapshot.legacy_registry | scoped source-evidence resolver borrowing this admitted snapshot; exact kind/text membership only, absent false and unreadable error; no global string registry or grants |
 | Snapshot.info / event / history / search | snapshot metadata; exact typed event; indexed/bounded history and budgeted search with honest omissions |
-| Snapshot.projects / project / principals / principal / profile / configuration / config / grant | authorized current metadata, resolved immutable originals where required; config/grant key and creator checks use committed heads |
+| Snapshot.projects / project / principals / principal / profile / grant | authorized current metadata, resolved immutable originals where required; grant key and creator checks use committed heads |
 | Snapshot.session / sessions / turns / capture_source | native binding/consent/capture state; bounded attributable text; never provider account credentials or a fake native conversation |
 | Snapshot.message / messages / decision / decisions | full or explicitly previewed bodies, correct sent-or-received/owner scope and exact-ID filtering; no read/delivery/disposition writes |
 | Snapshot.process / processes | recorded identity plus actual recorded observation, never live OS proof or a PID-only stop handle |

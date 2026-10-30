@@ -97,30 +97,8 @@ pub enum IntegrationState {
     Conflict,
 }
 #[derive(Clone, Debug)]
-pub enum ConfigKey {
-    DefaultProject,
-    DaemonAutostart,
-    McpPort,
-    ClaudeCommand,
-    ClaudeModel,
-    ClaudePermission,
-    CodexCommand,
-    CodexModel,
-    CodexPermission,
-    AtlasEnabled,
-    AgentCanCreate(AgentId),
-}
-#[derive(Clone, Debug)]
 pub enum GrantKey {
     AgentCanCreate(AgentId),
-}
-#[derive(Clone, Debug)]
-pub enum ConfigValue {
-    Bool(bool),
-    Integer(i64),
-    Text(String),
-    Project(ProjectId),
-    Permission(PermissionProfile),
 }
 #[derive(Clone, Debug)]
 pub struct SourceEvidence {
@@ -243,6 +221,64 @@ pub struct StoredEvent {
     pub erased_fields: Vec<(crate::EraseField, RecordId)>,
 }
 /// Closed version-1 persisted kind catalogue. Body text is supplied by T once.
+/// Exact closed storage/wire kinds; codec spellings are section 20's catalogue.
+/// SessionTurn is `session.turn`; general settings have no storage event kind.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EventKind {
+    ProjectRegistered,
+    ProjectUpdated,
+    ProjectRemoved,
+    PrincipalRegistered,
+    PrincipalRenamed,
+    AliasImported,
+    ProfileSaved,
+    GrantRecorded,
+    SessionPrepared,
+    SessionActivated,
+    SessionEnded,
+    SessionRevoked,
+    CredentialIssued,
+    CredentialActivated,
+    CredentialRevoked,
+    MessageSent,
+    MessageDelivered,
+    MessageRead,
+    MessageDismissed,
+    MessageSuperseded,
+    DecisionProposed,
+    DecisionRatified,
+    DecisionRejected,
+    DecisionRetracted,
+    DecisionSuperseded,
+    SessionTurn,
+    CaptureSource,
+    CaptureProgress,
+    CaptureFailed,
+    CaptureSuppressed,
+    ProcessRegistered,
+    ProcessTransition,
+    WorkingStateSet,
+    CursorRecorded,
+    CursorAcknowledged,
+    EffectRequested,
+    EffectOffered,
+    EffectSettled,
+    IntegrationRecorded,
+    RuntimeOwnerEstablished,
+    RuntimeHandoverRecorded,
+    BackupRecorded,
+    ImportStarted,
+    ImportProgress,
+    ImportFinished,
+    ImportUnreadable,
+    LegacyRetained,
+    TurnErased,
+    MessageErased,
+    ErasureRequested,
+    ErasureCompleted,
+    RecoveryRecorded,
+}
+
 #[derive(Clone)]
 pub enum EventBody<T> {
     ProjectRegistered {
@@ -293,11 +329,6 @@ pub enum EventBody<T> {
         principal: Actor,
         key: GrantKey,
         active: bool,
-        expected: Expected,
-    },
-    ConfigSet {
-        key: ConfigKey,
-        value: ConfigValue,
         expected: Expected,
     },
     SessionPrepared {
@@ -404,7 +435,7 @@ pub enum EventBody<T> {
         replacement_expected: Revision,
         approval: EventId,
     },
-    TurnCaptured {
+    SessionTurn {
         turn: RecordId,
         agent: AgentId,
         session: SessionId,
