@@ -1,1 +1,13 @@
-//! The host: session tasks, batched writer, mail delivery, Claude/Codex/SE Code integrations, MCP and local listener.
+//! Compile-only host design; no runtime, provider or listener implementation.
+//! Canonical declarations for docs/design/40-host-runtime-and-harnesses.md.
+//! The separately owned permissive linked API remains section 10's contract.
+mod harness;
+mod ipc;
+mod model;
+mod runtime;
+mod session;
+pub use harness::*;
+pub use ipc::*;
+pub use model::*;
+pub use runtime::*;
+pub use session::*;

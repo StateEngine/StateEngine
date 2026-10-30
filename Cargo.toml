@@ -24,6 +24,7 @@ schemars = "=1.2.1"
 uuid = { version = "=1.23.1", default-features = false }
 sha2 = "0.10.9"
 zeroize = "1.8.2"
+tokio = { version = "=1.53.3", default-features = false, features = ["rt"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
