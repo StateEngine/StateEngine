@@ -1,6 +1,6 @@
 # 70 — Security
 
-Status: reconciled design, 2026-10-30, base rust-se `3536238`. Builds on 00 §5.2 (logging), §5.4 (paths),
+Status: reconciled design, 2026-10-30, round-2 base assembled rust-se `f25ca90`. Builds on 00 §5.2 (logging), §5.4 (paths),
 §5.5 (environment); OPS.md's `Auth` column is the authority table this section implements.
 
 ## 1. Threat model, stated honestly
@@ -107,12 +107,19 @@ Five layers, each of which catches a different mistake:
    - Provider markers, where present (`CLAUDECODE=1` in Claude's tool shells), also withhold Owner. Their
      absence proves nothing.
 5. **Human-only verbs need human presence.** `decision ratify|reject|retract|supersede`,
-   `project.remove`, `store.forget`, `store.restore`, `credential.rotate`, and `config.set` of a
-   security key (permission profile, full-bypass opt-in, listener port) require all of: stdin and stdout are a console/TTY (`isatty`;
+   `project.remove`, `store.forget`, `store.restore`, `credential.rotate`,
+   `installation.uninstall`, `doctor.repair` (`se doctor --fix CHECK-ID`), and
+   `config.set` of a security key require all of: stdin and stdout are a console/TTY (`isatty`;
    `GetConsoleMode` succeeds), layer 4 says "outside every agent tree", and no `SE_SESSION` is set.
    There is no typed confirmation: Jimmy's ruling that friction is the enemy applies, and the three
    checks above are human-presence mistake/drift checks, not same-user adversary proof. In SE Code,
    the UI passes a `HumanPresence` token created by a UI gesture; tool calls never carry one.
+
+   Security keys include permission profiles, full-bypass opt-in,
+   `runtime.listen_port` and `agent.<A>.can-create`. The closed key catalogue carries
+   `human_only` **per key**; `config.set` is not given one operation-wide boolean
+   that would either exempt a security key or block ordinary configuration. CLI,
+   linked UI and repair paths use the same key classification and presence rule.
 
 **Not stopped:** an agent that escapes its job or cgroup (a Linux user can move its own processes
 between cgroups it owns; WMI process creation lands outside a Windows job), drives a TTY it allocates,
@@ -209,10 +216,12 @@ the CLI, hooks and `se mcp token`. Stdio `se mcp` with per-call capabilities. Th
    so immediate client cancellation remains unqualified. No reconnect or new mail clears hold.
 
 ### 4.3 Port
-Chosen once at `init` from a hash of the user's uid or SID in 20000–29999 (so OS users and a side-by-side
-Node install on 3221 don't collide), bind-probed, persisted in `config.toml`. It never moves on its own,
+Chosen once at `init` from a hash of the user's uid or SID in 20000–29999
+(avoiding 3221 and the Node install), bind-probed and persisted as
+`runtime.listen_port` in the per-user `config.toml`. A hash collision or another
+listener is diagnosed rather than treated as a guaranteed free port. It never moves on its own,
 because agents' MCP URLs name it; if something holds it at host start, the host refuses, naming the
-holder's pid when readable and `se config set listener.port N`. A non-loopback address refuses before any
+holder's pid when readable and `se config set runtime.listen_port N`. A non-loopback address refuses before any
 socket opens; alpha has no override.
 
 **Squatting.** Another local user can take the port while our host is down. `se mcp token` first
@@ -301,7 +310,11 @@ Human-only actions retain §2.3's existing presence checks and same-user limit.
 | `store.restore` / `se restore` | Separate named owner action with presence checks; show newest valid backup/captured head, exact events/intervals lost or unknown, revoked credentials and ended/re-admitted agents; preserve corrupt source, no event-log salvage or silent history rewrite |
 | `credential.rotate` / `se credential rotate` | Separate named owner action with presence checks; print every session/bearer/capability invalidation and rebind consequence; never smuggled into a configuration repair |
 | `doctor.repair` / `se doctor --fix CHECK-ID` | One diagnosed owned configuration repair, plan printed first and checked before apply; no rotation, restore, salvage or migration side effect |
-| `installation.uninstall` / `se uninstall` | Show owned integration/binary/PATH removal and achieved agent stop; PATH restoration is read back, user repos/history/provider login remain untouched |
+| `installation.uninstall` / `se uninstall` | Human presence; first ordinary graceful down with exact stop witness and saved resume references, print achieved stop facts, then owned integration/binary/PATH removal; read back PATH restoration, preserve user repos/history/provider login |
+
+Install/uninstall scripts and SE Code's installer call this same `se uninstall`
+path; they do not reimplement shutdown or kill agents without the stop witness.
+Incomplete stop remains incomplete and blocks removal of required custody resources.
 
 Automatic backups run at start-of-day and clean shutdown under section 20's single rule.
 No public manual backup or partial event-log salvage engine is advertised for alpha.
@@ -314,7 +327,9 @@ No public manual backup or partial event-log salvage engine is advertised for al
   rusqlite 0.40.1 `bundled` / libsqlite3-sys 0.38.1, axum 0.8.9, hyper 1 (http1/server) and
   hyper-util 0.1. se-host uses hyper directly or an axum range admitting 0.8.9, with one compatible
   resolved Tokio and SQLite links=sqlite3 package; `cargo tree -d` checks shared-package duplication.
-  Tokio is confined to se-host; kernel/store/proc and the hostless client remain synchronous.
+  Tokio is confined to se-host. Core/proc and the hostless client remain synchronous;
+  se-store exposes futures only at its writer boundary. The async host awaits writer
+  completion; only the hostless CLI may use `wait_blocking` (§40 §4).
 - A new direct dependency needs one review sentence on why std or an existing dep can't do it. No build
   script that downloads. Release builds run `--locked --offline` from a vendored mirror.
 - **No outbound network:** `cargo tree -i` finds no `rustls`, `native-tls`, `openssl`, `reqwest` or hyper
