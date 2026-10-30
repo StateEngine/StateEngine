@@ -287,9 +287,12 @@ establishes latency headroom. Windows with Defender, after-task memory and full
 native integration remain independently required; both reviews and accepted
 quiet-window numbers gate this candidate's merge.
 
-The existing activation deadline bounds the no-bind case. No-bind/definite
-first-bind refusal falls back to owner-only FULL admission before writer start;
-a later bind pays its ordinary session FULL transaction. Record the actual
+Section 40's FIRST_BIND_WINDOW = 10 s starts when activate returns Prepared,
+uses an absolute Instant deadline and is rechecked on resume. Window expiry
+with no bind or a definite first-bind refusal within it falls back to owner-only
+FULL admission before writer start; status becomes ready and a later first bind
+uses the ordinary session FULL transaction, like a second bind, without an
+expiry failure to SE Code. Record the actual
 fallback wait/extra barriers rather than pooling it with the normal atomic
 first-bind case. Explicit drain must fence/join a racing commit and retain both
 keys/known outcomes; it cannot force a duplicate owner or a synthetic successful

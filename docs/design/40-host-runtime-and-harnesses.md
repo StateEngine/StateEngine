@@ -452,15 +452,23 @@ request/deadline bounds, without a gather timer.
 Standalone admission and live-handover/cold-recovery maintenance retain their
 existing FULL ordering; no transfer barrier is folded into first binding.
 
-The already existing activation deadline bounds waiting for the first bind; it
-is not reset by a retry and adds no polling loop or per-session timer. If no bind
-arrives or one definitely refuses, fence new first-bind maintenance, join any
-accepted job and inspect its outcome. If neither operation committed, use the
-ordinary standalone-style FULL owner admission and start the normal writer;
-Ready no longer waits for a successful first bind. A subsequent/retried session
-uses the writer's ordinary binding transaction, with its additional FULL cost
-reported. If the joint pair committed, retain its exact receipts/owner, never
-append a second owner or relabel a known commit as refusal. Unknown COMMIT keeps
+The host owns the named constant FIRST_BIND_WINDOW = 10 s. At the moment
+activate returns Readiness::Prepared, set one absolute Instant deadline to that
+moment plus FIRST_BIND_WINDOW. This is separate from activate's
+CallOptions.timeout, which ends with that call; neither retries nor later bind
+calls reset the window. Arm one host-supervisor deadline wake, without polling
+or a per-session timer, and recheck the original deadline before first-bind
+admission and on OS resume under the suspend/resume rule below. If the window
+expires with no bind, or a bind definitely refuses within it, fence new
+first-bind maintenance immediately, join any accepted job and inspect its
+outcome. If neither operation committed, use the ordinary standalone-style FULL
+owner admission and start the normal writer;
+Ready no longer waits for a successful first bind, and status reports the host
+as ready. SE Code receives no failure merely because this window expired: a
+later first bind, like a second bind, uses the writer's ordinary session-activation
+transaction, with its additional FULL cost reported. A bind racing the fallback
+waits for its joined ownership transition within its own call bounds. If the joint
+pair committed, retain its exact receipts/owner, never append a second owner or relabel a known commit as refusal. Unknown COMMIT keeps
 both original keys and a named blocker until bounded readback resolves it; a
 new owner is not guessed. An explicit drain wins against fallback admission,
 fences its gate and joins work before resources can close.
