@@ -712,7 +712,7 @@ return LockPoisoned/internal. A quarantined scope may be independently
 observed and stopped through its validated native scope; it cannot launch or
 transfer until reconciliation commits its actual phase. No poisoned slot is
 forgotten because its store row is missing. Panic outside an effect has a
-recorded task-failed/internal report; panic after creation preserves cleanup
+recorded internal report; panic after creation preserves cleanup
 custody, including natural-exit release. No process-wide abort profile is
 introduced to make these paths disappear.
 
@@ -1056,7 +1056,7 @@ lease; they use the §6 store/lease barrier before activation.
   and yields Pending or RuntimeExitWitness with identity, exit evidence/status
   and timestamp. No failed dispatch is discarded. Only Exited permits
   release_runtime to close the pending pin and the host to retire the failed
-  startup slot. Deadline expiry with Pending reports runtime-stop-unwitnessed
+  startup slot. Deadline expiry with Pending reports stop-unwitnessed
   and retains custody; dropping a future is not a detach/cleanup mechanism.
 
 Commit/abort checks serialize on the per-child startup slot. EOF before ready
@@ -1235,19 +1235,19 @@ observation-ID selectors or a second process-control surface.
 | IdentityUnreadable | Agent launch/recovery refusal or stop-unwitnessed, selected by the section-50 mapper | pid + native reason; retry/doctor, never absent |
 | UnsupportedPlatform | window-unavailable for window; spawn-failed for unsupported native capability | tried adapters or program/native capability; choose supported mode/system |
 | ContainmentUnavailable | spawn-failed only when a requested strict scope cannot be provided | path/probes/native cause; default Linux BestAvailable launches uncontained instead and emits the status fact below |
-| ContainmentChanged, ContainmentEscape, ScopeUnreadable, RecoveryUnproved | stop-unwitnessed/stop-partial for agent stop; contextual agent launch/recovery refusal otherwise | preserve scope/remaining/native cause; no empty claim |
+| ContainmentChanged, ContainmentEscape, ScopeUnreadable, RecoveryUnproved | stop-unwitnessed for agent stop; contextual agent launch/recovery refusal otherwise | preserve scope/remaining/native cause; no empty claim |
 | HardeningUnavailable | spawn-failed with optional hardening cause | choose a supported requested hardening profile; default alpha launch does not require it |
 | BreakawayDenied | job-breakaway-refused | exact parent/caller job; use a terminal outside that job or grant explicit BREAKAWAY_OK; se up inside the same strict job cannot cure it |
 | LaunchFailed | spawn-failed (or launch-failed after provider startup) | program/native cause or provider exit/status/stderr context; retain failed-launch cleanup |
 | LaunchTimedOut | deadline-exceeded for native launch; launch-readiness-timeout only when provider readiness timed out | phase/waited/last-observed; distinguish native setup from provider handshake |
 | DuplicateLifecycle | launch-in-flight / agent-already-running as observed | existing lifecycle/result; do not duplicate |
 | HostChanged | runtime-handover-in-progress during transfer; runtime-not-running after actual loss | current owner/plan; wait for ready or start runtime/recovery |
-| GenerationChanged | session-generation-mismatch | expected/current; reread and retry |
-| StopDispatchFailed | stop-unwitnessed/stop-partial with the original deadline and cause | retain native error even if independent witness completes later |
-| StopIncomplete | stop-unwitnessed/stop-partial for agents | observation/deadline_ms/labelled remaining; retain state/custody |
+| GenerationChanged | state-conflict | expected/current; reread and retry |
+| StopDispatchFailed | stop-unwitnessed with the original deadline and cause | retain native error even if independent witness completes later |
+| StopIncomplete | stop-unwitnessed for agents | observation/deadline_ms/labelled remaining; retain state/custody |
 | ResourceLimit | input-too-large for input bounds; spawn-failed for native admission/capacity | resource/limit; release witnessed terminal scopes or retry, never truncate |
-| IllegalTransition, StopTokenConsumed, LockPoisoned, OperationPanicked, CallbackPanicked | internal (task-failed when reported by host task) | state/action or report_id/location, retained quarantined slot; doctor bundle |
-| StopTokenExpired | session-generation-mismatch if stale generation, otherwise deadline-exceeded | token generation/deadline; prepare a fresh authorized request, no signal |
+| IllegalTransition, StopTokenConsumed, LockPoisoned, OperationPanicked, CallbackPanicked | internal (internal when reported by host task) | state/action or report_id/location, retained quarantined slot; doctor bundle |
+| StopTokenExpired | state-conflict if stale generation, otherwise deadline-exceeded | token generation/deadline; prepare a fresh authorized request, no signal |
 
 Creator/session/lifecycle authority is checked by host admission before the
 native API. Retired process verbs, observation selectors and their public error
@@ -1324,7 +1324,7 @@ The host selects the existing runtime-operation catalogue for §5.5: a native
 start/identity failure maps runtime-start-failed with its sanitized native
 cause and startup log; an uncommitted startup still pending at the deadline
 maps runtime-start-pending; a failed abort with no outside exit proof maps
-runtime-stop-unwitnessed. A restrictive Windows job keeps the more specific
+stop-unwitnessed. A restrictive Windows job keeps the more specific
 job-breakaway-refused cause/remedy. Commit ambiguity preserves the pending
 startup record/nonce until authenticated reconciliation; it is never rendered
 as "ready" merely because a child exists. This is operation-context mapping

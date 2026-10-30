@@ -1287,16 +1287,16 @@ stderr/argv/native payload never enters errors/bundles.
 | Boundary | Existing codes raised / cause / legal remedy |
 | --- | --- |
 | Input/wire | usage-invalid-value, input-unknown-field, input-too-large: fix closed schema/budget; no dispatch/marker on invalid input |
-| API/version | api-version-unsupported, runtime-version-mismatch: upgrade matching side; no negotiation bypass |
+| API/version | api-version-unsupported, runtime-incompatible: upgrade matching side; no negotiation bypass |
 | Native peer/owner provenance | os-user-mismatch, listener-admission-refused, owner-required, human-terminal-required: correct user/native owner route; never ambient fallback |
-| Credential | machine-credential-missing/unreadable, capability-invalid/revoked/expired, session-binding-unproven: authenticated init/repair/renewal/rebind, no owner conversion |
-| Runtime | runtime-not-running, custody-unavailable-hostless, runtime-owned-elsewhere, runtime-start-failed/pending: legal up/actual-owner inspection, not a PID shortcut |
-| Generation/shutdown/handover | session-generation-mismatch, runtime-handover-in-progress, runtime-drain-timeout, runtime-stop-unwitnessed: re-read exact key/G/ownership; retain unsafe custody; controlled restart for unjoinable worker |
+| Credential | setup-required/unreadable, capability-invalid/revoked/expired, capability-invalid: authenticated init/repair/renewal/rebind, no owner conversion |
+| Runtime | runtime-not-running, runtime-not-running, runtime-incompatible, runtime-start-failed/pending: legal up/actual-owner inspection, not a PID shortcut |
+| Generation/shutdown/handover | state-conflict, runtime-handover-in-progress, stop-unwitnessed, stop-unwitnessed: re-read exact key/G/ownership; retain unsafe custody; controlled restart for unjoinable worker |
 | CAS/scope | revision-conflict, idempotency-key-reused, launch-in-flight, agent-already-running, grant-required, message-scope-denied, not-recipient: re-read/current authorization, preserve incumbent/original receipt |
-| Provider | provider-cli-not-found/too-old/unrecognized, provider-protocol-unsupported, codex-app-server-failed, resume-reference-missing/unverifiable, provider-change-breaks-resume: install/fix/explicit --new where desired, never silent fresh thread |
+| Provider | provider-cli-not-found/too-old/unrecognized, provider-incompatible, launch-failed, resume-reference-missing/unverifiable, provider-change-breaks-resume: install/fix/explicit --new where desired, never silent fresh thread |
 | Process | process-identity-changed/unreadable, bare-pid-refused, job-breakaway-refused, window-unavailable, launch-failed/readiness-timeout, stop-unwitnessed/partial/deadline-exceeded: exact outside observation and legal supported mode; no weakened containment/name kill |
-| Capture/config/remove | transcript-unreadable/truncated, hook-payload-invalid, capture-consent-missing, turn-invalid, integration-conflict/write-failed/readback-mismatch, remove-incomplete: preserve cursor/foreign bytes/history, repair actual pin/config; hook exit zero is not capture proof |
-| Failure/cancellation | deadline-exceeded, cancelled, task-failed, internal: original-key outcome readback, named route failure or ownership/lifecycle-domain poison as specified; mutex poison never success |
+| Capture/config/remove | source-unreadable/truncated, usage-invalid-value, capture-consent-missing, usage-invalid-value, integration-conflict/write-failed/readback-mismatch, remove-incomplete: preserve cursor/foreign bytes/history, repair actual pin/config; hook exit zero is not capture proof |
+| Failure/cancellation | deadline-exceeded, cancelled, internal, internal: original-key outcome readback, named route failure or ownership/lifecycle-domain poison as specified; mutex poison never success |
 
 A bounded se-proc stop is incomplete at the requested guarantee even if root
 exited; Complete retains its actual supported OS bound. Windows explicit escape,
