@@ -23,17 +23,19 @@ The compile-only declarations in `crates/se-store/src/` are the normative Rust s
 
 The commit bridge is declared in se-core, depending on se-store and se-types;
 se-types never depends on se-store. Cx borrows the admitted se_store::Snapshot
-read port. Synchronous validation/planning returns OpStep::Commit with an
-owned se_store::AtomicBatch and a typed continuation `then`, without a held SQL
-snapshot/transaction or IO closure. On the host route, HostStore::start_writer
-yields WriterOwner, whose client submits and returns Completion: CommitWait;
-the host async task awaits that future before feeding its CommitReceipt to then.
+read port. On the host route, synchronous validation/planning runs as a bounded
+blocking-pool job which opens and drops its finite snapshot inside that job. It
+returns OpStep::Commit with an owned se_store::AtomicBatch and typed continuation
+`then`, without a held SQL transaction, borrowed read port or IO closure.
+HostStore::start_writer yields WriterOwner, whose client submits and returns
+Completion: CommitWait. Only that future await runs on the executor; after it,
+a second bounded blocking-pool job opens a fresh snapshot and feeds the actual
+CommitReceipt to `then`. The consumer owns/clones its reader handle across jobs.
 On the hostless route, DirectStore::append uses the same transaction engine
 synchronously under the shared runtime lease and returns CommitReceipt directly
-to the same continuation. It needs no synthetic asynchronous completion or
-wait_blocking wrapper. CommitWait::wait_blocking is CLI-only when a CLI actually
-holds that completion; it is never called on a host thread. Iris's compile-only
-consumer binds message.send and working_state.set across both receipt routes.
+to the same continuation. CommitWait has no blocking-wait method or caller.
+Iris's compile-only consumer binds message.send and working_state.set across
+both receipt routes.
 
 There are four access objects:
 
@@ -179,8 +181,6 @@ CREATE TABLE events(
 CREATE INDEX events_scope_seq ON events(project_id,seq);
 CREATE INDEX events_actor_seq ON events(project_id,actor_id,seq);
 CREATE INDEX events_session_seq ON events(project_id,session_id,seq);
-CREATE INDEX events_kind_seq ON events(project_id,kind,seq);
-CREATE INDEX events_session_kind_seq ON events(project_id,session_id,kind,seq);
 CREATE TABLE operations(
   operation_id BLOB PRIMARY KEY CHECK(length(operation_id)=16),
   scope_key BLOB NOT NULL,
@@ -284,6 +284,7 @@ CREATE TABLE turn_data(
   FOREIGN KEY(project_id,session_id) REFERENCES sessions(project_id,session_id)
 ) STRICT;
 CREATE INDEX turn_data_agent_seq ON turn_data(project_id,agent_id,event_seq);
+CREATE INDEX turn_data_session_seq ON turn_data(project_id,session_id,event_seq);
 CREATE TABLE process_data(
   event_seq INTEGER PRIMARY KEY REFERENCES events(seq),
   process_id BLOB NOT NULL CHECK(length(process_id)=16),
@@ -696,11 +697,12 @@ config.toml is the only effective authority for general settings, resolved by
 flag > env > config.toml > default. The store has no configuration head,
 ConfigKey/ConfigValue, ConfigSet event, Snapshot.config or configuration-list
 method. General config.set (including runtime.listen_port, provider defaults,
-Atlas enablement) is the host's keyed protected-file write with sync/readback in
-STATE/receipts; it emits no SQLite mirror event or writer stamp. Manual edits
+Atlas enablement) is the host's protected-file write with sync/readback and
+readback reconciliation as defined in section 40; it emits no SQLite mirror
+event or writer stamp and has no separate receipt journal. Manual edits
 take effect at the next settings read or restart, without replaying an old store
-value over the file. A replay returns its original result and separately reports
-current file conflict; it never overwrites a later manual edit.
+value over the file. Explicit retries use section 40’s current-state readback
+reconciliation, not a retained versioned result or journal.
 
 Agent identity/name/creator, grants including agent.<A>.can-create, and saved
 provider/model/profile revisions remain in principals/grants/profiles with their
@@ -710,39 +712,19 @@ second configuration authority. No project settings layer exists. Dropping the
 general-settings-only table/kind yields **42 application tables, 30 triggers and
 52 event kinds**; SQLite's internal sqlite_sequence is excluded from the count.
 
-### Keyed file-only effects
+### File-only retries
 
-Store-backed effects retain their request identity, intent and settled evidence in
-`operations` plus the existing `effect.requested` / `effect.settled` and integration
-facts. Native IO runs outside the transaction; retries reconcile that exact plan
-before doing another effect. A file readback alone never invents an event or writer.
-
-For operations whose only durable result is an owned file effect, including
-pre-store setup and final uninstall cleanup, the host filesystem adapter owns a
-protected `STATE/receipts/` journal, separate from SQLite and public history.
-The receipt key is a versioned digest of store/home identity, authenticated owner and original idempotency key; the operation name, normalized semantic fingerprint and
-exact keyed plan are retained beside it. No secret bytes, environment, transcript
-body or raw credential is retained. One finite versioned record per request is
-reserved no-replace under the existing exclusive file-effect custody; write/sync
-intent before effect, then atomically replace/sync with each achieved readback and
-final public result. Same key/intent resumes pending phases or replays the retained
-result; changed intent conflicts. A crash with an unresolved effect requires fresh
-outside readback of its original targets before retry, never blind repetition.
-Unknown/unreadable journal state refuses or reports outcome unknown.
-
-Uninstall preserves these receipts with history/backups and prints their location;
-it must not delete the evidence required to retry its own PATH/integration removal.
-Restore retains its file-publication journal outside the replaced DB, so replay
-cannot lose the plan with the corrupt image. There is no timer, extra server,
-public journal operation or new authority table. Native permission/sync/publication
-and exclusion of agent-owned paths remain host/se-proc responsibilities; store
-code never treats a file receipt as Admission or an OS witness.
+Section 40 owns current-state readback reconciliation for general config set,
+uninstall and restore; these file-only retries have no separate receipt journal.
+Store-backed effects keep their existing operation/effect facts, while a file
+readback alone never invents an event or writer. Retained source/backups and
+explicit restore consequences remain as specified below.
 
 ## Writer ownership, batching and durability
 
 The host owns one write connection on one named blocking worker. It blocks on receive, then drains only already queued work up to 256 operations and the 2 MiB materialized group-byte cap. There is no gather window, gather timer or post-first-message sleep. Queue admission is capped at 256 requests and 1 MiB resident body bytes; large staged captures carry owned bounded references. A full queue immediately returns backpressure. Outer BEGIN/COMMIT is shared, each operation has a savepoint, and replies wait for outer COMMIT. Invalid members roll back independently; a poisoned connection, failed rollback or indeterminate COMMIT affects every unresolved member. This is section 80's protocol; S1's 250 µs/16 tuning is historical measurement only.
 
-`CommitWait` is a Future that registers a waker without blocking; the async host awaits it or applies its own timeout. `wait_blocking` exists only for synchronous CLI consumers. Flush/drain return futures too; joining the worker happens on the host's blocking pool, never the current-thread runtime. A timed-out/dropped future does not cancel accepted work. Successful drain/join returns the unique maintenance HostStore retaining the Arc lease and its report; failure keeps admission closed and names any indeterminate keys. The worker retains the Arc lease until its SQL handle closes and thread exits.
+`CommitWait` is a Future that registers a waker without blocking; the async host awaits it or applies its own timeout. Flush/drain return futures too; joining the worker happens on the host's blocking pool, never the current-thread runtime. A timed-out/dropped future does not cancel accepted work. Successful drain/join returns the unique maintenance HostStore retaining the Arc lease and its report; failure keeps admission closed and names any indeterminate keys. The worker retains the Arc lease until its SQL handle closes and thread exits.
 
 A direct client holds a **shared** OS runtime.lock for its complete transaction/connection lifetime; multiple direct clients may coexist and SQLite BEGIN IMMEDIATE + finite busy_timeout serializes their writes. The host needs the **exclusive** lock and cannot start until all direct clients finish. A direct client does not mistake another direct client for a host or forward to a nonexistent endpoint. After shared-lock acquisition it validates store/version; an endpoint without a live exclusive owner cannot grant host authority. Direct invokes the identical commit_group with one operation, creates no persistent worker, does no per-command startup/shutdown backup, and leaves durable effects for the next host. OS custody always auto-starts/uses the host.
 
@@ -905,13 +887,25 @@ unknown strings refuse in the shared codec and duplicates normalize once.
 Session, exact kind, authorized scope, high-water and since predicates are
 applied before candidate selection, count/byte/step/deadline accounting and
 limit+1. Cursor fingerprints bind every filter. A session/kind page never takes
-a broad page and post-filters it into false exhaustion. events_session_kind_seq
-supports the scoped session+kind range; events_session_seq handles session-only,
-and events_kind_seq handles scoped exact-kind ranges. Multiple kinds merge
-bounded indexed sequence streams with one shared read budget/eligible lookahead,
-not a full-history scan or unbounded per-kind materialization. EXPLAIN and the
+a broad page and post-filters it into false exhaustion.
+
+A.14's exact session + session.turn query reads the existing turns projection:
+`turn_data AS t INDEXED BY turn_data_session_seq JOIN events AS e ON e.seq=t.event_seq`,
+with t.project_id, t.session_id and t.event_seq cursor/high-water predicates,
+ordered by t.event_seq. The narrow scoped session/sequence index lives only on
+turn_data; it replaces the two all-event exact-kind indexes from the earlier
+sketch, reducing indexing for unrelated hot writes. Typed decoding verifies the
+joined event is session.turn with the same session; a broken projection is an
+explicit integrity error. Bodies still join their single owning payload rows.
+
+Other event kinds keep the existing scoped event/session/actor sequence indexes
+and finite SQL-side predicates before LIMIT, with the same shared byte/step/time
+budget. Sparse general-kind queries can return explicitly incomplete windows;
+they do not acquire unmeasured all-event indexes or guess exhaustion. Additional
+all-event exact-kind indexes require measured E3 insert/footprint cost before review. EXPLAIN and the
 actual `se history --session S --kind session.turn --json` consumer must witness
-this at 1M scale, including sparse matches, unreadable rows and old windows.
+the turns path at 1M scale, including sparse matches, unreadable rows and old
+windows. No SQL snapshot or per-kind buffer survives an external await.
 
 ### Mail windows and live keysets
 
@@ -1141,7 +1135,7 @@ This index binds the following declarations to the algorithms above. All methods
 | StoreFactory.backup / HostStore.backup_context / WriterOwner.backup_context / HostStore.checkpoint / close_clean | opaque shared pin/cancel state; whole-copy fixed read transaction, 64 MiB abort rather than backup-induced write backpressure; background rotation without writer drain; checkpoint/close require the drained maintenance object; close_clean drains and reports backup failure truthfully |
 | StoreFactory.erasure_plan / HostStore.erase | exact target/revision inventory then approved in-place transaction and witnessed live DB/WAL cleanup; narrow approved body UPDATE/DELETE trigger exception with secure_delete and witnessed WAL cleanup; named backup/provider residuals |
 | WriterOwner.client / flush / drain | clone handle, async barrier through accepted work, then awaited stop/join yields unique HostStore; flush is not a new backup or a claim of power-loss durability |
-| WriterClient.submit / CommitWait Future / wait_blocking | immediate bounded admission/rejection and awaitable one-shot result; blocking wait is CLI-only; timeout/drop cannot cancel a possibly committed write; retry same key resolves outcome |
+| WriterClient.submit / CommitWait Future | immediate bounded admission/rejection and awaitable one-shot result; no blocking-wait API; timeout/drop cannot cancel a possibly committed write; retry same key resolves outcome |
 | TransactionEngine.commit_group / append_atomic / apply | private common implementation seam: one outer transaction, isolated operation savepoints, exhaustive per-event apply; PreparedReceipt cannot escape as durable success before COMMIT |
 | Snapshot.legacy_registry | scoped source-evidence resolver borrowing this admitted snapshot; exact kind/text membership only, absent false and unreadable error; no global string registry or grants |
 | Snapshot.info / event / history / search | snapshot metadata; exact typed event; indexed/bounded history and budgeted search with honest omissions |
