@@ -17,14 +17,14 @@ se-types has no separate breakdown and keeps its earlier estimate.
 | --- | ---: | ---: | --- | --- |
 | Shared types (se-types) | ~2,000 | ~2,000 | earlier estimate | Atlas DTOs moved in from se-atlas (counted once) |
 | Store (se-store) | ~9,250 | 8,800 | 95-store S01–S15 | no decision chain, no general settings in the store, live keysets for non-mail lists, six import families, no salvage, automatic migration without approval |
-| Process ownership (se-proc) | ~10,950 | 10,950 | 95-se-proc P00–P14 | three launch barriers (four on Unix terminal, macOS, uncontained); five handover outcomes; process.* operations removed; native scope unchanged |
-| Core and CLI/MCP surface | ~9,050 | 8,200 | 95-core-cli K01–K11, B01–B06 | process tools, N-1 encoders, FTS and project settings removed; owner actions added; 150-line Atlas bridge moved to the Atlas row |
+| Process ownership (se-proc) | ~10,950 | 10,950 | 95-se-proc P00–P09 | three launch barriers (four on Unix terminal, macOS, uncontained); five handover outcomes; process.* operations removed; native scope unchanged |
+| Core and CLI/MCP surface | ~9,050 | 8,200 | 95-core-cli K01–K11, B01–B06 | process tools, N-1 encoders, FTS and project settings removed; owner actions added; the Atlas bridge (`ops/atlas.rs`) is owned and counted once, by Atlas A12 |
 | Host runtime and harnesses | ~8,900 + 200–350 JS | 9,150 + 200–350 JS | 95-host H01–H20 | automatic migration, file-only settings journal, async commit join, version-independent stop |
 | Release and packaging | 920–1,600 | 960–1,600 | 95-release R01–R07 | one `se uninstall` path; early unsigned archives |
 | **Core product (alpha critical path)** | | **40,060–40,700 + 200–350 JS** | | |
-| Atlas (after journeys and handover; Jimmy) | 6,000–9,300 | 6,150–9,450 | 95-atlas A01–A13 + core bridge | standalone only, disabled by default |
+| Atlas (after journeys and handover; Jimmy) | 6,000–9,300 | 6,000–9,300 | 95-atlas A01–A13 (A12 owns the core bridge) | standalone only, disabled by default |
 | macOS backends (Mac campaign) | ~1,350 | 1,350 | 95-se-proc P03-M, P07-M | qualified on Jimmy's borrowed Mac before alpha ships |
-| **Everything** | 47,000–51,000 | **47,560–51,500 + 200–350 JS** | | |
+| **Everything** | 48,420–52,400 | **47,410–51,350 + 200–350 JS** | | |
 
 The first reconciled overview claimed a core of ~38,500–39,700 without per-task sums behind it.
 The summed figure is about 1,000–1,500 lines higher: se-proc's native scope did not shrink, and the
@@ -47,7 +47,7 @@ se-store, plus SE Code's side. `forget` stays in alpha (Jimmy), about 600 lines.
 | E7 Linux containment | what ssh, Docker and WSL2 hosts actually get | Pending |
 | E8 Cold hook start | host-start versus direct write on Windows with Defender | Pending |
 | Lost-ACK slice | one message after a dropped reply, through CLI, IPC, MCP and the linked API | Pending |
-| E9 SE Code real server | the integration target is SE Code's Rust server, not the frozen TypeScript one | **DONE** (Alpha): `E:ust-secode` branch dev, `crates/secode-product`, caret pins, axum `=0.8.9` |
+| E9 SE Code real server | the integration target is SE Code's Rust server, not the frozen TypeScript one | **DONE** (Alpha): `E:\rust-secode` branch dev, `crates/secode-product`, caret pins, axum `=0.8.9` |
 | Runner | the journey runner judges Rust from a Rust-only map, launched outside agent trees | Section 90 revised; red-against-stub run pending |
 
 ## Build order

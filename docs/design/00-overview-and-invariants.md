@@ -156,7 +156,7 @@ sequenceDiagram
   U->>C: se msg send bob "plan ready"
   C->>C: generated parser; project = -p / SE_PROJECT / registered root containing cwd
   C->>C: try shared lock on runtime.lock: refused (host holds exclusive)
-  C->>H: connect IPC, hello{API_VERSION 2.0, exact match}, Request{op: message.send, input, idem_key}
+  C->>H: connect IPC, hello{se-types API_VERSION 1.0 framing}, Request{op: message.send, input, idem_key}
   H->>H: peer credentials = this OS user -> Authority::Owner
   H->>W: submit commit batch (bounded queue); the host task awaits its Completion
   W->>DB: BEGIN IMMEDIATE; SAVEPOINT per queued write
@@ -200,7 +200,7 @@ sequenceDiagram
   K->>H: HookEvent{stop, payload, capability}
   H->>H: verify capability; transcript_path must match the session's capture source
   H->>T: read from stored byte offset, bounded
-  H->>W: turn.captured events (dedup by provider turn ref) + new offset, one txn
+  H->>W: session.turn events (dedup by provider turn ref) + new offset, one txn
   W-->>H: TurnReceipt{captured n, duplicate m}
   H-->>K: HookResult
   K-->>CL: hook stdout per Claude protocol, exit 0
@@ -252,7 +252,7 @@ se-types  <-  se-store  <-  se-core  <-  se-host  <-  se (binary)
 | Crate | Holds | Our deps | I/O allowed | Async | unsafe |
 | --- | --- | --- | --- | --- | --- |
 | `se-types` | IDs, `SeError` + remedies, `Read<T>`, `Page<T>`/`Window`, receipts, op input/output DTOs, host API types, `API_VERSION` | none | **none** | no | forbid |
-| `se-store` | SQLite open/refuse, event log, projections in the same txn, migrations, automatic backup and restore of the newest valid backup, `forget` | se-types | `state.db`, its WAL/SHM, backups | no | forbid |
+| `se-store` | SQLite open/refuse, event log, projections in the same txn, migrations, automatic backup and restore of the newest valid backup, `forget` | se-types | `state.db`, its WAL/SHM, backups | futures only at the writer boundary | forbid |
 | `se-core` | Identity and authority checks, sessions, init/adopt/remove records, messages, decisions, capture records, resume, the `ops!` registry and sync executors | se-types, se-store | **only through se-store** | no | forbid |
 | `se-proc` | All OS-native calls: process identity, Windows jobs, Linux pidfd + cgroup v2, macOS kqueue, peer credentials on IPC, owner-only ACLs | se-types | OS process/security APIs | no tokio: exposes nonblocking descriptors that se-host registers on its own `AsyncFd` reactor (Linux, macOS) and the one shared per-host IOCP collector (Windows); never creates a runtime | **only here**, every block with `// SAFETY:` |
 | `se-atlas` | Code index: walker, tree-sitter, its own db, five queries | se-types | its own `atlas.db`, reads the working tree | incremental updates on a host-scheduled task; the cold index runs in a transient child capped at 64 MB; no tokio in the crate | forbid |
@@ -384,7 +384,7 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
   clippy config. Queue full: host callers wait; IPC callers get `retry`. Mail fan-out uses `watch`
   (latest value, no queue); subscriptions are bounded and overflow yields `Lagged{resume_from}`,
   never a silent drop.
-- No blocking in async code (use `se-writer` or `spawn_blocking`). No timers without a live session.
+- No blocking in async code (use `se-writer` or `spawn_blocking`). No timers without a live session, except the auto-started host's 10-minute exit timer (40).
 
 ### 5.7 Cancellation
 - Each generation owns a `CancellationToken`; sessions and requests take child tokens. Generation
