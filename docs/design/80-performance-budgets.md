@@ -32,7 +32,8 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | B6 | Idle wakeups | ≤ 1/s with no session; ≤ 2/s with one | Same | Same |
 | B7 | CLI reads | p95 strictly < 20 ms, 30 runs each of `--version`, `status`, `agent list`, `msg inbox`, `msg list`, `decision list` | Spawn to process exit | `CLI --version`, `CLI contextual read verbs` |
 | B8 | Re-adoption after handover or restart | ≤ 500 ms, no lost or doubled input | Cutover start (after participating agents are interrupted to exact idle) to every live session re-adopted; quiescence time reported separately | **Not yet probed** (§2.6) |
-| B9 | CLI writes | p95 ≤ 20 ms through a running host | Spawn to exit, including IPC/queue/commit/receipt | Native CLI probe required; current writer spike FAILS (§3.6) |
+| B9 | Ordinary CLI writes: `msg send`, `working-state set`, `hook claude stop` | p95 ≤ 20 ms through a running host | Spawn to exit, including IPC/queue/commit/receipt | E3 native CLI probe required; retained mixed writer spike fails (§3.6) |
+| FULL | FULL commands: decide/ratify family, `config set`, `agent create`, `project register`, `profile save` | p95 ≤ 75 ms on Windows with Defender | Same complete CLI boundary, each command sampled separately through the running host | E3; not yet qualified |
 
 B1 and B2 are Alpha's requirements. The rest are plan decisions. Budget failures make the Rust run exit
 nonzero even when every behavior row passes. Measurements include embedded
@@ -58,12 +59,24 @@ Long operations have their own targets, measured on StateEngine's share only:
 
 ## 2. How the runner measures
 
-### 2.1 CLI latency (B7)
+### 2.1 CLI latency (B7, B9 and FULL)
 `performance.now()` before `spawn` to the child's `exit` event. No census, logging or helper inside the
 interval; output is validated after timing, so a fast refusal is not a sample. All 30 samples count,
-including the cold first call. Nearest-rank p95 of 30 is the 29th sorted sample: **at most one run in
-30 may reach 20 ms.** On Windows the first run of a new binary under Defender is the likely outlier, so a
+including the cold first call. Nearest-rank p95 of 30 is the 29th sorted sample.
+For B7's strict threshold, **at most one run in 30 may reach 20 ms.** On Windows the first run of a new binary under Defender is the likely outlier, so a
 second slow run is a real failure.
+
+For B9 sample each of its three named ordinary-write commands through an
+already running host. Sample every FULL-command family separately under the
+FULL row on Windows with Defender; retain actual durability and batch promotion,
+not just the command label. The decision family includes ratify/reject/retract/
+supersede. Include request framing, queue wait, required COMMIT/sync, receipt
+delivery and process exit; a timeout, lost acknowledgment or refused operation
+cannot become a fast successful sample. Report queue, SQL, sync/checkpoint,
+receipt and client startup/round-trip components alongside the complete sample.
+Use the same 30-run/all-samples and p95 convention; never pool ordinary and
+FULL-command samples to conceal a failing command. E3 also retains the mixed
+workload to expose ordinary requests promoted into FULL batches and their delay.
 
 ### 2.2 Memory (B1, B4)
 | OS | Source | Note |
@@ -123,8 +136,10 @@ the actual observer; no unverified existing-runner defect is assumed.
   are required. A cold restart replacing a Windows agent is a separate case,
   not unchanged-instance live handover.
 - **E3 / B9:** measure the complete native CLI/IPC host writer on ext4 and NTFS,
-  retaining ordinary/FULL mix, queue, batch, SQL, COMMIT, sync/checkpoint and
-  receipt timings. The fixed target is B9; neither a fast refusal nor an
+  retaining ordinary/FULL mix and separate command-class samples, queue, batch,
+  SQL, COMMIT, sync/checkpoint and
+  receipt timings. Apply the B9 and FULL rows to their named command classes;
+  neither a fast refusal nor an
   in-process producer substitutes for the CLI sample. The launch slice also
   measures section 30's three barriers and four-commit helper exception.
 - **E4–E9:** attended mail, Codex modes, non-fleet user-history import, Linux
@@ -159,10 +174,10 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Capture: 256 KiB read buffer × 2 active + parsing | 1.0 MB | Bounded transcript reads |
 | Transcript watcher | 0.5 MB | Live sessions' directories only |
 | Process custody state | 0.2 MB | Handles, job/cgroup records and one Windows IOCP collector's state per host; stack charged once below, no registered-wait pool |
-| Resume assembly: 64 KiB budget × 4 concurrent | 0.5 MB | Byte-budgeted packet |
+| Resume assembly: 32 KiB default, 1 MiB max × 4 concurrent | 4.5 MB | Four maximum encoded packets plus bounded assembly metadata; no duplicate full packet |
 | Fixed native/writer thread stack pages and allocator slack | 2.0 MB | Count every added committed stack page in E2; SE Code's existing reactor is not a second runtime |
-| **Spend** | **20.0 MB** | Measured minimal core: 1.4 MB |
-| Reserve | 10.0 MB | Atlas is off in embedded |
+| **Spend** | **24.0 MB** | Measured minimal core: 1.4 MB; revised packet allowance is unmeasured |
+| Reserve | 6.0 MB | Atlas is off in embedded |
 | **Total** | **30.0 MB** | |
 
 ### 3.2 Standalone memory (B4: 25 MB)
@@ -172,20 +187,45 @@ component that outgrows its line has to fix that or negotiate within the total (
 | tokio `current_thread`, blocking pool (max 2), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
 | SQLite page cache: writer + 1 reader × 2 MB | 4.0 MB | CLI reads go straight to the file and don't need host readers |
 | SQLite connections, schema, statements | 1.0 MB | |
-| Sessions, mail, listener/MCP, capture + watcher, custody, resume | 6.5 MB | Same per-item figures as 3.1 |
+| Sessions, mail, listener/MCP, capture + watcher, custody, resume | 10.5 MB | Includes the same four-max-packet resume allowance as 3.1 |
 | Optional Atlas in-host: queries and single-file updates after config opt-in | 2.0 MB | One closed-when-idle connection plus one parser |
 | Allocator slack | 1.0 MB | |
-| **Spend** | **20.5 MB** | Prototypes measured 4–12 MB |
-| Reserve | 4.5 MB | |
+| **Spend** | **24.5 MB** | Prototypes measured 4–12 MB; revised packet allowance is unmeasured |
+| Reserve | 0.5 MB | |
 | **Total** | **25.0 MB** | |
 
-Atlas is built after the journeys and live handover pass, ships disabled,
-and never holds a milestone. Explicit config opt-in admits its cold index as
+Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+It is built after the journeys and live handover pass and never holds a
+milestone. Explicit config opt-in admits its cold index as
 a transient background child; it is not triggered by an ordinary first query.
 The child has a separate cold-window cap and exits after indexing; resident
 queries/incremental updates stay in the allocation above. The runner reports
 that window separately and measures B4 outside it. The prototype's large-file
 peak makes the per-file admission/deadline mandatory, not already qualified.
+
+### Shared input limits and packet sizing
+
+CLI, MCP and linked calls consume one closed input DTO per operation. Lists
+accept 1–100 rows, default 20; search accepts 1–50; message previews are 400
+characters; resume defaults to 32 KiB and accepts at most 1 MiB. A row limit
+does not override the page/body or final encoded reply cap. A full message is
+never cut to fit a page; retain whole rows and explicit omissions/cursor.
+Preview text is a labelled view, not a truncated stored body. The DTO byte
+limits remain message 32 KiB and working state 16 KiB before effects.
+
+A maximum preview page can carry 100 × 400 Unicode characters: at most
+160,000 UTF-8 bytes of preview text, before metadata/JSON escaping. Full-body
+pages retain the separate 256 KiB body budget and final transport cap; append
+only whole rows that fit the encoded result. Build one bounded result buffer,
+move it into the transport and do not keep a second encoded copy or all source
+bodies. Resume's requested byte budget covers its final encoded wrapper,
+markers and cursor. Four simultaneous maximum packets alone require
+4,194,304 bytes, so the old 0.5 MB allowance cannot support the accepted max.
+The revised 4.5 MB packet allowance includes that output plus bounded metadata;
+default packets do not eagerly reserve maximum capacity. This spends 4 MB of
+each composition's former reserve, leaving the hard memory ceilings unchanged.
+E2 must exercise max-budget concurrency and after-task retained capacity;
+no packet/stack allowance is a measured RSS result.
 
 ### 3.3 Embedded startup (B2)
 
@@ -254,17 +294,25 @@ Windows has the thinner margin, which is one more reason to sign the binary (lig
 B9's sole threshold is in §1. Hosted MCP/hook and burst timings are useful
 component measurements, but their RPC/body/startup boundaries must be named;
 none establishes a complete native CLI latency by renaming an in-process call.
-Retained component targets are server-side MCP reads p95 ≤ 5 ms and writes
-≤ 15 ms with eight agents, and a 20-agent burst worst-case ≤ 100 ms with no
-lost writes. Hosted Claude stop-hook overhead uses B9's target plus bounded
-transcript processing. These are targets requiring the real mixed workload;
+Retained component targets are server-side MCP reads p95 ≤ 5 ms and ordinary
+writes ≤ 15 ms with eight agents, and a 20-agent burst worst-case ≤ 100 ms with no
+lost writes. Hosted Claude stop-hook processing uses B9's complete boundary, including its
+bounded transcript work; report input bytes without subtracting that work. FULL
+command samples use their own row; FULL MCP mutations are reported separately
+from the ordinary MCP write target, with no claim of CLI acceptance from a
+server-only interval.
+These are targets requiring the real mixed workload;
 the earlier narrow-hook timings do not qualify them.
 The ordinary writer drains already queued work without a timer/gather window;
 a mixed batch takes FULL when any closed-FULL member is present.
 
 The retained mixed-workload Python spike used 4,944 writes/run (611 NORMAL
 and 7 FULL per cycle), a persistent writer and real schema/payload shapes.
-Serial end-to-end producer p95 is 37.47 ms; 20-client p95 is 66.92 ms: **FAIL**.
+Serial producer p95 is 37.47 ms; 20-client p95 is 66.92 ms. The retained run
+**fails the ordinary-write target as a mixed component observation**; it does
+not separately qualify the newly explicit FULL-command boundary or any native
+CLI command. Policy-NORMAL request p95 is 37.73/66.91 ms respectively, so
+separating FULL commands does not make this contrary ordinary-path evidence pass.
 Serial queue-to-transaction p95 is 0.108 ms, append p95 2.436 ms and
 COMMIT-plus-restore p95 35.942 ms. With 20 clients, batch median/p95/max is
 10/17/18 and transaction p95 is 53.266 ms; max-per-batch queue delay p95 is
@@ -285,8 +333,9 @@ Nell owns every writer/schema rerun. Independent decomposition compares
 per-commit fsync/checkpoint time, batching, SQL/restore, queue wait, full client
 round-trip and FULL share against the older prototype, then ext4 versus NTFS.
 Keep the current durability/checkpoint baseline and all failures before diagnostic
-variants. E3 must identify the cause and report the unchanged B9 result; no
-new budget number or passing reserve is inferred from a faster median.
+variants. E3 must identify the cause and report B9 and FULL-command results
+separately; no passing reserve is inferred from a faster median or a reclassified
+command.
 Raw initial data: `/mnt/nvme/stateengine/nell-import-rehearsal-20261030/
 benchmark-result.json`, `bench-*-samples.json`. Independent retained-sample
 analysis: `/mnt/nvme/stateengine/5p-e3-write-decomposition-20261030/`.
@@ -319,11 +368,11 @@ do not label that interval settled idle or hide it in the baseline expectation.
 | **Fixed thread set at idle.** The writer is a named `std::thread`, not a pool thread. Standalone blocking pool capped at 2. No per-session threads. Windows process exits for all jobs arrive on one shared IOCP collector per host; no registered-wait thread pool. | B6, Windows bound |
 | **Bounded SQLite:** `cache_size=-2000` per connection, `mmap_size=0` (mapped pages would inflate RSS without a ceiling), statement cache 32, `temp_store=FILE`, `journal_size_limit` 4 MiB, `TRUNCATE` checkpoint at clean shutdown. | B1, B4 |
 | **Batched writer, explicit durability:** block on receive, drain whatever is queued (up to 256), one `BEGIN IMMEDIATE … COMMIT`. No gather window, so no latency or timer is added. Autocheckpoint is commit-driven. Ordinary batches use NORMAL; credential/session/runtime/security transitions and decision ratify/reject/retract/supersede require FULL. NORMAL can lose several recent commits on power/OS loss, not an application crash. | B9, burst, B2 |
-| **Bounded everything else:** channels bounded with `Lagged{resume_from}` on overflow; pages default 100 and max 1,000 rows; one shared DTO limit per kind: message body 32 KiB, working state 16 KiB; list/page budgets expose incompleteness and never truncate a body; transport frames retain their separately bounded envelope. | B1, B4 |
+| **Bounded everything else:** channels bounded with `Lagged{resume_from}` on overflow; one closed DTO per operation for CLI/MCP; lists default 20 and max 100 rows, search max 50, message preview 400 characters, resume default 32 KiB/max 1 MiB; message body 32 KiB and working state 16 KiB; page/encoded budgets expose incompleteness and never truncate a full body. | B1, B4 |
 | **Bounded transcript reads:** read from the stored byte offset in 256 KiB chunks and parse line by line. A line over 4 MiB gets an `oversized-line` verdict (G4/G5). Never load a whole transcript. | B1, B4, hooks |
-| **Lazy startup:** Atlas, Codex reconnect, re-adoption and the start-of-day backup run after ready. The backup uses SQLite's online backup API in 64-page steps on a background read connection, never holding the writer. It holds one read transaction for the whole copy, so it reads one stable WAL snapshot and never restarts when the writer commits. While that snapshot pins the WAL, the 16 MiB high-water rule defers checkpointing instead of raising `store-backpressure`; if the WAL reaches 64 MiB the backup aborts, releases its snapshot and retries at the next start-of-day. A backup never stalls the writer. Tool schemas are built at compile time. | B2 |
+| **After-readiness work:** Codex reconnect, re-adoption and the start-of-day backup run after ready. The backup uses SQLite's online backup API in 64-page steps on a background read connection, never holding the writer. It holds one read transaction for the whole copy, so it reads one stable WAL snapshot and never restarts when the writer commits. While that snapshot pins the WAL, the 16 MiB high-water rule defers checkpointing instead of raising `store-backpressure`; if the WAL reaches 64 MiB the backup aborts, releases its snapshot and retries at the next start-of-day. A backup never stalls the writer. Tool schemas are built at compile time. | B2 |
 | **A lean CLI:** no async runtime, no TLS, no network, no subprocess (no `git`, no PowerShell), no process census. `status` reads `endpoint.json` and checks the host pid's identity natively instead of making an IPC round trip. | B7 |
-| **Atlas budgets:** disabled by default, explicit config opt-in after core journeys/handover; cold index in a transient child (§3.2); files over 512 KiB skipped with a recorded `skipped: size` fact; per-file parse deadline 200 ms (tree-sitter progress callback); one parse at a time; the search index holds names and paths, not bodies; its own `atlas.db`. | B4, B6 |
+| **Atlas budgets:** standalone-only compilation and config activation are fixed in §3.2; cold index in a transient child; files over 512 KiB skipped with a recorded `skipped: size` fact; per-file parse deadline 200 ms (tree-sitter progress callback); one parse at a time; the search index holds names and paths, not bodies; its own `atlas.db`. | B4, B6 |
 | **Smaller events:** trim the prototype's ~2 KB per event toward ≤ 600 B median for non-turn events (00 open item 3); a review signal. | Disk, cache hit rate |
 
 ## 5. When a budget is missed
