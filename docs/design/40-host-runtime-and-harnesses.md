@@ -1107,13 +1107,14 @@ the section-30 maintainer; no backend is implemented in this design.
 | Claude headless | **Pinned transcript + command hooks are authoritative**; stream-json supplies activity/input correlation only, not duplicate captured turns | Serialized persistent stream-json stdin; complete write is offered, correlated real input acceptance is delivered | Provider supported control/stdin graceful request plus coordinator native stop; process/root/scope and stream events, no polling |
 | Claude attended | Same pinned transcript/hooks; native directory events and live catch-up recover missed hooks | Small provider-native JS mod, one authenticated GET wait, attributed prompt after safe idle boundary | Genuine human stop/hold plus provider/native control; terminal/process/native binding events |
 | Codex stdio headless | Actual app-server completed item/turn IDs, optional **pinned** rollout as catch-up only | turn/start idle, turn/steer exact active turn; real response/input correlation | turn/interrupt request then actual turn completion; process and exact scope remain separate |
-| Codex private WebSocket attended | Same canonical app-server item/turn capture, no duplicate hook ingestion | Same RPC through actual WebSocket-over-UDS transport and stock remote UI | Same RPC/native witnesses; private transport/terminal attach separately qualified on each OS |
+| Codex private WebSocket headless or attended | Same canonical app-server item/turn capture, no duplicate hook ingestion | Same RPC through actual WebSocket-over-UDS transport; stock remote UI for attended mode | Same RPC/native witnesses; private transport/terminal attach separately qualified on each OS |
 | SE Code embedded | Direct canonical capture_turn with native event identity; no invented transcript file | Its existing native input queue via concrete SecodeAdapter | Durable hold -> interrupt -> exact point active state; native source fence/epoch and custody where applicable |
 
 **Windows Codex supported stranger path is explicit:** `se launch AGENT --detach`
 starts stock app-server over stdio with the normal user's existing login/home,
-safe permissions, real tools and saved-thread resume. The same mode is available
-on all OSes and is the headless journey baseline. Attended Windows Codex requires
+safe permissions, real tools and saved-thread resume. This is the headless journey
+baseline on each OS; Linux and Windows have provider proofs below, while macOS
+remains unqualified. Attended Windows Codex requires
 the stock build's qualified private attach capability; until demonstrated, that
 mode refuses provider-incompatible/window-unavailable with the detached
 command. This is an honest supported fallback, **not** a passed attended alpha
@@ -1231,14 +1232,53 @@ qualify stock transport behavior. Never launch silently without working tools.
 
 Use per-launch MCP/helper configuration and user's existing CODEX_HOME/login;
 no managed replacement home, hooks.json injection, fork or automatic approval.
+Headless thread/start and thread/resume set sandbox=workspace-write,
+approvalPolicy=never and command network access disabled. `never` refuses
+escalation; it does not grant permissions, approve commands or disable the
+sandbox. Retain a supported, working native sandbox; readiness/setup or command
+creation failure remains a visible launch/provider failure. Do not silently
+change to full access or a weaker sandbox implementation to make work succeed.
+Attended on-request approvals require a genuine user decision through the owned
+UI; an unsupported request on a headless connection remains a visible refusal.
+
+On native Windows, select a sandbox-compatible unpackaged PowerShell in the
+child environment and verify the actual command shell. Store PowerShell under
+WindowsApps failed CreateProcessAsUserW with access denied before requesting an
+unsandboxed retry; the unpackaged system PowerShell performed the same workspace
+work under the sandbox. Change only the launch environment, preserving the
+user's global PATH, configuration, login and native sandbox selection. Isolate
+edition-specific helper environments if a helper uses Windows PowerShell 5.1
+under a pwsh 7 parent; native ACL operations do not depend on PowerShell modules.
+
+Private Unix listeners use a newly created, current-user-owned rendezvous
+directory: 0700 on Linux; on Windows, a protected DACL with exactly one
+current-user FullControl allow ACE inheritable by files and directories. Create
+the restrictive ACL with the directory and read it back before launch; refuse
+links/reparse directories, inherited/foreign grants or an existing untrusted
+directory. Never repair a shared directory's ACL. Record the exact listen and
+proxy socket paths. Readiness is an actual stock-proxy connection, verified
+WebSocket Upgrade and initialize/initialized handshake, with bounded startup
+retries and retained causes. Do not infer Windows AF_UNIX readiness from
+exists/stat; failed probes must be closed and their exact process exit observed.
+
+E5 stock 0.163 headless proofs pass stdio and private Unix listeners on Linux
+and Windows. Native Windows stdio passed 16/16 and Unix 26/26: actual workspace
+write/readback, outside-write denial, canonical item/turn capture, exact saved
+thread restart/resume and recall, stale-turn refusal, exact-turn steering,
+interrupted completion and captured process exit; Unix additionally proved
+same-server reconnect. These qualify the provider seam, not the Rust launch
+implementation, native descendant containment, network isolation, macOS or an
+attended Windows UI. Retain the Windows stdio arena: the private listener still
+needs the stock proxy and WebSocket framing, so no whole-mechanism removal is
+proved by --listen.
+
 The Linux stock 0.163 attended spike uses a private unix:// app-server and
 `codex resume THREAD --remote unix://PATH`; its real window and socket client
 share one saved thread and canonical item/turn capture. Configure safe sandbox
 and approval policy on thread/start or thread/resume RPC: remote TUI resume
-refuses -s/-a permission overrides. E5 still qualifies headless/windowed auth,
-reconnect and every OS, and evaluates --listen as a simplification only if it
-removes a whole mechanism; retain the Windows stdio arena. Headless unsupported
-approval reports pending/refusal rather than inventing a human decision. Turn completion is separate from process exit/task effect.
+refuses -s/-a permission overrides. Attended attach, auth and reconnect still
+require each actual OS; the headless proof does not close that release
+obligation. Turn completion is separate from process exit/task effect.
 
 Embedded SE Code registers the Prepared Host/G before activate, supplies exact
 native epoch/fresh fenced services and calls canonical linked methods directly.
