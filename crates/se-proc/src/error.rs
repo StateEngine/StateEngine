@@ -12,7 +12,6 @@ pub enum ProcErrorCode {
     ExecutableMissing,
     CwdOutsideWorkspace,
     EnvironmentDenied,
-    ProcessAbsent,
     IdentityUnreadable,
     IdentityChanged,
     UnsupportedPlatform,

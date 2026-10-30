@@ -3,6 +3,13 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ScopeIdentity {
+    LinuxPrepared {
+        nonce: [u8; 16],
+    },
+    LinuxTracked {
+        process_group: ProcessId,
+        root: ProcessIdentity,
+    },
     MacOsPrepared {
         nonce: [u8; 16],
     },
@@ -73,6 +80,10 @@ pub enum ReservationParent {
         inode: u64,
         boot_id: [u8; 16],
     },
+    /// Lazy manager lookup; exact unit derives from reservation host/nonce.
+    LinuxUserManager,
+    /// No delegated cgroup; helper/group identity is checkpointed before exec.
+    LinuxTracked,
     MacOs,
 }
 /// Runtime owns all resources. This is a revocable reference, not a second
@@ -276,7 +287,12 @@ pub trait ProcessRuntime: Send + Sync {
     fn begin_launch(&self, prepared: PreparedLaunch, spec: LaunchSpec) -> LaunchStart;
     fn poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress>;
     fn authorize_exec(&self, ticket: &LaunchTicket) -> ProcResult<()>;
-    fn cancel_launch(&self, ticket: LaunchTicket) -> ProcResult<StopAttempt>;
+    /// Host must commit Starting -> StopRequested before this consumes the token.
+    fn cancel_launch(
+        &self,
+        ticket: LaunchTicket,
+        prepared: PreparedStop,
+    ) -> ProcResult<StopAttempt>;
     fn describe(&self, process: &OwnedProcess) -> ProcResult<ProcessRecord>;
     fn observe(&self, process: &OwnedProcess) -> ProcResult<OwnedObservation>;
     fn watch_exit(&self, process: &OwnedProcess, sink: Arc<dyn ExitSink>) -> ProcResult<ExitWatch>;
@@ -299,13 +315,19 @@ pub trait ProcessRuntime: Send + Sync {
     fn release(&self, process: &OwnedProcess, witness: &StopWitness) -> ProcResult<()>;
     fn plan_recovery(&self, source: RecoverySource) -> ProcResult<RecoveryPlan>;
     fn recover(&self, plan: RecoveryPlan, generation: GenerationId) -> ProcResult<RecoveryOutcome>;
+}
+
+/// Host handover protocol, separate from normal process lifecycle operations.
+pub trait ProcessTransfer: ProcessRuntime {
     fn begin_transfer(&self, request: TransferRequest) -> ProcResult<TransferOffer>;
     fn accept_transfer(
         &self,
         endpoint: TransferEndpoint,
         manifest: TransferManifest,
     ) -> ProcResult<ReceivedTransfer>;
-    fn activate_transfer(&self, imported: TransferImport) -> ProcResult<TransferReceipt>;
+    fn activate_transfer(&self, imported: &mut TransferImport) -> ProcResult<ActivatedTransfer>;
+    /// Pre-activation only: close staged copies; source retains original streams.
+    fn discard_transfer(&self, imported: &mut TransferImport) -> ProcResult<()>;
     fn commit_transfer(&self, offer: TransferOffer, receipt: TransferReceipt) -> ProcResult<()>;
     fn abort_transfer(&self, offer: TransferOffer) -> ProcResult<()>;
 }
@@ -313,6 +335,8 @@ pub trait ProcessRuntime: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScopeCheckpoint {
     pub reservation: LaunchReservation,
+    /// Resolved physical parent, or the explicitly selected tracked-group parent.
+    pub parent: ReservationParent,
     pub scope: ScopeIdentity,
     pub guarantee: ContainmentGuarantee,
 }
@@ -329,6 +353,7 @@ pub struct TransferRequest {
     pub endpoint: TransferEndpoint,
     pub successor: HostInstanceId,
     pub generation: GenerationId,
+    /// Duplicate harness descriptors, not its sole originals.
     pub streams: Vec<TransferStream>,
     pub deadline: Instant,
 }
@@ -363,6 +388,11 @@ pub struct ReceivedTransfer {
     pub imported: TransferImport,
     pub records: Vec<ProcessRecord>,
     pub processes: Vec<OwnedProcess>,
+}
+/// Returned exactly once, only after host ownership CAS and lease activation.
+pub struct ActivatedTransfer {
+    pub receipt: TransferReceipt,
+    pub streams: Vec<TransferStream>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferReceipt {
