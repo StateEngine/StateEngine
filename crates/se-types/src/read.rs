@@ -29,7 +29,13 @@ pub enum Source {
 impl Source {
     pub fn describe(&self) -> String {
         match self {
-            Self::Store { store, project } => format!("store {store}, project {project:?}"),
+            Self::Store { store, project } => format!(
+                "store {store}, project {}",
+                project
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "all".into())
+            ),
             Self::Host { epoch } => format!(
                 "host pid {}, epoch {}",
                 epoch.owner.fields().pid,
@@ -40,7 +46,13 @@ impl Source {
                 project,
                 root,
                 epoch,
-            } => format!("atlas.db project {project}, root {root}, epoch {epoch:?}"),
+            } => format!(
+                "atlas.db project {project}, root {root}, epoch {}",
+                epoch
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "unverified".into())
+            ),
         }
     }
 }
@@ -73,10 +85,13 @@ impl<T> Read<T> {
     pub fn absent(checked: Checked) -> Self {
         Self::Absent {
             checked: format!(
-                "{} at {}us, snapshot {:?}",
+                "{} at {}, snapshot {}",
                 checked.source.describe(),
-                checked.observed_at.get(),
-                checked.snapshot_to.map(Sequence::get)
+                checked.observed_at,
+                checked
+                    .snapshot_to
+                    .map(|seq| seq.get().to_string())
+                    .unwrap_or_else(|| "unverified".into())
             ),
         }
     }
@@ -166,6 +181,8 @@ pub enum StopReason {
     Unsupported,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+/// Store snapshot bounds are (from, to]: exclusive from, inclusive to.
+/// bytes is producer accounting; foundation does not serialize items to recount it.
 pub struct WindowFields {
     pub source: Source,
     pub from: Sequence,
@@ -184,7 +201,10 @@ pub struct WindowFields {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "WindowWire", into = "WindowWire")]
 pub struct Window {
-    fields: WindowFields,
+    fields: Option<WindowFields>,
+    from: Option<Cursor>,
+    to: Option<Cursor>,
+    limit: NonZeroU32,
     complete: bool,
     omitted: Omitted,
 }
@@ -195,7 +215,8 @@ struct WindowWire {
     limit: u32,
     complete: bool,
     omitted: Omitted,
-    snapshot: WindowFields,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    snapshot: Option<WindowFields>,
 }
 fn omission_rank(reason: OmissionReason) -> u8 {
     match reason {
@@ -258,13 +279,17 @@ impl Window {
             && fields.unreadable == 0
             && fields.stop_reason == StopReason::Exhausted;
         Ok(Self {
-            fields,
+            from: fields.start_cursor.clone(),
+            to: fields.end_cursor.clone(),
+            limit: fields.limit,
+            fields: Some(fields),
             complete,
             omitted,
         })
     }
-    pub fn fields(&self) -> &WindowFields {
-        &self.fields
+    /// Detailed producer accounting is absent in a minimal public wire Window.
+    pub fn fields(&self) -> Option<&WindowFields> {
+        self.fields.as_ref()
     }
     pub const fn complete(&self) -> bool {
         self.complete
@@ -288,9 +313,9 @@ impl Window {
 impl From<Window> for WindowWire {
     fn from(value: Window) -> Self {
         Self {
-            from: value.fields.start_cursor.clone(),
-            to: value.fields.end_cursor.clone(),
-            limit: value.fields.limit.get(),
+            from: value.from,
+            to: value.to,
+            limit: value.limit.get(),
             complete: value.complete,
             omitted: value.omitted,
             snapshot: value.fields,
@@ -300,10 +325,31 @@ impl From<Window> for WindowWire {
 impl TryFrom<WindowWire> for Window {
     type Error = SeError;
     fn try_from(value: WindowWire) -> Result<Self> {
-        let window = Self::new(value.snapshot)?;
-        if value.from != window.fields.start_cursor
-            || value.to != window.fields.end_cursor
-            || value.limit != window.fields.limit.get()
+        let limit = NonZeroU32::new(value.limit)
+            .ok_or_else(|| SeError::invalid("window limit", "nonzero"))?;
+        if (value.complete && (value.omitted.count != Some(0) || value.omitted.reason.is_some()))
+            || (!value.complete
+                && (value.omitted.reason.is_none() || value.omitted.count == Some(0)))
+        {
+            return Err(SeError::invalid(
+                "window omitted",
+                "consistent complete/count/reason",
+            ));
+        }
+        let Some(snapshot) = value.snapshot else {
+            return Ok(Self {
+                fields: None,
+                from: value.from,
+                to: value.to,
+                limit,
+                complete: value.complete,
+                omitted: value.omitted,
+            });
+        };
+        let window = Self::new(snapshot)?;
+        if value.from != window.from
+            || value.to != window.to
+            || limit != window.limit
             || value.complete != window.complete
             || value.omitted != window.omitted
         {
@@ -316,10 +362,7 @@ impl TryFrom<WindowWire> for Window {
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(
-    try_from = "PageWire<T>",
-    bound(deserialize = "T: Deserialize<'de> + Serialize")
-)]
+#[serde(try_from = "PageWire<T>", bound(deserialize = "T: Deserialize<'de>"))]
 pub struct Page<T> {
     items: Vec<T>,
     window: Window,
@@ -331,21 +374,29 @@ struct PageWire<T> {
     window: Window,
     next: Option<Cursor>,
 }
-impl<T: Serialize> Page<T> {
+impl<T> Page<T> {
     pub fn new(items: Vec<T>, window: Window, next: Option<Cursor>) -> Result<Self> {
-        let bytes = serde_json::to_vec(&items)
-            .map_err(|error| {
-                SeError::invalid("page items", "serializable values").with_cause(error)
-            })?
-            .len();
-        if items.len() as u64 != window.fields.returned
-            || bytes as u64 > window.fields.bytes
+        let known_after = window
+            .fields
+            .as_ref()
+            .is_some_and(|fields| matches!(fields.omitted_after, Omission::Known { .. }));
+        let wire_more = window.fields.is_none()
+            && matches!(
+                window.omitted.reason,
+                Some(OmissionReason::Limit | OmissionReason::Budget)
+            );
+        if items.len() > window.limit.get() as usize
+            || window
+                .fields
+                .as_ref()
+                .is_some_and(|fields| items.len() as u64 != fields.returned)
             || (window.complete && next.is_some())
-            || (next.is_some() && next == window.fields.start_cursor)
+            || (next.is_none() && (known_after || wire_more))
+            || (next.is_some() && next == window.from)
         {
             return Err(SeError::invalid(
                 "page",
-                "matching count/bytes and a progressing incomplete continuation",
+                "matching count and a progressing continuation for remaining rows",
             ));
         }
         Ok(Self {
@@ -369,7 +420,7 @@ impl<T> Page<T> {
         self.items
     }
 }
-impl<T: Serialize> TryFrom<PageWire<T>> for Page<T> {
+impl<T> TryFrom<PageWire<T>> for Page<T> {
     type Error = SeError;
     fn try_from(value: PageWire<T>) -> Result<Self> {
         Self::new(value.items, value.window, value.next)

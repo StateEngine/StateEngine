@@ -83,42 +83,126 @@ macro_rules! codes {
         impl Detail{
             pub const fn code(&self)->Code{match self{$(Self::$variant(_)=>Code::$variant,)+}}
             pub fn message(&self)->String{match self{$(Self::$variant(_)=>render($message,self),)+}}
-            fn payload(&self)->std::result::Result<Value,serde_json::Error>{match self{$(Self::$variant(value)=>serde_json::to_value(value),)+}}
+            fn fields(&self)->Vec<(&'static str,String,Option<usize>)>{match self{$(Self::$variant(value)=>vec![$((stringify!($field),value.$field.human(),value.$field.count()),)*],)+}}
         }
     };
 }
 include!("error/catalog.rs");
 
-fn render(template: &str, detail: &Detail) -> String {
-    // Typed detail contains no arbitrary serializer implementations. Preserve
-    // serializer failure explicitly instead of replacing it with an empty cause.
-    let fields = match detail.payload() {
-        Ok(value) => value,
-        Err(error) => {
-            return format!(
-                "{}: detail serialization failed: {error}",
-                detail.code().as_str()
-            );
-        }
-    };
-    let mut text = template.to_owned();
-    if let Some(fields) = fields.as_object() {
-        for (name, value) in fields {
-            let rendered = match value {
-                Value::String(value) => value.clone(),
-                Value::Null => "unknown".into(),
-                _ => value.to_string(),
-            };
-            text = text.replace(&format!("{{{name}}}"), &rendered);
-        }
-        if let Some(count) = fields
-            .values()
-            .find_map(|value| value.as_array().map(Vec::len))
-        {
-            text = text.replace("{n}", &count.to_string());
-        }
+trait HumanValue {
+    fn human(&self) -> String;
+    fn count(&self) -> Option<usize> {
+        None
     }
-    text
+}
+macro_rules! display_values {
+    ($($ty:ty),+ $(,)?) => {$(impl HumanValue for $ty {fn human(&self)->String {self.to_string()}})+};
+}
+display_values!(
+    String,
+    u16,
+    u32,
+    u64,
+    i32,
+    AgentId,
+    DecisionId,
+    EventId,
+    LaunchId,
+    MessageId,
+    ObservationId,
+    ProjectId,
+    SessionId,
+    UnixMicros
+);
+impl HumanValue for Generation {
+    fn human(&self) -> String {
+        self.get().to_string()
+    }
+}
+impl<T: HumanValue> HumanValue for Option<T> {
+    fn human(&self) -> String {
+        self.as_ref()
+            .map(HumanValue::human)
+            .unwrap_or_else(|| "unknown".into())
+    }
+}
+impl<T: HumanValue> HumanValue for Vec<T> {
+    fn human(&self) -> String {
+        self.iter()
+            .map(HumanValue::human)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+    fn count(&self) -> Option<usize> {
+        Some(self.len())
+    }
+}
+impl HumanValue for ProjectChoice {
+    fn human(&self) -> String {
+        format!("{} ({}, {})", self.name, self.id, self.root)
+    }
+}
+impl HumanValue for ImportFamilyIssue {
+    fn human(&self) -> String {
+        format!(
+            "{}: {} rejected, {} unreadable",
+            self.name, self.rejected, self.unreadable
+        )
+    }
+}
+fn render(template: &str, detail: &Detail) -> String {
+    let fields = detail.fields();
+    let mut output = String::new();
+    let mut rest = template;
+    // Single pass: braces inside a detail string are data, never another template.
+    while let Some(start) = rest.find('{') {
+        output.push_str(&rest[..start]);
+        let token = &rest[start..];
+        let Some(end) = token.find('}') else {
+            output.push_str(token);
+            return output;
+        };
+        let name = &token[1..end];
+        if let Some(field) = name.strip_suffix(".len") {
+            match fields
+                .iter()
+                .find(|(key, _, _)| *key == field)
+                .and_then(|(_, _, count)| *count)
+            {
+                Some(count) => output.push_str(&count.to_string()),
+                None => output.push_str(&token[..=end]),
+            }
+        } else if let Some((_, value, _)) = fields.iter().find(|(key, _, _)| *key == name) {
+            output.push_str(value);
+        } else {
+            output.push_str(&token[..=end]);
+        }
+        rest = &token[end + 1..];
+    }
+    output.push_str(rest);
+    output
+}
+
+mod duration_millis {
+    use serde::{Deserialize, Deserializer, Serializer};
+    use std::time::Duration;
+    pub fn serialize<S: Serializer>(
+        value: &Duration,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        if !value.subsec_nanos().is_multiple_of(1_000_000) {
+            return Err(serde::ser::Error::custom(
+                "retry duration must be whole milliseconds",
+            ));
+        }
+        let millis = u64::try_from(value.as_millis()).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_u64(millis)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Duration, D::Error> {
+        u64::deserialize(deserializer).map(Duration::from_millis)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
@@ -127,7 +211,11 @@ pub enum Retry {
     #[default]
     Never,
     AfterReread,
-    After(Duration),
+    After(
+        #[serde(with = "duration_millis")]
+        #[schemars(with = "u64")]
+        Duration,
+    ),
     WhenRuntimeReady,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -307,7 +395,20 @@ struct ErrorEnvelopeWire {
 }
 impl ErrorEnvelope {
     pub fn new(body: ErrorBody, cx: &RenderCx<'_>) -> crate::Result<Self> {
-        let message = body.message();
+        let message = body
+            .message()
+            .replace(
+                "{project}",
+                &cx.project
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "PROJECT".into()),
+            )
+            .replace(
+                "{agent}",
+                &cx.agent
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "AGENT".into()),
+            );
         let remedy = body.remedy(cx)?;
         Ok(Self {
             body,
@@ -337,7 +438,7 @@ impl TryFrom<ErrorEnvelopeWire> for ErrorEnvelope {
         if value.schema != "se.error/v1"
             || value.class != value.body.class()
             || value.exit != value.body.class().exit_code()
-            || value.message != value.body.message()
+            || value.message.is_empty()
             || value.remedy.text.is_empty()
         {
             return Err(SeError::invalid(

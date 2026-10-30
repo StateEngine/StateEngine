@@ -35,7 +35,7 @@ codes! {
     ListenerAdmissionRefused => ("listener-admission-refused", Unauthorized) { reason: String } => "local server refused the request: {reason}", "reconnect through `se mcp token`; non-loopback access is not supported";
     ProjectRequired => ("project-required", Usage) { choices: Vec<ProjectChoice> } => "which project? none registered here", "Use `se init` (none) or `se … -p NAME`";
     ProjectUnknown => ("project-unknown", Unknown) { selector: String } => "no project `{selector}`", "Use `se status --all`";
-    ProjectAmbiguous => ("project-ambiguous", Usage) { selector: String, matches: Vec<String> } => "`{selector}` names {n} projects", "use the id: `-p prj_…`";
+    ProjectAmbiguous => ("project-ambiguous", Usage) { selector: String, matches: Vec<String> } => "`{selector}` names {matches.len} projects", "use the id: `-p prj_…`";
     ProjectRemoved => ("project-removed", Refused) { project: ProjectId, at: UnixMicros } => "project {project} was removed at {at}", "re-adopt: → `se init --repo {root}`";
     RegistrationUnreadable => ("registration-unreadable", Unreadable) { path: String, reason: String } => "can't read project registrations: {reason}", "Use `se doctor`";
     CwdRegistrationAmbiguous => ("cwd-registration-ambiguous", Usage) { cwd: String, candidates: Vec<String> } => "{cwd} is registered twice", "Use `-p P`, then `se doctor --fix`";
@@ -98,7 +98,7 @@ codes! {
     ApiVersionUnsupported => ("api-version-unsupported", Refused) { client: String, host: String } => "client API {client} vs runtime {host}", "upgrade the older side";
     CustodyUnavailableHostless => ("custody-unavailable-hostless", Unavailable) { op: String } => "this stdio server has no runtime; `{op}` can't act", "Use `se up`";
     AgentUnknown => ("agent-unknown", Unknown) { selector: String, suggestion: Option<String> } => "no agent `{selector}` in {project}", "Use `se agent list`";
-    AgentAmbiguous => ("agent-ambiguous", Usage) { selector: String, matches: Vec<String> } => "`{selector}` matches {n} agents", "use the id";
+    AgentAmbiguous => ("agent-ambiguous", Usage) { selector: String, matches: Vec<String> } => "`{selector}` matches {matches.len} agents", "use the id";
     AgentNameTaken => ("agent-name-taken", Conflict) { name: String, agent: AgentId } => "`{name}` is already agent {agent}", "Use `se launch {name}` or pick another name";
     AgentNameInvalid => ("agent-name-invalid", Usage) { name: String, rule: String } => "`{name}`: {rule}", "choose another name";
     ProviderUnsupported => ("provider-unsupported", Usage) { got: String } => "`{got}` isn't a provider (claude, codex)", "Inspect the reported cause and correct it before retrying.";
@@ -119,7 +119,7 @@ codes! {
     CodexAppServerFailed => ("codex-app-server-failed", Refused) { phase: String, reason: String } => "Codex app-server failed at {phase}: {reason}", "Use `se doctor`";
     WakeNotRunning => ("wake-not-running", Refused) { agent: AgentId } => "{agent} isn't running, so there is nothing to wake", "Use `se launch {agent}`";
     StopUnwitnessed => ("stop-unwitnessed", Incomplete) { agent: AgentId, pid: u32, reason: String } => "stop sent but {agent}'s exit isn't confirmed", "Use `se agent show {agent}`, then `se stop {agent}`";
-    StopPartial => ("stop-partial", Incomplete) { stopped: Vec<String>, failed: Vec<String> } => "stopped {n}; not confirmed: {failed}", "Use `se stop AGENT` for each";
+    StopPartial => ("stop-partial", Incomplete) { stopped: Vec<String>, failed: Vec<String> } => "stopped {stopped.len}; not confirmed: {failed}", "Use `se stop AGENT` for each";
     SessionUnknown => ("session-unknown", Unknown) { session: SessionId } => "no session {session}", "Use `se agent show AGENT`";
     SessionBindingUnproven => ("session-binding-unproven", Unauthorized) { reason: String } => "a session id alone can't bind ({reason})", "launch through se, or → `se doctor --fix` for your integration";
     SessionGenerationMismatch => ("session-generation-mismatch", Conflict) { expected: Generation, current: Generation } => "session generation is {current}, not {expected}", "reread and retry";
@@ -147,14 +147,14 @@ codes! {
     SpawnFailed => ("spawn-failed", Refused) { program: String, reason: String } => "couldn't start {program}: {reason}", "Inspect the reported cause and correct it before retrying.";
     CwdOutsideWorkspace => ("cwd-outside-workspace", Refused) { cwd: String, workspace: String } => "{cwd} is outside the project folder {workspace}", "use a path inside the project";
     EnvKeyNotAllowed => ("env-key-not-allowed", Usage) { key: String } => "`{key}` can't be set for a managed process", "drop it";
-    StopDeadlineExceeded => ("stop-deadline-exceeded", Incomplete) { observation: ObservationId, deadline_ms: u64, remaining: Vec<String> } => "{n} processes still alive after {deadline_ms} ms", "retry with a longer `--deadline`";
+    StopDeadlineExceeded => ("stop-deadline-exceeded", Incomplete) { observation: ObservationId, deadline_ms: u64, remaining: Vec<String> } => "{remaining.len} processes still alive after {deadline_ms} ms", "retry with a longer `--deadline`";
     AtlasIndexAbsent => ("atlas-index-absent", Refused) { project: ProjectId } => "no code index for {project} yet", "Use `se config set atlas.enabled true -p P` (indexes in the background; `se status` shows progress)";
     AtlasIndexing => ("atlas-indexing", Incomplete) { indexed: u64, total: u64 } => "index is {indexed}/{total} files; results may be partial", "retry later";
     AtlasUnreadable => ("atlas-unreadable", Unreadable) { path: String, reason: String } => "can't read atlas.db: {reason}", "Use `se doctor --fix` (rebuilds the index)";
     AtlasPathOutsideRoot => ("atlas-path-outside-root", Refused) { path: String, root: String } => "{path} is outside {root}", "use a project-relative path";
     AtlasPathUnknown => ("atlas-path-unknown", Unknown) { path: String } => "{path} isn't indexed", "Use `se atlas find PATH --kind path`";
     AtlasSymbolUnknown => ("atlas-symbol-unknown", Unknown) { symbol: String } => "no symbol `{symbol}`", "Use `se atlas find {symbol}`";
-    AtlasSymbolAmbiguous => ("atlas-symbol-ambiguous", Usage) { symbol: String, candidates: Vec<String> } => "`{symbol}` names {n} symbols", "add `--path`";
+    AtlasSymbolAmbiguous => ("atlas-symbol-ambiguous", Usage) { symbol: String, candidates: Vec<String> } => "`{symbol}` names {candidates.len} symbols", "add `--path`";
     AtlasLanguageUnsupported => ("atlas-language-unsupported", Refused) { path: String, language: Option<String> } => "{language} files aren't parsed", "text search: `--kind text`";
     AtlasFileOverBudget => ("atlas-file-over-budget", Refused) { path: String, size: u64, budget: u64 } => "{path} ({size}) exceeds the parse budget", "none; the file stays text-searchable";
     RepairNotSupported => ("repair-not-supported", Refused) { check: String } => "`doctor --fix` can't repair {check}", "follow the check's own fix line";

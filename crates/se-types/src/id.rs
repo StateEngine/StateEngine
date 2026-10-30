@@ -52,21 +52,21 @@ macro_rules! ids {
             }
         }
         impl TryFrom<String> for $name { type Error=SeError; fn try_from(value:String)->Result<Self> {
-            // Wire readers preserve explicitly kind-prefixed imported IDs as data.
-            Self::from_legacy(value)
+            // Ordinary wire decoding is strict; only importers call from_legacy.
+            value.parse()
         } }
         impl From<$name> for String { fn from(value:$name)->String {value.0} }
         impl fmt::Display for $name {fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result {f.write_str(&self.0)}}
         impl fmt::Debug for $name {fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result {f.write_str(&self.0)}}
         impl JsonSchema for $name {
             fn schema_name()->Cow<'static,str>{stringify!($name).into()}
-            fn json_schema(_: &mut SchemaGenerator)->Schema {json_schema!({"type":"string","minLength":1,"maxLength":512,"pattern":"^[!-~]+$"})}
+            fn json_schema(_: &mut SchemaGenerator)->Schema {json_schema!({"type":"string","pattern":format!("^{}[0-9a-f]{{8}}-[0-9a-f]{{4}}-7[0-9a-f]{{3}}-[89ab][0-9a-f]{{3}}-[0-9a-f]{{12}}$",Self::PREFIX)})}
         }
     )+
         fn known_id_prefix(value:&str)->Option<&'static str>{[$($prefix),+].into_iter().find(|prefix|value.starts_with(prefix))}
     };
 }
-ids!(ProjectId=>"prj_",AgentId=>"ag_",HumanId=>"hu_",SessionId=>"ses_",MessageId=>"msg_",DecisionId=>"dec_",EventId=>"ev_",LaunchId=>"launch_",ObservationId=>"obs_",StoreId=>"store_",LifecycleId=>"life_",AtlasRootId=>"aroot_",IndexEpochId=>"aidx_");
+ids!(ProjectId=>"prj_",AgentId=>"ag_",HumanId=>"hu_",SessionId=>"ses_",MessageId=>"msg_",DecisionId=>"dec_",EventId=>"ev_",LaunchId=>"lch_",ObservationId=>"obs_",StoreId=>"store_",LifecycleId=>"life_",AtlasRootId=>"aroot_",IndexEpochId=>"aidx_");
 
 pub(crate) fn validate_opaque(value: &str, max: usize, field: &str) -> Result<()> {
     if value.len() > max {
@@ -239,5 +239,33 @@ impl From<Sha256> for String {
 impl fmt::Debug for Sha256 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.hex())
+    }
+}
+
+/// UTC calendar text for human messages; serde remains exact Unix microseconds.
+impl fmt::Display for UnixMicros {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let seconds = self.get() / 1_000_000;
+        let days = (seconds / 86_400) as i64;
+        // Gregorian 400-year eras, with March as month zero to handle leap days.
+        let z = days + 719_468;
+        let era = z / 146_097;
+        let day_of_era = z - era * 146_097;
+        let year_of_era =
+            (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+        let mut year = year_of_era + era * 400;
+        let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let march_month = (5 * day_of_year + 2) / 153;
+        let day = day_of_year - (153 * march_month + 2) / 5 + 1;
+        let month = march_month + if march_month < 10 { 3 } else { -9 };
+        year += i64::from(month <= 2);
+        let hour = seconds % 86_400 / 3_600;
+        let minute = seconds % 3_600 / 60;
+        let second = seconds % 60;
+        write!(
+            f,
+            "{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02}.{:06} UTC",
+            self.get() % 1_000_000
+        )
     }
 }
