@@ -8,14 +8,14 @@ use se_store::{DirectStore, ReadScope, ReadStore, RuntimeLease, StoreError, Writ
 use se_types::SeError;
 use std::{future::Future, sync::Arc};
 use tokio::runtime::Handle;
-use tokio::sync::{Semaphore, TryAcquireError};
+use tokio::sync::{AcquireError, Semaphore};
 use tokio::task::JoinError;
 
 #[derive(Debug)]
 pub enum ConsumerError {
     Core(SeError),
     Store(Box<StoreError>),
-    Capacity(TryAcquireError),
+    PoolClosed(AcquireError),
     Worker(JoinError),
 }
 
@@ -41,11 +41,13 @@ pub fn message_via_host<
     runtime: Handle,
 ) -> impl Future<Output = Result<MessageSendOutput, ConsumerError>> + Send + 'a {
     async move {
-        // Admission bounds queued plus running blocking jobs, without a polling loop.
+        // Wait within the enclosing host request deadline; never refuse a busy pool.
+        // The shared permit bounds queued plus running blocking jobs.
         let permit = blocking_slots
             .clone()
-            .try_acquire_owned()
-            .map_err(ConsumerError::Capacity)?;
+            .acquire_owned()
+            .await
+            .map_err(ConsumerError::PoolClosed)?;
         let planning_core = core.clone();
         let planning_reader = reader.clone();
         let planning_scope = scope.clone();
@@ -71,8 +73,9 @@ pub fn message_via_host<
                 let completion = writer.submit(batch).map_err(ConsumerError::Store)?;
                 let receipt = completion.await.map_err(ConsumerError::Store)?;
                 let permit = blocking_slots
-                    .try_acquire_owned()
-                    .map_err(ConsumerError::Capacity)?;
+                    .acquire_owned()
+                    .await
+                    .map_err(ConsumerError::PoolClosed)?;
                 runtime
                     .spawn_blocking(move || {
                         let _permit = permit;
@@ -154,11 +157,13 @@ pub fn working_state_via_host<
     runtime: Handle,
 ) -> impl Future<Output = Result<WorkingStateSetOutput, ConsumerError>> + Send + 'a {
     async move {
-        // Admission bounds queued plus running blocking jobs, without a polling loop.
+        // Wait within the enclosing host request deadline; never refuse a busy pool.
+        // The shared permit bounds queued plus running blocking jobs.
         let permit = blocking_slots
             .clone()
-            .try_acquire_owned()
-            .map_err(ConsumerError::Capacity)?;
+            .acquire_owned()
+            .await
+            .map_err(ConsumerError::PoolClosed)?;
         let planning_core = core.clone();
         let planning_reader = reader.clone();
         let planning_scope = scope.clone();
@@ -184,8 +189,9 @@ pub fn working_state_via_host<
                 let completion = writer.submit(batch).map_err(ConsumerError::Store)?;
                 let receipt = completion.await.map_err(ConsumerError::Store)?;
                 let permit = blocking_slots
-                    .try_acquire_owned()
-                    .map_err(ConsumerError::Capacity)?;
+                    .acquire_owned()
+                    .await
+                    .map_err(ConsumerError::PoolClosed)?;
                 runtime
                     .spawn_blocking(move || {
                         let _permit = permit;

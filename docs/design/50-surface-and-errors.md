@@ -66,7 +66,8 @@ schema generation. Synchronous `dispatch` returns one of:
 
 `then` is not a closure and captures no SQL handle, transaction or lock. On the
 host, planning and continuation each run in a finite blocking-pool job, admitted
-through the host's bounded worker permits. An owned/Arc reader enters each job;
+through the host's bounded worker permits, waiting within the request deadline
+as specified in [40 §4](40-host-runtime-and-harnesses.md#4-executor-blocking-and-native-thread-accounting). An owned/Arc reader enters each job;
 the job opens and closes its finite Snapshot there. No SQL read or synchronous
 continuation runs on the async executor. After planning releases its worker
 permit and Snapshot, the async driver calls `WriterClient::submit` and awaits
