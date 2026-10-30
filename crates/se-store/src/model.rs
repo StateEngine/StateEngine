@@ -187,6 +187,17 @@ pub struct CommitReceipt {
     pub last: Revision,
     pub events: Vec<EventId>,
 }
+/// Trusted maintenance input, not a public operation or cross-scope admission.
+/// Owner is one registry runtime.owner; session is the witnessed project binding.
+pub struct FirstBinding {
+    pub owner: crate::AtomicBatch,
+    pub session: crate::AtomicBatch,
+}
+/// Two scoped operation receipts from the same successful outer FULL commit.
+pub struct FirstBindingReceipt {
+    pub owner: CommitReceipt,
+    pub session: CommitReceipt,
+}
 /// Constructed only by the canonical store committer or retained-event decoder.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriterMode {

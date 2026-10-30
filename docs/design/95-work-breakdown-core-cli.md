@@ -80,6 +80,9 @@ resume or start indexing.
 `src/ops/agent.rs`. Depends K01/K02/S/H. Cover project init/remove/status and agent
 list/create/show/rename: idempotent adoption, immutable creator, safe named profiles,
 required keys, accurate state/containment and stop/revoke before removal. Init
+owns absent-store creation/FULL schema/header publication and readback through
+S01 before completing owner/project/agent facts; retry reuses valid published
+state and finishes missing setup. Embedded open never invokes init implicitly. Init
 chooses/persists a per-user listener port in 20000–29999. H performs native/file
 work and readbacks. Witness: T18/T26, J2/J5, unchanged user files/HEAD, refusal of
 edited integrations and explicit incomplete obligations. Remove preserves history;
@@ -89,7 +92,10 @@ it does not imply forget or uninstall.
 `src/ops/hook.rs`. Depends K01/K02/K05/S/H. Cover session begin/context/turn/end and
 hook.claude, with session_turn in MCP. Require proved binding, exact generation,
 consent, stable capture identity before send and the frozen SE Code context
-adapter. Embedded binding returns an in-process handle and issues no credentials;
+adapter. The first ordinary-cold embedded binding supplies S01/S04 and H with
+separately admitted registry-owner/project-session batches for their single FULL
+maintenance transaction before writer startup; both stable keys and the actual
+activation revision survive retry. Embedded binding returns an in-process handle and issues no credentials;
 external helpers remain authenticated. The public turn DTO uses 128 KiB content inside the existing 1 MiB frame, including worst-case escaping; trusted pinned-source capture streams its separate canonical turn into staging. Witness: T3/T13/T23/T24, real J2/J3 capture and
 A.14; session-start is read-only and hook exit zero is not capture proof.
 
@@ -132,6 +138,8 @@ and H/P. Resolve only admitted home/env/config inputs, native owner/session proo
 redacted origins, shared input limits and bounded stdin. Anonymous metadata and
 static compatibility refusals precede store access. Witness: T2/T3/T22/T23,
 J1/J2 and no fleet defaults; ordinary current-schema reads construct no runtime.
+Preserve measured absence as setup-required with the resolved-home se init remedy;
+no CLI/embedded bootstrap can turn an open into silent schema creation.
 
 **B02 — Generated grammar (250).** Own binary `src/grammar.rs`, `src/compat.rs`.
 Depends K01/B01. Consume the generated tree, map doctor/history selectors to the
@@ -145,7 +153,9 @@ a supported older schema releases the reader lease and privately bootstraps the
 sole migrating host, rather than asking a stranger to run an upgrade. Existing
 host writes use authenticated IPC; hostless writes use the same batch transaction
 engine under the lease through synchronous DirectStore::append. No future or background writer is added to that direct route. Preserve request identity,
-uncertain commit outcomes and version-independent down routing. Witness:
+uncertain commit outcomes and version-independent down routing. Route explicit
+init through S01 create/open and its FULL publication/readback; a missing store
+on a non-init store-dependent route reports setup-required. Witness:
 T8/T17/T21, P2, lost-ACK CLI/IPC slice and writer/event readback; never fall back to
 a different actor or second writer after endpoint/peer mismatch.
 

@@ -241,6 +241,17 @@ StateEngine 0.1.0 — no project here yet.
   Then:  se launch <name>   (opens your first agent)
 ```
 
+Initialization is explicit. `se init` creates the per-user store, FULL-publishes
+and reads back its schema/header, then completes the owner/project/agent setup
+and reports only achieved facts in `se.init/v1`. A retry opens the valid existing
+store and completes missing setup without replacing identities or user files.
+Embedded factory/open/activate never performs this initialization. If it never
+ran, return existing `setup-required` (Refused): subject “StateEngine store”,
+reason “not initialized for the selected state home”, next step
+“Run se --home DIR init in the repository you want to adopt”, using the resolved
+home in structured argv. No empty DB, host endpoint or implicit agent is created.
+Unreadable/foreign/newer state is diagnosed separately; init cannot overwrite it.
+
 ### 2.4 Argument vocabulary
 
 | Token | Type and bounds |
@@ -781,7 +792,7 @@ Automatic backups run at start-of-day and clean shutdown, plus the verified back
 
 History search is a bounded streamed scan with a byte/time window and continuation, not FTS. Forget matches those actual stores and caches rather than promising removal of a nonexistent FTS index. NORMAL durability may lose several recent ordinary commits on power loss or OS crash, not an application crash; decision ratify/reject/retract/supersede are all FULL. Section 20 defines the complete FULL set and 80 measures its real mixed workload.
 
-`se down` stops all owned agents and runtime on each OS and renders achieved stop witnesses plus original-conversation resume argv. It cannot report success then say agents remain running. Failed/unknown stop witnesses report incomplete facts. Default SE Code exit with live agents instead transfers to detached `se up`; that daemon exits ten minutes after its last live agent. Embedded idle process measurements apply when no agent is live. Embedded session binding uses an in-process handle, adds no credential-issued/activated commits, and still includes runtime.owner/session activation/new-schema FULL cost in E2.
+`se down` stops all owned agents and runtime on each OS and renders achieved stop witnesses plus original-conversation resume argv. It cannot report success then say agents remain running. Failed/unknown stop witnesses report incomplete facts. Default SE Code exit with live agents instead transfers to detached `se up`; that daemon exits ten minutes after its last live agent. Embedded idle process measurements apply when no agent is live. Embedded session binding uses an in-process handle and adds no credential-issued/activated commits. Explicit se init pays the fresh-schema FULL cost; ordinary embedded cold first bind atomically commits runtime.owner and the witnessed first session under FULL before starting the writer. E2 still includes that joint commit, native binding and complete continuity response. Setup absence is a named refusal, not a fast successful E2 sample.
 
 Install/uninstall scripts and SE Code's installer invoke this same `se uninstall` operation rather than reimplementing it. It never kills an agent without the ordinary stop witness. File-only retries follow section 40’s readback-reconciliation rule, without a separate persistent journal; file readbacks never claim an event/writer.
 
@@ -812,6 +823,11 @@ Exact field paths for the families the journey runner judges. `$` is the payload
 | ProcessId | object | `{"pid":int,"started_at":Time,"exe":string,"machine_id":string}`. `started_at` is the OS birth time (00 G6). A pid alone never identifies a process. |
 
 ### A.1 `se.init/v1` — `se init`
+
+Success requires the selected state home to contain the read-back initialized
+schema/header and achieved project/owner/agent facts. A schema-only or partially
+configured attempt is not a completed init receipt; its retry preserves valid
+published state and finishes the missing work. No new output fields are added.
 
 | Path | Type | Always | Meaning |
 | --- | --- | --- | --- |

@@ -50,12 +50,13 @@ pub trait StoreFactory {
     /// after verified backup; an older schema never escapes as a HostStore.
     fn open_host(options: &StoreOptions, lease: &dyn RuntimeLease)
     -> StoreResult<Read<Self::Host>>;
-    /// Owner bootstrap with shared runtime lease; publish a new schema no-replace.
+    /// Explicit owner init with shared runtime lease; FULL-publish schema no-replace.
     fn create_direct(
         options: &StoreOptions,
         lease: &dyn RuntimeLease,
         store_id: StoreId,
     ) -> StoreResult<Self::Direct>;
+    /// Explicit owner init only; never an embedded open/activation fallback.
     fn create(
         options: &StoreOptions,
         lease: &dyn RuntimeLease,
@@ -110,6 +111,14 @@ pub trait HostStore: ReadStore + TextStaging + Sized {
         batch: AtomicBatch,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CommitReceipt>;
+    /// Embedded cold first bind only, before writer startup: registry owner and
+    /// project session retain separate admissions/operations but commit FULL
+    /// together. Any member failure rolls back both; no ordinary group exposure.
+    fn record_first_binding(
+        &mut self,
+        binding: FirstBinding,
+        lease: &dyn RuntimeLease,
+    ) -> StoreResult<FirstBindingReceipt>;
     fn checkpoint(
         &mut self,
         mode: CheckpointMode,
@@ -162,12 +171,19 @@ pub trait CommitWait: Future<Output = StoreResult<CommitReceipt>> + Send {}
     reason = "Compile-only private transaction contract; implementation is not admitted."
 )]
 pub(crate) trait TransactionEngine {
-    fn commit_group(
-        &mut self,
-        batches: Vec<AtomicBatch>,
-    ) -> StoreResult<Vec<StoreResult<CommitReceipt>>>;
+    fn commit_group(&mut self, group: CommitGroup) -> StoreResult<Vec<StoreResult<CommitReceipt>>>;
     fn append_atomic(&mut self, batch: AtomicBatch) -> StoreResult<PreparedReceipt>;
     fn apply(&mut self, event: &StoredEvent) -> StoreResult<()>;
+}
+/// One transaction engine; the maintenance pair cannot use ordinary savepoint
+/// failure isolation and accidentally commit only the owner operation.
+#[allow(
+    dead_code,
+    reason = "Compile-only transaction policy; no backend is admitted."
+)]
+pub(crate) enum CommitGroup {
+    Ordinary(Vec<AtomicBatch>),
+    FirstBinding(Box<FirstBinding>),
 }
 /// Cannot be returned to a caller as a durable receipt before group COMMIT.
 pub(crate) struct PreparedReceipt {

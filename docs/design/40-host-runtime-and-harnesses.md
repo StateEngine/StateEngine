@@ -390,7 +390,7 @@ the error channel without appending a history event.
 Factory preparation is read-only, returns absent/unreadable/version error
 truthfully, and starts no writer/callback/native effect. SE Code registers the
 Prepared Host/G and fresh immutable generation-fenced services before activate.
-Missing store does not implicitly init. Preparation reads the version and plans
+Missing store returns `setup-required`: “StateEngine has not been initialized for this state home; run se --home DIR init in the repository to adopt.” No store/schema, endpoint, writer or credential is created on this refusal; unreadable/foreign/unsupported stores keep their distinct diagnosis. Preparation reads the version and plans
 any supported additive migration; activation, under the exclusive runtime lease,
 first verifies a pre-migration backup, applies it and FULL-publishes the version
 before starting ordinary resources. There is no MigrationApproval, plan
@@ -402,9 +402,10 @@ the registered owner; an independent live owner refuses.
 | From | Trigger | Next / actual effect |
 | --- | --- | --- |
 | Unopened | Valid read-only prepare | Prepared, possibly held preparation lease; no worker/native mutation |
-| Prepared | Registered correct G/epoch/services, activate | Activating; start compatible store writer/resources |
+| Prepared | Registered correct G/epoch/services, activate | Activating; validate/open initialized store and native resources; embedded first-bind maintenance retains the store before writer startup |
 | Prepared | Invalid source/G before resource start | Prepared + error |
-| Activating | Initial authenticated first bind/continuity ready | Ready, with route recovery exposed separately |
+| Activating | Initial authenticated ordinary-cold embedded bind | One FULL owner+first-session maintenance commit, then start ordinary writer and return binding/continuity; Ready, with route recovery separate |
+| Activating | Standalone FULL owner admission completes | Start ordinary writer; Ready without waiting for an embedded bind |
 | Activating/Ready | Indexed routes need reconciliation | Recovering; unaffected routes work |
 | Recovering | Required route reconciliation done | Ready |
 | Any owned active state | Writer/lease/collector ownership fault, activate/drain/close panic, or migration failure after resource start | Poisoned, gate G and retain exact partial resources; independent factory restart |
@@ -415,6 +416,22 @@ the registered owner; an independent live owner refuses.
 | Drained/Poisoned | Independent factory restart of exact call G + stable key | Close old resources safely, fresh Prepared G+1 |
 | Restart closure | Unjoined worker/unsafe ownership | Old quarantined ownership retained; no new writer |
 | Closed | Same-handle close retry | Original result, no reopened resources |
+
+For ordinary embedded cold start, activate may finish its setup with
+Readiness::Prepared while GenerationHealth remains Activating; it does not wait
+for a bind that SE Code can issue only after activate returns. The already
+registered G/services allow the first authenticated bind during Activating.
+No other mutation is admitted then. Resolve native binding/consent/incumbent
+witnesses before the bounded blocking maintenance job; call section 20's
+record_first_binding with separate registry-owner and project-session admissions,
+then start the ordinary writer only after the joint FULL receipt. Finish the
+bounded continuity read before returning IssuedSession. Failed pre-COMMIT work
+leaves neither owner nor activation; any prepared native session stays unbound,
+with no provider/tool/mail work authorized and explicit cleanup obligations.
+Post-COMMIT failure retains both keys and known committed facts and keeps
+admission closed. Concurrent distinct first binds wait within the existing request/deadline bounds, without a gather timer.
+Standalone admission and live-handover/cold-recovery maintenance retain their
+existing FULL ordering; no transfer barrier is folded into first binding.
 
 All unlisted transitions refuse. HostStatus reports its own G/epoch/phase and
 bounded real blockers/counts; status/negotiated/health are nonblocking snapshots.
@@ -1300,9 +1317,12 @@ linked session/continuity response is inside B2, actual task memory is inside
 B1/B4, and B8 begins after independently reported quiescence. A declaration
 compile or arithmetic allocation establishes none of those measurements.
 
-Embedded binds use in-process handles and mint no credentials, removing the two
-credential FULL commits; runtime.owner and any required FULL session activation
-remain inside the first-bind measurement. E2 re-spends the unchanged B2 ceiling
+Embedded binds use in-process handles and mint no credentials. Explicit se init
+creates and FULL-publishes the schema/header first; embedded open never does.
+Ordinary cold first bind records runtime.owner plus the witnessed first session
+in one FULL maintenance transaction before writer startup, with two SQLite file
+syncs and any directory sync reported separately. Both records and the complete
+binding/continuity response remain inside the first-bind measurement. E2 re-spends the unchanged B2 ceiling
 using the real FULL set on Windows with Defender, both new and existing store,
 and memory after a real task. Historical FULL commit tails require actual first-bind measurement, not an
 optimistic allocation. Re-adoption, Codex reconnect, backup and optional Atlas run
