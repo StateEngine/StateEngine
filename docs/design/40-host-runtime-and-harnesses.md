@@ -219,9 +219,9 @@ Unreadable ownership blocks that route; a historical imported PID is never custo
 The core remains synchronous and never waits on a commit. It returns
 `OpStep::Commit { batch, then }`: an owned typed batch and a typed continuation,
 not a closure holding a transaction or borrowed connection. The host submits
-`batch` through `WriterClient::submit`, awaits its `Completion` on the calling
-async task, then invokes `then` with the actual committed receipt to construct
-the result or next operation step. The store performs SQL on its one writer
+`batch` through the HostStore writer boundary (`WriterClient::submit`), awaits
+its `Completion: CommitWait` on the calling async task, then invokes `then` with
+the actual committed receipt to construct the result or next operation step. The store performs SQL on its one writer
 thread; no host thread blocks waiting for that writer, and no core call waits
 for IPC or starts a runtime. `wait_blocking` is CLI-only for hostless execution.
 Submission refusal leaves no accepted write; a timeout, cancellation or lost
@@ -1271,6 +1271,22 @@ preserves the journal with history/backups and prints its location; restore's
 journal survives DB replacement. It creates no event, writer stamp, new public
 operation, server or timer. Host/se-proc owns no-follow permissions, publication
 and agent-path exclusion; a journal entry is never authority or an OS witness.
+
+`config.toml` is the only effective general-settings authority. General
+`config.set` keys (including `runtime.listen_port`, provider defaults and
+`atlas.enabled`) use that keyed file-custody path: validate the closed key/value
+and per-key human-presence rule, compare the expected file/entry, atomically
+write and sync while preserving unrelated entries, then read back the actual
+file before settling the journal/result. There is no general-settings event,
+config head or `Snapshot.config` mirror in SQLite. A completed-key replay returns
+its original receipt without overwriting later manual edits; current reads report
+the actual configuration separately. Manual edits take effect on the next read,
+or on restart for startup-only values such as the listener port; no watcher,
+timer or background reconciliation copies them into a database. Agent metadata,
+including `agent.<A>.can-create`, grants, profiles and model revisions, remains
+in its store-owned agent records with the required durable transitions. That
+metadata is not a second general-settings layer; flags/env retain their stated
+precedence over the per-user file and defaults.
 
 ## 10. Performance and size allocation
 
