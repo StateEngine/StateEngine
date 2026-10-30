@@ -105,6 +105,7 @@ or a fake provider cannot qualify these measurements. Missing access, API, field
 is unavailable/not reached, never zero. B8 and B9 use section 80's single budget table; quiescence is
 reported separately from cutover, dormant SE Code input is not active adoption, and hook exit zero
 is not capture evidence. Codex capture uses app-server, not a fabricated Claude hook.
+With no host running, a real Claude hook must start one and commit with `writer.mode=host`, verified against outside history readback and the actual host generation.
 
 ### 2.4 Cadence
 | When | Where | Agents |

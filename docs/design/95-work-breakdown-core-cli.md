@@ -161,7 +161,8 @@ Witness: T10–T13/T28, family/exit readback and J1–J5; no new golden-output s
 `src/mcp_token.rs`. Depends K07/K09/B01/B03/H. Preserve native hook/header-helper
 stdout, bounded escaped-JSON frames, per-call session authentication and generated
 MCP results. H owns framing/execution/listeners; wrappers add no second dispatcher.
-Cold hook bootstrap remains pending E8, rather than a promised latency win.
+Cold hooks use private host bootstrap and the host writer (40 §9.3), as settled
+by E8; no direct-write fallback or production cold-hook latency win is promised.
 Witness: T3/T4/T19–T23, real-provider J2–J4 and outside capture readback; a failed
 capture must remain visible even when provider protocol requires exit zero.
 

@@ -204,7 +204,7 @@ sequenceDiagram
   W-->>H: TurnReceipt{captured n, duplicate m}
   H-->>K: HookResult
   K-->>CL: hook stdout per Claude protocol, exit 0
-  Note over K,H: A capture that fails is committed as a named fact (capture-failed + code); exit 0 is never proof of capture
+  Note over K,H: Failed capture is committed as a named fact when the host accepted the request and persistence works; failed bootstrap or connection leaves stderr and status only; exit 0 is never proof of capture
 ```
 
 ### 2.7 A message delivered to a live agent

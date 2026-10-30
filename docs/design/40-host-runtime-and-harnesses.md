@@ -1184,11 +1184,14 @@ but HookOutput carries actual captured Read/failure and status exposes failed/
 suppressed capture. Zero exit is never capture evidence. If persistence itself
 fails, do not claim a durable diagnostic exists. Hook writes go through the
 host's existing writer. If no host runs, the hook starts one through private
-runtime bootstrap, waits for its authenticated endpoint within the request
-deadline, then submits with the original natural key. Hooks have no direct-write
-fallback; bootstrap, connection or persistence failure follows the hook failure
-contract above. E8's Windows-with-Defender comparison settled this routing choice
-(00 §7.2 item 4); its warm-cache fixture establishes no production cold-hook
+runtime bootstrap and waits for an authenticated endpoint up to section 50's
+ten-second bootstrap limit, or the hook's remaining deadline if sooner. A hook
+that loses the start race connects to the winner's authenticated endpoint
+(30 §5.5/§7.3). In either case, it submits with the original natural key. At the deadline,
+`runtime-start-pending` is a capture failure, never capture success. Hooks have
+no direct-write fallback; bootstrap, connection or persistence failure follows
+the hook failure contract above. E8's Windows-with-Defender comparison settled
+this routing choice (00 §7.2 item 4); its warm-cache fixture establishes no production cold-hook
 latency guarantee.
 
 Attended plugin is ~200–350 lines of provider-native JS, no Node process/executor.

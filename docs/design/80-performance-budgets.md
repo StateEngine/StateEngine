@@ -147,8 +147,9 @@ the actual observer; no unverified existing-runner defect is assumed.
   measures section 30's three barriers and four-commit helper exception.
 - **E4–E9:** attended mail, Codex modes, non-fleet user-history import, Linux
   containment from SSH/Docker/WSL2, cold Windows hook startup and the actual
-  SE Code composition precede the broad build. Cold-hook routing is decided
-  after E8 rather than inferred from a Linux direct-hook sample.
+  SE Code composition precede the broad build. E8 settled cold-hook routing:
+  private host bootstrap, then the host writer (40 §9.3); its warm-cache Windows
+  fixture establishes no production cold-hook latency guarantee.
 
 Native writer transfer passed Linux 3/3 and Windows 11 3/3, each with 2,097,152
 ordered bytes and no loss/duplication at the named cuts. Real Codex 0.166 and
