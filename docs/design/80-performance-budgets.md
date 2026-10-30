@@ -81,6 +81,19 @@ Long operations have their own targets, measured on StateEngine's share only:
 - **Atlas** (standalone only, opt-in and off the milestone path): cold index peak ≤ 64 MB in its own process (§3.2); save-to-searchable
   ≤ 200 ms (prototype 67 ms); query p95 ≤ 50 ms (prototype 7–16 ms); zero idle wakeups once settled.
 
+The private Linux manager transport uses dbus 0.9.10, default features off,
+vendored only (libdbus-sys 0.2.7), with no Tokio/futures dependency. A build-only
+Linux x86-64 linker probe with release/LTO/strip/panic-abort was 611,472 bytes
+versus 307,648 bytes for the matching std-only executable: **303,824 additional
+bytes (~297 KiB)** for this exercised transport surface. Allow roughly 384 KiB
+in planning, not zero dependency cost; final combined StateEngine/SE Code
+marginal artifact size still must be measured against B1. The probe only links
+a private client branch; it never executes a bus request or measures latency.
+It confirms no dynamic libdbus/libsystemd dependency. Existing scope timings
+used libsystemd plus placement polling, so they do not qualify the selected
+dbus-rs event-driven path. Its first qualification waits for the designated
+quiet window and the actual selected bytes.
+
 ## 2. How the runner measures
 
 ### 2.1 CLI latency (B7, B9 and FULL)

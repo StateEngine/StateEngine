@@ -133,7 +133,8 @@ while acknowledged commits survive an application crash.
 
 ### 2.4 Optional hardening: Landlock and seccomp
 Kernel containment is the alpha guarantee where the OS offers it: a Windows job, or on Linux a cgroup v2
-scope delegated by the systemd user manager at first launch (BestAvailable, section 30), is what stop,
+fresh scope delegated by the systemd user manager over direct D-Bus for every
+LinuxUserManager agent-process launch (BestAvailable, section 30), is what stop,
 its witness and layer 4 above rely on. Landlock (deny writes under `/sys/fs/cgroup`) and a
 seccomp filter could additionally keep a Linux agent from leaving its cgroup. Both are optional
 hardening: **off by default for alpha and never a launch requirement.** A kernel without Landlock, or a

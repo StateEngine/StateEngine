@@ -582,8 +582,12 @@ generation transfer CASes the single arena owner and revokes older references.
 
 `witness_exit(&OwnedProcess)` reads root/scope without sending a signal or
 requiring a stop ticket. A Linux manager may remove an empty exact cgroup
-before its final population read. A still-held validated directory FD proving
-that original object was removed, joined to the original root's independent
+before its final population read. A still-held validated cgroup2 directory FD whose fstat still matches the
+recorded boot/device/inode and now reports st_nlink == 0 proves removal of
+that original object. ENOENT while opening cgroup.events relative to it is
+corroboration, never sufficient alone; EACCES/EIO, failed fstat, changed
+identity or a still-linked object remains unreadable/unproved. This native
+removed-object test, joined to the original root's independent
 exit witness (or the explicit unpublished/no-child witness), is a successful
 scope-exit witness, not ScopeUnreadable. Retain the removed-object fact and
 pinned boot/device/inode separately from a population-zero read. The safe
@@ -835,12 +839,27 @@ host-controlled bus address goes in argv. The short-lived bootstrap opens
 the current user's authenticated local manager bus and requests only its own
 fresh reservation-derived .scope: mode=fail, Delegate=yes and its own live
 PID. Validate the expected same-user manager/bus endpoint through the native
-adapter; no system-bus privilege or permission change is requested. Wait for
-actual placement in the exact requested scope, not merely the method reply,
-before creating/entering its private leaf. The host's cgroup is unchanged.
+adapter; no system-bus privilege or permission change is requested. Install
+the authenticated manager's JobRemoved match and call Subscribe before
+StartTransientUnit. Filter signals to the exact reservation-derived unit and retain at most its
+one completion if it arrives before the method reply; correlate its job object path with the returned job and its unit with
+the exact reservation-derived unit. Drive the bus FD on readable events up
+to the launch deadline, not a sleep loop or repeated /proc read. Only a
+correlated result=done permits one /proc/self/cgroup read proving actual
+placement in the requested scope; a wrong scope, other result, timeout or
+transport error remains a concrete preparation failure with retained custody.
+Then create/enter its private leaf. The host's cgroup is unchanged.
 The Linux-native D-Bus transport is private to se-proc's bootstrap adapter;
 there is no general D-Bus API, Tokio dependency, resident bus helper or
-additional StateEngine service. An absent manager or unavailable delegation
+additional StateEngine service. Use dbus 0.9.10 with default-features=false
+and only vendored enabled, through its blocking::Connection in this already
+short-lived bootstrap; libdbus is statically packaged by libdbus-sys 0.2.7.
+No dbus-tokio, futures feature, async executor, background bus thread or
+libdbus/libsystemd runtime-install prerequisite is introduced. Open/register
+only the validated local user-bus address, not an untrusted inherited bus
+address; process(deadline_remaining) waits for incoming messages rather than
+periodically waking. P03-L includes ~250 adapter lines and section 80 records
+the transport's binary-size allowance/measurement. An absent manager or unavailable delegation
 still selects the existing explicit uncontained default, with its actual
 cause; a transport/malformed-reply/native error cannot fabricate delegation.
 The agent path launches no systemd-run process. The separately specified
@@ -1600,7 +1619,9 @@ cross-boundary EACCES and final `FINAL-AUDIT.json`. This is headless native
 mechanism evidence, not durable host integration, terminal qualification or
 launch-budget acceptance. The measured manager collected the exact pinned
 scope before a population-zero read; the audit retains deleted-object and
-native exit evidence, never a fabricated zero. This E7 observation establishes
+native exit evidence, never a fabricated zero. The prototype still used a
+placement polling loop and libsystemd; it does not qualify the selected
+dbus-rs/JobRemoved implementation. This E7 observation establishes
 the collected-scope witness mechanism adopted in §3.2; durable host integration
 and reviewer crash/replacement cases still require qualification. Docker and WSL2 remain unqualified pending
 installation approval; Podman is not substituted for Docker. Default Linux launch remains
@@ -1628,7 +1649,9 @@ native journeys are implemented:
   [pidfd_open](https://man7.org/linux/man-pages/man2/pidfd_open.2.html),
   [cgroup v2 delegation/events/kill](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html),
   [systemd transient scopes](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html),
-  [systemd-run scope startup](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html).
+  [systemd-run scope startup](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html),
+  [dbus-rs blocking/vendored features](https://github.com/diwic/dbus-rs#features)
+  and [dbus 0.9.10 message-driven processing](https://docs.rs/dbus/0.9.10/dbus/blocking/struct.Connection.html#method.process).
 * [Apple kqueue process exit notifications](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html),
   [Apple spawn implementation and descriptor inheritance](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_exec.c).
 
