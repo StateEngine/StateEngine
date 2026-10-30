@@ -70,8 +70,10 @@ Ordinary refusals use the error channel without a history event.
 Every public mutation carries an identity created before its first send. CLI
 invocations generate/print it and accept `--key` for cross-invocation retry; MCP
 mutation schemas require `idempotency_key`; IPC and linked calls preserve it.
-Same key with changed input conflicts. Only capture and read/ack/dismiss marker
-families use their restricted natural identity, verified by the registry/store.
+For store-backed mutations, same key with changed input conflicts. File-only
+general config set, uninstall and restore follow section 40’s current-state
+readback reconciliation rather than a separate receipt journal. Only capture
+and read/ack/dismiss marker families use their restricted natural identity, verified by the registry/store.
 A retry cannot substitute a new key after an uncertain commit. Linked
 `RequestIdentity` explicitly separates reads, keyed mutations and that natural-key
 exception; selecting the wrong form refuses before effects.
