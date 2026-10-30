@@ -325,10 +325,12 @@ completion. `stdio_state.stdin_closed` reports the native endpoint fact.
 and closes every host endpoint after native requests drain. It may upgrade a
 pending Stdin close without a second control slot: the original close ticket
 remains the recoverable operation and its terminal Close scope is All. With no
-pending close, a completed/released Stdin close permits a later All close.
+pending close, a terminal Stdin close permits a later All close after its
+result is taken and its ticket released; terminal results never get overwritten.
 `Close{scope, result: Ok(witness)}` proves only that scope's endpoints closed
-and its kernel requests drained. Failed close retains the port and native
-cause for retry; read/write outcomes remain until taken/released across future
+and its kernel requests drained. The host reads the returned Close.scope;
+StdioClosed stays opaque. Failed close retains the port and native cause for
+retry; read/write outcomes remain until taken/released across future
 drop. `release_stdio` requires an exact **All** witness and every operation
 released; a Stdin witness cannot release output readers or the port. Dropping
 a reference never closes a live port, waits or frees pending buffers; the
@@ -390,7 +392,9 @@ another process. The native handover path therefore uses the documented
 NtSetInformationFile / FileReplaceCompletionInformation (Windows 8.1+) inside
 se-proc: after freezing and draining all operations, the staged receiver
 atomically replaces the shared FILE_OBJECT association with its own IOCP/key
-using the duplicated endpoint. There is no detach-then-bind gap and source
+inside accept_transfer, before returning the inactive import. Activation
+checks that association but does not replace it again. The replacement uses
+the duplicated endpoint. There is no detach-then-bind gap and source
 and receiver cannot have different simultaneous associations for that object.
 All original endpoints stay pinned and neither host submits I/O during this
 replacement. After the host proves pre-Claimed and a still-valid source lease,
