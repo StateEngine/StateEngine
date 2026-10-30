@@ -1,14 +1,14 @@
 # 95 — Work breakdown: se-atlas
 
-Planning draft, 2026-10-30. Base: `118044a` (accepted section 60 and its review
-fold-ins). This is the Atlas contribution to section 95, not authorization to
+Planning revision, 2026-10-30, reconciled through round 3.
+This is the Atlas contribution to section 95, not authorization to
 implement. It changes no source, tests, public operations or budget thresholds.
 
-The governing contracts are [section 60](60-atlas.md), `docs/OPS.md`, and section 80
+The contracts are [section 60](60-atlas.md), `docs/OPS.md`, and section 80
 (`80-performance-budgets.md` in the approved design handoff). References below use
-those section numbers. Section 80's final **Atlas cold-index window decision**
-supersedes its earlier proposal for a public index command/aggregate memory limit;
-section 60 supplies the explicit config-enable activation and private child entry.
+those section numbers. Section 80 defines cold-window accounting; section 60
+supplies the explicit config-enable activation and private child entry.
+Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
 
 ## Dependencies and estimate convention
 
@@ -16,11 +16,12 @@ Build in the numbered order below; a later unit can prepare against an earlier
 port, but is not complete until its stated dependency and witness exist. These
 are build units within one Atlas outcome, not mandatory separate landings. Planned
 filenames locate ownership and keep responsibilities small; existing public
-`model.rs`, `queries.rs`, `lifecycle.rs` and `errors.rs` remain the contract until
-shared declarations move in A01.
+`model.rs`/`queries.rs` reexport the shared values; lifecycle, policy and execution
+traits stay local. A01 qualifies this existing ownership boundary.
 
 - **se-types:** shared IDs, `Source::Atlas`, `Read`, `Page`, `Window`, typed `Detail`,
-  `ErrorBody` and `SeError` already exist. Shared code DTO/port placement does not.
+  `ErrorBody` and `SeError` already exist; code DTOs and pure validation live in
+  `se-types::code`, without an Atlas dependency.
 - **se-store:** se-atlas never depends on it or opens `state.db`. Only core's private
   resume-cursor CAS uses se-store, through its existing owner (A11). Atlas is enabled by
   the single `config.toml` setting (section 60), not by a store record (A12).
@@ -42,8 +43,8 @@ shared declarations move in A01.
 
 ### A01 — Shared code contracts and validated query values
 
-**Files:** `crates/se-types/src/code/{mod,model,query,resume}.rs` (planned shared
-placement); reexports in `crates/se-types/src/lib.rs` and
+**Files:** `crates/se-types/src/code.rs`; module declaration in
+`crates/se-types/src/lib.rs` and shared reexports in
 `crates/se-atlas/src/{model,queries,errors}.rs`.
 
 **Depends on:** accepted se-types; section 10 owner agreement on shared ports;
@@ -292,6 +293,8 @@ intact and core resume usable. Explicit changes retains its independent range.
 `crates/se-core/src/ops/atlas.rs` in the existing operation registry;
 `crates/se/src/render/atlas.rs` and the Atlas entries in the existing generated CLI/
 MCP dispatch. No second hand-maintained tool catalogue or transport implementation.
+The core operation bridge is owned exclusively by A12: its **150 Rust LOC** are
+included in this unit, not a separate K11 unit or another core/CLI allocation.
 
 **Depends on:** A01–A11/se-types; the `config.toml` Atlas setting read at startup and on
 change (no store record); host: normal ready/bind/startup composition, read dispatch and diagnostics.
@@ -300,15 +303,17 @@ The operation inventory remains exactly the existing five Atlas reads.
 **Satisfies:** 60 §1, §4 state mapping, §§5–7/9/10; 80 §§3.1/3.3/3.5/4, B1–B3/B7.
 
 **Witness:** CLI and MCP, both harnesses and attended/autonomous dispatch return the
-same scoped results/errors. Explicit enable records the after-ready effect and
+same scoped standalone results/errors. Explicit enable schedules the after-ready effect and
 background first index; ordinary reads/status/resume never enable or start it.
 Disabled/not-built/absent/unreadable/updating/ready stay distinct. Embedded builds
-keep Atlas off with no grammar/DB/watch startup cost, including first authenticated
-bind; standalone first bind/core agent work succeeds while Atlas is deferred/failed.
+link no Atlas and reject enablement with feature-unavailable; standalone first
+bind/core agent work succeeds while Atlas is deferred/failed.
 Outside observation confirms no new tool/alias/public worker command, and the six
 core CLI read p95 values remain strictly <20 ms over 30 retained runs each.
 
-**Estimate:** 250–400 Rust LOC of Atlas-specific composition, not entire transports.
+**Estimate:** 250–400 Rust LOC of Atlas-specific composition: 150 for the core
+operation bridge plus 100–250 for host/configuration and CLI/MCP composition.
+This includes the bridge once and leaves the aggregate estimate unchanged.
 
 ### A13 — Drain, erasure, retention and abandoned-root cleanup
 
@@ -351,7 +356,7 @@ latency/peak/idle targets. B8 handover and B9 core writes stay their existing ow
 contracts; optional Atlas must not delay or disable those core paths.
 
 **Witness:** clean native public CLI/MCP runs on all three OSes with both harnesses;
-standalone actual indexing/edit/query/resume/remove plus embedded Atlas-off A/B
+standalone actual indexing/edit/query/resume/remove plus embedded feature-unavailable A/B
 through first bind and real core work. Observe the complete attributed process set,
 <=25,000,000-byte steady host after a real task, separate <=64,000,000-byte cold
 peak/reap, admitted-save <=200 ms and query p95 <=50 ms. Use section 80's external
