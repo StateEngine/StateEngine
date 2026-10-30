@@ -157,10 +157,19 @@ pub struct RemainingScope {
     pub extent: EnumerationExtent,
     pub observed_at_unix_ns: u128,
 }
+/// Native basis for an empty scope; absence alone cannot construct a witness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ScopeExitBasis {
+    ObservedEmpty,
+    /// Linux only: the still-pinned original cgroup object was removed.
+    RemovedPinnedLinuxCgroup,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScopeObservation {
     pub scope: ScopeIdentity,
     pub remaining: RemainingScope,
+    /// Some only with a proved empty scope; retained in the durable exit witness.
+    pub exit_basis: Option<ScopeExitBasis>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedObservation {
@@ -283,8 +292,12 @@ pub trait ProcessRuntime: Send + Sync {
         Self: Sized;
     fn capabilities(&self) -> ProcResult<PlatformCapabilities>;
     fn arena_snapshot(&self) -> ProcResult<ArenaSnapshot>;
-    fn prepare_launch(&self, reservation: LaunchReservation) -> ProcResult<PreparedScope>;
-    fn begin_launch(&self, prepared: PreparedLaunch, spec: LaunchSpec) -> LaunchStart;
+    fn prepare_launch(
+        &self,
+        reservation: LaunchReservation,
+        spec: LaunchSpec,
+    ) -> ProcResult<PreparedScope>;
+    fn begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart;
     fn poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress>;
     fn authorize_exec(&self, ticket: &LaunchTicket) -> ProcResult<()>;
     /// Host must commit Starting -> StopRequested before this consumes the token.

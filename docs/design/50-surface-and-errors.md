@@ -650,7 +650,7 @@ and never become successful empty reads. Section 20 lists the complete map.
 
 `stop-unwitnessed.detail.reason` includes the observed population, enumeration completeness and scope/escape bound; structured partial-stop results retain the separate A.6 fields. Named `remaining` is not a complete census unless that observation says so.
 
-Containment is never a refusal. Launch succeeds uncontained when Linux delegation is unavailable, with the exact cause. Stop reports its actual cgroup/job/process-group bound and enumeration; setsid/double-fork escapes outside an uncontained group are named. A short or empty named list never proves an empty scope.
+Default BestAvailable containment is never a refusal. Launch succeeds uncontained when Linux delegation is unavailable, with the exact cause. Before window-child creation the selected terminal/broker's common-ancestor entry permission is probed; denied or unproved entry selects uncontained with `containment_cause: "no-delegation"`, even if a headless scoped creator could launch contained. A later failure of an already selected contained launch retains its native error, never retries weaker. Stop reports its actual cgroup/job/process-group bound and enumeration; setsid/double-fork escapes outside an uncontained group are named. A short or empty named list never proves an empty scope.
 
 ---
 
@@ -808,7 +808,7 @@ Exact field paths for the families the journey runner judges. `$` is the payload
 | `Page<T>` | `{"items":[T],"window":Window,"next":Cursor\|null}` | `next` is non-null exactly when following it can return more. Mail retains stable windows. Non-mail pages are labelled `consistency: "live-keyset"`; continuation advances a stable key without snapshot membership. Complete means complete for the measured range, not an immutable historical list. |
 | Receipt state | string | `committed`: a new event was appended. `replayed`: section 00's "already done" (same idempotency key and same body, so no new event). `pending`: committed, but the follow-up is not confirmed yet. `refused`: appears only inside bulk results; when a whole call is refused, the output is an `se.error/v1` payload instead. |
 | Writer | object | `{"mode":"host","host_generation":string}` \| `{"mode":"direct"}`. Records who committed the event the receipt refers to. `host`: the running host's writer committed it, and `host_generation` is the decimal text of that host's generation (the same number as `se.status/v1` `$.runtime.generation`, e.g. `"7"`). `direct`: the CLI committed it with no host running, and the key `host_generation` is absent. The value is stored on the event row at commit, so a `replayed` receipt reports the original commit's writer. Families that carry `$.writer` (always present): `se.message-receipt/v1`, `se.message-read/v1`, `se.disposition-receipt/v1`, `se.decision-receipt/v1`, `se.working-state-receipt/v1`, `se.turn-receipt/v1`, `se.agent-receipt/v1`. See §1.1, "Writer stamp". |
-| Witness | object | `{"state":"witnessed"\|"unwitnessed"\|"not-applicable","method":string\|null,"observed_at":Time\|null,"detail":string\|null}`. A result is `witnessed` only after a re-read from outside the writer (00 G8). `method` is one of `job-empty` (Windows), `pidfd-exit+cgroup-empty` (Linux), `pidfd-exit+pgid-empty` (Linux, `uncontained`), `start-identity-exit+pgid-empty` (Linux without pidfd support: exit confirmed by re-reading the recorded start identity as gone or changed, at the bound section 30 states), `kqueue-exit+pgid-empty` (macOS), `readback` (files and config), `registry-reread`. |
+| Witness | object | `{"state":"witnessed"\|"unwitnessed"\|"not-applicable","method":string\|null,"observed_at":Time\|null,"detail":string\|null}`. A result is `witnessed` only after a re-read from outside the writer (00 G8). `method` is one of `job-empty` (Windows), `pidfd-exit+cgroup-empty` (Linux), `pidfd-exit+cgroup-removed` (Linux original pinned object removed plus root exit), `start-identity-exit+cgroup-empty` and `start-identity-exit+cgroup-removed` (Linux without pidfds, preserving the native identity-recheck bound), `pidfd-exit+pgid-empty` (Linux, `uncontained`), `start-identity-exit+pgid-empty` (Linux without pidfd support: exit confirmed by re-reading the recorded start identity as gone or changed, at the bound section 30 states), `kqueue-exit+pgid-empty` (macOS), `readback` (files and config), `registry-reread`. |
 | ProcessId | object | `{"pid":int,"started_at":Time,"exe":string,"machine_id":string}`. `started_at` is the OS birth time (00 G6). A pid alone never identifies a process. |
 
 ### A.1 `se.init/v1` — `se init`
@@ -1075,6 +1075,20 @@ This example exits 2: 3 messages are unread and 1 is shown.
 
 For a single target, the per-target fields sit at the root, with `$.scope = "agent"` and `$.stops = null`. With `--all`, `$.scope = "all"`, the root-level per-target fields are null, and each element of `$.stops[]` carries the same per-target fields. `$.complete` is false if any entry lacks a witness. There is no arbitrary-process stop family; these facts describe the managed agent scope only.
 
+For the ordinary Linux scoped-creator path, the helper reports exec success or
+the actual pre-exec failure while the root is still its child. A root outliving
+that helper can later be witnessed exited while its wait status is unavailable.
+Human output says "exited, status unavailable"; it never guesses exit 0 or
+"crashed". A stop may be successfully witnessed with unavailable status;
+requested termination and an unrequested exit of unknown cause stay distinct.
+A removed original pinned cgroup plus independent root exit is an exit witness,
+including on the first stop observation; a missing name without that native
+object evidence is not. Render native ScopeObservation.exit_basis through
+`pidfd-exit+cgroup-removed` or `start-identity-exit+cgroup-removed`, retaining
+the pinned original scope identity in Witness.detail; an ObservedEmpty basis
+keeps the corresponding cgroup-empty method. The Exited record retains this
+same evidence through retry/recovery and already-released acknowledgment.
+
 Human text follows `enumeration`: `complete` prints the count ("2 processes still running"); `best-effort` or `unavailable` with `population = populated` prints "processes still running in the agent's group; count unavailable" and lists whatever `remaining[]` names, labelled as partial.
 
 | Path | Type | Always | Meaning |
@@ -1092,8 +1106,8 @@ Human text follows `enumeration`: `complete` prints the count ("2 processes stil
 | `$.target.provider` | provider | single target | |
 | `$.target.process` | ProcessId \| null | single target | the exact instance stopped, re-checked before acting |
 | `$.method` | `"graceful"` \| `"forced"` \| null | single target | null for `already-stopped` |
-| `$.witness` | Witness | single target | outside confirmation that the recorded instance and owned job/cgroup/group are gone; uncontained process-group checks exclude setsid/double-fork escapes and name that bound |
-| `$.population` | `"populated"` \| `"empty"` | single target | the kernel's answer for the agent's whole scope (Linux cgroup `populated`, Windows job, macOS tracked group, Linux `uncontained` process group); `empty` when witnessed |
+| `$.witness` | Witness | single target | outside confirmation that the recorded instance and owned job/cgroup/group are gone; exact pinned Linux scope removal plus root exit is valid and retained in detail, not ScopeUnreadable; uncontained process-group checks exclude setsid/double-fork escapes and name that bound |
+| `$.population` | `"populated"` \| `"empty"` | single target | the witnessed live-population state for the whole owned scope (Linux cgroup, Windows job, macOS tracked group, Linux uncontained group); `empty` also permits proved removal of the original pinned cgroup plus root exit, with that distinct basis in witness detail, never a fabricated population-file read |
 | `$.remaining[]` | `{pid, exe, started_at}` | single target | members still running that StateEngine could name; empty when `population = empty` |
 | `$.enumeration` | `"complete"` \| `"best-effort"` \| `"unavailable"` | single target | whether `remaining[]` is the whole population. `best-effort`/`unavailable` with `populated` means "still running; count unavailable", never a count |
 | `$.capture.flushed` | bool | single target | the transcript was caught up before the stop |
