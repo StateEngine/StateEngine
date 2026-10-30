@@ -5,7 +5,10 @@ use std::{borrow::Cow, fmt, num::NonZeroU64, str::FromStr};
 use uuid::{Builder, Uuid, Variant, Version};
 
 macro_rules! ids {
-    ($($name:ident => $prefix:literal),+ $(,)?) => {$ (
+    ($($name:ident => $prefix:literal),+ $(,)?) => {
+        #[derive(Clone,Copy,Debug,Eq,PartialEq,Hash)]
+        pub enum IdKind { $($name,)+ }
+        $ (
         #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
@@ -30,13 +33,24 @@ macro_rules! ids {
             pub fn from_legacy(value: impl Into<String>) -> Result<Self> {
                 let value=value.into();
                 validate_opaque(&value,512,stringify!($name))?;
-                if known_id_prefix(&value).is_some_and(|prefix|prefix!=Self::PREFIX){return Err(SeError::invalid(stringify!($name),Self::PREFIX));}
-                if let Some(suffix)=value.strip_prefix(Self::PREFIX) {
-                    if suffix.is_empty() { return Err(SeError::invalid(stringify!($name),"a nonempty legacy suffix")); }
-                    if suffix.len()==36 && Uuid::parse_str(suffix).is_ok() { return value.parse(); }
+                if known_id_prefix(&value).is_some() { return value.parse(); }
+                if !legacy_matches(IdKind::$name,&value) {
+                    return Err(SeError::invalid(stringify!($name),"this kind's documented legacy grammar"));
                 }
-                // Imported legacy identifiers predate the new prefix grammar;
-                // their existence/kind must be resolved in the authorized registry.
+                Ok(Self(value))
+            }
+            /// Only a contextual, source/project-scoped registry may accept a
+            /// historical custom spelling. No ambient registry is used by serde.
+            pub fn from_registered_legacy(value:impl Into<String>,registry:&dyn LegacyIdRegistry)->Result<Self> {
+                let value=value.into();
+                validate_opaque(&value,512,stringify!($name))?;
+                if known_id_prefix(&value).is_some() { return value.parse(); }
+                if known_legacy_kind(&value).is_some_and(|kind|kind!=IdKind::$name) {
+                    return Err(SeError::invalid(stringify!($name),"the registered spelling's matching kind"));
+                }
+                if !registry.contains(IdKind::$name,&value)? {
+                    return Err(SeError::invalid(stringify!($name),"an exact kind/project/source registration"));
+                }
                 Ok(Self(value))
             }
         }
@@ -52,21 +66,136 @@ macro_rules! ids {
             }
         }
         impl TryFrom<String> for $name { type Error=SeError; fn try_from(value:String)->Result<Self> {
-            // Ordinary wire decoding is strict; only importers call from_legacy.
-            value.parse()
+            // Only the own-kind historical producer grammar supplements strict UUIDv7.
+            Self::from_legacy(value)
         } }
         impl From<$name> for String { fn from(value:$name)->String {value.0} }
         impl fmt::Display for $name {fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result {f.write_str(&self.0)}}
         impl fmt::Debug for $name {fn fmt(&self,f:&mut fmt::Formatter<'_>)->fmt::Result {f.write_str(&self.0)}}
         impl JsonSchema for $name {
             fn schema_name()->Cow<'static,str>{stringify!($name).into()}
-            fn json_schema(_: &mut SchemaGenerator)->Schema {json_schema!({"type":"string","pattern":format!("^{}[0-9a-f]{{8}}-[0-9a-f]{{4}}-7[0-9a-f]{{3}}-[89ab][0-9a-f]{{3}}-[0-9a-f]{{12}}$",Self::PREFIX)})}
+            fn json_schema(_: &mut SchemaGenerator)->Schema {json_schema!({"type":"string","minLength":1,"maxLength":512,"anyOf":[{"pattern":format!("^{}[0-9a-f]{{8}}-[0-9a-f]{{4}}-7[0-9a-f]{{3}}-[89ab][0-9a-f]{{3}}-[0-9a-f]{{12}}$",Self::PREFIX)},{"pattern":legacy_pattern(IdKind::$name)}]})}
         }
     )+
         fn known_id_prefix(value:&str)->Option<&'static str>{[$($prefix),+].into_iter().find(|prefix|value.starts_with(prefix))}
     };
 }
 ids!(ProjectId=>"prj_",AgentId=>"ag_",HumanId=>"hu_",SessionId=>"ses_",MessageId=>"msg_",DecisionId=>"dec_",EventId=>"ev_",LaunchId=>"lch_",ObservationId=>"obs_",StoreId=>"store_",LifecycleId=>"life_",AtlasRootId=>"aroot_",IndexEpochId=>"aidx_");
+
+/// An already-authorized registry snapshot scoped to the import project/source.
+/// Implemented by the store/import boundary, never a global or a name heuristic.
+/// The result permits representing history, not launching or authenticating it.
+pub trait LegacyIdRegistry {
+    fn contains(&self, kind: IdKind, text: &str) -> Result<bool>;
+}
+fn hex(value: &str, count: Option<usize>) -> bool {
+    count.is_none_or(|count| value.len() == count)
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+fn serial(value: &str, prefix: &str) -> bool {
+    let Some(suffix) = value.strip_prefix(prefix) else {
+        return false;
+    };
+    let groups: Vec<_> = suffix.split('-').collect();
+    groups.len() == 3
+        && groups.iter().all(|group| {
+            group.len() == 4
+                && group
+                    .bytes()
+                    .all(|b| b"0123456789abcdefghjkmnpqrstvwxyz".contains(&b))
+        })
+}
+fn uuid_v4(value: &str) -> bool {
+    Uuid::parse_str(value).is_ok_and(|id| {
+        id.get_version() == Some(Version::Random)
+            && id.get_variant() == Variant::RFC4122
+            && id.to_string() == value
+    })
+}
+fn known_legacy_kind(value: &str) -> Option<IdKind> {
+    [
+        ("agt-", IdKind::AgentId),
+        ("hum-", IdKind::HumanId),
+        ("msg-", IdKind::MessageId),
+        ("evt-", IdKind::EventId),
+        ("se-", IdKind::SessionId),
+        ("semantic-observation:", IdKind::ObservationId),
+    ]
+    .into_iter()
+    .find_map(|(prefix, kind)| value.starts_with(prefix).then_some(kind))
+}
+fn legacy_project(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 128
+        || known_id_prefix(value).is_some()
+        || known_legacy_kind(value).is_some()
+        || uuid_v4(value)
+    {
+        return false;
+    }
+    let bytes = value.as_bytes();
+    if !bytes[0].is_ascii_alphanumeric()
+        || value.ends_with('.')
+        || !bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(b))
+    {
+        return false;
+    }
+    let stem = value.split('.').next().unwrap_or("").to_ascii_lowercase();
+    !matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        && !((stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.len() == 4
+            && (b'1'..=b'9').contains(&stem.as_bytes()[3]))
+}
+fn legacy_matches(kind: IdKind, value: &str) -> bool {
+    match kind {
+        IdKind::ProjectId => legacy_project(value),
+        IdKind::AgentId => serial(value, "agt-"),
+        IdKind::HumanId => serial(value, "hum-"),
+        IdKind::SessionId => {
+            value
+                .strip_prefix("se-session-sha256-")
+                .is_some_and(|s| hex(s, Some(64)))
+                || value.strip_prefix("se-").is_some_and(uuid_v4)
+                || uuid_v4(value)
+        }
+        IdKind::MessageId => value
+            .strip_prefix("msg-")
+            .is_some_and(|s| s.len() >= 8 && hex(s, None)),
+        IdKind::EventId => value.strip_prefix("evt-").is_some_and(|s| hex(s, Some(64))),
+        IdKind::DecisionId | IdKind::LaunchId | IdKind::LifecycleId => uuid_v4(value),
+        IdKind::ObservationId => value
+            .strip_prefix("semantic-observation:")
+            .is_some_and(|s| hex(s, Some(64))),
+        IdKind::StoreId | IdKind::AtlasRootId | IdKind::IndexEpochId => false,
+    }
+}
+fn legacy_pattern(kind: IdKind) -> &'static str {
+    match kind {
+        IdKind::ProjectId => {
+            r"^(?!(?:prj_|ag_|hu_|ses_|msg_|dec_|ev_|lch_|obs_|store_|life_|aroot_|aidx_|agt-|hum-|msg-|evt-|se-|semantic-observation:))(?!(?:[cC][oO][nN]|[pP][rR][nN]|[aA][uU][xX]|[nN][uU][lL]|[cC][oO][mM][1-9]|[lL][pP][tT][1-9])(?:\..*)?$)(?![0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$"
+        }
+        IdKind::AgentId => {
+            r"^agt-[0-9a-hjkmnp-tv-z]{4}-[0-9a-hjkmnp-tv-z]{4}-[0-9a-hjkmnp-tv-z]{4}$"
+        }
+        IdKind::HumanId => {
+            r"^hum-[0-9a-hjkmnp-tv-z]{4}-[0-9a-hjkmnp-tv-z]{4}-[0-9a-hjkmnp-tv-z]{4}$"
+        }
+        IdKind::SessionId => {
+            r"^(?:se-session-sha256-[0-9a-f]{64}|(?:se-)?[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"
+        }
+        IdKind::MessageId => r"^msg-[0-9a-f]{8,}$",
+        IdKind::EventId => r"^evt-[0-9a-f]{64}$",
+        IdKind::DecisionId | IdKind::LaunchId | IdKind::LifecycleId => {
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        }
+        IdKind::ObservationId => r"^semantic-observation:[0-9a-f]{64}$",
+        IdKind::StoreId | IdKind::AtlasRootId | IdKind::IndexEpochId => r"^$",
+    }
+}
 
 pub(crate) fn validate_opaque(value: &str, max: usize, field: &str) -> Result<()> {
     if value.len() > max {

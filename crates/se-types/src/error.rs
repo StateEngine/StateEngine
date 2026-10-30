@@ -72,17 +72,15 @@ macro_rules! codes {
             }
             pub fn remedy(self,detail:&Detail,cx:&RenderCx<'_>)->crate::Result<Remedy>{
                 if self!=detail.code(){return Err(SeError::invalid("detail","detail matching the error code"));}
-                let text=match self{$(Self::$variant=>render($remedy,detail),)+};
-                let text=text.replace("{agent}",&cx.agent.map(ToString::to_string).unwrap_or_else(||"AGENT".into()))
-                    .replace("{project}",&cx.project.map(ToString::to_string).unwrap_or_else(||"PROJECT".into()))
-                    .replace("{root}","DIR");
+                let text=match self{$(Self::$variant=>render($remedy,detail,Some(cx)),)+};
                 let command=match cx.commands{Some(commands)=>commands.for_error(&ErrorBody::new(detail.clone()))?,None=>None};
                 Ok(Remedy{text,command})
             }
         }
         impl Detail{
             pub const fn code(&self)->Code{match self{$(Self::$variant(_)=>Code::$variant,)+}}
-            pub fn message(&self)->String{match self{$(Self::$variant(_)=>render($message,self),)+}}
+            pub fn message(&self)->String{match self{$(Self::$variant(_)=>render($message,self,None),)+}}
+            fn message_in(&self,cx:&RenderCx<'_>)->String{match self{$(Self::$variant(_)=>render($message,self,Some(cx)),)+}}
             fn fields(&self)->Vec<(&'static str,String,Option<usize>)>{match self{$(Self::$variant(value)=>vec![$((stringify!($field),value.$field.human(),value.$field.count()),)*],)+}}
         }
     };
@@ -150,7 +148,7 @@ impl HumanValue for ImportFamilyIssue {
         )
     }
 }
-fn render(template: &str, detail: &Detail) -> String {
+fn render(template: &str, detail: &Detail, cx: Option<&RenderCx<'_>>) -> String {
     let fields = detail.fields();
     let mut output = String::new();
     let mut rest = template;
@@ -175,7 +173,20 @@ fn render(template: &str, detail: &Detail) -> String {
         } else if let Some((_, value, _)) = fields.iter().find(|(key, _, _)| *key == name) {
             output.push_str(value);
         } else {
-            output.push_str(&token[..=end]);
+            match name {
+                "project" => output.push_str(
+                    &cx.and_then(|cx| cx.project)
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "PROJECT".into()),
+                ),
+                "agent" => output.push_str(
+                    &cx.and_then(|cx| cx.agent)
+                        .map(ToString::to_string)
+                        .unwrap_or_else(|| "AGENT".into()),
+                ),
+                "root" => output.push_str("DIR"),
+                _ => output.push_str(&token[..=end]),
+            }
         }
         rest = &token[end + 1..];
     }
@@ -395,20 +406,7 @@ struct ErrorEnvelopeWire {
 }
 impl ErrorEnvelope {
     pub fn new(body: ErrorBody, cx: &RenderCx<'_>) -> crate::Result<Self> {
-        let message = body
-            .message()
-            .replace(
-                "{project}",
-                &cx.project
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "PROJECT".into()),
-            )
-            .replace(
-                "{agent}",
-                &cx.agent
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "AGENT".into()),
-            );
+        let message = body.detail.message_in(cx);
         let remedy = body.remedy(cx)?;
         Ok(Self {
             body,
