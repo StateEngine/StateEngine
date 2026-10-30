@@ -320,15 +320,20 @@ pub trait ProcessRuntime: Send + Sync {
 /// Host handover protocol, separate from normal process lifecycle operations.
 pub trait ProcessTransfer: ProcessRuntime {
     fn begin_transfer(&self, request: TransferRequest) -> ProcResult<TransferOffer>;
+    /// Frozen actual offer metadata/digest, never native handle values.
+    fn transfer_manifest(&self, offer: &TransferOffer) -> ProcResult<TransferManifest>;
     fn accept_transfer(
         &self,
         endpoint: TransferEndpoint,
         manifest: TransferManifest,
     ) -> ProcResult<ReceivedTransfer>;
     fn activate_transfer(&self, imported: &mut TransferImport) -> ProcResult<ActivatedTransfer>;
-    /// Pre-activation only: close staged copies; source retains original streams.
+    /// Before durable Claimed only: source retains original streams.
+    /// After Claimed, ambiguity retains staged custody for reconciliation.
     fn discard_transfer(&self, imported: &mut TransferImport) -> ProcResult<()>;
     fn commit_transfer(&self, offer: TransferOffer, receipt: TransferReceipt) -> ProcResult<()>;
+    /// Restore source only before durable Claimed with a still-valid source lease.
+    /// An unproved transfer stays pending; Claimed never restores the source.
     fn abort_transfer(&self, offer: TransferOffer) -> ProcResult<()>;
 }
 
@@ -372,6 +377,8 @@ pub enum StreamRole {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TransferManifest {
     pub transfer: [u8; 16],
+    /// Digest of the actual authenticated native resource frame, excluding this field.
+    pub resources_sha256: [u8; 32],
     pub source: HostInstanceId,
     pub successor: HostInstanceId,
     pub generation: GenerationId,

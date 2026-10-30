@@ -8,8 +8,12 @@ mod error;
 mod identity;
 mod launch;
 mod ownership;
+#[cfg(windows)]
+mod stdio;
 
 pub use error::*;
 pub use identity::*;
 pub use launch::*;
 pub use ownership::*;
+#[cfg(windows)]
+pub use stdio::*;

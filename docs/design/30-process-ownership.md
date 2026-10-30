@@ -73,6 +73,7 @@ All public Rust types/fields and signatures are the normative source appendix:
 | `launch.rs` | explicit environment/streams/policy, headless/window + terminal adapter, capabilities including complete causes, detached runtime bootstrap, stateless native read |
 | `ownership.rs` | reservations/checkpoints, records, opaque handles, launch/stop/recovery/transfer outcomes, labelled population/enumeration, arena snapshots and native events |
 | `error.rs` | internal cause enum, typed detail, sanitized native cause and result alias |
+| `stdio.rs` (Windows) | safe provider-stream creation, bounded operation tickets, partial completions, cancellation, recovery and drained release |
 | `lib.rs` | re-exports only |
 
 Opaque runtime/owned/prepared/stop/launch/transfer handles have no public
@@ -156,15 +157,20 @@ pub trait ProcessRuntime: Send + Sync {
 
 pub trait ProcessTransfer: ProcessRuntime {
     fn begin_transfer(&self, request: TransferRequest) -> ProcResult<TransferOffer>;
+    /// Frozen actual offer metadata/digest, never native handle values.
+    fn transfer_manifest(&self, offer: &TransferOffer) -> ProcResult<TransferManifest>;
     fn accept_transfer(
         &self,
         endpoint: TransferEndpoint,
         manifest: TransferManifest,
     ) -> ProcResult<ReceivedTransfer>;
     fn activate_transfer(&self, imported: &mut TransferImport) -> ProcResult<ActivatedTransfer>;
-    /// Pre-activation only: close staged copies; source retains original streams.
+    /// Before durable Claimed only: source retains original streams.
+    /// After Claimed, ambiguity retains staged custody for reconciliation.
     fn discard_transfer(&self, imported: &mut TransferImport) -> ProcResult<()>;
     fn commit_transfer(&self, offer: TransferOffer, receipt: TransferReceipt) -> ProcResult<()>;
+    /// Restore source only before durable Claimed with a still-valid source lease.
+    /// An unproved transfer stays pending; Claimed never restores the source.
     fn abort_transfer(&self, offer: TransferOffer) -> ProcResult<()>;
 }
 ```
@@ -196,9 +202,10 @@ missing capability and mapped remedy. No bare enum code loses the cause.
 ### 2.2 Explicit stream ownership
 
 `Headless`: supplied standard-stream Files are duplicated into only those
-slots; None means the null device. Provider pipes are created/retained by the
-host harness and can be transferred without giving the agent a host control
-handle. No unspecified FD/handle inheritance.
+slots; None means the null device. The host harness owns stream protocol and
+buffer admission; Windows pipe creation and pending native buffers stay in
+se-proc through the safe port below. Streams can be transferred without giving
+the agent a host control handle. No unspecified FD/handle inheritance.
 
 `Window`: `WindowSpec` is required. On Windows, allocate a new console and let
 its default keyboard/screen handles populate **unspecified** streams; do not
@@ -209,6 +216,121 @@ PTY slave as controlling terminal and duplicates it to 0/1/2; the terminal
 owns the master. Explicit redirects are intentional exceptions, not default
 NUL. Host-held PTY masters use the TerminalMaster transfer role. Terminal
 lifetime/readiness and provider readiness remain separate facts.
+
+### 2.3 Windows provider-stdio port (narrow amendment)
+
+`stdio.rs` is the compile-only safe native counterpart of section 40's
+`ProviderIoPlatform`; it adds no backend or thread. `ProviderStdioApi` extends
+the existing `ProcessRuntime`, so every port uses that host's one arena and
+one IOCP collector. It is Windows-only; Unix keeps nonblocking descriptors on
+the host's existing AsyncFd reactor.
+
+| Native method | Safe host contract |
+| --- | --- |
+| `create_stdio(owner, config)` | After `prepare_launch` and before `begin_launch`, verify the owned lifecycle/host/generation, allocate one pipe set, and return ordinary child `StandardIo` Files plus an opaque host port |
+| `stdio_state(owner)` | Return current-generation port/ticket references, including results whose future was dropped; None means no port, while read failure is an error |
+| `begin_read(port, stdout-or-stderr, max)` | Reserve bounded owned storage and return an opaque operation ticket; no synchronous pipe wait |
+| `begin_write(port, owned Vec)` | Transfer the input buffer into the native arena; rejection returns the untouched Vec and typed admission error |
+| `cancel(ticket)` | Request cancellation only; `Requested`, `AlreadyCompleted`, or native failure never substitutes for taking completion |
+| `take_completion(ticket)` | `Pending`, or one terminal read/write/close result; preserve read stream, partial bytes, EOF, original write buffer and actual completed count even on cancellation/error |
+| `begin_close(port)` | Gate new I/O, cancel/drain accepted operations asynchronously, and issue a close ticket; no blocking destructor |
+| `release_operation(ticket)` | Reclaim operation metadata only after kernel completion has been consumed and its terminal result taken |
+| `release_stdio(port, closed_witness)` | Reclaim the port only after its exact close witness and every operation's release; an unrelated witness refuses |
+
+A port is created for an already reserved native owner, before a vendor child
+exists; identity must exactly match the prepared scope. Only child-side Files
+enter `LaunchSpec.stdio` and its closed inheritance list. Host endpoints are
+non-inheritable overlapped byte pipes, connected and associated with the
+existing IOCP before use; child endpoints retain ordinary synchronous stdio.
+Create private single-instance named-pipe pairs with closed access/handle
+lists inside se-proc, never expose pipe names or raw HANDLE/OVERLAPPED values
+to se-host. Native partial creation is arena-owned before publication;
+creation failure gates vendor exec and schedules cancellation/drain of partial
+endpoints in the arena, without dropping pending native storage or process
+custody. `stdio_state` keeps this cleanup reachable. Only one port per owned
+lifecycle is admitted; zero limits or a zero-byte read refuse InvalidInput.
+
+At most one unreleased read per stdout/stderr and one unreleased write to
+stdin are admitted; a single additional close control ticket is allowed.
+This bounds ordering and metadata without a per-stream thread or executor.
+`StdioLimits` caps each read/write and total retained bytes per port, and
+`ResourceLimits.max_stdio_buffer_bytes` caps the sum across the host, including
+completed-but-untaken buffers. Charge actual Vec capacity, not just its length,
+and reserve that full allocation before native dispatch; reject oversized
+capacity/counts with ResourceLimit and return the untouched write Vec.
+Payload buffers use section 80's existing provider-I/O allocation, never an
+extra 0.2 MB custody allocation; native ticket/OVERLAPPED metadata fits the
+existing per-lifecycle custody share. Returned buffers transfer their charge
+to the host's existing provider buffers; no duplicate hidden payload copy.
+
+The arena retains each overlapped structure, port pin and buffer until the
+actual native completion, independently of Rust future/port/ticket drop.
+Immediate success and pending completion feed the same exactly-once state;
+se-proc must account for whether an IOCP packet is still due before reclaiming
+any address. A failed GetQueuedCompletionStatus with a non-null OVERLAPPED is
+a real failed completion, including its returned byte count. EOF is its own
+fact: an empty/cancelled/error read is never silently treated as EOF. After
+accepted dispatch, native failure is a terminal `StdioOutcome::Failed` with
+sanitized API/code/reason; it does not disappear as a submission error.
+
+CancelIoEx success and ERROR_NOT_FOUND both race completion and prove no
+buffer lifetime bound. Keep the operation pinned until the completion path
+records Complete, Cancelled or Failed; cancellation may still return bytes
+or a completed write prefix. `take_completion` returns the original write
+Vec plus `written` (bounded by its length), so the host can retain its exact
+unwritten suffix and classify ambiguous provider input. A second take/release
+refuses IllegalTransition. Nothing here proves a provider accepted a message.
+
+The collector records completion before posting a coalesced
+`StdioNotice{identity,operation,sequence}` through the unwind-contained,
+lock-free sink. A notification contains no buffer pointer and is only a
+nudge; the host registers its wake before checking native state and rereads
+after every wake/deadline. No native lock is held across a sink call, and
+CallbackPanicked follows section 4.2 without dropping another port's custody.
+
+Closing refuses further reads/writes and cancels outstanding I/O. Its
+completion is `Close(Ok(witness))` only when every accepted native request is
+drained and every host endpoint is closed; failed close retains the port and
+returns a native cause, allowing another close attempt. Read/write outcomes
+remain retained until taken/released, including across dropped close futures;
+`release_stdio` checks both the close witness and an empty operation set.
+Dropping a reference never closes a live port, waits or frees pending buffers;
+the supervisor recovers retained state through `stdio_state`. Failed launch
+or host shutdown explicitly requests close/drain. Native process scope release
+does not bypass stream cleanup.
+
+Generation replacement gates old submissions before effects, requests
+cancellation and retains every outstanding outcome. The new owner uses
+`stdio_state` after the existing ownership CAS/re-adoption to recover the
+same operation IDs with current-generation references; old references refuse
+HostChanged/GenerationChanged even if an old nudge is delayed. Before live
+handover, section 40 freezes input and drains/cancels reads to a proved complete
+frame boundary, preserving partial frames in its transfer state. Only then
+may section 6 transfer/reassociate the quiescent endpoints to the successor's
+single collector; staged ports stay inactive until activation. Abort restores
+source ownership only before the durable Claimed phase; uncertain ownership
+after Claimed remains pending under section 20. No pending OVERLAPPED moves
+between collectors.
+
+Pipe handles already associated with an IOCP cannot be moved by calling
+CreateIoCompletionPort again, and the IOCP itself cannot be duplicated to
+another process. The native handover path therefore uses the documented
+NtSetInformationFile / FileReplaceCompletionInformation (Windows 8.1+) inside
+se-proc: after freezing and draining all operations, source detaches the
+association and the staged receiver installs its own IOCP/key on the duplicated
+endpoint. All original endpoints stay pinned and neither host submits I/O in
+this interval. A pre-Claimed abort restores the source association **before**
+discarding receiver resources; a failed restoration remains pending, never
+resumes a reader. After Claimed only the successor may finish binding; unknown
+binding stays pending with both copies retained. Native qualification must
+prove this replacement for the actual named-pipe handles and shared object,
+including failure between detach and bind; failure never falls back to a
+second collector, a forwarding host or hidden per-pipe blocking threads.
+
+Windows create/connect/partial read/write, error-after-prefix, cancel-versus-
+completion, future drop, generation replacement, EOF/close, blocked provider,
+and quiescent handover are reviewer/native qualification obligations. Compile
+checks prove signatures only; no native behavior is claimed by this amendment.
 
 ## 3. Durable data and native resources
 
@@ -419,7 +541,7 @@ Windows uses **one IOCP per host and the one existing native wait/collector
 thread from sections 00/80**, GetQueuedCompletionStatus(INFINITE), associated
 with every owned job. JOB_OBJECT_MSG_EXIT_PROCESS and ACTIVE_PROCESS_ZERO are
 nudges; fresh process-handle/accounting reads establish truth. All scopes,
-control wakes, cancellation and staged handover transport use that IOCP. No
+control wakes, provider-stdio completions (section 2.3), cancellation and staged handover transport use that IOCP. No
 RegisterWaitForSingleObject, OS registered-wait pool, per-process waiter or
 second collector is added. Native creation registers job completion before
 any child can execute; the initial empty job is not a completed launch. Job
@@ -848,7 +970,19 @@ The native two-phase protocol is:
 
 1. Source gates custody/admissions and creates an offer ID, target host/generation,
    bounded manifest and deadline. Pin the exact peer process. begin_transfer
-   retains every original resource; no last handle is closed yet.
+   retains every original resource; no last handle is closed yet. The source
+   calls the safe read-only `transfer_manifest(&offer)` to obtain the actual
+   immutable TransferManifest, including `transfer` (the native nonce) and
+   `resources_sha256`, before committing section 20's FULL Prepared record.
+   This accessor performs no transfer effect and returns no native handle.
+   The digest is produced from the exact canonical authenticated native
+   resource frame, excluding its digest field, and binds the offer/peers,
+   generation and actual resource roles/bindings. It is the same digest that
+   accept_transfer validates and TransferReceipt echoes; the host never
+   substitutes a hash of a guessed/Debug/JSON reconstruction. Any changed
+   resource set requires a new offer/nonce; repeated reads of the same offer
+   return the same metadata. Native nonce/frame data remains private host
+   custody, excluded from public CLI/MCP/history/export surfaces.
 2. TransferEndpoint is an authenticated same-user pipe/socket already bound to
    that peer by native identity. TransferManifest lists exact records/resource
    roles; it is data, not authority by itself. Windows uses DuplicateHandle
@@ -878,29 +1012,33 @@ The native two-phase protocol is:
    association (supported since Windows 8), binds it to the successor's one IOCP
    and rereads root/accounting before and after. The reads cover messages lost
    during reassociation; queued keys are immutable slot IDs checked against
-   generation, never freed pointers. Abort restores the source association and
-   rereads. Source commit_transfer verifies the receipt and closes its copies
+   generation, never freed pointers. A pre-Claimed abort restores the source
+   association and rereads; after Claimed, ownership cannot return to the source.
+   Source commit_transfer verifies the receipt and closes its copies
    only after receiver ownership is established. The source host then drops
    its gated harness originals; its transfer duplicate alone never stood in
    for those originals. Job handles **overlap**, so
    KILL_ON_CLOSE never sees an unintended zero-handle interval.
-5. Before activation failure/timeout, abort_transfer retains the old owner;
-   receiver calls discard_transfer(&mut imported), closing staged native and
-   stream copies; source abort_transfer retains its originals and resumes its
-   generation if still valid. begin_transfer receives duplicated harness Files,
-   not its only originals, so pre-activation failure cannot consume source I/O.
-   accept_transfer stages stream Files privately; it never hands them to an
-   active harness. activate_transfer moves those Files out exactly once after
-   the host CAS/lease barrier. It borrows TransferImport mutably: a failed call
-   leaves staged custody inspectable/retryable; a second successful activation
-   refuses IllegalTransition, never yields duplicate readers. After activation,
-   discard/abort cannot revoke returned Files; the successor harness owns and
-   closes them, and any rollback needs a new authorized reverse transfer.
-   After activation, source never reclaims control on an ambiguous lost ACK:
-   it rereads the ownership barrier/receipt; successor keeps resources. Source
-   death/broken transfer channel wakes staged recovery; if the committed transfer
-   cannot be proved, staged handles close and the ordinary crash policy applies.
-   No leaked staged copy silently keeps Windows agents alive forever.
+5. **Only before Claimed** (section 20's durable ownership CAS), failure or
+   timeout may call abort_transfer to retain the old owner. Source first
+   restores native associations and proves the pre-Claimed phase and still-valid
+   lease; only then may receiver discard_transfer close inactive staged copies
+   and source resume its generation. Unproved restoration stays pending. begin_transfer receives duplicated harness
+   Files, not the only originals, so this abort cannot consume source I/O.
+   Claimed is irrevocable even before Activated: source admission stays fenced,
+   and neither abort nor discard may undo that committed ownership or close
+   the successor's only custody merely because an activation ACK is missing.
+   accept_transfer keeps stream Files private until activate_transfer moves
+   them out exactly once after the host CAS/lease barrier. Failed activation
+   leaves the mutable TransferImport pinned, inspectable and retryable; a
+   second successful activation refuses IllegalTransition. After Claimed,
+   uncertainty about nonce, committed head, native transfer or peer identity
+   remains pending with staged/source resources retained for authenticated
+   reconciliation; an unproved transfer is never ordinary crash-policy proof.
+   Source death or a broken channel wakes that reconciliation. Only separately
+   proved full owner loss permits section 20's cold recovery policy. After
+   activation, returned Files belong to the successor harness; any later
+   authorized reversal is a new transfer, not resurrection of the old source.
 
 Provider stdin/stdout/stderr and host-owned PTY masters transfer as labelled
 TransferStreams before the old harness drops its ends, preventing accidental
@@ -1248,3 +1386,6 @@ native journeys are implemented:
   [systemd-run scope startup](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html).
 * [Apple kqueue process exit notifications](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html),
   [Apple spawn implementation and descriptor inheritance](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_exec.c).
+
+Windows provider-stdio amendment references: [overlapped pipe I/O](https://learn.microsoft.com/en-us/windows/desktop/ipc/synchronous-and-overlapped-input-and-output), [CancelIoEx lifetime and races](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex), and [GetQueuedCompletionStatus failed completions](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-getqueuedcompletionstatus). These specify OS contracts, not implemented qualification.
+The handover binding also follows [CreateIoCompletionPort's fixed file association](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-createiocompletionport), [FileReplaceCompletionInformation](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_completion_information), and its [user-mode NtSetInformationFile port replacement](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ntsetinformationfile); no completion-port handle is transferred between processes.
