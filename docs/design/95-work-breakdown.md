@@ -8,20 +8,27 @@ caps; no schedule is promised until the early proofs below settle.
 Per-crate plans (files, dependencies, clauses, outside witness and estimate per task):
 `95-work-breakdown-store.md`, `-se-proc.md`, `-core-cli.md`, `-host.md`, `-atlas.md`, `-release.md`.
 
-## Size (one table; owners' parts are the source)
+## Size (one table, summed from the owners' per-task estimates)
 
-| Part | Before reconciliation | Reconciled estimate | Main change |
-| --- | ---: | ---: | --- |
-| Shared types (se-types) | ~2,000 | ~2,000 | — |
-| Store (se-store) | ~9,250 | ~7,900–8,300 | no decision chain, live keysets for non-mail lists, user-state import families only, salvage deferred, automatic migration without approval machinery |
-| Process ownership (se-proc) | ~10,950 | ~10,600 | three launch barriers (four on Unix terminal, macOS and uncontained helpers); process.* operations removed |
-| Core and CLI/MCP surface | ~9,050 | ~8,300–8,500 | process tools removed, error catalogue merged, simpler config layers, no N-1 encoders or schema-freeze tooling |
-| Host runtime and harnesses | ~8,900 + 200–350 JS | ~8,700 + 200–350 JS | no embedded credential events; handover durable phases 7 → 5 |
-| Release and packaging | 920–1,540 | 960–1,600 | uninstall and early unsigned archives added |
-| **Core product (alpha critical path)** | | **~38,500–39,700** | |
-| Atlas (after journeys and handover; Jimmy) | 6,000–9,300 | 6,000–9,300 | disabled by default; never holds a milestone |
-| macOS backends (Mac campaign) | ~1,350 | ~1,350 | qualified on Jimmy's borrowed Mac before alpha ships |
-| **Everything** | 47,000–51,000 | **~45,800–50,300** | |
+Every row is the sum of its part's per-task estimates; the part file shows the arithmetic.
+se-types has no separate breakdown and keeps its earlier estimate.
+
+| Part | Before reconciliation | Reconciled (per-task sum) | Source | Main change |
+| --- | ---: | ---: | --- | --- |
+| Shared types (se-types) | ~2,000 | ~2,000 | earlier estimate | Atlas DTOs moved in from se-atlas (counted once) |
+| Store (se-store) | ~9,250 | 8,800 | 95-store S01–S15 | no decision chain, no general settings in the store, live keysets for non-mail lists, six import families, no salvage, automatic migration without approval |
+| Process ownership (se-proc) | ~10,950 | 10,950 | 95-se-proc P00–P14 | three launch barriers (four on Unix terminal, macOS, uncontained); five handover outcomes; process.* operations removed; native scope unchanged |
+| Core and CLI/MCP surface | ~9,050 | 8,200 | 95-core-cli K01–K11, B01–B06 | process tools, N-1 encoders, FTS and project settings removed; owner actions added; 150-line Atlas bridge moved to the Atlas row |
+| Host runtime and harnesses | ~8,900 + 200–350 JS | 9,150 + 200–350 JS | 95-host H01–H20 | automatic migration, file-only settings journal, async commit join, version-independent stop |
+| Release and packaging | 920–1,600 | 960–1,600 | 95-release R01–R07 | one `se uninstall` path; early unsigned archives |
+| **Core product (alpha critical path)** | | **40,060–40,700 + 200–350 JS** | | |
+| Atlas (after journeys and handover; Jimmy) | 6,000–9,300 | 6,150–9,450 | 95-atlas A01–A13 + core bridge | standalone only, disabled by default |
+| macOS backends (Mac campaign) | ~1,350 | 1,350 | 95-se-proc P03-M, P07-M | qualified on Jimmy's borrowed Mac before alpha ships |
+| **Everything** | 47,000–51,000 | **47,560–51,500 + 200–350 JS** | | |
+
+The first reconciled overview claimed a core of ~38,500–39,700 without per-task sums behind it.
+The summed figure is about 1,000–1,500 lines higher: se-proc's native scope did not shrink, and the
+host gained the settings journal and stop-across-versions work. Estimates are review signals, not caps.
 
 Live handover stays in before alpha (Jimmy): about 2,500–3,000 lines across se-proc, se-host and
 se-store, plus SE Code's side. `forget` stays in alpha (Jimmy), about 600 lines.
