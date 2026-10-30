@@ -1,6 +1,7 @@
 //! Shared product values. No I/O, ambient identity, runtime, clock or random source.
 //! Prefer explicit imports for Read, Cursor and Result to avoid std name collisions.
 //! Public host-facing contracts are owned by SE Code, not this proprietary crate.
+pub mod code;
 mod error;
 mod id;
 mod process;
@@ -27,3 +28,8 @@ pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 0 };
 /// UTF-8 byte limits shared by operation DTOs and every ingress/store validator.
 pub const MESSAGE_BODY_MAX_BYTES: usize = 32 * 1024;
 pub const WORKING_STATE_MAX_BYTES: usize = 16 * 1024;
+
+/// Public session.turn transport input; trusted pinned-source capture stages separately.
+pub const SESSION_TURN_MAX_CONTENT_BYTES: usize = 128 * 1024;
+pub const SESSION_TURN_MAX_METADATA_BYTES: usize = 256 * 1024;
+pub const SESSION_TURN_MAX_FRAME_BYTES: usize = 1024 * 1024;
