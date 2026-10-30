@@ -735,8 +735,8 @@ is the **current runtime owner's** full epoch, including when SE Code initiates 
 request to a daemon; CallOptions names that source G, not the caller's process.
 The retained factory verifies actual owner/lease/store before mutation, pins the
 successor and binds a unique TransferId to one immutable HandoverPlan and original
-request key. Both epochs/generations are fixed. Exact-key retry recovers that
-transfer, not a second plan. Private authenticated IPC orchestrates the two
+request key. Both epochs/generations and the requested destination kind/epoch
+are fixed. Exact-key retry recovers that transfer, not a second plan. Private authenticated IPC orchestrates the two
 processes; no Rust Arc crosses it and no agent/model operation is added.
 
 HandoverServices supplies nonblocking epoch()/queue() snapshots of the actual
@@ -773,8 +773,34 @@ the actual fresh settled_by epoch; no old Arc is rebound or resurrected.
 | Control call | Required native result |
 | --- | --- |
 | freeze_queue(plan) | Commit a distinct transfer fence on both human and native-mail admission/promotion for the complete participating target set; drain entered transactions, immediately interrupt and prove exact idle, then seal/read back the complete queue checkpoint |
+| queue_state_for_request(key) | Bounded indexed lookup by (actual NativeQueueId, original request key), returning the original typed Frozen/Settled checkpoint and plan even before Prepared; preserve Absent/Unreadable/Unknown and original commit references |
 | queue_state(transfer) | Exact durable Frozen/Settled lookup by TransferId, including a predecessor epoch's record; preserve Absent/Unreadable/Unknown and original commit references after a lost reply |
 | settle_queue(checkpoint,resolution) | After factory verification, match the retained transfer/checkpoint/queue and commit/read back removal of only that fence at Finished, verified Aborted or checked Recovered, preserving every independent human/takeover/revocation hold |
+
+Before allocating any replacement plan or successor, an exact-key retry reads
+queue_state_for_request on the verified actual queue. The native fence atomically
+stores its request-key index and full immutable plan with the initial freeze,
+including the original source, requested destination kind/epoch, source G and
+request key. The lookup returns at most one result, including a settled result;
+it never scans history or parses a refusal message. The factory checks the
+returned queue incarnation and every request-fingerprint field against the
+surviving HandoverRequest/CallOptions before using the recovered TransferId.
+A changed fingerprint refuses; Absent alone permits new-plan preparation,
+while Unreadable/Unknown prevents replacement allocation. A competing key still
+cannot overwrite the queue's single open fence; freeze's native transaction
+checks that invariant along with request-key uniqueness.
+
+After a lost freeze reply in the same process, or process loss before Prepared,
+the call order is: verify the current native epoch/queue and recovery lineage;
+lookup the surviving request key; recover its original plan/checkpoint; read the
+store's exact phase/owner and independently verify pinned peer/native resources;
+then resume same-plan freeze if the original peer plan remains valid, or perform
+checked pre-claim abort/recovery and settle that original fence. A fresh epoch
+never impersonates an old plan peer. Missing peer/resource proof stays pending;
+discovery is read-only and grants no ownership, cancellation or settlement
+permission. Only after terminal settlement can a new keyed transfer allocate a
+replacement plan. Settled retry returns the original verified outcome rather
+than repeating freeze or queue effects.
 
 The complete participating set comes from SE Code's native binding registry,
 not a caller-guessed list. Unrelated SE Code sessions continue and are never
@@ -3667,6 +3693,7 @@ pub struct HandoverRequest {
 pub struct HandoverPlan {
     pub transfer: TransferId,
     pub source: HostEpoch,
+    pub destination: HandoverDestination,
     pub successor: HostEpoch,
     pub source_generation: Generation,
     pub successor_generation: Generation,
@@ -3726,6 +3753,12 @@ pub trait HandoverServices: Send + Sync {
         plan: &'a HandoverPlan,
         options: HandoverOptions,
     ) -> HostFuture<'a, NativeQueueCheckpoint>;
+    /// Indexed lookup recovers the original plan even before Prepared exists.
+    fn queue_state_for_request<'a>(
+        &'a self,
+        key: &'a IdempotencyKey,
+        options: HandoverOptions,
+    ) -> HostFuture<'a, Read<NativeQueueHandoverState>>;
     fn queue_state<'a>(
         &'a self,
         transfer: &'a TransferId,

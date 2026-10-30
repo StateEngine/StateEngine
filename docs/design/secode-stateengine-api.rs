@@ -653,6 +653,7 @@ pub struct HandoverRequest {
 pub struct HandoverPlan {
     pub transfer: TransferId,
     pub source: HostEpoch,
+    pub destination: HandoverDestination,
     pub successor: HostEpoch,
     pub source_generation: Generation,
     pub successor_generation: Generation,
@@ -712,6 +713,12 @@ pub trait HandoverServices: Send + Sync {
         plan: &'a HandoverPlan,
         options: HandoverOptions,
     ) -> HostFuture<'a, NativeQueueCheckpoint>;
+    /// Indexed lookup recovers the original plan even before Prepared exists.
+    fn queue_state_for_request<'a>(
+        &'a self,
+        key: &'a IdempotencyKey,
+        options: HandoverOptions,
+    ) -> HostFuture<'a, Read<NativeQueueHandoverState>>;
     fn queue_state<'a>(
         &'a self,
         transfer: &'a TransferId,
