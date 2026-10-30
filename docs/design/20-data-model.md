@@ -673,12 +673,12 @@ The implementation embeds these complete fixed trigger statements in version-1 D
 
 ## Atomic append, apply and idempotency
 
-The sole write algorithm is `commit_group(connection, CommitGroup)`, whose ordinary variant contains admitted batches and whose first-binding variant couples exactly the two maintenance operations below, using `append_atomic` for one savepoint-isolated operation and `apply` for each event. Direct writes pass a one-element group; the host passes its bounded group. Both invoke the same `TransactionEngine` interface; neither reimplements a projection. Pseudocode here specifies ordering, not permission to implement before approval:
+The common transaction engine uses `commit_group(connection, admitted_batches)` for ordinary independent operations and the private all-or-nothing `commit_first_binding(FirstBinding)` wrapper for the two maintenance operations below, both using `append_atomic` for one savepoint-isolated operation and `apply` for each event. Direct writes pass a one-element group; the host passes its bounded group. Both invoke the same `TransactionEngine` interface; neither reimplements a projection. Pseudocode here specifies ordering, not permission to implement before approval:
 
 1. Bound input validation outside the write lock: closed kind/version, sizes, ID/encoding shape, scope, no plaintext credentials. Core has already resolved labels and supplied verified authority. For RequestIdentity compute the store fingerprint from the core-produced canonical IntentDigest plus admitted scope/actor, as below; do not hash newly allocated event/body IDs as though they were caller input. Verify inline/staged payload integrity independently.
 2. The store derives the writer stamp from its owned runtime lease (host generation or direct), never Admission.generation or Door. It selects FULL if any group member is a security event, reads the pragma back before BEGIN, then `commit_group` issues one `BEGIN IMMEDIATE`, then `append_atomic` creates a savepoint per operation and rechecks schema/incarnation and transaction preconditions. It never starts a nested BEGIN inside that group. Consult `(scope_key, actor_id, request_key)` only when the caller supplied an explicit key; public mutation requests always supply one. Trusted capture/marker catch-up may use request=None and deduplicate solely by its mandatory natural key. Same fingerprint returns the original committed first/last event and typed receipt without adding events. Different fingerprint refuses `idempotency-key-reused`. An erased fingerprint refuses `content-erased`; it cannot accept/recreate the original body or silently replay an uncheckable request. A failed uncommitted batch consumes no key.
 3. Validate natural keys and resolve no-ops before allocating operation/envelope rows; check each genuinely new event ID for collision before insertion. Insert one operation envelope only if there is a new event or an explicit caller-supplied request key. A different operation cannot reuse it even with identical text. Resolve natural-key no-ops: a second delivered/read/dismissed mark returns the original marker; a duplicate vendor turn returns the original turn only after verifying equal body/source identity. Different bytes at a natural key refuse `natural-key-conflict`. No new domain event/marker is generated just to make an idempotency receipt. A caller-supplied new request key still receives a durable operation/member correspondence even for a no-op, preserving conflict detection. A newly captured keyless operation stores no retry key/fingerprint and has no operations_caller_key index entry; its atomic member map still exists. A derived/keyless all-no-op capture sweep returns a transient NaturalKeyReplay receipt without any INSERT: members retain input natural-key order, primary is the first original event and supplies its retained writer, first/last bound those original revisions and request_key remains None. They need not have belonged to one prior operation; this aggregate does not invent a durable operation ID or claim all members had one writer. Repeating Stop hooks cannot grow history indefinitely. Keyless writes are restricted to natural-keyed capture/marks, never unchecked configuration or arbitrary events.
-4. Insert the envelope, store-owned writer/durability stamp, typed data and body exactly once. `apply(event)` checks the current projection revision/state and changes all affected projections, resume heads and pending effect debt. An operation with multiple events is all-or-nothing. CommitGroup::FirstBinding additionally couples both scoped operations: either failure aborts the outer transaction, unlike ordinary independent group members. Unknown kinds/versions, missing referenced rows, stale CAS, wrong recipient or invalid transition abort the **whole operation**, not just the final event.
+4. Insert the envelope, store-owned writer/durability stamp, typed data and body exactly once. `apply(event)` checks the current projection revision/state and changes all affected projections, resume heads and pending effect debt. An operation with multiple events is all-or-nothing. commit_first_binding additionally couples both scoped operations: either failure aborts the outer transaction, unlike ordinary independent group members. Unknown kinds/versions, missing referenced rows, stale CAS, wrong recipient or invalid transition abort the **whole operation**, not just the final event.
 5. Insert the ordered operation-member map (including reused natural-key events) and return an internal `PreparedReceipt`; this is not yet a committed reply. `commit_group` alone issues outer COMMIT under the selected NORMAL/FULL policy, then materializes public `CommitReceipt` values. A receipt reconstructs its exact event-ID list from that map; ordinal zero is the fixed primary event and supplies `primary_event`, `writer` and `durability`, while the operation row separately preserves the actual committer of a newly recorded caller-key alias. This preserves the original event writer even when a new host/direct route encounters a natural-key no-op. Wakes are deterministically reconstructed from original member events (affected project/principal/position), never the current dispatcher; replay may repeat advisory watch bumps but cannot repeat a delivery effect. Exact-key replay returns the original stamps/wake targets. Each member event retains its own stamp if a compound receipt contains pre-existing natural-key facts alongside new events; its first/last positions are descriptive bounds, never permission to treat every intervening event as a member. Only then release successful replies and the committed high-water notification. A reply/notification failure does not undo COMMIT; retry with the same key resolves it. No OS call, filesystem edit, network request, await or expensive transcript scan occurs while holding the transaction.
 
 SQL statement failure and COMMIT failure are not interchangeable. Before COMMIT, rollback is definite. A lost connection/IO error while committing is reported as `commit-outcome-unknown` with the original request key, or the bounded natural event IDs/source checkpoint when keyless; the caller queries/retries those same identities rather than inventing another. Flush/drain preserves the distinction as PendingOperation::CallerKey or NaturalEvents, never an invented empty key. Shutdown/drain does not report success until accepted work has a definite result or an explicit indeterminate receipt. The store never stamps a projection/bell as witnessed just because append succeeded.
@@ -739,9 +739,13 @@ and project/principal setup. It completes and reads these back before reporting
 an initialized project; a retry reuses an already valid store and completes only
 missing setup. These required writes remain FULL. The embedded open path only
 opens the initialized store: measured absence maps to `setup-required` with
-`se --home DIR init` in the repository to adopt, without creating a DB, runtime
+`se --home HOME init --repo DIR`, without creating a DB, runtime
 endpoint or empty replacement. Unreadable/foreign/newer files retain their own
-refusals. Supported migration/backup remains the exclusive-host startup path.
+refusals. SE Code onboarding handles this absence on the UI owner/human-presence
+path: run the bundled se init with the selected workspace as --repo and the same
+state home, then re-prepare. Only decline/setup failure presents the refusal to
+the user; this never runs from an agent tree. Bare se/status retain normal
+not-set-up output and exit 0. Supported migration/backup remains the exclusive-host startup path.
 
 For an ordinary embedded cold start with no unresolved transfer fence,
 `HostStore::record_first_binding(FirstBinding, lease)` runs before start_writer.
@@ -754,7 +758,7 @@ witnessed session.activated. It must bind the same store/incarnation, engine G,
 native epoch, project, principal and native session selected before BEGIN.
 No credential is issued or activated for the in-process binding.
 
-The one TransactionEngine receives CommitGroup::FirstBinding and uses one outer
+The private TransactionEngine::commit_first_binding wrapper uses one outer
 FULL BEGIN/COMMIT for both operations, applying the owner CAS before session
 activation and checking every binding/incumbent precondition. Both operations
 keep their own operation-member maps and FULL stamps. Unlike ordinary group
@@ -779,13 +783,24 @@ A known post-COMMIT resource/continuity failure retains the committed pair and
 closes admission; it cannot claim rollback. An unknown COMMIT outcome preserves
 both original keys for resolution. This changes neither the FULL event set nor
 NORMAL's loss window. On a current preinitialized store the intended SQLite file
-sync count is two (WAL header and combined commit); a required directory sync is
+sync count is up to two (WAL header when needed and combined commit); actual
+counts, including any checkpoint work, are reported. A required directory sync is
 additional and must be reported, never suppressed to satisfy a count.
 
 Standalone owner admission still uses its separate FULL runtime.owner. The
 combined embedded path cannot absorb live Prepared/Claimed/Finished/Aborted or
 Recovered/fence-settlement work: those maintenance phases and checked cold
 recovery retain the protocol below, with any extra startup barriers measured.
+If no first bind arrives by the existing activation deadline, or a first bind
+definitely refuses/rolls back, the host fences that gate and joins/resolves any
+accepted first-binding job before ordinary standalone-style FULL owner admission.
+It starts the normal writer after that owner commit, without inventing a session.
+A late/retried bind then uses the ordinary session path. If the pair already
+committed, retain both receipts and that owner instead of appending another owner;
+an unknown outcome keeps both keys for resolution and cannot trigger speculative
+fallback. Explicit drain cancels the fallback gate and closes only joined actual
+resources. These are mutually exclusive ownership paths under the same lease,
+not concurrent ways to commit G. Additional fallback barriers remain measured.
 The ordinary first-binding pair is not admitted through direct append or the
 public operation registry and adds no event kind, SQL table or transport DTO.
 
@@ -1087,7 +1102,7 @@ The error type carries the stable code, typed offending entity/range/revision, c
 
 | Internal cause | Cause / typed detail | Remedy | Public code / class |
 | --- | --- | --- | --- |
-| `setup-required` | reader/direct/host or embedded open found no initialized state file | run owner `se --home DIR init` in the repository to adopt; never auto-create in embedded startup | setup-required / Refused |
+| `setup-required` | missing state on a non-init route that requires initialization; embedded preparation reports it to UI onboarding | run owner `se --home HOME init --repo DIR`; UI onboarding invokes it then re-prepares, otherwise show decline/setup failure; bare se/status return not-set-up and exit 0 | setup-required / Refused |
 | `store-already-exists` | exclusive create/no-replace publication found existing state | reopen the validated existing store and reuse its identities; never overwrite | state-conflict / Conflict |
 | `store-unreadable` | permission, malformed/truncated header, undecodable row or IO error; source/range preserved | restore access or inspect with doctor; do not initialize over it | store-unreadable / Unreadable |
 | `store-application-mismatch` | application_id belongs to another database | select the correct home; never migrate the foreign file | configuration-invalid / Refused |
@@ -1190,7 +1205,7 @@ This index binds the following declarations to the algorithms above. All methods
 | TextStaging.stage_text | bounded owned stream to protected staging under held lease; UTF-8/length/digest checked; opaque handle has no caller-path constructor; used/failed staging is reclaimed by exact identity |
 | DirectStore.append / close | one-element canonical commit_group under direct-client lease; success only after COMMIT; close releases handles before lease release |
 | HostStore.start_writer | consumes the ready HostStore, retains Arc lease, independent of background startup backup; yields unique control owner and cloneable bounded submission handle |
-| StoreFactory.backup / HostStore.backup_context / WriterOwner.backup_context / HostStore.checkpoint / close_clean | opaque shared pin/cancel state; whole-copy fixed read transaction, 64 MiB abort rather than backup-induced write backpressure; background rotation without writer drain; checkpoint/close require the drained maintenance object; close_clean drains and reports backup failure truthfully |
+| StoreFactory.backup / HostStore.backup_context / WriterOwner.backup_context / HostStore.checkpoint / close_clean | opaque shared pin/cancel state; whole-copy fixed read transaction, 64 MiB abort rather than backup-induced write backpressure; background rotation without writer drain; checkpoint/close require the unique maintenance object after all work joins (including a never-started writer case); close_clean preserves required backup/closure facts and reports failure truthfully |
 | StoreFactory.erasure_plan / HostStore.erase | exact target/revision inventory then approved in-place transaction and witnessed live DB/WAL cleanup; narrow approved body UPDATE/DELETE trigger exception with secure_delete and witnessed WAL cleanup; named backup/provider residuals |
 | WriterOwner.client / flush / drain | clone handle, async barrier through accepted work, then awaited stop/join yields unique HostStore; flush is not a new backup or a claim of power-loss durability |
 | WriterClient.submit / CommitWait Future | immediate bounded admission/rejection and awaitable one-shot result; no blocking-wait API; timeout/drop cannot cancel a possibly committed write; retry same key resolves outcome |

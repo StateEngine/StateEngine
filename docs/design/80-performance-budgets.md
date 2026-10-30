@@ -252,18 +252,20 @@ issuance/activation events. Explicit `se init` creates and FULL-publishes the
 schema/header and completes project/principal setup first, with its cost measured
 as init above. Absent state refuses with setup-required and the same-home init
 remedy; embedded open never creates it inside or outside a hidden startup clock.
-Newly initialized and existing compatible stores use the same B2 first-bind path:
+Newly initialized and existing compatible stores use the same normal B2 first-bind path:
 one FULL maintenance transaction for runtime.owner and the witnessed first
-session, then writer startup and the complete continuity/binding response.
+session, then writer startup and the complete continuity/binding response. UI
+onboarding invokes bundled se init --repo DIR on its owner/human-presence path
+before this interval; a new-store sample means newly initialized state.
 Neither ordinary work nor a bound handle is published before that commit.
 
 | Critical-path work | Current spend status |
 | --- | --- |
 | Native setup, existing store/header checks and supported upgrade path | Pending quiet-window E2; upgrade includes verified pre-migration backup and refuses an active old host with the se down remedy |
-| Runtime.owner plus first embedded session preparation/activation | One joint FULL maintenance commit; two SQLite file fsyncs for its journal protocol, plus required directory sync; no credential barriers |
-| Fresh schema/header and project/principal setup | Owned by explicit se init before host spawn; report its complete FULL initialization cost separately, including publication readback |
+| Runtime.owner plus first embedded session preparation/activation | One joint FULL maintenance commit; up to two SQLite file fsyncs for its journal protocol, with actual file/directory/checkpoint counts reported; no credential barriers |
+| Fresh schema/header and project/principal setup | Owned by explicit owner/UI se init --repo DIR before the timed embedded interval; report its complete FULL initialization cost separately, including publication readback |
 | Bounded effects/profile load, static catalogue, writer start and first continuity | Pending the same exact-build E2 first-bound response; count every serial step |
-| **Measured B2 spend / reserve** | **Pending Prime's explicit quiet window; no measured headroom or qualification claimed** |
+| **Measured B2 spend / reserve** | **Pending quiet-window qualification; no measured headroom or qualification claimed** |
 
 The syscall count is not a latency estimate: one FULL transaction can require
 multiple file/directory sync calls, and checkpoint/migration work must retain
@@ -274,19 +276,27 @@ qualify this candidate. The loaded Linux runs overlapped a full preflight and a
 system-wide syscall trace; their raw samples remain archived but are excluded
 from qualification and from causal latency conclusions.
 
-The pending Linux run uses the frozen batched throwaway and unchanged baseline,
-50 alternating pairs per newly initialized/existing case, through heavy's
-exclusive slot after the preflight/system-wide trace end. Prime explicitly calls
-the window; record host load and require load1 below 4 at measurement start.
-Run batched E2, then E3 baseline/best variant, then native scope timing in that
-order. Record actual file and directory sync counts separately; source-specific
-traces run separately from latency samples. Independent readback must prove FULL
-owner/session publication, rollback of both on a member failure, original-key
-retry and actual first continuity. Missing-init refusal, concurrent first binds,
-post-COMMIT failure and unchanged handover/recovery barriers remain reviewer
-witnesses. Both reviews and the quiet-window results must pass before merge;
-the declaration compile is not that proof. Windows with Defender, after-task
-memory and full native/runtime integration remain separate qualification work.
+Qualification remains pending a quiet-window measurement of the actual Rust
+SE Code first-bound response against its unchanged baseline, with newly
+initialized and existing stores and the same durability/inputs/build. Record load
+beside every result; a Linux qualification starts below load1 4 with interfering
+full-suite/system-wide tracing absent. Retain every paired sample, including
+signed negative differences and failures; file/directory/count traces are
+separate from latency samples. No loaded result or transaction-count arithmetic
+establishes latency headroom. Windows with Defender, after-task memory and full
+native integration remain independently required; both reviews and accepted
+quiet-window numbers gate this candidate's merge.
+
+The existing activation deadline bounds the no-bind case. No-bind/definite
+first-bind refusal falls back to owner-only FULL admission before writer start;
+a later bind pays its ordinary session FULL transaction. Record the actual
+fallback wait/extra barriers rather than pooling it with the normal atomic
+first-bind case. Explicit drain must fence/join a racing commit and retain both
+keys/known outcomes; it cannot force a duplicate owner or a synthetic successful
+binding. Reviewer witnesses include declined/failed onboarding, no side effect
+on missing-state open, bare se/status not-set-up exit 0, whole-pair rollback and
+same-key replay, concurrent first binds, deadline fallback, and close before a
+bind/after refusal/racing COMMIT. Live-handover/recovery barriers stay unchanged.
 
 Startup migration is automatic only in the sole owning host after a verified
 pre-migration backup; too-new/unsupported formats refuse, and an active older

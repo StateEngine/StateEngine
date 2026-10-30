@@ -171,19 +171,15 @@ pub trait CommitWait: Future<Output = StoreResult<CommitReceipt>> + Send {}
     reason = "Compile-only private transaction contract; implementation is not admitted."
 )]
 pub(crate) trait TransactionEngine {
-    fn commit_group(&mut self, group: CommitGroup) -> StoreResult<Vec<StoreResult<CommitReceipt>>>;
+    fn commit_group(
+        &mut self,
+        batches: Vec<AtomicBatch>,
+    ) -> StoreResult<Vec<StoreResult<CommitReceipt>>>;
+    /// Private all-or-nothing maintenance wrapper over the same append/apply
+    /// machinery; neither scoped operation may commit without the other.
+    fn commit_first_binding(&mut self, binding: FirstBinding) -> StoreResult<FirstBindingReceipt>;
     fn append_atomic(&mut self, batch: AtomicBatch) -> StoreResult<PreparedReceipt>;
     fn apply(&mut self, event: &StoredEvent) -> StoreResult<()>;
-}
-/// One transaction engine; the maintenance pair cannot use ordinary savepoint
-/// failure isolation and accidentally commit only the owner operation.
-#[allow(
-    dead_code,
-    reason = "Compile-only transaction policy; no backend is admitted."
-)]
-pub(crate) enum CommitGroup {
-    Ordinary(Vec<AtomicBatch>),
-    FirstBinding(Box<FirstBinding>),
 }
 /// Cannot be returned to a caller as a durable receipt before group COMMIT.
 pub(crate) struct PreparedReceipt {

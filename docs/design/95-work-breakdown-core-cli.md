@@ -138,8 +138,11 @@ and H/P. Resolve only admitted home/env/config inputs, native owner/session proo
 redacted origins, shared input limits and bounded stdin. Anonymous metadata and
 static compatibility refusals precede store access. Witness: T2/T3/T22/T23,
 J1/J2 and no fleet defaults; ordinary current-schema reads construct no runtime.
-Preserve measured absence as setup-required with the resolved-home se init remedy;
-no CLI/embedded bootstrap can turn an open into silent schema creation.
+For non-init store-dependent routes requiring setup, preserve absence as
+setup-required with resolved-home `se init --repo DIR` remedy. Bare se and
+se status render not-set-up and exit 0 (T10/G4); metadata remains store-free.
+No CLI/embedded open silently creates schema; UI onboarding invokes explicit
+bundled owner init, then re-prepares.
 
 **B02 — Generated grammar (250).** Own binary `src/grammar.rs`, `src/compat.rs`.
 Depends K01/B01. Consume the generated tree, map doctor/history selectors to the
@@ -155,7 +158,8 @@ host writes use authenticated IPC; hostless writes use the same batch transactio
 engine under the lease through synchronous DirectStore::append. No future or background writer is added to that direct route. Preserve request identity,
 uncertain commit outcomes and version-independent down routing. Route explicit
 init through S01 create/open and its FULL publication/readback; a missing store
-on a non-init store-dependent route reports setup-required. Witness:
+on a non-init store-dependent route requiring setup reports setup-required; bare
+se/status keep their not-set-up exit-0 result. Witness:
 T8/T17/T21, P2, lost-ACK CLI/IPC slice and writer/event readback; never fall back to
 a different actor or second writer after endpoint/peer mismatch.
 

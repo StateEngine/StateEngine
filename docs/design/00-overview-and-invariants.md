@@ -47,7 +47,7 @@ Everything StateEngine adds, not counting the agent CLIs.
 | Budget | Target | Measured so far |
 | --- | --- | --- |
 | Memory added inside SE Code | **≤ 30 MB** | 1.4 MB (embedding prototype) |
-| Startup added to SE Code | **≤ 100 ms**, including the first bound session | p95 75 ms existing store, 96 ms new store (2 of 50 over) |
+| Startup added to SE Code | **≤ 100 ms**, including the first bound session | Revised FULL first binding pending quiet-window qualification; historical readiness-only 75/96 ms is not proof |
 | Re-adopting agents after handover or restart | **≤ 500 ms**, no lost or doubled input | Proposed by Alpha; unmeasured, a build task |
 | Idle cost | **~0 wakeups, < 0.1% CPU** | 0 over 10 min embedded |
 | Idle wakeups, exact | **≤ 1/s** across all StateEngine processes with no session, **≤ 2/s** with one; < 0.1% of one core, over 60 s | — |
@@ -55,6 +55,13 @@ Everything StateEngine adds, not counting the agent CLIs.
 | CLI read command | **p95 < 20 ms** over 30 runs each of `--version`, `status`, `agent list` (was `agents`), `msg inbox`, `msg list`, `decision list` | — |
 | Standalone daemon memory | **≤ 25 MB** with one live session | 4–12 MB prototypes |
 | CLI write command (B9) | **p95 ≤ 20 ms** (section 80 owns the number) | hooks through host 7.5 ms typical, 9 ms worst; 8 agents 11 ms worst. A later mixed-workload rehearsal measured 37 ms serial and 67 ms with 20 clients; E3 explains the gap before the build |
+
+New-store creation and FULL schema/header publication are now an explicit
+`se init --repo DIR` cost, including SE Code's UI-owned onboarding invocation.
+B2's “new store” means a newly initialized store before the timed embedded
+first-bind interval. Existing/newly initialized samples still include actual
+FULL owner/session publication, writer start and complete binding/continuity;
+a missing-init refusal is never a successful sample (20/40/50/80).
 
 Line counts come from the one size table in section 95; they are estimates and a review signal,
 never a reason to cut quality. No schedule is promised until the early proofs (section 95) settle.
