@@ -15,10 +15,11 @@ pub trait StoreFactory {
     type Reader: ReadStore;
     type Direct: DirectStore;
     type Host: HostStore;
-    /// Background online snapshot; requires host lease, independent read connection.
+    /// Whole-copy stable read transaction; WAL pressure cancels backup, not writes.
     fn backup(
         options: &StoreOptions,
         lease: Arc<dyn RuntimeLease>,
+        context: BackupContext,
         deadline: Duration,
     ) -> StoreResult<BackupReport>;
     /// Read-only inventory before owner approval or writer drain; recheck on erase.
@@ -95,6 +96,8 @@ pub trait DirectStore: ReadStore + TextStaging {
 }
 pub trait HostStore: ReadStore + TextStaging + Sized {
     type Writer: WriterOwner<Host = Self>;
+    /// Same coordination context before/after the writer ownership transfer.
+    fn backup_context(&self) -> BackupContext;
     fn start_writer(
         self,
         options: WriterOptions,
@@ -131,6 +134,8 @@ pub trait WriterOwner {
     type Host: HostStore;
     type Client: WriterClient;
     fn client(&self) -> Self::Client;
+    /// Clone shared state without a writer barrier or a new worker.
+    fn backup_context(&self) -> BackupContext;
     type Flush: Future<Output = StoreResult<FlushReport>> + Send;
     type Drain: Future<Output = StoreResult<DrainedHost<Self::Host>>> + Send;
     fn flush(&mut self, deadline: Duration) -> StoreResult<Self::Flush>;

@@ -23,7 +23,7 @@ The compile-only declarations in `crates/se-store/src/` are the normative Rust s
 There are four access objects:
 
 1. A factory opens/creates under an explicit role. A host holding the exclusive runtime lease can create/recover or run startup/shutdown backup; an owner CLI can bootstrap an absent store through create_direct under its shared runtime lease; migration additionally requires explicit owner/upgrade approval. Opening a missing store for a reader/direct client returns measured absence; it never creates an empty database.
-2. A read snapshot owns one SQLite read transaction and a captured high-water position. It cannot be held across an async suspension or an external call. Typed methods return fully materialized bounded results, then release it.
+2. A read snapshot owns one SQLite read transaction and a captured high-water position. Unlike the separate background backup transaction, it cannot be held across an async suspension or an external call. Typed methods return fully materialized bounded results, then release it.
 3. A direct writer performs the same atomic write batch as the host worker, while the caller holds a shared runtime lease. It cannot coexist with a host that acquires that lease later: the host waits, then opens after the client releases it.
 4. A bounded host submission handle and its owner control. Cloned submission handles cannot close/migrate the store. A dropped reply receiver does not cancel a committed operation. The unique owner drains and joins the worker on shutdown.
 
@@ -259,6 +259,7 @@ CREATE TABLE process_data(
   process_id BLOB NOT NULL CHECK(length(process_id)=16),
   principal_id BLOB NOT NULL CHECK(length(principal_id)=16),
   target_session_id BLOB CHECK(target_session_id IS NULL OR length(target_session_id)=16),
+  root_identity TEXT NOT NULL CHECK(root_identity IN ('no-child-created','unpublished','identified','unknown')),
   identity_state TEXT NOT NULL CHECK(identity_state IN ('present','absent','unreadable')),
   identity_cause TEXT,
   machine_id INTEGER REFERENCES symbols(id),
@@ -279,7 +280,12 @@ CREATE TABLE process_data(
   observation_event BLOB CHECK(observation_event IS NULL OR length(observation_event)=16),
   CHECK((identity_state='present' AND machine_id IS NOT NULL AND boot_identity IS NOT NULL AND pid IS NOT NULL AND birth_identity IS NOT NULL AND executable IS NOT NULL AND argv_sha256 IS NOT NULL AND identity_cause IS NULL)
      OR (identity_state IN ('absent','unreadable') AND machine_id IS NULL AND boot_identity IS NULL AND pid IS NULL AND birth_identity IS NULL AND executable IS NULL AND argv_sha256 IS NULL AND identity_cause IS NOT NULL)),
-  CHECK(state IN ('reserved','starting','historical','lost') OR identity_state='present'),
+  CHECK((root_identity='identified' AND identity_state='present')
+     OR (root_identity IN ('no-child-created','unpublished') AND identity_state='absent')
+     OR (root_identity='unknown' AND identity_state IN ('absent','unreadable') AND state IN ('historical','lost'))),
+  CHECK(state<>'reserved' OR root_identity='no-child-created'),
+  CHECK(state NOT IN ('running','leader-exited') OR root_identity='identified'),
+  CHECK(state NOT IN ('stop-requested','stop-unproved','exited') OR (root_identity<>'unknown' AND observation_event IS NOT NULL)),
   CHECK((containment='uncontained' AND containment_cause IN ('no-user-manager','no-delegation','cgroup-v2-absent','cgroup-unreadable','scope-create-failed') AND containment_cause IS NOT NULL AND containment_observed_at_us IS NOT NULL AND containment_unknown_reason IS NULL)
      OR (containment IN ('cgroup','job','process-group') AND containment_cause IS NULL AND containment_observed_at_us IS NOT NULL AND containment_unknown_reason IS NULL)
      OR (containment='unknown' AND containment_cause IS NULL AND containment_unknown_reason IS NOT NULL)
@@ -533,14 +539,15 @@ CREATE TABLE list_versions(
   read_seq INTEGER REFERENCES events(seq),
   dismissed_seq INTEGER REFERENCES events(seq),
   CHECK(valid_to IS NULL OR valid_to>valid_from),
+  CHECK(sort_seq=CASE WHEN family='decision' THEN last_seq ELSE first_seq END),
   PRIMARY KEY(scope_key,family,entity_key,valid_from)
 ) STRICT, WITHOUT ROWID;
 CREATE UNIQUE INDEX list_versions_open ON list_versions(scope_key,family,entity_key) WHERE valid_to IS NULL;
-CREATE INDEX list_versions_order ON list_versions(scope_key,family,sort_seq DESC,entity_key,valid_from DESC,valid_to);
-CREATE INDEX list_versions_state ON list_versions(scope_key,family,state,sort_seq DESC,entity_key,valid_from DESC,valid_to);
-CREATE INDEX list_versions_sender ON list_versions(scope_key,family,sender_id,sort_seq DESC,entity_key,valid_from DESC,valid_to);
-CREATE INDEX list_versions_recipient ON list_versions(scope_key,family,recipient_id,sort_seq DESC,entity_key,valid_from DESC,valid_to);
-CREATE INDEX list_versions_recipient_state ON list_versions(scope_key,family,recipient_id,state,sort_seq DESC,entity_key,valid_from DESC,valid_to);
+CREATE INDEX list_versions_order ON list_versions(scope_key,family,sort_seq ASC,entity_key,valid_from DESC,valid_to);
+CREATE INDEX list_versions_state ON list_versions(scope_key,family,state,sort_seq ASC,entity_key,valid_from DESC,valid_to);
+CREATE INDEX list_versions_sender ON list_versions(scope_key,family,sender_id,sort_seq ASC,entity_key,valid_from DESC,valid_to);
+CREATE INDEX list_versions_recipient ON list_versions(scope_key,family,recipient_id,sort_seq ASC,entity_key,valid_from DESC,valid_to);
+CREATE INDEX list_versions_recipient_state ON list_versions(scope_key,family,recipient_id,state,sort_seq ASC,entity_key,valid_from DESC,valid_to);
 CREATE TABLE erasures(
   erasure_id BLOB PRIMARY KEY CHECK(length(erasure_id)=16),
   requested_seq INTEGER NOT NULL REFERENCES events(seq),
@@ -674,9 +681,9 @@ The fixed FULL set is: credential.issued, credential.activated, credential.revok
 
 ## Recorded process, session and delivery facts
 
-The store persists the same nine lifecycle states as accepted section 30: reserved, starting, running, leader-exited, stop-requested, stop-unproved, exited, lost, historical. A scope-prepared reservation can lack a root PID/executable/birth identity. RecordedIdentity distinguishes Present(native ProcessInstance), Absent(reason) and Unreadable(cause); process_data stores all native identity columns together or all NULL plus the explicit reason. Each ProcessTransition carries the complete new ProcessIdentityRecord checkpoint, so reserved→starting/root-known does not fabricate fields or require rewriting registration. Its lifecycle/principal/session must match the existing immutable record; native root may change only absent→present at the witnessed section-30 checkpoint, never PID substitution. Running/leader-exited/stopping/exited Rust records require a known recorded identity; reserved/starting/historical/lost may have explicit absent/unreadable identity. PID zero, fabricated birth times and replacement characters are never substitutes. Lost may recover to running only with section-30 exact re-adoption proof against the saved identity/scope; leader exit alone does not prove an empty scope.
+The store persists the same nine lifecycle states and complete transition table as accepted section 30 §3.1 (reproduced below). A prepared scope can lack a root PID/executable/birth identity. RootIdentityState distinguishes NoChildCreated, Unpublished (child/pre-exec work without a published complete root identity), Identified and Unknown; RecordedIdentity independently preserves Present(native ProcessInstance), Absent(reason) or Unreadable(cause). SQL stores all complete identity columns together or all NULL with an explicit cause. Identified requires Present; NoChildCreated/Unpublished require Absent; Unknown is limited to historical/lost records. Running and LeaderExited require Identified. Scope-only StopRequested/StopUnproved requires the exact reservation/scope/root checkpoint and stop-intent/attempt observation; Exited additionally requires the section-30 no-child/unpublished required-scope exit witness. None requires a guessed identity. A never-created scope's failed reservation can terminate with its exact reservation and failed-launch/no-live-scope observation. PinnedUnpublished retains its actual native PID/status inside the exit checkpoint without fabricating the missing ProcessInstance fields. Each transition carries the complete new ProcessIdentityRecord and expected revision; lifecycle/principal/session stay immutable. Once a full root identity is published it is retained through stop/exit/loss and must never be downgraded, replaced or relabelled NoChildCreated; recovery requires exact saved-identity/scope proof. SQL validates local shape; transactional apply validates this predecessor relationship and the closed native checkpoint/witness semantics. Leader exit alone never proves an empty scope.
 
-NativeCustody format_version=1 is the closed se-proc LaunchReservation or ProcessRecord checkpoint codec: a tagged UTF-8 JSON object with exactly the accepted section-30 record's fields, tagged native path bytes/UTF16, explicit optional root, host/generation/nonce/scope identity/guarantee/entry/state/exit/observation fields. Its variant tag is reservation or process for native checkpoints, or historical for an imported non-authoritative record with explicit absent/unreadable fields, its record schema version is mandatory, unknown fields/versions refuse, integers use checked decimal fields and no OS handle/address is serialized. The host adapter converts the accepted se-proc record at this boundary; se-store validates the versioned shape before insertion and never interprets it as permission to signal. The separate indexed/native columns are the authoritative query keys checked equal to this checkpoint, not guesses derived from opaque bytes. Replay retains original checkpoint bytes; import may supply a historical checkpoint with explicit unknown/absent fields, never synthesize a live se-proc handle.
+NativeCustody format_version=1 is the closed se-proc checkpoint codec: a tagged UTF-8 JSON wrapper with variant reservation, scope (ScopeCheckpoint), root (RootCheckpoint), process (ProcessRecord), exit (retained source checkpoint plus StopWitness), failed-reservation (LaunchReservation plus failed-validation/native-error outcome, observation reference and explicit no-scope-created fact), or historical. Each variant carries exactly the accepted section-30 type's fields, tagged native path bytes/UTF16, lifecycle/principal/session, host/generation/nonce, exact scope identity/guarantee and explicit root publication state. Exit records preserve NoChildCreated, UnpublishedScope, PinnedUnpublished or Identified and the required-scope exit/status/observation. Failed-reservation is allowed only when no native scope/child was created; it retains that fact instead of fabricating the ScopeIdentity required by StopWitness. Unknown historical fields remain absent/unreadable. Record schema version is mandatory; unknown fields/versions refuse, integers are checked and no OS handle/address is serialized. The host adapter converts the accepted se-proc record at this boundary; se-store validates the versioned shape before insertion and never treats it as permission to signal. Indexed columns must agree with the checkpoint. Replay retains original checkpoint bytes; historical import cannot synthesize live custody.
 
 ContainmentFact is persisted on process registration/transitions and session activation, with the session pointing to the exact lifecycle/fact that launched it. Known contained kind is cgroup (Linux), job (Windows), or process-group (macOS), observed time present, cause NULL. Linux uncontained requires observed time and exactly one cause: no-user-manager, no-delegation, cgroup-v2-absent, cgroup-unreadable, scope-create-failed; cause is never NULL. Unknown historical facts retain a reason and produce unknown/null with an explicit incomplete status, never inferred containment from the OS or today's probe. NotLaunched is distinct and renders the section-50 null pair for a never-launched session. Persist only the compact cause and optional probe observation reference here; full OS probe text is separate doctor evidence, not the user-facing cause code. The CHECKs enforce all combinations; the closed session JSON uses the same tagged union. A fresh read after restart renders these saved facts, with current OS observations reported separately.
 
@@ -739,12 +746,33 @@ CREATE TABLE resume_heads(
 | Credential | absent → prepared → active → revoked; active → expired by timestamp predicate | no resurrection, no plaintext event; expired/revoked token never falls back to owner |
 | Message | absent → sent; sent → sent+delivered/read/dismissed; sent → superseded relation | markers are independent monotonic facts; dismiss does not imply read; no ordinary body rewrite/delete or recipient change; approved forget alone erases content |
 | Decision | absent → proposed; proposed → ratified/rejected/retracted; ratified → retracted/superseded | rejected/retracted/superseded terminal; superseding requires ratified replacement and both expected heads; proposed supersedes hint has no activation effect |
-| Process | absent → reserved/historical; reserved → starting/lost/exited; starting → running/lost/exited; running → leader-exited/stop-requested/lost; leader-exited → stop-requested/exited/lost; stop-requested → stop-unproved/exited/lost; stop-unproved → stop-requested/exited/lost; lost → running only on exact re-adoption proof | exited/historical terminal; no PID-only revival, no cancellation of a stop request by relabeling it running; section-30 leader/scope witnesses decide terminal state |
+| Process | exactly the section-30 §3.1 table below | CAS and native witnesses required; no PID-only revival or implicit stop success |
 | Effect | absent → pending; pending → offered → witnessed/failed/abandoned (or pending → terminal on failed offer) | terminal result immutable; retry after failed uses a new attempt/request linked to the same cause, never changes failed into witnessed invisibly |
 | Import | absent → running; running → running checkpoint/complete/partial | source mismatch pauses/refuses without advancing; resume of partial requires same policy/source identity and explicit remaining window |
 | Backup | absent → writing → verified → published; writing/verified → failed | published generation immutable until owned rotation; partial file never counts as a backup |
 | Erasure | absent → inventoried → approved → draining → content-erased/pending-cleanup → WAL/FTS-cleaned → verified → complete | failure freezes ordinary writers and preserves phase evidence; no successful tombstone-only shortcut; restart resumes exactly this erasure ID |
 | Salvage | diagnosed → source-frozen → scanning → candidate-built → validated → owner-adopted | gaps remain explicit; invalid candidate never replaces source; ordinary open does not auto-adopt salvage |
+
+The complete accepted process transition matrix (section 30 §3.1) is:
+
+| From | Trigger/evidence | To / retained obligation |
+| --- | --- | --- |
+| no row | authorized unique reservation committed | Reserved; no child |
+| Reserved | Starting arena inserted, vendor-free scope prepared and checkpoint committed | Starting; exact scope known, root may be absent |
+| Reserved/Starting | validation or native failure with no live scope | Exited failed launch; no task-complete claim |
+| Starting | native exec observed + running record committed | Running |
+| Starting | cancellation/rollback intent committed with stop CAS before native dispatch | StopRequested; retained scope/ticket/rollback; failed CAS has no dispatch |
+| Running | root exited, scope still populated | LeaderExited; children remain owned |
+| Running/LeaderExited | natural/graceful root and required scope exit | Exited via witness_exit, no signal/token required |
+| Running/LeaderExited/Starting | authenticated stop CAS | StopRequested |
+| StopRequested | token expired/consumed, generation/identity recheck refuses, native dispatch fails or proof pending | StopUnproved with typed cause; CAS is never erased or mislabelled "nothing happened" |
+| StopRequested/StopUnproved | outside required-scope exit witness | Exited; preserve dispatch errors/status |
+| StopUnproved | explicit retry, fresh observation/CAS/token | StopRequested |
+| nonterminal | irrecoverable native custody, actual host/boot loss | Lost, never assumed stopped |
+| Lost | authorized native recovery + store CAS succeeds | actual Running, LeaderExited or StopUnproved |
+| Lost | old required scope/instances exit proved | Exited |
+| Exited | durable witness committed, native release succeeds, release acknowledgment committed | terminal released; history retained |
+| imported | import | Historical; cannot become live custody |
 
 Stored read/disposition facts can be imported as historical states only when the Node row actually supports them. A bell offer, stdout flush, packet creation, launch readiness and task completion never substitute for one another.
 
@@ -752,7 +780,7 @@ Stored read/disposition facts can be imported as historical states only when the
 
 A read captures the committed maximum event position and store incarnation under one deferred read transaction. Backup-file inspection is a separate read API: snapshot its manifest/event metadata, release SQL, then inspect immutable owned files and report per-file observed/absent/unreadable facts; it does not pretend filesystem observations share a SQLite snapshot. Every row and head it materializes belongs to that snapshot; there is no read of a projection at one position and bodies at another. Reader connections are read-only, with `query_only=ON`; closing a snapshot releases its transaction even on decoder failure. Readers never rebuild, migrate, mark mail read or advance durable cursors.
 
-All lists are keyset paged, with indexes beginning with authorized scope and relevant actor/recipient. The default order is descending commit position for inbox/history and ascending position for replay/import. No OFFSET scan or cold-cache full-file count is required for a page. Read at most `limit + 1` candidates plus a bounded byte budget. `ReadBudget` wraps the canonical se-types PageRequest and a finite deadline; it does not introduce a second cursor/limit/byte vocabulary. Full message listing yields only complete bodies that fit, with continuation before the first omitted item, and never appends read/delivered markers. Owner may inspect any selected-project message; session scope is sent-or-received by that actor. The extra candidate establishes `has_more`; exact omitted count is `None` when computing it would require an unbounded scan. Zero, absent and count-not-computed stay distinct. A rejected/undecodable candidate is not skipped into a deceptively complete page: return an unreadable error with the checked sequence/source or an explicitly incomplete window, preserving the continuation before that row.
+All lists are keyset paged, with indexes beginning with authorized scope and relevant actor/recipient. Order is operation-specific: section 50 messages/inbox are oldest sent event first; decisions are oldest latest-transition-at-H first; raw history/replay/import is ascending, while recent-turn queries are descending. No shared default may override those public orders. No OFFSET scan or cold-cache full-file count is required for a page. Read at most `limit + 1` candidates plus a bounded byte budget. `ReadBudget` wraps the canonical se-types PageRequest and a finite deadline; it does not introduce a second cursor/limit/byte vocabulary. Full message listing yields only complete bodies that fit, with continuation before the first omitted item, and never appends read/delivered markers. Owner may inspect any selected-project message; session scope is sent-or-received by that actor. The extra candidate establishes `has_more`; exact omitted count is `None` when computing it would require an unbounded scan. Zero, absent and count-not-computed stay distinct. A rejected/undecodable candidate is not skipped into a deceptively complete page: return an unreadable error with the checked sequence/source or an explicitly incomplete window, preserving the continuation before that row.
 
 An opaque page cursor encodes version, store ID/incarnation, fixed snapshot high-water position, query/scope fingerprint, order and last returned position. Its canonical binary form is version byte + 16-byte store ID + fixed-width integers + 32-byte query digest, base64url without padding; maximum 192 bytes. It is not a capability: the supplied authorized scope is rechecked for every query even with a syntactically valid cursor. Reject wrong store/incarnation/query/order, positions outside the captured window, overflow and unsupported cursor version. Newly arrived mail above the cursor's high-water is reported as outside this page's window and appears in a new inbox read; it is never silently hidden as “no unread mail.” An old high-water remains readable while records exist, except after an explicit erasure/recovery incarnation bump.
 
@@ -762,29 +790,31 @@ An opaque page cursor encodes version, store ID/incarnation, fixed snapshot high
 
 ### Mutable lists at a cursor high-water
 
-Current projections and their partial indexes serve fresh status/exact lookups. A first page may use that fast path only when its SQL snapshot high-water equals the chosen H; after later commits a cursor must use the temporal path, not current state for its historical filter. `list_versions` is a rebuildable, text-free temporal list index. Apply closes an entity's open interval with valid_to=S and inserts its new summary at valid_from=S in the same transaction as event S. Intervals are [from,to); exactly one is eligible when from≤H and (to IS NULL or H<to). Creation's sort_seq never changes. An update changes last_seq/state/filter keys but cannot move an existing item across the page's immutable creation-order cursor. One event changing several entities creates one version per affected entity; source history can rebuild all summaries. Body text is joined through first_seq/last_seq, never copied into this index.
+Current projections and their partial indexes serve fresh status/exact lookups. A first page may use that fast path only when its SQL snapshot high-water equals the chosen H; after later commits a cursor must use the temporal path, not current state for its historical filter. `list_versions` is a rebuildable, text-free temporal list index. Apply closes an entity's open interval with valid_to=S and inserts its new summary at valid_from=S in the same transaction as event S. Intervals are [from,to); exactly one is eligible when from≤H and (to IS NULL or H<to). sort_seq is the family's published order key: message sent_seq; decision last_seq for this version; first_seq for the other mutable families. A transition can change a decision's sort_seq in its new version without moving its old-H version. Every page selects the version at the same H before filtering or ordering, so later transitions cannot move items across that cursor. One event changing several entities creates one version per affected entity; source history can rebuild all summaries. Body text is joined through first_seq/last_seq, never copied into this index.
 
 | Snapshot list | Historical candidate/filter index; materialization |
 | --- | --- |
-| projects / principals / configuration / sessions / processes / integrations / import_progress | list_versions_order on exact scope_key/family, descending (sort_seq,entity_key), validity predicate at H; first_seq + last_seq reconstruct the state at H |
-| messages owner list | family=message, scope + order index; immutable sender/recipient/kind and historical mark sequences in that version |
+| projects / principals / configuration / sessions / processes / integrations / import_progress | list_versions_order on exact scope_key/family, ascending (first_seq,entity_key), validity predicate at H; first_seq + last_seq reconstruct the state at H |
+| messages owner list | family=message, scope + order index, ascending (sent_seq,entity_key); immutable sender/recipient/kind and historical mark sequences in that version |
 | messages sender or recipient | list_versions_sender / list_versions_recipient; sent-or-received is two indexed streams merged/deduplicated by entity key, never OR over the whole project |
 | unread inbox | list_versions_recipient_state on exact scope/recipient/state='unread'; validity at H, independent of today's marks_unread partial index |
-| pending decisions | list_versions_state on exact scope/family=decision/state='proposed', validity at H; original proposed_seq is sort_seq |
+| pending decisions | list_versions_state on exact scope/family=decision/state='proposed', validity at H; this version's last_seq is sort_seq, ascending (sort_seq,entity_key), for all decision states including pending |
 | pending effects | list_versions_state, merge pending and offered streams at H; principal-debt exact lookup uses effects_principal_pending |
 | immutable turns / event or decision history | turn_data_agent_seq / events_scope_seq / events_session_seq and sequence≤H; no temporal index row per captured turn |
 
 Temporal summaries exist only for listed mutable families, not every turn/event. MessageSent creates unread; delivered/read/dismiss/supersession close/append a summary preserving every marker visible at that time. Owner/sender/full-body message lists use the same as-of summary to populate marks. Decision transitions, project removal, agent rename, session/process/effect state, configuration/integration/import-progress changes all append corresponding versions. Exact non-paged reads use the new snapshot's actual H; caller membership/current authorization is revalidated on every page, so revocation overrides a historical window.
 
-Canonical unread SQL uses `list_versions AS v INDEXED BY list_versions_recipient_state WHERE v.scope_key=? AND v.family='message' AND v.recipient_id=? AND v.state='unread' AND v.sort_seq<=? AND (v.sort_seq<? OR (v.sort_seq=? AND v.entity_key>?)) AND v.valid_from<=? AND (v.valid_to IS NULL OR ?<v.valid_to) ORDER BY v.sort_seq DESC,v.entity_key ASC LIMIT ?`. Bind H to both validity comparisons and creation ceiling; the mixed DESC/ASC keyset predicate is expanded explicitly, including a deterministic entity-key tie-break. The query retrieves limit+1 eligible rows, then fixed-PK joins materialize their immutable owning events/payloads. No SQLite transaction is retained across CLI requests. The point-reconstruction PK is (scope,family,entity_key,valid_from DESC) and returns the latest version≤H; direct ID reads never walk full entity history.
+Canonical unread SQL uses `list_versions AS v INDEXED BY list_versions_recipient_state WHERE v.scope_key=? AND v.family='message' AND v.recipient_id=? AND v.state='unread' AND v.sort_seq<=? AND (v.sort_seq>? OR (v.sort_seq=? AND v.entity_key>?)) AND v.valid_from<=? AND (v.valid_to IS NULL OR ?<v.valid_to) ORDER BY v.sort_seq ASC,v.entity_key ASC LIMIT ?`. Bind H to both validity comparisons and the sort-key ceiling; the ASC/ASC keyset predicate follows sent_seq, then entity_key. Decision lists use the same predicate/order with their versioned latest-transition sort_seq; they never sort by proposed_seq. Cursor fingerprint binds family, filters, sort-key meaning and direction. Messages therefore return 01,02 at H=2; decisions with creation 1/2/3 and latest transitions 8/4/6 return B,C,A, while an older H retains each prior transition order. The query retrieves limit+1 eligible rows, then fixed-PK joins materialize their immutable owning events/payloads. No SQLite transaction is retained across CLI requests. Point reconstruction uses PK (scope,family,entity_key,valid_from), scanned in reverse from H to return the latest version≤H; direct ID reads never walk full entity history.
 
-The matching indexes lead with scope/family/filter then creation order, so EXPLAIN must show a SEARCH of that scoped index and no global event/mark scan or project-wide temp sort. Validity may reject historical versions; SQL's progress callback enforces the request's finite step/time budget. If this old window cannot produce limit+1 or prove exhaustion within budget, return read-incomplete with H/cause/remedy, not a successful empty/complete Page or a guessed next pointer. Only a known additional eligible row yields next. This does not pretend B7 is qualified for pathological old windows; measure latest 1M unread, state changes between pages and old-window amplification independently. An index mismatch is an implementation defect, not permission to ignore H.
+The shared temporal summaries are retained for Sol R3: current rows alone cannot reconstruct mutable membership/filters at H, including low-volume families. They are text-free, scoped and rebuildable; no per-turn version is added.
+
+The matching indexes lead with scope/family/filter then the per-family sort key in ascending order, so EXPLAIN must show a SEARCH of that scoped index and no global event/mark scan or project-wide temp sort. Validity may reject historical versions; SQL's progress callback enforces the request's finite step/time budget. If this old window cannot produce limit+1 or prove exhaustion within budget, return read-incomplete with H/cause/remedy, not a successful empty/complete Page or a guessed next pointer. Only a known additional eligible row yields next. This does not pretend B7 is qualified for pathological old windows; measure latest 1M unread, state changes between pages and old-window amplification independently. An index mismatch is an implementation defect, not permission to ignore H.
 
 ## Migrations and version skew
 
 Connection setup: confirm a regular owned state file in an owner-only directory through the host's filesystem custody service; open without following a final symlink, no URI paths from a remote input; validate `application_id`, `user_version`, store ID/incarnation and ready/maintenance state before queries. Wrong application ID, unreadable header, newer schema or configured synced/network storage returns a distinct error/remedy. A missing file is absent. An empty/truncated existing file is unreadable, not permission to initialize over it. Create uses a new exclusively reserved pathname and refuses collision; 16 KiB pages are set before first WAL activation. Hostless init uses create_direct under a shared runtime lock: construct a protected same-volume uniquely reserved staging DB, commit the complete schema/header under FULL, close/read back it, then publish with no-replace. Another direct initializer may race but cannot see partial schema or overwrite the winner; the loser receives store-already-exists and core reopens/re-resolves the winner's identities. Both staged data and destination parent are under the host filesystem-custody adapter. No host generation is fabricated and no daemon is required just to init. A lease with unknown StoreId is admitted only after measured absence for this bootstrap or for explicit unreadable-source recovery, never for ordinary writes; existing-store open must bind the actual StoreId.
 
-Pragmas: WAL, NORMAL, `foreign_keys=ON`, `trusted_schema=OFF`, `mmap_size=0`, `temp_store=FILE`, bounded cache, `busy_timeout=5000`, 4 MiB journal-size target. Read back journal/synchronous/foreign-key settings; refusal to apply is fatal to write admission. Only an explicitly owner-approved migration/upgrade under the exclusive runtime lease performs forward migrations under `BEGIN EXCLUSIVE`. Version 0 is fresh creation, not an arbitrary SQLite importer. The explicit owner path is a diagnosed supported migration through existing doctor.repair (`se doctor --fix`), or an explicit application upgrade action; this adds no public operation/command. An ordinary host/auto-start/status never migrates: a supported older schema returns store-migration-required with the explicit owner upgrade remedy, distinct from too-new and unsupported-old. A maintenance-only HostStore may inspect/plan an older schema but cannot start a writer; migrate requires MigrationApproval binding the plan fingerprint, owner and ExplicitOwnerCommand/ExplicitUpgrade trigger. Before each migration take/verify a backup; apply additive DDL/backfill in explicit bounded phases, update `user_version` in the same final FULL transaction, then check integrity/foreign keys/version before ready. Version metadata outside SQLite is only a recovery hint, never authority over a contradictory database header.
+Pragmas: WAL, NORMAL, `foreign_keys=ON`, `trusted_schema=OFF`, `mmap_size=0`, `temp_store=FILE`, bounded cache, `busy_timeout=5000`, 4 MiB journal-size target. Read back journal/synchronous/foreign-key settings; refusal to apply is fatal to write admission. Only an explicitly owner-approved migration/upgrade under the exclusive runtime lease performs forward migrations under `BEGIN EXCLUSIVE`. Version 0 is fresh creation, not an arbitrary SQLite importer. The explicit owner path is a diagnosed supported migration through existing doctor.repair (`se down` then `se doctor --fix`), or an explicit application upgrade action with the old host down; this adds no public operation/command. An ordinary host/auto-start/status never migrates: a supported older schema returns store-migration-required with the explicit owner upgrade remedy, distinct from too-new and unsupported-old. A maintenance-only HostStore may inspect/plan an older schema but cannot start a writer; migrate requires MigrationApproval binding the plan fingerprint, owner and ExplicitOwnerCommand/ExplicitUpgrade trigger. Before each migration take/verify a backup; apply additive DDL/backfill in explicit bounded phases, update `user_version` in the same final FULL transaction, then check integrity/foreign keys/version before ready. Version metadata outside SQLite is only a recovery hint, never authority over a contradictory database header.
 
 A migration changing immutable rows drops only the named fixed immutability triggers inside its exclusive migration transaction, performs the versioned backfill, recreates the complete approved trigger set, validates it, then publishes user_version with FULL COMMIT. SQL rollback restores both rows and triggers; a crash before COMMIT leaves the old complete schema. No disable flag or permanent exemption leaks into a normal connection. Long staged migration phases modify only new/unpublished tables until the final exclusive transaction, never unguarded old authority.
 
@@ -794,9 +824,11 @@ The runtime lease serializes old/new hosts and direct clients before migration. 
 
 ## Backups, restart and salvage
 
-Backups are SQLite online-backup snapshots, not copies of a live main file without its WAL. The host admits the first session and normal writes/custody as soon as the supported store is ready; startup backup is **after ready**, off the critical path. StoreFactory.backup owns an independent bounded read connection (borrowed from the fixed reader allocation), runs at most 64 pages per step at background priority and yields for foreground reads. It never holds the writer connection, drains the writer, or gates first-session/re-adoption admission. A slow/failed backup reports pending/failed through host diagnosis with source/cause and retained generation; it cannot turn ready into a false success for backup. Migration/recovery/erasure are separate explicit maintenance barriers. Shutdown drains/flushes, then attempts the requested clean backup within its explicit deadline; failure is named, not called clean.
+Backups are SQLite online-backup snapshots, not copies of a live main file without its WAL. Normal first-session admission, writes/custody and re-adoption start as soon as the supported store is ready; startup backup is **after ready**. StoreFactory.backup owns one independent bounded read connection from the fixed reader allocation and begins one read transaction, reads the source header/H to establish its WAL snapshot, then holds that **same transaction for the whole copy** through SQLITE_DONE or abort. Check the 64 MiB abort condition before the first step as well as between steps. Copy at most 64 pages per step at background priority and yield for foreground work. This explicit stable snapshot prevents writes on the separate writer from restarting the copy; see [SQLite backup source-connection locking](https://www.sqlite.org/backup.html). It never takes the writer connection, drains the writer or gates first bind. A slow/failed backup names source/cause and retained generations through diagnosis; it cannot turn ready into a false backup success. A throwaway SQLite 3.46.1 measurement held H=1000 across 65 one-page steps while a second connection committed 65 inserts: backup max remained 1000, writer max reached 1065 and remaining pages decreased every step. This measures SQLite snapshot convergence only, not the future store's WAL-limit cancellation or runtime budgets.
 
-Keep two published generations and at most one owned pending generation. Each manifest carries store/incarnation, schema/application ID, captured position, byte count, digest and validation result. No machine credential, launch secret or active endpoint is in a manifest; copied credential hashes are not live authority. Allocate the pending pathname exclusively; online-copy in finite steps; close and independently reopen read-only; validate integrity/FKs/version/captured H; sync owned files/directories where supported; no-replace publish and atomically update the manifest pointer; remove the oldest owned generation only after publication. Failure retains the two prior valid generations. A pending filename alone never proves a valid backup. Changes during backup may restart SQLite's copy internally; report that retry/deadline cost and keep yielding rather than pausing the writer to meet a snapshot goal.
+The store-owned opaque BackupContext is cloned from WriterOwner.backup_context (or HostStore.backup_context for maintenance/shutdown) and passed to the factory. It shares private store/incarnation/generation-bound pin/cancel state with the writer, without globals, a new worker or a queued barrier. The factory validates context and exclusive lease against the source, atomically reserves the single pending-backup slot, registers its pin intent **before** starting the read transaction, then clears it on every return/error/unwind. start_writer/drain preserve that same context; a stale context refuses. While a backup pin is active, the commit-driven writer defers checkpoint work that cannot finish and **never returns store-backpressure because of backup WAL growth**, including at 16 MiB. Commit-driven auto-checkpoint work is suppressed while the pin is registered and restored to the 256-page trigger on release; this never waits on the reader. Existing commit/WAL accounting records backlog and sets the backup abort flag at **64 MiB WAL**. The backup checks the flag/deadline between finite steps, finishes/closes the backup handle, rolls back the read transaction and releases its pin on abort, then returns backup-failed with WAL-limit cause and retained generations. Checkpointing can then resume on normal commits. The threshold is an abort trigger, not a physical hard cap: already-running bounded steps/commit groups can overshoot. Foreign pinned readers are diagnosed separately after backup release; backup cannot be relabelled as foreign-reader backpressure. No retry loop or polling timer runs: automatic retry is **next start-of-day**, not another attempt in this run.
+
+Keep two published generations and at most one owned pending generation. Each manifest carries store/incarnation, schema/application ID, the stable captured H, byte count, digest and validation result. No machine credential, launch secret or active endpoint is in a manifest; copied hashes are not live authority. Reserve the pending path exclusively; step the snapshot copy; release its source transaction/pin; close and independently reopen the destination read-only; validate integrity/FKs/version/captured H; sync owned files/directories where supported; no-replace publish and atomically update the manifest pointer. Remove the oldest owned generation only after publication. Failed/aborted owned pending copies never publish and retain both prior valid generations; cleanup removes only that exact owned pending artifact. The fixed source snapshot never restarts to chase new writes. Migration/recovery/erasure remain explicit maintenance barriers and require backup pin release/join. Shutdown drains/flushes, then makes its requested clean backup within the explicit deadline; failure is named, not called clean.
 
 Normal open reads only header/version and indexed readiness metadata, not whole-history validation. SQLite WAL recovery preserves acknowledged process-crash commits under NORMAL; it is not a promise against OS/power loss. Security events use FULL as specified above. Recovery restores at an explicit owner action; backup credentials are revoked/inactivated on adoption and process rows cannot become live custody just because they were copied. New incarnation invalidates old cursors/leases before admission.
 
@@ -902,14 +934,14 @@ The error type carries the stable code, typed offending entity/range/revision, c
 | `store-unreadable` | permission, malformed/truncated header, undecodable row or IO error; source/range preserved | restore access or inspect with doctor; do not initialize over it |
 | `store-application-mismatch` | application_id belongs to another database | select the correct home; never migrate the foreign file |
 | `store-too-new` | user_version above binary's supported range | install a compatible newer binary; old binary stays read/write refused |
-| `store-migration-required` | supported older schema; ordinary host/status/auto-start cannot upgrade | explicit owner migration/upgrade with the reviewed plan; no implicit daemon migration |
+| `store-migration-required` | supported older schema; ordinary host/status/auto-start cannot upgrade | owner runs se down, then se doctor --fix with the reviewed plan; explicit upgrade likewise requires old host down; no implicit daemon migration |
 | `store-version-unsupported` | older version/event/cursor codec outside supported range | use the named supported migration/import version |
 | `store-not-ready` | creating/migrating/recovering/erasing or failed maintenance phase | finish/resume the named owner maintenance operation |
 | `store-generation-changed` | incarnation/schema/generation changed after admission | reopen and re-admit using a fresh scope/cursor |
 | `store-location-unsafe` | non-owned/linked/unsupported network or synced state location | choose a local owned per-user state directory; preserve original data |
 | `store-pragma-refused` | required WAL/NORMAL/FK pragmas do not read back | correct filesystem/build support; do not admit writes |
 | `store-busy` | finite SQLite lock deadline expired | wait for named writer/maintenance; retry the same operation key |
-| `store-backpressure` | queue request/byte bound reached | await outstanding work then retry same key; do not spawn another writer |
+| `store-backpressure` | queue request/byte bound or non-backup pinned-reader WAL high-water reached | await outstanding work or release the diagnosed reader/checkpoint, then retry same key; never blame a backup pin or spawn another writer |
 | `store-writer-closed` | runtime writer drained/stopped before acceptance | reopen the current runtime generation and resubmit same key |
 | `commit-outcome-unknown` | IO/connection/reply deadline cannot prove COMMIT outcome | inspect/replay the original operation key before any replacement work |
 | `idempotency-key-reused` | same scope/actor/key with a different semantic fingerprint | recover the original arguments or choose a new key for an intentionally new operation |
@@ -948,9 +980,9 @@ A configured network/synced location refuses by explicit configuration/path clas
 
 Budget allocation within the 30 MB embedded envelope: target <=8 MiB store steady RSS and <=10 MiB normal peak for normal message/turn operations, including one 2 MB write cache and two lazy 2 MB reader caches (section 80 cache_size=-2000 each), bounded queue/staging buffers and decoded page material. No connection per session. Reader pool limit is two, with one materialized result budget per borrower; oversized capture text is staged/streamed rather than multiplied through queue copies. Backup/recovery/erasure are explicit maintenance with bounded buffers and visible resource costs; they must not starve the host's runtime or run idle workers. Startup open/header/version check targets section 80's 4 ms allocation within the <=100 ms budget including the first bound session; backup/re-adoption run after ready and never block the binding transaction. Idle store worker blocks without timers; no polling or WAL watcher is necessary for in-host commits.
 
-Storage target is <=1.4 KiB/event on the unchanged S1 825k-turn/100k-message/75k-marker composition at 1M, with complete source/body equality independently verified. A schema-only remeasurement addressing the review's 1,527 B/event result uses its 100k turns/200-byte bodies, 16 KiB pages and time-ordered keys: the corrected canonical/caller-key schema is **1,266.16 B/event**. Remove canonical identity dictionary rows (derive kind prefix from UUIDv7 bytes), eliminate the redundant turns projection (indexed owning turn_data suffices), and make the retry-key index partial. No body is omitted or compressed. A separate all-legacy EventId fixture with the actual keyless natural-capture policy is **1,390.84 B/event**; that is a different retry-key policy, not an apples-to-apples legacy overhead comparison. A scaled unchanged mix (82,500 turns +10,000 messages +7,500 read marks, 200-byte turn/message bodies, caller keys on every operation and all temporal indexes) is **1,375.76 B/event**. These are raw SQLite 3.46.1 schema fixtures adapted from Opus's sizing script with foreign_keys disabled, not a production writer/import/recovery implementation or full 1M/native qualification. They include commit stamps, reverse lookup and temporal indexes; WAL was checkpointed and backups are separate. Full product acceptance still measures its actual bodies, metadata, imported IDs and backup/WAL costs without hiding them. The sizing scripts/databases are external throwaway measurements, not product source or an author test suite.
+Storage target is <=1.4 KiB/event on the unchanged S1 825k-turn/100k-message/75k-marker composition at 1M, with complete source/body equality independently verified. A schema-only remeasurement addressing the review's 1,527 B/event result uses its 100k turns/200-byte bodies, 16 KiB pages and time-ordered keys: the corrected canonical/caller-key schema is **1,265.50 B/event**. Remove canonical identity dictionary rows (derive kind prefix from UUIDv7 bytes), eliminate the redundant turns projection (indexed owning turn_data suffices), and make the retry-key index partial. No body is omitted or compressed. A separate all-legacy EventId fixture with the actual keyless natural-capture policy is **1,390.18 B/event**; that is a different retry-key policy, not an apples-to-apples legacy overhead comparison. A scaled unchanged mix (82,500 turns +10,000 messages +7,500 read marks, 200-byte turn/message bodies, caller keys on every operation and all temporal indexes) is **1,356.43 B/event**. These are raw SQLite 3.46.1 schema fixtures adapted from Opus's sizing script with foreign_keys disabled, not a production writer/import/recovery implementation or full 1M/native qualification. They include commit stamps, reverse lookup and temporal indexes; WAL was checkpointed and backups are separate. Full product acceptance still measures its actual bodies, metadata, imported IDs and backup/WAL costs without hiding them. The sizing scripts/databases are external throwaway measurements, not product source or an author test suite.
 
-Warm 1M inbox target <=6 ms in-host/<=20 ms whole CLI, with an indexed 50-message page; no full history scan. Section 80's CLI-read p95 <20 ms and measured hook/write burst targets remain **unproven by this design**: NORMAL measured 3.14/72.15 and 3.42/19.21 ms p50/p99 at 20-agent bursts, with worse later tails. Queue/window tuning alone did not establish the tail. Build acceptance must measure signed native Windows with Defender, macOS and Linux; a median win does not establish the required p95/burst budgets. Checkpoint work is commit-driven on both host and direct connections via SQLite auto-checkpoint at 256 16-KiB pages (4 MiB), with TRUNCATE on clean shutdown. There is no scheduled PASSIVE worker or checkpoint timer. journal_size_limit is a reuse target, not a hard WAL cap: if pinned readers prevent checkpoint and WAL exceeds the 16 MiB high-water, reject new ordinary writes with store-backpressure, identify the pinned-reader condition, and retry only after reader release/checkpoint; never delete a live WAL. A security revocation must not be silently dropped for this pressure: close agent admission and report a FULL commit failure if it cannot be persisted. A busy checkpoint reports backlog and yields; it never blocks a query indefinitely or reports a fully flushed WAL when frames remain.
+Warm 1M inbox target <=6 ms in-host/<=20 ms whole CLI, with an indexed 50-message page; no full history scan. Section 80's CLI-read p95 <20 ms and measured hook/write burst targets remain **unproven by this design**: NORMAL measured 3.14/72.15 and 3.42/19.21 ms p50/p99 at 20-agent bursts, with worse later tails. Queue/window tuning alone did not establish the tail. Build acceptance must measure signed native Windows with Defender, macOS and Linux; a median win does not establish the required p95/burst budgets. Checkpoint work is commit-driven on both host and direct connections via SQLite auto-checkpoint at 256 16-KiB pages (4 MiB), with TRUNCATE on clean shutdown. There is no scheduled PASSIVE worker or checkpoint timer. journal_size_limit is a reuse target, not a hard WAL cap: if non-backup pinned readers prevent checkpoint and WAL exceeds the 16 MiB high-water, reject new ordinary writes with store-backpressure, identify the pinned-reader condition, and retry only after reader release/checkpoint; never delete a live WAL. During a backup pin, defer checkpointing and keep accepting writes; at 64 MiB abort/release the backup and retry next start-of-day as specified above. A security revocation must not be silently dropped for this pressure: close agent admission and report a FULL commit failure if it cannot be persisted. A busy checkpoint reports backlog and yields; it never blocks a query indefinitely or reports a fully flushed WAL when frames remain.
 
 A patched bundled SQLite must be shared with SE Code and avoid the documented WAL-reset defect (fixed in 3.51.3, with 3.50.7 backport); dependency/link versions are workspace coordination, not a private second SQLite build. The implementation must validate `cargo tree -d`/links compatibility at integration. [SQLite synchronous semantics](https://www.sqlite.org/pragma.html#pragma_synchronous), [WAL-reset advisory](https://www.sqlite.org/wal.html#walreset).
 
@@ -999,7 +1031,7 @@ This index binds the following declarations to the algorithms above. All methods
 | DirectStore.append / close | one-element canonical commit_group under direct-client lease; success only after COMMIT; close releases handles before lease release |
 | HostStore.start_writer | consumes the ready HostStore, retains Arc lease, independent of background startup backup; yields unique control owner and cloneable bounded submission handle |
 | HostStore.migration_plan / migrate | explicit owner/upgrade approval bound to plan fingerprint, maintenance-only supported old store; drain/join and close snapshots; verified backup, temporary transactional trigger recreation, FULL version publication |
-| StoreFactory.backup / HostStore.checkpoint / close_clean | background snapshot/rotation on a separate read connection without writer drain; checkpoint/close require the drained maintenance object; close_clean drains and reports backup failure truthfully |
+| StoreFactory.backup / HostStore.backup_context / WriterOwner.backup_context / HostStore.checkpoint / close_clean | opaque shared pin/cancel state; whole-copy fixed read transaction, 64 MiB abort rather than backup-induced write backpressure; background rotation without writer drain; checkpoint/close require the drained maintenance object; close_clean drains and reports backup failure truthfully |
 | StoreFactory.erasure_plan / HostStore.erase | exact target/revision inventory then approved in-place transaction and witnessed live DB/WAL cleanup; narrow approved body UPDATE/DELETE trigger exception with secure_delete and witnessed WAL cleanup; named backup/provider residuals |
 | WriterOwner.client / flush / drain | clone handle, async barrier through accepted work, then awaited stop/join yields unique HostStore; flush is not a new backup or a claim of power-loss durability |
 | WriterClient.submit / CommitWait Future / wait_blocking | immediate bounded admission/rejection and awaitable one-shot result; blocking wait is CLI-only; timeout/drop cannot cancel a possibly committed write; retry same key resolves outcome |
@@ -1014,1376 +1046,6 @@ This index binds the following declarations to the algorithms above. All methods
 | Snapshot.pending_effects / effect / integrations | durable pending/terminal intentions and exact outside-witness references; reads do not execute effects |
 | Snapshot.operation_receipt / import_progress / close | original request-key result and bounded source checkpoint windows; close ends snapshot, never advances a durable cursor |
 
-## Complete Rust declarations
+## Canonical Rust declarations
 
-The four source files below are the normative compile-only contract and are reproduced exactly. Rust 1.97.1 checks use the accepted main foundation directly: workspace check, Rustfmt and store Clippy with warnings denied for Linux x86_64, Windows MSVC x86_64 and macOS AArch64. Schema parsing creates 43 tables/30 triggers, foreign-key metadata is clean, and EXPLAIN shows scoped SEARCH plans for owner/sender/recipient messages, live processes, session history, event-to-operation lookup, decision key and both historical unread/pending-decision paths. These are declaration/DDL/plan checks, not an implemented SQLite store or native runtime qualification. No author tests, implementation blocks, executable defaults or placeholder macros are included. Exact sizing fixture limits are stated in the resource contract above.
-
-### crates/se-store/src/lib.rs
-
-```rust
-//! Compile-only storage design contract. No SQLite implementation is admitted.
-//!
-//! Normative behavior and formats: docs/design/20-data-model.md.
-//! All executable functions are trait declarations, without stub/default bodies.
-mod api;
-mod event;
-mod model;
-
-pub use api::*;
-pub use event::*;
-pub use model::*;
-```
-
-### crates/se-store/src/model.rs
-
-```rust
-use crate::HistoryFamily;
-pub use se_types::StoreId;
-use se_types::{
-    AgentId, Cursor, EventId, HumanId, IdempotencyKey, NativePath, ProjectId, Sequence, SessionId,
-    Window,
-};
-use std::{
-    num::{NonZeroU16, NonZeroU32},
-    path::PathBuf,
-    time::Duration,
-};
-
-/// Logical internal object (effect/source/import/erasure/process record), never an OS PID.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RecordId {
-    _bytes: [u8; 16],
-}
-/// UUIDv7 representation only; allocation supplies explicit time/entropy.
-pub trait RecordIdentity: Sized {
-    fn from_parts(unix_millis: u64, random: [u8; 10]) -> StoreResult<Self>;
-    fn from_bytes(bytes: [u8; 16]) -> StoreResult<Self>;
-    fn as_bytes(&self) -> &[u8; 16];
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Revision {
-    pub incarnation: u64,
-    pub position: Sequence,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Expected {
-    Absent,
-    Revision(Revision),
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Actor {
-    Human(HumanId),
-    Agent(AgentId),
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Scope {
-    Registry,
-    Project(ProjectId),
-}
-/// Supplied by admitted core policy; this is not a deserializable authority credential.
-#[derive(Clone, Debug)]
-pub struct Admission {
-    pub scope: Scope,
-    pub actor: Actor,
-    pub session: Option<SessionId>,
-    pub generation: u64,
-}
-#[derive(Clone, Debug)]
-pub enum Visibility {
-    Owner,
-    SelfOnly(AgentId),
-    SharedProject(AgentId),
-}
-#[derive(Clone, Debug)]
-pub struct ReadScope {
-    pub admission: Admission,
-    pub visibility: Visibility,
-}
-#[derive(Clone, Debug)]
-pub struct StoreOptions {
-    pub state_directory: PathBuf,
-    pub busy_timeout: Duration,
-}
-#[derive(Clone, Debug)]
-pub struct StoreInfo {
-    pub id: StoreId,
-    pub incarnation: u64,
-    pub schema_version: u32,
-    pub head: Option<Revision>,
-    pub state: StoreState,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StoreState {
-    Ready,
-    Migrating,
-    Recovering,
-    Erasing,
-}
-#[derive(Clone, Debug)]
-pub struct LeaseIdentity {
-    pub store: Option<StoreId>,
-    pub generation: u64,
-    pub mode: LeaseMode,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LeaseMode {
-    Host,
-    DirectClient,
-}
-#[derive(Clone, Debug)]
-pub struct WriterOptions {
-    pub maximum_requests: NonZeroU16,
-    pub queue_requests: NonZeroU16,
-    pub resident_bytes: NonZeroU32,
-    pub group_bytes: NonZeroU32,
-}
-#[derive(Clone, Debug)]
-pub struct ReadBudget {
-    pub page: se_types::PageRequest,
-    pub deadline: Duration,
-}
-
-/// Core computes this from the closed admitted operation input, before allocating IDs.
-/// It is never accepted from JSON/MCP or a caller-selected environment value.
-#[derive(Clone, Debug)]
-pub struct IntentDigest {
-    pub operation: &'static str,
-    pub codec_version: u16,
-    pub sha256: [u8; 32],
-}
-#[derive(Clone, Debug)]
-pub struct RequestIdentity {
-    pub key: IdempotencyKey,
-    pub intent: IntentDigest,
-}
-#[derive(Clone, Debug)]
-pub struct CommitReceipt {
-    pub request_key: Option<IdempotencyKey>,
-    pub state: CommitState,
-    pub primary_event: EventId,
-    pub writer: WriterMode,
-    pub durability: CommitDurability,
-    pub wakes: Vec<Wake>,
-    pub first: Revision,
-    pub last: Revision,
-    pub events: Vec<EventId>,
-}
-/// Constructed only by the canonical store committer or retained-event decoder.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WriterMode {
-    _kind: WriterKind,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WriterKind {
-    Host { generation: u64 },
-    Direct,
-}
-pub trait WriterModeValue {
-    fn kind(&self) -> WriterKind;
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CommitDurability {
-    Normal,
-    Full,
-}
-#[derive(Clone, Debug)]
-pub struct Wake {
-    pub project: ProjectId,
-    pub principal: Actor,
-    pub through: Revision,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CommitState {
-    Committed,
-    Replayed,
-    NaturalKeyReplay,
-}
-#[derive(Clone, Debug)]
-pub struct FlushReport {
-    pub through: Option<Revision>,
-    pub pending_requests: u32,
-    pub indeterminate: Vec<PendingOperation>,
-}
-#[derive(Clone, Debug)]
-pub enum PendingOperation {
-    CallerKey(IdempotencyKey),
-    NaturalEvents(Vec<EventId>),
-}
-#[derive(Clone, Debug)]
-pub struct CheckpointReport {
-    pub wal_frames: u64,
-    pub checkpointed_frames: u64,
-    pub busy: bool,
-}
-#[derive(Clone, Debug)]
-pub struct BackupGeneration {
-    pub id: RecordId,
-    pub through: Revision,
-    pub schema_version: u32,
-    pub bytes: u64,
-    pub sha256: [u8; 32],
-    pub path: PathBuf,
-}
-#[derive(Clone, Debug)]
-pub struct BackupReport {
-    pub published: BackupGeneration,
-    pub retained: Vec<BackupGeneration>,
-    pub removed: Vec<RecordId>,
-}
-#[derive(Clone, Debug)]
-pub struct MigrationPlan {
-    pub fingerprint: [u8; 32],
-    pub from: u32,
-    pub to: u32,
-    pub source: StoreId,
-    pub required_bytes: u64,
-}
-#[derive(Clone, Debug)]
-pub struct MigrationApproval {
-    pub owner: HumanId,
-    pub plan_fingerprint: [u8; 32],
-    pub trigger: MigrationTrigger,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MigrationTrigger {
-    ExplicitOwnerCommand,
-    ExplicitUpgrade,
-}
-#[derive(Clone, Debug)]
-pub struct MigrationReport {
-    pub schema_version: u32,
-    pub incarnation: u64,
-    pub backup: BackupGeneration,
-}
-#[derive(Clone, Debug)]
-pub struct RecoveryGap {
-    pub from: Option<Revision>,
-    pub to: Option<Revision>,
-    pub source_offset: Option<u64>,
-    pub reason: String,
-}
-#[derive(Clone, Debug)]
-pub struct SalvagePlan {
-    pub source_store: Option<StoreId>,
-    pub target_store: StoreId,
-    pub source: PathBuf,
-    pub candidate: PathBuf,
-    pub source_sha256: [u8; 32],
-    pub required_bytes: u64,
-}
-#[derive(Clone, Debug)]
-pub struct SalvageReport {
-    pub candidate: PathBuf,
-    pub source: Option<StoreId>,
-    pub target: StoreId,
-    pub recovered_events: u64,
-    pub gaps: Vec<RecoveryGap>,
-    pub complete: bool,
-}
-#[derive(Clone, Debug)]
-pub enum EraseField {
-    Body,
-    SourceDigest,
-}
-#[derive(Clone, Debug)]
-pub struct EraseTarget {
-    pub event: EventId,
-    pub expected: Revision,
-}
-#[derive(Clone, Debug)]
-pub struct ResidualCopy {
-    pub custodian: String,
-    pub location: NativePath,
-    pub reason: String,
-}
-#[derive(Clone, Debug)]
-pub struct ErasurePlan {
-    pub id: RecordId,
-    pub targets: Vec<EraseTarget>,
-    pub owned_generations: Vec<RecordId>,
-    pub residuals: Vec<ResidualCopy>,
-    pub required_bytes: u64,
-}
-/// Host supplies actual buffer/consumer readback; mere callback completion is not a witness.
-#[derive(Clone, Debug)]
-pub struct ErasureApproval {
-    pub erasure: RecordId,
-    pub owner: HumanId,
-    pub expected_incarnation: u64,
-    pub buffer_witnesses: Vec<EventId>,
-    pub accept_named_residuals: bool,
-}
-#[derive(Clone, Debug)]
-pub struct ErasureReport {
-    pub erasure: RecordId,
-    pub completed_event: Option<EventId>,
-    pub cleanup_complete: bool,
-    pub incarnation: u64,
-    pub erased_fields: Vec<EraseTarget>,
-    pub residuals: Vec<ResidualCopy>,
-}
-#[derive(Clone, Debug)]
-pub struct ImportCheckpoint {
-    pub import: RecordId,
-    pub family: String,
-    pub source_key: Vec<u8>,
-    pub source_sha256: [u8; 32],
-    pub byte_offset: u64,
-    pub row_offset: u64,
-    pub expected: Expected,
-}
-#[derive(Clone, Debug)]
-pub struct ImportCounts {
-    pub read: u64,
-    pub imported: u64,
-    pub duplicate: u64,
-    pub unreadable: u64,
-    pub dropped_by_policy: u64,
-}
-#[derive(Clone, Debug)]
-pub struct ResumeHead {
-    pub principal: Actor,
-    pub turn: Option<Revision>,
-    pub working_state: Option<Revision>,
-    pub cursor: Option<Revision>,
-    pub session: Option<Revision>,
-    pub unread: u64,
-    pub pending_effects: u64,
-    pub through: Revision,
-}
-#[derive(Clone, Debug)]
-pub struct CursorRecord {
-    pub id: RecordId,
-    pub agent: AgentId,
-    pub purpose: String,
-    pub value: Cursor,
-    pub window: Window,
-    pub expected: Expected,
-}
-#[derive(Clone, Debug)]
-pub struct StoreError {
-    pub code: StoreErrorCode,
-    pub cause: String,
-    pub detail: StoreDetail,
-    pub remedy: se_types::Remedy,
-    pub retry: se_types::Retry,
-}
-#[derive(Clone, Debug)]
-pub enum StoreDetail {
-    None,
-    Conflict {
-        expected: Expected,
-        observed: Option<Revision>,
-    },
-    Version {
-        application_id: u32,
-        found: u32,
-        minimum: u32,
-        maximum: u32,
-    },
-    Request {
-        scope: Scope,
-        actor: Actor,
-        key: IdempotencyKey,
-    },
-    Entity {
-        family: HistoryFamily,
-        event: Option<EventId>,
-        record: Option<RecordId>,
-    },
-    Source {
-        path: NativePath,
-        offset: Option<u64>,
-        length: Option<u64>,
-        sqlite_extended_code: Option<i32>,
-    },
-    Budget {
-        allowed: u64,
-        required: Option<u64>,
-    },
-    Maintenance {
-        state: StoreState,
-        operation: Option<RecordId>,
-    },
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StoreErrorCode {
-    Absent,
-    AlreadyExists,
-    Unreadable,
-    ApplicationMismatch,
-    TooNew,
-    VersionUnsupported,
-    MigrationRequired,
-    NotReady,
-    GenerationChanged,
-    LocationUnsafe,
-    PragmaRefused,
-    Busy,
-    Backpressure,
-    WriterClosed,
-    CommitOutcomeUnknown,
-    IdempotencyKeyReused,
-    EventIdConflict,
-    NaturalKeyConflict,
-    RevisionConflict,
-    InvalidTransition,
-    ReferenceMissing,
-    ScopeMismatch,
-    CreatorControlRefused,
-    EventInvalid,
-    BodyTooLarge,
-    ProjectionInconsistent,
-    CursorInvalid,
-    CursorStale,
-    ReadBudgetTooSmall,
-    ReadIncomplete,
-    SourceChanged,
-    MigrationFailed,
-    BackupFailed,
-    RecoveryIncomplete,
-    ContentErased,
-    ErasureIncomplete,
-    ErasureExternalCopies,
-    ErasurePhysicalGuaranteeUnavailable,
-}
-pub type StoreResult<T> = std::result::Result<T, Box<StoreError>>;
-```
-
-### crates/se-store/src/event.rs
-
-```rust
-use crate::{
-    Actor, CursorRecord, Expected, ImportCheckpoint, ImportCounts, RecordId, Revision, Scope,
-    StoreId,
-};
-use se_types::{
-    AgentId, DecisionId, EventId, HumanId, IdempotencyKey, LifecycleId, MessageId, NativePath,
-    ProcessInstance, ProjectId, SessionId,
-};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Door {
-    Cli,
-    Mcp,
-    Hook,
-    Host,
-    Import,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Provider {
-    Claude,
-    Codex,
-    SeCode,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PermissionProfile {
-    ReadOnly,
-    WorkspaceWrite,
-    NamedFullBypass,
-}
-#[derive(Clone, Debug)]
-pub struct Profile {
-    pub provider: Provider,
-    pub model: Option<String>,
-    pub permission: PermissionProfile,
-    pub named_profile: String,
-    pub effort: Option<String>,
-}
-#[derive(Clone, Debug)]
-pub struct Root {
-    pub path: NativePath,
-    pub canonical_key: Vec<u8>,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PrincipalKind {
-    Human,
-    Agent,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Consent {
-    Capture,
-    Suppressed,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Role {
-    System,
-    User,
-    Assistant,
-    Tool,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DecisionKind {
-    Note,
-    Decision,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProcessState {
-    Reserved,
-    Starting,
-    Running,
-    LeaderExited,
-    StopRequested,
-    StopUnproved,
-    Exited,
-    Lost,
-    Historical,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EffectKind {
-    Bell,
-    Packet,
-    IntegrationWrite,
-    ProcessStart,
-    ProcessStop,
-    RuntimeStart,
-    RuntimeStop,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EffectOutcome {
-    Witnessed,
-    Failed,
-    Abandoned,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IntegrationState {
-    Installed,
-    Removed,
-    Conflict,
-}
-#[derive(Clone, Debug)]
-pub enum ConfigKey {
-    DefaultProject,
-    DaemonAutostart,
-    McpPort,
-    ClaudeCommand,
-    ClaudeModel,
-    ClaudePermission,
-    CodexCommand,
-    CodexModel,
-    CodexPermission,
-    AtlasEnabled,
-    AgentCanCreate(AgentId),
-}
-#[derive(Clone, Debug)]
-pub enum GrantKey {
-    AgentCanCreate(AgentId),
-}
-#[derive(Clone, Debug)]
-pub enum ConfigValue {
-    Bool(bool),
-    Integer(i64),
-    Text(String),
-    Project(ProjectId),
-    Permission(PermissionProfile),
-}
-#[derive(Clone, Debug)]
-pub struct SourceEvidence {
-    pub path: NativePath,
-    pub incarnation: Vec<u8>,
-    pub offset: u64,
-    pub length: u64,
-    pub sha256: Option<[u8; 32]>,
-}
-#[derive(Clone, Debug)]
-pub struct ProcessIdentityRecord {
-    pub record: LifecycleId,
-    pub principal: Actor,
-    pub session: Option<SessionId>,
-    pub instance: RecordedIdentity,
-    pub custody: NativeCustody,
-    pub containment: ContainmentFact,
-}
-#[derive(Clone, Debug)]
-pub enum RecordedIdentity {
-    Present(ProcessInstance),
-    Absent { reason: String },
-    Unreadable { cause: String },
-}
-/// Versioned se-proc ProcessRecord/LaunchReservation codec; never an OS handle.
-#[derive(Clone, Debug)]
-pub struct NativeCustody {
-    pub format_version: u16,
-    pub record: Vec<u8>,
-}
-#[derive(Clone, Debug)]
-pub enum ContainmentFact {
-    NotLaunched,
-    Unknown {
-        reason: String,
-    },
-    Contained {
-        kind: ContainmentKind,
-        observed_at_us: i64,
-    },
-    Uncontained {
-        cause: ContainmentCause,
-        observed_at_us: i64,
-        probe: Option<EventId>,
-    },
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContainmentKind {
-    Cgroup,
-    Job,
-    ProcessGroup,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ContainmentCause {
-    NoUserManager,
-    NoDelegation,
-    CgroupV2Absent,
-    CgroupUnreadable,
-    ScopeCreateFailed,
-}
-/// Metadata from the same owned staging pass; never caller-path metadata.
-pub trait StagedTextValue {
-    fn byte_length(&self) -> u64;
-    fn sha256(&self) -> [u8; 32];
-}
-/// Created only by the future staging implementation from a bounded owned stream.
-/// No public arbitrary-path constructor; not a credential or an event payload by itself.
-#[derive(Debug)]
-pub struct StagedText {
-    _private: (),
-}
-pub enum InputText {
-    Inline(String),
-    Staged(StagedText),
-}
-#[derive(Clone)]
-pub enum StoredText {
-    Present(String),
-    Erased { erasure: RecordId },
-}
-#[derive(Clone)]
-pub struct LegacyBytes {
-    pub bytes: Vec<u8>,
-    pub sha256: [u8; 32],
-}
-#[derive(Clone, Debug)]
-pub struct EventHeader {
-    pub event: EventId,
-    pub scope: Scope,
-    pub actor: Actor,
-    pub session: Option<SessionId>,
-    pub origin: StoreId,
-    pub door: Door,
-    pub occurred_at_us: i64,
-    pub cause: Option<EventId>,
-    pub supersedes: Option<EventId>,
-}
-pub struct NewEvent {
-    pub header: EventHeader,
-    pub body: EventBody<InputText>,
-}
-#[derive(Clone)]
-pub struct StoredEvent {
-    pub header: EventHeader,
-    pub revision: Revision,
-    pub recorded_at_us: i64,
-    pub recorded_incarnation: u64,
-    pub writer: crate::WriterMode,
-    pub durability: crate::CommitDurability,
-    pub body: EventBody<StoredText>,
-    pub erased_fields: Vec<(crate::EraseField, RecordId)>,
-}
-/// Closed version-1 persisted kind catalogue. Body text is supplied by T once.
-#[derive(Clone)]
-pub enum EventBody<T> {
-    ProjectRegistered {
-        project: ProjectId,
-        name: String,
-        roots: Vec<Root>,
-        owner: HumanId,
-        expected: Expected,
-    },
-    ProjectUpdated {
-        project: ProjectId,
-        name: String,
-        roots: Vec<Root>,
-        expected: Expected,
-    },
-    ProjectRemoved {
-        project: ProjectId,
-        expected: Expected,
-        witnesses: Vec<EventId>,
-        preserved: Vec<String>,
-    },
-    PrincipalRegistered {
-        principal: Actor,
-        kind: PrincipalKind,
-        owner: HumanId,
-        created_by: Option<Actor>,
-        name: String,
-        role: String,
-        expected: Expected,
-    },
-    PrincipalRenamed {
-        principal: Actor,
-        name: String,
-        expected: Expected,
-    },
-    AliasImported {
-        alias: String,
-        principal: Actor,
-        source: EventId,
-        expected: Expected,
-    },
-    ProfileSaved {
-        agent: AgentId,
-        profile: Profile,
-        expected: Expected,
-    },
-    GrantRecorded {
-        principal: Actor,
-        key: GrantKey,
-        active: bool,
-        expected: Expected,
-    },
-    ConfigSet {
-        key: ConfigKey,
-        value: ConfigValue,
-        expected: Expected,
-    },
-    SessionPrepared {
-        session: SessionId,
-        agent: AgentId,
-        provider: Provider,
-        native_ref: String,
-        consent: Consent,
-        generation: u64,
-        expected: Expected,
-    },
-    SessionActivated {
-        session: SessionId,
-        expected: Expected,
-        incumbent: Option<(SessionId, Revision)>,
-        process: Option<LifecycleId>,
-        containment: ContainmentFact,
-        witnesses: Vec<EventId>,
-    },
-    SessionEnded {
-        session: SessionId,
-        expected: Expected,
-        reason: T,
-        final_turn: Option<EventId>,
-        final_cursor: Option<EventId>,
-    },
-    SessionRevoked {
-        session: SessionId,
-        expected: Expected,
-        reason: T,
-    },
-    CredentialIssued {
-        credential: RecordId,
-        session: SessionId,
-        purpose: String,
-        secret_sha256: [u8; 32],
-        expires_at_us: i64,
-        activation_deadline_us: i64,
-        expected: Expected,
-    },
-    CredentialActivated {
-        credential: RecordId,
-        session: SessionId,
-        expected: Expected,
-        first_request: RecordId,
-    },
-    CredentialRevoked {
-        credential: RecordId,
-        expected: Expected,
-        reason: T,
-    },
-    MessageSent {
-        message: MessageId,
-        recipient: Actor,
-        kind: String,
-        body: T,
-        refs: Vec<EventId>,
-        reply_to: Option<MessageId>,
-    },
-    MessageDelivered {
-        message: MessageId,
-        recipient: Actor,
-        evidence: EventId,
-    },
-    MessageRead {
-        message: MessageId,
-        recipient: Actor,
-    },
-    MessageDismissed {
-        message: MessageId,
-        recipient: Actor,
-    },
-    MessageSuperseded {
-        message: MessageId,
-        replacement: MessageId,
-        expected: Expected,
-    },
-    DecisionProposed {
-        decision: DecisionId,
-        key: String,
-        statement: T,
-        prior: Option<DecisionId>,
-        kind: DecisionKind,
-    },
-    DecisionRatified {
-        decision: DecisionId,
-        expected: Expected,
-        approval: EventId,
-    },
-    DecisionRejected {
-        decision: DecisionId,
-        expected: Expected,
-        reason: T,
-    },
-    DecisionRetracted {
-        decision: DecisionId,
-        expected: Expected,
-        reason: T,
-    },
-    DecisionSuperseded {
-        prior: DecisionId,
-        replacement: DecisionId,
-        prior_expected: Revision,
-        replacement_expected: Revision,
-        approval: EventId,
-    },
-    TurnCaptured {
-        turn: RecordId,
-        agent: AgentId,
-        session: SessionId,
-        provider: Provider,
-        vendor_ref: String,
-        role: Role,
-        text: T,
-        evidence: SourceEvidence,
-    },
-    CaptureSource {
-        source: RecordId,
-        session: SessionId,
-        consent: Consent,
-        native_ref: String,
-        incarnation: Vec<u8>,
-        expected: Expected,
-    },
-    CaptureProgress {
-        source: RecordId,
-        expected: Expected,
-        incarnation: Vec<u8>,
-        old_offset: u64,
-        new_offset: u64,
-        last_turn: RecordId,
-    },
-    CaptureFailed {
-        source: RecordId,
-        session: SessionId,
-        from_offset: u64,
-        to_offset: u64,
-        code: se_types::Code,
-        cause: String,
-        retry: se_types::Retry,
-    },
-    CaptureSuppressed {
-        source: RecordId,
-        session: SessionId,
-        expected: Expected,
-        reason: String,
-        from_offset: u64,
-        to_offset: u64,
-        count: u64,
-    },
-    ProcessRegistered {
-        identity: Box<ProcessIdentityRecord>,
-        initial: ProcessState,
-    },
-    ProcessTransition {
-        process: LifecycleId,
-        identity: Box<ProcessIdentityRecord>,
-        expected: Expected,
-        from: ProcessState,
-        to: ProcessState,
-        observation: EventId,
-        outcome: String,
-        containment: ContainmentFact,
-    },
-    WorkingStateSet {
-        agent: AgentId,
-        text: T,
-        expected: Expected,
-    },
-    CursorRecorded {
-        cursor: Box<CursorRecord>,
-    },
-    CursorAcknowledged {
-        cursor: RecordId,
-        expected: Revision,
-        evidence: EventId,
-    },
-    EffectRequested {
-        principal: Option<Actor>,
-        effect: RecordId,
-        kind: EffectKind,
-        intent: EffectIntent,
-        cause: EventId,
-        request_key: IdempotencyKey,
-    },
-    EffectOffered {
-        effect: RecordId,
-        principal: Actor,
-        attempt: RecordId,
-        evidence: EventId,
-    },
-    EffectSettled {
-        effect: RecordId,
-        expected: Expected,
-        outcome: EffectOutcome,
-        evidence: Vec<EventId>,
-        failure: Option<String>,
-        attempts: u32,
-    },
-    IntegrationRecorded {
-        integration: RecordId,
-        path: NativePath,
-        key: String,
-        marker: String,
-        prior_sha256: Option<[u8; 32]>,
-        written_sha256: Option<[u8; 32]>,
-        state: IntegrationState,
-        witness: EventId,
-        expected: Expected,
-    },
-    BackupRecorded {
-        generation: RecordId,
-        through: Revision,
-        bytes: u64,
-        sha256: [u8; 32],
-        schema_version: u32,
-        witness: EventId,
-    },
-    ImportStarted {
-        import: RecordId,
-        source: NativePath,
-        source_sha256: [u8; 32],
-        format: String,
-        policy_version: u32,
-    },
-    ImportProgress {
-        checkpoint: ImportCheckpoint,
-        counts: ImportCounts,
-    },
-    ImportFinished {
-        import: RecordId,
-        expected: Expected,
-        counts: ImportCounts,
-        complete: bool,
-        omissions: Vec<RecordId>,
-    },
-    ImportUnreadable {
-        import: RecordId,
-        family: String,
-        evidence: SourceEvidence,
-        code: String,
-    },
-    LegacyRetained {
-        import: RecordId,
-        family: String,
-        format_version: u32,
-        legacy_id: String,
-        mapped_id: RecordId,
-        source: SourceEvidence,
-        bytes: Option<LegacyBytes>,
-    },
-    TurnErased {
-        target: EventId,
-        erasure: RecordId,
-        original_bytes: u64,
-        by: HumanId,
-    },
-    MessageErased {
-        target: EventId,
-        erasure: RecordId,
-        original_bytes: u64,
-        by: HumanId,
-    },
-    ErasureRequested {
-        erasure: RecordId,
-        targets: Vec<crate::EraseTarget>,
-        residuals: Vec<crate::ResidualCopy>,
-    },
-    ErasureCompleted {
-        erasure: RecordId,
-        manifest_sha256: [u8; 32],
-        incarnation: u64,
-        witnesses: Vec<EventId>,
-    },
-    RecoveryRecorded {
-        recovery: RecordId,
-        source: Option<StoreId>,
-        source_artifact: SourceEvidence,
-        target: StoreId,
-        backup: Option<RecordId>,
-        recovered: u64,
-        gaps: Vec<crate::RecoveryGap>,
-        schema_version: u32,
-        witnesses: Vec<EventId>,
-    },
-}
-/// Closed effect intent: safe references, never shell code, secret environment or arbitrary SQL.
-#[derive(Clone, Debug)]
-pub enum EffectIntent {
-    Mail {
-        message: MessageId,
-        recipient: Actor,
-    },
-    Packet {
-        session: SessionId,
-        cursor: RecordId,
-    },
-    Integration {
-        integration: RecordId,
-        plan_sha256: [u8; 32],
-    },
-    Process {
-        process: LifecycleId,
-        plan_sha256: [u8; 32],
-    },
-    Runtime {
-        generation: u64,
-    },
-}
-pub struct AtomicBatch {
-    pub admission: crate::Admission,
-    pub request: Option<crate::RequestIdentity>,
-    pub events: Vec<NewEvent>,
-    pub import_checkpoint: Option<ImportCheckpoint>,
-}
-```
-
-### crates/se-store/src/api.rs
-
-```rust
-use crate::*;
-use se_types::{
-    AgentId, DecisionId, EventId, IdempotencyKey, LifecycleId, MessageId, Page, ProjectId, Read,
-    SessionId,
-};
-use std::{future::Future, io::Read as ByteReader, sync::Arc, time::Duration};
-
-/// Host filesystem custody supplies the held per-user runtime lease. An in-process
-/// caller is trusted; IPC callers cannot construct this object from request JSON.
-pub trait RuntimeLease: Send + Sync {
-    fn identity(&self) -> StoreResult<LeaseIdentity>;
-}
-/// Constructors are declarations, not executable fallback/default implementations.
-pub trait StoreFactory {
-    type Reader: ReadStore;
-    type Direct: DirectStore;
-    type Host: HostStore;
-    /// Background online snapshot; requires host lease, independent read connection.
-    fn backup(
-        options: &StoreOptions,
-        lease: Arc<dyn RuntimeLease>,
-        deadline: Duration,
-    ) -> StoreResult<BackupReport>;
-    /// Read-only inventory before owner approval or writer drain; recheck on erase.
-    fn erasure_plan(
-        options: &StoreOptions,
-        targets: Vec<EraseTarget>,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<ErasurePlan>;
-    fn recovery_plan(
-        options: &StoreOptions,
-        lease: &dyn RuntimeLease,
-        target_store: StoreId,
-    ) -> StoreResult<SalvagePlan>;
-    fn build_salvage(
-        options: &StoreOptions,
-        plan: SalvagePlan,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<SalvageReport>;
-    fn adopt_salvage(
-        options: &StoreOptions,
-        report: SalvageReport,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<Self::Host>;
-    fn restore_backup(
-        options: &StoreOptions,
-        backup: BackupGeneration,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<Self::Host>;
-    fn open_reader(options: &StoreOptions) -> StoreResult<Read<Self::Reader>>;
-    fn open_direct(
-        options: &StoreOptions,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<Read<Self::Direct>>;
-    fn open_host(options: &StoreOptions, lease: &dyn RuntimeLease)
-    -> StoreResult<Read<Self::Host>>;
-    /// Owner bootstrap with shared runtime lease; publish a new schema no-replace.
-    fn create_direct(
-        options: &StoreOptions,
-        lease: &dyn RuntimeLease,
-        store_id: StoreId,
-    ) -> StoreResult<Self::Direct>;
-    fn create(
-        options: &StoreOptions,
-        lease: &dyn RuntimeLease,
-        store_id: StoreId,
-    ) -> StoreResult<Self::Host>;
-}
-pub trait ReadStore {
-    type Snapshot: Snapshot;
-    fn info(&self) -> StoreResult<StoreInfo>;
-    fn inspect_backups(&self, budget: ReadBudget) -> StoreResult<Page<Read<BackupGeneration>>>;
-    fn snapshot(&self, scope: ReadScope) -> StoreResult<Self::Snapshot>;
-    /// Bootstrap-only hash lookup used by the trusted capability verifier before
-    /// constructing Admission; never an operation/tool or a principal fallback.
-    fn credential(&self, secret_sha256: [u8; 32]) -> StoreResult<Read<CredentialRecord>>;
-}
-pub trait TextStaging {
-    fn stage_text(
-        &self,
-        source: &mut dyn ByteReader,
-        maximum_bytes: u64,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<StagedText>;
-}
-pub trait DirectStore: ReadStore + TextStaging {
-    fn append(
-        &mut self,
-        batch: AtomicBatch,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<CommitReceipt>;
-    fn close(self) -> StoreResult<()>
-    where
-        Self: Sized;
-}
-pub trait HostStore: ReadStore + TextStaging + Sized {
-    type Writer: WriterOwner<Host = Self>;
-    fn start_writer(
-        self,
-        options: WriterOptions,
-        lease: Arc<dyn RuntimeLease>,
-    ) -> StoreResult<Self::Writer>;
-    fn migration_plan(&self, target_version: u32) -> StoreResult<MigrationPlan>;
-    fn migrate(
-        &mut self,
-        plan: MigrationPlan,
-        approval: MigrationApproval,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<MigrationReport>;
-    fn checkpoint(
-        &mut self,
-        mode: CheckpointMode,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<CheckpointReport>;
-    fn erase(
-        &mut self,
-        plan: ErasurePlan,
-        approval: ErasureApproval,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<ErasureReport>;
-    fn close_clean(self, lease: &dyn RuntimeLease, deadline: Duration) -> StoreResult<BackupReport>
-    where
-        Self: Sized;
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CheckpointMode {
-    Passive,
-    Truncate,
-}
-pub trait WriterOwner {
-    type Host: HostStore;
-    type Client: WriterClient;
-    fn client(&self) -> Self::Client;
-    type Flush: Future<Output = StoreResult<FlushReport>> + Send;
-    type Drain: Future<Output = StoreResult<DrainedHost<Self::Host>>> + Send;
-    fn flush(&mut self, deadline: Duration) -> StoreResult<Self::Flush>;
-    fn drain(self, deadline: Duration) -> Self::Drain
-    where
-        Self: Sized;
-}
-pub struct DrainedHost<H: HostStore> {
-    pub host: H,
-    pub report: FlushReport,
-}
-pub trait WriterClient: Clone + Send + Sync {
-    type Completion: CommitWait;
-    fn submit(&self, batch: AtomicBatch) -> StoreResult<Self::Completion>;
-}
-pub trait CommitWait: Future<Output = StoreResult<CommitReceipt>> + Send {
-    /// CLI/direct synchronous consumers only; async host awaits this Future.
-    fn wait_blocking(self, deadline: Duration) -> StoreResult<CommitReceipt>
-    where
-        Self: Sized;
-}
-/// Private implementation seam: both host group commit and direct append use
-/// this exact transaction engine. SQL handles never appear in the public API.
-#[allow(
-    dead_code,
-    reason = "Compile-only private transaction contract; implementation is not admitted."
-)]
-pub(crate) trait TransactionEngine {
-    fn commit_group(
-        &mut self,
-        batches: Vec<AtomicBatch>,
-    ) -> StoreResult<Vec<StoreResult<CommitReceipt>>>;
-    fn append_atomic(&mut self, batch: AtomicBatch) -> StoreResult<PreparedReceipt>;
-    fn apply(&mut self, event: &StoredEvent) -> StoreResult<()>;
-}
-/// Cannot be returned to a caller as a durable receipt before group COMMIT.
-pub(crate) struct PreparedReceipt {
-    _private: (),
-}
-
-#[derive(Clone, Debug)]
-pub struct MessageQuery {
-    pub recipient: Option<Actor>,
-    pub sender: Option<Actor>,
-    pub kind: Option<String>,
-    pub unread_only: bool,
-    pub full_body: bool,
-}
-#[derive(Clone, Debug)]
-pub struct DecisionQuery {
-    pub id: Option<DecisionId>,
-    pub pending_only: bool,
-    pub history: bool,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum HistoryFamily {
-    Identity,
-    Configuration,
-    Sessions,
-    Messages,
-    Decisions,
-    Turns,
-    Processes,
-    WorkingState,
-    Cursors,
-    Effects,
-    Import,
-    Recovery,
-}
-#[derive(Clone, Debug)]
-pub struct HistoryQuery {
-    pub agent: Option<AgentId>,
-    pub families: Vec<HistoryFamily>,
-    pub since: Option<Revision>,
-}
-#[derive(Clone, Debug)]
-pub struct SearchQuery {
-    pub text: String,
-    pub history: HistoryQuery,
-}
-/// Internal storage record, not a frozen CLI/MCP wire DTO.
-#[derive(Clone)]
-pub struct MessageRecord {
-    pub message: MessageId,
-    pub event: EventId,
-    pub sent: Revision,
-    pub sender: Actor,
-    pub recipient: Actor,
-    pub kind: String,
-    pub body: StoredText,
-    pub refs: Vec<EventId>,
-    pub reply_to: Option<MessageId>,
-    pub delivered: Option<Revision>,
-    pub read: Option<Revision>,
-    pub dismissed: Option<Revision>,
-    pub body_complete: bool,
-}
-#[derive(Clone, Debug)]
-pub struct CredentialRecord {
-    pub credential: RecordId,
-    pub project: ProjectId,
-    pub agent: AgentId,
-    pub session: SessionId,
-    pub purpose: String,
-    pub expires_at_us: i64,
-    pub activation_deadline_us: i64,
-    pub state: CredentialState,
-    pub revision: Revision,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CredentialState {
-    Prepared,
-    Active,
-    Revoked,
-}
-#[derive(Clone)]
-pub struct SearchHit {
-    pub event: EventId,
-    pub revision: Revision,
-    pub snippet: StoredText,
-    pub body_complete: bool,
-}
-/// Current-head record; body is reconstructed from the owning immutable event.
-#[derive(Clone)]
-pub struct ProjectionRecord {
-    pub original: Option<Box<StoredEvent>>,
-    pub current: StoredEvent,
-}
-/// One finite read transaction. No method mutates a marker/cursor or repairs data.
-pub trait Snapshot {
-    type LegacyRegistry<'a>: se_types::LegacyIdRegistry
-    where
-        Self: 'a;
-    /// Bound to this snapshot's admitted project and recorded import sources.
-    fn legacy_registry(&self) -> StoreResult<Self::LegacyRegistry<'_>>;
-    fn info(&self) -> StoreInfo;
-    fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>>;
-    fn history(
-        &mut self,
-        query: HistoryQuery,
-        budget: ReadBudget,
-    ) -> StoreResult<Page<StoredEvent>>;
-    fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<Page<SearchHit>>;
-    fn projects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
-    fn project(&mut self, id: ProjectId) -> StoreResult<Read<ProjectionRecord>>;
-    fn principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
-    fn principal(&mut self, id: Actor) -> StoreResult<Read<ProjectionRecord>>;
-    fn profile(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
-    fn configuration(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
-    fn config(&mut self, key: ConfigKey) -> StoreResult<Read<ProjectionRecord>>;
-    fn grant(&mut self, principal: Actor, key: GrantKey) -> StoreResult<Read<ProjectionRecord>>;
-    fn session(&mut self, id: SessionId) -> StoreResult<Read<ProjectionRecord>>;
-    fn sessions(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
-    fn message(&mut self, id: MessageId) -> StoreResult<Read<MessageRecord>>;
-    fn messages(
-        &mut self,
-        query: MessageQuery,
-        budget: ReadBudget,
-    ) -> StoreResult<Page<MessageRecord>>;
-    fn decision(&mut self, id: DecisionId) -> StoreResult<Read<ProjectionRecord>>;
-    fn decisions(
-        &mut self,
-        query: DecisionQuery,
-        budget: ReadBudget,
-    ) -> StoreResult<Page<ProjectionRecord>>;
-    fn turns(&mut self, agent: AgentId, budget: ReadBudget) -> StoreResult<Page<StoredEvent>>;
-    fn capture_source(&mut self, source: RecordId) -> StoreResult<Read<ProjectionRecord>>;
-    fn process(&mut self, id: LifecycleId) -> StoreResult<Read<ProjectionRecord>>;
-    fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
-    fn working_state(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
-    fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorRecord>>;
-    fn resume_head(&mut self, principal: Actor) -> StoreResult<Read<ResumeHead>>;
-    fn pending_effects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
-    fn effect(&mut self, id: RecordId) -> StoreResult<Read<ProjectionRecord>>;
-    fn integrations(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
-    fn operation_receipt(
-        &mut self,
-        actor: Actor,
-        request_key: IdempotencyKey,
-    ) -> StoreResult<Read<CommitReceipt>>;
-    fn import_progress(
-        &mut self,
-        import: RecordId,
-        budget: ReadBudget,
-    ) -> StoreResult<Page<ImportCheckpoint>>;
-    fn close(self) -> StoreResult<()>
-    where
-        Self: Sized;
-}
-```
+The compile-only signatures live only in the crate: [lib.rs](../../crates/se-store/src/lib.rs) exports [model.rs](../../crates/se-store/src/model.rs), [event.rs](../../crates/se-store/src/event.rs) and [api.rs](../../crates/se-store/src/api.rs). Those four source files are the single Rust declaration authority; this document owns the behavioral contracts and SQL. Workspace check, formatting and Linux/Windows-MSVC/macOS-AArch64 Clippy check the declarations; they do not qualify a runtime backend.

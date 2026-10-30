@@ -176,6 +176,12 @@ pub struct CheckpointReport {
     pub checkpointed_frames: u64,
     pub busy: bool,
 }
+/// Store-owned shared backup/WAL coordination; no public constructor or mutator.
+/// Private implementation retains store/incarnation/generation and pin/cancel state.
+#[derive(Clone)]
+pub struct BackupContext {
+    _private: (),
+}
 #[derive(Clone, Debug)]
 pub struct BackupGeneration {
     pub id: RecordId,

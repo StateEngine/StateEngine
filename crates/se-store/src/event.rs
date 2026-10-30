@@ -135,9 +135,18 @@ pub struct ProcessIdentityRecord {
     pub record: LifecycleId,
     pub principal: Actor,
     pub session: Option<SessionId>,
+    pub root_identity: RootIdentityState,
     pub instance: RecordedIdentity,
     pub custody: NativeCustody,
     pub containment: ContainmentFact,
+}
+/// Durable native checkpoint fact, not a claim about current PID liveness.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootIdentityState {
+    NoChildCreated,
+    Unpublished,
+    Identified,
+    Unknown,
 }
 #[derive(Clone, Debug)]
 pub enum RecordedIdentity {
@@ -145,7 +154,7 @@ pub enum RecordedIdentity {
     Absent { reason: String },
     Unreadable { cause: String },
 }
-/// Versioned se-proc ProcessRecord/LaunchReservation codec; never an OS handle.
+/// Versioned se-proc reservation/scope/root/process/exit codec; never an OS handle.
 #[derive(Clone, Debug)]
 pub struct NativeCustody {
     pub format_version: u16,
