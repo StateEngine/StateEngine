@@ -1,6 +1,6 @@
 use crate::{
     Actor, CursorRecord, Expected, ImportCheckpoint, ImportCounts, RecordId, Revision,
-    RuntimeHandoverRecord, Scope, StoreId,
+    RuntimeHandoverRecord, RuntimeRecoveredTransfer, Scope, StoreId,
 };
 use se_types::{
     AgentId, DecisionId, EventId, Generation, HostEpoch, HumanId, IdempotencyKey, LifecycleId,
@@ -515,6 +515,7 @@ pub enum EventBody<T> {
         expected_owner_generation: Option<Generation>,
         expected: Expected,
         witnesses: Vec<EventId>,
+        recovered: Option<Box<RuntimeRecoveredTransfer>>,
     },
     RuntimeHandoverRecorded {
         record: Box<RuntimeHandoverRecord>,

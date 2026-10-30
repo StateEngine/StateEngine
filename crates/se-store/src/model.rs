@@ -114,6 +114,18 @@ pub enum RuntimeHandoverPhase {
     Activated,
     Finished,
     Aborted,
+    /// Terminal resolution recorded inside the fresh FULL runtime.owner fact.
+    Recovered,
+}
+/// Binds checked cold ownership to the original transfer without rewriting peers.
+/// The enclosing event header is the new owner/completion EventId.
+#[derive(Clone)]
+pub struct RuntimeRecoveredTransfer {
+    pub transfer: RecordId,
+    pub handover_event: EventId,
+    pub activated_custody_sha256: [u8; 32],
+    pub capture_at: Revision,
+    pub queue_cut_sha256: [u8; 32],
 }
 /// Non-secret singleton view; private transfer material stays on the host port.
 #[derive(Clone, Debug)]
