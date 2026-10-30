@@ -36,7 +36,7 @@ Three release variants must stay explicit:
 | Variant | Contains | Runtime/build boundary |
 | --- | --- | --- |
 | Public SE Code | permissively licensed host API and unavailable stub | no proprietary se-types/store/core/proc/host/atlas dependency, source or `se` payload |
-| Commercial SE Code | linked StateEngine host plus separately licensed native `se` payload/alias | embedded host uses default-features=false, secode+listener, Atlas disabled by default; one product host |
+| Commercial SE Code | linked StateEngine host plus separately licensed native `se` payload/alias | embedded host uses default-features=false, secode+listener, no linked Atlas; one product host |
 | Standalone StateEngine | native `se`, required notices and install/uninstall scripts | Atlas optional and disabled by default; user-history import, no fleet data; one daemon only when normal custody requires it |
 
 The commercial package and standalone download use the same version/target-pinned
@@ -58,8 +58,8 @@ earlier-numbered units to finish:
 | Build stage | Release work available at that stage | Consumer milestone |
 | --- | --- | --- |
 | 0 | R01 input/feature split and runner wiring with the existing Rust action map | runner red against a stub on Windows/Linux, launched outside agent trees |
-| 1 | minimal R03 standalone binary, standalone R06, unsigned R07 archive; R02 public separation proceeds independently | J1 from an unsigned archive, including install and uninstall scripts |
-| 2 | extend R03/R06/R07 for host, Claude headless and uninstall operation | J2/J3/J5 with real Claude on Linux, then Windows |
+| 1 | minimal R03 standalone binary, R06 including se uninstall, unsigned R07 archive; R02 public separation proceeds independently | J1 from an unsigned archive, including install and delegating uninstall scripts |
+| 2 | extend R03/R06/R07 for host and Claude headless custody | J2/J3/J5 with real Claude on Linux, then Windows |
 | 3 | extend those same artifacts for Codex, attended/windowed flows, doctor plans and user-history import | all five journeys, both providers, Windows/Linux standalone |
 | 4 | R05 embedded bundle plus live handover, forget and R04 signing; rerun R07 on signed bytes | B1/B2/B8 Windows/Linux and J1 from the signed download |
 | 5 | macOS R03/R04 work in the borrowed-Mac compatibility campaign; final R08 | all five journeys on clean Windows/Linux/macOS, both providers, standalone and embedded SE Code |
@@ -67,6 +67,7 @@ earlier-numbered units to finish:
 Atlas implementation follows the journeys and live handover. It may be included
 if ready and qualified, remains off by default, and never holds a milestone or
 release. An Atlas-free build reports NotBuilt rather than advertising tools.
+Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
 Windows/Linux is an intermediate milestone; macOS qualification precedes alpha
 shipping, while Windows/Linux development does not wait for borrowed hardware.
 
@@ -207,14 +208,16 @@ release; no fleet migration or factory API conversion is needed.
 and existing installer/PATH handling; SE `scripts/release/install.{ps1,sh}` and
 `uninstall.{ps1,sh}` for standalone user installation/removal. Wire the local-owner
 `se uninstall` operation (`installation.uninstall`) registered in OPS by the
-surface owner; it has no MCP tool.
+surface owner; it has no MCP tool. Uninstall scripts and SE Code's installer call
+that operation; they contain no second stop, deletion or PATH-removal implementation.
 
 **Depends on:** R03's minimal native entry for standalone stage 1; only commercial
 installation waits for R05 and SC's installation owner/active-version guard at
 stage 4. Both use platform user PATH APIs and ownership records. No runtime is
 booted simply by installing or selecting the executable. The release scripts
-are usable from the unsigned archive before J1 is claimed; the registered
-operation joins J5 when host/remove are present at stage 2.
+are usable from the unsigned archive before J1 is claimed, including the registered
+uninstall operation. With no running host it witnesses that absence; once launched
+agents exist at stage 2, its same ordinary-down path stops them with the witness.
 
 **Clauses:** 00 §§1.3/2.1/5.4/5.8; integration **Payloads and entrypoints**;
 80 §§2.1/3.5/4, B3/B7.
@@ -232,19 +235,25 @@ timing cannot hide a slow installed wrapper; optimize the existing guarded path 
 
 Uninstall prints the exact owned binaries, integration bindings and PATH edits
 it will remove, with any live-agent consequence, then uses section 70's owner
-human-presence/mistake-and-drift guard; no typed-ID prompt. A live installed
-version must first complete ordinary down with an outside stop witness, or
-uninstall refuses with the named remaining obligation. It never silently kills
-agents or removes an in-use version. Project `remove` and executable `uninstall`
+human-presence/mistake-and-drift guard; no typed-ID prompt. `se uninstall` first
+performs ordinary graceful down itself: stop owned agents with the outside stop
+witness, save their original-conversation resume references, and print the achieved
+stop facts. Only after that succeeds does it remove the installation. If down or
+its witness is incomplete, it refuses with the named remaining obligation and
+retains the installation; the user need not run a separate down command first.
+It never kills agents without a stop witness or removes an in-use version.
+Project `remove` and executable `uninstall`
 are distinct: neither erases history, source, provider conversations, unrelated
 aliases or independently installed commands; erasure remains explicit forget.
 Remove only recorded install-owned PATH entries/bindings that still match their
-owned bytes; user edits/conflicts refuse rather than overwrite. The standalone
-scripts and operation share these effects and receipts, including partial-failure
-facts, rather than reporting success before cleanup has happened.
+owned bytes; user edits/conflicts refuse rather than overwrite. Standalone scripts
+and SE Code's installer invoke the installed `se uninstall` and surface its receipt,
+exit status and partial-failure facts. The operation owns the complete effect and
+readbacks rather than reporting success before cleanup has happened.
 
-From an external fresh terminal, J5 invokes uninstall, verifies installed command
-absence and restored PATH against its pre-install value, and checks unrelated
+From an external fresh terminal, J5 invokes `se uninstall` with live owned agents,
+reads their achieved stop facts and saved resume references, verifies installed
+command absence and restored PATH against its pre-install value, and checks unrelated
 commands and preserved user history/source. Also exercise interrupted install/
 uninstall and the bundled-versus-standalone collision case. Windows and Linux
 qualify this early; macOS repeats it in the compatibility campaign before alpha.
@@ -308,8 +317,9 @@ and section 80's B1/B2 memory/startup methods. Embedded sessions use in-process
 handles and mint no machine credentials. B3's zero persistent embedded-process
 claim is measured while no agent is live; after SE Code exits with live agents,
 count the detached successor and qualify both handover directions under B8,
-including all retained crash phases. Qualify standalone B4 and real NORMAL/FULL
-write mix B9 after real work, and core CLI latency/idle with the same budget table.
+including all retained crash phases. Qualify standalone B4, ordinary B9 write
+paths and the separate FULL-mutation bound after real work, and core CLI
+latency/idle with the same budget table.
 Confirm public-package exclusion again, native trust/launch, upgrade/removal and
 outside download/readback. Keep failed/outlier samples; missing probes are unknown,
 not passes. Promote only the qualified package/index through the authorized release
@@ -321,7 +331,10 @@ Linked-code upgrades redeploy the product process; no dynamic Rust hot reload is
 ## Estimate and handoff boundaries
 
 The per-unit estimates above feed the single generated size table in section 95;
-this file carries no second total table. R08 reuses the existing independent
+R01–R07 sum to **960–1,600 handwritten lines** (lower bounds 80+120+140+100+160+240+120;
+upper bounds 140+220+220+180+260+380+200). This file carries no second total table.
+R06 counts installation effects and delegating scripts; the core registry/CLI
+entry is counted once in 95-core-cli. R08 reuses the existing independent
 runner and adds no product lines or new qualification framework. R03/R04 include
 their macOS portion, scheduled in the borrowed-Mac campaign rather than counted
 again as a second release implementation.

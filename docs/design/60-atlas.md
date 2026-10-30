@@ -18,13 +18,13 @@ reports Atlas handles or data it could not close or erase.
 
 `se-atlas` depends only on se-types and its own parsing, SQLite and native-source
 ports; never se-store, se-core, se-host or se-proc. It never opens the authoritative
-database. Se-host adapts core's shared CodeIndex port, supplies authorized scope
+database. Se-host adapts core's CodeIndex port using the shared code DTOs, supplies authorized scope
 and edit evidence, schedules work and owns native handles/processes. This
 compile-only crate has only the se-types dependency. Later implementation uses
 workspace rusqlite with the caret range `0.40`, resolving ONE bundled libsqlite3-sys
 with the linked SE Code server, Tree-sitter with
 JS/JSX/TS/TSX/Rust/Python grammars, ignore handling and event-only watches. No
-process-global Tree-sitter allocator is installed by this embedded crate.
+process-global Tree-sitter allocator is installed by this crate.
 
 Exactly five OPS reads exist, with the same dispatch for CLI and MCP:
 
@@ -44,11 +44,12 @@ retiring a corrupt epoch and scheduling the same lifecycle. That cache repair
 neither rotates credentials nor restores authoritative history.
 
 Atlas is built only after the five core journeys and live handover pass. It may
-ship in alpha if ready, but never holds a milestone or the alpha release. Both
-standalone and embedded compositions default to `atlas.enabled=false`; a build
-without the feature reports NotBuilt and advertises no Atlas tools. A build with
-the feature still requires explicit configuration opt-in. Registration is
-metadata-only, including when a project first binds.
+ship in alpha if ready, but never holds a milestone or the alpha release.
+Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+An Atlas-free standalone build reports NotBuilt and advertises no Atlas tools.
+Registration is metadata-only, including when a project first binds. The
+activation lifecycle below applies only to a feature-enabled standalone build;
+embedded requests neither write the setting nor schedule work.
 
 `config.set atlas.enabled true` atomically writes and rereads the user
 `config.toml` setting using the shared config operation's request identity.
@@ -732,13 +733,13 @@ exhaustively to typed shared detail; no catch returns an empty vector.
 
 | Local cause | Shared catalog mapping | Cause and legal action |
 | --- | --- | --- |
-| FeatureDisabled | FeatureDisabled | explicitly disabled; config set atlas.enabled true |
-| EmbeddedUnavailable | FeatureNotBuilt | use feature-enabled standalone build |
-| ConfigurationInvalid | ConfigValueInvalid | correct the named config.toml policy |
-| RootUnavailable | RepoNotFound | restore registered physical source |
+| FeatureDisabled | FeatureUnavailable | explicitly disabled; config set atlas.enabled true |
+| EmbeddedUnavailable | FeatureUnavailable | embedded setting returns feature-unavailable; use feature-enabled standalone se |
+| ConfigurationInvalid | UsageInvalidValue | correct the named config.toml policy |
+| RootUnavailable | RepoInvalid | restore registered physical source |
 | RootIdentityChanged | RevisionConflict | inspect and explicitly rebind |
 | CacheIo, CacheCorrupt, CacheScopeMismatch, CacheLinkRefused | AtlasUnreadable | owned cache IO/integrity/scope failure; doctor or inspect location, never source deletion |
-| CacheTooNew | ConfigVersionUnsupported | preserve cache, upgrade binary |
+| CacheTooNew | ConfigurationInvalid | preserve cache, upgrade binary |
 | CacheBusy | AtlasResourceBudget | cache reader/lock/retired-epoch capacity unavailable, resource names that capacity with requested=1/available=0; retry after readers release it or use bounded text |
 | InvalidPath | AtlasPathOutsideRoot | use registered root-relative path |
 | UnsupportedPathEncoding, InvalidQuery, InvalidLimit | UsageInvalidValue | correct encoding/query/bounds |
@@ -758,7 +759,7 @@ exhaustively to typed shared detail; no catch returns an empty vector.
 | ShuttingDown | Cancelled | explicit root/host drain cancels this Atlas operation; status says updating/draining and a later activation may retry |
 | Cancelled | Cancelled | explicit cancellation; retry if still wanted |
 | InternalInvariant | Internal | report diagnostic; preserve last safe cache |
-| WorkerLost, WorkerProtocol | TaskFailed | exact worker lost/invalid frames; reap and inspect owned staging |
+| WorkerLost, WorkerProtocol | Internal | exact worker lost/invalid frames; reap and inspect owned staging |
 | WorkerLeaseStale | RevisionConflict | discard superseded job/epoch result |
 | WorkerDeadline | DeadlineExceeded | actual cold deadline; preserve cache and inspect cause before retry |
 
@@ -818,11 +819,12 @@ is separately reported only during its finite exception window, then reaped.
 B3's zero persistent embedded-process measurement applies while no agent is live;
 after SE Code exits with live agents, the detached handover successor is counted
 as the standalone host and exits 10 minutes after its last live agent. Atlas adds
-no per-agent helper. Disabled Atlas adds no grammar/DB/watcher at startup; first
-bind and post-task use still qualify under B1/B2. Settled Atlas contributes zero
-timers, CPU and context-switch wakes within whole-host B5/B6. B9 write timing uses
-section 80's one target and the real NORMAL/FULL mix; Atlas's disposable NORMAL
-cache cannot substitute for that authoritative-store measurement.
+no per-agent helper. Embedded SE Code links no Atlas; B1/B2 first-bind and post-task
+measurements do not include its standalone-only optional parser/cache. Disabled
+standalone Atlas adds no grammar/DB/watcher at startup. Settled Atlas contributes zero
+timers, CPU and context-switch wakes within whole-host B5/B6. Ordinary B9 writes
+and the separate FULL-mutation measurements use section 80's budget table;
+Atlas's disposable NORMAL cache cannot substitute for those authoritative-store measurements.
 Target save-to-searchable <=200 ms for ADMITTED small updates, query p95 <=50 ms;
 parse deadline 200 ms is a cancellation ceiling, not proof debounce+IO+parse meets
 latency. Core CLI read targets and sample counts are those in section 80;
@@ -852,7 +854,7 @@ FTS or qualify 30-run core budgets. Full reference:
 | J5 Remove | reap/close/remove owned caches, outside absence | stuck IO/unknown files/pinned epochs reported, source preserved |
 
 Five core journeys require neither Atlas enabled nor cold index. Native optional
-qualification must exercise Windows/macOS/Linux, CLI/MCP and both harnesses; attended/
+standalone qualification must exercise Windows/macOS/Linux, CLI/MCP and both harnesses; attended/
 autonomous use the same readers and host effects. There is no autonomous renewer.
 Read/write mirror: scheduler alone writes; all consumers share query contracts;
 close/privacy covers writer AND readers/retired epochs. Reviewer-owned checks need
@@ -869,11 +871,14 @@ This revision uses accepted main shared types directly. Source::Atlas and prefix
 RootId/CacheEpoch are resolved by se-types; there is no stale local clone or request
 to invent a second source. Remaining work before implementation approval:
 
-1. Core cannot import se-atlas. Section10 publishes the five query request/result
-   DTOs, ResumeChange/ResumeCode/ResumeAdvance and the CodeIndex/ResumeCursorStore ports
-   in shared se-types::code; Atlas reexports them. Native lifecycle/parser/source
-   declarations stay local. This appendix is the assigned ownership draft, not a
-   competing wire schema or permission for core->Atlas dependency. Surface serializers
+1. Core cannot import se-atlas. The five query request/result DTOs,
+   ResumeChange/ResumeCode/ResumeAdvance and pure AtlasValidation/AtlasText contracts
+   live in `se-types::code`, indexed in section 10; Atlas reexports them.
+   AtlasQueries, ResumeCursorStore and native lifecycle/parser/source execution
+   traits stay local. Se-host adapts core's CodeIndex/private cursor-store ports
+   using these shared values; se-types contains no execution-port alias or Atlas
+   dependency, and core does not implement an Atlas-local trait directly. Section 60 specifies
+   their behavior without copying a second public DTO or port definition. Surface serializers
    preserve Answer<Read<T>> metadata and the array code_changes contract.
 2. The accepted catalog now supplies resource/parser/source causes. Implementation
    uses those typed Details directly, including named cache-capacity shortage;
@@ -884,7 +889,8 @@ to invent a second source. Remaining work before implementation approval:
    text/path fallback, never a budget increase or incremental child by assumption.
 4. Host/core owners connect explicit config-enable after-ready effect, generation-
    scoped worker reap/pointer adoption and delivery-record-backed private CAS.
-   Standalone/embedded entry paths share these contracts and default disabled.
+   Only the standalone host activates Atlas; embedded SE Code refuses enablement
+   with feature-unavailable and does not acquire Atlas resources.
    Full Atlas implementation follows the five journeys and live handover; optional
    admission failures never block those milestones or alpha release.
 
@@ -892,968 +898,24 @@ Commit/time baselines and bounded Text remain because OPS explicitly admits them
 we simplified their storage/cursor rather than silently deleting operations. The
 64-ID plan, author-version history and CBOR/checksum are removed. No runtime function
 bodies, todo/unimplemented placeholders, SQL executor or test implementation appear
-in the crate below.
+in the crate declarations indexed below.
 
-## Appendix A — complete public Rust declarations
+## Appendix A — declaration locations
 
-These are the exact formatted source files, not abridged examples. All callable
-signatures are trait declarations; behavior awaits design approval.
+The shared query requests/results, code pointers, resume enrichment DTOs and
+pure text-validation contracts live in `se-types::code`; [section 10](10-types-and-host-api.md)
+indexes that module. Their source declarations are the API definition; this
+section does not maintain copied declarations or a second wire schema.
 
-### crates/se-atlas/src/lib.rs
+Atlas-local declarations remain in these crate files:
 
-```rust
-//! Compile-only Atlas contract. See docs/design/60-atlas.md.
-//! No indexer, watcher, SQL executor, runtime stub or transport is implemented.
+| File | Responsibility |
+| --- | --- |
+| [lib.rs](../../crates/se-atlas/src/lib.rs) | crate/module entry points |
+| [model.rs](../../crates/se-atlas/src/model.rs) | Atlas model entry point and shared-type reexports |
+| [queries.rs](../../crates/se-atlas/src/queries.rs) | shared DTO/validation reexports; local AtlasQueries and ResumeCursorStore execution ports |
+| [lifecycle.rs](../../crates/se-atlas/src/lifecycle.rs) | host-internal activation, child adoption, parser and native-source ports |
+| [errors.rs](../../crates/se-atlas/src/errors.rs) | local cause classification using shared typed errors |
 
-#![allow(dead_code, reason = "Declarations only until design approval")]
-
-pub mod errors;
-pub mod lifecycle;
-pub mod model;
-pub mod queries;
-```
-
-### crates/se-atlas/src/errors.rs
-
-```rust
-pub use se_types::{Detail as AtlasErrorDetail, ErrorBody as AtlasFailure, SeError as AtlasError};
-
-pub type AtlasResult<T> = Result<T, AtlasError>;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AtlasErrorCode {
-    FeatureDisabled,
-    ConfigurationInvalid,
-    RootUnavailable,
-    RootIdentityChanged,
-    CacheIo,
-    CacheCorrupt,
-    CacheTooNew,
-    CacheScopeMismatch,
-    CacheBusy,
-    CacheLinkRefused,
-    InvalidPath,
-    UnsupportedPathEncoding,
-    InvalidQuery,
-    InvalidLimit,
-    IndexAbsent,
-    PathUnknown,
-    SymbolUnknown,
-    AmbiguousSymbol,
-    LanguageUnsupported,
-    FileOverBudget,
-    InvalidCursor,
-    CursorEpochMismatch,
-    CursorExpired,
-    CursorQueryMismatch,
-    BaselineUnavailable,
-    WatchUnavailable,
-    ResourceBudgetUnavailable,
-    SourceReadFailed,
-    SourceChangedDuringRead,
-    ParserFailed,
-    ShuttingDown,
-    Cancelled,
-    InternalInvariant,
-    EmbeddedUnavailable,
-    WorkerLost,
-    WorkerProtocol,
-    WorkerLeaseStale,
-    WorkerDeadline,
-}
-
-/// One wire error remains se-types::SeError. The final central Code allocation
-/// maps every AtlasErrorCode exhaustively to typed shared Detail. A mismatched
-/// cause/detail is an invariant failure, never a generic string-payload escape.
-pub trait AtlasErrors {
-    fn error(&self, code: AtlasErrorCode, detail: AtlasErrorDetail) -> AtlasError;
-}
-```
-
-### crates/se-atlas/src/model.rs
-
-```rust
-use crate::errors::AtlasFailure;
-use se_types::{AgentId, EventId, ProjectId};
-pub use se_types::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
-use std::{path::PathBuf, time::Duration};
-
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct AtlasJobId(pub [u8; 16]);
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct Generation(pub u64);
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct ChangeId {
-    pub generation: Generation,
-    pub ordinal: u32,
-}
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct FileId(pub [u8; 16]);
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct SymbolId(pub [u8; 32]);
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct ContentHash(pub [u8; 32]);
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RelativePath(pub(crate) String);
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AtlasCursor(pub(crate) String);
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct QueryText(pub(crate) String);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Language {
-    JavaScript,
-    Jsx,
-    TypeScript,
-    Tsx,
-    Rust,
-    Python,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SymbolKind {
-    Module,
-    Namespace,
-    Class,
-    Interface,
-    Trait,
-    Struct,
-    Enum,
-    TypeAlias,
-    Function,
-    Method,
-    Constant,
-    Static,
-    Variable,
-    Parameter,
-    Field,
-    EnumVariant,
-    Macro,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReferenceKind {
-    Call,
-    Import,
-    Export,
-    TypeUse,
-    ValueUse,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Accuracy {
-    LexicalBinding,
-    ExplicitImport,
-    NameOnly,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CoverageReason {
-    UnsupportedLanguage,
-    UnsupportedEncoding,
-    Generated,
-    SourceBytesLimit,
-    ParseWorkLimit,
-    FileCountLimit,
-    ParseErrors,
-    ReadFailure,
-    ChangedDuringRead,
-    UnresolvedImport,
-    DynamicDispatch,
-    StaleSnapshot,
-    TimeLimit,
-    ResultLimit,
-    ByteLimit,
-    WatchLoss,
-    PartialWatch,
-    ParserUnqualified,
-    BaselineReset,
-    BulkChange,
-    RetentionGap,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Position {
-    pub line: u32,
-    pub byte_column: u32,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Span {
-    pub start: Position,
-    pub end: Position,
-    pub start_byte: u64,
-    pub end_byte: u64,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SnapshotFreshness {
-    Current,
-    Stale,
-    Unknown,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodePointer {
-    pub file: FileId,
-    pub path: RelativePath,
-    pub span: Option<Span>,
-    pub content_hash: Option<ContentHash>,
-    pub freshness: SnapshotFreshness,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum FileCoverage {
-    Indexed,
-    Partial {
-        reasons: Vec<CoverageReason>,
-    },
-    Deferred {
-        reason: CoverageReason,
-    },
-    Failed {
-        error: AtlasFailure,
-    },
-    Stale {
-        reason: CoverageReason,
-        last_good_generation: Generation,
-        observed_hash: Option<ContentHash>,
-        diagnostic: Option<AtlasFailure>,
-    },
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Coverage {
-    pub discovered_files: u64,
-    pub indexed_files: u64,
-    pub partial_files: u64,
-    pub deferred_files: u64,
-    pub failed_files: u64,
-    pub discovery_complete: bool,
-    pub stale_files: u64,
-    pub resolved_references: u64,
-    pub name_only_references: u64,
-    pub watched_directories: u64,
-    pub unwatched_directories: u64,
-    pub watch_discovery_complete: bool,
-    /// Process-lifetime counters; status reports scope/reset, never implies history.
-    pub watch_stats_started: Option<se_types::UnixMicros>,
-    pub watch_activation_attempts: u64,
-    pub watch_limited_activations: u64,
-    pub reasons: Vec<CoverageReason>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum IndexState {
-    NotBuilt,
-    Disabled,
-    Dormant,
-    Absent,
-    Opening,
-    ColdIndexing {
-        job: AtlasJobId,
-        discovered_files: u64,
-    },
-    Updating {
-        pending_files: u64,
-        pending_change_batches: u32,
-        discovery_complete: bool,
-    },
-    Current,
-    VerificationNeeded {
-        reason: CoverageReason,
-    },
-    Suspended {
-        reason: AtlasFailure,
-    },
-    Unreadable {
-        error: AtlasFailure,
-    },
-    Draining,
-    Closed,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IndexSummary {
-    pub project: ProjectId,
-    pub root: RootId,
-    pub epoch: Option<CacheEpoch>,
-    pub generation: Option<Generation>,
-    pub state: IndexState,
-    pub coverage: Coverage,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Answer<T> {
-    pub index: IndexSummary,
-    pub snapshot_advanced: bool,
-    pub epoch_retired: bool,
-    pub data: T,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FindMethod {
-    ExactName,
-    SplitIdentifier,
-    MetadataFts,
-    Text,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodeHit {
-    pub pointer: CodePointer,
-    pub symbol: Option<SymbolId>,
-    pub name: String,
-    pub kind: Option<SymbolKind>,
-    pub method: FindMethod,
-    pub accuracy: Option<Accuracy>,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Reference {
-    pub site: CodePointer,
-    pub kind: ReferenceKind,
-    pub spelling: String,
-    pub enclosing: Option<SymbolId>,
-    pub resolved_target: Option<SymbolId>,
-    pub accuracy: Accuracy,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ImpactHop {
-    pub from: SymbolId,
-    pub to: SymbolId,
-    pub site: CodePointer,
-    pub accuracy: Accuracy,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Dependent {
-    pub pointer: CodePointer,
-    pub symbol: Option<SymbolId>,
-    pub hops: Vec<ImpactHop>,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Impact {
-    pub dependents: Vec<Dependent>,
-    pub tests: Vec<Dependent>,
-    pub omitted_frontier: u64,
-    pub frontier_count_complete: bool,
-    pub next: Option<AtlasCursor>,
-    pub complete: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AuthorHint {
-    Captured {
-        agent: AgentId,
-        evidence: EventId,
-    },
-    Mixed {
-        evidence: Vec<EventId>,
-        omitted: Option<u64>,
-    },
-    Unknown,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ChangeKind {
-    Added,
-    Removed,
-    SignatureChanged,
-    BodyChanged,
-    FileOnly,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DependentCount {
-    pub count: u64,
-    pub at_generation: Generation,
-    pub complete: bool,
-    pub reason: Option<CoverageReason>,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodeEdit {
-    pub id: ChangeId,
-    pub pointer: CodePointer,
-    pub symbol: Option<SymbolId>,
-    pub kind: ChangeKind,
-    pub baseline_reset: bool,
-    pub previous_hash: Option<ContentHash>,
-    pub author: AuthorHint,
-    pub dependents: DependentCount,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum BulkReason {
-    HeadChange,
-    FilesystemBurst,
-    IgnoreReconcile,
-    WatchReconcile,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct BulkChange {
-    pub id: ChangeId,
-    pub reason: BulkReason,
-    pub files: u64,
-    pub semantic_changes: Option<u64>,
-    pub sample_paths: Vec<RelativePath>,
-    pub complete: bool,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CodeChange {
-    Edit(Box<CodeEdit>),
-    Bulk(BulkChange),
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SurfaceAtlasState {
-    NotBuilt,
-    Disabled,
-    Absent,
-    Updating,
-    Ready,
-    Unreadable,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OutlineSymbol {
-    pub id: SymbolId,
-    pub parent: Option<SymbolId>,
-    pub name: String,
-    pub kind: SymbolKind,
-    pub span: Span,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Outline {
-    pub file: CodePointer,
-    pub language: Option<Language>,
-    pub coverage: FileCoverage,
-    pub symbols: Vec<OutlineSymbol>,
-    pub complete: bool,
-    pub next: Option<AtlasCursor>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CacheLocation {
-    pub directory: PathBuf,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CachePointer {
-    pub schema: u32,
-    pub project: ProjectId,
-    pub root: RootId,
-    pub epoch: CacheEpoch,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitMetadataRegistration {
-    pub physical_git_directory: PathBuf,
-    pub physical_common_directory: PathBuf,
-    pub git_directory_identity: [u8; 32],
-    pub common_directory_identity: [u8; 32],
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RootRegistration {
-    pub project: ProjectId,
-    pub root: RootId,
-    pub canonical_source_root: PathBuf,
-    pub cache: CacheLocation,
-    pub git_metadata: Option<GitMetadataRegistration>,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct QueryBudget {
-    pub max_results: u16,
-    pub max_bytes: u32,
-    pub work: Duration,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ParseBudget {
-    pub max_source_bytes: u32,
-    pub max_rows: u32,
-    pub max_work: Duration,
-    pub reserved_bytes: u32,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IgnorePolicy {
-    pub global_patterns: Vec<String>,
-    pub generated_prefixes: Vec<RelativePath>,
-    pub digest: ContentHash,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WatchBudget {
-    /// Global host policy shared by roots, not a per-root allowance.
-    pub max_directories: u32,
-    pub max_mapping_bytes: u32,
-    pub observed_os_limit: Option<u64>,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AtlasPolicy {
-    pub ignore: IgnorePolicy,
-    pub watch: WatchBudget,
-    pub enabled: bool,
-    pub max_files: u32,
-    pub parse: ParseBudget,
-    pub total_reserved_bytes: u32,
-    pub change_retention_days: u16,
-    pub max_change_rows: u32,
-    pub max_cache_bytes: u64,
-}
-```
-
-### crates/se-atlas/src/queries.rs
-
-```rust
-use crate::{errors::AtlasResult, model::*};
-use se_types::{AgentId, Page, Read};
-
-#[derive(Debug)]
-pub struct SearchScope {
-    pub paths: Vec<RelativePath>,
-    pub languages: Vec<Language>,
-}
-#[derive(Debug)]
-pub enum SymbolSelector {
-    Id(SymbolId),
-    At {
-        path: RelativePath,
-        position: Position,
-    },
-    Name {
-        name: QueryText,
-        path: Option<RelativePath>,
-        container: Option<QueryText>,
-    },
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SearchKind {
-    Symbol,
-    Text,
-    Path,
-}
-#[derive(Debug)]
-pub struct FindQuery {
-    pub kind: SearchKind,
-    pub query: QueryText,
-    pub scope: SearchScope,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-#[derive(Debug)]
-pub struct RefsQuery {
-    pub symbol: SymbolSelector,
-    pub kinds: Vec<ReferenceKind>,
-    pub include_name_only: bool,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-#[derive(Debug)]
-pub struct ImpactQuery {
-    pub symbol: SymbolSelector,
-    pub depth: u8,
-    pub include_name_only: bool,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-#[derive(Debug)]
-pub enum GitObjectId {
-    Sha1([u8; 20]),
-    Sha256([u8; 32]),
-}
-#[derive(Debug)]
-pub enum ChangeBaseline {
-    Cursor(AtlasCursor),
-    ObservedCommit(GitObjectId),
-    ObservedUnixMillis(i64),
-}
-#[derive(Debug)]
-pub struct ChangesQuery {
-    pub since: ChangeBaseline,
-    pub scope: SearchScope,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-#[derive(Debug)]
-pub struct OutlineQuery {
-    pub path: RelativePath,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-
-#[derive(Debug)]
-pub struct ResumeRequest {
-    pub viewer: AgentId,
-    pub saved_cursor: Option<AtlasCursor>,
-    pub cursor_revision: u64,
-    pub recently_edited_symbols: Vec<SymbolId>,
-}
-#[derive(Debug)]
-pub enum ResumeCodeState {
-    Available,
-    Zero,
-    NeverIndexed,
-    Disabled,
-    Unreadable,
-    BaselineGap,
-    Updating,
-    BudgetExceeded,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ResumeOfferId(pub [u8; 16]);
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ResumeChange {
-    File {
-        pointer: CodePointer,
-        kinds: Vec<ChangeKind>,
-        changes: u64,
-        author: AuthorHint,
-        dependents: DependentCount,
-        late_attribution: bool,
-        baseline_reset: bool,
-    },
-    Bulk(BulkChange),
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResumeAdvance {
-    pub offer: ResumeOfferId,
-    pub expected_cursor: Option<AtlasCursor>,
-    pub expected_revision: u64,
-    pub next_cursor: AtlasCursor,
-    pub fence: Generation,
-}
-#[derive(Debug)]
-pub enum ResumeCursorCommit {
-    Applied { revision: u64 },
-    AlreadyApplied { revision: u64 },
-    Stale { actual_revision: u64 },
-}
-/// Implemented by core's private store. Atlas never writes the viewer cursor.
-/// Delivery must identify a successful context delivery, not mere construction.
-pub trait ResumeCursorStore {
-    fn compare_and_set(
-        &mut self,
-        viewer: &AgentId,
-        delivered: &se_types::EventId,
-        advance: &ResumeAdvance,
-    ) -> AtlasResult<ResumeCursorCommit>;
-}
-#[derive(Debug)]
-pub struct ResumeCode {
-    pub index: IndexSummary,
-    pub state: ResumeCodeState,
-    /// The surface's $.code_changes array, never a pre-rendered string.
-    pub items: Vec<ResumeChange>,
-    pub omitted: Option<u64>,
-    pub unattributed_omitted: Option<u64>,
-    pub complete: bool,
-    /// Lossless explicit changes retrieval starts here, independently of digest delivery.
-    pub omitted_since: Option<AtlasCursor>,
-    pub advance: Option<ResumeAdvance>,
-    pub diagnostic: Option<crate::errors::AtlasFailure>,
-}
-
-/// Bound by the host to one registered project/worktree and authorized source
-/// scope. These methods never enable, open-for-write, index or launch anything.
-pub trait AtlasQueries {
-    fn find(&self, query: &FindQuery) -> AtlasResult<Answer<Read<Page<CodeHit>>>>;
-    fn refs(&self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<Reference>>>>;
-    fn impact(&self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>>;
-    fn changes(&self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>>;
-    fn outline(&self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>>;
-    fn resume_code(&self, request: &ResumeRequest) -> AtlasResult<ResumeCode>;
-    fn status(&self) -> IndexSummary;
-}
-
-/// Required constructors/decoders, declared without implementation until design
-/// approval. JSON/CLI adapters call these same validations.
-pub trait AtlasValidation {
-    fn relative_path(&self, value: String) -> AtlasResult<RelativePath>;
-    fn query_text(&self, value: String) -> AtlasResult<QueryText>;
-    fn cursor(&self, value: String) -> AtlasResult<AtlasCursor>;
-    fn query_budget(&self, results: u16, bytes: u32) -> AtlasResult<QueryBudget>;
-    fn selector(&self, value: SymbolSelector) -> AtlasResult<SymbolSelector>;
-}
-
-/// Implemented for RelativePath, AtlasCursor and QueryText after approval.
-pub trait AtlasText {
-    fn as_str(&self) -> &str;
-}
-```
-
-### crates/se-atlas/src/lifecycle.rs
-
-```rust
-use crate::{errors::AtlasResult, model::*, queries::AtlasQueries};
-use se_types::{AgentId, EventId};
-use std::time::Duration;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ReconcileReason {
-    ConfigEnabled,
-    FirstSession,
-    HostRestart,
-    WatchOverflow,
-    WatchFailure,
-    IgnoreRulesChanged,
-    GitHeadChanged,
-    GitActivity,
-    DirectoryChanged,
-    ExtractorChanged,
-    ConfigurationChanged,
-}
-#[derive(Debug)]
-pub enum SourceHint {
-    FileChanged(RelativePath),
-    FileRemoved(RelativePath),
-    Rename {
-        from: RelativePath,
-        to: RelativePath,
-    },
-    Reconcile(ReconcileReason),
-}
-#[derive(Debug)]
-pub struct EditEvidence {
-    pub agent: AgentId,
-    pub event: EventId,
-    pub path: RelativePath,
-    pub before: Option<ContentHash>,
-    pub after: Option<ContentHash>,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ScheduleReceipt {
-    Queued,
-    Coalesced,
-    ReconciliationRequired,
-    Disabled,
-    Closing,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WorkPhase {
-    Discover,
-    Read,
-    Parse,
-    Resolve,
-    Diff,
-    Commit,
-    Prune,
-    Checkpoint,
-}
-#[derive(Debug)]
-pub struct WorkReport {
-    pub root: RootId,
-    pub phase: WorkPhase,
-    pub completed_files: u32,
-    pub remaining_known: u32,
-    pub generation: Option<Generation>,
-    pub state: IndexState,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NextWork {
-    Park,
-    Ready,
-    AfterEventDebounce(Duration),
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CloseReason {
-    Disabled,
-    HostDrain,
-    ProjectRemoved,
-    PrivacyErasure,
-}
-#[derive(Debug)]
-pub enum CloseResult {
-    Closed,
-    Pending { in_flight: u32 },
-    Refused { error: crate::errors::AtlasFailure },
-}
-#[derive(Debug)]
-pub struct CacheRemoval {
-    pub root: RootId,
-    pub database_absent: bool,
-    pub wal_absent: bool,
-    pub shm_absent: bool,
-    pub remaining_paths: Vec<std::path::PathBuf>,
-}
-
-/// Host-internal lifecycle, never added to OPS as another user operation.
-/// A single host-owned low-priority worker owns this mutable value.
-pub trait AtlasController {
-    type Reader: AtlasQueries;
-    fn register(
-        &mut self,
-        root: RootRegistration,
-        policy: AtlasPolicy,
-    ) -> AtlasResult<IndexSummary>;
-    fn activate(&mut self, root: RootId, reason: ReconcileReason) -> AtlasResult<ScheduleReceipt>;
-    fn enqueue(&mut self, root: RootId, hint: SourceHint) -> AtlasResult<ScheduleReceipt>;
-    fn captured_edit(
-        &mut self,
-        root: RootId,
-        evidence: EditEvidence,
-    ) -> AtlasResult<ScheduleReceipt>;
-    fn work_quantum(&mut self, allowance: Duration) -> AtlasResult<Option<WorkReport>>;
-    fn next_work(&self) -> NextWork;
-    fn reader(&self, root: RootId) -> AtlasResult<Self::Reader>;
-    fn close(
-        &mut self,
-        root: RootId,
-        reason: CloseReason,
-        deadline: Duration,
-    ) -> AtlasResult<CloseResult>;
-    fn remove_cache(&mut self, root: RootId) -> AtlasResult<CacheRemoval>;
-    fn forget_evidence(&mut self, root: RootId, events: &[EventId]) -> AtlasResult<CacheRemoval>;
-    fn take_child_request(&mut self) -> AtlasResult<Option<WorkerRequest>>;
-    fn child_event(&mut self, event: WorkerEvent) -> AtlasResult<ScheduleReceipt>;
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WorkerPurpose {
-    ColdIndex,
-}
-#[derive(Debug)]
-pub struct WorkerReservation {
-    /// B4 is measured outside the separate cold window.
-    pub host_steady_ceiling_bytes: u64,
-    /// Hard cold-child peak, separately observed during the window.
-    pub child_peak_bytes: u64,
-    pub wall_deadline: Duration,
-}
-#[derive(Debug)]
-pub struct WorkerRequest {
-    pub job: AtlasJobId,
-    pub root: RootRegistration,
-    pub expected_epoch: Option<CacheEpoch>,
-    pub purpose: WorkerPurpose,
-    pub paths: Vec<RelativePath>,
-    pub reservation: WorkerReservation,
-    pub policy: AtlasPolicy,
-}
-#[derive(Debug)]
-pub enum WorkerEvent {
-    Started {
-        job: AtlasJobId,
-    },
-    Progress {
-        job: AtlasJobId,
-        discovered: u64,
-        completed: u64,
-    },
-    Exited {
-        job: AtlasJobId,
-        outcome: WorkerExit,
-    },
-}
-#[derive(Debug)]
-pub enum WorkerExit {
-    Completed {
-        staged_cache: CacheLocation,
-        candidate_epoch: CacheEpoch,
-    },
-    Failed {
-        error: crate::errors::AtlasFailure,
-    },
-    Cancelled,
-    Lost,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CaseMode {
-    Sensitive,
-    InsensitivePreserving,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RevisionTrust {
-    Unverified,
-    QualifiedChangeSequence,
-    QualifiedCtime,
-}
-#[derive(Debug)]
-pub struct FileIdentity {
-    pub volume: [u8; 16],
-    pub file: [u8; 16],
-    pub size: u64,
-    pub mtime_unix_nanos: i128,
-    pub ctime_unix_nanos: Option<i128>,
-    pub change_sequence: Option<u64>,
-    /// Reset/replaced journal domains invalidate saved sequence comparisons.
-    pub sequence_domain: Option<[u8; 16]>,
-    /// Supplied only by a qualified native adapter, never request metadata.
-    pub revision_trust: RevisionTrust,
-}
-#[derive(Debug)]
-pub struct SourceSnapshot {
-    pub path: RelativePath,
-    pub identity: FileIdentity,
-    pub content_hash: ContentHash,
-    pub bytes: Vec<u8>,
-}
-#[derive(Debug)]
-pub enum SourceRead {
-    Bytes(SourceSnapshot),
-    Deferred {
-        identity: FileIdentity,
-        reason: CoverageReason,
-    },
-    Removed,
-}
-#[derive(Debug)]
-pub struct SourceChunk {
-    pub path: RelativePath,
-    pub identity: FileIdentity,
-    pub offset: u64,
-    pub bytes: Vec<u8>,
-    pub end_of_file: bool,
-    /// Hash of this verified range only; never a full-file revision by inference.
-    pub range_hash: ContentHash,
-    /// Present only after full-file verification, never inferred from stat identity.
-    pub content_revision: Option<ContentHash>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SourceVerification {
-    Unchanged,
-    Changed,
-    Removed,
-}
-
-/// Uses the registered physical root, no-follow opens and native identity checks.
-/// OS-specific unsafe code remains behind the host/se-proc adapter.
-/// verify rehashes the entire admitted file before semantic commit. Reconcile
-/// may skip unchanged files only with a qualified native revision proof, never
-/// plain identity/size/mtime. read_chunk rereads/verifies the requested bounded range and
-/// never promises a resumable snapshot across calls.
-pub trait AtlasSource {
-    fn case_mode(&self) -> CaseMode;
-    fn read(&self, path: &RelativePath, budget: ParseBudget) -> AtlasResult<SourceRead>;
-    fn verify(&self, snapshot: &SourceSnapshot) -> AtlasResult<SourceVerification>;
-    fn read_chunk(
-        &self,
-        path: &RelativePath,
-        offset: u64,
-        max_bytes: u32,
-    ) -> AtlasResult<SourceChunk>;
-}
-
-#[derive(Debug)]
-pub struct SymbolRecord {
-    pub id: SymbolId,
-    pub parent: Option<SymbolId>,
-    pub name: String,
-    pub kind: SymbolKind,
-    pub span: Span,
-    pub exported: bool,
-    /// None means absent syntax; Some(hash(empty)) means an actual empty body.
-    pub signature_hash: Option<ContentHash>,
-    pub body_hash: Option<ContentHash>,
-    pub doc_line: String,
-}
-#[derive(Debug)]
-pub struct ImportRecord {
-    pub spelling: String,
-    pub local_name: Option<String>,
-    pub imported_name: Option<String>,
-    pub target_file: Option<FileId>,
-    pub target_symbol: Option<SymbolId>,
-    pub span: Span,
-}
-#[derive(Debug)]
-pub struct ParsedFile {
-    pub file: FileId,
-    pub language: Language,
-    pub content_hash: ContentHash,
-    pub coverage: FileCoverage,
-    pub symbols: Vec<SymbolRecord>,
-    pub imports: Vec<ImportRecord>,
-    pub references: Vec<Reference>,
-}
-
-pub trait AtlasParser {
-    fn parse(
-        &mut self,
-        snapshot: &SourceSnapshot,
-        language: Language,
-        budget: ParseBudget,
-    ) -> AtlasResult<ParsedFile>;
-    fn release_scratch(&mut self);
-}
-```
+All callable signatures remain declarations until implementation is approved.
+No indexer, database executor, watcher or runtime is implemented by this design.
