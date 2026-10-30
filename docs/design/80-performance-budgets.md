@@ -33,7 +33,7 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | B7 | CLI reads | p95 strictly < 20 ms, 30 runs each of `--version`, `status`, `agent list`, `msg inbox`, `msg list`, `decision list` | Spawn to process exit | `CLI --version`, `CLI contextual read verbs` |
 | B8 | Re-adoption after handover or restart | ≤ 500 ms, no lost or doubled input | Cutover start (after participating agents are interrupted to exact idle) to every live session re-adopted; quiescence time reported separately | **Not yet probed** (§2.6) |
 | B9 | Ordinary CLI writes: `msg send`, `working-state set`, `hook claude stop` | p95 ≤ 20 ms through a running host | Spawn to exit, including IPC/queue/commit/receipt | E3 native CLI probe required; retained mixed writer spike fails (§3.6) |
-| FULL | FULL commands: decide/ratify family, `config set`, `agent create`, `project register`, `profile save` | p95 ≤ 75 ms on Windows with Defender | Same complete CLI boundary, each command sampled separately through the running host | E3; not yet qualified |
+| FULL | `se decision ratify`, `se decision reject`, `se decision retract`, `se decision supersede`, `se agent add`, `se config set agent.<A>.profile`, `se config set agent.<A>.model`, `se config set agent.<A>.can-create`, `se init` | p95 ≤ 75 ms on Windows with Defender | Same complete CLI boundary, each concrete command sampled separately through the running host | E3; not yet qualified |
 
 B1 and B2 are Alpha's requirements. The rest are plan decisions. Budget failures make the Rust run exit
 nonzero even when every behavior row passes. Measurements include embedded
@@ -69,8 +69,11 @@ second slow run is a real failure.
 For B9 sample each of its three named ordinary-write commands through an
 already running host. Sample every FULL-command family separately under the
 FULL row on Windows with Defender; retain actual durability and batch promotion,
-not just the command label. The decision family includes ratify/reject/retract/
-supersede. Include request framing, queue wait, required COMMIT/sync, receipt
+not just the command label. Sample each listed decision action and agent
+setting separately; general settings writes are not FULL store mutations.
+Use valid changing fixtures so the sample performs the requested mutation,
+including a new project for init, rather than timing an already-matching readback.
+Include request framing, queue wait, required COMMIT/sync, receipt
 delivery and process exit; a timeout, lost acknowledgment or refused operation
 cannot become a fast successful sample. Report queue, SQL, sync/checkpoint,
 receipt and client startup/round-trip components alongside the complete sample.
@@ -174,10 +177,10 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Capture: 256 KiB read buffer × 2 active + parsing | 1.0 MB | Bounded transcript reads |
 | Transcript watcher | 0.5 MB | Live sessions' directories only |
 | Process custody state | 0.2 MB | Handles, job/cgroup records and one Windows IOCP collector's state per host; stack charged once below, no registered-wait pool |
-| Resume assembly: 32 KiB default, 1 MiB max × 4 concurrent | 4.5 MB | Four maximum encoded packets plus bounded assembly metadata; no duplicate full packet |
+| Resume assembly: up to four packets; one may exceed 32 KiB, max 1 MiB | 1.5 MB | One shared above-default permit, bounded metadata and no duplicate encoded packet |
 | Fixed native/writer thread stack pages and allocator slack | 2.0 MB | Count every added committed stack page in E2; SE Code's existing reactor is not a second runtime |
-| **Spend** | **24.0 MB** | Measured minimal core: 1.4 MB; revised packet allowance is unmeasured |
-| Reserve | 6.0 MB | Atlas is off in embedded |
+| **Spend** | **21.0 MB** | Measured minimal core: 1.4 MB; revised packet allowance is unmeasured |
+| Reserve | 9.0 MB | Atlas is off in embedded |
 | **Total** | **30.0 MB** | |
 
 ### 3.2 Standalone memory (B4: 25 MB)
@@ -187,11 +190,11 @@ component that outgrows its line has to fix that or negotiate within the total (
 | tokio `current_thread`, blocking pool (max 2), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
 | SQLite page cache: writer + 1 reader × 2 MB | 4.0 MB | CLI reads go straight to the file and don't need host readers |
 | SQLite connections, schema, statements | 1.0 MB | |
-| Sessions, mail, listener/MCP, capture + watcher, custody, resume | 10.5 MB | Includes the same four-max-packet resume allowance as 3.1 |
+| Sessions, mail, listener/MCP, capture + watcher, custody, resume | 7.5 MB | Includes the same single-large-packet resume allowance as 3.1 |
 | Optional Atlas in-host: queries and single-file updates after config opt-in | 2.0 MB | One closed-when-idle connection plus one parser |
 | Allocator slack | 1.0 MB | |
-| **Spend** | **24.5 MB** | Prototypes measured 4–12 MB; revised packet allowance is unmeasured |
-| Reserve | 0.5 MB | |
+| **Spend** | **21.5 MB** | Prototypes measured 4–12 MB; revised packet allowance is unmeasured |
+| Reserve | 3.5 MB | |
 | **Total** | **25.0 MB** | |
 
 Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
@@ -219,12 +222,20 @@ pages retain the separate 256 KiB body budget and final transport cap; append
 only whole rows that fit the encoded result. Build one bounded result buffer,
 move it into the transport and do not keep a second encoded copy or all source
 bodies. Resume's requested byte budget covers its final encoded wrapper,
-markers and cursor. Four simultaneous maximum packets alone require
-4,194,304 bytes, so the old 0.5 MB allowance cannot support the accepted max.
-The revised 4.5 MB packet allowance includes that output plus bounded metadata;
-default packets do not eagerly reserve maximum capacity. This spends 4 MB of
-each composition's former reserve, leaving the hard memory ceilings unchanged.
-E2 must exercise max-budget concurrency and after-task retained capacity;
+markers and cursor. There is one host-wide permit for a requested budget above
+32 KiB, shared by CLI/MCP/linked calls. Acquire it before allocation/assembly
+and retain it until the final packet buffer is sent or released, including
+cancellation/error paths. Waiting requests retain only bounded request metadata;
+they do not allocate a second large packet. Default-budget packets can continue
+under the existing four-packet concurrency bound.
+
+At most one 1 MiB packet plus three 32 KiB packets require 1,146,880 encoded
+bytes. The 1.5 MB allowance covers that output plus bounded assembly metadata;
+default packets do not eagerly reserve maximum capacity. This restores 3 MB
+to each composition's reserve compared with four simultaneous maximum packets,
+leaving hard memory ceilings unchanged. E2 exercises a maximum-budget request,
+concurrent default packets and a second above-default request that must wait
+without retaining a second large allocation, plus after-task retained capacity;
 no packet/stack allowance is a measured RSS result.
 
 ### 3.3 Embedded startup (B2)
@@ -346,7 +357,7 @@ does not explain them; real CLI/IPC RTT was not exercised. Prepared SQL omits
 codec/auth/ID/hash construction, preloads the fixture, uses a 128-statement
 cache instead of the planned 32 and retains historical capture labels. It
 qualifies neither the later session.turn/config-subtracted DDL nor a native
-running host, the three B9 commands or five FULL families. Windows worker
+running host, the three B9 commands or the named FULL commands. Windows worker
 p95 below a target does not establish product PASS. No B1/B2/B8 or first-bind/
 handover spend is inferred from these mixed-workload quantiles.
 
