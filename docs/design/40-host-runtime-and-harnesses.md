@@ -353,7 +353,8 @@ the writer thread retains an Arc of the exclusive lease until actual join. A
 stale endpoint/PID, missing pathname, timeout or caller-supplied report cannot
 steal a lock. IPC failure under a live exclusive lease cannot fall through to a
 direct write. Read-only snapshots remain available without the host. Hostless
-stdio custody requests refuse CustodyUnavailableHostless; legal CLI custody can
+stdio custody requests refuse runtime-not-running with the hostless-custody
+cause and bootstrap remedy; legal CLI custody can
 bootstrap the standalone host through section-30 NativeProcessApi spawn_runtime,
 commit_runtime with authenticated readiness, or abort/witness/release_runtime.
 The exact RuntimeChild stays pinned through that outcome. This is private
@@ -1063,7 +1064,7 @@ starts stock app-server over stdio with the normal user's existing login/home,
 safe permissions, real tools and saved-thread resume. The same mode is available
 on all OSes and is the headless journey baseline. Attended Windows Codex requires
 the stock build's qualified private attach capability; until demonstrated, that
-mode refuses ProviderProtocolUnsupported/WindowUnavailable with the detached
+mode refuses provider-incompatible/window-unavailable with the detached
 command. This is an honest supported fallback, **not** a passed attended alpha
 requirement; windowed support remains a release qualification obligation.
 
@@ -1284,19 +1285,22 @@ omissions, unreadables and progressing cursors. A post-COMMIT lost response or
 cancelled wait is keyed readback, not proof of rollback. Secret-bearing raw
 stderr/argv/native payload never enters errors/bundles.
 
-| Boundary | Existing codes raised / cause / legal remedy |
+The public spellings below come from the shared catalogue; retained native or
+provider discriminants belong in typed causes, not extra public wire codes.
+
+| Boundary | Public codes / retained cause / legal remedy |
 | --- | --- |
 | Input/wire | usage-invalid-value, input-unknown-field, input-too-large: fix closed schema/budget; no dispatch/marker on invalid input |
 | API/version | api-version-unsupported, runtime-incompatible: upgrade matching side; no negotiation bypass |
 | Native peer/owner provenance | os-user-mismatch, listener-admission-refused, owner-required, human-terminal-required: correct user/native owner route; never ambient fallback |
-| Credential | setup-required/unreadable, capability-invalid/revoked/expired, capability-invalid: authenticated init/repair/renewal/rebind, no owner conversion |
-| Runtime | runtime-not-running, runtime-not-running, runtime-incompatible, runtime-start-failed/pending: legal up/actual-owner inspection, not a PID shortcut |
-| Generation/shutdown/handover | state-conflict, runtime-handover-in-progress, stop-unwitnessed, stop-unwitnessed: re-read exact key/G/ownership; retain unsafe custody; controlled restart for unjoinable worker |
+| Credential | setup-required, source-unreadable, capability-invalid: detail distinguishes missing/unreadable credential, invalid/revoked/expired capability and unproved binding; actual init/diagnosed repair/renewal/rebind, no owner conversion |
+| Runtime | runtime-not-running, runtime-incompatible, runtime-start-failed, runtime-start-pending: retain hostless/actual-owner/start cause; legal bootstrap/owner inspection, not a PID shortcut |
+| Generation/shutdown/handover | state-conflict, runtime-handover-in-progress, stop-unwitnessed: retain exact generation/phase/deadline/closure cause; re-read original key/G/ownership, retain unsafe custody, controlled restart for an unjoinable worker |
 | CAS/scope | revision-conflict, idempotency-key-reused, launch-in-flight, agent-already-running, grant-required, message-scope-denied, not-recipient: re-read/current authorization, preserve incumbent/original receipt |
-| Provider | provider-cli-not-found/too-old/unrecognized, provider-incompatible, launch-failed, resume-reference-missing/unverifiable, provider-change-breaks-resume: install/fix/explicit --new where desired, never silent fresh thread |
-| Process | process-identity-changed/unreadable, bare-pid-refused, job-breakaway-refused, window-unavailable, launch-failed/readiness-timeout, stop-unwitnessed/partial/deadline-exceeded: exact outside observation and legal supported mode; no weakened containment/name kill |
-| Capture/config/remove | source-unreadable/truncated, usage-invalid-value, capture-consent-missing, usage-invalid-value, integration-conflict/write-failed/readback-mismatch, remove-incomplete: preserve cursor/foreign bytes/history, repair actual pin/config; hook exit zero is not capture proof |
-| Failure/cancellation | deadline-exceeded, cancelled, internal, internal: original-key outcome readback, named route failure or ownership/lifecycle-domain poison as specified; mutex poison never success |
+| Provider | provider-cli-not-found, provider-incompatible, launch-failed, resume-reference-missing, resume-reference-unverifiable, provider-change-breaks-resume: retain version/feature/app-server cause; install/fix/explicit --new where desired, never silent fresh thread |
+| Process | state-conflict, source-unreadable, usage-invalid-value, job-breakaway-refused, window-unavailable, launch-failed, launch-readiness-timeout, stop-unwitnessed, deadline-exceeded: retain exact identity/bare-PID/partial-stop/native cause and outside observation; no weakened containment/name kill |
+| Capture/config/remove | source-unreadable, transcript-truncated, usage-invalid-value, capture-consent-missing, integration-conflict, integration-failed, remove-incomplete: retain exact source/payload/body/write/readback cause; preserve cursor/foreign bytes/history, repair actual pin/config; hook exit zero is not capture proof |
+| Failure/cancellation | deadline-exceeded, cancelled, internal: original-key outcome readback, retained task/native cause and named route failure or lifecycle-domain poison; mutex poison never success |
 
 A bounded se-proc stop is incomplete at the requested guarantee even if root
 exited; Complete retains its actual supported OS bound. Windows explicit escape,
