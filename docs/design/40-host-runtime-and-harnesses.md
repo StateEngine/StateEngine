@@ -1,7 +1,7 @@
 # 40 — Host runtime and harnesses
 
 Design candidate, not runtime implementation or qualification. Owner: Vera.
-Base: accepted main `eac8c69c196c3f9793e3810d63fa80e1737f5e40`.
+Base: accepted main `a644381871cbae5d8e1eaf56559943443b580f35`.
 This revision folds Prime's Opus return `msg-1f35564dbeb211d846bf5f9c` and Sol's
 `msg-8e0ac6e98350f404c9abe25f`. Verification tier: kernel boundary design;
 compiling declarations here, journey/black-box checks owned by reviewers.
@@ -226,7 +226,7 @@ exact Tokio/SQLite versions. No library installs a global tracing subscriber.
 | Unix process and watch events | Existing Tokio AsyncFd/kqueue reactor via ReactorAdapter implementing NativeReactor | se-proc HostConfig.reactor supplied; no Unix collector thread |
 | Windows native job/process completion | One existing se-proc IOCP collector thread per host | §80 custody 0.2 MB includes collector; no RegisterWait pool or second collector |
 | Windows provider stdin/out/err | Overlapped named-pipe host ends and IOCP readiness, bounded buffers | No tokio::fs::File/blocking read wrapper or thread per pipe; detailed below |
-| Transcript watch | inotify FD / kqueue vnode / overlapped directory events on existing reactor | No notify-owned helper thread; §80 watcher 0.5 MB includes state, not an omitted stack |
+| Transcript watch | Unix native events; Windows uses section 60's shared safe se-proc file-watch service (ReadDirectoryChangesW on the same per-host IOCP) | One shared service for capture/Atlas, no notify-owned helper thread; §80 watcher 0.5 MB includes state, not an omitted stack |
 | Optional Atlas | Accepted standalone Atlas worker only after use | §80 standalone 2 MB in-host share; cold-index child has separate approved 64 MB window |
 
 On Unix ReactorAdapter takes the owned File from NativeReactor::register, installs
@@ -281,8 +281,14 @@ close is a separate cancel/drain operation; neither future drop nor stdin close
 may discard output/completion buffers. These are section 30's reviewed EOF and
 half-close requirements, not a synthetic empty-read convention.
 
-For directory events use native sources on these same reactors; do not quietly
-select notify's extra thread or poll watcher. If events are unavailable, expose
+For Windows directory events, use the **same shared safe se-proc file-watch
+service specified by section 60**, including ReadDirectoryChangesW on the one
+per-host IOCP. Capture subscribes independently of Atlas activation; Atlas being
+absent embedded cannot remove capture's watch service. There is no separate
+transcript-specific native port, collector or unsafe host implementation. Use
+that service's loss/overflow observations for bounded pinned-source catch-up,
+never full machine/floor scans. Unix sources use the existing native reactors.
+Do not quietly select notify's extra thread or poll watcher. If events are unavailable, expose
 watcher unavailable and rely on real hook/completion plus the bounded live catch-up.
 No extra uncounted watcher thread is reserved. CreateProcess and transcript
 256-KiB chunk reads run as bounded blocking jobs. Exec/provider readiness awaits
@@ -397,6 +403,7 @@ suspend, so a resumed stop is not silently granted a fresh full interval.
 | Unstaged host crash/full process loss | Last job handles close and ordinary members end; cold successor proves old closure and resumes saved conversation under a **new lifecycle**, never reopens job name as authority | Cgroup/group may survive, pipes may EOF; reobserve exact old identity/scope and verify transport/conversation before adoption or same-conversation replacement | Group may survive, pipes may EOF; same exact tracked/native proof, no global-descendant guarantee |
 | Normal SE Code exit with handover configured | Staged overlapping-handle handover below keeps jobs/PIDs and streams alive; if handover fails, retain source until resolved or explicitly stop, never silently drop last handles | Staged FD/scope transfer preserves actual PIDs/streams where supported; failure is visible | Staged streams/PTY and protected-record transfer, re-register native events; preserve achieved tracked bound |
 | Normal exit choosing explicit stop | Same stop policy as se down | Same stop policy as se down | Same stop policy as se down |
+| Ordinary SE Code/daemon exit with neither handover nor explicit stop selected | Run graceful stop first: interrupt, save original resume reference and flush capture/debt; then exit. Last job close ends ordinary members; status/resume retain the saved reference and distinguish observed closure from pending readback | Same graceful stop/save/flush; stop and witness exact owned cgroup or explicitly Uncontained group before exit at its achieved bound; saved reference remains available | Same graceful stop/save/flush and exact tracked-group stop/readback at its achieved bound; incomplete closure stays named, saved reference remains available |
 | Same-process generation restart | Arena/job/pipe resources stay with supervisor, no last-handle interval | Arena/FDs stay retained | Arena/FDs stay retained |
 
 Explicit Windows breakaway descendants are outside the stated ordinary-job bound;
@@ -406,6 +413,11 @@ An unproved live job/foreign retained handle after unplanned loss blocks automat
 replacement. Linux/macOS provider EOF can require original-conversation resume
 rather than process preservation; never start a duplicate while old scope closure
 or transport ownership is unknown.
+The ordinary-exit path is an explicit shutdown policy, not a raw Rust Drop.
+An external status/resume reader reobserves exact native closure after host exit;
+an unwitnessed final job close cannot forge an already committed Exited fact.
+It shows the stopped/exit-pending state and the actual saved conversation resume
+command as supported by that observation, never claims live adoption.
 
 ## 6. Live handover: standalone ↔ SE Code
 
@@ -448,8 +460,8 @@ durable result after a lost reply. **The factory** reads/verifies durable phase,
 ownership and native proof; the permissive adapter checks only its actual epoch,
 queue incarnation and exact persisted transfer/checkpoint binding. It has no
 StateEngine store reader and cannot turn an opaque EventRef into a phase witness.
-The factory requests settle_queue only after verified FULL Finished or pre-claim
-Aborted, removing only that transfer fence. The checkpoint names the actual
+The factory requests settle_queue only after verified FULL Finished, pre-claim
+Aborted or checked-cold Recovered, removing only that transfer fence. The checkpoint names the actual
 protected NativeQueueId, original cut/event, digest/count and target receipts,
 never pending input bodies or a substitute host queue. The native control plane
 flushes and independently reopens/readbacks that queue image before SE Code exit.
@@ -472,13 +484,16 @@ authority to clear the fence nor a reason to strand the retained queue.
 NativeQueueCheckpoint.owner names the actual native epoch that created that cut,
 not necessarily the later recovery adapter. The factory checks the directional
 epoch, protected queue incarnation and original cut before its first callback.
+A recovery adapter instead proves its fresh epoch through the verified native
+adoption lineage and the same retained queue/transfer, never by pretending to be
+the dead source or successor.
 A second handover plan while a fence is open refuses transfer-in-progress with
 the open transfer identity. Resolve the first transfer before starting a reverse
 one; timeout, an empty active map or a new epoch cannot replace that resolution.
 
 | Phase | Source / receiver / store / native barrier |
 | --- | --- |
-| SourceGated | Validate/retain keyed request and expected current owner; gate new custody/delivery, finish already accepted launches/capture/debt, then install transfer-scoped native admission/promotion fence, interrupt and prove exact idle; source still owns lease/resources |
+| SourceGated | Validate/retain keyed request and owner; gate new custody/delivery, immediately fence native admission/promotion and interrupt participating agents, then finish accepted finite launch/capture/debt operations and prove exact idle; do not await a running turn's natural completion; source still owns lease/resources |
 | Standby | Verify exact successor peer/PID/birth/API/home and native ready channel; receiver is read-only, no ordinary HostServices callbacks or queue promotion |
 | Staged | After source capture/debt heads and full-frame input/output boundaries freeze, duplicate host-owned/Unix stream/PTY descriptors and call begin_transfer; native arena includes Windows provider ports automatically; transfer_manifest reads actual nonce/digest, receiver accept_transfer stages inactive copies and attaches ready local stdio sinks |
 | BarrierCommitted | Seal FULL Prepared with final immutable manifest/nonce/frozen_at after all accepted work is finished; drain/join writer, then record FULL ReadyToClaim on drained maintenance; frozen data cannot change afterward |
@@ -487,6 +502,7 @@ one; timeout, an empty active map or a new epoch cannot replace that resolution.
 | Acknowledged | Persist/read back keyed destination activation receipt and original admission/capture heads; source verifies exact receipt plus current ownership barrier, calls commit_transfer and closes its now-gated originals |
 | Finished | After source resource closure is verified, destination commits FULL Finished; factory then settles that transfer's native fence, with old-G routing still fenced. Destination remains unique owner; native routes stay dormant while SE Code is absent |
 | Aborted | Before Claimed and before native activation: source abort_transfer and receiver discard_transfer staged copies; restore source only after actual lease/owner/G validation; settle only this transfer fence and preserve all human/takeover/revocation holds |
+| Recovered | A checked cold owner supersedes Claimed/Activated; one FULL transaction records the new runtime.owner and original transfer's Recovered outcome with fresh activated custody/capture and retained queue-cut proof; only then may the factory settle that original fence |
 | RecoveryPending | Lost ACK, peer death, ambiguous CAS/lease/stream state; no guessed rollback or second consumer; reconcile exact transfer/receipt/native state |
 
 The ownership row is a CAS and key in the store, not permission to bypass the
@@ -502,7 +518,7 @@ Before sealing a native route, the transfer-scoped fence -> interrupt -> exact
 Present(None) precedes final target selection; target/G/fence/no-execution are
 rechecked inside the native atomic transition. Never reuse Takeover/HumanStop
 then automatically unhold it. Settle only the matching transfer fence after
-verified Finished or pre-claim Aborted. FULL Activated alone cannot clear it.
+verified Finished, pre-claim Aborted or checked-cold Recovered. FULL Activated alone cannot clear it.
 Do not clear a human hold to make handover appear live.
 A resumed human invalidates the stale absence barrier; re-read/retry legally.
 Host-only delivery is frozen before native transfer. SE Code freezes its sole
@@ -549,12 +565,16 @@ Failure recovery:
   once their committed transfer cannot be proved, applying ordinary crash policy.
 
 After Claimed, receiver loss requires checked cold recovery of the original
-transfer into actual activated custody/capture, then terminal Finished, or an
-explicit reverse transfer after the first open fence is resolved. No aborted
-outcome is fabricated for a Claimed transfer. Original manifest, queue cut,
-admission/debt and independent holds remain bound throughout recovery. Only the
-factory's verified terminal outcome permits queue-fence settlement; retained
-partial custody or a cold owner identity by itself cannot do so.
+transfer into actual activated custody/capture. The same FULL transaction as its
+new runtime.owner records the original transfer as **Recovered**, citing that
+new owner event plus fresh native custody/capture and retained queue-cut proof.
+The original peers, generations, nonce and manifest remain immutable. Do not
+invent Finished/Aborted or append an ordinary old-generation phase advance.
+HandoverState.recovery_owner names that verified new owner event only for a
+Recovered outcome; it never overwrites the original HandoverIntent or fabricates
+an old native transfer receipt. Missing/unreadable completion proof keeps recovery
+pending. A new reverse plan requires the original fence's terminal settlement
+first. Original admission/debt and independent holds survive either route.
 
 Before Prepared, staging has no committed transfer authority. If source dies or
 staging times out before that first FULL seal, receiver closes the uncommitted
@@ -614,7 +634,10 @@ No raw handle, body or credential is in that record.
 | Activated | Actual native activation receipt persisted FULL **before destination input/capture consumers run**; lost ACK is keyed readback; a crash cannot justify fresh stream activation/input |
 | Finished | Source verified destination receipt/owner and committed native transfer, then closed originals; destination records terminal FULL outcome before native transfer-fence settlement |
 | Aborted | Only before Claimed and native activation, after checked source/lease recovery or while source retained it; retain real human holds/debt |
+| Recovered | Exceptional checked-cold completion from Claimed/Activated, atomically with the new FULL runtime.owner; cite its event, fresh activated custody/capture and retained queue-cut proof while keeping original peer/generation fields immutable |
 
+The Recovered row consumes section 20's admitted recovery amendment, not a local
+side-file, invented Finished or phase-only write under a stale generation.
 Acknowledged/LeaseTransferred/RecoveryPending are bounded host observations, not
 extra durable owner phases. Exact phase retries use stable per-transition keys
 derived from the original request, transfer and phase; changed fingerprints
@@ -625,6 +648,38 @@ activation cannot be proved after peer loss, cold recovery remains explicit
 rather than inventing an abort or a second set of streams. The record's immutable
 peer/generation/nonce/digest binding and legal transition checks belong to Nell's
 store amendment; the host supplies real outside facts and holds the OS lease.
+
+### 6.2 Closed recovery attestations
+
+RuntimeOwnerEstablished.recovered uses section 20's RuntimeRecoveredTransfer,
+not another recovery event. transfer and handover_event identify the exact current
+Claimed/Activated head; capture_at is a real committed revision in the same store,
+at least frozen_at and no later than the observed head. The enclosing FULL owner
+event is both new-owner and Recovered completion reference. Its projection keeps
+the original transfer plus Recovered under the fresh epoch/G. A standalone
+RuntimeHandoverRecorded(Recovered) or a bare owner event is illegal.
+
+The two digests bind these private, versioned metadata documents:
+
+| Schema / digest | Closed content and checks before the FULL append |
+| --- | --- |
+| se.handover.recovered-custody/v1 / activated_custody_sha256 | Original transfer/current handover event/manifest digest; actual fresh owner HostEpoch/G; one entry per required original lifecycle with canonical ProcessRecord, fresh OwnedObservation, achieved containment bound, exact transferred/recovered stream roles and current ready native binding. Include each original capture source's identity, verified conversation/incarnation and committed cursor at capture_at, plus its fresh generation-bound capture registration. Missing required lifecycle/stream/source or stale/unreadable native observation refuses publication; an old receipt/hash alone proves none of these facts |
+| se.handover.retained-queue/v1 / queue_cut_sha256 | Original NativeQueueId/incarnation, keyed plan, checkpoint owner/freeze event, native manifest digest/count, original admission/promotion-dedupe/hold cut, and the actual independent native flush/reopen/readback observation verifying that retained cut. Source bodies remain solely in the native queue. A path, new epoch, engine debt, count or old digest without that readback cannot supply the proof |
+
+Use the owners' checked lossless ID/path/record codecs and one versioned compact
+JSON encoding with recursively sorted keys, integer numeric values and no unknown fields;
+hash UTF-8 bytes prefixed by the schema domain and a zero byte. Sort lifecycle
+and capture-source entries by their canonical IDs; duplicate/missing entries
+refuse. The factory reads the canonical original facts and actual native reader
+results before constructing these documents. They are attestations inside the
+trusted host, not authority imported from an agent-supplied hash or JSON body.
+Stage/hash them through existing bounded chunk permits under protected host
+custody at STATE/recovery/handover/<sha256>.json, retain their digest references
+with the completion fact, and exclude bodies,
+credentials, nonce formatting and raw handles. A complete document exceeding
+4 MiB refuses recovery with custody retained; never truncate it into a complete
+attestation or reserve 4 MiB per session. Missing queue readback can leave native
+routes pending until an authorized native adapter can prove the original cut.
 
 ## 7. Client transport, provenance and HTTP
 
@@ -709,12 +764,17 @@ no grandchildren/all-agent privilege or private mailbox read follows from it.
 
 ### 7.3 HTTP inventory and concrete parser
 
-Use the **same pinned hyper 1 server-only HTTP crate already linked by SE Code**,
-with its existing Tokio integration; no independent HTTP parser or TLS/client
-stack. Standalone uses that same server stack. Confirm exact package unification
-in the combined consumer. Only if the embedding host links no HTTP crate may the
-maintainer choose a separately reviewed minimal parser; this candidate does not
-hand-roll HTTP. No hidden process/server per agent.
+Reuse **the HTTP crate SE Code's server already links**, verified against that
+server's Cargo.lock at build start, with its existing runtime integration.
+The desktop lockfile alone does not establish a shared server dependency; do not
+assume hyper is present or add a second stack. If the server links no HTTP crate,
+use a minimal **POST-only HTTP/1.1 MCP parser**: fixed routes, bounded headers and
+Content-Length body, no chunked/ambiguous framing, pipelining, upgrades or SSE.
+The fixed GET mail/livez auxiliary endpoints below remain supported through the
+same bounded front end, with no request body and no generic HTTP proxy surface.
+Standalone uses the selected common stack/parser. No TLS/client stack or hidden
+process/server per agent is introduced. Both parser choices enforce the same
+Host/Origin/Sec-Fetch-Site, credential and final-envelope budgets below.
 
 Admission order: bounded parse -> origin-form target -> exact Host/port ->
 Origin/Sec-Fetch-Site -> method/media -> credential -> core scope. Host is exactly
@@ -1061,6 +1121,10 @@ aggregate, 262,144 local reply bytes and two admitted blocking jobs. This replac
 the old unbudgeted 128-session default. Embedded may explicitly negotiate up to
 128 only against its reserve: 128×50 KB=6.4 MB, +5.6 MB over the 16-session row,
 20+5.6=25.6 MB before the remaining reserve; all other aggregate caps stay fixed.
+The separately parked-wait count scales to that negotiated session cap (one per
+session), while its aggregate byte allocation stays fixed in the mail/watch row.
+Release header/body parsing buffers before parking and retain only bounded
+IDs/cursor/auth metadata; no 16 KiB header or 1 MiB body reservation per wait.
 Standalone policy stays at 16 until an independently measured within-B4 allocation
 is approved. A cap is admission/backpressure, not preallocation; durable debt
 retains overflow and no oldest unread item is dropped. Parked connection buffers
@@ -1199,7 +1263,7 @@ Integration obligations still requiring owner review/measurement:
    native qualification and single-collector integration remain unmeasured.
    No host unsafe or second collector.
 3. **Alpha + host composition** publish the permissive linked API, unify actual
-   Tokio/hyper/SQLite packages, catch unwinds and apply the reconciled route-local
+   Tokio/selected-HTTP/SQLite packages, catch unwinds and apply the reconciled route-local
    versus ownership/lifecycle poison policy at the existing boundary. Iris's
    major-2 handover entry and queue fence are required, with Prime's quiescence,
    cutover timing and explicit native-route dormancy policy. Section 40 adds no

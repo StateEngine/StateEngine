@@ -66,6 +66,7 @@ pub enum HandoverPhase {
     Acknowledged,
     Finished,
     Aborted,
+    Recovered,
     RecoveryPending,
 }
 #[derive(Clone, Debug)]
@@ -89,5 +90,6 @@ pub struct HandoverState {
     pub native_nonce: Option<[u8; 16]>,
     pub manifest_sha256: Option<se_types::Sha256>,
     pub frozen_at: Option<se_store::Revision>,
+    pub recovery_owner: Option<se_types::EventId>,
     pub unresolved: Vec<se_types::ErrorBody>,
 }
