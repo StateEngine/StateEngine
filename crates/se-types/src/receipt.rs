@@ -1,48 +1,128 @@
-use crate::{EventId, IdempotencyKey, Result, SeError, Sequence};
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+use crate::{ErrorBody, EventId, IdempotencyKey, Result, SeError, Sequence};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct EventRef {
     pub id: EventId,
     pub sequence: Sequence,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum EffectStatus {
     NotRequired,
     Pending,
     Witnessed { witness: EventRef },
-    Failed { error: SeError },
+    Failed { error: Box<ErrorBody> },
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Commit<T> {
-    pub event: EventRef,
+    pub event_id: EventId,
+    pub sequence: Sequence,
     pub idempotency_key: IdempotencyKey,
     pub value: T,
     pub effects: EffectStatus,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum PendingReason {
     Queued,
     AwaitingWitness,
     Recovering,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "state",
+    rename_all = "snake_case",
+    try_from = "ReceiptWire<T>",
+    bound(deserialize = "T: Deserialize<'de>")
+)]
 pub enum Receipt<T> {
     Committed {
+        #[serde(flatten)]
         commit: Commit<T>,
     },
     Replayed {
+        #[serde(flatten)]
         original: Commit<T>,
     },
     Refused {
-        error: SeError,
+        error: Box<ErrorBody>,
     },
     Pending {
         cause: PendingReason,
-        event: Option<EventRef>,
+        event_id: Option<EventId>,
         idempotency_key: IdempotencyKey,
     },
 }
-pub trait ReceiptValue<T> {
-    fn committed_value(&self) -> Option<&T>;
-    fn validate(&self) -> Result<()>;
+impl<T> Receipt<T> {
+    pub fn committed_value(&self) -> Option<&T> {
+        match self {
+            Self::Committed { commit } | Self::Replayed { original: commit } => Some(&commit.value),
+            _ => None,
+        }
+    }
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Self::Committed { commit } | Self::Replayed { original: commit } => {
+                if commit.sequence == Sequence::ZERO {
+                    return Err(SeError::invalid(
+                        "receipt sequence",
+                        "a committed nonzero sequence",
+                    ));
+                }
+                if let EffectStatus::Witnessed { witness } = &commit.effects
+                    && witness.sequence <= commit.sequence
+                {
+                    return Err(SeError::invalid(
+                        "effect witness",
+                        "an outside event after the commit",
+                    ));
+                }
+            }
+            Self::Pending { .. } | Self::Refused { .. } => (),
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+enum ReceiptWire<T> {
+    Committed {
+        #[serde(flatten)]
+        commit: Commit<T>,
+    },
+    Replayed {
+        #[serde(flatten)]
+        original: Commit<T>,
+    },
+    Refused {
+        error: Box<ErrorBody>,
+    },
+    Pending {
+        cause: PendingReason,
+        event_id: Option<EventId>,
+        idempotency_key: IdempotencyKey,
+    },
+}
+impl<T> TryFrom<ReceiptWire<T>> for Receipt<T> {
+    type Error = SeError;
+    fn try_from(value: ReceiptWire<T>) -> Result<Self> {
+        let receipt = match value {
+            ReceiptWire::Committed { commit } => Self::Committed { commit },
+            ReceiptWire::Replayed { original } => Self::Replayed { original },
+            ReceiptWire::Refused { error } => Self::Refused { error },
+            ReceiptWire::Pending {
+                cause,
+                event_id,
+                idempotency_key,
+            } => Self::Pending {
+                cause,
+                event_id,
+                idempotency_key,
+            },
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
 }

@@ -1,9 +1,13 @@
 use crate::{
-    Cursor, Generation, HostEpoch, ProjectId, Result, SeError, Sequence, StoreId, UnixMillis,
+    AtlasRootId, Cursor, ErrorBody, HostEpoch, IndexEpochId, ProjectId, Result, SeError, Sequence,
+    StoreId, UnixMicros,
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use std::num::{NonZeroU32, NonZeroU64};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Source {
     Store {
         store: StoreId,
@@ -12,53 +16,129 @@ pub enum Source {
     Host {
         epoch: HostEpoch,
     },
+    /// Rebuildable code cache, never the authority for history.
+    Atlas {
+        project: ProjectId,
+        root: AtlasRootId,
+        epoch: Option<IndexEpochId>,
+    },
     Configuration {
         location: String,
     },
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl Source {
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Store { store, project } => format!("store {store}, project {project:?}"),
+            Self::Host { epoch } => format!(
+                "host pid {}, epoch {}",
+                epoch.owner.fields().pid,
+                epoch.generation.get()
+            ),
+            Self::Configuration { location } => location.clone(),
+            Self::Atlas {
+                project,
+                root,
+                epoch,
+            } => format!("atlas.db project {project}, root {root}, epoch {epoch:?}"),
+        }
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Checked {
     pub source: Source,
     pub snapshot_to: Option<Sequence>,
-    pub observed_at: UnixMillis,
+    pub observed_at: UnixMicros,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum Read<T> {
-    Present { value: T },
-    Absent { checked: Checked },
-    Unreadable { source: Source, error: SeError },
-    Unknown { what: String },
-}
-pub enum ReadRef<'a, T> {
     Present {
-        value: &'a T,
+        value: T,
     },
     Absent {
-        checked: &'a Checked,
+        checked: String,
     },
     Unreadable {
-        source: &'a Source,
-        error: &'a SeError,
+        source: String,
+        reason: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<Box<ErrorBody>>,
     },
     Unknown {
-        what: &'a str,
+        what: String,
     },
 }
-pub trait ReadValue<T> {
-    fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Read<U>;
-    fn as_ref(&self) -> ReadRef<'_, T>;
+impl<T> Read<T> {
+    pub fn absent(checked: Checked) -> Self {
+        Self::Absent {
+            checked: format!(
+                "{} at {}us, snapshot {:?}",
+                checked.source.describe(),
+                checked.observed_at.get(),
+                checked.snapshot_to.map(Sequence::get)
+            ),
+        }
+    }
+    pub fn unreadable(source: Source, error: ErrorBody) -> Self {
+        Self::Unreadable {
+            source: source.describe(),
+            reason: error.message(),
+            error: Some(Box::new(error)),
+        }
+    }
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Read<U> {
+        match self {
+            Self::Present { value } => Read::Present { value: f(value) },
+            Self::Absent { checked } => Read::Absent { checked },
+            Self::Unreadable {
+                source,
+                reason,
+                error,
+            } => Read::Unreadable {
+                source,
+                reason,
+                error,
+            },
+            Self::Unknown { what } => Read::Unknown { what },
+        }
+    }
+    pub fn as_ref(&self) -> Read<&T> {
+        match self {
+            Self::Present { value } => Read::Present { value },
+            Self::Absent { checked } => Read::Absent {
+                checked: checked.clone(),
+            },
+            Self::Unreadable {
+                source,
+                reason,
+                error,
+            } => Read::Unreadable {
+                source: source.clone(),
+                reason: reason.clone(),
+                error: error.clone(),
+            },
+            Self::Unknown { what } => Read::Unknown { what: what.clone() },
+        }
+    }
+    pub const fn exit_code(&self) -> u8 {
+        match self {
+            Self::Present { .. } | Self::Absent { .. } => 0,
+            Self::Unreadable { .. } => 3,
+            Self::Unknown { .. } => 4,
+        }
+    }
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
 pub enum OmissionReason {
     Limit,
-    Bytes,
-    BeforeCursor,
+    Budget,
     Unreadable,
-    Unsupported,
-    Cancelled,
-    Deadline,
+    SourceIncomplete,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Omission {
     None,
     Known {
@@ -69,7 +149,13 @@ pub enum Omission {
         reason: OmissionReason,
     },
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct Omitted {
+    pub count: Option<u64>,
+    pub reason: Option<OmissionReason>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum StopReason {
     Exhausted,
     ItemLimit,
@@ -79,54 +165,219 @@ pub enum StopReason {
     Deadline,
     Unsupported,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WindowFields {
     pub source: Source,
     pub from: Sequence,
     pub to: Sequence,
+    pub start_cursor: Option<Cursor>,
+    pub end_cursor: Option<Cursor>,
     pub returned: u64,
     pub limit: NonZeroU32,
     pub bytes: u64,
+    pub max_bytes: NonZeroU32,
     pub omitted_before: Omission,
     pub omitted_after: Omission,
     pub unreadable: u64,
     pub stop_reason: StopReason,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "WindowWire", into = "WindowWire")]
 pub struct Window {
     fields: WindowFields,
     complete: bool,
+    omitted: Omitted,
 }
-pub trait WindowValue: Sized {
-    fn new(fields: WindowFields) -> Result<Self>;
-    fn fields(&self) -> &WindowFields;
-    fn complete(&self) -> bool;
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+struct WindowWire {
+    from: Option<Cursor>,
+    to: Option<Cursor>,
+    limit: u32,
+    complete: bool,
+    omitted: Omitted,
+    snapshot: WindowFields,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+fn omission_rank(reason: OmissionReason) -> u8 {
+    match reason {
+        OmissionReason::Limit => 0,
+        OmissionReason::Budget => 1,
+        OmissionReason::SourceIncomplete => 2,
+        OmissionReason::Unreadable => 3,
+    }
+}
+fn combine(before: &Omission, after: &Omission) -> Result<Omitted> {
+    let mut count = Some(0u64);
+    let mut reason = None;
+    for omission in [before, after] {
+        let (n, r) = match omission {
+            Omission::None => continue,
+            Omission::Known { count, reason } => (Some(count.get()), *reason),
+            Omission::Unknown { reason } => (None, *reason),
+        };
+        count = match (count, n) {
+            (Some(a), Some(b)) => Some(
+                a.checked_add(b)
+                    .ok_or_else(|| SeError::invalid("omitted", "a nonoverflowing count"))?,
+            ),
+            _ => None,
+        };
+        if reason.is_none_or(|current| omission_rank(r) > omission_rank(current)) {
+            reason = Some(r);
+        }
+    }
+    Ok(Omitted { count, reason })
+}
+impl Window {
+    pub fn new(fields: WindowFields) -> Result<Self> {
+        if fields.from > fields.to
+            || fields.returned > u64::from(fields.limit.get())
+            || fields.bytes > u64::from(fields.max_bytes.get())
+            || (fields.from == fields.to && fields.returned != 0)
+        {
+            return Err(SeError::invalid(
+                "window",
+                "ordered snapshot bounds, item and byte limits",
+            ));
+        }
+        let mut omitted = combine(&fields.omitted_before, &fields.omitted_after)?;
+        if fields.unreadable > 0 {
+            omitted.count = if omitted.count == Some(0) {
+                Some(fields.unreadable)
+            } else {
+                None
+            };
+            omitted.reason = Some(OmissionReason::Unreadable);
+        }
+        if fields.stop_reason != StopReason::Exhausted && omitted.reason.is_none() {
+            return Err(SeError::invalid(
+                "window omitted",
+                "a stated omission for a non-exhausted read",
+            ));
+        }
+        let complete = omitted.reason.is_none()
+            && fields.unreadable == 0
+            && fields.stop_reason == StopReason::Exhausted;
+        Ok(Self {
+            fields,
+            complete,
+            omitted,
+        })
+    }
+    pub fn fields(&self) -> &WindowFields {
+        &self.fields
+    }
+    pub const fn complete(&self) -> bool {
+        self.complete
+    }
+    pub fn omitted(&self) -> &Omitted {
+        &self.omitted
+    }
+    pub fn exit_code(&self, require_all: bool) -> u8 {
+        if (require_all && !self.complete)
+            || matches!(
+                self.omitted.reason,
+                Some(OmissionReason::Unreadable | OmissionReason::SourceIncomplete)
+            )
+        {
+            2
+        } else {
+            0
+        }
+    }
+}
+impl From<Window> for WindowWire {
+    fn from(value: Window) -> Self {
+        Self {
+            from: value.fields.start_cursor.clone(),
+            to: value.fields.end_cursor.clone(),
+            limit: value.fields.limit.get(),
+            complete: value.complete,
+            omitted: value.omitted,
+            snapshot: value.fields,
+        }
+    }
+}
+impl TryFrom<WindowWire> for Window {
+    type Error = SeError;
+    fn try_from(value: WindowWire) -> Result<Self> {
+        let window = Self::new(value.snapshot)?;
+        if value.from != window.fields.start_cursor
+            || value.to != window.fields.end_cursor
+            || value.limit != window.fields.limit.get()
+            || value.complete != window.complete
+            || value.omitted != window.omitted
+        {
+            return Err(SeError::invalid(
+                "window envelope",
+                "facts matching its snapshot",
+            ));
+        }
+        Ok(window)
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    try_from = "PageWire<T>",
+    bound(deserialize = "T: Deserialize<'de> + Serialize")
+)]
 pub struct Page<T> {
     items: Vec<T>,
     window: Window,
     next: Option<Cursor>,
 }
-pub trait PageValue<T>: Sized {
-    fn new(items: Vec<T>, window: Window, next: Option<Cursor>) -> Result<Self>;
-    fn items(&self) -> &[T];
-    fn window(&self) -> &Window;
-    fn next(&self) -> Option<&Cursor>;
-    fn into_items(self) -> Vec<T>;
+#[derive(Deserialize, JsonSchema)]
+struct PageWire<T> {
+    items: Vec<T>,
+    window: Window,
+    next: Option<Cursor>,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+impl<T: Serialize> Page<T> {
+    pub fn new(items: Vec<T>, window: Window, next: Option<Cursor>) -> Result<Self> {
+        let bytes = serde_json::to_vec(&items)
+            .map_err(|error| {
+                SeError::invalid("page items", "serializable values").with_cause(error)
+            })?
+            .len();
+        if items.len() as u64 != window.fields.returned
+            || bytes as u64 > window.fields.bytes
+            || (window.complete && next.is_some())
+            || (next.is_some() && next == window.fields.start_cursor)
+        {
+            return Err(SeError::invalid(
+                "page",
+                "matching count/bytes and a progressing incomplete continuation",
+            ));
+        }
+        Ok(Self {
+            items,
+            window,
+            next,
+        })
+    }
+}
+impl<T> Page<T> {
+    pub fn items(&self) -> &[T] {
+        &self.items
+    }
+    pub fn window(&self) -> &Window {
+        &self.window
+    }
+    pub fn next(&self) -> Option<&Cursor> {
+        self.next.as_ref()
+    }
+    pub fn into_items(self) -> Vec<T> {
+        self.items
+    }
+}
+impl<T: Serialize> TryFrom<PageWire<T>> for Page<T> {
+    type Error = SeError;
+    fn try_from(value: PageWire<T>) -> Result<Self> {
+        Self::new(value.items, value.window, value.next)
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PageRequest {
     pub after: Option<Cursor>,
     pub limit: NonZeroU32,
     pub max_bytes: NonZeroU32,
-}
-/// Durable cursor origin and audience, decoded only inside the store codec.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CursorScope {
-    pub store: StoreId,
-    pub project: ProjectId,
-    pub audience: crate::AgentId,
-    pub generation: Option<Generation>,
-    pub query_sha256: crate::Sha256,
 }
