@@ -1,6 +1,6 @@
 # 95. Work breakdown — se-proc
 
-Reconciled planning input for Prime, 2026-10-30; base `f25ca90`. **No code, tests or
+Reconciled planning input for Prime, 2026-10-30; base `99cd6c5`. **No code, tests or
 build permission. Jimmy approves the full design before implementation.**
 
 Section 30, including its accepted stdio port, transfer_manifest and handover
@@ -48,7 +48,7 @@ coordinates their registration, but those native lines are not counted again her
 
 **P03-W — Windows identity, jobs, launch and events (~1,500).** Owner WIN; files `src/platform/windows/{mod,identity,security,job,spawn,notify}.rs`. Depends P00, P01 retention and U/E. Can overlap LINUX; WIN serializes its own stdio work. Satisfies §30 §§4.1/5.1: held FILETIME/image identity, absent versus unreadable, native peer/ACL/membership, explicit BREAKAWAY plus atomic JOB_LIST creation, KILL_ON_CLOSE|BREAKAWAY_OK without SILENT, exact inheritance/quoting/console defaults and pinned-job stop with independent root-exit/active-zero witness. One existing host IOCP serves jobs and streams, with the stated missed-nudge bounds. Witness: native T14–T16/T21–T23 and J1–J5; reviewers cover strict caller jobs, unrelated children, console behavior and last-handle timing. Cross-compilation alone is insufficient.
 
-**P03-L — Linux delegation and honest fallback (~1,600).** Owner LINUX; files `src/platform/linux/{mod,identity,security,scope,spawn,notify}.rs`. Depends P00/P01, P02 for attach and U/E; identity/probes can start before terminals. Satisfies §30 §§4.1/5.2/7: bracketed boot/start/image reads, zombie/status facts, pidfds when supported, native peer/mode/membership, lazy trusted delegation without moving the embedded host, pinned cgroup checkpoint, clone3 entry/accepted ENOSYS fallback and tracked uncontained group with exact cause. No weaker retry after failed cgroup entry, fabricated member count or unrelated-child reap; optional hardening remains opt-in. Witness: native T14–T16/T21–T23/T28 and J1–J5 with/without manager and genuinely unavailable pidfds; witness labels must match capability. Reviewer crash/entry failures supplement journeys.
+**P03-L — Linux delegation and honest fallback (~1,800).** Owner LINUX; files `src/platform/linux/{mod,identity,security,scope,spawn,notify}.rs`. Depends P00/P01, P02 for attach and U/E; identity/probes can start before terminals. Satisfies §30 §§4.1/5.2/7: bracketed boot/start/image reads, zombie/status facts, pidfds when supported, native peer/mode/membership, lazy trusted delegation without moving either host, pinned cgroup checkpoint, temporary scoped helper creating the root after C2, authenticated stdio/pidfd handoff with acknowledgment and witnessed helper closure, clone3 entry/accepted ENOSYS fallback and tracked uncontained group with exact cause. The extra ~200 lines cover this native launch/handoff join, reusing P02's private control; bootstrap creation and role validation are counted here, with generation-handover work remaining in P07-L; no permanent reaper or fourth contained-launch commit is added. No weaker retry after failed cgroup entry, fabricated member count or unrelated-child reap; optional hardening remains opt-in. Witness: native T14–T16/T21–T23/T28 and J1–J5 with/without manager and genuinely unavailable pidfds; witness labels must match capability. Reviewer crash/entry failures supplement journeys, including an actual SSH session outside the user-manager subtree, retained cross-boundary EACCES, helper loss before/after child creation, live transferred streams and truthful non-parent exit status. Headless proof does not qualify a terminal-created peer's separate self-entry path.
 
 **P03-M — macOS backend and shared-task joins (~1,000; MAC CAMPAIGN BEFORE ALPHA).** Owner MAC, with PROC coordinating shared-file edits; files `src/platform/macos/{mod,identity,security,group,spawn,notify}.rs` plus Mac-specific joins in PROC-owned Unix/recovery/bootstrap files. Depends P00/P01/P02 and U/E; assigned only in the Mac campaign. Satisfies §30 §§1.1/5.3–5.5: boot/start/path checks, existing-reactor kqueue, native peers/modes, literal helper/PTY/session setup, exact tracked-group stop/recovery and its explicit non-atomic/deliberate-escape bound. No Mach task entitlement or unescapable-tree claim. Witness: actual Mac J1–J5, T15/T16/T21–T23 and reviewer Mac mismatch/escape/terminal cases; T14's current Linux/Windows listing is not a Mac pass. Cross-compilation remains intermediate only.
 
@@ -79,9 +79,9 @@ runtime. Other workstreams retain authority, store, framing, public transport,
 binary dispatch, schemas, packaging and reviewer ownership. Prime alone assigns
 and lands; a declaration stub never completes a behavioral task.
 
-Production estimate: **~10,950 Windows/Linux + shared lines**, plus **~1,350
-Mac-specific lines in the pre-alpha Mac campaign** (P03-M ~1,000; P07-M ~350), for **~12,300 total**.
-The active subtotal includes ~1,000 retained/shared contracts and ~9,950 further
+Production estimate: **~11,150 Windows/Linux + shared lines**, plus **~1,350
+Mac-specific lines in the pre-alpha Mac campaign** (P03-M ~1,000; P07-M ~350), for **~12,500 total**.
+The active subtotal includes ~1,000 retained/shared contracts and ~10,150 further
 native/common lines; it excludes the separate core/CLI, host, store, foundation,
 Atlas, release and reviewer implementations. These are rough planning amounts,
 not measured finished code or an implementation authorization. Removing generic
