@@ -1,0 +1,25 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/se-types",
+    "crates/se-store",
+    "crates/se-core",
+    "crates/se-proc",
+    "crates/se-host",
+    "crates/se-atlas",
+    "crates/se",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.97.1"
+license = "LicenseRef-StateEngine-Proprietary"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
