@@ -454,8 +454,10 @@ source G in CallOptions and actual pinned successor resolved by the retained
 factory. It uses Iris's HandoverServices with native epoch/queue accessors
 independently of ordinary G callback fencing. The fence is keyed by the exact
 transfer and retained queue incarnation, not the lifetime of one SE Code epoch.
+The linked TransferId is the checked spelling of the same store transfer
+RecordId, never the native transfer nonce or a newly allocated retry identity.
 freeze_queue installs that fence and returns NativeQueueCheckpoint for the
-complete participating native binding set; queue_state resolves the original
+complete participating native binding set; queue_state(TransferId) resolves the original
 durable result after a lost reply. **The factory** reads/verifies durable phase,
 ownership and native proof; the permissive adapter checks only its actual epoch,
 queue incarnation and exact persisted transfer/checkpoint binding. It has no
@@ -475,6 +477,16 @@ settle its predecessor's still-open fence only after proving the same protected
 queue/cut and native adoption lineage and after factory-verified terminal outcome.
 Different native queue/store identity refuses; epoch replacement alone is neither
 authority to clear the fence nor a reason to strand the retained queue.
+
+Frozen with quiescence_witnessed=false proves only that the initial native fence
+committed. It cannot authorize Prepared. Same-transfer retry finishes immediate
+cancellation and exact-idle readback, seals quiescence_witnessed=true and returns
+the final immutable checkpoint. HandoverReport contains only a verified
+NativeQueueSettlement, including actual settled_by epoch; a Frozen checkpoint
+is never a successful terminal report. An Aborted committed/replayed report
+means the abort completed, not that activation succeeded. NativeDormant maps to
+the linked AdoptionState::WaitingForSecode{transfer} typed status and preserves
+the original transfer through the next SE Code adoption.
 
 | Direction | Actual native adapter and freeze semantics |
 | --- | --- |
