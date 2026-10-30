@@ -85,7 +85,8 @@ root identity needs owner rebind. Native unsafe code stays in the host adapter.
 registration the host reads a bounded .git file (<=4096 bytes), validates linked-
 worktree backpointer and registers physical gitdir/commondir handles and identities.
 Atlas may read only HEAD, its bounded referenced ref, packed-refs, commondir,
-worktree backpointer and info/exclude from these handles (<=2,000,000 metadata
+worktree backpointer and info/exclude from these handles; observe only presence/
+change events for index.lock and HEAD.lock as checkout hints (<=2,000,000 metadata
 bytes per reconciliation). No objects, hooks, arbitrary config includes, remote
 access or source outside the root. Physical metadata replacement requires rebind.
 No GIT_* ambient variables or git subprocess. Per-worktree HEAD and shared refs
@@ -109,8 +110,15 @@ Read checks size before allocating, opens no-follow, hashes bounded original byt
 and rechecks metadata. **verify reopens the same physical file, rehashes all admitted
 bytes and compares the full content hash plus identity immediately before commit.**
 A same-size in-place edit is Changed even if timestamps are coarse or restored.
-Uncertain timestamps, watcher loss and restart require streamed rehash, not an
-Unchanged claim from stat identity. Reconcile holds at most a 16,384-byte hash buffer
+Restart reconciliation can skip a full rehash ONLY when the native adapter
+provides a qualified persistent content-change sequence (same file and journal
+domain), or ctime semantics qualified to detect EVERY relevant byte write across
+that restart. RevisionTrust records that qualification; a journal reset/unknown
+resolution, rollback, mount/domain change, unsupported ctime or uncertain clock
+invalidates it. Plain size/inode/mtime is never sufficient. Without that proof,
+watch loss/restart/uncertain timestamps require streamed rehash. Parsing a changed
+file still verifies its full bytes immediately before commit, regardless of this
+unchanged-file optimization. Reconcile holds at most a 16,384-byte hash buffer
 and a bounded path batch; it may take many work quanta. A change after verification
 can still happen: results carry indexed hash/freshness, and editors must reread
 before acting. This is snapshot evidence, not a filesystem transaction guarantee.
@@ -216,6 +224,10 @@ CREATE TABLE changes (
  PRIMARY KEY(generation,ordinal)
 ) STRICT;
 CREATE INDEX changes_file_generation ON changes(file_key,generation,ordinal);
+CREATE TABLE watch_directories (
+ id INTEGER PRIMARY KEY, descriptor INTEGER NOT NULL UNIQUE,
+ path TEXT NOT NULL, identity BLOB NOT NULL
+) STRICT;
 CREATE TABLE active_batch (
  singleton INTEGER PRIMARY KEY CHECK(singleton=1), kind TEXT NOT NULL,
  first_serial INTEGER NOT NULL, last_serial INTEGER NOT NULL,
@@ -268,19 +280,37 @@ baseline, not millions of additions. Subsequent file activity is grouped into a
 source batch: ordinary file-event debounce 15 ms, at most 2 seconds after the
 first event before closing that event batch, timers armed only by events. An explicit
 HEAD/directory/loss reconcile is ONE logical batch through its completed discovery
-fence, however many work quanta it needs; the 2-second event window does not split it. For <=100 distinct files, provisional
+fence, however many work quanta it needs; the 2-second event window does not split it.
+For <=100 distinct files, provisional
 per-file changes live in a bounded SQL staging table, never visible until batch
 publication. On file 101, discard provisional symbol rows and switch to one Bulk
 row (reason, distinct-file count, optional semantic count, <=5 sample paths,
 complete flag). HEAD/directory/overflow reconciles share this rule, including when
-the total is discovered incrementally. No per-symbol rows leak before the threshold
-is known: changes reads use published_generation, separate from index_generation.
+the total is discovered incrementally. A slow checkout is not split into separately
+published small batches: presence
+of registered index.lock/HEAD.lock opens a checkout batch BEFORE HEAD moves, held
+through lock removal/HEAD observation and reconciliation. Files update the search
+index immediately while the changes publication fence waits. With no observed
+Git lock, keep unattributed small event batches provisional for a **10-second
+source-event-armed grace**; HEAD movement within that window merges them into ONE
+HeadChange Bulk row even below 100 files. More than 100 distinct files inside the
+grace also becomes one burst Bulk. A recognized Git checkout remains one logical
+batch across work quanta, not a 2-second/100-file series. No per-symbol rows leak
+before this grouping decision is known: changes reads use published_generation, separate from index_generation.
 Completed large reconciles publish ONE summary even if processing spans quanta.
+No lock polling loop: metadata events wake a waiting checkout; an abandoned lock
+keeps pending_change_batches/Updating explicit and needs owner/Git inspection,
+never automatic removal. The finite grace cannot predict an unobserved custom
+checkout whose HEAD update comes later; do not rewrite already published history
+or claim perfect checkout detection. This limitation is qualified with slow native
+Git checkout before implementation acceptance. The grace delays the change feed,
+not the <=200 ms admitted save-to-searchable target.
 Interrupted bulk publishes an explicitly incomplete summary, not many ordinary rows.
 active_batch has one row and staged_changes shares the normal retention/disk
 ceiling. Publish clears both in the same transaction as published_generation;
 a crash with an unfinished batch forces reconcile and a labelled incomplete Bulk
-summary before reset, never silently advances a resume fence. A normal <=100-file batch is also bounded by 50,000 change rows and 8,000,000 staging
+summary before reset, never silently advances a resume fence. A normal <=100-file batch is also bounded
+by 50,000 change rows and 8,000,000 staging
 bytes; hitting either converts it to Bulk. Branch checkout therefore cannot evict
 50,000 historical rows merely through its symbol count. Bulk counts are changes
 observed in this batch, not attribution to any particular agent.
@@ -323,7 +353,8 @@ on unrelated cold start, or while no Atlas activity exists.
 
 ## 4. Lifecycle, native events and cold adoption
 
-The state/coverage pair describes actual observations. Current means caught up to
+The state/coverage pair describes actual observations. Only explicit config
+disable maps to disabled; closing host resources does not change that setting. Current means caught up to
 an event fence, never full compiler semantics. Public section 50 state mapping is
 exhaustive; reasons, progress, coverage and diagnostic accompany the six values.
 
@@ -340,8 +371,8 @@ exhaustive; reasons, progress, coverage and diagnostic accompany the six values.
 | VerificationNeeded | updating | explicit reconcile; partial watch remains visible |
 | Suspended | updating | resource/root unavailable; explicit host/resource event may retry |
 | Unreadable | unreadable | corrupt/scope/IO error; owner repair may reopen |
-| Draining | disabled | Pending on deadline, Closed only after real close |
-| Closed | disabled | new registration/activation required to reopen |
+| Draining | updating | reason draining, Pending on deadline; Closed only after real close |
+| Closed | updating | reason closed/offline; new registration/activation required; retained cache is not declared absent |
 
 register validates supplied scope/policy without source traversal. activate queues
 an admitted host effect. enqueue coalesces hints without blocking. work_quantum
@@ -358,7 +389,7 @@ all roots. No per-agent process, thread, parser tree or watch duplication. Event
 queue <=150,000 bytes and <=256 path hints shared across roots; overflow is a sticky
 root reconcile bit. Discovery/hash scans are streamed and cancellation-aware. Ignore
 policy uses nested .gitignore, registered info/exclude and already-loaded global
-patterns <=32,768 bytes plus <=32 generated prefixes (within queue/metadata shares).
+patterns plus <=32 generated prefixes, together <=32,768 bytes (within metadata share).
 No ambient global config filename or environment supplies policy. Ignored subtrees
 (.git source contents, node_modules, target, etc. according to rules) are pruned
 before traversal/watch installation; registered Git metadata watches are separate.
@@ -378,14 +409,30 @@ The subscribe-before-scan race is documented in [inotify(7)](https://man7.org/li
 Windows loss behavior follows [ReadDirectoryChangesW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw);
 coalescing/reconcile follows [Apple's FSEvents guide](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html).
 Across platforms, partial registration reports Coverage.watched_directories,
-unwatched_directories and watch_discovery_complete (unknown isn't zero). Native
-metadata allowance permits at most TWO active root subscriptions and, for Linux,
-at most 1024 directory watches with <=64,000 bytes of path mapping globally; excess
-roots/directories remain explicitly partially watched, supplied by harness events
-or session-triggered reconcile. These admission bounds need native qualification;
-OS/kernel watch buffers and allocator retention must appear in the full resource
-accounting, not vanish because their handle count is small. Network/synced roots
-without reliable identity/events degrade explicitly with no polling fallback.
+unwatched_directories and watch_discovery_complete (unknown isn't zero). The host
+reads Linux max_user_watches once per activation (not a poll), and supplies a global
+WatchBudget: **min(floor(OS limit/8), 6144)** directory watches; unreadable OS limit
+uses a labelled conservative 1024 fallback. This is admission, not a promise the
+shared per-user OS quota is free: ENOSPC still yields explicit partial coverage.
+Keep <=98,304 bytes of compact 16-byte entries (watch descriptor u32, root slot u32, SQLite directory ID u64),
+not full paths in RAM. Path/physical identity mapping lives in the bounded cache
+watch_directories table (at most the admitted watch count, cleared/rebuilt on
+activation/close); a <=32,768-byte event buffer and <=32,768-byte ignore policy
+leave 36,160 bytes of the 200,000-byte share for root/adapter metadata. No unbounded
+hash-map/path allocation or separate parser connection hides behind watch count.
+Windows uses its two 65,536-byte root buffers instead of the Linux map/event arena;
+platform-specific layouts must independently qualify within the SAME share.
+
+At most TWO active roots share these limits; excess roots remain partial, supplied
+by harness events/session-triggered reconcile. Status also reports per-root
+**watch_activation_attempts and watch_limited_activations**, process-lifetime scope
+and watch_stats_started timestamp (unknown if the clock is unavailable), so chronic watch exhaustion is observable rather than permanently
+"updating" without explanation. Native qualification reports those counts plus
+eligible/watched directories for both real corpora and default OS limits; no
+frequency claim is invented from a single successful subscription. Native/kernel
+buffers and allocator retention are accounted outside the descriptor count in
+resource measurements; if a platform cannot fit, reduce admission and report it.
+Network/synced roots without reliable identity/events degrade with no polling fallback.
 
 ### 4.1 Cold child and atomic epoch discovery
 
@@ -674,7 +721,7 @@ exhaustively to typed shared detail; no catch returns an empty vector.
 | RootIdentityChanged | RevisionConflict | inspect and explicitly rebind |
 | CacheIo, CacheCorrupt, CacheScopeMismatch, CacheLinkRefused | AtlasUnreadable | owned cache IO/integrity/scope failure; doctor or inspect location, never source deletion |
 | CacheTooNew | ConfigVersionUnsupported | preserve cache, upgrade binary |
-| CacheBusy | DeadlineExceeded | actual bounded wait for cache lock/checkpoint/retired-epoch slot expired; name that Atlas operation/deadline and retry after readers close |
+| CacheBusy | AtlasResourceBudget | cache reader/lock/retired-epoch capacity unavailable, resource names that capacity with requested=1/available=0; retry after readers release it or use bounded text |
 | InvalidPath | AtlasPathOutsideRoot | use registered root-relative path |
 | UnsupportedPathEncoding, InvalidQuery, InvalidLimit | UsageInvalidValue | correct encoding/query/bounds |
 | IndexAbsent | AtlasIndexAbsent | enable config schedules background first index |
@@ -690,22 +737,23 @@ exhaustively to typed shared detail; no catch returns an empty vector.
 | ResourceBudgetUnavailable | AtlasResourceBudget | GLOBAL reservation unavailable, resource/requested/available; wait for pressure or use bounded text |
 | ParserFailed | AtlasParseFailed | grammar failure, path/language/reason; bounded text/report diagnostic |
 | SourceReadFailed | AtlasSourceUnreadable | source path permission/IO, restore SOURCE access |
-| ShuttingDown | IpcUnavailable | Atlas host/root draining; reconnect when host ready |
+| ShuttingDown | Cancelled | explicit root/host drain cancels this Atlas operation; status says updating/draining and a later activation may retry |
 | Cancelled | Cancelled | explicit cancellation; retry if still wanted |
 | InternalInvariant | Internal | report diagnostic; preserve last safe cache |
 | WorkerLost, WorkerProtocol | TaskFailed | exact worker lost/invalid frames; reap and inspect owned staging |
 | WorkerLeaseStale | RevisionConflict | discard superseded job/epoch result |
 | WorkerDeadline | DeadlineExceeded | actual cold deadline; preserve cache and inspect cause before retry |
 
-Section 50 now specifies these three typed Atlas errors and Iris's catalog candidate
-supplies them. Integration must use those approved Detail variants, not silently
+Section 50 and the accepted main catalog supply the typed AtlasResourceBudget,
+AtlasParseFailed and AtlasSourceUnreadable details/messages/remedies. Integration must use those approved Detail variants, not silently
 map to AtlasFileOverBudget: a global shortage isn't an oversized file; a grammar
 failure isn't a file limit; a source read failure isn't "can't read atlas.db".
 AtlasErrorDetail reexports shared Detail, so constructor inputs retain typed
 resource/count/path/language/cause fields rather than generic strings that would
 need reparsing. AtlasErrorCode is only local classification; mismatch with the
-selected typed detail is an InternalInvariant. Until the catalog candidate lands,
-this declaration-only crate doesn't construct missing variants or wrong wire errors.
+selected typed detail is an InternalInvariant. The crate imports this accepted
+catalog directly; it introduces no replacement
+error types or runtime mapping implementation in this declaration-only pass.
 
 ## 8. Close, privacy and removal
 
@@ -805,10 +853,9 @@ to invent a second source. Remaining work before implementation approval:
    declarations stay local. This appendix is the assigned ownership draft, not a
    competing wire schema or permission for core->Atlas dependency. Surface serializers
    preserve Answer<Read<T>> metadata and the array code_changes contract.
-2. Integrate the section 50-approved AtlasResourceBudget/AtlasParseFailed/
-   AtlasSourceUnreadable catalog candidate from its owner. CacheBusy uses a real
-   expired bounded wait, not StoreBusy's misleading authoritative-store message.
-   No ad-hoc wire catalog is introduced here.
+2. The accepted catalog now supplies resource/parser/source causes. Implementation
+   uses those typed Details directly, including named cache-capacity shortage;
+   shutdown is cancellation, not an unreachable runtime. No catalog blocker remains.
 3. Windows/macOS/Linux native measurements establish the 2,000,000-byte host share,
    parser grammar retention, cold 64,000,000 peak, event coverage limits and cold-
    connection resume 20 ms/SQL 5 ms. Failure means visibly deferred semantics + bounded
@@ -1057,6 +1104,10 @@ pub struct Coverage {
     pub watched_directories: u64,
     pub unwatched_directories: u64,
     pub watch_discovery_complete: bool,
+    /// Process-lifetime counters; status reports scope/reset, never implies history.
+    pub watch_stats_started: Option<se_types::UnixMicros>,
+    pub watch_activation_attempts: u64,
+    pub watch_limited_activations: u64,
     pub reasons: Vec<CoverageReason>,
 }
 
@@ -1073,6 +1124,7 @@ pub enum IndexState {
     },
     Updating {
         pending_files: u64,
+        pending_change_batches: u32,
         discovery_complete: bool,
     },
     Current,
@@ -1284,9 +1336,17 @@ pub struct IgnorePolicy {
     pub generated_prefixes: Vec<RelativePath>,
     pub digest: ContentHash,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WatchBudget {
+    /// Global host policy shared by roots, not a per-root allowance.
+    pub max_directories: u32,
+    pub max_mapping_bytes: u32,
+    pub observed_os_limit: Option<u64>,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AtlasPolicy {
     pub ignore: IgnorePolicy,
+    pub watch: WatchBudget,
     pub enabled: bool,
     pub max_files: u32,
     pub parse: ParseBudget,
@@ -1492,6 +1552,7 @@ pub enum ReconcileReason {
     WatchFailure,
     IgnoreRulesChanged,
     GitHeadChanged,
+    GitActivity,
     DirectoryChanged,
     ExtractorChanged,
     ConfigurationChanged,
@@ -1656,6 +1717,12 @@ pub enum CaseMode {
     Sensitive,
     InsensitivePreserving,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevisionTrust {
+    Unverified,
+    QualifiedChangeSequence,
+    QualifiedCtime,
+}
 #[derive(Debug)]
 pub struct FileIdentity {
     pub volume: [u8; 16],
@@ -1664,6 +1731,10 @@ pub struct FileIdentity {
     pub mtime_unix_nanos: i128,
     pub ctime_unix_nanos: Option<i128>,
     pub change_sequence: Option<u64>,
+    /// Reset/replaced journal domains invalidate saved sequence comparisons.
+    pub sequence_domain: Option<[u8; 16]>,
+    /// Supplied only by a qualified native adapter, never request metadata.
+    pub revision_trust: RevisionTrust,
 }
 #[derive(Debug)]
 pub struct SourceSnapshot {
@@ -1703,8 +1774,9 @@ pub enum SourceVerification {
 
 /// Uses the registered physical root, no-follow opens and native identity checks.
 /// OS-specific unsafe code remains behind the host/se-proc adapter.
-/// verify rehashes the entire admitted file; identity/size/timestamps alone are
-/// insufficient. read_chunk rereads/verifies the requested bounded range and
+/// verify rehashes the entire admitted file before semantic commit. Reconcile
+/// may skip unchanged files only with a qualified native revision proof, never
+/// plain identity/size/mtime. read_chunk rereads/verifies the requested bounded range and
 /// never promises a resumable snapshot across calls.
 pub trait AtlasSource {
     fn case_mode(&self) -> CaseMode;

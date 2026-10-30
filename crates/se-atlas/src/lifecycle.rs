@@ -11,6 +11,7 @@ pub enum ReconcileReason {
     WatchFailure,
     IgnoreRulesChanged,
     GitHeadChanged,
+    GitActivity,
     DirectoryChanged,
     ExtractorChanged,
     ConfigurationChanged,
@@ -175,6 +176,12 @@ pub enum CaseMode {
     Sensitive,
     InsensitivePreserving,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RevisionTrust {
+    Unverified,
+    QualifiedChangeSequence,
+    QualifiedCtime,
+}
 #[derive(Debug)]
 pub struct FileIdentity {
     pub volume: [u8; 16],
@@ -183,6 +190,10 @@ pub struct FileIdentity {
     pub mtime_unix_nanos: i128,
     pub ctime_unix_nanos: Option<i128>,
     pub change_sequence: Option<u64>,
+    /// Reset/replaced journal domains invalidate saved sequence comparisons.
+    pub sequence_domain: Option<[u8; 16]>,
+    /// Supplied only by a qualified native adapter, never request metadata.
+    pub revision_trust: RevisionTrust,
 }
 #[derive(Debug)]
 pub struct SourceSnapshot {
@@ -222,8 +233,9 @@ pub enum SourceVerification {
 
 /// Uses the registered physical root, no-follow opens and native identity checks.
 /// OS-specific unsafe code remains behind the host/se-proc adapter.
-/// verify rehashes the entire admitted file; identity/size/timestamps alone are
-/// insufficient. read_chunk rereads/verifies the requested bounded range and
+/// verify rehashes the entire admitted file before semantic commit. Reconcile
+/// may skip unchanged files only with a qualified native revision proof, never
+/// plain identity/size/mtime. read_chunk rereads/verifies the requested bounded range and
 /// never promises a resumable snapshot across calls.
 pub trait AtlasSource {
     fn case_mode(&self) -> CaseMode;

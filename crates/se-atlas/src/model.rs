@@ -153,6 +153,10 @@ pub struct Coverage {
     pub watched_directories: u64,
     pub unwatched_directories: u64,
     pub watch_discovery_complete: bool,
+    /// Process-lifetime counters; status reports scope/reset, never implies history.
+    pub watch_stats_started: Option<se_types::UnixMicros>,
+    pub watch_activation_attempts: u64,
+    pub watch_limited_activations: u64,
     pub reasons: Vec<CoverageReason>,
 }
 
@@ -169,6 +173,7 @@ pub enum IndexState {
     },
     Updating {
         pending_files: u64,
+        pending_change_batches: u32,
         discovery_complete: bool,
     },
     Current,
@@ -380,9 +385,17 @@ pub struct IgnorePolicy {
     pub generated_prefixes: Vec<RelativePath>,
     pub digest: ContentHash,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WatchBudget {
+    /// Global host policy shared by roots, not a per-root allowance.
+    pub max_directories: u32,
+    pub max_mapping_bytes: u32,
+    pub observed_os_limit: Option<u64>,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AtlasPolicy {
     pub ignore: IgnorePolicy,
+    pub watch: WatchBudget,
     pub enabled: bool,
     pub max_files: u32,
     pub parse: ParseBudget,
