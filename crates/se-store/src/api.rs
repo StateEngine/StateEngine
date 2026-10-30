@@ -28,24 +28,17 @@ pub trait StoreFactory {
         targets: Vec<EraseTarget>,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<ErasurePlan>;
-    fn recovery_plan(
+    /// Inspect owned automatic generations even when the live store is corrupt.
+    fn inspect_backups(
         options: &StoreOptions,
-        lease: &dyn RuntimeLease,
-        target_store: StoreId,
-    ) -> StoreResult<SalvagePlan>;
-    fn build_salvage(
-        options: &StoreOptions,
-        plan: SalvagePlan,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<SalvageReport>;
-    fn adopt_salvage(
-        options: &StoreOptions,
-        report: SalvageReport,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<Self::Host>;
+        budget: ReadBudget,
+    ) -> StoreResult<Page<Read<BackupGeneration>>>;
+    /// Owner restore only: recheck newest valid generation and retain source/WAL.
     fn restore_backup(
         options: &StoreOptions,
         backup: BackupGeneration,
+        target_store: StoreId,
+        admission: &Admission,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<Self::Host>;
     fn open_reader(options: &StoreOptions) -> StoreResult<Read<Self::Reader>>;
@@ -53,6 +46,8 @@ pub trait StoreFactory {
         options: &StoreOptions,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<Read<Self::Direct>>;
+    /// Supported additive migrations finish automatically under exclusive custody
+    /// after verified backup; an older schema never escapes as a HostStore.
     fn open_host(options: &StoreOptions, lease: &dyn RuntimeLease)
     -> StoreResult<Read<Self::Host>>;
     /// Owner bootstrap with shared runtime lease; publish a new schema no-replace.
@@ -114,13 +109,6 @@ pub trait HostStore: ReadStore + TextStaging + Sized {
         batch: AtomicBatch,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CommitReceipt>;
-    fn migration_plan(&self, target_version: u32) -> StoreResult<MigrationPlan>;
-    fn migrate(
-        &mut self,
-        plan: MigrationPlan,
-        approval: MigrationApproval,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<MigrationReport>;
     fn checkpoint(
         &mut self,
         mode: CheckpointMode,
@@ -293,6 +281,7 @@ pub trait Snapshot {
     ) -> StoreResult<Page<StoredEvent>>;
     /// Excludes runtime.* facts before matching/snippet construction.
     fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<Page<SearchHit>>;
+    /// Non-mail mutable lists are labelled live keysets; Page describes this read only.
     fn projects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn project(&mut self, id: ProjectId) -> StoreResult<Read<ProjectionRecord>>;
     fn principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
@@ -318,6 +307,7 @@ pub trait Snapshot {
     fn turns(&mut self, agent: AgentId, budget: ReadBudget) -> StoreResult<Page<StoredEvent>>;
     fn capture_source(&mut self, source: RecordId) -> StoreResult<Read<ProjectionRecord>>;
     fn process(&mut self, id: LifecycleId) -> StoreResult<Read<ProjectionRecord>>;
+    /// Internal recorded custody for status/agent control, not a public process.list operation.
     fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn working_state(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
     fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorRecord>>;
