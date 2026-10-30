@@ -48,14 +48,14 @@ All following kinds have `schema_version = 1`; changing required fields or meani
 | Kind | Typed body fields | Emitting operation / internal cause | Authoritative projection effect |
 | --- | --- | --- | --- |
 | `project.registered` | project ID, display name, canonical/lossless repository roots, owner ID, expected absent; safe config/profile events share its atomic batch | `project.init`; supported project import | create registry/project heads; roots cannot collide |
-| `project.updated` | project ID, complete display name/root snapshot, expected; configuration changes have their own typed event | `project.init` idempotent adoption repair; `config.set` only for project metadata | append revision; preserve ID and registration history |
+| `project.updated` | project ID, complete display name/root snapshot, expected; configuration changes have their own typed event | `project.init` idempotent adoption repair | append revision; preserve ID and registration history |
 | `project.removed` | project ID, expected, stop/revocation/integration witness event refs, preserved-history facts | `project.remove` after outside effects | tombstone registration, remove active root lookup; retain history |
 | `principal.registered` | principal ID, human/agent kind, owner ID, authenticated creator ID (unknown only for import/bootstrap), display name, role, expected absent | `project.init`, `agent.create`; owner/agent import | create principal; no authority from display name |
 | `principal.renamed` | principal ID, name, expected | `agent.rename` | change lookup label, preserve ID |
 | `alias.imported` | legacy alias, target principal ID, source ref, expected absent | `store.import_node` only | add historical lookup alias; never public alias creation |
 | `profile.saved` | agent ID, provider, model, named permission profile, supported effort setting, expected | init/create/config and supported imported profiles | update saved profile, no launch claim |
 | `grant.recorded` | principal ID, typed agent-create grant/scope, active/revoked, expected | owner init/config policy; historical import | update effective explicit grant; no bootstrap from old capability |
-| `config.set` | user/project scope, typed key/value, expected | `config.set`, initial setup | update effective persisted setting; secrets disallowed |
+| `config.set` | user scope or project-scoped agent.<A> key, typed value, expected; no project settings layer | `config.set`, initial setup | update effective persisted setting; secrets disallowed |
 | `session.prepared` | session ID, agent ID, provider/native conversation ref, capture consent, generation, expected absent | `session.begin`, `agent.launch` preparation | insert prepared session; incumbent remains active |
 | `session.activated` | session ID, expected, incumbent ID/revision if replacing, process ref, recorded containment fact and binding/witness refs | witnessed launch/bind | activate atomically with incumbent terminal transition; one active per agent |
 | `session.ended` | session ID, expected, end reason, final captured-turn/cursor refs | `session.end`; observed provider termination | terminal ended state; revoke active capability projections |
@@ -679,7 +679,35 @@ For codec 1, core streams `SEINTENT\0v1\0` plus the stable operation name and ca
 
 Store computes fingerprint = SHA256(`SEOP\0v1\0` + unambiguous admitted scope/actor encoding + static operation name + intent codec version + intent SHA256). This binds scope/actor independently of the trusted core input digest. Store still validates the entire resulting closed event batch, payload digests, references and preconditions; it does not reconstruct operation intent by hashing generated event bodies. operations.fingerprint_codec retains the supported codec identity. Same caller key/fingerprint returns original membership/stamps; different intent refuses before any planned side effects. The existing operation's codec must remain supported or return a named version refusal, never reinterpret its bytes. Erasure invalidates affected composite fingerprints so no body-derived digest remains. Keyless natural operations retain neither an intent digest nor a retry index entry; their collision/body rules are separate.
 
-### Writer ownership, batching and durability
+#### Keyed file-only effects
+
+Store-backed effects retain their request identity, intent and settled evidence in
+`operations` plus the existing `effect.requested` / `effect.settled` and integration
+facts. Native IO runs outside the transaction; retries reconcile that exact plan
+before doing another effect. A file readback alone never invents an event or writer.
+
+For operations whose only durable result is an owned file effect, including
+pre-store setup and final uninstall cleanup, the host filesystem adapter owns a
+protected `STATE/receipts/` journal, separate from SQLite and public history.
+The receipt key is a versioned digest of store/home identity, authenticated owner and original idempotency key; the operation name, normalized semantic fingerprint and
+exact keyed plan are retained beside it. No secret bytes, environment, transcript
+body or raw credential is retained. One finite versioned record per request is
+reserved no-replace under the existing exclusive file-effect custody; write/sync
+intent before effect, then atomically replace/sync with each achieved readback and
+final public result. Same key/intent resumes pending phases or replays the retained
+result; changed intent conflicts. A crash with an unresolved effect requires fresh
+outside readback of its original targets before retry, never blind repetition.
+Unknown/unreadable journal state refuses or reports outcome unknown.
+
+Uninstall preserves these receipts with history/backups and prints their location;
+it must not delete the evidence required to retry its own PATH/integration removal.
+Restore retains its file-publication journal outside the replaced DB, so replay
+cannot lose the plan with the corrupt image. There is no timer, extra server,
+public journal operation or new authority table. Native permission/sync/publication
+and exclusion of agent-owned paths remain host/se-proc responsibilities; store
+code never treats a file receipt as Admission or an OS witness.
+
+## Writer ownership, batching and durability
 
 The host owns one write connection on one named blocking worker. It blocks on receive, then drains only already queued work up to 256 operations and the 2 MiB materialized group-byte cap. There is no gather window, gather timer or post-first-message sleep. Queue admission is capped at 256 requests and 1 MiB resident body bytes; large staged captures carry owned bounded references. A full queue immediately returns backpressure. Outer BEGIN/COMMIT is shared, each operation has a savepoint, and replies wait for outer COMMIT. Invalid members roll back independently; a poisoned connection, failed rollback or indeterminate COMMIT affects every unresolved member. This is section 80's protocol; S1's 250 µs/16 tuning is historical measurement only.
 
@@ -857,7 +885,7 @@ Connection setup: confirm a regular owned state file in an owner-only directory 
 
 Pragmas: WAL, NORMAL, foreign_keys=ON, trusted_schema=OFF, mmap_size=0, temp_store=FILE, bounded cache, busy_timeout=5000 and a 4 MiB journal-size target. Read back required settings before write admission. Startup under the sole host's exclusive runtime lease automatically applies supported additive migrations after a verified pre-migration online-backup snapshot, before returning a ready HostStore, opening ordinary readers or accepting work. The startup path prints the schema change and backup result; no manual migration command, MigrationApproval, plan fingerprint or old-schema maintenance-only HostStore is exposed. An old host still holding its lease makes the new version refuse with **run se down first**; it never migrates around a running old binary or kills it. A too-new, foreign, corrupt or unsupported-old schema refuses with a distinct compatible-version/restore remedy.
 
-A hostless reader/direct client detecting a supported old schema closes its SQL handle and releases its shared runtime lease before asking the private runtime bootstrap to start the current sole host. That host performs the automatic migration, then the command retries its read/write under the new schema. The direct connection never upgrades its shared lease in place or migrates concurrently. Missing state remains measured absence: opening/diagnosing cannot initialize over an existing empty/truncated file. Read methods themselves never migrate or rebuild projections.
+Older-schema reader/direct detection automatically invokes the same private bootstrap path; it does not ask the user to run se up. A hostless reader/direct client detecting a supported old schema closes its SQL handle and releases its shared runtime lease before asking the private runtime bootstrap to start the current sole host. That host performs the automatic migration, then the command retries its read/write under the new schema. The direct connection never upgrades its shared lease in place or migrates concurrently. Missing state remains measured absence: opening/diagnosing cannot initialize over an existing empty/truncated file. Read methods themselves never migrate or rebuild projections.
 
 Migrations apply compiled, supported additive DDL/backfills in bounded phases under BEGIN EXCLUSIVE; version 0 means fresh creation, not an arbitrary SQLite import. The final FULL transaction publishes user_version together with the completed schema, followed by integrity/FK/version readback before ready. A required immutable-row backfill temporarily drops only its fixed triggers inside that transaction, recreates the complete approved trigger set and validates it before COMMIT; rollback restores both old data and guards. Long preparation modifies only new/unpublished tables until final publication. A failed migration retains source and verified backup, refuses ordinary admission and names the compatible binary/restore remedy. No ordinary connection gains a trigger-disable flag.
 
@@ -953,48 +981,48 @@ Import does not delete user repositories, original history or provider accounts.
 
 The error type carries the stable code, typed offending entity/range/revision, cause and an actionable remedy. Adapters map it to the shared `SeError` envelope; no SQL string, credential, turn body or raw account path leaks into a default message. Preserve IO/SQLite extended causes for redacted diagnosis. Expected absence is a `Read` value, not a generic error. Retryability never means “retry with a new idempotency key.”
 
-| Code | Cause / typed detail | Remedy |
-| --- | --- | --- |
-| `setup-required` | read/direct open found no state file | run owner `se init` for the selected state home |
-| `store-already-exists` | exclusive create/no-replace publication found existing state | reopen the validated existing store and reuse its identities; never overwrite |
-| `store-unreadable` | permission, malformed/truncated header, undecodable row or IO error; source/range preserved | restore access or inspect with doctor; do not initialize over it |
-| `store-application-mismatch` | application_id belongs to another database | select the correct home; never migrate the foreign file |
-| `store-too-new` | user_version above binary's supported range | install a compatible newer binary; old binary stays read/write refused |
-| `store-migration-required` | supported older schema encountered by a reader/direct connection | release shared custody and use private host bootstrap; sole host migrates automatically after backup; a running old host requires se down first |
-| `store-version-unsupported` | older version/event/cursor codec outside supported range | use the named supported migration/import version |
-| `store-not-ready` | creating/migrating/recovering/erasing or failed maintenance phase | finish/resume the named owner maintenance operation |
-| `store-generation-changed` | incarnation/schema/generation changed after admission | reopen and re-admit using a fresh scope/cursor |
-| `store-location-unsafe` | non-owned/linked/unsupported network or synced state location | choose a local owned per-user state directory; preserve original data |
-| `store-pragma-refused` | required WAL/NORMAL/FK pragmas do not read back | correct filesystem/build support; do not admit writes |
-| `store-busy` | finite SQLite lock deadline expired | wait for named writer/maintenance; retry the same operation key |
-| `store-backpressure` | queue request/byte bound or non-backup pinned-reader WAL high-water reached | await outstanding work or release the diagnosed reader/checkpoint, then retry same key; never blame a backup pin or spawn another writer |
-| `store-writer-closed` | runtime writer drained/stopped before acceptance | reopen the current runtime generation and resubmit same key |
-| `commit-outcome-unknown` | IO/connection/reply deadline cannot prove COMMIT outcome | inspect/replay the original operation key before any replacement work |
-| `idempotency-key-reused` | same scope/actor/key with a different semantic fingerprint | recover the original arguments or choose a new key for an intentionally new operation |
-| `event-id-conflict` | event ID already belongs to another operation | preserve that event; repair caller ID generation/request reuse |
-| `natural-key-conflict` | turn/message/source identity repeats with different bytes | inspect original/refused source evidence; do not overwrite |
-| `revision-conflict` | expected absent/revision differs from committed head | reread that entity and decide again |
-| `invalid-transition` | transition not in the closed state machine or missing prerequisite | use the legal state/operation named in the error |
-| `reference-missing` | required same-scope entity/event absent | supply/import the prerequisite, or report the original operation incomplete |
-| `scope-mismatch` | event/reference/target does not match admitted scope/actor/recipient | rebind to the correct session; labels cannot override authority |
-| `creator-control-refused` | current create grant or immutable direct-created relation missing | use owner control or the actual authorized creator; no descendant/bulk expansion |
-| `event-invalid` | unknown kind/version/enum, malformed typed field or forbidden registry event | use the current generated input/schema; no partial insertion |
-| `body-too-large` | body/ref/batch exceeds its documented bound | reduce/chunk the source using the supported capture contract without advancing past uncaptured bytes |
-| `projection-inconsistent` | expected projection/head/count disagrees with authoritative material | stop mutation and diagnose; diagnosed restore or a supported compiled projection migration, never catch-and-empty |
-| `cursor-invalid` | wrong version/store/query/order or invalid bounds | start a new explicitly bounded read |
-| `cursor-stale` | erasure/recovery changed incarnation | restart the read and acknowledge the changed history window |
-| `read-budget-too-small` | first complete item cannot fit | retry with the stated bounded minimum or explicit preview |
-| `read-incomplete` | row/byte/time/source budget ends with more possible data | follow continuation or increase the named budget; retain incomplete flag |
-| `source-changed` | transcript/import source incarnation/prefix differs | register/review a new source incarnation; never advance an old cursor |
-| `migration-failed` | DDL/backfill/validation failed under maintenance | retain source/backup and resume the named migration with compatible binary |
-| `backup-failed` | snapshot, sync, validation or owned rotation failed | retain prior generations; inspect source/destination/free space and retry |
-| `recovery-incomplete` | no valid automatic backup or restored source/loss boundary cannot be verified | preserve source and backups; diagnose or install the named compatible recovery version; event salvage is unavailable |
-| `content-erased` | requested body/key was explicitly forgotten | use the erasure receipt/retained metadata; never reconstruct it from an old owned copy |
-| `erasure-incomplete` | owned copy/reader/buffer cannot be replaced or acknowledged | finish the named phase/custodian before claiming completion |
-| `erasure-external-copies` | known vendor/import/export/snapshot copies outside store custody remain | act through those owners or accept a precisely scoped result; no automatic foreign deletion |
-| `erasure-physical-guarantee-unavailable` | requested raw-media guarantee exceeds logical store custody | use an approved encrypted-storage/media-erasure workflow; this store cannot attest it |
+| Internal cause | Cause / typed detail | Remedy | Public code / class |
+| --- | --- | --- | --- |
+| `setup-required` | read/direct open found no state file | run owner `se init` for the selected state home | setup-required / Refused |
+| `store-already-exists` | exclusive create/no-replace publication found existing state | reopen the validated existing store and reuse its identities; never overwrite | state-conflict / Conflict |
+| `store-unreadable` | permission, malformed/truncated header, undecodable row or IO error; source/range preserved | restore access or inspect with doctor; do not initialize over it | store-unreadable / Unreadable |
+| `store-application-mismatch` | application_id belongs to another database | select the correct home; never migrate the foreign file | configuration-invalid / Refused |
+| `store-too-new` | user_version above binary's supported range | install a compatible newer binary; old binary stays read/write refused | store-too-new / Refused |
+| `store-migration-required` | supported older schema encountered by a reader/direct connection | release shared custody and use private host bootstrap; sole host migrates automatically after backup; a running old host requires se down first | store-migration-required / Unavailable |
+| `store-version-unsupported` | older version/event/cursor codec outside supported range | use the named supported migration/import version | feature-unavailable / Refused |
+| `store-not-ready` | creating/migrating/recovering/erasing or failed maintenance phase | finish/resume the named owner maintenance operation | store-busy / Unavailable |
+| `store-generation-changed` | incarnation/schema/generation changed after admission | reopen and re-admit using a fresh scope/cursor | state-conflict / Conflict |
+| `store-location-unsafe` | non-owned/linked/unsupported network or synced state location | choose a local owned per-user state directory; preserve original data | home-unsupported-location / Refused |
+| `store-pragma-refused` | required WAL/NORMAL/FK pragmas do not read back | correct filesystem/build support; do not admit writes | configuration-invalid / Refused |
+| `store-busy` | finite SQLite lock deadline expired | wait for named writer/maintenance; retry the same operation key | store-busy / Unavailable |
+| `store-backpressure` | queue request/byte bound or non-backup pinned-reader WAL high-water reached | await outstanding work or release the diagnosed reader/checkpoint, then retry same key; never blame a backup pin or spawn another writer | store-busy / Unavailable |
+| `store-writer-closed` | runtime writer drained/stopped before acceptance | reopen the current runtime generation and resubmit same key | runtime-not-running / Unavailable |
+| `commit-outcome-unknown` | IO/connection/reply deadline cannot prove COMMIT outcome | CLI: rerun the same command with --key K; MCP: repeat the call with the same idempotency_key; never generate a replacement key | commit-outcome-unknown / Unknown (transient) |
+| `idempotency-key-reused` | same scope/actor/key with a different semantic fingerprint | recover the original arguments or choose a new key for an intentionally new operation | idempotency-key-reused / Conflict |
+| `event-id-conflict` | event ID already belongs to another operation | preserve that event; repair caller ID generation/request reuse | state-conflict / Conflict |
+| `natural-key-conflict` | turn/message/source identity repeats with different bytes | inspect original/refused source evidence; do not overwrite | state-conflict / Conflict |
+| `revision-conflict` | expected absent/revision differs from committed head | reread that entity and decide again | revision-conflict / Conflict |
+| `invalid-transition` | transition not in the closed state machine or missing prerequisite | use the legal state/operation named in the error | state-conflict / Conflict |
+| `reference-missing` | required same-scope entity/event absent | supply/import the prerequisite, or report the original operation incomplete | target-unknown / Unknown |
+| `scope-mismatch` | event/reference/target does not match admitted scope/actor/recipient | rebind to the correct session; labels cannot override authority | state-conflict / Conflict |
+| `creator-control-refused` | current create grant or immutable direct-created relation missing | use owner control or the actual authorized creator; no descendant/bulk expansion | grant-required / Unauthorized (missing grant); owner-required / Unauthorized (not a direct child) |
+| `event-invalid` | unknown kind/version/enum, malformed typed field or forbidden registry event | use the current generated input/schema; no partial insertion | usage-invalid-value / Usage |
+| `body-too-large` | body/ref/batch exceeds its documented bound | reduce/chunk the source using the supported capture contract without advancing past uncaptured bytes | input-too-large / Usage |
+| `projection-inconsistent` | expected projection/head/count disagrees with authoritative material | stop mutation and diagnose; diagnosed restore or a supported compiled projection migration, never catch-and-empty | store-corrupt / Unreadable |
+| `cursor-invalid` | wrong version/store/query/order or invalid bounds | start a new explicitly bounded read | cursor-invalid / Usage |
+| `cursor-stale` | erasure/recovery changed incarnation | restart the read and acknowledge the changed history window | cursor-expired / Incomplete |
+| `read-budget-too-small` | first complete item cannot fit | retry with the stated bounded minimum or explicit preview | usage-invalid-value / Usage |
+| `read-incomplete` | finite deadline expires before a valid bounded result/continuation can be constructed | retry the same read with its named finite budget; ordinary budget exhaustion is Page/Window incomplete | deadline-exceeded / Unavailable (see bounded-read rule below) |
+| `source-changed` | transcript/import source incarnation/prefix differs | register/review a new source incarnation; never advance an old cursor | state-conflict / Conflict |
+| `migration-failed` | DDL/backfill/validation failed under maintenance | retain source/backup and resume the named migration with compatible binary | store-migration-failed / Refused |
+| `backup-failed` | snapshot, sync, validation or owned rotation failed | retain prior generations; inspect source/destination/free space and retry | backup-failed / Refused |
+| `recovery-incomplete` | no valid automatic backup or restored source/loss boundary cannot be verified | preserve source and backups; diagnose or install the named compatible recovery version; event salvage is unavailable | store-corrupt / Unreadable |
+| `content-erased` | requested body/key was explicitly forgotten | use the erasure receipt/retained metadata; never reconstruct it from an old owned copy | state-conflict / Conflict |
+| `erasure-incomplete` | owned copy/reader/buffer cannot be replaced or acknowledged | finish the named phase/custodian before claiming completion | forget-incomplete / Incomplete |
+| `erasure-external-copies` | known vendor/import/export/snapshot copies outside store custody remain | act through those owners or accept a precisely scoped result; no automatic foreign deletion | forget-incomplete / Incomplete |
+| `erasure-physical-guarantee-unavailable` | requested raw-media guarantee exceeds logical store custody | use an approved encrypted-storage/media-erasure workflow; this store cannot attest it | feature-unavailable / Refused |
 
-These are store-domain cause codes (`StoreErrorCode`), not a second transport envelope. The global section-50 adapter must retain the exact cause/remedy/detail and map existing shared equivalents (`SetupRequired`, `StoreUnreadable`, `StoreTooNew`, `StoreBusy`, `RevisionConflict`, `IdempotencyKeyReused`, `CursorInvalid`, `CursorExpired`, `BackupFailed`, `ForgetIncomplete`, `GrantRequired`) where semantics match. These area-specific cause variants map into the approved section-50 catalogue with typed detail; they do not add transport codes beyond that catalogue or silently map to success or an undifferentiated Internal. `StoreError` reuses the shared typed Remedy/Retry, boxes the area-specific error result, and preserves typed version/conflict/request/source/budget/maintenance detail. The shared catalogue is the one transport-code source; the adapter preserves each storage cause and remedy in its typed detail.
+The 38 rows map every StoreErrorCode variant (Absent uses setup-required) to the one section-50 public catalogue; internal cause strings are not additional transport codes. Exact cause, redacted typed detail and legal next step survive the many-to-one mapping. ScopeMismatch here means a precondition drift after verified Admission, not an authorization bypass: core/host authorization failures retain their own Unauthorized codes. CreatorControlRefused distinguishes absent current grant from a non-child target. ReadIncomplete is an error only when the finite deadline expires before a valid result/continuation can be constructed; ordinary row/byte/step exhaustion returns an explicitly incomplete Page/Window and never a fabricated timeout. All unknown SQLite/IO integrity failures remain diagnosed failures rather than guessed domain conflicts. `StoreError` reuses the shared typed Remedy/Retry, boxes the area-specific error result, and preserves typed version/conflict/request/source/budget/maintenance detail. The shared catalogue is the one transport-code source; the adapter preserves each storage cause and remedy in its typed detail.
 
 Decode, FK, constraint, invariant and IO failures are never all flattened into busy/conflict. A constraint is mapped to a domain conflict only when its fixed constraint name and checked precondition identify that case. Any other constraint failure is integrity/internal failure with cause. Logs redact payloads/credential bytes by construction; diagnostic support bundles carry counts/IDs/ranges rather than text.
 
