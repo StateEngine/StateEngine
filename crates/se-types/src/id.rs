@@ -33,6 +33,7 @@ macro_rules! ids {
             pub fn from_legacy(value: impl Into<String>) -> Result<Self> {
                 let value=value.into();
                 validate_opaque(&value,512,stringify!($name))?;
+                if value.starts_with("selp-") { return Err(SeError::invalid(stringify!($name),"a public ID, never a bearer credential")); }
                 if known_id_prefix(&value).is_some() { return value.parse(); }
                 if !legacy_matches(IdKind::$name,&value) {
                     return Err(SeError::invalid(stringify!($name),"this kind's documented legacy grammar"));
@@ -44,10 +45,8 @@ macro_rules! ids {
             pub fn from_registered_legacy(value:impl Into<String>,registry:&dyn LegacyIdRegistry)->Result<Self> {
                 let value=value.into();
                 validate_opaque(&value,512,stringify!($name))?;
+                if value.starts_with("selp-") { return Err(SeError::invalid(stringify!($name),"a public ID, never a bearer credential")); }
                 if known_id_prefix(&value).is_some() { return value.parse(); }
-                if known_legacy_kind(&value).is_some_and(|kind|kind!=IdKind::$name) {
-                    return Err(SeError::invalid(stringify!($name),"the registered spelling's matching kind"));
-                }
                 if !registry.contains(IdKind::$name,&value)? {
                     return Err(SeError::invalid(stringify!($name),"an exact kind/project/source registration"));
                 }
@@ -77,7 +76,7 @@ macro_rules! ids {
             fn json_schema(_: &mut SchemaGenerator)->Schema {json_schema!({"type":"string","minLength":1,"maxLength":512,"anyOf":[{"pattern":format!("^{}[0-9a-f]{{8}}-[0-9a-f]{{4}}-7[0-9a-f]{{3}}-[89ab][0-9a-f]{{3}}-[0-9a-f]{{12}}$",Self::PREFIX)},{"pattern":legacy_pattern(IdKind::$name)}]})}
         }
     )+
-        fn known_id_prefix(value:&str)->Option<&'static str>{[$($prefix),+].into_iter().find(|prefix|value.starts_with(prefix))}
+        fn known_id_prefix(value:&str)->Option<&'static str>{["cred_",$($prefix),+].into_iter().find(|prefix|value.starts_with(prefix))}
     };
 }
 ids!(ProjectId=>"prj_",AgentId=>"ag_",HumanId=>"hu_",SessionId=>"ses_",MessageId=>"msg_",DecisionId=>"dec_",EventId=>"ev_",LaunchId=>"lch_",ObservationId=>"obs_",StoreId=>"store_",LifecycleId=>"life_",AtlasRootId=>"aroot_",IndexEpochId=>"aidx_");
@@ -122,6 +121,8 @@ fn known_legacy_kind(value: &str) -> Option<IdKind> {
         ("evt-", IdKind::EventId),
         ("se-", IdKind::SessionId),
         ("semantic-observation:", IdKind::ObservationId),
+        ("observation-", IdKind::ObservationId),
+        ("health-terminal-lineage-", IdKind::ObservationId),
     ]
     .into_iter()
     .find_map(|(prefix, kind)| value.starts_with(prefix).then_some(kind))
@@ -131,7 +132,7 @@ fn legacy_project(value: &str) -> bool {
         || value.len() > 128
         || known_id_prefix(value).is_some()
         || known_legacy_kind(value).is_some()
-        || uuid_v4(value)
+        || (value.len() == 36 && Uuid::parse_str(value).is_ok())
     {
         return false;
     }
@@ -176,7 +177,7 @@ fn legacy_matches(kind: IdKind, value: &str) -> bool {
 fn legacy_pattern(kind: IdKind) -> &'static str {
     match kind {
         IdKind::ProjectId => {
-            r"^(?!(?:prj_|ag_|hu_|ses_|msg_|dec_|ev_|lch_|obs_|store_|life_|aroot_|aidx_|agt-|hum-|msg-|evt-|se-|semantic-observation:))(?!(?:[cC][oO][nN]|[pP][rR][nN]|[aA][uU][xX]|[nN][uU][lL]|[cC][oO][mM][1-9]|[lL][pP][tT][1-9])(?:\..*)?$)(?![0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$)[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$"
+            r"^(?!(?:prj_|ag_|hu_|ses_|msg_|dec_|ev_|lch_|obs_|store_|life_|aroot_|aidx_|agt-|hum-|msg-|evt-|se-|semantic-observation:|observation-|health-terminal-lineage-|selp-|cred_))(?!(?:[cC][oO][nN]|[pP][rR][nN]|[aA][uU][xX]|[nN][uU][lL]|[cC][oO][mM][1-9]|[lL][pP][tT][1-9])(?:\..*)?$)(?![0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$)[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$"
         }
         IdKind::AgentId => {
             r"^agt-[0-9a-hjkmnp-tv-z]{4}-[0-9a-hjkmnp-tv-z]{4}-[0-9a-hjkmnp-tv-z]{4}$"
