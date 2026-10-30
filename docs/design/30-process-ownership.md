@@ -2,7 +2,7 @@
 
 Design reconciliation, 2026-10-30. **Declarations only: no product backend or
 author tests.** Linux prefers delegated cgroups and automatically requests
-them on first agent launch; absent delegation launches an explicitly
+a fresh scope for each new agent process; absent delegation launches an explicitly
 uncontained process group. Optional Landlock/seccomp remains named policy.
 Unix windows and live handover are required before alpha. Mac implementation
 and native qualification run in the borrowed-Mac campaign after the earlier
@@ -124,8 +124,12 @@ pub trait ProcessRuntime: Send + Sync {
         Self: Sized;
     fn capabilities(&self) -> ProcResult<PlatformCapabilities>;
     fn arena_snapshot(&self) -> ProcResult<ArenaSnapshot>;
-    fn prepare_launch(&self, reservation: LaunchReservation) -> ProcResult<PreparedScope>;
-    fn begin_launch(&self, prepared: PreparedLaunch, spec: LaunchSpec) -> LaunchStart;
+    fn prepare_launch(
+        &self,
+        reservation: LaunchReservation,
+        spec: LaunchSpec,
+    ) -> ProcResult<PreparedScope>;
+    fn begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart;
     fn poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress>;
     fn authorize_exec(&self, ticket: &LaunchTicket) -> ProcResult<()>;
     /// Host must commit Starting -> StopRequested before this consumes the token.
@@ -480,8 +484,11 @@ session-activation and new-schema FULL commits remain, with their actual cost
 reported in section 80/E2. Standalone credential preparation and activation
 are batched into C1/C3 instead of adding serial security transactions.
 
-`prepare_launch` inserts its Starting arena slot **before** any native effect,
-creates an exclusive scope (no vendor child) and returns PreparedScope with an opaque
+`prepare_launch` consumes LaunchSpec as well as the committed reservation,
+so mode, selected terminal/broker and containment requirement are known before
+native preparation. PreparedLaunch retains that unchanged spec; begin_launch
+cannot substitute a different launch mode or policy after C2. It inserts its
+Starting arena slot **before** any native effect, creates an exclusive scope (no vendor child) and returns PreparedScope with an opaque
 PreparedLaunch, OwnedProcess reference and ScopeCheckpoint. The checkpoint
 contains reservation, resolved parent, exact ScopeIdentity and achieved guarantee. The host
 commits that checkpoint (`scope-prepared`) **before** consuming PreparedLaunch
@@ -574,7 +581,27 @@ generation transfer CASes the single arena owner and revokes older references.
 ### 3.2 Natural release and empty-scope reaping
 
 `witness_exit(&OwnedProcess)` reads root/scope without sending a signal or
-requiring a stop ticket. It covers natural completion, provider-graceful exit,
+requiring a stop ticket. A Linux manager may remove an empty exact cgroup
+before its final population read. For a still-held, previously validated
+cgroup2 directory FD, recheck the recorded boot and use fstat to match the
+same device/inode. Then openat(fd, "cgroup.events", O_RDONLY|O_NOFOLLOW)
+returning ENOENT proves removal of that exact object: a live cgroup2 directory
+always has that control file. The recorded path plus " (deleted)" from
+/proc/self/fd/N can corroborate it. Do not require st_nlink == 0: E7 retained
+st_nlink=2 on removed cgroupfs objects. EACCES/EIO, failed identity reads,
+a changed object or a control file that still opens does not prove removal;
+a readable file may instead supply the separate ObservedEmpty witness. This native
+removed-object test, joined to the original root's independent
+exit witness (or the explicit unpublished/no-child witness), is a successful
+scope-exit witness, not ScopeUnreadable. Retain the removed-object fact and
+pinned boot/device/inode separately from a population-zero read. The safe
+ScopeObservation carries exit_basis = RemovedPinnedLinuxCgroup for that
+path, or ObservedEmpty for an actual empty-scope read; populated/unknown
+observations have no exit_basis. StopWitness retains this with ScopeIdentity
+and RootWitness, and the host persists the same basis with Exited before
+release acknowledgment. Section 50 renders a cgroup-removed witness method
+instead of calling it a population-file read. An absent pathname alone, unreadable FD or replacement object proves no such closure.
+It covers natural completion, provider-graceful exit,
 failed launch rollback and prepared-but-never-created scopes. RootWitness
 separates NoChildCreated, PinnedUnpublished, UnpublishedScope and Identified;
 only the last carries a complete expected root identity. It never fills one
@@ -582,7 +609,12 @@ from guesses. Complete carries the achieved platform bound; Pending/Bounded
 never becomes a successful strict removal by formatting alone.
 
 Normal order is witness → commit Exited with evidence/status → release exact
-empty native scope → commit scope-released acknowledgment. Crash in either
+empty native scope → commit scope-released acknowledgment. If the exact pinned
+scope was already proved removed, release is an idempotent already-released
+readback against that retained object witness, not an attempted removal of a
+new object at the old path. Commit Exited and scope-released in the same order;
+manager collection does not require an earlier committed Exited record to
+recognize the first outside removal/root witness. Crash in either
 gap is handled by ReleaseExitedScope from the protected store record and
 arena snapshot. Startup, generation recovery and project Remove trigger this
 bounded reaper; no idle directory sweep/timer is added. Reaper checks original
@@ -793,43 +825,118 @@ suffix as bytes after the final `) `; comm may contain spaces/parentheses or
 invalid UTF-8. Bracket executable symlink read with start/state rereads and
 combine field 22 with boot UUID. A zombie is an exited record, not absence.
 
-**A stranger does not run systemd-run manually.** Prime adopted Alpha's
+**A stranger needs no manual manager command.** Prime adopted Alpha's
 option (b): neither SE Code nor its existing process must move. HostConfig
 AutoUserManager probes current delegation, and the embedded
-host **and se up's host** request a delegated user scope on first agent launch
-if needed. se up calls spawn_runtime only to create the runtime; delegation
-for agents is lazy prepare_launch plumbing shared by both hosts. There is no
-launcher prerequisite and **no in-binary D-Bus client**.
+host **and se up's host** request a fresh delegated user scope and temporary
+creator for every LinuxUserManager process launch, warm launches included.
+Each creator exits after handoff; no resident creator or reused empty scope is
+assumed for the next launch. se up calls spawn_runtime only to create the runtime; delegation
+for agents is lazy prepare_launch plumbing shared by both hosts. Prime's
+2026-10-30 native-timing decision replaces the systemd-run process on this
+agent-scope path with direct user-manager D-Bus StartTransientUnit. Reuse is
+rejected: it would require resident creation authority, contrary to B3.
 
-Use the installed trusted systemd-run helper, literal fixed argv and an
-owner-only bootstrap descriptor: --user --scope --quiet --property=Delegate=yes
---unit=se-agents-<host>-<scope_nonce> -- <installed-se> <private-bootstrap-entry>. It runs only
-the native bootstrap, not a provider command or credential-bearing arguments.
+Start the installed native se private bootstrap with fixed literal argv and
+an owner-only rendezvous descriptor; no provider command, credential or
+host-controlled bus address goes in argv. The short-lived bootstrap opens
+the current user's authenticated local manager bus and requests only its own
+fresh reservation-derived .scope: mode=fail, Delegate=yes and its own live
+PID. Validate the expected same-user manager/bus endpoint through the native
+adapter; no system-bus privilege or permission change is requested. Install
+the authenticated manager's JobRemoved match and call Subscribe before
+StartTransientUnit. Filter signals to the exact reservation-derived unit and retain at most its
+one completion if it arrives before the method reply; correlate its job object path with the returned job and its unit with
+the exact reservation-derived unit. Drive the bus FD on readable events up
+to the launch deadline, not a sleep loop or repeated /proc read. Only a
+correlated result=done permits one /proc/self/cgroup read proving actual
+placement in the requested scope; a wrong scope, other result, timeout or
+transport error remains a concrete preparation failure with retained custody.
+Then create/enter its private leaf. The host's cgroup is unchanged.
+The Linux-native D-Bus transport is private to se-proc's bootstrap adapter;
+there is no general D-Bus API, Tokio dependency, resident bus helper or
+additional StateEngine service. Use dbus 0.9.10 with default-features=false
+and only vendored enabled, through its blocking::Connection in this already
+short-lived bootstrap; libdbus is statically packaged by libdbus-sys 0.2.7.
+No dbus-tokio, futures feature, async executor, background bus thread or
+libdbus/libsystemd runtime-install prerequisite is introduced.
+During implementation, both dbus and libdbus-sys are declared only under
+[target.'cfg(target_os="linux")'.dependencies], never workspace-wide or on
+Windows/macOS. This design amendment adds no actual Cargo dependency yet. Open/register
+only the validated local user-bus address, not an untrusted inherited bus
+address; process(deadline_remaining) waits for incoming messages rather than
+periodically waking. P03-L includes ~250 adapter lines and section 80 records
+the transport's binary-size allowance/measurement. An absent manager or unavailable delegation
+still selects the existing explicit uncontained default, with its actual
+cause; a transport/malformed-reply/native error cannot fabricate delegation.
+The agent path launches no systemd-run process. The separately specified
+standalone runtime service-detachment path in §5.6 is unchanged.
 The transient helper reports its manager-assigned cgroup and transfers a pinned
 directory FD over authenticated same-user IPC; validate cgroup2, boot, exact
-path/device/inode and create permission. Its temporary presence keeps the scope
-alive until the first vendor child has entered; then it exits. Agents keep
-the scope alive thereafter. If it becomes empty and the manager collects it,
-the next launch requests a fresh scope; FD presence alone is not a keepalive.
-This is transient scope acquisition, **not** a permanent per-agent owner.
-The embedded host stays in its original cgroup; children enter the independent
-delegated scope before vendor exec. The host first commits a LinuxUserManager
+path/device/inode and create permission. The host first commits a LinuxUserManager
 reservation, with unit se-agents-<host>-<scope_nonce> derived exactly from it.
 prepare_launch obtains the unit, creates the private owned child cgroup and
 moves its temporary helper **inside that same child cgroup** before returning
-ScopeCheckpoint. The helper keeps only the authenticated authorization/control
-channel, no provider work. The checkpoint records the resolved parent's physical
-identity. begin_launch creates the actual vendor root in that scope, then the
-helper exits; window attach can enter the scope instead. The helper is inside
-reserved native custody and is visible as pending work in the arena; it is
-never an unrecorded child outside the cleanup scope. Parent loss/rollback
-revokes authorization and the helper exits; post-checkpoint cleanup can also
-use the exact cgroup. Pre-checkpoint recovery resolves only the deterministic
-manager unit, forbids vendor exec and retains any populated/unreadable result
-as Unproved until the helper's independent exit is confirmed. No scope is
-adopted just because its unit name matches. Check a supplied root just
-as strictly; no shell interpolation, ambient PATH search or root escalation.
-The manager-assisted cold path is charged to the launch budget (§8).
+ScopeCheckpoint. The checkpoint records the resolved parent's physical identity.
+The helper retains only the authenticated authorization/control channel and
+reserved native resources; it creates no vendor child during preparation.
+
+**The unchanged host does not clone a child across a delegation boundary.**
+An SSH host can be in `user-1000.slice/session-*.scope` while the prepared
+scope is below `user@1000.service`. The common ancestor's cgroup.procs may be
+root-owned: possessing the target directory FD does not grant permission to
+move or clone a child across it. Native EACCES remains a real refusal, never
+an ENOSYS fallback, permission change or silent uncontained retry.
+
+For LinuxUserManager headless launch, begin_launch dispatches a one-use native
+creation request to the temporary helper **already inside the prepared scope**.
+Only after C2 commits may the host send that request, binding the reserved
+lifecycle, host generation, scope nonce and physical scope identity to the
+validated helper peer's UID/PID/birth. Literal vendor argv/env and allowlisted
+child stream descriptors travel only over this protected channel, not in the
+bootstrap command line, bus request or diagnostics. The helper performs the native
+creation/exec step there; it decides no store transition, provider policy,
+credential activation or readiness. begin_launch/poll_launch remain nonblocking
+host operations using the existing reactor and launch deadline.
+
+The helper observes the exec-error channel and the child's native status/image
+while it is still that child's parent, and reports the actual exec outcome.
+EOF alone is insufficient (§5.2's native exec rule). It keeps custody until
+that outcome and the host's complete handoff are resolved. It captures the
+exact child's pidfd when available, brackets its boot/start/image and transfers
+the native pin, exec-error channel and required
+stream/control resources by authenticated SCM_RIGHTS. Host-owned stream ends
+already prepared in the arena stay there; only missing roles are transferred.
+The receiver validates the complete role set, exact instance and scope membership,
+registers native exit/I/O sources and retains the child in the existing Starting
+slot before acknowledging custody. The helper retains its copies until that
+acknowledgment, then closes them and exits; its exact exit is witnessed before
+preparation custody retires. Once the host has validated and registered the
+complete resource set and retained the root plus reported exec outcome,
+helper exit is normal closure,
+even if the final ACK was lost. That host-local custody fact, not mere ACK
+transmission, separates normal closure from an incomplete handoff. No permanent owner/reaper or resident per-agent helper is
+introduced. A duplicate request cannot create a second child: it returns the
+same retained result while the handoff is pending. A lost reply, bad bundle,
+helper death before complete host registration or expired authorization retains
+the checkpoint/ticket and native failure for reconciliation; it never starts a replacement child or fabricates
+Running. EOF before authorization exits without vendor creation; after creation,
+a failed handoff retains the C2 scope-only cleanup obligation under §3's stop
+CAS/recovery rules, without an unregistered PID kill.
+
+The helper's presence keeps the scope alive until the vendor child has entered;
+agents keep it alive thereafter. If empty and collected, the next launch requests
+a fresh scope; an open directory FD alone is not a keepalive. The embedded and
+standalone hosts stay in their original cgroups. The helper is inside reserved
+native custody and visible in the arena, never an unrecorded child outside the
+cleanup scope. Pre-checkpoint rollback revokes authorization and witnesses helper
+exit. Recovery resolves only the deterministic manager unit, forbids vendor exec
+and retains a populated/unreadable result as Unproved until that exit is confirmed.
+No scope is adopted just because its unit name matches. Supplied/current roots
+must independently permit the selected native actor's entry; a received FD does
+not bypass the common-ancestor check. No shell interpolation, ambient PATH search
+or root escalation is permitted. The manager-assisted cold path, native creation
+handoff and helper closure are charged to the existing launch budget (§8).
 
 No user manager/helper/delegation is normal in minimal containers, WSL without
 systemd, non-systemd distributions, or SSH sessions without an available user
@@ -856,23 +963,34 @@ Never search a writable ancestor, move the host as a side effect of launching
 an agent, or delete another delegated subtree. The prepared checkpoint pins
 the exact private child scope before vendor creation/exec.
 
-Preferred raw clone3 uses INTO_CGROUP|PIDFD and SIGCHLD (no shared VM). Prepare
-all argv/env/FDs/error-pipe state in parent. Child executes only async-signal-safe
+Preferred raw clone3 uses INTO_CGROUP|PIDFD and SIGCHLD (no shared VM). For
+LinuxUserManager this call and the permitted fallback run in the temporary
+scoped helper; direct supplied/current-root launches must satisfy the same
+entry permissions from their actual caller. Prepare all argv/env/FDs/error-pipe
+state in that native parent. Child executes only async-signal-safe
 native calls: setsid, intended signal reset, streams, CLOEXEC on other FDs,
 chdir and execve; no allocation/locking/log formatting/unwind. Parent monitors
 the CLOEXEC exec-error pipe asynchronously. EOF alone is not proof of exec:
 combine fresh image/known child status; ambiguous pre-exec signal death fails.
 
 Fallback is **only ENOSYS** (syscall unavailable), with raw fork and writing
-0 to the pinned cgroup.procs before agent exec. EINVAL/EPERM retain the real
-configuration/security error; they are not silently reclassified as missing
+0 to the pinned cgroup.procs before agent exec, from that same authorized
+native parent. EACCES/EINVAL/EPERM retain the real configuration/security
+error and stage in the launch result; they are not silently reclassified as missing
 clone3. A host may add a reviewed explicit capability probe for a future
-feature-specific fallback, not guess from errno. Capture a pidfd while this
-is still our unreaped child and bracket its identity. Record entry method and
-errno. No process-group retry after a failed cgroup launch; the uncontained
+feature-specific fallback, not guess from errno. The creating native parent
+captures a pidfd while this is still its unreaped child and brackets its
+identity before transfer. Record EntryMethod::LinuxClone3 or
+LinuxPreExecMigration { clone3_errno }; helper origin invents no new entry method.
+No process-group retry after a failed cgroup launch; the uncontained
 mode above is a pre-creation capability choice. Reap only exact
 owned children (waitid for our pidfd/child), never waitpid(-1), a library-wide
 SIGCHLD takeover, or process-global subreaper setting inside SE Code.
+After helper exit the host is not the root's parent: pidfd readability proves
+exit, not a wait status. Preserve a status actually observed by the helper
+before handoff; otherwise report ExitStatus::Unavailable with reason
+ExitStatusUnavailable::NotOurChild when no authoritative status is available.
+Missing pidfds keep the documented identity-recheck bound, without a fabricated pin, exit code or resident reaper.
 
 No mandatory Landlock/seccomp guard gates alpha launch. ReadOnly/Workspace/
 NamedUnrestricted profiles are passed with the provider's safe/default or
@@ -892,6 +1010,9 @@ Same-host re-adoption retains pidfd/cgroup FDs; cold recovery validates protecte
 checkpoint/record machine/boot/parent/device/inode. A reused root with proved
 original exit uses the authorized scope-only path, never signals its new PID.
 A malformed/unreadable control field is ScopeUnreadable, not population zero.
+The distinct proved-removed exact-object path in §3.2 succeeds with the joined
+root witness: retain that basis and never present it as a read of populated=0.
+A changed object or merely missing pathname remains unproved.
 
 ### 5.3 macOS supported group/tracked-member policy
 
@@ -959,8 +1080,24 @@ lifecycle/nonce; no claimed agent ID in argv grants authority. The helper has
 an actual controlling PTY/slave (or establishes one), reports its native
 start/group and waits for the host's authorization. In Linux it enters the
 exact prepared cgroup **before vendor exec**, by self-writing 0 through the
-validated target or receiving its FD on the authenticated channel; without
-delegation it establishes the recorded uncontained group instead. On macOS
+validated target or receiving its FD on the authenticated channel. Before
+creating a terminal/attach peer, prepare_launch uses the selected adapter's
+actual spawning origin (the pinned broker when it brokers launch) to probe
+common-ancestor and target entry permission. An FD is not migration authority.
+If the origin or permission cannot be proved usable, default BestAvailable
+chooses LinuxPrepared/uncontained with the existing cause no-delegation, before
+any vendor or terminal child exists. The native cause explains the denied or
+unproved selected origin; a usable headless manager scope does not imply that
+this different actor can enter it. Clean up/witness any vendor-free manager
+helper/scope before returning that fallback checkpoint. C1's original parent
+remains unchanged; C2 records the actual selected tracked fallback per §3.
+Do not create a terminal child to discover denial and then launch a second one.
+An explicit strict KernelScope requirement retains its existing failure policy.
+After a contained plan is selected, a later native EACCES/permission race is a
+real failed launch with retained custody, never a weaker retry. This window
+path keeps its RootCheckpoint and same-PID exec contract; the headless SSH
+proof does not qualify terminal/broker integration. The preselected uncontained
+plan establishes its recorded process group instead. On macOS
 it creates its group. Record EntryMethod::TerminalAttach, not a fabricated
 clone3 errno: the terminal/broker, not clone3, created this attach process. The host commits RootCheckpoint, arms tracking, then
 authorize_exec releases execve into the literal vendor argv/env. The same PID
@@ -1004,7 +1141,7 @@ On Linux with a user manager, invoke its transient **service** mode (no --wait,
 --pipe or --pty keeper) for the native bootstrap, using fixed argv and a
 protected rendezvous. The manager creates it outside SE Code's cgroup and
 parents it independently; RuntimeDetachment::UserManagerUnit records this.
-Agent Delegate=yes scope acquisition still happens later on first launch,
+Agent Delegate=yes scope acquisition still happens lazily for each agent process,
 not by moving SE Code or recursively calling se up. HostConfig.linux_delegation
 owns that agent-scope policy; the obsolete RuntimeLaunchSpec delegation field
 is removed so runtime detachment cannot be confused with lazy agent delegation. If manager startup is
@@ -1286,7 +1423,10 @@ NotRequested, and observation time. Enumerate immediately before stop and on
 explicit diagnostic reads up to the small bounded buffer, label races, and
 never use that list as native scope authority. A scope can become empty
 independently while diagnostic PID reads are partial; the fresh kernel empty
-state plus root witness decides Complete.
+state plus root witness decides Complete. A proved removal of the original
+pinned Linux cgroup plus that root witness also decides Complete (§3.2).
+Population::Empty then states no live owned scope remains, not a fabricated
+kernel population read or an exact count; retain the removed-object basis.
 
 Human defaults coordinated with section 50:
 
@@ -1313,7 +1453,17 @@ Unavailable(NotOurChild/ReapedBeforeRecovery/NativeAccessDenied/NotRecorded).
 ProcessObservation::Exited, owned root witnesses and terminal ProcessRecord
 carry it. Linux/macOS retain owned child's waitid/waitpid status before reaping
 that exact child; Windows reads GetExitCodeProcess on a signalled held handle.
-No global child reaper consumes someone else's status. A non-child/post-crash
+No global child reaper consumes someone else's status. The temporary Linux
+creator observes and reports the exec-error channel while the new root is
+still its child; failed exec is a concrete failed launch, not unknown success.
+If the root exits before that helper leaves, retain its exact wait status.
+A root that outlives the helper ordinarily has Unavailable(NotOurChild) when
+it later exits: pidfd readability is still an exact exit witness, not status.
+Report "exited, status unavailable"; neither infer a crash nor call it exit 0.
+A requested stop records requested termination with witnessed exit and status
+unavailable; without a request it is an observed exit of unknown cause. Do not
+invent crash-versus-normal classification, auto-relaunch policy or a permanent
+reaper to conceal that limit. A non-child/post-crash
 identity may prove exit without recovering its status: say "exited, status
 unavailable", not "crashed" or exit zero. The host combines confirmed nonzero
 code/signal with whether it requested termination to distinguish an agent
@@ -1375,10 +1525,27 @@ wire `retry` code or a success with omitted custody.
 
 Section 80 owns the launch, stop, identity, runtime-open and handover targets;
 this chapter does not publish a second budget table. The ordinary launch chain
-includes C1 FULL, C2 and C3 FULL; helper paths also pay the RootCheckpoint
-barrier. E3 measures each serial commit, native setup/readback, host dispatch,
-provider handshake separately, and charges the cold manager/delegation probe
-to the first Linux launch. Warm and first-launch targets remain unchanged.
+includes C1 FULL, C2 and C3 FULL. Only the §3 four-commit paths (Unix terminal
+attach, macOS and Linux uncontained helpers) add RootCheckpoint; the contained
+manager helper still uses C2's exact scope for unpublished-root cleanup and
+adds no store barrier. E3 measures each serial commit, native setup/readback,
+host dispatch, provider handshake separately. Every LinuxUserManager launch pays for a fresh
+manager scope/temporary creator and handoff, not just the first launch. The
+section-80 scope-acquisition target therefore applies to warm launches
+too; no per-launch work is amortized behind an absent resident helper.
+Native scope timing measured 30 systemd-run/native and 30 direct-D-Bus/native
+samples per environment, with all 120 helpers exited, pinned scope closure
+witnessed and both hosts unchanged. Desktop load 25.18→26.03 gave acquisition
+p95 193.889 ms through systemd-run and 148.459 ms direct; real SSH load
+23.70→24.54 gave 203.221 ms and 145.384 ms respectively. The direct method
+reply preceded placement: SSH RPC p95 91.323 ms and post-reply placement p95
+59.225 ms are separately measured, not added p95s. Native startup baseline
+p95 was 2.623/2.670 ms desktop/SSH; Python/e7-import was 78.162/78.154 ms.
+These scope-only probes contain no vendor, C1/C2/C3 or full launch readiness;
+section 80 sets a scope-acquisition target, not a claimed complete-launch
+measurement. These loaded runs also overlapped system-wide tracing and cannot
+establish reliable latency conclusions; Prime requires a designated quiet
+window with starting load below 4 before any timing qualification.
 No 5 ms-per-commit arithmetic or presumed batching proves those targets; the
 measured FULL path may exceed them. E2/E3 must report that miss before build
 qualification. Never weaken durability, drop a crash barrier, hold a transaction
@@ -1446,10 +1613,27 @@ than the product JOB_LIST path. Raw proof directories are listed in section 80.
 
 E1 still qualifies job completion-port reassociation and abort, 100 traffic
 loops, exact resource closure and every product crash phase; E2/E3 qualify
-startup/launch/write timing and memory with actual FULL barriers. E7 covers
-SSH, Docker and WSL2, unavailable pidfds/delegation and a deliberate setsid/
-double-fork escape. Default Linux launch remains uncontained when delegation
-is unavailable; its group-empty witness cannot assert every descendant gone.
+startup/launch/write timing and memory with actual FULL barriers. E7's throwaway
+native helper proof passes 4/4 each in a desktop session, a real noninteractive
+SSH login and rootless Podman. Desktop/SSH verify two contained launches,
+including native ENOSYS-only fallback, live stdio/optional pidfd handoff, helper
+exit and unchanged host cgroup; the two uncontained cases preserve the escaped
+setsid/double-fork survivor until exact fixture cleanup. Podman has no manager
+and honestly reports all four cases uncontained; zombies remain labelled exited.
+Raw failures, source and outside readback are retained under
+`/mnt/nvme/stateengine/5p-e7-containment-20261030`, including the original SSH
+cross-boundary EACCES and final `FINAL-AUDIT.json`. This is headless native
+mechanism evidence, not durable host integration, terminal qualification or
+launch-budget acceptance. The measured manager collected the exact pinned
+scope before a population-zero read; the audit retains deleted-object and
+native exit evidence, never a fabricated zero. The prototype still used a
+placement polling loop and libsystemd; it does not qualify the selected
+dbus-rs/JobRemoved implementation. This E7 observation establishes
+the collected-scope witness mechanism adopted in §3.2; durable host integration
+and reviewer crash/replacement cases still require qualification. Docker and WSL2 remain unqualified pending
+installation approval; Podman is not substituted for Docker. Default Linux launch remains
+uncontained when delegation is unavailable; its group-empty witness cannot
+assert every descendant gone.
 E5 stock Codex 0.163 headless stdio and private Unix --listen pass on Linux and
 Windows (native Windows 16/16 and 26/26), with saved-thread resume, real work,
 a separate CLI write-boundary denial and exact captured process exit. The
@@ -1480,7 +1664,9 @@ native journeys are implemented:
   [pidfd_open](https://man7.org/linux/man-pages/man2/pidfd_open.2.html),
   [cgroup v2 delegation/events/kill](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html),
   [systemd transient scopes](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html),
-  [systemd-run scope startup](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html).
+  [systemd-run scope startup](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html),
+  [dbus-rs blocking/vendored features](https://github.com/diwic/dbus-rs#features)
+  and [dbus 0.9.10 message-driven processing](https://docs.rs/dbus/0.9.10/dbus/blocking/struct.Connection.html#method.process).
 * [Apple kqueue process exit notifications](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html),
   [Apple spawn implementation and descriptor inheritance](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_exec.c).
 

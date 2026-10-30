@@ -13,7 +13,7 @@ pub struct HostConfig {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinuxDelegation {
-    /// Probe current delegation, then ask the user manager on first launch.
+    /// Every manager-backed process launch acquires a fresh scope/creator via user D-Bus.
     AutoUserManager,
     /// Use current scope only; never search an arbitrary ancestor.
     CurrentScope,

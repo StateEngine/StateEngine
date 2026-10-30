@@ -40,15 +40,39 @@ nonzero even when every behavior row passes. Measurements include embedded
 first binding and a sample after one real task, context, mail and tool use.
 
 Long operations have their own targets, measured on StateEngine's share only:
-- **Launch:** request to child spawned, identity pinned and recorded ≤ 50 ms (Linux prototype: 15 ms,
-  24 of 24 under 20 ms). Provider start-up time is excluded and reported separately. On Linux the
-  **first launch a host serves** also pays for BestAvailable delegation: one `systemd-run --user`
-  transient scope creation, estimated at ~20–60 ms (not yet measured; the runner records it as its own
-  line), so the first launch's target is ≤ 110 ms and every later launch stays ≤ 50 ms. When the probe
-  finds no user manager or delegation, the probe's cost is paid once, and the `uncontained` fallback
-  adds no cgroup cost to later launches: the agent gets a tracked process group,
-  explicitly uncontained. Absence of delegation never refuses default launch;
-  setsid/double-fork escapes remain outside the stated stop bound.
+- **Launch:** request to child spawned, identity pinned and recorded ≤ 50 ms
+  for paths other than contained LinuxUserManager (Linux prototype: 15 ms,
+  24 of 24 under 20 ms). Provider startup is excluded and reported separately.
+  **Contained LinuxUserManager has a separate scope-acquisition target:
+  p95 ≤ 200 ms**, inside the agent's multi-second launch. Every such new
+  process, warm included, requests its own delegated scope through direct
+  user-manager D-Bus StartTransientUnit and a short-lived native creator;
+  no systemd-run process, reused scope or resident creation authority is
+  assumed. Measure from beginning native creator/manager preparation through
+  actual scope placement and validated prepared-leaf custody, not just the
+  method reply. Report C1/C2/C3, native child creation/custody, provider
+  startup and total launch separately; the 200 ms is a scope-stage target,
+  not a complete contained-launch claim or an extra serial-store allowance.
+  Window preparation checks the selected terminal/broker origin first; an
+  unusable origin selects uncontained with no-delegation before child creation.
+  Acquisition/probe work already performed is still charged to that actual
+  launch and reported; default fallback never hides its cost. Other paths
+  retain ≤ 50 ms, and manager-unavailable default launch stays explicitly
+  uncontained with its actual cause. A short capability probe may cache
+  measured manager absence, never cache new-child authority. Its cost is
+  reported separately, never silently omitted to claim the other-path target.
+  Uncontained stop retains the stated setsid/double-fork escape bound.
+  The throwaway native acquisition probes passed 60/60 per environment:
+  desktop load 25.18→26.03, direct p95 148.459 ms versus systemd-run 193.889 ms;
+  real SSH load 23.70→24.54, direct p95 145.384 ms versus systemd-run 203.221 ms.
+  Each path has 30 samples and outside exact-scope/helper-exit readback.
+  Direct SSH RPC p95 91.323 ms and post-reply placement p95 59.225 ms explain
+  distinct stages; quantiles are not additive. No store/provider/full-launch
+  integration was measured. Re-measure acquisition on a quiet box before
+  qualification, in Prime's designated window with starting load below 4.
+  The loaded runs overlapped a full preflight and system-wide syscall tracing;
+  they remain raw diagnostics, not reliable latency conclusions or proof of
+  the 200 ms target. The old first-launch-only 20–60 ms estimate is withdrawn.
 - **Stop:** identity recheck, stop and outside confirmation ≤ 50 ms of CLI time (prototype: ~4 ms each),
   plus the graceful deadline (5 s) and at most 500 ms of forced stop.
 - **Native custody setup:** identity-read p95 < 1 ms and synchronous runtime-open
@@ -56,6 +80,20 @@ Long operations have their own targets, measured on StateEngine's share only:
   async readiness/re-adoption wait; native qualification is still required.
 - **Atlas** (standalone only, opt-in and off the milestone path): cold index peak ≤ 64 MB in its own process (§3.2); save-to-searchable
   ≤ 200 ms (prototype 67 ms); query p95 ≤ 50 ms (prototype 7–16 ms); zero idle wakeups once settled.
+
+The private Linux manager transport uses dbus 0.9.10, default features off,
+vendored only (libdbus-sys 0.2.7), with no Tokio/futures dependency. A build-only
+Linux x86-64 linker probe with release/LTO/strip/panic-abort was 611,472 bytes
+versus 307,648 bytes for the matching std-only executable: **303,824 additional
+bytes (~297 KiB)** for this exercised transport surface. Allow roughly 384 KiB
+in planning, not zero dependency cost; final combined StateEngine/SE Code
+marginal artifact size still must be measured. This is artifact size, not
+B1's resident-memory increase; B1 retains its separate RSS measurement. The probe only links
+a private client branch; it never executes a bus request or measures latency.
+It confirms no dynamic libdbus/libsystemd dependency. Existing scope timings
+used libsystemd plus placement polling, so they do not qualify the selected
+dbus-rs event-driven path. Its first qualification waits for the designated
+quiet window and the actual selected bytes.
 
 ## 2. How the runner measures
 

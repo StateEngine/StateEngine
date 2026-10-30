@@ -164,7 +164,9 @@ Windows begin_launch associates the job **at creation** using
 PROC_THREAD_ATTRIBUTE_JOB_LIST and explicit CREATE_BREAKAWAY_FROM_JOB, not a
 create-then-assign race. Its job has KILL_ON_JOB_CLOSE | BREAKAWAY_OK, never SILENT.
 Required caller breakaway failure refuses without retrying weaker policy. Linux
-BestAvailable lazily requests the approved user-manager delegation on first launch;
+BestAvailable requests a fresh delegated user-manager scope over direct D-Bus
+StartTransientUnit for every LinuxUserManager agent-process launch, warm
+included, using section 30's short-lived creator and JobRemoved/placement wait;
 without it, select the explicit Uncontained group with reason, never refuse default
 launch merely because delegation is absent. Explicit KernelScope may still refuse.
 macOS uses the accepted tracked-group policy and before-exec root checkpoint.
