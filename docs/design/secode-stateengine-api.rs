@@ -2,6 +2,9 @@
 //! Proposal for Alpha's MIT/Apache secode-stateengine-api crate, not an engine API.
 //! Standalone trait/data declarations: deliberately no dependency on se-types.
 //! Checked independently as a crate root for design review, not published or wired.
+//! Closed Rust API: adding/removing/changing any public field, enum variant,
+//! trait method or its meaning requires a Cargo/API major version change.
+//! No blocking or joining in Drop; resources close through explicit async calls.
 use std::path::PathBuf;
 
 pub type Result<T> = std::result::Result<T, ApiError>;
@@ -24,9 +27,6 @@ pub enum ApiFailure {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApiCommand {
-    Se {
-        argv: Vec<String>,
-    },
     Tool {
         name: String,
         args: serde_json::Value,
@@ -58,8 +58,6 @@ pub struct ProjectId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HumanId(pub String);
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageId(pub String);
@@ -67,10 +65,6 @@ pub struct MessageId(pub String);
 pub struct EventId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoreId(pub String);
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AtlasRootId(pub String);
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IndexEpochId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostSessionId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -132,11 +126,6 @@ pub enum Source {
     },
     Host {
         epoch: HostEpoch,
-    },
-    Atlas {
-        project: ProjectId,
-        root: AtlasRootId,
-        epoch: Option<IndexEpochId>,
     },
     Configuration {
         location: String,
@@ -272,12 +261,6 @@ pub struct ApiVersion {
 pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 0 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ApiRange {
-    pub major: u16,
-    pub min_minor: u16,
-    pub max_minor: u16,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StoreVersion {
     pub application_id: u32,
     pub schema: u32,
@@ -290,7 +273,6 @@ pub enum HostKind {
 pub enum Feature {
     NativeMail,
     LocalListener,
-    Atlas,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Negotiated {
@@ -305,40 +287,45 @@ pub struct Limits {
     pub page_items: NonZeroU32,
     pub payload_bytes: NonZeroU32,
     pub notice_ids: NonZeroU32,
-    pub subscription_entries: NonZeroU32,
-    pub subscription_bytes: NonZeroU32,
 }
 #[derive(Clone, Debug)]
 pub struct HostConfig {
     pub state_home: NativePath,
-    pub api: ApiRange,
+    pub api: ApiVersion,
     pub kind: HostKind,
     pub features: Vec<Feature>,
     pub limits: Limits,
 }
-pub trait Cancellation: Send + Sync {
+pub trait Cancellation: Send + Sync + std::fmt::Debug {
     fn is_cancelled(&self) -> bool;
     fn cancelled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
-pub struct CallOptions {
+#[derive(Clone, Debug)]
+pub struct OpenOptions {
     pub expected_generation: Option<Generation>,
     pub timeout: Duration,
     pub cancellation: Arc<dyn Cancellation>,
 }
+#[derive(Clone, Debug)]
+pub struct CallOptions {
+    pub generation: Generation,
+    pub timeout: Duration,
+    pub cancellation: Arc<dyn Cancellation>,
+}
+#[derive(Clone, Debug)]
+pub struct ServiceOptions {
+    pub generation: Generation,
+    pub timeout: Duration,
+    pub cancellation: Arc<dyn Cancellation>,
+}
 
-// No Debug, Clone or Deserialize on protected material or authority.
-pub struct MachineCredential(pub Vec<u8>);
+// Protected byte buffers have no Debug, Clone or Deserialize.
 pub struct SessionCapability(pub Vec<u8>);
 pub struct LaunchCredential(pub Vec<u8>);
-pub struct OwnerProof {
-    pub credential: MachineCredential,
-    pub presenting_process: ProcessInstance,
-}
-/// Opaque issued handles; the implementation validates every handle and generation.
-/// Public bytes are protected transport data, not deserialized authority claims.
-pub struct OwnerAuthority {
-    pub grant: Vec<u8>,
-}
+/// Trusted SE Code control-plane authority, never decoded from model/tool input.
+#[derive(Clone, Copy, Debug)]
+pub struct OwnerAuthority;
+/// Engine-issued grant; every call revalidates its identity, revision and generation.
 pub struct BoundSession {
     pub grant: Vec<u8>,
     pub identity: SessionIdentity,
@@ -392,7 +379,6 @@ pub struct BindingRequest {
     pub model: ModelIdentity,
     pub conversation: ProviderSessionId,
     pub target: Option<HostSessionTarget>,
-    pub expected_generation: Generation,
     pub expected_binding_revision: Option<Sequence>,
     pub capture_consent: bool,
     pub idempotency_key: IdempotencyKey,
@@ -615,41 +601,6 @@ pub enum NoticeAdmission {
     Refused(ApiError),
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MailSubscriptionRequest {
-    pub from: Option<Cursor>,
-    pub page: PageRequest,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MailEvent {
-    Notice(MailNotice),
-    Lagged {
-        resume_from: Cursor,
-        window: Window,
-    },
-    Held {
-        hold: HoldReceipt,
-        resume_from: Cursor,
-    },
-    Revoked {
-        identity: SessionIdentity,
-    },
-    Closed {
-        generation: Generation,
-        resume_from: Cursor,
-    },
-}
-/// No read/dismiss action here: this settles notice delivery only.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MailSettlement {
-    pub notice: NoticeId,
-    pub admission: NoticeAdmission,
-    pub idempotency_key: IdempotencyKey,
-}
-pub trait MailSubscription: Send {
-    fn next<'a>(&'a mut self, options: CallOptions) -> HostFuture<'a, MailEvent>;
-    fn close<'a>(&'a mut self, options: CallOptions) -> HostFuture<'a, Cursor>;
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdoptionState {
     Pending,
     Reattached,
@@ -666,6 +617,7 @@ pub struct Adoption {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Readiness {
+    Prepared,
     Ready,
     Recovering { adoptions: Box<Page<Adoption>> },
 }
@@ -684,21 +636,38 @@ pub struct DrainReceipt {
 }
 
 /// The implementation/factory is configured with the embedding host's runtime.
-/// No Tokio dependency or runtime creation belongs to se-types.
+/// No Tokio dependency or runtime creation belongs to this permissive API crate.
 pub enum HostIntegration {
-    Secode(Arc<dyn HostServices>),
+    Secode {
+        epoch: HostEpoch,
+        services: Arc<dyn HostServices>,
+    },
 }
 
 pub trait HostFactory: Send + Sync {
+    /// Cold open is preparation only: no writer, native mutation or callbacks.
     fn open<'a>(
         &'a self,
         config: HostConfig,
-        integration: HostIntegration,
+        options: OpenOptions,
+    ) -> HostFuture<'a, Read<OpenedHost>>;
+    /// Independent supervisor closes the old generation, then prepares a fresh one.
+    fn restart<'a>(
+        &'a self,
+        reason: RestartReason,
+        key: IdempotencyKey,
         options: CallOptions,
     ) -> HostFuture<'a, Read<OpenedHost>>;
 }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RestartReason {
+    Drained { receipt: DrainReceipt },
+    Poisoned { incident: String },
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GenerationHealth {
+    Prepared,
+    Activating,
     Ready,
     Recovering,
     Draining,
@@ -708,7 +677,6 @@ pub enum GenerationHealth {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultReport {
-    pub generation: Generation,
     pub incident: String,
 }
 
@@ -719,12 +687,20 @@ pub trait Host: Send + Sync {
         options: CallOptions,
     ) -> HostFuture<'a, GenerationHealth>;
 
+    /// Non-blocking snapshots; no I/O or wait for worker threads.
     fn negotiated(&self) -> Negotiated;
-    fn authenticate_owner<'a>(
+    fn health(&self) -> GenerationHealth;
+    fn wait_health<'a>(
         &'a self,
-        proof: OwnerProof,
+        after: GenerationHealth,
         options: CallOptions,
-    ) -> HostFuture<'a, OwnerAuthority>;
+    ) -> HostFuture<'a, GenerationHealth>;
+    /// Caller registers this handle/generation before this first mutating call.
+    fn activate<'a>(
+        &'a self,
+        integration: HostIntegration,
+        options: CallOptions,
+    ) -> HostFuture<'a, Readiness>;
     fn verify_capability<'a>(
         &'a self,
         capability: &'a SessionCapability,
@@ -772,34 +748,19 @@ pub trait Host: Send + Sync {
         turn: CapturedTurn,
         options: CallOptions,
     ) -> HostFuture<'a, Receipt<EventRef>>;
-    fn subscribe_mail<'a>(
+    /// Nudge only: re-read eligibility/debt; cannot acknowledge admission or clear holds.
+    fn native_state_changed<'a>(
         &'a self,
-        session: &'a BoundSession,
-        request: MailSubscriptionRequest,
+        target: &'a HostSessionTarget,
         options: CallOptions,
-    ) -> HostFuture<'a, Box<dyn MailSubscription>>;
-    fn settle_mail<'a>(
-        &'a self,
-        session: &'a BoundSession,
-        settlement: MailSettlement,
-        options: CallOptions,
-    ) -> HostFuture<'a, Receipt<NoticeId>>;
+    ) -> HostFuture<'a, ()>;
     fn adoption_status<'a>(
         &'a self,
         authority: &'a OwnerAuthority,
         page: PageRequest,
         options: CallOptions,
     ) -> HostFuture<'a, Page<Adoption>>;
-    fn drain<'a>(
-        &'a self,
-        expected: Generation,
-        options: CallOptions,
-    ) -> HostFuture<'a, DrainReceipt>;
-    fn reopen<'a>(
-        &'a self,
-        drained: DrainReceipt,
-        options: CallOptions,
-    ) -> HostFuture<'a, Negotiated>;
+    fn drain<'a>(&'a self, options: CallOptions) -> HostFuture<'a, DrainReceipt>;
     fn close<'a>(
         &'a self,
         drained: DrainReceipt,
@@ -814,49 +775,56 @@ pub trait HostServices: Send + Sync {
         target: &'a HostSessionTarget,
         reason: HoldReason,
         key: IdempotencyKey,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, HoldReceipt>;
     fn interrupt<'a>(
         &'a self,
         held: &'a HoldReceipt,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, InterruptReceipt>;
+    /// Point observation; Present(None) proves no active execution at this read.
+    fn active_session<'a>(
+        &'a self,
+        target: &'a HostSessionTarget,
+        options: ServiceOptions,
+    ) -> HostFuture<'a, Read<Option<ActiveSession>>>;
+    /// Diagnostic pages cannot be combined into an absence proof.
     fn active_sessions<'a>(
         &'a self,
         epoch: &'a HostEpoch,
         page: PageRequest,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<Page<ActiveSession>>>;
     fn idle<'a>(
         &'a self,
         target: &'a HostSessionTarget,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<SessionActivity>>;
     fn binding_state<'a>(
         &'a self,
         target: &'a HostSessionTarget,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<BindingObservation>>;
     fn adopt_binding<'a>(
         &'a self,
         request: AdoptBinding,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<BindingObservation>>;
     fn update_mail_target<'a>(
         &'a self,
         transition: TargetTransition,
         key: IdempotencyKey,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, TargetReceipt>;
     fn deliver_notice<'a>(
         &'a self,
         notice: &'a MailNotice,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, NoticeAdmission>;
     fn notice_status<'a>(
         &'a self,
         target: &'a HostSessionTarget,
         notice: &'a NoticeId,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<NoticeAdmission>>;
 }

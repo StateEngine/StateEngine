@@ -7,9 +7,11 @@ constructible se-types implementations. That exception applies to pure foundatio
 values only. Host/API source remains trait/data declarations, with no host,
 authentication, queue, store or panic-wrapper implementation.
 
-Base: rust-se main 617d312, with the reviewed shared foundation and section 30
+Base: rust-se main 9618963, with the reviewed 165-code shared foundation and section 30
 process declarations. The current OPS contract governs helper targeting and
-scoped full-body listing. The small foundation delta here aligns credential/
+scoped full-body listing. Revision includes Prime/Opus msg-dd929f207d5f7645ecb8a21b and Gamma
+msg-a7821f5080b58b8ecb6742c6: preparation before activation, mandatory generations,
+push-only delivery and factory-owned recovery. The small foundation delta here aligns credential/
 observation namespace exclusions and registered exceptions with Nell's final
 section 20 matrix; the host API remains declarations only.
 The complete public source reference is in the appendix. Compiler/consumer checks
@@ -44,7 +46,7 @@ Responsibilities remain separate:
 | se-store | Durable data, snapshot/cursor scope, migrations, transactions, idempotency and readback |
 | se-core | The operation registry, authentication/authorization rules, identity and message/decision semantics |
 | se-proc | Native observation, pinned handles, process custody and outside stop witnesses |
-| se-host | Runtime composition, session tasks, bounded subscriptions, delivery debt and generation lifecycle |
+| se-host | Runtime composition, session tasks, push delivery debt and generation lifecycle |
 | SE Code API crate (MIT OR Apache-2.0, Alpha's tree) | Trait and DTO definitions only, API versions, public not-included stub contract; no proprietary dependency or runtime logic |
 | SE Code adapter (Alpha's tree) | Panic-catching call boundary, durable holds, native target registry, the one provider-input queue, notice admission/promotion and active-state observation |
 | CLI/MCP adapters | Decode and render the same operation inputs/outputs; neither supplies authority through an actor argument |
@@ -232,7 +234,8 @@ executable normalization require external observation, never lexical guessing.
 ## 4. Error and remedy model
 
 One codes! table in error/catalog.rs defines the current section 50 catalog:
-**163 codes**, including message-scope-denied. The macro generates Code, wire
+**165 codes**, including message-scope-denied and the three distinct Atlas
+resource/parser/source failures; cgroup delegation absence is not an error. The macro generates Code, wire
 names, Class, one typed details struct per code, the Detail tagged enum, message
 and remedy matches. Adding a row requires all metadata at compile time. There is
 no generic Detail::None or arbitrary exception-string substitute for the catalog's
@@ -287,7 +290,7 @@ the same structured facts. Refusals are not an event-history family.
 | Wrong cursor scope/MAC or expired snapshot | CursorInvalid / Usage; CursorExpired / Incomplete | Open an authorized bounded traversal |
 | Foreign store identity/read failure/newer schema | StoreUnreadable / Unreadable; StoreTooNew / Refused | Preserve data; doctor or use compatible product |
 | Measured absent required store | StoreAbsent / Refused | se init |
-| No API range intersection | ApiVersionUnsupported / Refused | Upgrade incompatible side |
+| Linked API version mismatch | ApiVersionUnsupported / Refused | Upgrade incompatible side |
 | Wrong bound project, invalid/revoked credential, missing grant | ProjectConflictsSession / Usage; CapabilityInvalid/Revoked/GrantRequired / Unauthorized | Legitimate rebind/grant, no owner fallback |
 | Stale engine generation | SessionGenerationMismatch / Conflict | Refresh binding from authoritative state |
 | Lost once-returned binding credential | SessionBindingUnproven / Unauthorized | Authorized new-key rebind/revocation, preserve conversation |
@@ -400,151 +403,168 @@ generic se-types receipt cannot mint or attest that writer identity.
 
 ## 7. Versioned service boundary owned by SE Code
 
-### 7.0 Repository and licensing split
+### 7.0 Repository, licensing and trust boundary
 
-Prime's ownership decision supersedes the earlier idea of placing the linked host
-API in se-types. Proposed crate name: `secode-stateengine-api`, in rust-secode,
-licensed MIT OR Apache-2.0, trait/data only. Alpha owns its name, Cargo version,
-API versions, DTO evolution and the public not-included implementation. The public
-SE Code build depends only on that permissive crate and its stub; it never pulls
-in proprietary se-types, se-core or se-host. The commercial build links our
-implementation behind Alpha's feature/composition boundary. The stub returns an
-explicit ApiFailure::NotIncluded for engine-dependent calls, never empty history,
-a fake binding, a running daemon or a successful no-op hold/notice admission.
+The linked API belongs in SE Code's small MIT OR Apache-2.0 crate, proposed name
+secode-stateengine-api. Alpha owns its package/API versions, traits, DTOs and
+public stub. Public SE Code depends only on that crate/stub; proprietary se-host
+implements it. docs/design/secode-stateengine-api.rs is a self-contained proposal,
+not a published dependency or a write to Alpha's tree. Once Alpha lands the API,
+replace this temporary copy with that reviewed dependency. There is no second
+operation executor or provider-input queue in the translation.
 
-`docs/design/secode-stateengine-api.rs` is proposed permissive source checked separately as a standalone crate root
-solely to make this design reviewable now; it imports no crate-local type.
-It carries the proposed permissive SPDX notice and is NOT a published API or an
-implementation in Alpha's tree. After Alpha accepts/lands the API crate, remove
-this proposal copy and depend on Alpha's exact reviewed revision; never maintain
-two authoritative copies or publish our own competing API version. The standalone
-compile check treats this file as its own crate root, proving it needs no se-types
-code. No change to SE Code 0.1 is authorized by this candidate.
+The stub factory returns ApiFailure::NotIncluded immediately. Its remedy is
+Manual/plain text describing the unavailable integration, with no instruction to
+run a proprietary CLI. All engine-dependent operations refuse visibly; ordinary
+SE Code remains usable. The permissive crate contains no Atlas/HumanId types or
+ApiCommand::Se. Embedded composition has no Atlas worker or feature. Atlas stays
+an optional standalone component and its types remain proprietary in se-types.
+ApiError.code is opaque diagnostic text; SE Code does not match proprietary Code.
 
-The proprietary se-host adapter is the sole translation boundary. Public DTOs
-contain raw, typed wrappers/fields; their construction grants no authority. Every
-incoming value is checked, and every outgoing completeness/receipt is derived
-from the actual internal result. There is no duplicate operation executor or
-second message queue hidden in this mapping.
+OwnerAuthority is a marker constructed by SE Code's trusted native control plane,
+not a model argument, serde field or reauthentication protocol. This follows the
+in-process trust ruling: the same process already owns the integration. Native
+SE Code establishes human/creator intent and permissions before selecting an
+owner path; generated model tool calls always use BoundSession and cannot select
+OwnerAuthority. Process/machine boundaries (CLI, MCP, credentials) still require
+the proprietary authentication rules. SessionCapability/LaunchCredential bytes
+remain protected transport, without Debug/Clone/serde; every issued session grant
+is checked against current core scope, revocation, revision and generation.
 
-| Permissive API representation | Proprietary internal mapping |
+| Public representation | Proprietary mapping / boundary |
 | --- | --- |
-| ID wrapper around String | Own-kind canonical/legacy decode; custom names require the scoped registry resolver; core verifies kind/project |
-| Cursor(String) | Validate bounded opaque syntax, then let se-store verify origin/MAC/audience/query |
-| u64-based Sequence/Generation/HostGeneration/UnixMicros wrappers | Check ranges/nonzero; retain distinct host/engine epochs |
-| ProcessInstance DTO with current native PathBuf | Convert to ProcessFields/NativePath, validate OS/start/time/path/hash; never create OwnedProcess |
-| ApiError(kind,code,message,remedy,retry) | Code/Class/Detail/Remedy mapping, explicit NotIncluded/EnginePanicked/GenerationPoisoned; unknown codes retained as unsupported/error, never absence |
-| Raw Read/Page/Window/Receipt containers | Validate all accounting and scope before internal use; outgoing containers preserve every non-present/pending/omission fact |
-| OwnerProof / credential bytes | Core/proc authenticate protected presentation; no credential in argv/debug/ordinary JSON |
-| OwnerAuthority / BoundSession opaque grant | Engine-issued in-process handle, validated against this instance, generation and durable scope on every call; raw identity claims do not authenticate it |
-| MailNotice / NoticeAdmission / HostSessionTarget | Validate stable digest/target/epoch, route through existing core debt and SE Code native queue only |
-| HostFactory / Host / HostServices | se-host implements the engine-facing traits; SE Code implements callbacks and catches the entire asynchronous API edge |
+| String ID wrappers | Validate matching new/legacy grammar; custom names use the scoped registry resolver; resolve project/kind before use |
+| Cursor | Bounded opaque token; origin/MAC/audience/query checked by its actual owner |
+| Counters/time/digest | Check range/nonzero/length and preserve UTC microseconds |
+| Native ProcessInstance/HostEpoch | Validate full tuple through se-proc; observation is not custody or signal authority |
+| Read/Page/Window/Receipt | Validate counts/completeness/metadata and preserve non-present/uncertain states; a minimal presentation Window is not a native active-state witness |
+| OwnerAuthority | Trusted embedding intent marker, never reconstructed from wire claims |
+| BoundSession | Engine-issued grant, identity and revision, revalidated at each dispatch |
+| ApiError/ApiRemedy | Preserve stable opaque code, class, text, retry and Tool/Manual remedy; unknown errors remain errors |
+| MailNotice/NoticeAdmission | IDs-only keyed native admission; no body or read/dismiss markers |
 
-ApiError is deliberately a small public transport vocabulary, not a dependency
-on our Code enum. ApiFailure maps Usage/Refused/Unauthorized/Unknown/Unreadable/
-Conflict/Incomplete/Unavailable/Cancelled/Internal plus NotIncluded, EnginePanicked
-and GenerationPoisoned; the precise stable engine code is retained as text with
-its remedy. Public code/schema ownership remains Alpha's. The data crate has no
-validation or negotiation implementation, catch_unwind, runtime, I/O or store.
+### 7.1 Version, runtime channel and call options
 
-### 7.1 Negotiation and call rules
+This is a statically linked Rust API. Cargo package identity/version is the
+compatibility gate, and ApiVersion is an exact equality sanity check against
+API_VERSION (initially 1.0). HostConfig.features is a required closed set;
+unsupported/disallowed entries refuse rather than silently disappearing. Limits
+are checked against host policy before work. ApiRange and minor-range negotiation are removed.
+Every addition/removal/change of a public field, enum variant, trait method or
+its meaning requires a Cargo/API major version bump, including an optional field
+in a public Rust struct. A minor may change documentation or implementation
+without changing that surface/meaning. Opaque engine error-code text can evolve
+without adding an ApiFailure variant. This closed-surface policy is the deliberate
+alternative to non_exhaustive plus constructor logic in the data crate.
 
-The proposed SE Code-owned API_VERSION is 1.0, independently of the internal
-CLI/IPC se-types::API_VERSION (also initially 1.0). Neither version may be used
-to infer compatibility of the other. ApiRange represents one major and inclusive minor interval.
-Reject min>max; require equal major; choose the highest minor in the intersection;
-otherwise ApiVersionUnsupported with both ranges. Features are closed NativeMail,
-LocalListener and optional Atlas, intersected with compiled/allowed host features;
-a required unsupported feature refuses. Every response uses the negotiated
-schema; new required fields, changed meanings, changed existing error/tag behavior
-or removal require a major bump. Additive optional inputs are sent only after
-negotiating the minor that supports them. Unknown operation inputs refuse.
-Decoders retain the raw failure for an unknown required tag/code; they never map
-it to success, an empty page or a generic absent value.
+The proprietary commercial constructor is explicitly
+se_host::embedded_factory(runtime: tokio::runtime::Handle) -> Arc<dyn HostFactory>.
+Its exact function-pointer signature is compiled in
+`docs/design/commercial-factory.rs` as EmbeddedFactoryBuilder. SE Code passes a
+clone of its existing runtime Handle. The constructor stores it without I/O or
+spawning. Every async spawn and spawn_blocking uses that supplied Handle; no
+ambient tokio::spawn, Handle::current, new runtime or block_on is permitted.
+Tokio is a proprietary composition dependency and never enters the permissive
+API crate. Composition uses the same Tokio crate version as SE Code. The one
+se-writer OS thread and native process collector remain their section 20/30
+owners, started only at explicit activation and counted in the shared budget.
 
-StoreVersion is independent: application_id and schema. Host open refuses a
-foreign application_id (StoreUnreadable) or newer schema (StoreTooNew) before
-any write; only the host performs
-a supported forward migration. An existing project attach is a cheap lookup with no migration/adoption/setup
-commit. HostFactory runtime ownership may require its own durable lease metadata;
-that cost must count in startup, not be hidden past first bound readiness. HostFactory is configured with the embedding
-runtime before open: the API data crate and se-types never accept/create a Tokio runtime. This public
-SE Code API requires HostIntegration::Secode and HostKind::EmbeddedSecode.
-Standalone composition uses the same proprietary core/host internals with real
-harness/proc adapters; it does not invent a no-op SE Code HostServices. The API
-crate is not an additional standalone daemon protocol.
+StoreVersion (application_id/schema) is independent. Foreign identity/newer
+schema refuses before mutation; supported migrations happen during activation,
+not during read-only factory preparation. Existing project attach is a lookup,
+not a new adoption/setup commit. No live daemon/SE Code handover is added.
 
-Every host operation uses HostFuture (boxed Send future with explicit borrow
-lifetime) and CallOptions (expected engine generation, timeout and caller cancellation). Host and HostServices
-are object safe. No mutex/store transaction survives an await. Timeouts apply to
-a call, not an authority lifetime. Cancellation before commit may refuse; after
-commit it preserves receipt and durable debt. Futures are dropped without assuming
-that the remote/native operation did not commit. Secrets, authority and database
-connections are never deserialized from tool arguments. Public credential DTOs have no
-Debug/Clone/Serialize/Deserialize; receiving protected bytes does not authenticate them. The trait/data crate
-cannot itself promise buffer erasure on drop; SE Code and proprietary protected-
-storage owners must retire/erase their own allocations without logging them.
+Only factory open uses OpenOptions with an optional expected generation. Every
+post-open Host call uses CallOptions.generation; every HostServices call uses
+ServiceOptions.generation, which cannot be omitted. Both options are Clone/Debug;
+cloning never changes the generation. Timeout and cancellation are bounded call
+controls, not authority. Cancellation Debug exposes no credential. Host and
+HostServices remain object-safe boxed Send futures. No store transaction or mutex
+is held across await. Cancellation after commit preserves keyed readback/debt.
 
-### 7.2 Host methods and authority
+negotiated(), health() and Cancellation::is_cancelled are non-blocking snapshots:
+no I/O, joins, blocking channel receives or blocking-lock waits. Drop never joins,
+flushes, waits, block_on's or releases a live writer's custody. Explicit async
+close invokes the store writer's close routine and waits for its join using the
+passed blocking pool. Factory restart uses that same close routine through its
+independent supervisor. Dropping a caller handle only releases its reference and
+may signal cancellation/fence atomics; the supervisor retains ownership until
+close completes. SE Code must explicitly close before shutting down its runtime.
+An incomplete close keeps ownership visible; dropping a handle is no success
+witness and never makes a still-live thread's home available to another writer.
 
-| Method | Contract and definitive result |
+### 7.2 Factory, preparation, activation and Host methods
+
+Factory open creates a Prepared handle. Before returning it, open may perform
+bounded read-only configuration/store validation and acquire an RAII ownership
+lease, but it cannot start se-writer, migrate/persist a generation or binding,
+invoke HostServices, adopt a native target or enqueue input. It does not start
+engine background loops. A bounded in-flight blocking read may finish after
+cancellation but has no callback/write channel. Unwinding a failed preparation
+cannot leave a late writer, native adoption or queue mutation. A preparation lease
+remains under the factory's cleanup custody until released, never an orphaned
+success. A missing store is Read::Absent, a failed read Read::Unreadable; neither
+implicitly initializes or starts a runtime.
+
+SE Code first receives and registers the Arc<dyn Host> and its generation with
+its panic wrapper/control plane. It then creates a HostServices wrapper bound to
+that exact generation, and only then calls Host::activate(integration, options).
+HostIntegration also carries the exact native HostEpoch. Repeated activation
+for the same G/epoch returns its actual current readiness; it cannot replace the
+registered native source under an already active generation. Wrong epoch or
+generation refuses, with no source swap. That is the first operation allowed to start writer/tasks, migrate, adopt or
+mutate native state. A panic in activate is now attributable to a known handle/
+generation. If open panics before publication, there is no engine generation with
+mutating resources to fence: it is an opening failure with an incident reference,
+not a successful bind. A Prepared handle dropped without activate has no writer
+or native work. This closes Gamma's pre-return opening window.
+
+Each HostServices wrapper records one immutable expected generation plus the
+SE Code-owned current-generation fence. Every call checks both ServiceOptions
+and that fence inside the native serialized transition. Activation/restart always
+gets a fresh wrapper; old Arc callbacks cannot silently become a successor's
+services. SE Code closes the old fence before restart or explicit drain and
+publishes the new routing fence only under the activation/adoption protocol.
+Already-entered atomic native transactions finish wholly and are reconciled by
+key; queued old calls fail before mutation once fenced.
+
+| Method | Contract / definitive result |
 | --- | --- |
-| HostFactory::open | Negotiate, open/validate store, establish usable services; Read::Absent if store is measured missing, Unreadable for failed access; never implicitly init; Present returns one shared host plus truthful recovery state |
-| negotiated | Return selected API/store/generation/features/limits, no I/O |
-| poison | Mark the exact current generation faulted, gate its admissions and preserve durable obligations; does not undo committed native transitions or release human holds |
-| authenticate_owner | Verify machine credential and presenting process/OS-user authority through core/proc; typed OwnerProof alone is not evidence; agents cannot obtain human-only approval by this call |
-| verify_capability | Per-call credential/session/revocation validation, no ambient fallback; yields a generation-bound handle |
-| open_project | Authorized existing lookup, no implicit initialization, root selection or adoption |
-| bind_session | Owner or one-use launch proof; validate project/agent/conversation/consent/target and expected generation; commit one binding; return capability only through protected output, once; retry cannot return a newly minted secret or duplicate session |
-| revoke_session | Owner-selected or bound-self scope only, generation CAS; retire native target and credentials through durable intent/recovery, never fabricate process stop |
-| tools | Registry-generated input/output schema catalogue, session permissions/features and bounded page; no unknown-name backdoor |
-| call_tool | Registry-only MCP operation by bound identity, no project/actor overrides; core validates closed inputs and returns its versioned output/error |
-| continuity | Read-only pre-provider barrier; context retains secode.session-context-v1 identity/provider/model/packet/model input/UTF-8 size/truncation/window/warnings; packet acknowledgment verifies digest and authenticated binding |
-| capture_turn | Consent and conversation/source validation, bounded content, natural vendor-turn/idempotency dedupe; records capture, not task success |
-| subscribe_mail | Atomic snapshot/subscription at durable cursor, bounded stream and exact binding; no notification before send COMMIT |
-| settle_mail | Records a verified native notice admission/replay/hold/refusal result, not Read/Dismissed markers; core message.read/ack/dismiss own those markers |
-| adoption_status | Owner inspection page with pending/reattached/held/revoked/absent/unreadable, never an empty success on recovery failure |
-| drain | Gate admissions for expected generation, cancel/join its work, persist delivery cursors/debt and flush writer; report unresolved effects honestly |
-| reopen | Require a completed drain of the actual current instance, reopen store and publish checked successor; stale supplied receipts do not override internal state |
-| close | Idempotently finish the drained instance; retain durable sessions/holds/debt, release resources after join; no new generation |
+| HostFactory::open | Read-only preparation; return Prepared, Absent or Unreadable; duplicate opens on the same factory may share an already registered healthy owner, never return a poisoned handle as successful readiness |
+| HostFactory::restart | Independent supervisor closes the exact Drained/Poisoned old generation without invoking its Host object, then returns a fresh Prepared handle; no new writer/native callbacks before caller registers and activates it |
+| activate | Required known generation plus fresh services wrapper; start resources/migrate/adopt, return Ready or Recovering only after truthful validation |
+| negotiated / health | Non-blocking metadata/current state of this specific handle, never another generation |
+| wait_health(after) | Notification-driven lifecycle change, not mail pull/polling; reports Prepared/Activating/Ready/Recovering/Draining/Drained/Poisoned/Closed or an explicit timeout/cancel error |
+| poison | Gate the current generation and preserve durable obligations; report known fault, never undo native commits or human holds |
+| verify_capability | Validate protected credential, scope, revocation and generation; no owner fallback |
+| open_project | Authorized existing lookup, no implicit init/root/adoption |
+| bind_session | Trusted owner/one-use launch path; validate conversation/target/consent and binding revision, commit once and issue protected capability once |
+| revoke_session | Owner-selected or bound-self scope; durable target/capability revocation intent, never invented process stop |
+| tools / call_tool | Core registry only; bound identity and closed arguments, same operation implementation as CLI/MCP |
+| continuity | Bound pre-provider context/packet/model/UTF-8/window facts, no cross-agent private fallback |
+| capture_turn | Consent/conversation/source/hash and natural vendor-turn dedupe; capture receipt is not task success |
+| native_state_changed | Native control-plane nudge after a committed eligibility/target change; re-read actual binding/status before retry, no body pull, admission settlement or hold release |
+| adoption_status | Bounded owner inspection of every pending/reattached/held/revoked/absent/unreadable route |
+| drain | Generation comes only from CallOptions; gate admissions, join generation tasks, persist debt and flush writer; return named unresolved facts |
+| close | Actual matching drained state, explicit writer close/join and resource release; idempotent readback, no new generation |
 
-One real Host is opened per runtime owner, shared by Arc; the public stub opens
-only an explicit not-included result. The HostFactory implementation
-must detect duplicate opens for the same runtime scope; it does not create another
-writer/listener per project or session. A state-home lock/native ownership is
-se-host's job, not an authorization granted by a HostConfig path. Canonical
-state-home/store identity scopes an exclusive runtime owner; concurrent opens
-serialize before migrations or publication. Existing verified same-process opens
-share that owner; a different live daemon/SE Code owner returns
-RuntimeOwnedElsewhere, since live handover is after alpha. Stale owner records
-require an exact process-identity outside witness before takeover. Unreadable
-ownership is not stale/absent, and a lease timeout alone cannot authorize stealing
-a running writer. Lock/lease acquisition cost counts toward open readiness.
+One factory/supervisor owns a canonical state-home/store scope. Duplicate opens
+share only its registered healthy owner. A different live daemon/factory owner
+returns RuntimeOwnedElsewhere even if its PID happens to match; timeout alone
+cannot steal a lease. Poisoned open returns GenerationPoisoned with the restart
+route. The independent supervisor outlives an individual Host object and holds
+the writer/tasks/lease needed to close it safely. It must not be implemented as a
+call back through a quarantined Host::drain or Host::close.
 
-SessionIdentity is the durable project/agent/session tuple. BoundSession adds the
-current engine Generation, binding revision and protected grant. HostEpoch is the SE Code
-owner ProcessInstance plus HostGeneration. HostSessionTarget binds that epoch,
-SE Code's native session ID, durable SessionIdentity and binding fingerprint.
-The three concepts must not be conflated. Current generation is rechecked at
-execution, not only at decode. Opaque API grants are issued by the implementation only after credential/grant
-resolution, and revalidated before dispatch; a DTO carrying claimed IDs is not
-such a resolution. Invalid/revoked capabilities never fall back to Owner or Anonymous.
-
-IssuedSession contains a capability exactly once plus a committed binding receipt.
-A replay whose once-returned secret is no longer in the original protected
-custody returns SessionBindingUnproven, retaining the committed binding fact; it
-must not return an empty/alternate secret with a successful receipt. Recovery is
-an explicitly authorized rebind with a new idempotency key, expected current
-binding revision, prior capability revocation and new capability issuance in one
-core transaction, preserving the provider conversation. The trusted integration
-must complete that recovery before provider admission, not silently start fresh.
-BindingRequest.expected_binding_revision=None means first binding only; Some(r)
-requires the current authoritative revision r. IssuedSession and BoundSession
-return that revision; owner adoption_status exposes it for lost-credential
-recovery. A stale revision refuses before issuing a new secret. ProviderSessionId and ModelIdentity retain the real
-conversation/provider/model; Harness distinguishes ClaudeCode, CodexAppServer and
-Secode. Harness::Secode is an embedding integration, not a new CLI provider or a
-permission to reinterpret an existing Claude/Codex conversation.
+SessionIdentity is durable project/agent/session. BoundSession adds engine
+Generation, binding revision and issued grant. HostEpoch identifies the native
+SE Code service separately from the engine generation, and HostSessionTarget
+binds native session, epoch, durable identity and fingerprint. No tuple alone
+proves custody or permission. A capability returned once is not regenerated on
+replay; lost custody yields SessionBindingUnproven and a trusted new-key CAS
+rebind that revokes the prior capability while retaining the conversation.
+expected_binding_revision=None means first binding only; Some(r) must match.
+Owner adoption_status supplies the revision for legitimate recovery.
 
 ### 7.3 Continuity and capture compatibility mapping
 
@@ -579,232 +599,231 @@ Schema additions/removals follow Alpha's API negotiation; an old decoder receive
 only a contract it supports. These field mappings require reviewer consumer
 witnesses before compatibility is claimed operational.
 
-## 8. SE Code callbacks, one queue, holds and settlement
+## 8. Push mail, native queue, holds and admission debt
 
-Input authority is Alpha's msg-45a1e58b4b70ef181371bbf1 and Gamma's source review
-msg-9b84ed3c402f78ca89fe7c93. Source independently read through git transport at
-SE Code f4cf8f6d8386accefeef706ddb9a4970e1f12ebb, notably
-`crates/secode-inbox/src/admission/{native_mail,native_mail_state}.rs` and
-`crates/secode-product/src/dogfood/interrupt_pending.rs`.
+Authority is Alpha's msg-45a1e58b4b70ef181371bbf1, Gamma's source assessment and
+review msg-a7821f5080b58b8ecb6742c6, and Prime's push-only decision. Source read is
+SE Code f4cf8f6d, especially native_mail/native_mail_state and interrupt_pending.
+The existing combined interrupt handler signals before committing its hold;
+takeover requires the stronger split ordering below. No unchanged HTTP handler
+is claimed to satisfy it.
 
-Current `interrupt_pending.rs` signals execution before `hold_native_mail_wakes`,
-then acknowledges only after the hold succeeds. It already retains the session
-hold and native pending rows durably. The takeover callback ordering below is
-stronger: hold must commit BEFORE any interrupt invocation, including a wake that
-lands between the calls. The design does not claim the current combined HTTP
-handler already offers that ordering. Alpha's adapter must expose the split
-callback or an atomic stronger operation; reusing the HTTP call unchanged fails
-this contract.
+### 8.1 HostServices contracts
 
-### 8.1 Callback contracts (proposed to Alpha for review)
+Every method requires ServiceOptions.generation and the exact target/epoch. The
+wrapper checks its expected generation and current native fence in the same
+serialized lane as any mutation; a late old-generation call refuses. No lock or
+transaction spans an engine await.
 
-| HostServices method | Required semantics |
+| Method | Definitive semantics |
 | --- | --- |
-| hold(target, reason, key) | Recheck exact current target/epoch; commit the session-wide hold even with zero pending native notices, plus necessary per-input holds; preserve pending input; return HostEventRef only after durable commit; exact retry returns original receipt |
-| interrupt(held) | Validate receipt against the durable held target and current epoch before signalling; never release hold; success means interruption requested, not idle/absent |
-| active_sessions(epoch,page) | Successful bounded snapshot from that exact service; unreadable/unknown remain explicit; absence proof requires exhausting all pages of the same complete snapshot |
-| idle(target) | Authoritative Idle/Executing/Interrupting or Read failure; Idle alone does not mean a target was revoked or a TUI process exited |
-| binding_state(target) | Read durable target/hold/revocation and activity under the supplied epoch; never infer from an empty process map |
-| adopt_binding(previous,current_epoch,key) | Compare the persisted native binding/fingerprint and recorded old epoch, append a durable adoption/CAS to the current epoch, preserve holds/revocation/pending admissions; refuse if original protected custody or persisted mapping cannot be verified |
-| update_mail_target(Select/Revoke,key) | One native registry transaction selects the new binding and revokes bounded predecessors, or revokes the exact target; selection preserves an existing human hold and cannot revive a revoked predecessor; under that same transaction every superseded target must still be held and not executing, otherwise conflict |
-| deliver_notice(notice) | Authenticate exact live binding/target; admit IDs only into SE Code's existing synthetic pending input queue with stable notice/digest dedupe; commit before returning Admitted; retry returns Replayed with original admitted sequence |
-| notice_status(target,id) | Recover committed admission after lost response without admitting again; Absent requires successful exact-key lookup, unreadable/unknown never mean retry under a new ID |
+| hold(target, reason, key) | Durably commit session-wide/per-input hold even with zero pending notices; retain pending input; exact retry returns original event |
+| interrupt(held) | Verify that exact hold is still active before signalling; return requested, never an idle/exit witness |
+| active_session(target) | One authoritative point lookup: Present(Some(active)) means observed execution, Present(None) proves no active execution for this exact target/epoch at that read; Absent/Unreadable/Unknown do not prove no execution |
+| active_sessions(epoch,page) | Bounded diagnostics only; pages are not a snapshot-bound absence proof |
+| idle(target) | Native activity observation, not revoked binding or client process exit |
+| binding_state(target) | Durable target/hold/revocation and activity, never inferred from an empty process map |
+| adopt_binding(previous,current_epoch,key) | Exact persisted old binding/fingerprint CAS into new epoch; preserve holds, revocation and original admissions; missing custody refuses |
+| update_mail_target(Select/Revoke,key) | Atomic selection/revocation; every superseded target must still be held and not executing inside that transaction; retain human holds and refuse changed activity/target |
+| deliver_notice(notice) | IDs-only push into the existing native queue; stable NoticeId/digest; Admitted only after commit, exact retry Replayed with original sequence |
+| notice_status(target,id) | Exact-key recovery after uncertain callback outcome; no mutation or fresh admission; unreadable/unknown never become absence |
 
-No callback transports message bodies or a session secret as notice text. MailNotice
-contains IDs, exact target, stable NoticeId, durable through cursor and dedupe hash.
-A store transaction reserves each (durable SessionId, MessageId) delivery debt
-for one outstanding stable notice intent before any callback; batches cannot
-overlap merely because a subscription/generation reopened. Settlement advances
-notification debt only; unread markers remain unread. SE Code constructs its
-existing synthetic prompt referencing those IDs. The model
-uses its bound StateEngine read operation to fetch bodies. The callback cannot
-ack/read/dismiss any message and cannot settle another session's mail.
+No subscribe_mail, MailSubscription, MailEvent, MailSettlement or settle_mail
+exists. StateEngine's host reads its indexed durable delivery debt internally and
+pushes through deliver_notice. SE Code never pulls a second mail stream. The only
+queue is SE Code's existing pending-input queue. Lifecycle wait_health transports
+no mail, body, admission or cursor.
 
-The canonical notice digest uses a versioned encoding of store/project/agent,
-durable SessionId, native HostSessionId, ordered distinct message IDs and the
-durable source cursor. It excludes transient engine generation/service process
-identity so a legitimate restart can recover the same admission. Host target
-routing/epoch is checked separately against the durable binding/adoption map.
-Reusing a NoticeId with a different stable tuple/digest is IdempotencyKeyReused, including
-under a new generation. `Admission.committed_in` retains the original service
-epoch; its target names the current verified routing after a recorded adoption.
-The original event/sequence are never replaced by a second admission.
+Before a callback, one core/store transaction reserves each (SessionId, MessageId)
+for a stable notice intent, preventing overlapping reopened batches. MailNotice
+contains IDs, exact native target, through cursor and digest, never body/secrets.
+The digest versioned encoding covers store/project/agent, durable SessionId,
+native HostSessionId, ordered distinct message IDs and durable cursor; it excludes
+transient engine/service process generations. Epoch routing is checked separately.
+Changed payload under the same NoticeId is IdempotencyKeyReused. On adoption,
+Admission.committed_in and original event/sequence stay original; current target
+is only updated through the verified native adoption map.
 
-### 8.2 Single queue state machine
+### 8.2 Notice debt and single-queue state machine
 
-| State | Allowed transition | Durable fact / outcome |
+| Existing state | Observation / action | Durable result and retry trigger |
 | --- | --- | --- |
-| Message committed, notice debt pending | Create stable bounded notice intent | No read marker; send remains committed with pending delivery |
-| Notice intent pending | Native deliver_notice | Admitted -> one synthetic pending item with admitted sequence/digest; callback response loss -> recovery lookup |
-| Native pending item | Exact retry | Replayed original item, no new admitted sequence |
-| Native pending item | Next safe promotion boundary | Existing SE Code promotion event selects eligible steer first, ordinary queued input only at idle |
-| Native pending, host session held | New mail/reconnect/synthetic input | Remains held/pending; no automatic promotion |
-| Native pending, held, genuine human input promoted | Native human-resume transaction | Clear human hold in that transaction; retained eligible work may resume at the allowed boundary |
-| Native pending, target revoked | Any human input or reconnect | Remains ineligible; human resume cannot restore a revoked binding |
-| Notice admitted/promoted | Host::settle_mail admission report | Notification offer/debt recorded, not recipient read |
-| Model performs bound message.read/ack/dismiss | Core operation commits | Only StateEngine updates the authenticated recipient's corresponding marker |
+| Message committed, unoffered debt | Reserve stable bounded notice intent | Intent/key/body-ID set durable before callback; recipient remains unread |
+| Intent pending | Admitted or Replayed with verified target/id/digest/event | Record original native queue admission in StateEngine debt, once; this is the only success that acknowledges queue admission |
+| Intent pending | Held before admission | Keep the same intent and full unoffered debt; no native pending item is presumed; record held reason/observation only |
+| Intent pending | Refused before admission | Keep intent/debt plus explicit cause; do not advance offer cursor, mark read, or claim a native pending item |
+| Intent pending | Callback reply lost/deadline/panic | Outcome uncertain; notice_status on the same target/ID before any retry; never mint a new NoticeId |
+| Uncertain | Verified status Admitted/Replayed | Record original admission; no second pending input |
+| Uncertain | Successful exact-key Absent | Retry the same intent only after target is verified eligible; Read::Unreadable/Unknown retains uncertainty |
+| Held debt | Genuine human promotion clears hold and native target remains eligible | An explicit native eligibility/control-plane event schedules retry with original intent; fresh mail, reconnect or engine restart is not a human resume |
+| Refused debt, retryable cause | Explicit binding repair/re-authorization or bounded work-driven retry allowed by that cause | Read binding/status then retry original key; no idle polling and no retry by inventing a key |
+| Refused debt, revoked/permanent target | Owner creates a legitimate new target or explicitly retires delivery obligation | Preserve original refused debt/history; a new target has a new explicit intent, never relabel old refusal as admitted |
+| Native pending input | Safe promotion boundary | Existing native queue promotes eligible steer first, ordinary queue input only at idle |
+| Native pending, held | Mail/reconnect/synthetic startup | Remains held; no promotion or read marker |
+| Held, genuine human input promoted | Native human transaction | Clear hold only if target still verifies; revoked target never revives |
+| Recipient performs bound message.read/ack/dismiss | Core commit | Only StateEngine changes that recipient's marker; admission is not read/task completion |
 
-There is no second StateEngine provider-input queue. Subscription buffers are
-bounded notification transport, not independent prompt schedulers. There is no
-resume boolean a mail sender can set. An explicit resume flag, fresh mail,
-synthetic input, reconnect and origin=seat-startup cannot clear the native human
-hold. Actual human-origin validation and promotion live in SE Code; no tool or
-public library function named release_hold exists here. Diagnostic UI notices
-are not native-mail synthetic admissions and are never reused as provider work.
+SE Code's adapter supplies the real human-eligibility event to its integration
+control plane, which calls Host::native_state_changed(target, CallOptions).
+This nudge means only reconciliation was accepted; it carries no mail IDs/bodies,
+acknowledges no admission and grants no authority. The host validates target/G,
+then reads actual binding_state/notice_status before eligible retry. It is an
+internal embedding hook, not a new CLI/MCP operation or a provider-input queue. Activation and
+explicit owner repair also schedule reconciliation, but first read native held/
+revoked state and never clear a hold. Pending debt is visible through status and
+adoption inspection until resolved. Held/Refused handling is internal keyed
+host/store accounting, not a public settlement API that SE Code can call to
+advance delivery. No response containing Held/Refused acknowledges admission.
 
-### 8.3 Hold/revocation state machine and takeover
+### 8.3 Takeover and abort semantics
 
-Held and revoked are distinct dimensions: eligible, human-held, or target-revoked.
-Hold moves eligible -> held and is idempotent. Genuine promoted human input can
-move held -> eligible only while the native target still verifies. Revoke moves
-either -> revoked; no human resume/reconnect transition leaves revoked. Selecting
-a legitimate new target establishes a new binding, not a resurrection of the old
-one, and carries forward any human hold on that native session. Native rows and
-historical per-input holds remain retained rather than deleted as "cleanup".
+Takeover commits a replacement intent/reservation; hold predecessor durably;
+interrupt only after that hold; active_session must return Present(None) for the
+exact predecessor; se-proc proves any owned client/descendants exited; recheck
+replacement/generation; final native Select transaction rechecks held/no execution,
+revokes predecessors and selects successor; read back that target transition;
+only then commit/enable the successor binding. Cross-store steps use keyed
+intents, never a transaction held across callbacks. Point observation can go stale:
+if a human resumed after it, final Select refuses rather than overlap execution.
+Paged active_sessions is diagnostic and cannot replace the point read. Its
+windows describe a single diagnostic observation; without an immutable cursor
+snapshot, a multi-page changing source is marked source-incomplete, not advertised
+as a complete concatenated census.
 
-Takeover sequence is precise: core commits reserved/CAS replacement intent;
-HostServices::hold commits exact predecessor hold; only then interrupt; then a
-successful same-epoch active-map snapshot proves predecessor execution absent;
-se-proc independently proves owned predecessor client/descendants gone if client
-custody applies; recheck replacement intent/generation; native target transition
-revokes predecessor and selects successor; core commits/adopts the successor
-binding and enables provider admission. Cross-store steps use durable keyed
-intents, not a transaction held across callbacks. Before the final admission,
-core must verify the intended native selection was read back. Any failed step
-leaves a named pending/held obligation, never admits an overlapping successor.
-The final native Select transaction rechecks that every predecessor is still
-held and not executing while it revokes their targets. An earlier complete active
-snapshot alone is insufficient: genuine human promotion may have happened since
-that read. A changed hold/activity/target refuses Select and forces a new
-authorized hold/observe sequence, rather than publishing an overlapping successor.
+Held and revoked remain separate dimensions. Hold: eligible->held; genuine human
+promotion: held->eligible only while target valid; revoke: either->revoked; no
+human/reconnect transition leaves revoked. A new legitimate binding preserves any
+native session human hold. A failed/aborted takeover does not automatically
+release its hold. An intact takeover hold stays until a genuine human acts; UI
+must say that the takeover stopped and the session awaits human input. There is
+no engine abort_takeover/release_hold escape. If a human already changed the hold,
+report that actual native state rather than inventing a held fact or re-holding
+as cleanup. Pending takeover intent is visibly aborted/failed, never success.
 
-A complete empty active map proves only no matching native execution in that
-snapshot. It does not prove client process absence or revoke a credential. An
-interrupt acknowledgement proves none of these. Changed epoch, stale reservation,
-unreadable map, unknown binding, timeout or failed outside stop witness refuses
-admission and preserves the hold for recovery.
+Interrupt acknowledgement proves neither idle nor process absence. Unreadable/
+unknown point query, changed epoch/reservation, failed outside stop or target CAS
+keeps the successor gated and preserves each actual obligation. Windows breakaway
+is owned by section 30/se-proc; SE Code's containing job must permit the required
+breakaway. An OS refusal reports the named breakaway failure; this API cannot
+weaken the job/profile or substitute an unowned PID. Linux uncontained process-
+group evidence cannot prove absence of descendants that left that group; a
+required outside witness remains incomplete rather than inventing total custody.
 
-## 9. Open, crash adoption and generation lifecycle
+## 9. Generation lifecycle, adoption and panic containment
 
-### 9.1 Runtime states
+### 9.1 States and observable signals
 
-| State | Trigger | Next state / rule |
+| State | Trigger | Next state / result |
 | --- | --- | --- |
-| Closed | HostFactory::open | Opening; negotiate and check store without private-state exposure on failure |
-| Opening | Missing store / failed read / unsupported API | Closed with Read::Absent / Unreadable / SeError, no half-ready owner |
-| Opening | Usable store/services with no recovery debt | Ready |
-| Opening | Usable store/services with pending verified recovery | Recovering with bounded per-session status; no hidden work counted as ready binding |
-| Recovering | Each custody/binding readback succeeds | Reattached or held/revoked per durable state; then Ready when all resolved |
-| Ready or Recovering | API-edge panic | Poisoned: gate this engine generation, preserve native state and keyed obligations |
-| Poisoned | Recovery supervisor | Drain/join or quarantine old generation; recover durable intents; create verified successor, never resume the poisoned instance |
-| Ready or Recovering | drain(expected current generation) | Draining; gate admissions and detach/cancel old subscription work |
-| Draining | Tasks joined and writer flushed | Drained with accurate unresolved debt/effects |
-| Draining | Deadline/unreadable worker/effect | Remain Draining with named error/obligation; no successful close/reopen receipt |
-| Drained | reopen(actual matching drain receipt) | Reopening; check successor without overflow, reopen/adopt, publish new negotiated generation |
-| Reopening | Successful usable successor | Ready or Recovering; old generation cannot admit work |
-| Reopening | Failure | Unavailable with explicit preserved debt; no fallback to old stale admission |
-| Drained | close(actual matching receipt) | Closed after resources joined/released; idempotent close returns same facts |
+| Closed | Factory open, valid read-only scope | Prepared handle, no writer/native callbacks before return |
+| Opening before publication | Missing/unreadable/version failure or panic | Explicit opening failure, no mutating generation to fence; retain factory cleanup custody over any preparation lease |
+| Prepared | SE Code registers handle/G and activates fresh services | Activating; this is the first mutating stage |
+| Prepared | Invalid activation arguments/source before resource start | Remain Prepared with explicit error, no native mutation |
+| Activating | Valid ownership/store/services, no pending recovery | Ready |
+| Activating | Actual routes still need reconciliation | Recovering with bounded truthful per-session states |
+| Activating | Global resource/migration failure after resource start | Gate this G, preserve exact partial facts, Poisoned and explicit factory-restart route |
+| Activating/Ready/Recovering | Panic in API edge or supervised task | Poisoned, gate engine admissions and report known generation/incident |
+| Prepared/Ready/Recovering | Explicit drain | Draining; SE Code closes native generation routing first, engine joins tasks/persists debt/flushes |
+| Draining | Tasks joined, writer flushed, all unfinished effects durable | Drained with pending-effect counts; still owned until close |
+| Draining | Deadline/unreadable/live task | Remain Draining with named blockers, never a successful drain |
+| Drained | Host close | Explicit writer close/join, resources released, Closed; repeated drain/close returns the same observed result |
+| Drained/Poisoned | Factory restart for actual current G | Supervisor closes old generation independently, then fresh Prepared G+1 after safe closure |
+| Restart closure | Live/unjoinable writer/task or unreadable ownership | Unavailable with named blocker; old ownership quarantined, no fresh writer or fake successor |
+| Fresh Prepared | Caller registers new handle/fresh services and activates | Ready or Recovering, old handles remain invalid |
 
-Drain is not a human stop and must not manufacture a human hold, revoke a durable
-session, or clear a pre-existing hold. Old in-memory futures/handles are cancelled;
-store intents/cursors/debt survive. Neither successful drain nor process loss
-means a recipient read a notice. Pending effects may be unresolved in a successful
-Drained result only if tasks are joined, the writer is flushed and every obligation
-is durable; unresolved running tasks prevent a successful drain.
+health() and notification-driven wait_health expose these states without a mail
+stream. API wrapper catches return EnginePanicked immediately with the known G;
+internal supervisor faults set Poisoned and wake wait_health. SE Code gates that
+G when either observation arrives. Explicit drain returns Drained/Incomplete,
+not a human hold. There is one host-level health wait, no per-seat poller/timer.
+Timeout is an explicit error, not a health change. Old handle snapshots refer only
+to old G; they can never start returning Ready for the new generation.
 
-### 9.2 Restart/adoption algorithm
+### 9.2 Factory recovery independent of a poisoned Host
 
-On existing-store open, record recovery from committed session/effect rows using
-bounded pages. For each session verify credentials are still valid, project/agent
-scope, current generation lease, protected provider conversation reference and
-recorded process/native target. A process row must be reobserved/pinned by se-proc;
-identity absent -> Absent, mismatch -> revoked/lost refusal, read failure ->
-Unreadable. It never becomes a running instance by import or a PID-only lookup.
+The caller first fences G in its own native/API wrapper, then invokes factory
+restart(Poisoned{incident}, stable_key, CallOptions{generation:G,...}). A normal restart uses
+its actual Drained receipt instead. The factory's independently retained
+supervisor validates G/state/lease, closes admissions and cancels/aborts/joins G's
+owned tasks without invoking any method on the quarantined Host object. It calls
+the store writer's explicit close routine, flushes/rolls back as appropriate and
+joins the writer via the passed blocking pool. Native committed effects and human
+holds are untouched; every uncertain commit is recovered by original key.
 
-For SE Code, first query durable native binding_state and the same-epoch active
-snapshot. A held binding reattaches as held; a revoked binding remains revoked;
-an unreadable binding blocks only that path. Logical StateEngine reopen preserves
-the durable SessionId and native target epoch; verify_capability creates a handle
-for the new engine Generation. Old handles fail SessionGenerationMismatch. No new agent
-conversation, user prompt or notice ID is created merely to recover.
+A completed writer join returning a panic still proves that thread terminated,
+not that its transaction committed or rolled back. The supervisor validates the
+store and resolves original in-flight keys against durable state before reusing
+it. A writer that already panicked can therefore be replaced even though the old
+Host cannot drain; no acknowledgement from that damaged object is required. Raw
+panic payload is not exposed. Unreadable/corrupt store remains an explicit refusal.
 
-If the SE Code process itself restarted, its HostEpoch changes. The adapter must
-use adopt_binding with the previous protected binding and a durable CAS into its
-current epoch, retaining pending queue admissions, human holds and revocation.
-No persisted mapping/secret custody -> explicit refusal, not owner fallback or
-"new session" success. Only after this outside callback readback may se-host mark
-the native route reattached. Restoring linked code still requires redeploying
-SE Code; there is no dynamic ABI/hot library replacement promise.
+Only after proved termination and ownership/store verification may the supervisor
+prepare checked successor G+1 and publish its new handle. It retains/transfers
+its exclusive home lease safely; it never releases a lease over a live old writer.
+SE Code registers that handle and a newly fenced HostServices wrapper, then calls
+activate. This path works even if old Host::drain/close panics or is unusable;
+those methods are not the supervisor's resource handles. Restart is keyed by
+the old generation and stable idempotency key; exact retries return the original
+successor/result instead of creating G+2. A reused key with a changed request
+refuses. If a caller loses a successful restart reply, it repeats that key or
+uses read-only factory open to recover the already prepared/registered owner;
+neither path starts native work before registration/activation. No Host::reopen method
+or old integration Arc is reused for recovery.
 
-Recover each stable notice intent with notice_status before offering it again.
-Admitted/Replayed -> record delivery of the original admission; measured Absent ->
-retry the same NoticeId and digest; Unreadable/Unknown -> retain pending debt and
-report the source. A crash after native commit but before engine settlement must
-not lose or double the pending input. A generation change after commit cannot
-reclassify it as an uncommitted retry. On cross-store target-selection recovery,
-read the keyed selection result and reconcile the original engine intent before
-successor admission; never claim cross-database atomicity.
+A truly stuck native writer cannot safely be killed or abandoned portably inside
+the process. In that case restart returns explicit Unavailable with the named
+unjoined worker/ownership blocker and asks for a controlled SE Code process
+restart after preserving its native work. It does not freeze ordinary SE Code
+sessions or claim a fresh generation while the old writer might still commit.
+Ordinary caught panics have the closed supervisor path above; abort/OOM/OS kill
+requires process-restart adoption instead. The whole embedded boundary uses
+unwind; an abort release profile cannot promise generation-only panic isolation.
 
-### 9.3 Subscription lifecycle
+### 9.3 Adoption and push recovery
 
-Opening subscribe_mail reads a bounded snapshot/high-water cursor and attaches
-notifications without a gap (subscribe first then snapshot/reconcile, or one
-serialized host lane). Notice is emitted only after its message transaction commits.
-Every subscription has negotiated entry and byte caps. Overflow emits Lagged with
-the last durable safe resume cursor, terminates that stream, and retains all debt;
-it never evicts unseen messages silently. Close returns the last safe cursor.
-Revocation produces Revoked then closes; drain produces Closed for the old engine
-generation. Resubscription validates scope and reads the durable remaining debt.
-No active sessions means no subscription timers/polls. Delivery timers, if required
-by a live provider, belong to se-host and are armed only by actual work.
+Activation reads committed session/effect state in bounded indexed pages. Verify
+credential/revocation/project/agent/conversation/current generation and actual
+process/native target. se-proc reobserves/pins process custody; absence, mismatch
+and unreadable remain distinct. Imported process/history rows are not live custody.
 
-### 9.4 Panic containment is part of the API contract
+Read binding_state and the exact active_session point query under this HostEpoch.
+A held route adopts as held; a revoked route remains revoked; unreadable blocks
+only that route. Same-process engine restart retains durable SessionId and native
+host epoch, refreshes generation-bound handles and creates no conversation/prompt.
+After SE Code service restart, adopt_binding verifies old protected mapping and
+CASes it to the current epoch, retaining holds/revocation/original queue sequence.
+Missing mapping/custody refuses, never falls back to owner/new-session success.
 
-SE Code owns a wrapper around every entry into a real engine implementation,
-including synchronous factory/future construction and every poll of the returned
-future, subscription next/close, and drop/cleanup paths it invokes. Catching only
-future construction does not catch an async panic. Every post-open call supplies
-Some(expected_generation) in CallOptions; open alone permits None. SE Code binds
-the HostServices wrapper to that generation and checks its fence inside the same
-native serialization lane/transaction as hold, selection or admission. Poison or
-publication closes that fence before joining old calls; no late old-generation
-callback may start a native mutation. A callback already inside its native commit
-finishes atomically and is reconciled by its original key before successor
-publication. These fences are owned by the runtime adapters, not the data crate. The implementation also guards
-its spawned tasks and joins their outcomes into its generation supervisor; a
-panic on a detached writer/session task cannot disappear behind an otherwise
-healthy Host handle. The API crate itself contains no catch/policy logic.
+For each outstanding stable notice call notice_status first. Verified original
+Admitted/Replayed records that exact admission; measured absence permits eligible
+retry of the same intent. Held/Refused/Unreadable/Unknown retain unoffered or
+uncertain debt with the triggers in 8.2. A crash after native commit but before
+engine debt recording cannot lose or duplicate input. Activation/restart itself
+cannot clear a human hold or pretend a notice was read.
 
-On caught panic: mint a bounded nonsecret incident ID, mark the local API handle's
-GenerationHealth Poisoned, gate calls through that generation immediately, and
-report ApiFailure::EnginePanicked with possible-commit semantics. Request poison
-on the matching engine generation and drain/join it; if poison/cleanup itself
-panics or times out, keep the old handle quarantined and refuse that binding path.
-Only publish the successor after ownership/tasks/writer safety is verified. A
-counter change alone is not a restart witness. Ordinary SE Code sessions, the
-product process, user work and unrelated generation-independent input stay alive.
-No raw panic payload, credential or captured body is logged in the API error.
+### 9.4 Atomic native transactions and panic/drop rules
 
-Native HostServices callbacks use their existing transactional authority: a
-panic before native commit rolls back via the transaction guard; a panic after
-commit loses at most the reply. A hold and its native per-input changes are one
-native transaction, as are a synthetic admission/claim/dedupe projection and its
-queue event. Neither transaction spans an engine await. A durable hold remains
-held across engine poisoning; a committed pending input stays in the single
-queue with its original admitted sequence/digest. The engine must never infer
-that catch_unwind rolled back a completed commit, unhold to "repair" a panic, or
-retry admission under a new NoticeId.
+SE Code catches synchronous constructor/future-construction panics and every poll
+of engine futures, including activate, health wait and explicit close. Constructor
+is Handle-only/no I/O and cold open is nonmutating; after publication every fault
+has a registered generation. Engine-owned task panics join the supervisor's fault
+state; they never disappear behind a healthy handle. The wrapper gates the known
+G, emits a bounded nonsecret incident and uses factory restart, not a method on a
+handle whose cleanup itself may panic. No raw panic payload/body/credential leaks.
 
-Recovery queries/replays the original keyed hold/selection/admission, restores the
-safe binding and resumes from the last durable cursor. Until definitive readback,
-provider admission for the affected StateEngine-bound session remains gated; this
-temporary safety gate is distinct from a durable human hold and never clears one.
-If a native callback panics, SE Code's boundary reports the same uncertain-outcome
-failure and reconciles its own authoritative transaction; the engine does not
-manufacture an empty active map or settled notice. A process abort/OOM/OS kill
-cannot be caught by Rust unwinding; process-restart adoption applies instead.
-The release panic strategy must remain unwind on this embedded boundary; an abort
-profile cannot claim generation-only panic isolation.
+Native hold plus per-input holds, target selection/revocation, and pending input
+admission/claim/dedupe are each one existing SE Code transaction. Before commit,
+panic rolls back; after commit, it may lose only the reply. Atomic changes remain
+atomic across engine poison. Catching unwind never proves rollback of a completed
+commit. Recovery queries/replays original keys; it never unholds, invents a new
+NoticeId, erases pending input or acknowledges Held/Refused as admission.
+
+Drop never runs arbitrary cleanup futures, blocks on writer joins or catches a
+second destructor panic as if recovery succeeded. Resource shutdown is explicit
+async close, with its result witnessed before runtime shutdown. SE Code's normal
+work, native queue and durable holds survive a contained engine fault. Only the
+affected binding/generation is gated until verified recovery; that temporary gate
+is separate from the persistent human hold and cannot release one.
 
 ## 10. Per-OS behavior and budget allocation
 
@@ -821,19 +840,27 @@ first-bound time, zero extra persistent processes, and idle below 0.1% of one CP
 with approximately zero wakeups; standalone CLI target remains <20 ms. These are
 whole-product measurements by the independent journey runner, not sums of asserted
 module numbers. Foundation's design share is zero threads/tasks/timers/processes,
-no retained global cache and no startup I/O; small-page pure validation/negotiation
+no retained global cache and no startup I/O; small-page pure validation/version checks
 should use <=1 ms of the startup allowance, to be measured, not claimed proven.
 
 Default page limits follow section 50: 20 items, hard max 200 (message tools may
 cap at 100); 1 MiB request/response
 payload including envelope; continuity model input 32 KiB default and max 1 MiB as section 50;
-128 distinct IDs per notice; 256 entries and 1 MiB total per host's native-mail
-subscription buffers (shared accounting, not 1 MiB per seat). Producers reject
+128 distinct IDs per notice. Callback request/response memory is bounded per
+host; there is no mail subscription buffer or additional prompt queue. Producers reject
 oversized configurations/requests rather than granting an unbounded allocation.
-These caps are reported in Negotiated; changing a default cannot weaken the
+Page/payload/notice caps are reported in Negotiated; changing a default cannot weaken the
 correctness invariant or erase unreadable/omitted counts. Session/queue storage
 is bounded independently from transient transport; unserved durable debt remains
 in the store and is fetched by indexed pages.
+
+The runner must measure the entire first-bound sequence: commercial factory
+construction, read-only open, registration/activate, open_project, bind_session,
+verify_capability and continuity, including lease/migrations/recovery work. It
+must fit the 100 ms whole-product ceiling before this shape is frozen as a
+performance-qualified API. A fused bind/context operation is a possible reviewed
+revision if measurement requires it, not a present speed claim. Owner marker
+construction is local; no extra machine-credential round trip exists here.
 
 Prototype input is explicitly limited. S3 follow-up 0e47c3c0 had observed paired
 p95 75.1 ms existing and 96.1 ms fresh-inline over 50 pairs, with all samples kept;
@@ -848,7 +875,7 @@ qualified; no live-agent handover or input-loss result is inferred from that spi
 
 | Journey | Required real-consumer observations |
 | --- | --- |
-| J1 Install | Installed version/API provenance, missing store distinct from unreadable, supported schema negotiation, no external checkout/Node required for the embedded StateEngine path |
+| J1 Install | Installed version/API provenance, missing store distinct from unreadable, supported schema/version sanity, no external checkout/Node required for the embedded StateEngine path |
 | J2 Adopt | Project/agent UUIDs retained across idempotent init, pre-provider session context identity verified, actual committed turn/task, user files survive, no display-name or ambient actor authority |
 | J3 Come back | Same durable conversation/session mapping, bounded complete continuity, crash/generation adoption and capability revalidation, held input not automatically resumed, no duplicate notice admission |
 | J4 Two agents | Message committed before notice, IDs-only single-queue admission at a safe boundary, exact recipient bound body read and marker commit, replay after callback loss, final handoff/result visible |
@@ -867,13 +894,20 @@ Authors add no tests. Reviewers own targeted executable examples for UUID format
 wrong audience cursors, unknown/unreadable distinctions, window arithmetic,
 typed remedy mapping, lost callback replies, held-session races and stale generation
 refusal where journeys do not reach them. The independent journeys and budget
-runner remain the acceptance oracle. Foundation checks reuse Otto's supplied external consumer (12 assertions, no
-new author assertions), plus workspace compiler/Clippy/format checks. Its copied fixture corrects the retired launch_ ID prefix to lch_ and the
-nonproducer agt-imported-legacy example to genuine agt-0000-0000-0000, retaining
-the same 12 assertions. API declarations compile independently; none proves a runtime
-guarantee above.
+runner remain the acceptance oracle. Foundation checks reuse Otto's supplied external consumer unchanged (12 assertions
+and all 165 typed error fixtures), plus workspace compiler/Clippy/format checks.
+The public API and commercial constructor signature compile independently. None
+proves a runtime guarantee above.
 
 ## 12. Decisions, open questions and implementation handoff
+
+The eight Opus changes and Gamma's two owner clarifications are incorporated:
+point active lookup; required service generations/fresh activation wrapper;
+push-only mail; independent keyed factory restart and human-only takeover abort;
+non-blocking Drop/snapshots with Clone/Debug options; no public Atlas/Human/CLI
+command type; closed API major-bump rule and version sanity; named passed Handle
+constructor. Gamma's opening fence is achieved by forbidding mutating resources
+before handle publication, and Held/Refused debt remains explicit/retryable.
 
 Only the explicitly authorized pure foundation implementation is present. No
 host implementation may begin before its design approval. The following cross-area details must be reconciled during review:
@@ -881,7 +915,7 @@ host implementation may begin before its design approval. The following cross-ar
 1. **Store owner / Prime:** finalize the store application_id, schema progression,
    cursor MAC/key custody and durability policy; StoreVersion is explicit so this
    chapter does not pick another owner's migration/flush policy.
-2. **Host owner / Alpha reviewer:** confirm the proposed callback methods and atomic
+2. **Host owner / Alpha reviewer:** confirm the point lookup, activation/fencing and callback methods plus atomic
    native adoption/selection recovery can map to SE Code's persisted target registry
    without an alternative queue; hold-before-interrupt is a required stronger seam
    than the current combined handler, not an optional optimization.
@@ -892,15 +926,14 @@ host implementation may begin before its design approval. The following cross-ar
    facts, but adapter fixtures must demonstrate N/N-1 decoding, not just schema
    strings. Any additional mandatory legacy field becomes a declared field here
    before implementation, not an untyped catch-all.
-5. **Critic/Prime:** proposed page/continuity/notice caps and required feature
-   negotiation are shared allocation policy; adjust centrally, not per surface.
+5. **Critic/Prime:** proposed page/continuity/notice caps and linked version sanity are shared allocation policy; adjust centrally, not per surface.
 6. **Alpha:** accept the exact permissive-crate signatures/version and panic
    wrapper placement, then land that crate in SE Code; our temporary proposal
    module is removed when replaced by the reviewed dependency. Stub behavior and
    panic-after-commit recovery need SE Code reviewer witnesses before adoption.
 
 Live daemon/SE Code handover remains after alpha. Crash adoption of the same
-supported host and logical engine generation drain/reopen are covered here, not
+supported host and logical engine generation drain/factory-restart are covered here, not
 a new launch/handover command. macOS runtime validation and signing infrastructure
 remain project acceptance dependencies; pure type compilation is not that witness.
 
@@ -911,14 +944,14 @@ before dependent implementation, rather than growing a second mirror API.
 
 ## Appendix: complete compiling public source
 
-Foundation implementations are the explicit exception authorized by Prime.
-The complete source includes validating bodies so every public signature below
-is real Rust, with no declaration-only inherent methods. Macro input is included
-because it defines public Code, Detail and per-code detail structs. The separate
-SE Code proposal is trait/data only and checked independently as a crate root
-with serde_json. Source files are the compilation authority; these copies must
-be refreshed together after review corrections. There is no second generated
-runtime API or behavior implementation in this appendix.
+The pure foundation is the explicit implementation exception authorized by Prime.
+Its exact source is included so public signatures and macro-generated details
+remain reviewable. The SE Code proposal is a separate MIT/Apache trait/data crate
+root with only serde_json. The commercial constructor signature is checked in a
+third independent crate with Tokio and that public API; Tokio never enters the
+permissive dependency graph. All three compile roots are declarations/values only,
+with no host implementation, author tests or runtime qualification. Actual files
+are the compilation authority and these copies must change together on returns.
 
 ### crates/se-types/src/lib.rs
 
@@ -2773,7 +2806,6 @@ codes! {
     LaunchFailed => ("launch-failed", Refused) { agent: AgentId, provider: String, exit_code: Option<i32>, stderr_tail: String } => "{provider} exited during launch: {stderr_tail}", "fix the provider error, then → `se launch {agent}`";
     WindowUnavailable => ("window-unavailable", Refused) { tried: Vec<String> } => "no terminal window could be opened ({tried})", "Use `se launch AGENT --detach`, or set `launch.terminal`";
     JobBreakawayRefused => ("job-breakaway-refused", Refused) { parent: String } => "Windows won't let the agent outlive {parent}", "Use `se up` first, then launch";
-    CgroupDelegationMissing => ("cgroup-delegation-missing", Refused) { path: String } => "Linux cgroup delegation is off ({path})", "enable systemd user delegation (`Cmd::Manual`, exact text in doctor)";
     CodexAppServerFailed => ("codex-app-server-failed", Refused) { phase: String, reason: String } => "Codex app-server failed at {phase}: {reason}", "Use `se doctor`";
     WakeNotRunning => ("wake-not-running", Refused) { agent: AgentId } => "{agent} isn't running, so there is nothing to wake", "Use `se launch {agent}`";
     StopUnwitnessed => ("stop-unwitnessed", Incomplete) { agent: AgentId, pid: u32, reason: String } => "stop sent but {agent}'s exit isn't confirmed", "Use `se agent show {agent}`, then `se stop {agent}`";
@@ -2808,13 +2840,16 @@ codes! {
     StopDeadlineExceeded => ("stop-deadline-exceeded", Incomplete) { observation: ObservationId, deadline_ms: u64, remaining: Vec<String> } => "{remaining.len} processes still alive after {deadline_ms} ms", "retry with a longer `--deadline`";
     AtlasIndexAbsent => ("atlas-index-absent", Refused) { project: ProjectId } => "no code index for {project} yet", "Use `se config set atlas.enabled true -p P` (indexes in the background; `se status` shows progress)";
     AtlasIndexing => ("atlas-indexing", Incomplete) { indexed: u64, total: u64 } => "index is {indexed}/{total} files; results may be partial", "retry later";
-    AtlasUnreadable => ("atlas-unreadable", Unreadable) { path: String, reason: String } => "can't read atlas.db: {reason}", "Use `se doctor --fix` (rebuilds the index)";
+    AtlasUnreadable => ("atlas-unreadable", Unreadable) { path: String, reason: String } => "can't read the index database atlas.db: {reason}", "Use `se doctor --fix` (rebuilds the index)";
     AtlasPathOutsideRoot => ("atlas-path-outside-root", Refused) { path: String, root: String } => "{path} is outside {root}", "use a project-relative path";
     AtlasPathUnknown => ("atlas-path-unknown", Unknown) { path: String } => "{path} isn't indexed", "Use `se atlas find PATH --kind path`";
     AtlasSymbolUnknown => ("atlas-symbol-unknown", Unknown) { symbol: String } => "no symbol `{symbol}`", "Use `se atlas find {symbol}`";
     AtlasSymbolAmbiguous => ("atlas-symbol-ambiguous", Usage) { symbol: String, candidates: Vec<String> } => "`{symbol}` names {candidates.len} symbols", "add `--path`";
     AtlasLanguageUnsupported => ("atlas-language-unsupported", Refused) { path: String, language: Option<String> } => "{language} files aren't parsed", "text search: `--kind text`";
-    AtlasFileOverBudget => ("atlas-file-over-budget", Refused) { path: String, size: u64, budget: u64 } => "{path} ({size}) exceeds the parse budget", "none; the file stays text-searchable";
+    AtlasFileOverBudget => ("atlas-file-over-budget", Refused) { path: String, size: u64, budget: u64 } => "{path} ({size}) exceeds the per-file parse budget", "none; the file stays text-searchable";
+    AtlasResourceBudget => ("atlas-resource-budget", Unavailable) { resource: String, requested: u64, available: u64 } => "Atlas can't index right now: {resource} needs {requested}, {available} available", "wait for memory pressure to ease, or use bounded text search → `se atlas find QUERY --kind text`";
+    AtlasParseFailed => ("atlas-parse-failed", Incomplete) { path: String, language: String, reason: String } => "Atlas couldn't parse {path} ({language}): {reason}", "results for this file use bounded text search; → `se doctor --bundle` to report the diagnostic";
+    AtlasSourceUnreadable => ("atlas-source-unreadable", Unreadable) { path: String, reason: String } => "Atlas can't read {path}: {reason}", "restore read access to the file";
     RepairNotSupported => ("repair-not-supported", Refused) { check: String } => "`doctor --fix` can't repair {check}", "follow the check's own fix line";
     RepairWouldWeakenDefaults => ("repair-would-weaken-defaults", Refused) { change: String } => "refusing to {change}: it weakens safety defaults", "change it yourself by named profile";
     BundleDestinationInvalid => ("bundle-destination-invalid", Usage) { path: String, reason: String } => "can't write the bundle to {path}: {reason}", "Use `se doctor --bundle PATH`";
@@ -2832,6 +2867,9 @@ codes! {
 //! Proposal for Alpha's MIT/Apache secode-stateengine-api crate, not an engine API.
 //! Standalone trait/data declarations: deliberately no dependency on se-types.
 //! Checked independently as a crate root for design review, not published or wired.
+//! Closed Rust API: adding/removing/changing any public field, enum variant,
+//! trait method or its meaning requires a Cargo/API major version change.
+//! No blocking or joining in Drop; resources close through explicit async calls.
 use std::path::PathBuf;
 
 pub type Result<T> = std::result::Result<T, ApiError>;
@@ -2854,9 +2892,6 @@ pub enum ApiFailure {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApiCommand {
-    Se {
-        argv: Vec<String>,
-    },
     Tool {
         name: String,
         args: serde_json::Value,
@@ -2888,8 +2923,6 @@ pub struct ProjectId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AgentId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HumanId(pub String);
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MessageId(pub String);
@@ -2897,10 +2930,6 @@ pub struct MessageId(pub String);
 pub struct EventId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoreId(pub String);
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AtlasRootId(pub String);
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IndexEpochId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostSessionId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2962,11 +2991,6 @@ pub enum Source {
     },
     Host {
         epoch: HostEpoch,
-    },
-    Atlas {
-        project: ProjectId,
-        root: AtlasRootId,
-        epoch: Option<IndexEpochId>,
     },
     Configuration {
         location: String,
@@ -3102,12 +3126,6 @@ pub struct ApiVersion {
 pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 0 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ApiRange {
-    pub major: u16,
-    pub min_minor: u16,
-    pub max_minor: u16,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StoreVersion {
     pub application_id: u32,
     pub schema: u32,
@@ -3120,7 +3138,6 @@ pub enum HostKind {
 pub enum Feature {
     NativeMail,
     LocalListener,
-    Atlas,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Negotiated {
@@ -3135,40 +3152,45 @@ pub struct Limits {
     pub page_items: NonZeroU32,
     pub payload_bytes: NonZeroU32,
     pub notice_ids: NonZeroU32,
-    pub subscription_entries: NonZeroU32,
-    pub subscription_bytes: NonZeroU32,
 }
 #[derive(Clone, Debug)]
 pub struct HostConfig {
     pub state_home: NativePath,
-    pub api: ApiRange,
+    pub api: ApiVersion,
     pub kind: HostKind,
     pub features: Vec<Feature>,
     pub limits: Limits,
 }
-pub trait Cancellation: Send + Sync {
+pub trait Cancellation: Send + Sync + std::fmt::Debug {
     fn is_cancelled(&self) -> bool;
     fn cancelled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
 }
-pub struct CallOptions {
+#[derive(Clone, Debug)]
+pub struct OpenOptions {
     pub expected_generation: Option<Generation>,
     pub timeout: Duration,
     pub cancellation: Arc<dyn Cancellation>,
 }
+#[derive(Clone, Debug)]
+pub struct CallOptions {
+    pub generation: Generation,
+    pub timeout: Duration,
+    pub cancellation: Arc<dyn Cancellation>,
+}
+#[derive(Clone, Debug)]
+pub struct ServiceOptions {
+    pub generation: Generation,
+    pub timeout: Duration,
+    pub cancellation: Arc<dyn Cancellation>,
+}
 
-// No Debug, Clone or Deserialize on protected material or authority.
-pub struct MachineCredential(pub Vec<u8>);
+// Protected byte buffers have no Debug, Clone or Deserialize.
 pub struct SessionCapability(pub Vec<u8>);
 pub struct LaunchCredential(pub Vec<u8>);
-pub struct OwnerProof {
-    pub credential: MachineCredential,
-    pub presenting_process: ProcessInstance,
-}
-/// Opaque issued handles; the implementation validates every handle and generation.
-/// Public bytes are protected transport data, not deserialized authority claims.
-pub struct OwnerAuthority {
-    pub grant: Vec<u8>,
-}
+/// Trusted SE Code control-plane authority, never decoded from model/tool input.
+#[derive(Clone, Copy, Debug)]
+pub struct OwnerAuthority;
+/// Engine-issued grant; every call revalidates its identity, revision and generation.
 pub struct BoundSession {
     pub grant: Vec<u8>,
     pub identity: SessionIdentity,
@@ -3222,7 +3244,6 @@ pub struct BindingRequest {
     pub model: ModelIdentity,
     pub conversation: ProviderSessionId,
     pub target: Option<HostSessionTarget>,
-    pub expected_generation: Generation,
     pub expected_binding_revision: Option<Sequence>,
     pub capture_consent: bool,
     pub idempotency_key: IdempotencyKey,
@@ -3445,41 +3466,6 @@ pub enum NoticeAdmission {
     Refused(ApiError),
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MailSubscriptionRequest {
-    pub from: Option<Cursor>,
-    pub page: PageRequest,
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MailEvent {
-    Notice(MailNotice),
-    Lagged {
-        resume_from: Cursor,
-        window: Window,
-    },
-    Held {
-        hold: HoldReceipt,
-        resume_from: Cursor,
-    },
-    Revoked {
-        identity: SessionIdentity,
-    },
-    Closed {
-        generation: Generation,
-        resume_from: Cursor,
-    },
-}
-/// No read/dismiss action here: this settles notice delivery only.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MailSettlement {
-    pub notice: NoticeId,
-    pub admission: NoticeAdmission,
-    pub idempotency_key: IdempotencyKey,
-}
-pub trait MailSubscription: Send {
-    fn next<'a>(&'a mut self, options: CallOptions) -> HostFuture<'a, MailEvent>;
-    fn close<'a>(&'a mut self, options: CallOptions) -> HostFuture<'a, Cursor>;
-}
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdoptionState {
     Pending,
     Reattached,
@@ -3496,6 +3482,7 @@ pub struct Adoption {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Readiness {
+    Prepared,
     Ready,
     Recovering { adoptions: Box<Page<Adoption>> },
 }
@@ -3514,21 +3501,38 @@ pub struct DrainReceipt {
 }
 
 /// The implementation/factory is configured with the embedding host's runtime.
-/// No Tokio dependency or runtime creation belongs to se-types.
+/// No Tokio dependency or runtime creation belongs to this permissive API crate.
 pub enum HostIntegration {
-    Secode(Arc<dyn HostServices>),
+    Secode {
+        epoch: HostEpoch,
+        services: Arc<dyn HostServices>,
+    },
 }
 
 pub trait HostFactory: Send + Sync {
+    /// Cold open is preparation only: no writer, native mutation or callbacks.
     fn open<'a>(
         &'a self,
         config: HostConfig,
-        integration: HostIntegration,
+        options: OpenOptions,
+    ) -> HostFuture<'a, Read<OpenedHost>>;
+    /// Independent supervisor closes the old generation, then prepares a fresh one.
+    fn restart<'a>(
+        &'a self,
+        reason: RestartReason,
+        key: IdempotencyKey,
         options: CallOptions,
     ) -> HostFuture<'a, Read<OpenedHost>>;
 }
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RestartReason {
+    Drained { receipt: DrainReceipt },
+    Poisoned { incident: String },
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GenerationHealth {
+    Prepared,
+    Activating,
     Ready,
     Recovering,
     Draining,
@@ -3538,7 +3542,6 @@ pub enum GenerationHealth {
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultReport {
-    pub generation: Generation,
     pub incident: String,
 }
 
@@ -3549,12 +3552,20 @@ pub trait Host: Send + Sync {
         options: CallOptions,
     ) -> HostFuture<'a, GenerationHealth>;
 
+    /// Non-blocking snapshots; no I/O or wait for worker threads.
     fn negotiated(&self) -> Negotiated;
-    fn authenticate_owner<'a>(
+    fn health(&self) -> GenerationHealth;
+    fn wait_health<'a>(
         &'a self,
-        proof: OwnerProof,
+        after: GenerationHealth,
         options: CallOptions,
-    ) -> HostFuture<'a, OwnerAuthority>;
+    ) -> HostFuture<'a, GenerationHealth>;
+    /// Caller registers this handle/generation before this first mutating call.
+    fn activate<'a>(
+        &'a self,
+        integration: HostIntegration,
+        options: CallOptions,
+    ) -> HostFuture<'a, Readiness>;
     fn verify_capability<'a>(
         &'a self,
         capability: &'a SessionCapability,
@@ -3602,34 +3613,19 @@ pub trait Host: Send + Sync {
         turn: CapturedTurn,
         options: CallOptions,
     ) -> HostFuture<'a, Receipt<EventRef>>;
-    fn subscribe_mail<'a>(
+    /// Nudge only: re-read eligibility/debt; cannot acknowledge admission or clear holds.
+    fn native_state_changed<'a>(
         &'a self,
-        session: &'a BoundSession,
-        request: MailSubscriptionRequest,
+        target: &'a HostSessionTarget,
         options: CallOptions,
-    ) -> HostFuture<'a, Box<dyn MailSubscription>>;
-    fn settle_mail<'a>(
-        &'a self,
-        session: &'a BoundSession,
-        settlement: MailSettlement,
-        options: CallOptions,
-    ) -> HostFuture<'a, Receipt<NoticeId>>;
+    ) -> HostFuture<'a, ()>;
     fn adoption_status<'a>(
         &'a self,
         authority: &'a OwnerAuthority,
         page: PageRequest,
         options: CallOptions,
     ) -> HostFuture<'a, Page<Adoption>>;
-    fn drain<'a>(
-        &'a self,
-        expected: Generation,
-        options: CallOptions,
-    ) -> HostFuture<'a, DrainReceipt>;
-    fn reopen<'a>(
-        &'a self,
-        drained: DrainReceipt,
-        options: CallOptions,
-    ) -> HostFuture<'a, Negotiated>;
+    fn drain<'a>(&'a self, options: CallOptions) -> HostFuture<'a, DrainReceipt>;
     fn close<'a>(
         &'a self,
         drained: DrainReceipt,
@@ -3644,50 +3640,70 @@ pub trait HostServices: Send + Sync {
         target: &'a HostSessionTarget,
         reason: HoldReason,
         key: IdempotencyKey,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, HoldReceipt>;
     fn interrupt<'a>(
         &'a self,
         held: &'a HoldReceipt,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, InterruptReceipt>;
+    /// Point observation; Present(None) proves no active execution at this read.
+    fn active_session<'a>(
+        &'a self,
+        target: &'a HostSessionTarget,
+        options: ServiceOptions,
+    ) -> HostFuture<'a, Read<Option<ActiveSession>>>;
+    /// Diagnostic pages cannot be combined into an absence proof.
     fn active_sessions<'a>(
         &'a self,
         epoch: &'a HostEpoch,
         page: PageRequest,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<Page<ActiveSession>>>;
     fn idle<'a>(
         &'a self,
         target: &'a HostSessionTarget,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<SessionActivity>>;
     fn binding_state<'a>(
         &'a self,
         target: &'a HostSessionTarget,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<BindingObservation>>;
     fn adopt_binding<'a>(
         &'a self,
         request: AdoptBinding,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<BindingObservation>>;
     fn update_mail_target<'a>(
         &'a self,
         transition: TargetTransition,
         key: IdempotencyKey,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, TargetReceipt>;
     fn deliver_notice<'a>(
         &'a self,
         notice: &'a MailNotice,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, NoticeAdmission>;
     fn notice_status<'a>(
         &'a self,
         target: &'a HostSessionTarget,
         notice: &'a NoticeId,
-        options: CallOptions,
+        options: ServiceOptions,
     ) -> HostFuture<'a, Read<NoticeAdmission>>;
 }
+```
+
+### Proprietary commercial constructor signature
+
+```rust
+// SPDX-License-Identifier: LicenseRef-StateEngine-Proprietary
+//! Constructor signature for se-host's commercial composition, not the public API.
+//! The real se_host::embedded_factory function must have this exact type.
+use secode_stateengine_api::HostFactory;
+use std::sync::Arc;
+use tokio::runtime::Handle;
+
+pub type EmbeddedFactoryBuilder = fn(runtime: Handle) -> Arc<dyn HostFactory>;
 ```
