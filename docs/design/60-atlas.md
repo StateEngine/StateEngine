@@ -2,10 +2,10 @@
 
 Design revision, 2026-10-30. Owner: 5e. This document and the declaration-only
 `crates/se-atlas` specify behavior for later implementation; they implement no
-indexer, database, watcher or runtime. Jimmy's decisions and OPS.md govern, then
-00, then this design. The appended cold-window decision in 80 governs resource
-accounting. The Linux prototype is reference evidence, not production code or
-proof that this revised design fits its budgets.
+indexer, database, watcher or runtime. The scope and activation below incorporate
+the 2026-10-30 reconciliation decisions. Resource accounting uses section 80.
+The Linux prototype is reference evidence, not production code or proof that
+this revised design fits its budgets.
 
 ## 1. Scope, ownership and activation
 
@@ -21,7 +21,8 @@ ports; never se-store, se-core, se-host or se-proc. It never opens the authorita
 database. Se-host adapts core's shared CodeIndex port, supplies authorized scope
 and edit evidence, schedules work and owns native handles/processes. This
 compile-only crate has only the se-types dependency. Later implementation uses
-workspace-pinned rusqlite 0.40 with ONE bundled libsqlite3-sys, Tree-sitter with
+workspace rusqlite with the caret range `0.40`, resolving ONE bundled libsqlite3-sys
+with the linked SE Code server, Tree-sitter with
 JS/JSX/TS/TSX/Rust/Python grammars, ignore handling and event-only watches. No
 process-global Tree-sitter allocator is installed by this embedded crate.
 
@@ -38,20 +39,37 @@ Exactly five OPS reads exist, with the same dispatch for CLI and MCP:
 Configuration is config.set; status is status. No public index, refresh, renew,
 repair or watcher operation is added. The cold child uses a private inherited
 host handle and authenticated entry mode, never another clap leaf or MCP tool.
-Doctor's existing owned-cache repair workflow can retire a corrupt epoch and
-schedule the same lifecycle, without a new command.
+Doctor's `--fix CHECK-ID` prints the diagnosed owned-cache repair plan before
+retiring a corrupt epoch and scheduling the same lifecycle. That cache repair
+neither rotates credentials nor restores authoritative history.
 
-Embedded Atlas is OFF for alpha. Standalone includes the feature but defaults
-`atlas.enabled=false`. Registration is metadata-only. **config.set false->true**
-commits the project setting and records a host after-ready activation effect
-(ConfigEnabled), which queues the first cold index if absent. If the host is not
-running, its next normal startup drains that durable effect after ready; config
-set does not start a daemon. Once-enabled host restart/first bound session schedules
-HostRestart/FirstSession reconciliation after the bind response, including cold
-index if its cache is absent. Already-true config set is idempotent. First bind
-never waits for Atlas. Queries, status and resume never index, write, enable, start
-a daemon or schedule an after-query action. A missing cache therefore remains
-honestly absent until one of those explicit host activation events occurs.
+Atlas is built only after the five core journeys and live handover pass. It may
+ship in alpha if ready, but never holds a milestone or the alpha release. Both
+standalone and embedded compositions default to `atlas.enabled=false`; a build
+without the feature reports NotBuilt and advertises no Atlas tools. A build with
+the feature still requires explicit configuration opt-in. Registration is
+metadata-only, including when a project first binds.
+
+`config.set atlas.enabled true` atomically writes and rereads the user
+`config.toml` setting using the shared config operation's request identity.
+There is no project-setting row or Atlas activation event in the authoritative
+store. After a successful effective false->true change, an already-running host
+queues a ConfigEnabled effect after ready for its registered roots, including a
+first cold index when the cache is absent. The shared config receipt distinguishes
+saved readback from host notification; a failed notification reports pending
+application, not an applied activation. If no host is running, config set does
+not start one: its next normal startup reads the saved setting and reconciles
+after ready. If the host exits between config readback and notification, the same
+startup reconciliation recovers activation without a second durable queue.
+
+Host restart/first bound session rereads the resolved configuration. Once enabled,
+it schedules HostRestart/FirstSession
+reconciliation after the bind response, including cold indexing when its cache
+is absent. An already-true config set is idempotent and does not rebuild a cache.
+Disabling stops admission and drains owned Atlas work; it preserves the cache for
+later enablement. First bind never waits for Atlas. Queries, status and resume
+never index, write, enable, start a daemon or schedule an after-query action.
+A missing cache remains honestly absent until an explicit host activation event.
 
 ## 2. Identity, physical paths and source revisions
 
@@ -360,7 +378,7 @@ exhaustive; reasons, progress, coverage and diagnostic accompany the six values.
 
 | Private IndexState | $.atlas.state | Transition/meaning |
 | --- | --- | --- |
-| NotBuilt | not-built | embedded feature missing; no activation |
+| NotBuilt | not-built | optional feature missing in this build; no activation |
 | Disabled | disabled | config false; enable -> Dormant |
 | Dormant | absent | registered, no IO; explicit activation -> Opening |
 | Absent | absent | verified no database; admitted child -> ColdIndexing |
@@ -716,7 +734,7 @@ exhaustively to typed shared detail; no catch returns an empty vector.
 | --- | --- | --- |
 | FeatureDisabled | FeatureDisabled | explicitly disabled; config set atlas.enabled true |
 | EmbeddedUnavailable | FeatureNotBuilt | use feature-enabled standalone build |
-| ConfigurationInvalid | ConfigValueInvalid | correct the named project policy |
+| ConfigurationInvalid | ConfigValueInvalid | correct the named config.toml policy |
 | RootUnavailable | RepoNotFound | restore registered physical source |
 | RootIdentityChanged | RevisionConflict | inspect and explicitly rebind |
 | CacheIo, CacheCorrupt, CacheScopeMismatch, CacheLinkRefused | AtlasUnreadable | owned cache IO/integrity/scope failure; doctor or inspect location, never source deletion |
@@ -794,16 +812,20 @@ SQL response data and output serialization ownership must avoid overlapping copi
 beyond these reservations; native adapters include their buffers and kernel charges
 in the external measurement. Global root registration bounds also count here.
 
-80's standalone spend 20.5 MB + reserve 4.5 MB is **25,000,000 bytes steady-state (B4)**.
-Cold child **<=64,000,000 peak** is separately reported only during its finite
-exception window, then reaped. B3 is zero persistent embedded processes/one standalone
-daemon/zero per-agent helpers. Embedded Atlas off adds no grammar/DB/watcher at
-startup; B1 <=30 MB and B2 <=100 ms/first authenticated bind are core budgets.
-Settled Atlas contributes zero timers, CPU and context-switch wakes; B5 <60 CPU ms/
-60 seconds and B6 <=1 context switch/s no session, <=2 one session remain whole-host
-limits. Target save-to-searchable <=200 ms for ADMITTED small updates, query p95 <=50 ms;
+The single budget table in section 80 defines whole-host B1-B9, including the
+standalone steady-state ceiling (B4) and reserve. Cold child **<=64,000,000 peak**
+is separately reported only during its finite exception window, then reaped.
+B3's zero persistent embedded-process measurement applies while no agent is live;
+after SE Code exits with live agents, the detached handover successor is counted
+as the standalone host and exits 10 minutes after its last live agent. Atlas adds
+no per-agent helper. Disabled Atlas adds no grammar/DB/watcher at startup; first
+bind and post-task use still qualify under B1/B2. Settled Atlas contributes zero
+timers, CPU and context-switch wakes within whole-host B5/B6. B9 write timing uses
+section 80's one target and the real NORMAL/FULL mix; Atlas's disposable NORMAL
+cache cannot substitute for that authoritative-store measurement.
+Target save-to-searchable <=200 ms for ADMITTED small updates, query p95 <=50 ms;
 parse deadline 200 ms is a cancellation ceiling, not proof debounce+IO+parse meets
-latency. The six CORE CLI read p95 targets are strictly <20 ms with 30 samples each;
+latency. Core CLI read targets and sample counts are those in section 80;
 Atlas's query target isn't a replacement acceptance oracle.
 
 Linux prototype (shared host, not revised-design qualification): StateEngine 6,179
@@ -862,7 +884,9 @@ to invent a second source. Remaining work before implementation approval:
    text/path fallback, never a budget increase or incremental child by assumption.
 4. Host/core owners connect explicit config-enable after-ready effect, generation-
    scoped worker reap/pointer adoption and delivery-record-backed private CAS.
-   Standalone/embedded entry paths share these contracts; embedded stays off alpha.
+   Standalone/embedded entry paths share these contracts and default disabled.
+   Full Atlas implementation follows the five journeys and live handover; optional
+   admission failures never block those milestones or alpha release.
 
 Commit/time baselines and bounded Text remain because OPS explicitly admits them;
 we simplified their storage/cursor rather than silently deleting operations. The
