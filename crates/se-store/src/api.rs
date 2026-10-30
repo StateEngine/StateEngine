@@ -153,12 +153,8 @@ pub trait WriterClient: Clone + Send + Sync {
     type Completion: CommitWait;
     fn submit(&self, batch: AtomicBatch) -> StoreResult<Self::Completion>;
 }
-pub trait CommitWait: Future<Output = StoreResult<CommitReceipt>> + Send {
-    /// CLI/direct synchronous consumers only; async host awaits this Future.
-    fn wait_blocking(self, deadline: Duration) -> StoreResult<CommitReceipt>
-    where
-        Self: Sized;
-}
+/// Await-only host completion. DirectStore::append returns CommitReceipt synchronously.
+pub trait CommitWait: Future<Output = StoreResult<CommitReceipt>> + Send {}
 /// Private implementation seam: both host group commit and direct append use
 /// this exact transaction engine. SQL handles never appear in the public API.
 #[allow(
