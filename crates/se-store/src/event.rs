@@ -1,10 +1,10 @@
 use crate::{
-    Actor, CursorRecord, Expected, ImportCheckpoint, ImportCounts, RecordId, Revision, Scope,
-    StoreId,
+    Actor, CursorRecord, Expected, ImportCheckpoint, ImportCounts, RecordId, Revision,
+    RuntimeHandoverRecord, Scope, StoreId,
 };
 use se_types::{
-    AgentId, DecisionId, EventId, HumanId, IdempotencyKey, LifecycleId, MessageId, NativePath,
-    ProcessInstance, ProjectId, SessionId,
+    AgentId, DecisionId, EventId, Generation, HostEpoch, HumanId, IdempotencyKey, LifecycleId,
+    MessageId, NativePath, ProcessInstance, ProjectId, SessionId,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -507,6 +507,19 @@ pub enum EventBody<T> {
         state: IntegrationState,
         witness: EventId,
         expected: Expected,
+    },
+    /// Initial or checked cold owner admission, never an implicit handover abort.
+    RuntimeOwnerEstablished {
+        epoch: HostEpoch,
+        generation: Generation,
+        expected_owner_generation: Option<Generation>,
+        expected: Expected,
+        witnesses: Vec<EventId>,
+    },
+    RuntimeHandoverRecorded {
+        record: Box<RuntimeHandoverRecord>,
+        expected: Expected,
+        witnesses: Vec<EventId>,
     },
     BackupRecorded {
         generation: RecordId,

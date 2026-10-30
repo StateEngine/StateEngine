@@ -1,8 +1,8 @@
 use crate::HistoryFamily;
 pub use se_types::StoreId;
 use se_types::{
-    AgentId, Cursor, EventId, HumanId, IdempotencyKey, NativePath, ProjectId, Sequence, SessionId,
-    Window,
+    AgentId, Cursor, EventId, Generation, HostEpoch, HumanId, IdempotencyKey, NativePath,
+    ProjectId, Sequence, SessionId, UnixMicros, Window,
 };
 use std::{
     num::{NonZeroU16, NonZeroU32},
@@ -90,6 +90,30 @@ pub struct LeaseIdentity {
 pub enum LeaseMode {
     Host,
     DirectClient,
+}
+/// One transfer identity and immutable manifest binding; phase advances by CAS.
+/// Nonce is private native peer-binding material, so the record is not Debug.
+#[derive(Clone)]
+pub struct RuntimeHandoverRecord {
+    pub transfer: RecordId,
+    pub native_nonce: [u8; 16],
+    pub source_epoch: HostEpoch,
+    pub successor_epoch: HostEpoch,
+    pub source_generation: Generation,
+    pub successor_generation: Generation,
+    pub phase: RuntimeHandoverPhase,
+    pub manifest_sha256: [u8; 32],
+    pub frozen_at: Revision,
+    pub deadline_at: UnixMicros,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RuntimeHandoverPhase {
+    Prepared,
+    ReadyToClaim,
+    Claimed,
+    Activated,
+    Finished,
+    Aborted,
 }
 #[derive(Clone, Debug)]
 pub struct WriterOptions {

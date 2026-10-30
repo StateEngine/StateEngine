@@ -70,6 +70,8 @@ pub trait StoreFactory {
 pub trait ReadStore {
     type Snapshot: Snapshot;
     fn info(&self) -> StoreResult<StoreInfo>;
+    /// Trusted host bootstrap/recovery read, not a CLI/MCP principal fallback.
+    fn runtime_owner(&self) -> StoreResult<Read<ProjectionRecord>>;
     fn inspect_backups(&self, budget: ReadBudget) -> StoreResult<Page<Read<BackupGeneration>>>;
     fn snapshot(&self, scope: ReadScope) -> StoreResult<Self::Snapshot>;
     /// Bootstrap-only hash lookup used by the trusted capability verifier before
@@ -103,6 +105,12 @@ pub trait HostStore: ReadStore + TextStaging + Sized {
         options: WriterOptions,
         lease: Arc<dyn RuntimeLease>,
     ) -> StoreResult<Self::Writer>;
+    /// Exclusive maintenance only; one ownership event, canonical FULL commit.
+    fn record_runtime_ownership(
+        &mut self,
+        batch: AtomicBatch,
+        lease: &dyn RuntimeLease,
+    ) -> StoreResult<CommitReceipt>;
     fn migration_plan(&self, target_version: u32) -> StoreResult<MigrationPlan>;
     fn migrate(
         &mut self,
