@@ -353,7 +353,8 @@ the writer thread retains an Arc of the exclusive lease until actual join. A
 stale endpoint/PID, missing pathname, timeout or caller-supplied report cannot
 steal a lock. IPC failure under a live exclusive lease cannot fall through to a
 direct write. Read-only snapshots remain available without the host. Hostless
-stdio custody requests refuse CustodyUnavailableHostless; legal CLI custody can
+stdio custody requests refuse runtime-not-running with the hostless-custody
+cause and bootstrap remedy; legal CLI custody can
 bootstrap the standalone host through section-30 NativeProcessApi spawn_runtime,
 commit_runtime with authenticated readiness, or abort/witness/release_runtime.
 The exact RuntimeChild stays pinned through that outcome. This is private
