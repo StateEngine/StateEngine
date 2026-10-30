@@ -101,6 +101,10 @@ pub struct FaultReport {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FaultStage {
+    Activation,
+    Drain,
+    Close,
+    Migration,
     Admission,
     Session,
     Capture,
