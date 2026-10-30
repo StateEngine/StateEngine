@@ -70,8 +70,8 @@ pub trait StoreFactory {
 pub trait ReadStore {
     type Snapshot: Snapshot;
     fn info(&self) -> StoreResult<StoreInfo>;
-    /// Trusted host bootstrap/recovery read, not a CLI/MCP principal fallback.
-    fn runtime_owner(&self) -> StoreResult<Read<ProjectionRecord>>;
+    /// Non-secret owner/fence view; never returns the private owning event.
+    fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>>;
     fn inspect_backups(&self, budget: ReadBudget) -> StoreResult<Page<Read<BackupGeneration>>>;
     fn snapshot(&self, scope: ReadScope) -> StoreResult<Self::Snapshot>;
     /// Bootstrap-only hash lookup used by the trusted capability verifier before
@@ -98,6 +98,9 @@ pub trait DirectStore: ReadStore + TextStaging {
 }
 pub trait HostStore: ReadStore + TextStaging + Sized {
     type Writer: WriterOwner<Host = Self>;
+    /// Trusted maintenance point read of a runtime.* fact, including private nonce.
+    /// Public snapshots/history/search/export must never expose these kinds.
+    fn runtime_ownership_fact(&self, event: EventId) -> StoreResult<Read<StoredEvent>>;
     /// Same coordination context before/after the writer ownership transfer.
     fn backup_context(&self) -> BackupContext;
     fn start_writer(
@@ -280,12 +283,15 @@ pub trait Snapshot {
     /// Bound to this snapshot's admitted project and recorded import sources.
     fn legacy_registry(&self) -> StoreResult<Self::LegacyRegistry<'_>>;
     fn info(&self) -> StoreInfo;
+    /// runtime.* facts are private: known excluded IDs return a typed refusal.
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>>;
+    /// Excludes runtime.* facts, including their native nonces.
     fn history(
         &mut self,
         query: HistoryQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>>;
+    /// Excludes runtime.* facts before matching/snippet construction.
     fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<Page<SearchHit>>;
     fn projects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn project(&mut self, id: ProjectId) -> StoreResult<Read<ProjectionRecord>>;

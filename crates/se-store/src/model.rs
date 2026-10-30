@@ -115,6 +115,20 @@ pub enum RuntimeHandoverPhase {
     Finished,
     Aborted,
 }
+/// Non-secret singleton view; private transfer material stays on the host port.
+#[derive(Clone, Debug)]
+pub struct RuntimeOwnerHead {
+    pub epoch: HostEpoch,
+    pub generation: Generation,
+    pub event: EventId,
+    pub revision: Revision,
+    pub handover: Option<RuntimeHandoverHead>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuntimeHandoverHead {
+    pub transfer: RecordId,
+    pub phase: RuntimeHandoverPhase,
+}
 #[derive(Clone, Debug)]
 pub struct WriterOptions {
     pub maximum_requests: NonZeroU16,
