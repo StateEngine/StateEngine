@@ -141,8 +141,11 @@ J1/J2 and no fleet defaults; ordinary current-schema reads construct no runtime.
 For non-init store-dependent routes requiring setup, preserve absence as
 setup-required with resolved-home `se init --repo DIR` remedy. Bare se and
 se status render not-set-up and exit 0 (T10/G4); metadata remains store-free.
-No CLI/embedded open silently creates schema; UI onboarding invokes explicit
-bundled owner init, then re-prepares.
+No CLI/embedded open silently creates schema. The per-workspace pre-TUI
+trust/consent hook invokes explicit bundled owner init and re-prepares; profile
+onboarding is separate and the public GitHub stub silently skips init. Rust
+se init --repo DIR writes nothing inside DIR; all setup stays in the per-user
+state home outside the repository.
 
 **B02 — Generated grammar (250).** Own binary `src/grammar.rs`, `src/compat.rs`.
 Depends K01/B01. Consume the generated tree, map doctor/history selectors to the

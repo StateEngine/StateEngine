@@ -57,7 +57,9 @@ Everything StateEngine adds, not counting the agent CLIs.
 | CLI write command (B9) | **p95 ≤ 20 ms** (section 80 owns the number) | hooks through host 7.5 ms typical, 9 ms worst; 8 agents 11 ms worst. A later mixed-workload rehearsal measured 37 ms serial and 67 ms with 20 clients; E3 explains the gap before the build |
 
 New-store creation and FULL schema/header publication are now an explicit
-`se init --repo DIR` cost, including SE Code's UI-owned onboarding invocation.
+`se init --repo DIR` cost, including SE Code's per-workspace pre-TUI trust/consent
+invocation (40), separate from once-per-profile onboarding. Rust init writes
+nothing inside DIR; setup lives in the per-user state home outside it.
 B2's “new store” means a newly initialized store before the timed embedded
 first-bind interval. Existing/newly initialized samples still include actual
 FULL owner/session publication, writer start and complete binding/continuity;

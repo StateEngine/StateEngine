@@ -741,10 +741,13 @@ missing setup. These required writes remain FULL. The embedded open path only
 opens the initialized store: measured absence maps to `setup-required` with
 `se --home HOME init --repo DIR`, without creating a DB, runtime
 endpoint or empty replacement. Unreadable/foreign/newer files retain their own
-refusals. SE Code onboarding handles this absence on the UI owner/human-presence
-path: run the bundled se init with the selected workspace as --repo and the same
-state home, then re-prepare. Only decline/setup failure presents the refusal to
-the user; this never runs from an agent tree. Bare se/status retain normal
+refusals. SE Code handles this at each workspace's first-open trust/consent
+hook (40): after the answer permits it, its UI owner path runs bundled se init
+with the selected workspace as --repo and the same state home, then re-prepares.
+The public GitHub stub silently skips init. Rust init writes nothing inside the
+repository; all schema/setup writes stay in the per-user state home outside it.
+Only decline/setup failure presents the refusal to the user; this never runs
+from an agent tree. Bare se/status retain normal
 not-set-up output and exit 0. Supported migration/backup remains the exclusive-host startup path.
 
 For an ordinary embedded cold start with no unresolved transfer fence,
@@ -1104,7 +1107,7 @@ The error type carries the stable code, typed offending entity/range/revision, c
 
 | Internal cause | Cause / typed detail | Remedy | Public code / class |
 | --- | --- | --- | --- |
-| `setup-required` | missing state on a non-init route that requires initialization; embedded preparation reports it to UI onboarding | run owner `se --home HOME init --repo DIR`; UI onboarding invokes it then re-prepares, otherwise show decline/setup failure; bare se/status return not-set-up and exit 0 | setup-required / Refused |
+| `setup-required` | missing state on a non-init route that requires initialization; embedded preparation reports it to per-workspace trust/consent | run owner `se --home HOME init --repo DIR`; the UI workspace hook invokes it after consent, then re-prepares; public GitHub stub silently skips init, otherwise show decline/setup failure; bare se/status return not-set-up and exit 0 | setup-required / Refused |
 | `store-already-exists` | exclusive create/no-replace publication found existing state | reopen the validated existing store and reuse its identities; never overwrite | state-conflict / Conflict |
 | `store-unreadable` | permission, malformed/truncated header, undecodable row or IO error; source/range preserved | restore access or inspect with doctor; do not initialize over it | store-unreadable / Unreadable |
 | `store-application-mismatch` | application_id belongs to another database | select the correct home; never migrate the foreign file | configuration-invalid / Refused |

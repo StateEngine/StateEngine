@@ -245,18 +245,36 @@ readback/retry; notify mail/capture consumers only from the
 actual committed receipt/wakes. Native/provider steps run only after their
 required commit continuation, with no SQL transaction or native lock across await.
 
-Initial SE Code onboarding belongs to its UI owner/human-presence path, not
-an agent tool, BoundSession or vendor process tree. On structured setup-required,
-it first closes failed-preparation handles/releases any temporary lease, then
-runs the installed bundled se init with literal selected-workspace --repo and
-resolved --home argv, without inherited runtime/store handles. It awaits the
-actual result/readback, then re-prepares before registering/activating. If
-native proof cannot establish the UI owner path
-outside the agent tree, refuse with the init remedy instead of manufacturing
-owner presence. Never pass an agent credential as owner or recursively
-retry a failed init. Decline/failure keeps normal SE Code usable and presents
-the refusal/remedy plus the original setup failure. Init time is reported as
-onboarding/init cost outside B2; it is not an embedded open side effect.
+Workspace initialization belongs to SE Code's per-repository trust decision
+(`profile_trust.rs`, SC-SEC-01), at first open of each workspace and before the
+TUI. Profile onboarding runs once per profile and is not this hook. After the
+workspace trust/consent answer permits it, the UI owner/human-presence path uses
+the bundled se already located by `stateengine_package.rs`, with literal
+selected-workspace --repo and resolved --home argv. A pending consent answer
+keeps init pending; it cannot write first and ask later. In the public GitHub
+build the stub host has no se: silently skip init, without an error or a message
+about a missing executable, and keep ordinary SE Code usable. This skip applies
+only to the known NotIncluded build; a declared included payload that is missing
+or unreadable retains its diagnosed package/setup failure.
+
+The redesigned Rust `se --home HOME init --repo DIR` writes **nothing inside
+DIR**: no .git, .stateengine, .mcp.json, provider settings, hooks, AGENTS.md,
+CLAUDE.md or other repository file/directory. It only reads the selected
+workspace identity/Git metadata and registers it in the per-user state home;
+state.db, its SQLite sidecars and protected setup files remain outside the
+repository under that home (00 §5.4). This --repo invocation does not install
+repository integrations or launch an agent. An invalid home inside the workspace refuses.
+This is the Rust init contract, not the legacy Node initializer.
+
+When setup is needed, first close failed-preparation handles/release any
+temporary lease, then run explicit init without inherited runtime/store handles.
+Await the actual result/readback, then re-prepare before registering/activating.
+If native proof cannot establish the UI owner path outside the agent tree,
+refuse with the init remedy instead of manufacturing owner presence. Never pass
+an agent credential as owner or recursively retry a failed init. Decline/failure
+keeps normal SE Code usable and presents the refusal/remedy plus the original
+setup failure. Workspace init cost is reported separately outside B2; it is not
+an embedded open side effect.
 
 All async work uses the supplied Tokio Handle. No ambient spawn/current handle,
 nested runtime or block_on. Embedded creates no runtime; standalone has one
@@ -405,9 +423,10 @@ the error channel without appending a history event.
 Factory preparation is read-only, returns absent/unreadable/version error
 truthfully, and starts no writer/callback/native effect. SE Code registers the
 Prepared Host/G and fresh immutable generation-fenced services before activate.
-Missing store returns structured `setup-required` to SE Code onboarding. The UI
-owner/human-presence path runs bundled `se --home HOME init --repo DIR` for the
-selected workspace, then re-prepares. Only declined/failed onboarding shows
+Missing store returns structured `setup-required` to the first-workspace-open
+trust/consent hook above. Its UI owner/human-presence path runs bundled
+`se --home HOME init --repo DIR`, then re-prepares; the public GitHub stub skips
+init silently. Only declined/failed workspace setup shows
 “StateEngine has not been initialized for this state home; run se --home HOME
 init --repo DIR.” The preparation/refusal itself creates no store/schema, endpoint,
 writer or credential; unreadable/foreign/unsupported state keeps its diagnosis. Preparation reads the version and plans
@@ -1398,8 +1417,9 @@ obligation. Turn completion is separate from process exit/task effect.
 Embedded SE Code registers the Prepared Host/G before activate, supplies exact
 native epoch/fresh fenced services and calls canonical linked methods directly.
 Model tools use BoundSession; native UI alone supplies trusted OwnerAuthority and
-HumanPresence where required. No StateEngine child, MCP config hop, mail HTTP
-hop or parallel queue. API errors retain opaque engine cause/remedy without
+HumanPresence where required. The embedded runtime adds no StateEngine child,
+MCP config hop, mail HTTP hop or parallel queue; the explicit pre-TUI init
+subprocess is the separate workspace setup path above. API errors retain opaque engine cause/remedy without
 proprietary type dependencies in the permissive crate; the public stub returns
 NotIncluded visibly while ordinary SE Code stays usable.
 

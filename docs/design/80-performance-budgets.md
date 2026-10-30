@@ -292,10 +292,23 @@ as init above. Absent state refuses with setup-required and the same-home init
 remedy; embedded open never creates it inside or outside a hidden startup clock.
 Newly initialized and existing compatible stores use the same normal B2 first-bind path:
 one FULL maintenance transaction for runtime.owner and the witnessed first
-session, then writer startup and the complete continuity/binding response. UI
-onboarding invokes bundled se init --repo DIR on its owner/human-presence path
-before this interval; a new-store sample means newly initialized state.
+session, then writer startup and the complete continuity/binding response. At
+first workspace open, the pre-TUI repository trust/consent hook invokes bundled
+se init --repo DIR on the UI owner path before this interval; profile onboarding
+is separate and the public GitHub stub silently skips init. Rust init writes
+nothing in the repository; a new-store sample means newly initialized state.
 Neither ordinary work nor a bound handle is published before that commit.
+
+A late first bind is an ordinary path: sign-in can exceed FIRST_BIND_WINDOW.
+Measure a host with its standalone-style runtime.owner already FULL-committed
+and writer running before that first authenticated session request. Keep the
+same baseline and time both owner startup plus the later session response, and
+the late request alone; every engine step and required FULL barrier stays in
+its applicable interval. User sign-in/consent idle time is outside engine-added
+B2 latency and is retained separately alongside full elapsed-to-first-bind time.
+The probe waits beyond the ten-second window and independently reads the owner
+and zero sessions before binding, then reads back the distinct FULL activation;
+it cannot reuse the prompt joint-commit sample as a late-bind measurement.
 
 | Critical-path work | Current spend status |
 | --- | --- |
@@ -337,7 +350,7 @@ expiry failure to SE Code. Record the actual
 fallback wait/extra barriers rather than pooling it with the normal atomic
 first-bind case. Explicit drain must fence/join a racing commit and retain both
 keys/known outcomes; it cannot force a duplicate owner or a synthetic successful
-binding. Reviewer witnesses include declined/failed onboarding, no side effect
+binding. Reviewer witnesses include declined/failed workspace consent/setup, no side effect
 on missing-state open, bare se/status not-set-up exit 0, whole-pair rollback and
 same-key replay, concurrent first binds, deadline fallback, and close before a
 bind/after refusal/racing COMMIT. Live-handover/recovery barriers stay unchanged.

@@ -245,13 +245,18 @@ Initialization remains an explicit owner operation. `se init --repo DIR` creates
 the per-user store, FULL-publishes/reads back its schema/header and completes
 owner/project/agent setup before an achieved `se.init/v1` receipt. A retry
 preserves valid state and completes missing setup. The low-level embedded
-prepare/open/activate never creates state implicitly; setup-required is routed
-to SE Code onboarding, which invokes the bundled `se --home HOME init --repo DIR`
-on its UI owner/human-presence path, then re-prepares. It cannot run from an
-agent tree or convert a BoundSession into owner authority. Init time is a
-separate onboarding cost outside B2.
+prepare/open/activate never creates state implicitly. At each workspace's first
+open, SE Code's pre-TUI repository trust decision (profile_trust.rs, SC-SEC-01)
+can await consent before its UI owner/human-presence path invokes the bundled
+`se --home HOME init --repo DIR` located by stateengine_package.rs, then
+re-prepares. Profile onboarding remains once per profile. The public GitHub
+stub has no se and silently skips init, without a missing-executable message.
+Rust init writes nothing inside DIR: no repository files, settings, hooks or
+Git changes; store/setup files live only in the per-user state home outside DIR
+(40). It cannot run from an agent tree or convert a BoundSession into owner
+authority. Workspace init time is a separate cost outside B2.
 
-Only declined/failed onboarding or another non-init route requiring initialized
+Only declined/failed workspace setup or another non-init route requiring initialized
 state presents setup-required (Refused): subject “StateEngine store”, reason
 “not initialized for the selected state home”, next step “Run se --home HOME
 init --repo DIR”, with the actual resolved home and selected workspace in
@@ -439,7 +444,7 @@ Every top-level product JSON result printed by `--json`, returned as MCP `struct
 | `se.version/v1` | meta.version | **stable** | SE Code installer, J1 runner |
 | `se.help/v1`, `se.schema-catalogue/v1` | meta.help, meta.schema | **stable** | API consumers |
 | `se.principal/v1` | identity.whoami | **stable** | agents |
-| `se.init/v1` (+ `stateengine-init/v1` profile) | project.init | **stable** | SE Code onboarding, J2 |
+| `se.init/v1` (+ `stateengine-init/v1` profile) | project.init | **stable** | SE Code first-workspace-open trust/consent, J2 |
 | `se.remove/v1` | project.remove | stable | J5 runner |
 | `se.status/v1` | project.status | **stable** | SE Code, CLI |
 | `se.diagnosis/v1`, `se.repair/v1`, `se.support-bundle/v1` | doctor.* | evolving | humans |
@@ -824,7 +829,7 @@ Automatic backups run at start-of-day and clean shutdown, plus the verified back
 
 History search is a bounded streamed scan with a byte/time window and continuation, not FTS. Forget matches those actual stores and caches rather than promising removal of a nonexistent FTS index. NORMAL durability may lose several recent ordinary commits on power loss or OS crash, not an application crash; decision ratify/reject/retract/supersede are all FULL. Section 20 defines the complete FULL set and 80 measures its real mixed workload.
 
-`se down` stops all owned agents and runtime on each OS and renders achieved stop witnesses plus original-conversation resume argv. It cannot report success then say agents remain running. Failed/unknown stop witnesses report incomplete facts. Default SE Code exit with live agents instead transfers to detached `se up`; that daemon exits ten minutes after its last live agent. Embedded idle process measurements apply when no agent is live. Embedded session binding uses an in-process handle and adds no credential-issued/activated commits. Explicit owner init (including the UI onboarding invocation) pays the fresh-schema FULL cost; the normal prompt embedded first bind atomically commits runtime.owner and the witnessed first session under FULL before starting the writer. Expiry of section 40's FIRST_BIND_WINDOW (10 s from activate returning Prepared, absolute deadline rechecked on resume), or definite first-bind refusal within that window, uses owner-only FULL admission. Status then reports ready; a later first bind takes the ordinary session-activation path like a second bind without an expiry failure to SE Code, with its actual extra cost reported. E2 still includes that joint commit, native binding and complete continuity response. Setup absence is a named refusal, not a fast successful E2 sample.
+`se down` stops all owned agents and runtime on each OS and renders achieved stop witnesses plus original-conversation resume argv. It cannot report success then say agents remain running. Failed/unknown stop witnesses report incomplete facts. Default SE Code exit with live agents instead transfers to detached `se up`; that daemon exits ten minutes after its last live agent. Embedded idle process measurements apply when no agent is live. Embedded session binding uses an in-process handle and adds no credential-issued/activated commits. Explicit owner init (including the per-workspace trust/consent invocation) pays the fresh-schema FULL cost; the normal prompt embedded first bind atomically commits runtime.owner and the witnessed first session under FULL before starting the writer. Expiry of section 40's FIRST_BIND_WINDOW (10 s from activate returning Prepared, absolute deadline rechecked on resume), or definite first-bind refusal within that window, uses owner-only FULL admission. Status then reports ready; a later first bind takes the ordinary session-activation path like a second bind without an expiry failure to SE Code, with its actual extra cost reported. E2's prompt case includes that joint commit, native binding and complete continuity response; its late-first-bind case charges owner startup plus ordinary FULL session activation separately from retained user sign-in idle time (80). Setup absence is a named refusal, not a fast successful E2 sample.
 
 Install/uninstall scripts and SE Code's installer invoke this same `se uninstall` operation rather than reimplementing it. It never kills an agent without the ordinary stop witness. File-only retries follow section 40’s readback-reconciliation rule, without a separate persistent journal; file readbacks never claim an event/writer.
 
