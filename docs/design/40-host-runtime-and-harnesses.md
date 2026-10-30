@@ -1,7 +1,7 @@
 # 40 — Host runtime and harnesses
 
 Design candidate, not runtime implementation or qualification. Owner: Vera.
-Base: accepted main `b14e68bbb76a8b0674e41ad7968c5b2da0b8d6b6`.
+Base: accepted main `51e0037384c2f7868b64089a4c2b1ae45e38e225`.
 This revision folds Prime's Opus return `msg-1f35564dbeb211d846bf5f9c` and Sol's
 `msg-8e0ac6e98350f404c9abe25f`. Verification tier: kernel boundary design;
 compiling declarations here, journey/black-box checks owned by reviewers.
@@ -253,20 +253,30 @@ session identity, so it cannot create unowned stream resources from an ID alone.
 The agreed native bridge is ProviderStdioApi: create_stdio against the already
 prepared OwnedProcess -> StandardIo + opaque port; begin_read/begin_write return
 retained tickets; take_completion returns Pending or exactly-once bytes/EOF/write
-count/error; cancel is request-only; begin_close cancels/drains asynchronously.
+count/error; cancel is request-only; begin_close(port, All) cancels/drains asynchronously.
 release_operation requires a terminal taken result; release_stdio requires a
 closed witness and no unreleased operations. stdio_state retrieves bounded current-
 generation port/ticket references after future drop/re-adoption. One operation per
 stream, global byte cap, no EOF from cancellation. This is the signature agreement
 with 5p, now declared in the section-30 amendment; it is not an implemented backend.
 
+For same-process adoption or staged native import, register the wake then call
+attach_stdio with the actual recovered/imported OwnedProcess and successor-local
+StdioConfig sink/limits. It creates no pipe and starts no I/O. Read stdio_state
+after binding and each BindingChanged nudge; Unbound/Draining cannot admit new
+I/O, Ready means old callbacks drained and the local successor binding is usable.
+An inactive imported port remains unable to read/write until activate_transfer.
+Retained operation IDs, completions and byte charges survive; smaller limits
+refuse rather than free old buffers. After activation, recover those same safe
+ports through stdio_state. No source Arc/callback is transferred across processes.
+
 After successful launch, drop the host's copies of child StandardIo; retaining
 them would suppress real EOF. A Windows read completion with ERROR_BROKEN_PIPE,
 ERROR_PIPE_NOT_CONNECTED or ERROR_HANDLE_EOF reports its actual prefix followed
 by EOF/Complete; every other failure remains an error and cancellation is never
 EOF. The host delivers a prefix once before exposing the retained terminal EOF.
-finish_input finishes any accepted stdin write, then requests the native stdin
-half-close and awaits its witness while stdout/stderr reads stay live. All-stream
+finish_input finishes any accepted stdin write, then requests
+begin_close(port, Stdin) and awaits its witness while stdout/stderr reads stay live. All-stream
 close is a separate cancel/drain operation; neither future drop nor stdin close
 may discard output/completion buffers. These are section 30's reviewed EOF and
 half-close requirements, not a synthetic empty-read convention.
@@ -397,6 +407,22 @@ or transport ownership is unknown.
 
 ## 6. Live handover: standalone ↔ SE Code
 
+Prime's alpha scope is SE Code restart/upgrade without killing its agents.
+The daemon takes native custody and continues capture; SE Code-native user-input
+and pushed-mail routes become **NativeDormant**, with status saying “waiting for
+SE Code to reopen”. Its protected queue, original pending admissions and new
+undelivered mail remain intact. No daemon promotes or recreates that native
+queue. Reopened SE Code proves the original queue/adoption and reclaims it before
+enabling promotion. Agents launched by the daemon itself remain unaffected.
+This is custody/capture re-adoption, never a claim that dormant input routes are
+fully active. Current-turn quiescence/timing follows the reconciled barrier below.
+Before Prepared, interrupt every participating agent to the exact idle point;
+an in-progress turn stops at its boundary, it does not continue through transfer.
+Report request-to-quiescence time separately. B8 starts at cutover **after all
+participating agents are quiescent**, and ends when actual custody and capture
+are re-adopted. A slow quiescence cannot be hidden as an instantaneous request,
+nor may its delay justify skipping the idle witness to meet the cutover target.
+
 HandoverCoordinator owns the host half; ProcessTransfer owns native staging. A
 trusted source/standby control protocol carries HandoverIntent/State over native
 peer-authenticated IPC, not an agent-callable IpcRequest. The factory's retained
@@ -408,11 +434,29 @@ store revision and deadline are bound into one durable intent. The successor is
 started detached/pinned by NativeProcessApi and stays Standby without a writer,
 lease or delivery/input consumer while source owns runtime.lock.
 
+The linked trigger is HostFactory::handover(request, native, CallOptions), with
+source G in CallOptions and actual pinned successor resolved by the retained
+factory. It uses Iris's HandoverServices, bound to the actual SE Code host epoch
+independently of ordinary G callback fencing. freeze_queue installs the keyed
+transfer fence and returns NativeQueueCheckpoint for the complete participating
+native binding set; queue_state resolves the original durable result after a lost
+reply; settle_queue verifies the exact FULL Activated or pre-claim Aborted event
+before removing only that transfer fence. The checkpoint names the actual
+protected NativeQueueId, original cut/event, digest/count and target receipts,
+never pending input bodies or a substitute host queue. The native control plane
+flushes and independently reopens/readbacks that queue image before SE Code exit.
+Its full retained manifest includes pending bodies/IDs, admissions, promotion
+dedupe, target/adoption mappings and independent holds; hashes alone cannot
+restore it. These names remain canonical in section 10's major-2 linked API,
+not copied as host service traits/DTOs. Fresh ordinary HostServices registration
+still precedes destination callbacks; the transfer adapter gains no successor-G
+work authority from surviving its old routing fence.
+
 | Phase | Source / receiver / store / native barrier |
 | --- | --- |
 | SourceGated | Validate/retain keyed request and expected current owner; gate new custody/delivery, finish already accepted launches/capture/debt, then install transfer-scoped native admission/promotion fence, interrupt and prove exact idle; source still owns lease/resources |
-| Standby | Verify exact successor peer/PID/birth/API/home and native ready channel; receiver is read-only, no callbacks/queue promotion |
-| Staged | After source capture/debt heads and full-frame input/output boundaries freeze, duplicate stream/PTY descriptors and call begin_transfer; transfer_manifest reads actual native nonce/manifest/digest, receiver accept_transfer verifies/stages inactive copies |
+| Standby | Verify exact successor peer/PID/birth/API/home and native ready channel; receiver is read-only, no ordinary HostServices callbacks or queue promotion |
+| Staged | After source capture/debt heads and full-frame input/output boundaries freeze, duplicate host-owned/Unix stream/PTY descriptors and call begin_transfer; native arena includes Windows provider ports automatically; transfer_manifest reads actual nonce/digest, receiver accept_transfer stages inactive copies and attaches ready local stdio sinks |
 | BarrierCommitted | Seal FULL Prepared with final immutable manifest/nonce/frozen_at after all accepted work is finished; drain/join writer, then record FULL ReadyToClaim on drained maintenance; frozen data cannot change afterward |
 | LeaseTransferred | Source closes readers/backup/context and releases exclusive runtime.lock after ReadyToClaim; successor acquires lease and records FULL Claimed on maintenance with exact owner-generation/head CAS before any destination writer/native consumer |
 | Activated | Receiver verifies lease/CAS/native manifest, calls activate_transfer once and obtains streams/receipt; record FULL Activated on maintenance before starting writer or input/capture consumers; register/read around event reassociation, fresh G services and original-notice recovery precede new offers |
@@ -447,7 +491,12 @@ Only source consumes provider stdout/capture until the freeze head commits. Its
 read task then parks at that exact offset/frame boundary before descriptor
 transfer. Receiver stages files without reading; activate_transfer returns them
 exactly once after the lease/ownership barrier. Receiver resumes from the frozen
-cursor and dedupe keys. No EOF interval on transferred stdin, no concurrent
+cursor and dedupe keys. On Windows, provider endpoints remain in the native
+arena: ReceivedTransfer.processes supply the owners for attach_stdio, every port
+must have a Ready successor binding before activation, then stdio_state returns
+safe activated ports. ActivatedTransfer.streams contains only host-owned/Unix
+Files; the host never extracts Windows raw handles or wraps them in AsyncFd.
+No EOF interval on transferred stdin, no concurrent
 readers, no duplicate prompt/captured turn. A missing required stream means
 handover failed, not native-PID-only success. Source originals remain retained
 through verified receipt; Windows job handles overlap across the whole transition.
@@ -693,6 +742,8 @@ adapters; there is no parallel SessionControl public trait.
 | Starting | Actual provider/native binding, consent and FULL activation/readiness | Active |
 | Starting/live | Readiness deadline, crash or unknown native state | RecoveryPending, not absent/ended |
 | Active | Durable human/takeover/revocation hold | Holding |
+| Active/Holding/Held | SE Code exits after proved custody/capture handover and retained queue cut | NativeDormant; actual activity and independent holds remain separate |
+| NativeDormant | Reopened SE Code proves original queue/adoption and current target | Active or actual Held/Revoked; promotion only after verified native settlement |
 | Holding | Same-target point observation proves no execution | Held |
 | Held | Genuine human input promotion under valid target | Active; engine cannot synthesize it |
 | Active/Holding/Held | Explicit stop/end | Ending, hold first where execution/input exists |
@@ -1006,7 +1057,13 @@ Re-adoption, Codex reconnect, backup and Atlas run **after that first ready
 response**, with explicit per-route Recovering/status; no 50-route native census
 on B2's critical path. Initial readiness is not a claim all old agents are ready.
 B8 re-adoption/handover remains ≤500 ms target (§80 §3.4: 165 ms planned spend,
-335 reserve), unmeasured. Do not defer the first FULL bind/continuity outside B2
+335 reserve), unmeasured. Per Prime's alpha scope, re-adoption means custody plus
+capture with no lost/doubled input; SE Code-native input/mail routes may remain
+explicitly NativeDormant until SE Code reopens. It does not claim fully active
+native routes or change daemon-launched agents. The 500 ms interval starts at
+cutover after the complete quiescence barrier and ends at actual custody/capture
+re-adoption; request-to-quiescence is measured and reported separately, including
+interrupt/idle delays. Do not defer the first FULL bind/continuity outside B2
 or fabricate missing adoption success to stop the clock.
 
 CLI read spend is section 80 §3.5 (Linux 7.5 ms, Windows 13 ms plus reserve);
@@ -1104,12 +1161,16 @@ Integration obligations still requiring owner review/measurement:
    head. The field/phase mapping in §6.1 consumes those declarations; native
    witness, FULL durability and crash behavior still need implementation proof.
 2. **5p, section-30 process maintainer**, owns native peer/ACL and the safe overlapped
-   IOCP stream bridge admitted in msg-11c68ce01adf4ca9f6d93894. ProviderIoPlatform describes the host side; native create/read/
-   cancel completion lifetimes and single-collector integration need its matching
-   safe port before a backend is built. No host unsafe or second collector.
+   IOCP stream bridge. ProviderIoPlatform consumes its create/attach/read/write,
+   scoped close/completion and manifest-accessor declarations described above;
+   native qualification and single-collector integration remain unmeasured.
+   No host unsafe or second collector.
 3. **Alpha + host composition** publish the permissive linked API, unify actual
    Tokio/hyper/SQLite packages, catch unwinds and apply the reconciled route-local
-   versus writer/lease/collector poison policy at the existing boundary.
+   versus writer/lease/collector poison policy at the existing boundary. Iris's
+   major-2 handover entry and queue fence are required, with Prime's quiescence,
+   cutover timing and explicit native-route dormancy policy. Section 40 adds no
+   proprietary copy of that permissive surface.
 4. **Provider/platform qualification** proves attended Claude mod prompt/hold
    behavior and idle cost, private Codex attended transport on every OS, native
    scope/EOF/resume, real live handover, B1/B2/B4/B7/B8/B9. Explicit detached

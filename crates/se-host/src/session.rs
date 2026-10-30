@@ -14,6 +14,7 @@ pub enum SessionPhase {
     Prepared,
     Starting,
     Active,
+    NativeDormant,
     Holding,
     Held,
     Ending,
