@@ -333,7 +333,14 @@ Nell owns every writer/schema rerun. Independent decomposition compares
 per-commit fsync/checkpoint time, batching, SQL/restore, queue wait, full client
 round-trip and FULL share against the older prototype, then ext4 versus NTFS.
 Keep the current durability/checkpoint baseline and all failures before diagnostic
-variants. E3 must identify the cause and report B9 and FULL-command results
+variants. The baseline is **commit-driven autocheckpoint**, with 16 KiB pages
+and 256-page autocheckpoint as specified in section 20. Checkpoint work inside
+COMMIT is a hypothesis until the independent sync/checkpoint decomposition
+supports it; this design does not move checkpoints to a separate worker or
+remove their latency from the measured commit. Any supported policy change
+is reviewed once and applied consistently across sections 20/40/80/95, preserving
+the required NORMAL/FULL durability and reporting its queue, WAL and memory costs.
+E3 must identify the cause and report B9 and FULL-command results
 separately; no passing reserve is inferred from a faster median or a reclassified
 command.
 Raw initial data: `/mnt/nvme/stateengine/nell-import-rehearsal-20261030/
