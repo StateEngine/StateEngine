@@ -119,10 +119,10 @@ pub enum ContainmentGuarantee {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UncontainedReason {
     NoUserManager,
-    NoUnifiedHierarchy,
-    DelegationDenied,
-    HelperUnavailable,
-    KernelCapabilityMissing,
+    NoDelegation,
+    CgroupV2Absent,
+    CgroupUnreadable,
+    ScopeCreateFailed,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Capability {

@@ -48,7 +48,11 @@ a saved named opt-in. Cgroup containment does not disable that opt-in.
 | macOS | new process group, kqueue root/tracked-child events, exact start/image rechecks, group signals and outside tracked-member exit | deliberate group/session escape or unobserved reparenting is outside the stated bound; no claim of an unescapable kernel tree or atomic PID-check-and-signal |
 
 `ContainmentGuarantee::KernelScope` describes Windows/Linux native membership;
-macOS reports `TrackedTree { atomic_signal: false, escape_prevented: false }`.
+macOS reports `TrackedTree { atomic_signal: false, escape_prevented: false }`
+with wire `containment: "process-group"` and `containment_cause: null`. Linux
+fallback reports wire `containment: "uncontained"` and a non-null
+`containment_cause` from the exact variant mapping in §7. Contained Linux and
+Windows report `"cgroup"` and `"job"` respectively, with null cause.
 The host selects that **supported macOS policy explicitly**. Linux default
 BestAvailable selects a scope before child creation: delegated kernel scope
 when available, otherwise Uncontained with a structured reason; status and
@@ -595,8 +599,9 @@ systemd, non-systemd distributions, or SSH sessions without an available user
 bus/manager (including absent linger after logout). In default BestAvailable,
 select LinuxPrepared/LinuxTracked process-group custody with
 ContainmentGuarantee::Uncontained { reason } **before vendor creation**. Report
-status fact `cgroup-delegation-missing` with the probe cause and `uncontained`
-in status/launch receipts. The fixed reason is retained in the guarantee;
+`containment: "uncontained"` and its mapped `containment_cause` (§7) in status
+and launch receipts; `cgroup-delegation-missing` names the capability finding,
+not an emitted refusal code. The fixed reason is retained in the guarantee;
 PlatformCapabilities.kernel_scope retains the full probe ProcError/native cause
 for the host to render alongside that status fact. This is **not a default launch refusal** and does
 not change provider permission defaults. No cgroup.kill is claimed; use
@@ -962,10 +967,27 @@ operation context (agent/observation IDs); se-proc does not invent those IDs.
 50 §6.11 remain host admission checks **before** this native API. They are not
 missing native error variants. ProcessAbsent was removed: measured absence
 is a ProcessRead/ProcessObservation fact, never an ambiguous native error.
-`cgroup-delegation-missing` is a Linux capability/status fact accompanying
-Uncontained (with structured reason/probe cause), **not a default launch
-error**. Section 50 must move it out of refusal semantics; no new wire spelling
-is introduced here.
+`cgroup-delegation-missing` names the Linux capability finding, **not a
+launch error code**. Section 50 A.3 exposes `session.containment` and
+`session.containment_cause`; its A.10 `custody.linux-cgroup` doctor warning
+carries the full probe text with `code: null`. UncontainedReason exactly matches
+that wire-cause set, without deriving wire strings from Rust variant names:
+
+| UncontainedReason variant | Section 50 containment_cause | Probe classification |
+| --- | --- | --- |
+| NoUserManager | `no-user-manager` | no reachable systemd user manager/bus |
+| NoDelegation | `no-delegation` | manager/root exists but delegation cannot be obtained, including an unavailable trusted helper or denied delegation |
+| CgroupV2Absent | `cgroup-v2-absent` | unified cgroup v2 hierarchy is absent |
+| CgroupUnreadable | `cgroup-unreadable` | hierarchy/parent identity or control files cannot be read/validated |
+| ScopeCreateFailed | `scope-create-failed` | a readable delegated parent cannot create/prepare the required owned scope, including missing required kernel capability |
+
+After the supported alternatives are exhausted, classify the decisive failed
+stage: hierarchy presence, readability, user-manager availability, delegation
+grant or child-scope preparation. A usable supplied/current root needs no
+manager, so a failed manager probe cannot downgrade that successful root.
+Keep the exact native reason in the doctor finding; never collapse unreadable
+into absent. Every uncontained launch has one of these non-null causes; all
+other containment values have null cause. No extra wire spelling is introduced.
 T14's wire spelling is process-identity-changed; section 90 now uses it.
 
 ### 7.1 Remaining counts and human output
