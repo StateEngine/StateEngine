@@ -30,16 +30,17 @@ se-store, plus SE Code's side. `forget` stays in alpha (Jimmy), about 600 lines.
 
 | Proof | What it settles | Status |
 | --- | --- | --- |
-| E1 Windows handover primitives | named-pipe completion-port replacement across hosts | **PASS 3/3** on the PC; Linux 3/3 |
-| E1b Real-provider handover | Codex 0.166 and Claude 2.1.314 keep the same process and conversation across A→B→A and answer a follow-up | **PASS** Windows 2/2, Linux 2/2 |
+| E1 Windows handover primitives | named-pipe completion-port replacement across hosts; job re-association; abort; 100 loops | **PARTIAL**: pipe transfer PASS 3/3 on the PC and 3/3 on Linux; job re-association, abort and the 100-loop run open |
+| E1b Real-provider handover | Codex 0.166 and Claude 2.1.314 keep the same process and conversation across A→B→A and answer a follow-up | **PASS** Windows 2/2 (Prime, on the PC, 2026-10-30), Linux 2/2 |
 | E2 Embedded startup | B2 ≤ 100 ms with the real FULL commits, new and existing store, Windows with Defender; memory after a real task | Running (Iris) |
-| E3 Write latency | B9 ≤ 20 ms; the 37/67 ms rehearsal traced to commit time (checkpoint in the commit path); rerun with checkpointing moved off the commit path, through a host, on NTFS and ext4 | Running (Nell, 5p) |
-| E4 Attended Claude mail | 25 s renewal under Claude's 30 s fetch limit; mail held during a busy turn | **PASS** on Linux; stop/revocation bound stated (Claude's fetch has no caller abort) |
-| E5 Windowed Codex | stock Codex through the private-socket app-server with a viewable TUI | **PASS** on Linux (0.163); Windows pending |
+| E3 Write latency | B9 p95 ≤ 20 ms for `msg send`, `working-state set` and `hook claude stop` through a running host; FULL commands p95 ≤ 75 ms on Windows with Defender; the 37/67 ms rehearsal traced to commit time (checkpoint in the commit path); rerun with checkpointing moved off the commit path, through a host, on NTFS and ext4 | Running (Nell, 5p) |
+| E4 Attended Claude mail | 25 s renewal under Claude's 30 s fetch limit; mail held during a busy turn; 100 sends with zero missed wakes | **PARTIAL**: renewal and busy-turn hold PASS on Linux; the 100-send run is open; stop/revocation bound stated (Claude's fetch has no caller abort) |
+| E5 Windowed Codex | stock Codex through the private-socket app-server with a viewable TUI; headless and `--listen` paths | **PARTIAL**: Linux windowed PASS (0.163); headless, `--listen` and Windows open |
 | E6 History import | real history imports; interrupted retries reproduce the same events; resumed conversation recalls | **PASS** for Codex on a factory slice; non-fleet history and Claude continuation pending |
 | E7 Linux containment | what ssh, Docker and WSL2 hosts actually get | Pending |
 | E8 Cold hook start | host-start versus direct write on Windows with Defender | Pending |
 | Lost-ACK slice | one message after a dropped reply, through CLI, IPC, MCP and the linked API | Pending |
+| E9 SE Code real server | the integration target is SE Code's Rust server, not the frozen TypeScript one | **DONE** (Alpha): `E:ust-secode` branch dev, `crates/secode-product`, caret pins, axum `=0.8.9` |
 | Runner | the journey runner judges Rust from a Rust-only map, launched outside agent trees | Section 90 revised; red-against-stub run pending |
 
 ## Build order

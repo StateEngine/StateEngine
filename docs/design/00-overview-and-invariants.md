@@ -51,7 +51,7 @@ Everything StateEngine adds, not counting the agent CLIs.
 | Re-adopting agents after handover or restart | **≤ 500 ms**, no lost or doubled input | Proposed by Alpha; unmeasured, a build task |
 | Idle cost | **~0 wakeups, < 0.1% CPU** | 0 over 10 min embedded |
 | Idle wakeups, exact | **≤ 1/s** across all StateEngine processes with no session, **≤ 2/s** with one; < 0.1% of one core, over 60 s | — |
-| Persistent processes | **0 embedded while no agent is live, 1 standalone**; after SE Code exits with live agents, the detached `se up` that took them over is the one standalone process and exits 10 minutes after its last live agent | 0 added embedded |
+| Persistent processes | **0 embedded while no agent is live, 1 standalone**; after SE Code exits with live agents, the detached `se up` that took them over is the one standalone process and exits 10 minutes after its last live agent. An auto-started host (from `se launch` or a hook) follows the same 10-minute rule; only an explicit `se up` stays resident (40) | 0 added embedded |
 | CLI read command | **p95 < 20 ms** over 30 runs each of `--version`, `status`, `agent list` (was `agents`), `msg inbox`, `msg list`, `decision list` | — |
 | Standalone daemon memory | **≤ 25 MB** with one live session | 4–12 MB prototypes |
 | CLI write command (B9) | **p95 ≤ 20 ms** (section 80 owns the number) | hooks through host 7.5 ms typical, 9 ms worst; 8 agents 11 ms worst. A later mixed-workload rehearsal measured 37 ms serial and 67 ms with 20 clients; E3 explains the gap before the build |
@@ -66,7 +66,7 @@ never a reason to cut quality. No schedule is promised until the early proofs (s
 | Mode | Who runs it | Runtime owner | Persistent processes added |
 | --- | --- | --- | --- |
 | **Embedded** | SE Code's server links `se-host` | SE Code's server process | 0 |
-| **Standalone** | `se up`, or auto-started by `se launch` or a hook | the `se up` process | 1 |
+| **Standalone** | `se up` (stays resident), or auto-started by `se launch` or a hook (exits 10 minutes after its last live agent) | the `se up` process | 1 |
 | **CLI, host running** | any `se` command | the running host | 0 (CLI exits) |
 | **CLI, no host** | read or write commands only | none | 0 |
 | **Hook** | Claude runs `se hook claude <event>` | the running host (started if absent) | 0 (hook exits) |
@@ -97,7 +97,7 @@ bootstrap (section 40), never through a public daemon command.
 | Mode | Threads StateEngine adds |
 | --- | --- |
 | Embedded | No runtime of its own: tasks run on SE Code's tokio runtime via the `Handle` it passes in. One named OS thread `se-writer`, parked on a bounded channel receive (0 wakeups idle). Reads use SE Code's blocking pool (`spawn_blocking`). Windows process exits for every job arrive on one shared IOCP collector per host (one thread blocked on the completion port; no registered-wait thread pool). No Atlas. |
-| Standalone | `se up`: tokio `current_thread` on the main thread, `se-writer`, a lazy blocking pool for reads, the Windows IOCP collector (one per host, shared by all jobs), and the Atlas worker (background priority) only once an agent uses Atlas. |
+| Standalone | `se up`: tokio `current_thread` on the main thread, `se-writer`, a lazy blocking pool for reads, the Windows IOCP collector (one per host, shared by all jobs), and, only when `atlas.enabled = true` in `config.toml`, the Atlas worker (background priority). |
 | CLI and hook | One thread. No async runtime. Blocking SQLite read or one blocking IPC round trip. |
 
 Per live session: one async task (`select!` over its mail watch, process exit, harness events and a
@@ -121,7 +121,7 @@ flowchart LR
     CORE["se-core: ops, identity, mail, decisions, capture, resume"]
     WR["se-writer thread (batched txns)"]
     PROC["se-proc: jobs / cgroups / kqueue"]
-    ATL["se-atlas worker (standalone, lazy)"]
+    ATL["se-atlas worker (standalone, opt-in)"]
   end
   CLI["se CLI / se hook (short-lived)"]
   DB[("state.db (SQLite WAL)")]
@@ -137,7 +137,7 @@ flowchart LR
   API --> CORE
   ST --> HAR
   HAR --> PROC
-  CORE -- "write closures" --> WR
+  CORE -- "commit batches" --> WR
   WR --> DB
   CORE -. "reads" .-> DB
   ATL --> ADB
@@ -156,9 +156,9 @@ sequenceDiagram
   U->>C: se msg send bob "plan ready"
   C->>C: generated parser; project = -p / SE_PROJECT / registered root containing cwd
   C->>C: try shared lock on runtime.lock: refused (host holds exclusive)
-  C->>H: connect IPC, hello{api 1.x}, Request{op: message.send, input, idem_key}
+  C->>H: connect IPC, hello{API_VERSION 2.0, exact match}, Request{op: message.send, input, idem_key}
   H->>H: peer credentials = this OS user -> Authority::Owner
-  H->>W: submit write closure (bounded queue)
+  H->>W: submit commit batch (bounded queue); the host task awaits its Completion
   W->>DB: BEGIN IMMEDIATE; SAVEPOINT per queued write
   W->>DB: append msg.sent; update inbox projection; insert effect bell=pending
   W->>DB: COMMIT (one commit for the batch)
@@ -196,7 +196,7 @@ sequenceDiagram
   participant W as se-writer
   CL->>K: spawn, stdin = {session_id, transcript_path, ...}
   K->>K: SE_SESSION handle -> read owner-only pin file
-  K->>H: IPC connect (if absent: start se up, wait for endpoint, then connect)
+  K->>H: IPC connect (if absent: start se up, wait for endpoint, then connect; host-start vs direct write pending E8)
   K->>H: HookEvent{stop, payload, capability}
   H->>H: verify capability; transcript_path must match the session's capture source
   H->>T: read from stored byte offset, bounded
@@ -349,7 +349,7 @@ or cloud-synced home with the fix "set SE_HOME to a local folder". Secret-bearin
 and the ACL is read back (se-proc).
 
 ### 5.5 Configuration
-Precedence: **flag > `SE_*` env > project setting (in the store) > `config.toml` > built-in default.**
+Precedence: **flag > `SE_*` env > `config.toml` > built-in default.** There is no project settings layer.
 Never from cwd, the repo or an engine root, except project selection by exact lookup of a registered
 root. Only the `se` binary reads env; embedded, SE Code passes `EngineConfig` and the library reads
 nothing ambient. Six environment variables:
@@ -369,8 +369,12 @@ set. Launched agents get a constructed environment with all `SE_*`/`STATEENGINE_
 clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 
 ### 5.6 Concurrency
-- **No transaction across an await.** The store API takes sync closures `FnOnce(&mut Tx) -> Result<T>`;
-  `Tx` is `!Send`, so it cannot be held across `.await`.
+- **No transaction across an await, and no host thread waits on the writer.** se-core is synchronous
+  and never waits on a commit: a write returns `OpStep::Commit { batch, then }`, a typed continuation
+  (not a closure holding a transaction). The host submits the batch to the writer, awaits the
+  `Completion` on its async task, then runs `then` to build the receipt. Only the hostless CLI calls
+  `wait_blocking`. se-store exposes futures only at the writer boundary; `Tx` is `!Send` and never
+  leaves the writer thread.
 - One writer per store: the `se-writer` thread drains a bounded queue, groups what is waiting into one
   `BEGIN IMMEDIATE … COMMIT`, one `SAVEPOINT` per request so one failure rolls back only itself (20).
   No OS call, network call or harness call inside a transaction.
@@ -460,7 +464,7 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 | Claude via launch flags, no config writes; hooks call `se`; mail through the plugin's small JS | Plan; measured (Vera) |
 | Stock Codex over app-server; never bundle a fork | Jimmy 2026-10-23/24; measured with 0.166 |
 | One op definition generates CLI and MCP; OPS.md is the allowlist; old names refuse with a hint | Plan; OPS.md `f8a2e59` |
-| Atlas: own db, code only, disabled by default in both modes, enabled by one `config.toml` setting; cold index in a transient capped child; built after the five journeys and live handover pass and never holds a milestone | Jimmy 2026-10-30; measured: 1.36M lines in 165 s, 20 MB peak, 11 MB settled, 67 ms save-to-search |
+| Atlas: own db, code only; compiled only into the standalone `se`, disabled by default and enabled by `atlas.enabled = true` in `config.toml`; in embedded SE Code that setting returns feature-unavailable; cold index in a transient capped child; built after the five journeys and live handover pass and never holds a milestone | Jimmy 2026-10-30; measured: 1.36M lines in 165 s, 20 MB peak, 11 MB settled, 67 ms save-to-search |
 | No hash chain over events or decisions; immutable typed decision transitions with expected revisions; no rollback writer into Node formats | Reconciliation 2026-10-30; OPS.md |
 | The host migrates automatically at startup as sole owner, after a verified pre-migration backup; no manual migration step; backups at start-of-day and clean shutdown, two kept, restore of the newest valid backup | Reconciliation 2026-10-30; Jimmy 09-02 (no manual steps) and 10-21 (refuse mixed old/new) |
 | Live handover is in before alpha; agents are interrupted to exact idle first; SE Code-native routes stay held while SE Code is gone | Jimmy 2026-10-30 |
