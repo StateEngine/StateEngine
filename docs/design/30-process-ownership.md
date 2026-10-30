@@ -1043,7 +1043,9 @@ The new runtime starts detached through spawn_runtime, proves exact PID/start
 and same-user IPC, and remains standby while the old owner holds runtime.lock.
 Host section 40 controls hold/interrupt/active-map, store flush/CAS and one-time
 input/delivery settlement; native handle transfer does not replace that barrier.
-No input is offered by both generations during transfer. B8 is <=500 ms.
+No input is offered by both generations during transfer. B8 is <=500 ms,
+timed from cutover start after the participating agents are interrupted to
+exact idle; quiescence time is reported separately.
 
 The native two-phase protocol is:
 
