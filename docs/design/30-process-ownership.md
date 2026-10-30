@@ -184,7 +184,8 @@ The host supplies persisted machine ID, fresh host-instance ID, expected
 service generation, absolute executable/cwd, literal argv and an explicitly
 constructed environment. `se-proc` never searches PATH, expands a shell or
 reads ambient configuration. A host resolver may deliberately resolve a
-provider command; missing program maps to `command-not-found` before launch.
+provider command; a missing program maps to `provider-cli-not-found` in the
+provider resolver or contextual `launch-failed` for a native/helper launch.
 Reject NUL, duplicate env keys (case-insensitive on Windows), relative paths,
 invalid PID range/native identity variant and bounded input overflow. Secret
 values are never logged or put in error detail. Program/cwd and redacted field
@@ -846,7 +847,7 @@ native identity-bracketed group signalling, tracked member/root witnesses and
 the same deliberate-escape/race bound as macOS. Native pidfds remain preferred
 where available; an older kernel lacking them uses start/image rechecks and
 is explicitly non-atomic. Strict KernelScope is an explicit requested contract;
-it may fail with spawn-failed and cause ContainmentUnavailable, never a bogus
+it may fail with launch-failed and cause ContainmentUnavailable, never a bogus
 cgroup status refusal. Requested optional hardening is separately enforced.
 
 Open physical cgroup directories with DIRECTORY|NOFOLLOW|CLOEXEC, verify
@@ -1228,25 +1229,25 @@ observation-ID selectors or a second process-control surface.
 | Internal cause(s) | Section 50 wire code | Structured context / remedy |
 | --- | --- | --- |
 | InvalidInput | usage-invalid-value | field/value rule; supply valid literal input |
-| ExecutableMissing | command-not-found (or provider-cli-not-found in resolver) | program; correct executable path |
-| CwdOutsideWorkspace | cwd-outside-workspace | cwd/workspace; use allowed workspace |
-| EnvironmentDenied | env-key-not-allowed | key only; drop denied key |
-| IdentityChanged | Agent launch/rebind refusal or stop-unwitnessed, selected by the section-50 mapper | pid, expected_start, found_start; original-instance mismatch, with scope-only exited-root cleanup kept separate (§4) |
-| IdentityUnreadable | Agent launch/recovery refusal or stop-unwitnessed, selected by the section-50 mapper | pid + native reason; retry/doctor, never absent |
-| UnsupportedPlatform | window-unavailable for window; spawn-failed for unsupported native capability | tried adapters or program/native capability; choose supported mode/system |
-| ContainmentUnavailable | spawn-failed only when a requested strict scope cannot be provided | path/probes/native cause; default Linux BestAvailable launches uncontained instead and emits the status fact below |
-| ContainmentChanged, ContainmentEscape, ScopeUnreadable, RecoveryUnproved | stop-unwitnessed for agent stop; contextual agent launch/recovery refusal otherwise | preserve scope/remaining/native cause; no empty claim |
-| HardeningUnavailable | spawn-failed with optional hardening cause | choose a supported requested hardening profile; default alpha launch does not require it |
+| ExecutableMissing | provider-cli-not-found in the provider resolver; launch-failed for a native/helper launch | program; correct executable path |
+| CwdOutsideWorkspace | usage-invalid-value | cwd/workspace; use allowed workspace |
+| EnvironmentDenied | usage-invalid-value | key only; drop denied key |
+| IdentityChanged | launch-failed for launch; state-conflict for rebind; stop-unwitnessed for stop | pid, expected_start, found_start; original-instance mismatch, with scope-only exited-root cleanup kept separate (§4) |
+| IdentityUnreadable | launch-failed for launch; source-unreadable for recovery/read; stop-unwitnessed for stop | pid + native reason; retry/doctor, never absent |
+| UnsupportedPlatform | window-unavailable for window; launch-failed for unsupported native capability | tried adapters or program/native capability; choose supported mode/system |
+| ContainmentUnavailable | launch-failed only when a requested strict scope cannot be provided | path/probes/native cause; default Linux BestAvailable launches uncontained instead and emits the status fact below |
+| ContainmentChanged, ContainmentEscape, ScopeUnreadable, RecoveryUnproved | stop-unwitnessed for stop; launch-failed for launch; source-unreadable or state-conflict for the observed recovery cause | preserve scope/remaining/native cause; no empty claim |
+| HardeningUnavailable | launch-failed with optional hardening cause | choose a supported requested hardening profile; default alpha launch does not require it |
 | BreakawayDenied | job-breakaway-refused | exact parent/caller job; use a terminal outside that job or grant explicit BREAKAWAY_OK; se up inside the same strict job cannot cure it |
-| LaunchFailed | spawn-failed (or launch-failed after provider startup) | program/native cause or provider exit/status/stderr context; retain failed-launch cleanup |
+| LaunchFailed | launch-failed | program/native cause or provider exit/status/stderr context; retain failed-launch cleanup |
 | LaunchTimedOut | deadline-exceeded for native launch; launch-readiness-timeout only when provider readiness timed out | phase/waited/last-observed; distinguish native setup from provider handshake |
 | DuplicateLifecycle | launch-in-flight / agent-already-running as observed | existing lifecycle/result; do not duplicate |
 | HostChanged | runtime-handover-in-progress during transfer; runtime-not-running after actual loss | current owner/plan; wait for ready or start runtime/recovery |
 | GenerationChanged | state-conflict | expected/current; reread and retry |
 | StopDispatchFailed | stop-unwitnessed with the original deadline and cause | retain native error even if independent witness completes later |
 | StopIncomplete | stop-unwitnessed for agents | observation/deadline_ms/labelled remaining; retain state/custody |
-| ResourceLimit | input-too-large for input bounds; spawn-failed for native admission/capacity | resource/limit; release witnessed terminal scopes or retry, never truncate |
-| IllegalTransition, StopTokenConsumed, LockPoisoned, OperationPanicked, CallbackPanicked | internal (internal when reported by host task) | state/action or report_id/location, retained quarantined slot; doctor bundle |
+| ResourceLimit | input-too-large for input bounds; launch-failed for native admission/capacity | resource/limit; release witnessed terminal scopes or retry, never truncate |
+| IllegalTransition, StopTokenConsumed, LockPoisoned, OperationPanicked, CallbackPanicked | internal | state/action or report_id/location, retained quarantined slot; doctor bundle |
 | StopTokenExpired | state-conflict if stale generation, otherwise deadline-exceeded | token generation/deadline; prepare a fresh authorized request, no signal |
 
 Creator/session/lifecycle authority is checked by host admission before the
@@ -1368,7 +1369,7 @@ resource cannot be evicted merely to make space. Thus failed empty-directory
 cleanup cannot wedge all 16 live slots, while uncertain live children remain
 accounted for. Arena
 snapshot and best-effort membership buffers are bounded; oversize input maps
-to input-too-large, native capacity pressure maps to spawn-failed with typed
+to input-too-large, native capacity pressure maps to launch-failed with typed
 Capacity cause and a release/retry remedy. It never maps to a nonexistent
 wire `retry` code or a success with omitted custody.
 
