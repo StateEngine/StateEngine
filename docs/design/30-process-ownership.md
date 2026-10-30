@@ -582,11 +582,15 @@ generation transfer CASes the single arena owner and revokes older references.
 
 `witness_exit(&OwnedProcess)` reads root/scope without sending a signal or
 requiring a stop ticket. A Linux manager may remove an empty exact cgroup
-before its final population read. A still-held validated cgroup2 directory FD whose fstat still matches the
-recorded boot/device/inode and now reports st_nlink == 0 proves removal of
-that original object. ENOENT while opening cgroup.events relative to it is
-corroboration, never sufficient alone; EACCES/EIO, failed fstat, changed
-identity or a still-linked object remains unreadable/unproved. This native
+before its final population read. For a still-held, previously validated
+cgroup2 directory FD, recheck the recorded boot and use fstat to match the
+same device/inode. Then openat(fd, "cgroup.events", O_RDONLY|O_NOFOLLOW)
+returning ENOENT proves removal of that exact object: a live cgroup2 directory
+always has that control file. The recorded path plus " (deleted)" from
+/proc/self/fd/N can corroborate it. Do not require st_nlink == 0: E7 retained
+st_nlink=2 on removed cgroupfs objects. EACCES/EIO, failed identity reads,
+a changed object or a control file that still opens does not prove removal;
+a readable file may instead supply the separate ObservedEmpty witness. This native
 removed-object test, joined to the original root's independent
 exit witness (or the explicit unpublished/no-child witness), is a successful
 scope-exit witness, not ScopeUnreadable. Retain the removed-object fact and
@@ -855,7 +859,10 @@ additional StateEngine service. Use dbus 0.9.10 with default-features=false
 and only vendored enabled, through its blocking::Connection in this already
 short-lived bootstrap; libdbus is statically packaged by libdbus-sys 0.2.7.
 No dbus-tokio, futures feature, async executor, background bus thread or
-libdbus/libsystemd runtime-install prerequisite is introduced. Open/register
+libdbus/libsystemd runtime-install prerequisite is introduced.
+During implementation, both dbus and libdbus-sys are declared only under
+[target.'cfg(target_os="linux")'.dependencies], never workspace-wide or on
+Windows/macOS. This design amendment adds no actual Cargo dependency yet. Open/register
 only the validated local user-bus address, not an untrusted inherited bus
 address; process(deadline_remaining) waits for incoming messages rather than
 periodically waking. P03-L includes ~250 adapter lines and section 80 records

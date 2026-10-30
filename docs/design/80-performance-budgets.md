@@ -87,7 +87,8 @@ Linux x86-64 linker probe with release/LTO/strip/panic-abort was 611,472 bytes
 versus 307,648 bytes for the matching std-only executable: **303,824 additional
 bytes (~297 KiB)** for this exercised transport surface. Allow roughly 384 KiB
 in planning, not zero dependency cost; final combined StateEngine/SE Code
-marginal artifact size still must be measured against B1. The probe only links
+marginal artifact size still must be measured. This is artifact size, not
+B1's resident-memory increase; B1 retains its separate RSS measurement. The probe only links
 a private client branch; it never executes a bus request or measures latency.
 It confirms no dynamic libdbus/libsystemd dependency. Existing scope timings
 used libsystemd plus placement polling, so they do not qualify the selected

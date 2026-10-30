@@ -268,6 +268,7 @@ versioned `/downloads/<version>/<target>/` objects and checksums.
 
 **Depends on:** R01/R03 and standalone R06; site/release owner and existing upload
 channel; license/notices inputs. No installer compiles code, fetches npm or needs a checkout.
+Linux notices elect AFL-2.1 for the vendored libdbus library and ship its license and upstream attribution in every applicable standalone/commercial package.
 R04/R05 are not needed for the early unsigned archive. R08 owns final release
 promotion after signed-artifact consumer qualification.
 
