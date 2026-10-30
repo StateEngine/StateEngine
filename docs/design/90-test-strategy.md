@@ -1,7 +1,7 @@
 # 90 — Test strategy
 
-Status: deep design, 2026-10-30. Precedence as in 00. Implements the plan's "How we know it works"
-and Jimmy's rulings: the five journeys are the judge; authors write no tests; reviewers add black-box
+Status: reconciled design, 2026-10-30. Implements the plan's "How we know it works"
+and Jimmy's decisions: the five journeys are the judge; authors write no tests; reviewers add black-box
 tests only where a journey can't reach or a bug was found; about 6–8 property tests for the store.
 
 ## 1. Policy
@@ -44,52 +44,75 @@ catch drift; stale recordings are re-recorded, never hand-edited to fit our code
 ## 2. The journeys are the acceptance oracle
 
 ### 2.1 Where they live and who owns them
-- Today: `journeys/` on `seat-5d/five-user-journeys` (`c422d0b4d4f`), with the budget probes on
-  `seat-5d/journey-runtime-budgets` (`32bbabfcde6`), in the Node repository.
-- Target, per the plan: their own repository, owned by the journey seat (5d), which writes no product
-  code. The Rust repo pins the runner commit it was judged by in `journeys.lock`; it never vendors or
-  edits the runner. Changes to the runner get independent review, and **Node and Rust must pass the same
-  runner commit**, so the judge cannot drift toward either implementation.
-- The runner uses its own Node 24+ and reaches the product only through a `journey-product/v1`
-  descriptor (public argv arrays, profile `node` or `rust`). Product authors may run it, never edit it.
+- The independent judge lives in `journeys/` in the Node factory repository. Master
+  `9fc45c7234faeb720bad37c4a1d13fab1dcec2bc` contains the accepted runner changes through
+  `31df4e96c93b84ee6e61c2dd775a951e38ae7329`. The journey owner (5d) writes no product code.
+  Product authors run the judge; independently reviewed runner changes remain the journey owner's work.
+- The Rust product is judged with `--implementation rust` and a `journey-product/v1` descriptor
+  selecting only the shipped `rust-v1` map. Node remains the private factory engine; passing its
+  journeys is not a Rust acceptance prerequisite. No factory runtime migration or fleet import is planned.
+- The judge uses its own Node 24+ on the test machine. Rust ships without Node. Public installer,
+  `se`, SE Code and uninstaller argv come from the descriptor; product source is never imported.
+  Record the exact product and runner commits and resolved map SHA with qualification results.
+- Launch the judge from a human's non-agent shell or an OS scheduler/timer outside every managed
+  agent process tree, with fleet/session variables absent. A PTY supplies terminal I/O; it does not
+  change ancestry or confer human authority. A managed seat may prepare scripts and inspect results,
+  but cannot run J5 from its own tree and claim the human-presence precondition passed.
 
 ### 2.2 What each journey asserts
 | Journey | Assertions, all observed from outside the product |
 | --- | --- |
-| J1 Install | Real installer; both commands found from a fresh terminal (fresh login shell on Unix; PATH rebuilt from the registry on Windows); `stateengine X.Y.Z` version format |
+| J1 Install | Unsigned archive with install and uninstall scripts for the first milestone; signed download for release; both commands found from a fresh terminal (fresh login shell on Unix; PATH rebuilt from the registry on Windows); `stateengine X.Y.Z` version format |
 | J2 Adopt | Existing Git repo with committed work; `HEAD` unchanged by init; a real agent writes a file holding a random token and replies by message; the user's file unchanged |
 | J3 Come back | Real task and reply; `stop` prints a resume command in its JSON; `down` then `up`; the printed command is run verbatim; a **new** reply recalls the token without being told it |
 | J4 Two agents | Planner→Builder and Builder→Planner messages with the token; the file effect is real |
-| J5 Remove | Host identity witnessed by pid + birth from outside; remove and uninstall; setup reported absent by a separate CLI; records, keys and commands gone; known and newly seen processes gone; user work and PATH restored |
+| J5 Remove | Host identity witnessed by pid + birth from outside; remove and uninstall; setup reported absent by a separate CLI; owned active records, credentials, integrations and commands gone; history retained; known and newly seen processes gone; user work and PATH restored |
 
 Each journey runs in a fresh private home with fleet variables stripped, links (never copies) provider
 credentials, never kills by name, and judges section 80's budgets in the same run.
 
-**Linux containment.** Linux launch is BestAvailable (00 §7.1), so a journey on Linux accepts either a
+**Required Linux qualification.** Linux launch is BestAvailable (00 §7.1), so a journey on Linux accepts either a
 contained agent (`containment: "cgroup"`) or an explicitly uncontained one (`"uncontained"` with a
-non-null `containment_cause`). The runner reads the pair from the launch receipt and from `se status`,
-reports it per run in `results.json`, and fails the step when the field is missing or null for a running
+non-null `containment_cause`). Read the pair from the launch receipt and from `se status`,
+report it per run in `results.json`, and fail the step when the field is missing or null for a running
 agent, or when `uncontained` comes without a cause. Stop and J5's "processes gone" checks are judged
 against the bound the receipt names: the cgroup when contained, the process group when uncontained
 (70 §2.4).
 
-### 2.3 Required runner change before Rust can be judged
-The runner still drives Node spellings and fields: `init --status`, `init --remove`, `seat launch`,
-`seat stop`, `seat create --human-actor`, `agents`, `--project-root`, `--registry-root`, `--user-id`,
-`up --detach --no-follow`, and JSON fields `from_seat`, `to_seat`, `msg_id`, `engine_session.session_pid`.
-OPS.md makes every one of those a `renamed` refusal or an unknown flag. Only `reads` is mapped by the
-descriptor today. **Proposal for the runner owner:** extend `journey-product/v1` with a closed
-**action map** (setup, status, agent create, launch, stop, down/up, send, list, remove) giving argv and
-field paths per profile, written by the journey seat and independently reviewed. The Node profile must
-still pass that commit. Product authors don't write the Rust profile's map.
+### 2.3 Runner on master and qualification still missing
+The runner on master has closed action and field maps for setup/status, create, launch, stop,
+resume, down/up, send/list, decisions and removal. The Rust map uses OPS spellings: `init --repo`,
+`status`, `agent add`, `agent list`, `launch`, `stop`, `up`, `down`, `msg send/list/inbox`,
+`decide`, `decision list`, and `remove --all`, with explicit `--home` and project context.
+It reads section 50's judged families, including message IDs and sender/recipient references,
+`runtime.process.pid`, complete pages, and stop's exact resume argv. The descriptor selects the map
+by name; embedded maps and legacy read overrides refuse. The descriptor cannot replace asserted
+facts, thresholds or the independently selected Rust policy. Saved `command-map.json` bytes match the SHA in `results.json`.
+
+On master, ordinary reads use 30 native CLI spawn-to-exit samples. Hosted message and decision
+writes use 30 fresh samples each, retain every failure, and require exact committed IDs/bodies from
+a separate public reader plus the observed writer generation. Linux no-session idle uses paired
+10/70-second foreground hosts and a native child subreaper, including exited-thread/descendant
+usage. One-session idle requires public kernel self-accounting with its stated helper and provider
+bounds. macOS CPU applies the Mach timebase. None of these controls is a Rust product pass.
+
+The following remain qualification work, not capabilities claimed for master: Linux receipt/status
+containment and independent achieved-scope closure; live linked handover in both directions with
+exact idle, queue/capture continuity, all crash phases and no doubled input; real Claude Stop-hook
+writes with outside `history` readback; and embedded memory after resume, mail, tools and a real task.
+The existing embedded S3 probe is bootstrap-only and explicitly provisional. Declaration-only Rust
+or a fake provider cannot qualify these measurements. Missing access, API, field or native evidence
+is unavailable/not reached, never zero. B8 and B9 use section 80's single budget table; quiescence is
+reported separately from cutover, dormant SE Code input is not active adoption, and hook exit zero
+is not capture evidence. Codex capture uses app-server, not a fabricated Claude hook.
 
 ### 2.4 Cadence
 | When | Where | Agents |
 | --- | --- | --- |
-| Every landing batch | Windows (clean test account on the PC) and Linux (per-seat worktree on the workstation) | Claude |
-| Nightly | Same two machines | Claude and Codex, against the latest upstream CLIs |
-| Mac campaign | Borrowed Mac, once the repo is mostly built | Claude and Codex |
-| Release candidate | All three OSes, from the signed download | Both, inside SE Code and standalone |
+| Each product milestone | Windows and Linux clean user accounts, scheduled outside agent trees | Claude |
+| Nightly | Same two machines, outside agent trees | Claude and Codex, against current supported upstream CLIs |
+| Mac campaign | Borrowed Mac before alpha ships; the Windows/Linux build continues before access is available | Claude and Codex |
+| Alpha release candidate | Clean Windows, Linux and macOS from the signed download | Real Claude and Codex, inside SE Code and standalone |
 
 Partial runs (`--only`) are diagnostic and never qualify. `results.json` and `budgets.json` go to the
 project's results directory, never the engine's. Pass counts are reported daily.
@@ -107,29 +130,29 @@ cannot reach its precondition on an OS reports **not reached**, which is never a
 | T3 | G1 revoked capability | After stop and after takeover, the old bearer and capability are refused over HTTP and IPC, with no fallback to owner | MCP, CLI | all |
 | T4 | G1 owner verbs absent | Session `tools/list` contains no ratify, reject, retract, supersede, remove, forget or config tool | MCP | all |
 | T5 | G1 human presence | `decision ratify` with piped stdin, and from inside a managed agent tree with an allocated PTY, refuses with its fix | CLI | all |
-| T6 | G2 retries | Same idempotency key + same body → replayed receipt; different body → `idempotency-key-reused`; one event | CLI, MCP | all |
+| T6 | G2 retries | Identity created before first send; drop the committed reply, retry the same key/body → original receipt and one event; changed body → `idempotency-key-reused`. Every MCP mutation requires its key; natural-key capture/dispositions retain their restricted path | CLI, IPC, MCP, linked API | all |
 | T7 | G2 supersede keeps history | Supersede a decision; history lists both with the transition | CLI | all |
-| T8 | G3 crash after acknowledged write | 100 sends through the host; the host is force-killed right after each receipt; on restart all 100 are present once (prototype: 0 of 100 lost) | CLI | all |
+| T8 | G3 crash after acknowledged write | 100 sends through the host; force-kill after each acknowledged receipt; restart finds every commit once. Separately benchmark the real NORMAL/FULL mix including FULL decision ratify/reject/retract/supersede. Application-crash results do not claim OS-crash or power-loss durability; NORMAL may lose several recent ordinary commits there | CLI | all |
 | T9 | G3 pending ≠ delivered | Send to a stopped agent → receipt says `delivery: pending`; never `delivered` until offered | CLI, MCP | all |
 | T10 | G4 absent / unreadable / zero | No store → Absent, exit 1, "run `se init`"; store with a foreign `application_id` or bad bytes → Unreadable, exit 3; store unreadable by permission → Unreadable, not Absent; empty inbox → exit 0, zero; newer `user_version` → `store-too-new` | CLI | all |
 | T11 | G4 unknown target | An unknown agent or message id → exit 4 naming the choices | CLI, MCP | all |
 | T12 | G5 partial inbox | 150 unread, page 100 → exit 2, window shows 50 omitted plus a continuation; following it returns the rest; nothing marked read implicitly | CLI, MCP | all |
-| T13 | G5 truncation is explicit | A body over budget → incomplete flag; a captured transcript truncated or rotated → a recorded verdict, with no silent re-ingest or duplicate | CLI | all |
-| T14 | G6 pid reuse refuses | Linux: inside `unshare --user --pid --fork --map-root-user`, write `ns_last_pid` so a new process gets the recorded pid, then `process stop` → `process-identity-changed`, and the impostor survives. Windows: spawn short processes until the pid recycles (bounded; else not reached). macOS: in the Mac campaign | CLI | Linux, Windows |
-| T15 | G6 + G8 orphan descendants | `process start` a command that double-forks and calls `setsid`. Windows, and Linux with `containment: "cgroup"`: `stop` → the descendant is gone by OS reread, and the receipt has an outside witness. macOS, and Linux with `containment: "uncontained"`: the bound is that every member still in the tracked process group is gone by OS reread and witnessed; a descendant that left the group with `setsid` is a stated limit (70 §1.2, §2.4), not a failure, and the test reports which bound it judged | CLI, MCP | all |
-| T16 | G6 host restart | Kill the host; on Linux/macOS agents survive and are re-adopted with the same pid and birth; on Windows the tree stops and the relaunch resumes the conversation; no doubled input | CLI | all |
-| T17 | G7 hostless loop | No daemon: init, send, inbox, decide, resume all work directly; the next host start delivers pending effects | CLI | all |
+| T13 | G5 truncation is explicit | A 32 KiB message is accepted; one byte over is rejected before any effect on every surface, with no truncation. Page/body budgets remain explicit. Transcript truncation/rotation retains the committed cursor and reports its mismatch, with no silent re-ingest or duplicate | CLI, MCP | all |
+| T14 | G6 pid reuse refuses | Linux: inside `unshare --user --pid --fork --map-root-user`, write `ns_last_pid` so a new process gets the recorded pid, then `stop AGENT` against the recorded managed lifecycle → `process-identity-changed`, and the impostor survives. Windows: spawn short processes until the pid recycles (bounded; else not reached). macOS: in the Mac campaign | CLI | Linux, Windows |
+| T15 | G6 + G8 orphan descendants | Launch a managed fake-provider fixture that double-forks and calls `setsid`. Windows, and Linux with `containment: "cgroup"`: `stop` → the descendant is gone by OS reread, and the receipt has an outside witness. macOS, and Linux with `containment: "uncontained"`: the bound is that every member still in the tracked process group is gone by OS reread and witnessed; a descendant that left the group with `setsid` is a stated limit (70 §1.2, §2.4), not a failure, and the test reports which bound it judged | CLI, MCP | all |
+| T16 | G6 host restart | Default SE Code exit with live agents transfers to a detached standalone host; reopening transfers back with the original PID/birth/conversation and retained queue. Exercise source/successor death at every committed transfer boundary and lost ACK with the same key. Abrupt host death without a completed transfer is judged separately at the OS crash-policy bound, with saved-conversation recovery and no doubled input | CLI, host API | all |
+| T17 | G7 hostless loop | No daemon: init, send, inbox, decide and resume use the same store implementation directly; custody auto-starts through private bootstrap; the next host start delivers pending effects | CLI | all |
 | T18 | G8 integration readback | Adopt writes marked entries; the user edits one; `remove` refuses that entry by name and restores the others byte-for-byte | CLI | all |
 | T19 | 70 §4.2 listener admission | Foreign `Host`, foreign or `null` `Origin`, cross-site `Sec-Fetch-Site`, `text/plain` POST, token in the query, `OPTIONS` → refused; no `Access-Control-*` header ever | HTTP | all |
 | T20 | 70 §4.3 loopback and squatting | Non-loopback config → refusal before any socket opens; another listener on the port → `se mcp token` prints no header | CLI | all |
 | T21 | 70 §4.4 IPC peer check | A client as another uid (`sudo -u nobody` in a CI container) is refused; Windows: pipe DACL read back as user-only | IPC | Linux, macOS; Windows readback |
-| T22 | 70 §5 permissions | After init: mode 0600/0700 or a user-only DACL; loosen it → `status` refuses with the `doctor --fix` fix; `doctor --fix` tightens and rotates | CLI | all |
-| T23 | 70 §3.2 no secret leaks | The fake provider dumps its argv and environment: no `sec1.`/`sels-` text, and `SE_SESSION` is a handle only; `process start` children have no `SE_SESSION` | CLI | all |
-| T24 | 70 §6 forget erases | A captured turn with a unique marker; `forget` → the marker's bytes are absent from `state.db` and the WAL, search finds nothing, a catch-up sweep does not re-ingest it, and the receipt names the backups and the provider transcript | CLI | all |
+| T22 | 70 §5 permissions | After init: mode 0600/0700 or a user-only DACL; loosen it → a named diagnosis and remedy. `doctor --fix CHECK-ID` prints the specific plan and consequences before applying that check; configuration repair never rotates credentials or restores history. Separate named owner actions for rotation/restore enforce the human-presence guard | CLI | all |
+| T23 | 70 §3.2 no secret leaks | The fake provider dumps its argv and environment: no `sec1.`/`sels-` text, and `SE_SESSION` is a handle only; unbound child/tool processes receive no session handle unless explicitly admitted | CLI | all |
+| T24 | 70 §6 forget erases | A captured turn with a unique marker; `forget` → the marker's bytes are absent from `state.db` and the WAL, the bounded streamed search and cache/readback find nothing, catch-up does not resurrect it, and the receipt names the backups and the provider transcript | CLI | all |
 | T25 | 70 §6 bundle allowlist | Markers in a message, turn and decision; `doctor --bundle` → none of the markers in the zip bytes | CLI | all |
 | T26 | G1 creator control is narrow | A with `can-create` launches, wakes and stops its direct helper via `target_agent_id`; a grandchild, another agent's helper, an imported agent with no recorded creator, and any target after the grant is revoked → refused; `stop --all` from a session refuses | MCP, CLI | all |
-| T27 | SE Code takeover holds | Through the host API: interrupt, hold, absent from the active map; a later mail wake does not revive the old session | host API | all |
-| T28 | G4 + G8 uncontained is reported, never silent | In a container or user namespace with no systemd user manager: `se launch` succeeds (no refusal); the launch receipt, `se status --json` and `se agent list --json` all show `containment: "uncontained"` with a non-null `containment_cause`; the human launch line says uncontained; `se doctor` reports `custody.linux-cgroup` as `warning`, not `ok`; `stop` witnesses with `pidfd-exit+pgid-empty`, or `start-identity-exit+pgid-empty` on a kernel without pidfd support, never `cgroup-empty`; the runner accepts either label only when it matches the kernel capability reported by `se doctor`. With a user manager present, the same test sees `cgroup` and a null cause (else that half is not reached) | CLI, MCP | Linux |
+| T27 | SE Code takeover holds | Through the host API: interrupt, hold, absent from the active map; a later mail wake does not revive the old session or clear the independent human hold; the human-presence guard prevents mistakes/drift, not a determined same-account program | host API | all |
+| T28 | G4 + G8 uncontained is reported, never silent | In a container or user namespace with no systemd user manager: `se launch AGENT` succeeds (no refusal); the launch receipt, `se status --json` and `se agent list --json` all show `containment: "uncontained"` with a non-null `containment_cause`; the human launch line says uncontained; `se doctor` reports `custody.linux-cgroup` as `warning`, not `ok`; `stop` witnesses with `pidfd-exit+pgid-empty`, or `start-identity-exit+pgid-empty` on a kernel without pidfd support, never `cgroup-empty`; the runner accepts either label only when it matches the kernel capability reported by `se doctor`. With a user manager present, the same test sees `cgroup` and a null cause (else that half is not reached) | CLI, MCP | Linux |
 
 ## 4. Property tests
 
@@ -139,51 +162,47 @@ the Linux workstation. Failing seeds are committed as `proptest-regressions` fil
 | # | Name | Invariant |
 | --- | --- | --- |
 | P1 | `crash_points_are_atomic` | A child process runs random write batches and is killed at a random moment. After reopening, every batch is all or none, and the projections (inbox, marks, resume heads, effects) equal a fresh replay of the event log. |
-| P2 | `retries_deduplicate` | Concurrent writers (direct CLI under the shared lock, plus the host writer) retrying any interleaving of idempotency keys produce exactly one event per key: same body gives the same receipt, a different body is refused. |
-| P3 | `pages_concatenate_to_the_full_read` | For any event set, page size and body budget, following cursors yields the full read in order with no gap or duplicate. Every page but the last says incomplete with correct omitted counts. Appends made while paging appear after the cursor, never inside earlier pages. |
+| P2 | `retries_deduplicate` | Concurrent callers through CLI/IPC/MCP/linked API, with direct CLI writing only under a shared lease while no host owns the exclusive lease, retrying uncertain outcomes with the original idempotency keys produce exactly one event per key: same body gives the same receipt, a different body is refused. |
+| P3 | `pages_concatenate_to_the_full_read` | For a quiescent event set, following cursors yields the full read in order without gaps/duplicates and with accurate omissions. Mail retains its snapshot window across appends. Other lists use labelled live keysets; concurrent changes remain explicitly live, never a fabricated historical snapshot. |
 | P4 | `mail_markers_are_monotonic` | For any sequence of offer, deliver, read, ack, dismiss and retry, each recipient's marker only moves forward (unread → delivered → read; dismissed separate). Only the recipient's authority writes read marks. The unread count equals the unread markers. |
 | P5 | `history_is_append_only` | For any operation sequence, the first n events are byte-identical before and after. `forget` changes only the body of the named turn events and keeps id, order and `vendor_turn_ref`. Supersession keeps both rows. |
 | P6 | `argv_is_literal` | For any argument strings (`--k=value`, `--`, leading dashes, quotes, non-ASCII): parse → typed input → render → parse gives the same input; nothing after `--` is read as a flag; NUL is refused. |
-| P7 | `import_is_idempotent_and_accounted` | For any generated Node-format corpus with malformed lines, importing twice gives the same state; read = imported + duplicate + unreadable + dropped-by-policy; no source byte changes. |
+| P7 | `import_is_idempotent_and_accounted` | For generated non-fleet Node user state (identities, agents/profiles, messages/marks, decisions, working state, turns and conversation references), including malformed lines, importing twice gives the same state; read = imported + duplicate + unreadable + dropped-by-policy; no source byte changes. |
 | P8 | `resume_respects_its_budget` | For any history and byte budget, resume output fits the budget, is valid UTF-8 at the cut, and included plus omitted equals the total for each section. |
 
-## 5. CI matrix and checks
+## 5. Build, review and release checks
 
-Hosted runners for Windows (x86_64), macOS (arm64) and Linux (x86_64), with no provider credentials on
-them. Journeys run on self-hosted clean accounts (§2.4), because they need signed-in agents.
+Use Windows x86_64, Linux x86_64 and macOS arm64 for compilation and bounded black-box/property
+checks without provider credentials. Real journeys run in clean signed-in accounts outside agent trees.
+Windows/Linux is an intermediate milestone; macOS and embedded SE Code are required before alpha ships.
 
-**Every PR and landing batch, on all three OSes:**
-1. `cargo fmt --check`.
-2. `cargo clippy --workspace --all-targets --locked -- -D warnings`, with the workspace lints
-   (`unwrap_used`/`expect_used` denied; `unsafe_code` forbidden) and clippy config disallowing
-   unbounded channels and `std::env::var*` outside `se::config` (00 §5.5–5.6).
-3. **Dependency direction:** an `xtask` (about 60 lines over `cargo metadata`) checks that each crate's
-   edges match 00 §3.1, and that the kernel crates (se-types, se-store, se-core) depend on no tokio
-   networking, hyper, notify, harness or surface crate.
-4. **Unsafe location:** the same xtask fails if any crate other than se-proc overrides `unsafe_code`.
-   In se-proc, `clippy::undocumented_unsafe_blocks` is denied, so every block carries `// SAFETY:`.
-5. **Schema freeze:** `cargo xtask schema --check` compares the generated MCP input and output schemas,
-   the `se.<family>/vN` output families and the store DDL against committed `schemas/`. A non-additive
-   change without a version bump fails. Store migrations must be additive in alpha (no drop, no rename).
-6. `cargo deny check` (licenses, advisories, bans, sources; 70 §7).
-7. **No outbound network:** `cargo tree -i` for TLS and HTTP-client crates is empty for the shipped
-   binary.
-8. Black-box tests and property tests (256 cases).
-9. Release build; binary size and per-crate line counts printed as review signals, not gates.
+Each candidate runs formatting, workspace clippy with the agreed lints, the applicable black-box and
+property tests, dependency/license checks and a release build. Review manifests for dependency direction,
+unsafe placement and the synchronous se-core boundary: Tokio belongs in se-host, not the synchronous
+core/store API. Print binary size and per-crate size as review signals using section 95's single size
+table. Do not add schema-freeze tooling, N-1 encoders, or additional CI machinery. Every JSON output
+retains its schema identifier; decoder behavior is exercised through the installed public surfaces.
 
-**Nightly:**
-- **SE Code link canary:** build `secode-server` from its mirrored source (offline) with the
-  `stateengine` feature against our head. `cargo tree -d` must show no duplicate tokio, hyper, rusqlite
-  or libsqlite3-sys. Run one bound-session smoke. Also build SE Code's public configuration and confirm
-  that no `se-*` crate appears in its dependency graph (the licensing rule). A failure goes to Alpha's
-  seat and ours as one message.
-- Journeys with Claude and Codex (§2.4).
-- Property tests at 10,000 cases.
-- `cargo deny check advisories` against a fresh advisory database, since new advisories arrive without
-  any code change.
+Embedded qualification links the actual Rust `secode-server` in `crates/secode-product` from Alpha's
+SE Code repository and its matching release source. It does not use the frozen TypeScript predecessor.
+The statically linked API version must match exactly. Dependencies use compatible caret ranges and one
+resolved SQLite linkage; the canary builds the real composition and runs a bound-session smoke and
+post-task memory/startup probes. It also confirms the public SE Code build excludes commercial se-* crates.
 
-**Release:** verify signatures (`signtool verify /pa`, `spctl --assess`, minisign), then run J1 from the
-signed download. CI never retries a failed test; a flaky test is fixed or deleted with a reason.
+Before the broad build, run E1-E9 and the lost-ACK slice from the coordinated build order. Prove the
+Rust runner rejects a stub on Windows/Linux outside agent trees. Begin J1 from an unsigned archive
+with install and uninstall scripts; then qualify Claude J2/J3/J5, both providers' five standalone
+journeys, embedded/live handover in both directions and all crash phases, forget, and signed downloads.
+Atlas stays disabled by default, is built after the journeys and live handover pass, and holds no
+milestone. Forget stays before release. Non-fleet import is interrupted, rerun and checked by resuming
+both providers' actual saved conversations. Supported additive migrations run automatically under the
+sole owner after a verified backup; a still-running old host refuses with `se down first`. Do not
+require an approval fingerprint or a manual stranger migration step.
+
+Nightly use the same runner against current supported native providers and the larger property corpus.
+For release verify the delivered signatures and run J1 from the signed download, then all five journeys
+with real Claude and Codex on clean Windows, Linux and macOS, standalone and embedded. Failed tests are
+not automatically retried or relabelled as passes; retain the original failure and fix its cause.
 
 ## 6. What we will not build
 
@@ -192,8 +211,7 @@ signed download. CI never retries a failed test; a flaky test is fixed or delete
 - **Census and ratchet gates:** no test-count, coverage-percentage, line-count or kernel-size gates.
   Sizes are printed as review signals.
 - **Golden-output sprawl:** no snapshots of human-readable output and no help goldens (help is
-  generated from the registry). Machine output is pinned once per family by the schema files; journeys
-  read JSON.
+  generated from the registry). Machine output keeps a versioned schema identifier and documented family fields; journeys read JSON.
 - **Unit tests of internals,** internal mocks, `#[cfg(test)]` hooks in production paths or test-only
   features. Crash tests kill real processes.
 - **Per-surface suites, flake-hunt infrastructure,** automatic retries or quarantine lists.
