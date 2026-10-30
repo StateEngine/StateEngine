@@ -216,17 +216,20 @@ Unreadable ownership blocks that route; a historical imported PID is never custo
 
 ## 4. Executor, blocking and native thread accounting
 
-The core remains synchronous and never waits on a commit. It returns
-`OpStep::Commit { batch, then }`: an owned typed batch and a typed continuation,
-not a closure holding a transaction or borrowed connection. The host submits
-`batch` through the HostStore writer boundary (`WriterClient::submit`), awaits
-its `Completion: CommitWait` on the calling async task, then invokes `then` with
-the actual committed receipt to construct the result or next operation step. The store performs SQL on its one writer
-thread; no host thread blocks waiting for that writer, and no core call waits
-for IPC or starts a runtime. Hostless CLI uses synchronous `DirectStore::append`
-over the same transaction engine and feeds its receipt to the same continuation;
-it needs no synthetic future. `CommitWait::wait_blocking` is CLI-only when a
-CLI actually holds that completion, never a host-thread wait.
+The core remains synchronous and never waits on a commit. On the host route,
+planning runs as one finite bounded blocking-pool job with an owned/Arc reader,
+and returns `OpStep::Commit { batch, then }`: an owned typed batch and typed
+continuation with no held SQL snapshot/transaction, borrowed connection or IO
+closure. The job releases its blocking permit before the host submits `batch`
+through the HostStore writer boundary (`WriterClient::submit`) and awaits
+`Completion: CommitWait` on the executor. Once the actual receipt arrives,
+`then` runs in a new bounded blocking-pool job to construct the result or next
+operation step, using an owned/Arc reader if needed. Neither planning nor `then`
+runs on the executor; no blocking-pool slot waits for writer completion. The
+store performs SQL on its one writer thread, and no core call waits for IPC or
+starts a runtime. Hostless CLI uses synchronous `DirectStore::append` over the
+same transaction engine and feeds its receipt directly to the same continuation;
+it needs no future or blocking-wait API.
 Submission refusal leaves no accepted write; a timeout, cancellation or lost
 reply after acceptance cannot cancel the batch or invent failure/success.
 Return `commit-outcome-unknown` (Unknown/transient) where the outcome cannot be
@@ -252,7 +255,7 @@ per file, including SQLite WAL/SHM, under section 70.
 | --- | --- | --- |
 | Session state/mail/control, IPC/HTTP, vendor JSON framing | Supplied executor tasks, one coordinator/session | Section-80 session/mail rows, no thread/session |
 | SQLite writes | One named se-writer OS thread, se-store owns it | Blocks on bounded receive; store lines, no shared-pool occupation |
-| Foreground DB reads, transcript chunks, config filesystem, CreateProcess/native finite steps | Shared blocking pool, at most two admitted jobs | Never run sync file reads/CreateProcess on standalone executor; finite work only |
+| Core planning and typed continuations, foreground DB reads, transcript chunks, config filesystem, CreateProcess/native finite steps | Shared blocking pool, at most two admitted jobs; planning and continuation each release their permit before any async wait | Never run sync file reads/CreateProcess on standalone executor; finite work only |
 | Whole-copy backup / close_clean | One background/maintenance blocking slot for its entire synchronous call | At most one; reserve the other slot for foreground work; not a per-step fake async call |
 | Unix process and watch events | Existing Tokio AsyncFd/kqueue reactor via ReactorAdapter implementing NativeReactor | se-proc HostConfig.reactor supplied; no Unix collector thread |
 | Windows native job/process completion | One existing se-proc IOCP collector thread per host | Section-80 custody row includes collector; no RegisterWait pool or second collector |
@@ -1261,29 +1264,16 @@ uninstall and diagnosed doctor repair, the host executes the exact typed plan
 and printed consequences in section 70; a configuration repair cannot silently
 rotate secrets, restore history or migrate.
 
-For file-only effects, the host filesystem adapter owns section 20's protected
-`STATE/receipts/` journal outside SQLite and the removed installation. Reserve
-a finite versioned record no-replace under exclusive file-effect custody, keyed
-by store/home identity, authenticated owner and original request key; retain the
-operation, semantic fingerprint and exact plan without secrets or turn bodies.
-Sync intent before the effect, then atomically publish/sync achieved outside
-readbacks and the final result. Same key/intent resumes or replays; changed intent
-conflicts. After a crash, reobserve the original targets before another effect;
-unknown/unreadable journal state refuses or reports outcome unknown. Uninstall
-preserves the journal with history/backups and prints its location; restore's
-journal survives DB replacement. It creates no event, writer stamp, new public
-operation, server or timer. Host/se-proc owns no-follow permissions, publication
-and agent-path exclusion; a journal entry is never authority or an OS witness.
+File-only general `config.set`, uninstall and restore reconcile retries with the same request key by reading the current file/installation state and reporting the original result if it already matches the request, otherwise applying the requested effect and reading it back; no receipt journal is retained.
 
 `config.toml` is the only effective general-settings authority. General
 `config.set` keys (including `runtime.listen_port`, provider defaults and
-`atlas.enabled`) use that keyed file-custody path: validate the closed key/value
+`atlas.enabled`) use that readback-reconciled file-custody path: validate the closed key/value
 and per-key human-presence rule, compare the expected file/entry, atomically
 write and sync while preserving unrelated entries, then read back the actual
-file before settling the journal/result. There is no general-settings event,
-config head or `Snapshot.config` mirror in SQLite. A completed-key replay returns
-its original receipt without overwriting later manual edits; current reads report
-the actual configuration separately. Manual edits take effect on the next read,
+file before reporting the result. Legal hostless general-setting writes never
+start a runtime. There is no general-settings event, config head or
+`Snapshot.config` mirror in SQLite. Manual edits take effect on the next read,
 or on restart for startup-only values such as the listener port; no watcher,
 timer or background reconciliation copies them into a database. Agent metadata,
 including `agent.<A>.can-create`, grants, profiles and model revisions, remains
@@ -1315,8 +1305,9 @@ B3's embedded zero persistent-process observation applies when no agent is live.
 Default SE Code exit with live agents instead creates one detached successor;
 that daemon exits ten minutes after its last live agent. Standalone and embedded
 must be measured under those actual compositions. B9 measures hosted `msg send`, `working-state set` and `hook claude stop` at
-p95 ≤20 ms. The FULL command family has the separate section-80 E3 bound,
-p95 ≤75 ms on Windows with Defender; cold direct/FULL tails remain contrary evidence requiring proof,
+p95 ≤20 ms. E3 separately samples `decision ratify|reject|retract|supersede`,
+`agent add`, `config set agent.<A>.profile|model|can-create` and `init`,
+with the FULL bound p95 ≤75 ms on Windows with Defender; cold direct/FULL tails remain contrary evidence requiring proof,
 not weaker authentication or durability. A failed budget blocks release.
 
 Resource defaults in HostLimits are admission/backpressure, not preallocation:
