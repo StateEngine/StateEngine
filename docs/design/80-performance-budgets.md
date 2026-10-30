@@ -279,8 +279,11 @@ from qualification and from causal latency conclusions.
 Qualification remains pending a quiet-window measurement of the actual Rust
 SE Code first-bound response against its unchanged baseline, with newly
 initialized and existing stores and the same durability/inputs/build. Record load
-beside every result; a Linux qualification starts below load1 4 with interfering
-full-suite/system-wide tracing absent. Retain every paired sample, including
+beside every result. For the coordinated Linux quiet window, use the exclusive
+heavy slot with no other heavy jobs or system-wide tracing, and require load1
+≤ 10 at each case start. This records Prime's revised criterion after observing
+the parked-runner/desktop idle floor of load1 6–8 on the 48-core box; it does not
+qualify the earlier contended measurements. Retain every paired sample, including
 signed negative differences and failures; file/directory/count traces are
 separate from latency samples. No loaded result or transaction-count arithmetic
 establishes latency headroom. Windows with Defender, after-task memory and full
