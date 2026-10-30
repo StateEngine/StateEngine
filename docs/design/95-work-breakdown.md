@@ -19,16 +19,16 @@ se-types has no separate breakdown and keeps its earlier estimate.
 | Store (se-store) | ~9,250 | 8,800 | 95-store S01–S15 | no decision chain, no general settings in the store, live keysets for non-mail lists, six import families, no salvage, automatic migration without approval |
 | Process ownership (se-proc) | ~10,950 | 10,950 | 95-se-proc P00–P09 | three launch barriers (four on Unix terminal, macOS, uncontained); five handover outcomes; process.* operations removed; native scope unchanged |
 | Core and CLI/MCP surface | ~9,050 | 8,200 | 95-core-cli K01–K11, B01–B06 | process tools, N-1 encoders, FTS and project settings removed; owner actions added; the Atlas bridge (`ops/atlas.rs`) is owned and counted once, by Atlas A12 |
-| Host runtime and harnesses | ~8,900 + 200–350 JS | 9,150 + 200–350 JS | 95-host H01–H20 | automatic migration, file-only settings journal, async commit join, version-independent stop |
+| Host runtime and harnesses | ~8,900 + 200–350 JS | 9,050 + 200–350 JS | 95-host H01–H20 | automatic migration, readback-reconciled file operations, async commit join, version-independent stop |
 | Release and packaging | 920–1,600 | 960–1,600 | 95-release R01–R07 | one `se uninstall` path; early unsigned archives |
-| **Core product (alpha critical path)** | | **40,060–40,700 + 200–350 JS** | | |
+| **Core product (alpha critical path)** | | **39,960–40,600 + 200–350 JS** | | |
 | Atlas (after journeys and handover; Jimmy) | 6,000–9,300 | 6,000–9,300 | 95-atlas A01–A13 (A12 owns the core bridge) | standalone only, disabled by default |
 | macOS backends (Mac campaign) | ~1,350 | 1,350 | 95-se-proc P03-M, P07-M | qualified on Jimmy's borrowed Mac before alpha ships |
-| **Everything** | 48,420–52,400 | **47,410–51,350 + 200–350 JS** | | |
+| **Everything** | 48,420–52,400 | **47,310–51,250 + 200–350 JS** | | |
 
 The first reconciled overview claimed a core of ~38,500–39,700 without per-task sums behind it.
-The summed figure is about 1,000–1,500 lines higher: se-proc's native scope did not shrink, and the
-host gained the settings journal and stop-across-versions work. Estimates are review signals, not caps.
+The summed figure is about 900–1,400 lines higher: se-proc's native scope did not shrink, and the
+host gained the async commit join and stop-across-versions work. Estimates are review signals, not caps.
 
 Live handover stays in before alpha (Jimmy): about 2,500–3,000 lines across se-proc, se-host and
 se-store, plus SE Code's side. `forget` stays in alpha (Jimmy), about 600 lines.
