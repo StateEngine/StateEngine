@@ -45,7 +45,7 @@ se-store, plus SE Code's side. `forget` stays in alpha (Jimmy), about 600 lines.
 | E5 Windowed Codex | stock Codex through the private-socket app-server with a viewable TUI; headless and `--listen` paths | **PARTIAL**: Linux windowed PASS (0.163); headless, `--listen` and Windows open |
 | E6 History import | real history imports; interrupted retries reproduce the same events; resumed conversation recalls | **PASS** for Codex on a factory slice; non-fleet history and Claude continuation pending |
 | E7 Linux containment | what ssh, Docker and WSL2 hosts actually get | Pending |
-| E8 Cold hook start | host-start versus direct write on Windows with Defender | Pending |
+| E8 Cold hook start | host-start versus direct write on Windows with Defender | **PASS, settled**: 100 pairs with Defender on; host-start p95 82.5 ms, direct p95 88.1 ms. A hook with no host starts the host privately and never writes directly (40 §9.3). Routing is settled; production hook latency is measured in wave 2 |
 | Lost-ACK slice | one message after a dropped reply, through CLI, IPC, MCP and the linked API | Pending |
 | E9 SE Code real server | the integration target is SE Code's Rust server, not the frozen TypeScript one | **DONE** (Alpha): `E:\rust-secode` branch dev, `crates/secode-product`, caret pins, axum `=0.8.9` |
 | Runner | the journey runner judges Rust from a Rust-only map, launched outside agent trees | Section 90 revised; red-against-stub run pending |
