@@ -81,6 +81,7 @@ pub trait TextStaging {
         lease: &dyn RuntimeLease,
     ) -> StoreResult<StagedText>;
 }
+/// Synchronous hostless route; returns the canonical engine receipt directly.
 pub trait DirectStore: ReadStore + TextStaging {
     fn append(
         &mut self,
@@ -146,6 +147,8 @@ pub struct DrainedHost<H: HostStore> {
     pub host: H,
     pub report: FlushReport,
 }
+/// Host route: obtained from HostStore::start_writer -> WriterOwner::client.
+/// Submit never waits for COMMIT; host async task awaits the returned CommitWait.
 pub trait WriterClient: Clone + Send + Sync {
     type Completion: CommitWait;
     fn submit(&self, batch: AtomicBatch) -> StoreResult<Self::Completion>;
@@ -192,7 +195,6 @@ pub struct DecisionQuery {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HistoryFamily {
     Identity,
-    Configuration,
     Sessions,
     Messages,
     Decisions,
@@ -207,6 +209,9 @@ pub enum HistoryFamily {
 #[derive(Clone, Debug)]
 pub struct HistoryQuery {
     pub agent: Option<AgentId>,
+    pub session: Option<SessionId>,
+    /// Empty means every authorized kind; codec rejects unknown exact names.
+    pub kinds: Vec<EventKind>,
     pub families: Vec<HistoryFamily>,
     pub since: Option<Revision>,
 }
@@ -287,8 +292,6 @@ pub trait Snapshot {
     fn principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn principal(&mut self, id: Actor) -> StoreResult<Read<ProjectionRecord>>;
     fn profile(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
-    fn configuration(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
-    fn config(&mut self, key: ConfigKey) -> StoreResult<Read<ProjectionRecord>>;
     fn grant(&mut self, principal: Actor, key: GrantKey) -> StoreResult<Read<ProjectionRecord>>;
     fn session(&mut self, id: SessionId) -> StoreResult<Read<ProjectionRecord>>;
     fn sessions(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
