@@ -223,7 +223,10 @@ not a closure holding a transaction or borrowed connection. The host submits
 its `Completion: CommitWait` on the calling async task, then invokes `then` with
 the actual committed receipt to construct the result or next operation step. The store performs SQL on its one writer
 thread; no host thread blocks waiting for that writer, and no core call waits
-for IPC or starts a runtime. `wait_blocking` is CLI-only for hostless execution.
+for IPC or starts a runtime. Hostless CLI uses synchronous `DirectStore::append`
+over the same transaction engine and feeds its receipt to the same continuation;
+it needs no synthetic future. `CommitWait::wait_blocking` is CLI-only when a
+CLI actually holds that completion, never a host-thread wait.
 Submission refusal leaves no accepted write; a timeout, cancellation or lost
 reply after acceptance cannot cancel the batch or invent failure/success.
 Return `commit-outcome-unknown` (Unknown/transient) where the outcome cannot be
