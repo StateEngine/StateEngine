@@ -600,8 +600,9 @@ bus/manager (including absent linger after logout). In default BestAvailable,
 select LinuxPrepared/LinuxTracked process-group custody with
 ContainmentGuarantee::Uncontained { reason } **before vendor creation**. Report
 `containment: "uncontained"` and its mapped `containment_cause` (§7) in status
-and launch receipts; `cgroup-delegation-missing` names the capability finding,
-not an emitted refusal code. The fixed reason is retained in the guarantee;
+and launch receipts. The `custody.linux-cgroup` doctor warning carries the
+capability finding, not an emitted refusal code. The fixed reason is retained
+in the guarantee;
 PlatformCapabilities.kernel_scope retains the full probe ProcError/native cause
 for the host to render alongside that status fact. This is **not a default launch refusal** and does
 not change provider permission defaults. No cgroup.kill is claimed; use
@@ -967,8 +968,8 @@ operation context (agent/observation IDs); se-proc does not invent those IDs.
 50 §6.11 remain host admission checks **before** this native API. They are not
 missing native error variants. ProcessAbsent was removed: measured absence
 is a ProcessRead/ProcessObservation fact, never an ambiguous native error.
-`cgroup-delegation-missing` names the Linux capability finding, **not a
-launch error code**. Section 50 A.3 exposes `session.containment` and
+The former `cgroup-delegation-missing` refusal/status fact is retired.
+Section 50 A.3 exposes `session.containment` and
 `session.containment_cause`; its A.10 `custody.linux-cgroup` doctor warning
 carries the full probe text with `code: null`. UncontainedReason exactly matches
 that wire-cause set, without deriving wire strings from Rust variant names:
@@ -1150,8 +1151,8 @@ Prime has been asked to route these **concrete sibling-owner edits** while
 this section/API is corrected; no other crate or owner's doc is edited here:
 
 * Section 50: same wire catalogue, labelled population/enumeration metadata
-  alongside remaining[], count-safe human wording, cgroup-delegation-missing as
-  an uncontained status fact rather than refusal, correct job-breakaway-refused
+  alongside remaining[], count-safe human wording, containment/containment_cause
+  plus the custody.linux-cgroup doctor warning, correct job-breakaway-refused
   remedy (outside the strict caller job), structured identity/recovery causes.
   No new wire spelling.
 * Section 70: optional Landlock/seccomp policy belongs there, not a mandatory
@@ -1163,6 +1164,12 @@ this section/API is corrected; no other crate or owner's doc is edited here:
   test must reflect the ratified group/tracked bound, rather than assert an
   unescapable-tree promise. Normal J2/J5 and ordinary descendant stop remain
   supported outcomes, not successful refusals.
+* Before native qualification, reconcile Linux without pidfds (§5.2) with
+  section 50's closed witness-method set and section 90 T28, which currently
+  name pidfd-exit+pgid-empty for every uncontained stop. A start/image-based
+  exit readback must carry its actual method and stated group/tracking bound;
+  it cannot be labelled pidfd-exit. Prime owns the shared surface/runner
+  alignment; this remaining qualification gap does not reopen accepted design.
 * Section 10: canonical ID/error/path types replace this compile-only proposal's
   local declarations before implementation. No serializable record becomes
   a custody constructor. Native peer/ACL primitives from section 70 belong to
