@@ -485,8 +485,9 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 Each open item is settled by an early proof in section 95, not by argument.
 1. **CLI write budget (B9 ≤ 20 ms)** — a mixed-workload rehearsal measured 37 ms serial and 67 ms
    with 20 clients. Batching and queueing are fast; the time is in commit, with about one group in
-   eleven paying ~36 ms. The automatic WAL checkpoint running inside the commit is a hypothesis, not
-   a proven cause. E3 keeps the failed baseline, decomposes commit time first, may compare an
+   eleven paying ~36 ms. E3 measured the automatic WAL checkpoint inside the commit as a tail contributor
+   on Linux (every slow commit included one); it is not proven to be the whole cause. Windows with
+   Defender measured 3.9/10.5 ms p95 at the database layer. E3 keeps the failed baseline, decomposes commit time first, may compare an
    off-path checkpoint variant, and adopts a change only through one reviewed checkpoint policy
    reflected in 20, 40, 80 and 95. No B9 fix is claimed until native host measurements pass.
 2. **First-bind cost (B2 ≤ 100 ms embedded)** — several FULL commits now precede the first answer
