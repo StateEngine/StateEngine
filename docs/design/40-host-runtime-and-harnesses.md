@@ -230,6 +230,10 @@ store performs SQL on its one writer thread, and no core call waits for IPC or
 starts a runtime. Hostless CLI uses synchronous `DirectStore::append` over the
 same transaction engine and feeds its receipt directly to the same continuation;
 it needs no future or blocking-wait API.
+A host caller waits asynchronously for a blocking slot within its request
+deadline at both planning and `then`; saturation cannot turn an already
+committed write into a Capacity refusal, and deadline/cancellation after
+acceptance follows the original-key outcome rules below.
 Submission refusal leaves no accepted write; a timeout, cancellation or lost
 reply after acceptance cannot cancel the batch or invent failure/success.
 Return `commit-outcome-unknown` (Unknown/transient) where the outcome cannot be
