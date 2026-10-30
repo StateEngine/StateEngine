@@ -7,8 +7,13 @@ constructible se-types implementations. That exception applies to pure foundatio
 values only. Host/API source remains trait/data declarations, with no host,
 authentication, queue, store or panic-wrapper implementation.
 
-Base: rust-se main 9618963, with the reviewed 165-code shared foundation and section 30
-process declarations. The current OPS contract governs helper targeting and
+This alpha handover amendment uses the accepted store ownership and native
+process handover contracts. It corrects all prior handover exclusions, adds the
+retained coordinator/native queue fence below and follows the section-00/40
+fault-domain and lifecycle-recovery policy. Linked API major 2 is required for the added
+traits/methods; the internal CLI/IPC foundation version is unchanged.
+The reviewed 165-code shared foundation and section 30 process declarations remain.
+The current OPS contract governs helper targeting and
 scoped full-body listing. Revision includes Prime/Opus msg-dd929f207d5f7645ecb8a21b and Gamma
 msg-a7821f5080b58b8ecb6742c6: preparation before activation, mandatory generations,
 push-only delivery and factory-owned recovery. The small foundation delta here aligns credential/
@@ -34,7 +39,8 @@ section drafts. In particular: the product has one SQLite registry store; public
 operations are only the OPS rows; every writer uses the same store implementation;
 notification is a post-commit nudge; no database polling watcher is introduced;
 Atlas is optional and uses a separate database; live SE Code/daemon handover is
-after alpha; aliases are static refusals; refusals are not an event-history family.
+in alpha under sections 20/30/40's durable ownership barrier; aliases are static
+refusals; refusals are not an event-history family.
 This chapter defines service seams, not new commands or tools. It does not revive
 HTTP mail v1/v2, factory orchestration, a generic extension loader or an old alias.
 
@@ -300,7 +306,7 @@ the same structured facts. Refusals are not an event-history family.
 | No runtime / incomplete drain | RuntimeNotRunning / Unavailable; RuntimeDrainTimeout / Incomplete | Start runtime or inspect/retry named obligations |
 | Callback uncertain at deadline / cancellation | DeadlineExceeded / Unavailable; Cancelled / Cancelled | Read back original keyed effect before retry |
 | Capture lacks consent | CaptureConsentMissing / Refused | Obtain consent |
-| Engine panic / invariant fault | TaskFailed or Internal / Internal | Poison this generation; preserve nonsecret diagnostics |
+| Engine panic / invariant fault | TaskFailed or Internal / Internal | Preserve nonsecret diagnostics; fence affected route, and poison G for writer/lease/shared collector faults, lifecycle-call panics or migration failure after resource start |
 
 Native Held is NoticeAdmission::Held, not a revoked-capability error or invented
 Code. Public ApiFailure includes NotIncluded/EnginePanicked/GenerationPoisoned;
@@ -447,7 +453,7 @@ is checked against current core scope, revocation, revision and generation.
 
 This is a statically linked Rust API. Cargo package identity/version is the
 compatibility gate, and ApiVersion is an exact equality sanity check against
-API_VERSION (initially 1.0). HostConfig.features is a required closed set;
+API_VERSION (2.0 for the handover amendment). HostConfig.features is a required closed set;
 unsupported/disallowed entries refuse rather than silently disappearing. Limits
 are checked against host policy before work. ApiRange and minor-range negotiation are removed.
 Every addition/removal/change of a public field, enum variant, trait method or
@@ -472,7 +478,9 @@ owners, started only at explicit activation and counted in the shared budget.
 StoreVersion (application_id/schema) is independent. Foreign identity/newer
 schema refuses before mutation; supported migrations happen during activation,
 not during read-only factory preparation. Existing project attach is a lookup,
-not a new adoption/setup commit. No live daemon/SE Code handover is added.
+not a new adoption/setup commit. Live daemon/SE Code handover is an alpha
+requirement; read-only preparation and activation do not replace its section-40
+ownership, native-custody and input/delivery barrier.
 
 Only factory open uses OpenOptions with an optional expected generation. Every
 post-open Host call uses CallOptions.generation; every HostServices call uses
@@ -512,8 +520,9 @@ that exact generation, and only then calls Host::activate(integration, options).
 HostIntegration also carries the exact native HostEpoch. Repeated activation
 for the same G/epoch returns its actual current readiness; it cannot replace the
 registered native source under an already active generation. Wrong epoch or
-generation refuses, with no source swap. That is the first operation allowed to start writer/tasks, migrate, adopt or
-mutate native state. A panic in activate is now attributable to a known handle/
+generation refuses, with no source swap. That is the first ordinary Host operation allowed to start writer/tasks, migrate,
+adopt or mutate native state. Explicit factory handover is the separate retained
+coordinator protocol in section 8.4, never an implicit side effect of open. A panic in activate is now attributable to a known handle/
 generation. If open panics before publication, there is no engine generation with
 mutating resources to fence: it is an opening failure with an incident reference,
 not a successful bind. A Prepared handle dropped without activate has no writer
@@ -532,6 +541,7 @@ key; queued old calls fail before mutation once fenced.
 | --- | --- |
 | HostFactory::open | Read-only preparation; return Prepared, Absent or Unreadable; duplicate opens on the same factory may share an already registered healthy owner, never return a poisoned handle as successful readiness |
 | HostFactory::restart | Independent supervisor closes the exact Drained/Poisoned old generation without invoking its Host object, then returns a fresh Prepared handle; no new writer/native callbacks before caller registers and activates it |
+| HostFactory::handover | Retained coordinator stages a keyed live transfer using section 20/30/40 barriers and the separate native queue fence; pending/aborted is not activation, and ordinary close cannot replace this protocol |
 | activate | Required known generation plus fresh services wrapper; start resources/migrate/adopt, return Ready or Recovering only after truthful validation |
 | negotiated / health | Non-blocking metadata/current state of this specific handle, never another generation |
 | wait_health(after) | Notification-driven lifecycle change, not mail pull/polling; reports Prepared/Activating/Ready/Recovering/Draining/Drained/Poisoned/Closed or an explicit timeout/cancel error |
@@ -709,6 +719,158 @@ weaken the job/profile or substitute an unowned PID. Linux uncontained process-
 group evidence cannot prove absence of descendants that left that group; a
 required outside witness remains incomplete rather than inventing total custody.
 
+### 8.4 Alpha live handover and the native queue fence
+
+Live SE Code↔daemon transfer is in alpha. Each participating agent is interrupted
+**immediately**: a running turn is cancelled, not awaited to completion or a later
+natural boundary. Before Prepared, exact active_session Present(None) proves idle
+for every participating native target; the equivalent harness witness applies to
+external agents. An interruption ACK is insufficient. B8 measures the subsequent
+custody/capture cutover within 500 ms without lost/doubled input; quiescence time
+is measured and reported separately. Runtime qualification is still outstanding.
+Section 40 owns coordination; section 20 owns the FULL ownership CAS.
+
+HostFactory::handover is the generation-independent control entry. Request.source
+is the **current runtime owner's** full epoch, including when SE Code initiates a
+request to a daemon; CallOptions names that source G, not the caller's process.
+The retained factory verifies actual owner/lease/store before mutation, pins the
+successor and binds a unique TransferId to one immutable HandoverPlan and original
+request key. Both epochs/generations and the requested destination kind/epoch
+are fixed. Exact-key retry recovers that transfer, not a second plan. Private authenticated IPC orchestrates the two
+processes; no Rust Arc crosses it and no agent/model operation is added.
+
+HandoverServices supplies nonblocking epoch()/queue() snapshots of the actual
+SE Code adapter and retained native store/queue incarnation. The factory checks
+these **before the first callback**. A new transfer uses the direction checks
+below; predecessor-fence recovery instead verifies the fresh adapter's actual
+epoch and adoption chain as specified after the table:
+
+| Direction | Native adapter and checkpoint.owner | Freeze semantics |
+| --- | --- | --- |
+| SE Code → Standalone | native.epoch() == plan.source; checkpoint.owner is that SE Code source epoch | Fence participating live native routes, immediately interrupt them and prove exact idle; retain their original queue before SE Code exits |
+| Standalone → SE Code | native.epoch() == plan.successor == destination.epoch; checkpoint.owner is that receiving SE Code epoch | Reopen the same durable dormant queue; the factory first settles any predecessor transfer's fence using its verified terminal outcome, then starts the new transfer and freezes its participating targets before any new-G admission/promotion or callbacks; do not pretend the daemon's epoch owns the native queue |
+
+HandoverServices has no proprietary store reader and **does not verify runtime
+ownership events or FULL phases**. Those checks belong exclusively to the factory,
+which reads section-20 facts/head and fresh native/lease proof before issuing a
+resolution. EventRef in a resolution identifies the factory-verified fact; it is
+not an adapter-readable proof or permission from a caller-supplied number. The
+native adapter checks exact TransferId/plan, queue incarnation, stored checkpoint
+and its own current native epoch/adoption mapping. It cannot select an unrelated
+target or become ordinary successor-G authority. Old HostServices Arcs remain
+fenced; fresh ordinary callbacks require handle registration and activation.
+
+The native fence is keyed by **TransferId in the retained queue**, not by the
+lifetime of the adapter or its SE Code epoch. Checkpoint.owner records the epoch
+that made the original freeze and never changes on recovery. A fresh adapter
+may inspect/settle that predecessor's fence only when its queue() is exactly the
+same NativeQueueId and the factory independently verifies the new epoch's native
+store/binding adoption and ownership/recovery chain. This recovery check replaces
+the original-attempt epoch equality in the direction table; it does not rewrite
+checkpoint.owner or either plan epoch. NativeQueueSettlement records
+the actual fresh settled_by epoch; no old Arc is rebound or resurrected.
+
+| Control call | Required native result |
+| --- | --- |
+| freeze_queue(plan) | Commit a distinct transfer fence on both human and native-mail admission/promotion for the complete participating target set; drain entered transactions, immediately interrupt and prove exact idle, then seal/read back the complete queue checkpoint |
+| queue_state_for_request(key) | Bounded indexed lookup by (actual NativeQueueId, original request key), returning the original typed Frozen/Settled checkpoint and plan even before Prepared; preserve Absent/Unreadable/Unknown and original commit references |
+| queue_state(transfer) | Exact durable Frozen/Settled lookup by TransferId, including a predecessor epoch's record; preserve Absent/Unreadable/Unknown and original commit references after a lost reply |
+| settle_queue(checkpoint,resolution) | After factory verification, match the retained transfer/checkpoint/queue and commit/read back removal of only that fence at Finished, verified Aborted or checked Recovered, preserving every independent human/takeover/revocation hold |
+
+Before allocating any replacement plan or successor, an exact-key retry reads
+queue_state_for_request on the verified actual queue. The native fence atomically
+stores its request-key index and full immutable plan with the initial freeze,
+including the original source, requested destination kind/epoch, source G and
+request key. The lookup returns at most one result, including a settled result;
+it never scans history or parses a refusal message. The factory checks the
+returned queue incarnation and every request-fingerprint field against the
+surviving HandoverRequest/CallOptions before using the recovered TransferId.
+A changed fingerprint refuses; Absent alone permits new-plan preparation,
+while Unreadable/Unknown prevents replacement allocation. A competing key still
+cannot overwrite the queue's single open fence; freeze's native transaction
+checks that invariant along with request-key uniqueness.
+
+After a lost freeze reply in the same process, or process loss before Prepared,
+the call order is: verify the current native epoch/queue and recovery lineage;
+lookup the surviving request key; recover its original plan/checkpoint; read the
+store's exact phase/owner and independently verify pinned peer/native resources;
+then resume same-plan freeze if the original peer plan remains valid, or perform
+checked pre-claim abort/recovery and settle that original fence. A fresh epoch
+never impersonates an old plan peer. Missing peer/resource proof stays pending;
+discovery is read-only and grants no ownership, cancellation or settlement
+permission. Only after terminal settlement can a new keyed transfer allocate a
+replacement plan. Settled retry returns the original verified outcome rather
+than repeating freeze or queue effects.
+
+The complete participating set comes from SE Code's native binding registry,
+not a caller-guessed list. Unrelated SE Code sessions continue and are never
+interrupted. The manifest binds the exact target set; additions need a new checked
+transfer after the current one ends. freeze_queue persists its initial fence
+before awaiting cancellation; queue_state may therefore show Frozen with
+quiescence_witnessed=false. That is not idle or Prepared authority. Same-plan
+retry completes the cancellation/readback and seals quiescence_witnessed=true;
+only this final checkpoint is immutable and may enter Prepared. Unknown activity
+leaves the fence and original queue visible. Neither interruption nor await holds
+a native transaction open.
+
+NativeQueueId binds the retained store incarnation and its sole queue; the freeze
+event sequence identifies the cut. The manifest digest is domain-bound to NativeQueueId and the frozen cut, not
+just coincidentally equal payload bytes. The protected manifest includes original
+pending-input IDs/bodies, NoticeId/digest, admission events/sequences, committed
+epochs, adoption maps, claims/promotion dedupe and independent holds. The actual
+queue is flushed and independently reopened/read before ownership advances.
+Digests/counts or StateEngine debt alone cannot restore it. HoldReceipt values in
+checkpoint.held identify transfer-fence events to interrupt; ordinary human or
+takeover release paths ignore them. Only settle_queue with the full checkpoint
+can remove this fence, and it never removes independent holds.
+
+| Recovery state | Factory proof and native settlement |
+| --- | --- |
+| SE Code dies after freeze, before settlement | Fresh epoch reopens the same queue; queue_state(transfer) returns the original plan/checkpoint, including checkpoint.owner; factory verifies its actual epoch/queue and durable recovery chain, then settles its original fence using the verified Finished, pre-claim Aborted or Recovered outcome |
+| Freeze exists before Prepared | Factory proves no Prepared fact, actual source ownership/lease and safe staged-copy closure; Aborted may cite that FULL source-owner fact, and the native settlement records the abort without inventing a skipped store phase; unreadable fact/peer state remains pending |
+| Prepared/ReadyToClaim, no claim | Verified pre-claim abort/lease recovery commits FULL Aborted before native fence removal; deadline/cancellation alone never clears it |
+| Claimed/Activated, receiver lost | One checked cold runtime.owner FULL event carries RuntimeRecoveredTransfer and atomically sets the owner head to the original transfer/Recovered, with fresh activated custody/capture and queue-cut proof; its own EventId is the completion reference, and old peers/generations stay immutable |
+| Another plan/key while this fence exists | Ordinary freeze/handover refuses runtime-handover-in-progress and names the open TransferId; it does not overwrite, stack or steal the fence, even for a proposed reverse plan |
+
+RuntimeHandoverInProgress keeps its catalog generation detail; the returned
+ApiError.message must also name the exact open TransferId from the retained
+fence, not the attempted request key. This is diagnostic identity, not authority
+to settle the fence; the factory still verifies the persisted plan and outcome.
+
+An ordinary second plan, including a reverse request, cannot bypass an open
+native fence. Checked receiver-loss recovery first accounts for that original
+transfer as Recovered in the same FULL owner transaction; the factory verifies
+the one owner/completion EventId, its RuntimeRecoveredTransfer payload, the
+atomic Recovered head and fresh activated custody/capture plus retained queue-cut
+proof before settlement. An actual reverse transfer can then
+start as a new explicit transfer after the old fence is settled. The old plan's
+peers/generations are not rewritten to impersonate the cold owner. A cold owner
+fact without that typed Recovered payload/head is not terminal permission.
+HandoverResolution::Recovered.ownership names this FULL runtime.owner event,
+not a fabricated old-plan phase append; the factory checks its exact old
+handover-event reference and retained queue-cut digest against the checkpoint. Resolution
+is Finished, Aborted or Recovered, never receiver absence or timeout alone.
+
+Source gates ordinary work and completes accepted launch/capture/debt operations,
+then freezes capture/debt/full-frame positions before inactive staging and FULL
+Prepared. Writer drain/ReadyToClaim, exclusive lease transfer, FULL Claimed,
+native activation and FULL Activated precede destination consumers. On the normal path, FULL Finished
+plus verified source closure precedes native fence removal; the native transfer
+fence still blocks promotion during the Activated→Finished interval. Factory
+replays a lost Finished acknowledgement to finish native settlement with the same
+key. Removing the transfer fence does not reopen an old ordinary-G routing fence.
+
+After SE Code exits, the daemon continues custody/capture; native input/mail stay
+intact and dormant. AdoptionState::WaitingForSecode{transfer} is the typed status
+fact rendered “waiting for SE Code to reopen”, never fully active. Daemon-launched
+agents are unaffected. Receiving SE Code proves original queue/admission adoption
+under its fresh epoch/G before promotion; a daemon never promotes or reconstructs
+native input. The version-2 HandoverReport contains only NativeQueueSettlement,
+never a Frozen checkpoint. A verified abort returns Ok(Committed/Replayed) with
+resolution Aborted, meaning the abort completed, **not** successful activation;
+an unresolved transfer returns Pending or its precise error, never a terminal
+report. No runtime or B8 result follows from these declarations.
+
 ## 9. Generation lifecycle, adoption and panic containment
 
 ### 9.1 States and observable signals
@@ -721,8 +883,10 @@ required outside witness remains incomplete rather than inventing total custody.
 | Prepared | Invalid activation arguments/source before resource start | Remain Prepared with explicit error, no native mutation |
 | Activating | Valid ownership/store/services, no pending recovery | Ready |
 | Activating | Actual routes still need reconciliation | Recovering with bounded truthful per-session states |
-| Activating | Global resource/migration failure after resource start | Gate this G, preserve exact partial facts, Poisoned and explicit factory-restart route |
-| Activating/Ready/Recovering | Panic in API edge or supervised task | Poisoned, gate engine admissions and report known generation/incident |
+| Activating | Writer/lease/collector fault or migration failure after resource start | Gate this G, preserve exact partial facts, Poisoned and explicit factory-restart route |
+| Activating/Ready/Recovering | Writer/lease/shared collector panic or invariant fault | Poisoned, gate G and report known generation/incident |
+| Any published G | Panic or invariant fault in activate, drain or close | Poisoned, gate G and retain actual resources/obligations for independent factory restart |
+| Activating/Ready/Recovering | Non-lifecycle API/session/capture/listener task panic | Return Internal/EnginePanicked and fence affected route; session task restarts at most three times in 60 s, then fails by name; unaffected routes continue |
 | Prepared/Ready/Recovering | Explicit drain | Draining; SE Code closes native generation routing first, engine joins tasks/persists debt/flushes |
 | Draining | Tasks joined, writer flushed, all unfinished effects durable | Drained with pending-effect counts; still owned until close |
 | Draining | Deadline/unreadable/live task | Remain Draining with named blockers, never a successful drain |
@@ -733,8 +897,10 @@ required outside witness remains incomplete rather than inventing total custody.
 
 health() and notification-driven wait_health expose these states without a mail
 stream. API wrapper catches return EnginePanicked immediately with the known G;
-internal supervisor faults set Poisoned and wake wait_health. SE Code gates that
-G when either observation arrives. Explicit drain returns Drained/Incomplete,
+writer/lease/shared collector faults, activate/drain/close panics, and migration
+failure after resources start set Poisoned and wake wait_health.
+SE Code gates that G for these ownership/lifecycle faults; other incidents fence the
+affected route, preserving original-key recovery and named task status. Explicit drain returns Drained/Incomplete,
 not a human hold. There is one host-level health wait, no per-seat poller/timer.
 Timeout is an explicit error, not a health change. Old handle snapshots refer only
 to old G; they can never start returning Ready for the new generation.
@@ -775,7 +941,7 @@ the process. In that case restart returns explicit Unavailable with the named
 unjoined worker/ownership blocker and asks for a controlled SE Code process
 restart after preserving its native work. It does not freeze ordinary SE Code
 sessions or claim a fresh generation while the old writer might still commit.
-Ordinary caught panics have the closed supervisor path above; abort/OOM/OS kill
+Caught ownership/lifecycle panics have the closed supervisor path above; abort/OOM/OS kill
 requires process-restart adoption instead. The whole embedded boundary uses
 unwind; an abort release profile cannot promise generation-only panic isolation.
 
@@ -806,10 +972,14 @@ cannot clear a human hold or pretend a notice was read.
 SE Code catches synchronous constructor/future-construction panics and every poll
 of engine futures, including activate, health wait and explicit close. Constructor
 is Handle-only/no I/O and cold open is nonmutating; after publication every fault
-has a registered generation. Engine-owned task panics join the supervisor's fault
-state; they never disappear behind a healthy handle. The wrapper gates the known
-G, emits a bounded nonsecret incident and uses factory restart, not a method on a
-handle whose cleanup itself may panic. No raw panic payload/body/credential leaks.
+has a registered generation. Engine-owned task panics reach the supervisor with
+their fault domain; they never disappear as successful work. Writer/runtime-lease/
+shared-collector faults, activate/drain/close panics, and migration failure after
+resources start poison G and use independent factory restart. Other non-lifecycle
+public/API/session faults
+return Internal/EnginePanicked and fence the affected route; a session task is
+restarted at most three times in 60 seconds, then failed by name. Mutex poison is
+Internal and retains actual resources. No raw panic payload/body/credential leaks.
 
 Native hold plus per-input holds, target selection/revocation, and pending input
 admission/claim/dedupe are each one existing SE Code transaction. Before commit,
@@ -906,7 +1076,9 @@ point active lookup; required service generations/fresh activation wrapper;
 push-only mail; independent keyed factory restart and human-only takeover abort;
 non-blocking Drop/snapshots with Clone/Debug options; no public Atlas/Human/CLI
 command type; closed API major-bump rule and version sanity; named passed Handle
-constructor. Gamma's opening fence is achieved by forbidding mutating resources
+constructor. The handover correction adds transfer-keyed cross-epoch recovery,
+factory-owned FULL phase verification, direction-specific native controls,
+immediate cancellation and lifecycle/migration poison rules. Gamma's opening fence is achieved by forbidding mutating resources
 before handle publication, and Held/Refused debt remains explicit/retryable.
 
 Only the explicitly authorized pure foundation implementation is present. No
@@ -932,9 +1104,12 @@ host implementation may begin before its design approval. The following cross-ar
    module is removed when replaced by the reviewed dependency. Stub behavior and
    panic-after-commit recovery need SE Code reviewer witnesses before adoption.
 
-Live daemon/SE Code handover remains after alpha. Crash adoption of the same
-supported host and logical engine generation drain/factory-restart are covered here, not
-a new launch/handover command. macOS runtime validation and signing infrastructure
+Live daemon/SE Code handover is in alpha, with B8 requiring custody/capture
+re-adoption within 500 ms from post-quiescence cutover and no lost or doubled
+input; quiescence is separately reported. Sections 20/30/40 own its
+durable ownership, native custody and host barrier; same-host crash adoption and
+logical generation drain/factory-restart remain distinct from that transfer.
+No new public launch/handover command is introduced. macOS runtime validation and signing infrastructure
 remain project acceptance dependencies; pure type compilation is not that witness.
 
 Review the implemented foundation and have reviewers exercise its real values;
@@ -2943,6 +3118,8 @@ pub struct IdempotencyKey(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NoticeId(pub String);
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TransferId(pub String);
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Cursor(pub String);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Generation(pub u64);
@@ -3123,7 +3300,7 @@ pub struct ApiVersion {
     pub major: u16,
     pub minor: u16,
 }
-pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 0 };
+pub const API_VERSION: ApiVersion = ApiVersion { major: 2, minor: 0 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StoreVersion {
@@ -3473,6 +3650,7 @@ pub enum AdoptionState {
     Revoked,
     Absent,
     Unreadable(ApiError),
+    WaitingForSecode { transfer: TransferId },
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Adoption {
@@ -3500,6 +3678,100 @@ pub struct DrainReceipt {
     pub writer_flushed: bool,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HandoverDestination {
+    Standalone,
+    EmbeddedSecode { epoch: HostEpoch },
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HandoverRequest {
+    pub source: HostEpoch,
+    pub destination: HandoverDestination,
+    pub idempotency_key: IdempotencyKey,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HandoverPlan {
+    pub transfer: TransferId,
+    pub source: HostEpoch,
+    pub destination: HandoverDestination,
+    pub successor: HostEpoch,
+    pub source_generation: Generation,
+    pub successor_generation: Generation,
+    pub idempotency_key: IdempotencyKey,
+}
+#[derive(Clone, Debug)]
+pub struct HandoverOptions {
+    pub timeout: Duration,
+    pub cancellation: Arc<dyn Cancellation>,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeQueueId(pub String);
+/// Receipt for SE Code's own protected queue, never its input bodies or a second queue.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeQueueCheckpoint {
+    pub plan: HandoverPlan,
+    pub owner: HostEpoch,
+    pub queue: NativeQueueId,
+    pub committed: HostEventRef,
+    pub sha256: Sha256,
+    pub pending: u64,
+    pub held: Vec<HoldReceipt>,
+    pub quiescence_witnessed: bool,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HandoverResolution {
+    Finished { ownership: EventRef },
+    Aborted { ownership: EventRef },
+    Recovered { ownership: EventRef },
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeQueueSettlement {
+    pub checkpoint: NativeQueueCheckpoint,
+    pub resolution: HandoverResolution,
+    pub committed: HostEventRef,
+    pub settled_by: HostEpoch,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NativeQueueHandoverState {
+    Frozen(Box<NativeQueueCheckpoint>),
+    Settled(Box<NativeQueueSettlement>),
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HandoverReport {
+    pub plan: HandoverPlan,
+    pub queue: NativeQueueSettlement,
+}
+/// Native queue control retained independently of ordinary generation callbacks.
+/// A fresh epoch may recover the same queue's transfer-keyed fence; ownership
+/// phase verification belongs to the factory, not this permissive adapter.
+pub trait HandoverServices: Send + Sync {
+    /// Non-blocking snapshots of this adapter's actual epoch and queue incarnation.
+    fn epoch(&self) -> HostEpoch;
+    fn queue(&self) -> NativeQueueId;
+    fn freeze_queue<'a>(
+        &'a self,
+        plan: &'a HandoverPlan,
+        options: HandoverOptions,
+    ) -> HostFuture<'a, NativeQueueCheckpoint>;
+    /// Indexed lookup recovers the original plan even before Prepared exists.
+    fn queue_state_for_request<'a>(
+        &'a self,
+        key: &'a IdempotencyKey,
+        options: HandoverOptions,
+    ) -> HostFuture<'a, Read<NativeQueueHandoverState>>;
+    fn queue_state<'a>(
+        &'a self,
+        transfer: &'a TransferId,
+        options: HandoverOptions,
+    ) -> HostFuture<'a, Read<NativeQueueHandoverState>>;
+    fn settle_queue<'a>(
+        &'a self,
+        checkpoint: &'a NativeQueueCheckpoint,
+        resolution: HandoverResolution,
+        options: HandoverOptions,
+    ) -> HostFuture<'a, NativeQueueSettlement>;
+}
+
 /// The implementation/factory is configured with the embedding host's runtime.
 /// No Tokio dependency or runtime creation belongs to this permissive API crate.
 pub enum HostIntegration {
@@ -3523,6 +3795,13 @@ pub trait HostFactory: Send + Sync {
         key: IdempotencyKey,
         options: CallOptions,
     ) -> HostFuture<'a, Read<OpenedHost>>;
+    /// Retained coordinator; does not invoke a drained or poisoned Host object.
+    fn handover<'a>(
+        &'a self,
+        request: HandoverRequest,
+        native: Arc<dyn HandoverServices>,
+        options: CallOptions,
+    ) -> HostFuture<'a, Receipt<HandoverReport>>;
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RestartReason {
