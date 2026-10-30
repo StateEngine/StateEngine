@@ -63,6 +63,7 @@ codes! {
     AgentUnknown => ("agent-unknown", Unknown) { selector: String, suggestion: Option<String> } => "no agent `{selector}` in {project}", "Use `se agent list`";
     AtlasPathUnknown => ("atlas-path-unknown", Unknown) { path: String } => "{path} isn't indexed", "Use `se atlas find PATH --kind path`";
     AtlasSymbolUnknown => ("atlas-symbol-unknown", Unknown) { symbol: String } => "no symbol `{symbol}`", "Use `se atlas find {symbol}`";
+    CommitOutcomeUnknown => ("commit-outcome-unknown", Unknown) { operation: String, key: Option<String>, natural_events: Vec<EventId> } => "Commit outcome unknown for {operation}; original key {key}, natural events {natural_events}", "Rerun the same command with --key K (CLI), substituting the original detail.key, or repeat the call with the same idempotency_key (MCP); natural capture/markers replay the original natural_events unchanged";
     TargetUnknown => ("target-unknown", Unknown) { subject: String, reason: String, next_step: String } => "Unknown target {subject}: {reason}", "{next_step}";
     AtlasSourceUnreadable => ("atlas-source-unreadable", Unreadable) { path: String, reason: String } => "Atlas can't read {path}: {reason}", "restore read access to the file";
     AtlasUnreadable => ("atlas-unreadable", Unreadable) { path: String, reason: String } => "can't read the index database atlas.db: {reason}", "Run `se doctor`; only a diagnosed atlas.index repair may rebuild atlas.db; source-file unreadability is separate";
@@ -90,9 +91,9 @@ codes! {
     DeadlineExceeded => ("deadline-exceeded", Unavailable) { op: String, deadline_ms: u64 } => "`{op}` didn't finish in {deadline_ms} ms", "retry";
     IpcUnavailable => ("ipc-unavailable", Unavailable) { endpoint: String, reason: String } => "can't reach the runtime: {reason}", "Use `se status`";
     RuntimeHandoverInProgress => ("runtime-handover-in-progress", Unavailable) { generation: String } => "the runtime is changing hosts", "retry (`WhenRuntimeReady`)";
-    RuntimeNotRunning => ("runtime-not-running", Unavailable) { op: String } => "`{op}` needs the StateEngine runtime", "Use `se up`";
+    RuntimeNotRunning => ("runtime-not-running", Unavailable) { op: String, reason: String } => "`{op}` needs a ready runtime writer: {reason}", "Reopen the current runtime generation and retry with the original request identity; use `se up` if no runtime is running";
     RuntimeStartFailed => ("runtime-start-failed", Unavailable) { reason: String, log: String } => "the runtime didn't start: {reason}", "see {log}; → `se doctor`";
-    StoreBusy => ("store-busy", Unavailable) { waited_ms: u64 } => "the store stayed locked for {waited_ms} ms", "retry (`Retry::After`)";
+    StoreBusy => ("store-busy", Unavailable) { waited_ms: u64, reason: String, next_step: String } => "Store unavailable after {waited_ms} ms: {reason}", "{next_step}; retry the same request identity";
     StoreDiskFull => ("store-disk-full", Unavailable) { path: String, free_bytes: u64 } => "not enough disk space at {path}", "free space and retry";
     StoreMigrationRequired => ("store-migration-required", Unavailable) { from: u64, to: u64 } => "Store {from} needs supported additive migration to {to}", "Start `se up`: the sole owning host verifies a pre-migration backup and migrates automatically; an old running host requires `se down` first";
     Internal => ("internal", Internal) { report_id: String, location: String } => "StateEngine hit a bug ({report_id})", "Use `se doctor --bundle` and send it";

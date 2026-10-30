@@ -16,9 +16,11 @@ cutover is outside this product plan.
 | Commit, replay, pending and refusal values | [receipt.rs](../../crates/se-types/src/receipt.rs) | 20 and 50 |
 | Protected byte values | [sensitive.rs](../../crates/se-types/src/sensitive.rs) | [70 — security](70-security.md) |
 | Error classes, typed detail and remedies | [error.rs](../../crates/se-types/src/error.rs), [catalog.rs](../../crates/se-types/src/error/catalog.rs) | 50 §6 |
+| Atlas query/result values and text validation | [code.rs](../../crates/se-types/src/code.rs) | [60 — Atlas](60-atlas.md); core uses these without a se-atlas dependency |
 | Shared limits and internal framing identity | [lib.rs](../../crates/se-types/src/lib.rs) | 50 §1 and §2 |
 | Proposed permissive SE Code API | [secode-stateengine-api.rs](secode-stateengine-api.rs) | [40 — host](40-host-runtime-and-harnesses.md) |
 | Proprietary embedded constructor signature | [commercial-factory.rs](commercial-factory.rs) | 40 |
+| Synchronous core commit step and read port | [commit.rs](../../crates/se-core/src/commit.rs), [compile-only consumer](commit-bridge-consumer.rs) | 50 §1; AtomicBatch/Snapshot/CommitReceipt belong to se-store, with no reverse dependency from se-types |
 | Operation inputs, outputs and exposure | [OPS.md](../OPS.md), 50 | Synchronous `se-core` registry; async custody execution in `se-host` |
 
 The foundation has no I/O, environment/ambient principal, runtime, random source,
@@ -190,7 +192,7 @@ The linked declarations do not establish any performance, crash or native result
 [95 — work breakdown](95-work-breakdown.md) owns the build order and generated
 size table. Standalone Windows/Linux is an intermediate milestone; done includes
 all five journeys, real Claude and Codex, standalone and embedded, plus borrowed-Mac
-qualification before alpha release. Atlas is disabled by default and built after
+qualification before alpha release. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable. Atlas is built after
 the journeys and handover; it cannot hold a milestone. Forget remains before
 release, after the journeys. No factory cutover or Rust implementation is admitted
 by a compilation result or by this index.

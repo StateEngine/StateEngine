@@ -8,7 +8,7 @@ Crates: types and errors live in `se-types`; the registry, `Op` impls and dispat
 
 ## 1. The operation registry
 
-### 1.1 Core types (`se-types::op`)
+### 1.1 Synchronous operation types (`se-core`; values in `se-types`)
 
 ```rust
 pub trait Op: DeserializeOwned + JsonSchema + Validate + Send + 'static
@@ -16,7 +16,10 @@ pub trait Op: DeserializeOwned + JsonSchema + Validate + Send + 'static
 {
     const META: OpMeta;
     type Output: Serialize + JsonSchema + Render + ExitStatus + Send + 'static;
-    fn run(self, cx: &mut Cx<'_>) -> Result<OpStep<Self::Output>, SeError>;
+    type Then: Send + 'static;
+    type Custody: Send + 'static;
+    fn run<R: se_store::Snapshot>(self, cx: &mut Cx<'_, R>)
+        -> Result<OpStep<Self::Output, Self::Then, Self::Custody>, SeError>;
 }
 
 pub struct OpMeta {
@@ -25,7 +28,7 @@ pub struct OpMeta {
     pub mcp: McpExposure,
     pub auth: Auth,                    // Owner | Session | Either
     pub anonymous: bool,               // only meta.version / meta.help / meta.schema
-    pub human_only: bool,              // interactive TTY outside any agent process tree
+    pub human_only: HumanPolicy,       // Always | Never | ConfigKey
     pub effect: Effect,
     pub scope: Scope,                  // decides which global flags the op accepts
     pub runtime: RuntimeNeed,
@@ -44,15 +47,42 @@ pub enum Selector { Always, Flag(&'static str) }
 pub enum McpExposure { Tool { name: &'static str, title: &'static str, description: &'static str }, None(Reason) }
 pub struct Reason(pub &'static str);   // non-empty, ≥ 12 bytes (const-checked)
 pub enum Auth { Owner, Session, Either }
+pub enum HumanPolicy { Never, Always, ConfigKey }
+pub struct ConfigKeyMeta { pub human_only: bool /* security keys, including agent can-create */ }
 pub enum Effect { Read, Write, Custody, Variant(&'static [(&'static str, Effect)]) }
 pub enum Scope { None, Home, Project, ProjectOrAll, Session }
 pub enum RuntimeNeed { None, HostForWrites, Host, HostAutoStart }
 pub struct Family { pub name: &'static str, pub major: u16 }   // ("se.launch", 1)
 ```
 
-`Cx` contains verified authority, resolved project, synchronous store reader/writer access, clock and feature facts. It has no host future, async runtime or I/O callback. `Validate::validate(&self) -> Result<(), SeError>` enforces the same closed inputs and limits as JSON Schema. `OpStep<T>` is either `Complete(T)` or a typed `CustodyPlan<T>`; the latter describes admitted work for the host's async custody executor. Core validation, planning and store transactions are synchronous. A host worker invokes those same functions; no transaction or native lock spans an await. A hostless CLI uses the same store implementation when no host owns the lease; when a host owns it, the transport wrapper routes the request to that host before core execution. No core function waits for IPC or starts a runtime.
+`Cx` borrows the store Snapshot and verified Admission after project/feature policy resolves. It has no writer wait, future, runtime or native I/O
+callback. `Validate::validate` enforces the same closed input and UTF-8 limits as
+schema generation. Synchronous `dispatch` returns one of:
 
-**Writer stamp (Prime decision, 2026-10-30).** Every store commit records which writer made it: `WriterMode::Host { generation }` when the running host's writer committed it, `WriterMode::Direct` when the CLI committed with no host running. The store writes this onto the event row in the commit transaction and returns it in `Committed { receipt, wakes, writer }`. The dispatcher, not the op, copies it into the output's `writer` field. An `Op::run` cannot construct or override a `WriterMode`; the type has no public constructor outside `se-store`. Every output family that carries a store receipt includes `writer` (Appendix A.0 lists them), and it is a required stable field. An outside observer proves routing by comparing `writer.host_generation` with `se status` `$.runtime.generation` and with the event read back through `se history --event`, which carries the same object. No timing is involved. MCP and SE Code calls always commit through a host, so they always report `host`. A replayed receipt reports the writer of the original commit.
+- `OpStep::Complete(output)` for an already measured read/result;
+- `OpStep::Commit { batch, then }`, where `batch` is the store's closed AtomicBatch
+  and `then` is a typed operation continuation containing owned values only;
+- `OpStep::Custody(plan)` for native/file work admitted to the host executor.
+
+`then` is not a closure and captures no SQL handle, transaction or lock. The async
+host calls `WriterClient::submit`, awaits its Completion on its async task, then
+runs the synchronous continuation with the actual CommitReceipt. Submission is
+bounded admission, not a blocking commit. Core never waits; no host thread calls
+`wait_blocking`. The hostless CLI calls synchronous `DirectStore::append(batch, lease)` and passes its actual CommitReceipt to the same typed continuation. CommitWait::wait_blocking remains CLI-only for a queued writer consumer; it is not a new DirectStore requirement. `se-store` is **Async: futures only at the writer boundary**.
+No write closure or transaction spans an await. Custody continuations may produce
+another typed Commit step; only the host drives this loop.
+
+The frozen first-write seam is [se-core::commit](../../crates/se-core/src/commit.rs).
+`Cx` borrows `se-store::Snapshot` and verified Admission, while AtomicBatch and
+CommitReceipt also live in se-store. Dependencies are core -> store -> types;
+there is no types -> store cycle. [The compile-only consumer](commit-bridge-consumer.rs)
+plans message.send and working_state.set, closes the actual planning Snapshot,
+then exercises both routes. The host awaits WriterClient's CommitWait; the CLI
+uses DirectStore::append. Both feed the same typed continuation a real
+CommitReceipt and a fresh finite read for replayed payload IDs. No planner,
+transaction engine or fake store/receipt implementation is supplied.
+
+**Writer stamp (Prime decision, 2026-10-30).** Every store commit records which writer made it: `WriterMode::Host { generation }` when the running host's writer committed it, `WriterMode::Direct` when the CLI committed with no host running. The store writes this onto the event row in the commit transaction and returns it in `Committed { receipt, wakes, writer }`. The typed continuation copies the actual CommitReceipt writer into the output; it never predicts that stamp before the writer completes. An `Op::run` cannot construct or override a `WriterMode`; the type has no public constructor outside `se-store`. Every output family that carries a store receipt includes `writer` (Appendix A.0 lists them), and it is a required stable field. An outside observer proves routing by comparing `writer.host_generation` with `se status` `$.runtime.generation` and with the event read back through `se history --event`, which carries the same object. No timing is involved. MCP and SE Code calls always commit through a host, so they always report `host`. A replayed receipt reports the writer of the original commit.
 
 Owner-only selectors (`--all`, private-read previews) stay outside MCP schemas and refuse under session authority. For launch/stop/wake, CLI AGENT resolves to the same typed `target_agent_id` used by the MCP DTO; the creator-control check in §3.1 applies before `run`. A target is never an actor override.
 
@@ -108,7 +138,7 @@ The `macro_rules!` expansion produces:
 | `fn from_matches(&ArgMatches) -> Result<AnyOp, SeError>` | leaf → `AnyOp` | `se` binary |
 | `fn tool_defs(&Principal, &Features) -> Vec<ToolDef>` | §1.4 | MCP `tools/list`, `Host::tools` |
 | `fn decode_tool(name: &str, args: Value) -> Result<AnyOp, SeError>` | serde with `deny_unknown_fields` | MCP `tools/call` |
-| `fn dispatch(AnyOp, &mut Cx<'_>) -> Result<AnyStep, SeError>` | §1.5 | every surface |
+| `fn dispatch<R: Snapshot>(AnyOp, &mut Cx<'_, R>) -> Result<AnyStep, SeError>` | §1.5 | every surface |
 | `fn schema_catalogue(Option<&str>) -> SchemaCatalogue` | §1.6 | `se schema`, MCP schemas |
 | `const` assertions | §1.7 | compile-time mirror rules |
 
@@ -131,11 +161,11 @@ Global flags are attached per leaf according to `Scope`: `-p/--project` only for
 
 The transport wrapper and synchronous dispatcher use the same admission order for CLI, MCP, IPC and linked calls:
 
-1. Resolve the registered operation, feature, authority and human-only policy. Refuse before any effect on failure.
+1. Resolve the registered operation, feature and authority, then its HumanPolicy. Always covers ratify, reject, retract, supersede, remove, forget, restore, credential rotate, uninstall and doctor --fix. ConfigKey covers config.set of security keys, including agent.<A>.can-create. Other config keys are not human-only by a blanket operation flag. The owner terminal/ancestry proof is verified before any effect; a failed check refuses with the same-user mistake/drift bound.
 2. Resolve project from the bound session or §2.2. A conflicting owner selector refuses.
 3. Validate the closed DTO, UTF-8 limits, revision preconditions and required request identity. Wrong identity kind, unknown fields or changed-body key reuse refuse before effects.
-4. Inspect runtime requirements. Read-only/hostless store work stays synchronous. Writes route to the existing host writer when it owns the lease. For custody requiring a host, the adapter uses the **private runtime bootstrap**, waits up to ten seconds for readiness and retains the same request identity. There is no public `se daemon` command. Pending returns an explicit readiness/result handle, never a fabricated success.
-5. Synchronous `dispatch` validates/plans/commits through `se-core` and the canonical store functions. It returns a completed value or typed custody plan. The host async executor performs native custody and feeds measured results back through synchronous core/store transitions; it never holds a transaction over an await.
+4. Inspect runtime requirements. Read-only/hostless store work stays synchronous. Writes route to the existing host writer when it owns the lease. A reader/direct connection finding a supported older schema releases its shared lease and uses private host bootstrap for automatic backed-up migration, then reopens the read; it does not ask the user to run se up or upgrade manually. For custody requiring a host, the adapter uses the **private runtime bootstrap**, waits up to ten seconds for readiness and retains the same request identity. There is no public `se daemon` command. Pending returns an explicit readiness/result handle, never a fabricated success.
+5. Synchronous `dispatch` validates/plans and returns Complete, Commit { batch, then } or Custody. The host submits a Commit batch and asynchronously awaits Completion before calling its typed continuation; no host thread blocks on a writer. Its async custody executor performs native work and feeds actual facts back through these synchronous steps. Core does not submit or await commits, and no transaction spans an await.
 6. Render achieved facts, including original writer on replay. Ordinary refusals return `se.error/v1` on the error channel **without appending a history event**. A prior commit or partial native effect remains an explicit receipt/pending fact, not a refusal erased from the record.
 
 ### 1.5.1 Request identity and bounded inputs
@@ -148,7 +178,7 @@ Only captured turns/hooks and recipient read/ack/dismiss markers use the restric
 
 ### 1.6 `se schema`
 
-`SchemaCatalogue { schema: "se.schema-catalogue/v1", api: "1.0", build, ops: [OpSchema], families: [FamilySchema], errors: [ErrorSchema] }`. `OpSchema` = name, CLI path(s), MCP name or reason, auth, anonymous, human_only, effect, scope, runtime, feature, since, input schema, output family. `ErrorSchema` = code, class, exit, detail schema. With `OP`, one `OpSchema` plus the families it references. Anonymous, discloses no state.
+`SchemaCatalogue { schema: "se.schema-catalogue/v1", api: "1.0", build, ops: [OpSchema], families: [FamilySchema], errors: [ErrorSchema] }`. `OpSchema` = name, CLI path(s), MCP name or reason, auth, anonymous, human_only, effect, scope, runtime, feature, since, per-config-key human policy, input schema, output family. `ErrorSchema` = code, class, exit, detail schema. With `OP`, one `OpSchema` plus the families it references. Anonymous, discloses no state.
 
 ### 1.7 Compile-time mirror rules
 
@@ -158,7 +188,7 @@ Expanded as `const _: () = { ... };` blocks using `const fn` byte comparison:
 * Every MCP name starts with `stateengine_`, matches `[a-z0-9_]+`, and is unique; every registry name is unique; no two leaves share a path unless their selectors differ.
 * `auth == Owner` ⇒ `mcp` is `None` (MCP is session-bound).
 * `anonymous` ⇒ name ∈ {`meta.version`, `meta.help`, `meta.schema`}.
-* `human_only` ⇒ `auth == Owner` and `mcp` is `None`.
+* `human_only == Always` or `ConfigKey` ⇒ `auth == Owner` and `mcp` is `None`; config.set checks its closed key metadata before effects.
 * Catalogue and MCP counts are derived from registry rows and feature/auth filtering. Changing the allowlist updates OPS.md and the source registry together; no separately maintained count assertion supplies authority.
 
 ### 1.8 Version boundaries
@@ -178,7 +208,7 @@ Expanded as `const _: () = { ... };` blocks using `const fn` byte comparison:
 | `--json` | bool | false | current family JSON on stdout, diagnostics on stderr |
 | `--key KEY` | 1–128 bytes | generated before send | mutating leaves only; reuse after an uncertain result (§1.5.1) |
 | `-q, --quiet` | bool | false | suppresses human success text; errors still print |
-| `--no-color` | bool | false | also `NO_COLOR`, `[output] color` |
+| `--no-color` | bool | false | also `NO_COLOR` |
 | `-h, --help` | bool | | generated help, loads no handler |
 | `-V, --version` | bool | | `meta.version`; accepts only `--json` |
 
@@ -216,7 +246,21 @@ StateEngine 0.1.0 — no project here yet.
 | `CURSOR` | opaque, project- and principal-bound |
 | `REV` | non-negative integer, or `absent` |
 | `QUERY` | 1–512 bytes |
-| Paging | `--limit N` (1–200, default 20), `--cursor CURSOR` on every list op |
+| Paging | `--limit N` (1–100, default 20; search 1–50), `--cursor CURSOR` on every list op |
+
+One closed input type per operation is shared by CLI, MCP, IPC and linked calls;
+CLI flag names may select/rename those fields but cannot define different limits
+or defaults. General lists use limit 1–100, default 20; search 1–50, default 20;
+message previews default 400 characters; resume defaults 32 KiB and caps at 1 MiB.
+The public session.turn DTO accepts at most 128 KiB decoded UTF-8 content within
+the existing 1 MiB encoded frame cap. These are se-types constants SESSION_TURN_MAX_CONTENT_BYTES, SESSION_TURN_MAX_METADATA_BYTES and SESSION_TURN_MAX_FRAME_BYTES. Non-content fields, keys and framing occupy
+at most 256 KiB; worst-case six-byte JSON escaping of content uses 768 KiB, so both
+fit without enlarging transport buffers. CLI/MCP/IPC share these constants and
+reject before effects. Trusted host capture from pinned provider sources streams
+up to the store's 1 MiB canonical turn cap into staging instead of carrying raw
+turn text through this public JSON operation; its source identity/cursor remains
+mandatory. The in-process SE Code capture adapter uses that trusted capture seam.
+Other strings/arrays retain their DTO bounds.
 
 ### 2.5 Commands
 
@@ -243,7 +287,7 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 
 | Op | Command line | Human output | Family |
 | --- | --- | --- | --- |
-| runtime.up | `se up [--foreground]` | `StateEngine running (daemon, pid 4120, generation 7, 127.0.0.1:3221).` | `se.runtime-start/v1` |
+| runtime.up | `se up [--foreground]` | `StateEngine running (daemon, pid 4120, generation 7, 127.0.0.1:24731).` | `se.runtime-start/v1` |
 | runtime.down | `se down` | `Stopped main and the daemon (witnessed). Resume the conversation: se launch main` | `se.runtime-stop/v1` |
 | mcp.serve | `se mcp [--stdio]` (stdio is the only transport; flag is explicit for clients) | none (JSON-RPC on stdout) | MCP protocol |
 | mcp.token | `se mcp token` | `{"Authorization":"Bearer sels-…"}` | header map (Claude `headersHelper` protocol; no `schema` key) |
@@ -254,7 +298,7 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 | agent.launch | `se launch AGENT [--new] [--provider PROVIDER] [--model MODEL] [--task TEXT] [--detach] [-p P]` — resumes the saved conversation unless `--new`; window by default, `--detach` = headless | `Resumed main (claude) in a new window — conversation 7f3a…, ready in 1.9 s. Stop: se stop main`; when not contained it adds `Uncontained: no systemd user manager (stop reaches only its process group).` | `se.launch/v1` |
 | agent.stop | `se stop AGENT \| --all [-p P]` | `Stopped main (exit witnessed). Resume: se launch main` | `se.stop/v1` (`receipt = seat-stop/v1`) |
 | agent.wake | `se wake AGENT [-p P]` | `Offered 2 unread messages to main (delivered to its session; not yet read).` | `se.wake/v1` |
-| continuity.resume | `se resume [--since CURSOR] [--budget BYTES] [--preview AGENT]` (`--budget` 1024–1048576, default 32768; `--preview` owner only) | sections: who you are, working state, unread, required reads, omissions, next cursor | `se.resume/v1` |
+| continuity.resume | `se resume [--since CURSOR] [--budget BYTES] [--preview AGENT]` (`--budget` 1024–1048576, default 32768, max 1048576; `--preview` owner only) | sections: who you are, working state, unread, required reads, omissions, next cursor | `se.resume/v1` |
 | working_state.get | `se working-state [--agent AGENT]` | text + `revision 12` or `no working state yet` | `se.working-state/v1` |
 | working_state.set | `se working-state set TEXT --expect REV [--agent AGENT]` | `Saved revision 13.` | `se.working-state-receipt/v1` |
 | history.search | `se search QUERY [--kind turn\|message\|decision]... [--since TIME] [--until TIME] [--agent AGENT] [--limit N] [--cursor C]` | hits: time, kind, who, snippet, `history --event` id | `se.search-page/v1` |
@@ -266,8 +310,8 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 | Op | Command line | Human output | Family |
 | --- | --- | --- | --- |
 | message.send | `se msg send TO BODY [--kind KIND] [--ref ID]... [--reply-to ID] [--key IDEMPOTENCY]` — `TO` is `AGENT` or `owner` | `Sent msg_01J… to rev (committed; delivery pending).` | `se.message-receipt/v1` |
-| message.inbox | `se msg inbox [AGENT] [--full] [--limit N]` | unread list with 200-char previews; footer `3 of 7 unread shown — se msg inbox --cursor …` (exit 2) | `se.message-page/v1` |
-| message.list | `se msg list [--to AGENT] [--from AGENT] [--kind KIND] [--all] [--full] [--limit N] [--cursor C]`. `--all` includes read and dismissed messages. `--full` prints complete bodies instead of previews, within the fixed page body budget of 256 KiB: a body is never cut, each page holds at least one row, and the rest comes through `--cursor`. Listing never creates or changes read or delivered markers; only `msg read`, `ack` and `dismiss` do. The owner may list any message in the project. Under a session, only messages the agent sent or received are listed. | table with disposition column; with `--full`, each message in full under a header line | `se.message-page/v1` |
+| message.inbox | `se msg inbox [AGENT] [--full] [--limit N] [--preview-chars N] [--cursor C]` | unread list with 400-character previews; footer `3 of 7 unread shown — se msg inbox --cursor …` (exit 2) | `se.message-page/v1` |
+| message.list | `se msg list [--to AGENT] [--from AGENT] [--kind KIND] [--all] [--full] [--limit N] [--preview-chars N] [--cursor C]`. `--all` includes read and dismissed messages. `--full` prints complete bodies instead of previews, within the fixed page body budget of 256 KiB: a body is never cut, each page holds at least one row, and the rest comes through `--cursor`. Listing never creates or changes read or delivered markers; only `msg read`, `ack` and `dismiss` do. The owner may list any message in the project. Under a session, only messages the agent sent or received are listed. | table with disposition column; with `--full`, each message in full under a header line | `se.message-page/v1` |
 | message.read | `se msg read ID` | full message; `marked read` | `se.message-read/v1` |
 | message.ack | `se msg ack ID` | `Acknowledged msg_… (read).` | `se.disposition-receipt/v1` |
 | message.dismiss | `se msg dismiss ID` | `Dismissed msg_… (not marked read; still in history).` | `se.disposition-receipt/v1` |
@@ -287,13 +331,13 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 | --- | --- | --- | --- |
 | session.begin | `se session begin --agent AGENT --source claude\|codex\|secode --provider-session ID [--incognito]` (hidden; stdout must be a pipe) | none | `se.session-begin/v1` |
 | session.context | `se session context [--budget BYTES] [--since CURSOR]` (hidden; capability from `SE_SESSION` or stdin line 1) | none | `secode.session-context-v1` |
-| session.turn | `se session turn` (hidden; stdin one `se.turn/v1` JSON object ≤1 MiB) | none | `se.turn-receipt/v1` |
+| session.turn | `se session turn` (hidden; stdin one `se.turn/v1` object with at most 128 KiB decoded content in a 1 MiB frame) | none | `se.turn-receipt/v1` |
 | session.end | `se session end [--session ID] --reason REASON --expect-generation N` (hidden) | none | `se.session-end/v1` |
 | hook.claude | `se hook claude session-start\|prompt\|stop\|stop-failure` (hidden; native stdin) | Claude hook stdout protocol | Claude hook protocol |
 | store.restore | `se restore` (human-only) | prints newest valid automatic backup, events lost, affected agents/credentials; preserves corrupt source and reports verified restore | `se.restore/v1` |
 | credential.rotate | `se credential rotate` (human-only) | prints credentials revoked and affected agents; independently verifies new credential and revocations | `se.credential-rotation/v1` |
-| installation.uninstall | `se uninstall` (human-only) | stops owned agents/runtime, removes owned install/integrations and restores managed PATH entries; preserves repositories/history | `se.uninstall/v1` |
-| store.import_node | `se import --from-node PATH` | per family: read/imported/duplicate/unreadable/dropped; originals untouched | `se.import/v1` |
+| installation.uninstall | `se uninstall` (human-only) | first ordinary graceful down with exact stop witnesses and saved resume references; prints achieved facts; then removes owned install/integrations and restores managed PATH entries | `se.uninstall/v1` |
+| store.import_node | `se import --from-node PATH` | six user-state families: read/imported/duplicate/unreadable/dropped; originals untouched | `se.import/v1` |
 | store.forget | `se forget --event ID [--event ID]...` (human-only; prints exact erase plan first) | erased bodies/projections, WAL/cache readback, no resurrection; named residual copies | `se.erasure/v1` |
 | atlas.find | `se atlas find QUERY [--kind symbol\|text\|path] [--in PATH] [--limit N]` | `src/store/tx.rs:41 fn commit (symbol, resolved)` | `se.code-hits/v1` |
 | atlas.refs | `se atlas refs SYMBOL [--path PATH] [--limit N] [--cursor C]` | sites with enclosing symbol and `resolved`/`name-only` | `se.code-refs/v1` |
@@ -307,7 +351,7 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 
 ## 3. MCP tool set
 
-Session-bound: no tool takes an actor/authority override or project selector. External HTTP uses the authenticated bearer; stdio uses verified per-call session metadata. The statically linked SE Code caller uses its generation-bound in-process `BoundSession`, **not a minted credential or bearer**. Invalid/revoked authority refuses without owner fallback. `target_agent_id` is only a creator-control destination (§3.1), never the authenticated actor. Every tool's auth is session. Common failures include `session-required`, `capability-invalid`, `input-unknown-field`, `usage-invalid-value`, `input-too-large`, `store-unreadable`, `store-busy`, `internal`; keyed mutations also require their caller-retained identity (§1.5.1).
+Session-bound: no tool takes an actor/authority override or project selector. External HTTP uses the authenticated bearer; stdio uses verified per-call session metadata. The statically linked SE Code caller uses its generation-bound in-process `BoundSession`, **not a minted credential or bearer**. Invalid/revoked authority refuses without owner fallback. `target_agent_id` is only a creator-control destination (§3.1), never the authenticated actor. Every tool's auth is session. Common failures include `session-required`, `capability-invalid`, `input-unknown-field`, `usage-invalid-value`, `input-too-large`, `store-unreadable`, `store-busy`, `internal`; keyed mutations also require their caller-retained identity (§1.5.1) and return commit-outcome-unknown when a commit/reply cannot be resolved. That tool error preserves the original identity for retry, not a success/read claim.
 
 | Tool | Description (verbatim) | Input | Output | Extra errors |
 | --- | --- | --- | --- | --- |
@@ -329,7 +373,7 @@ Session-bound: no tool takes an actor/authority override or project selector. Ex
 | `stateengine_agent_launch` | "Start or resume your own agent, or a directly created agent while you hold agent-create permission. Resumes by default; new starts a fresh conversation." | `target_agent_id?` Id, `new?` bool, `model?`, `task?` ≤16 KiB, `detach?` bool (true), `idempotency_key` 1–128 | `LaunchResult` | `runtime-not-running`, `agent-already-running`, `launch-in-flight`, `resume-reference-missing`, `resume-reference-unverifiable`, provider errors |
 | `stateengine_agent_stop` | "Stop your own agent, or a directly created agent while you hold agent-create permission. Returns the exact command that resumes this conversation." | `target_agent_id?` Id, `idempotency_key` 1–128 | `StopReceipt` | `runtime-not-running`, `stop-unwitnessed` |
 | `stateengine_agent_wake` | "Offer pending mail to a running agent you directly created while you hold agent-create permission. Does not launch it or mark mail read." | `target_agent_id` Id, `idempotency_key` 1–128 | `WakeReceipt` | `grant-required`, `owner-required`, `wake-not-running` |
-| `stateengine_session_turn` | "Record one conversation turn for this session (used by integrations, not for notes)." | `role` user\|assistant, `content` ≤1 MiB, `occurred_at`, `provider_session_id`, `turn_id` (stable provider/source identity before first send), `event_id?`, `source` claude\|codex\|secode | `TurnReceipt`: captured\|duplicate\|suppressed, event_id | `capture-consent-missing`, `usage-invalid-value`, `state-conflict` |
+| `stateengine_session_turn` | "Record one conversation turn for this session (used by integrations, not for notes)." | `role` user\|assistant, `content` ≤128 KiB, `occurred_at`, `provider_session_id`, `turn_id` (stable provider/source identity before first send), `event_id?`, `source` claude\|codex\|secode | `TurnReceipt`: captured\|duplicate\|suppressed, event_id | `capture-consent-missing`, `usage-invalid-value`, `state-conflict` |
 | `stateengine_atlas_find` | "Find code by symbol name, text or path in your project. Each hit says whether it was resolved or matched by name only." | `query`, `kind?` symbol\|text\|path (symbol), `in?` path prefix, `limit?` 1–50 (20) | `Page<CodeHit>` + index_state | `feature-unavailable`, `atlas-index-absent`, `atlas-unreadable` |
 | `stateengine_atlas_refs` | "Who uses this symbol: imports, calls and type references." | `symbol`, `path?`, `limit?`, `cursor?` | `Page<Reference>` | + `atlas-symbol-unknown`, `atlas-symbol-ambiguous` |
 | `stateengine_atlas_impact` | "What could break if this symbol changes: dependents up to 3 hops, with tests that reference them." | `symbol`, `path?`, `depth?` 1–3 (2), `budget?` | `Impact` | + `atlas-symbol-unknown`, `atlas-symbol-ambiguous` |
@@ -396,7 +440,7 @@ The statically linked SE Code API requires exact version identity as declared in
 | 1 | failed or refused | `Refused`, `Unauthorized`, `Conflict`, `Unavailable`, `Internal`, `Cancelled` |
 | 2 | incomplete | `Incomplete`; `msg inbox` when not every unread message is in the window, any row is unreadable, or (`--full`) a body stays truncated; `Page` omissions for `unreadable`/`source-incomplete`; doctor with an unmeasured check and no failed one; stop/remove with an unwitnessed effect |
 | 3 | unreadable | `Unreadable`; `Read::Unreadable` |
-| 4 | unknown target | `Unknown`; `Read::Unknown` |
+| 4 | unknown target or commit outcome | `Unknown`; `Read::Unknown`; transient `commit-outcome-unknown` retains original request identity |
 | 64 | usage | `Usage` (also `renamed`, `command-retired`) |
 
 Rules: `ExitStatus::exit(&self)` on each output computes the code from payload facts, so a nonzero exit always comes with the full payload on stdout. Doctor: 0 all healthy, 1 any check failed, 2 none failed but some unmeasured. `se hook claude` always exits 0 (Claude treats exit 2 as blocking; a failed capture is a recorded fact and a stderr line). `se mcp` exits 0 on EOF and 1 on a transport failure. Human errors go to stderr; with `--json` the `se.error/v1` object goes to stdout and the human text still goes to stderr.
@@ -494,13 +538,14 @@ The table below mirrors `crates/se-types/src/error/catalog.rs`; typed detail fie
 | wake-not-running | R | agent: AgentId | {agent} isn't running, so there is nothing to wake | Use `se launch {agent}` |
 | window-unavailable | R | tried: Vec<String> | no terminal window could be opened ({tried}) | Use `se launch AGENT --detach`, or set `launch.terminal` |
 
-#### Unknown (4)
+#### Unknown (5)
 
 | Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
 | agent-unknown | K | selector: String, suggestion: Option<String> | no agent `{selector}` in {project} | Use `se agent list` |
 | atlas-path-unknown | K | path: String | {path} isn't indexed | Use `se atlas find PATH --kind path` |
 | atlas-symbol-unknown | K | symbol: String | no symbol `{symbol}` | Use `se atlas find {symbol}` |
+| commit-outcome-unknown | K | operation: String, key: Option<String>, natural_events: Vec<EventId> | Commit outcome unknown for {operation}; original key {key}, natural events {natural_events} | Rerun the same command with --key K (CLI), substituting the original detail.key, or repeat the call with the same idempotency_key (MCP); natural capture/markers replay the original natural_events unchanged |
 | target-unknown | K | subject: String, reason: String, next_step: String | Unknown target {subject}: {reason} | {next_step} |
 
 #### Unreadable (6)
@@ -548,9 +593,9 @@ The table below mirrors `crates/se-types/src/error/catalog.rs`; typed detail fie
 | deadline-exceeded | V | op: String, deadline_ms: u64 | `{op}` didn't finish in {deadline_ms} ms | retry |
 | ipc-unavailable | V | endpoint: String, reason: String | can't reach the runtime: {reason} | Use `se status` |
 | runtime-handover-in-progress | V | generation: String | the runtime is changing hosts | retry (`WhenRuntimeReady`) |
-| runtime-not-running | V | op: String | `{op}` needs the StateEngine runtime | Use `se up` |
+| runtime-not-running | V | op: String, reason: String | `{op}` needs a ready runtime writer: {reason} | Reopen the current runtime generation and retry with the original request identity; use `se up` if no runtime is running |
 | runtime-start-failed | V | reason: String, log: String | the runtime didn't start: {reason} | see {log}; → `se doctor` |
-| store-busy | V | waited_ms: u64 | the store stayed locked for {waited_ms} ms | retry (`Retry::After`) |
+| store-busy | V | waited_ms: u64, reason: String, next_step: String | Store unavailable after {waited_ms} ms: {reason} | {next_step}; retry the same request identity |
 | store-disk-full | V | path: String, free_bytes: u64 | not enough disk space at {path} | free space and retry |
 | store-migration-required | V | from: u64, to: u64 | Store {from} needs supported additive migration to {to} | Start `se up`: the sole owning host verifies a pre-migration backup and migrates automatically; an old running host requires `se down` first |
 
@@ -566,7 +611,24 @@ The table below mirrors `crates/se-types/src/error/catalog.rs`; typed detail fie
 | --- | --- | --- | --- | --- |
 | cancelled | Z | op: String | `{op}` was interrupted | rerun; writes are all-or-nothing |
 
-Total: **96 codes**. Warnings remain stderr-only: `w-legacy-env-present`, `w-provider-near-minimum`, `w-store-near-full`, `w-notify-degraded`.
+Total: **97 codes**. Warnings remain stderr-only: `w-legacy-env-present`, `w-provider-near-minimum`, `w-store-near-full`, `w-notify-degraded`.
+
+`commit-outcome-unknown` is Class::Unknown (exit 4) with a transient
+`Retry::AfterReread` policy; no new class is introduced. Its key is the original
+caller request key, or null only for the restricted natural-event path, whose
+original event IDs are retained. CLI prints the concrete retry argv with the same
+`--key`; MCP repeats `idempotency_key`; natural capture/markers replay exactly
+the original source/marker identities. An unknown outcome is not a definite
+rollback, rejection, committed receipt or permission to start replacement work.
+The adapter preserves the source checkpoint for natural captures even when no
+event ID is yet assigned; that protected source identity is repeated unchanged.
+
+Internal `store-backpressure` maps to `store-busy` with exact pressure cause and
+release/checkpoint remedy; `store-writer-closed` maps to `runtime-not-running`
+with closed-before-acceptance cause and current-generation reopen remedy;
+`source-changed` maps to `state-conflict` with the exact source incarnation/prefix
+cause and new-source review remedy. They retain their typed internal diagnostics
+and never become successful empty reads. Section 20 lists the complete map.
 
 `stop-unwitnessed.detail.reason` includes the observed population, enumeration completeness and scope/escape bound; structured partial-stop results retain the separate A.6 fields. Named `remaining` is not a complete census unless that observation says so.
 
@@ -596,16 +658,11 @@ version = 1                       # required; other values refuse configuration-
 default_project = ""              # name or id; "" = none
 
 [runtime]
-autostart = true                  # launch starts the standalone runtime when none runs
-after_host_exit = "handover"      # handover | stop — SE Code exiting with live agents
-listen_address = "127.0.0.1"      # loopback only; anything else refuses
-listen_port = 3221                # written at init if 3221 is taken
+listen_port = 24731               # example only; init chooses per-user hash in 20000–29999
 
 [launch]
 provider = "claude"               # claude | codex — default for init/agent add
-window = "auto"                   # auto | window | headless
 terminal = ""                     # Linux/macOS terminal command; "" = detect
-ready_timeout_ms = 60000          # 5000–600000
 
 [providers.claude]
 command = "claude"                # name on PATH or absolute path
@@ -624,40 +681,36 @@ approval = "on-request"           # on-request | untrusted | never (never needs 
 # [profiles.NAME]                 # user-defined; the ONLY place bypass can appear
 # bypass = true                   # full permission/sandbox bypass, chosen by name
 
-[resume]
-byte_budget = 32768               # 1024–1048576
-
-[messages]
-inbox_limit = 20                  # 1–200
-preview_chars = 200               # 0–4000
-
-[store]
-backups_kept = 2                  # start-of-day and clean-shutdown automatic backups, 1–10
-
-[log]
-level = "info"                    # SE_LOG wins
-max_file_mb = 4
-files_kept = 3
-
-[output]
-color = "auto"                    # auto | always | never
-
 [atlas]
 enabled = false                   # opt-in in this file; no project settings layer
-max_file_kb = 512                 # per-file parse budget
 ```
+
+`runtime.listen_port` is persisted at init from a deterministic per-user hash in
+20000–29999, probing candidates in that range if occupied and naming exhaustion
+instead of selecting the old Node port. The explicit remedy for a later collision
+is `se config set runtime.listen_port N`. Listen address is the fixed loopback
+constant; it is not configurable. Hash inputs/owner identity stay private.
+
+Autostart on custody demand, default handback on SE Code exit, launch readiness
+60 s, list default 20/max 100, search max 50, preview default 400, resume default
+32 KiB/max 1 MiB, two automatic backups, 4 MiB log rotation with three files, and
+the Atlas parse budget are constants with one owning module. No config knobs
+control those fixed policies. Existing per-call limit/budget flags remain bounded
+by the shared input DTO. SE_LOG and CLI/no-color environment choices remain the
+explicit diagnostic/render overrides, not another settings layer.
 
 Unknown keys refuse (`input-unknown-field`) on load, naming the line. Dotted names (`launch.provider`) are the `KEY` used by `se config`.
 
 ### 7.3 One configuration file and durable agent metadata
 
-General settings live only in the selected `config.toml`; no project settings layer or repository config participates. This includes `capture.enabled` (bool, default true), `atlas.exclude` (glob list, default empty), and the settings above. `se config get/list --origin` names the selected file, environment/flag override or built-in default. `config set` validates a closed key/value, atomically writes that file, rereads it and returns its keyed receipt. It never writes a project override. General settings reject `-p` as inapplicable.
+General settings live only in the selected `config.toml`; no project settings layer or repository config participates. This includes `capture.enabled` (bool, default true) and the keys above. General file values have exactly one source; saved agent metadata is not a project settings layer. `se config get/list --origin` names the selected file, environment/flag override or built-in default. `config set` of a general key validates the one file value, then uses host file custody for atomic replacement, sync and independent reread. Its protected STATE/receipts journal retains the original key, file preimage/readback and application result outside SQLite and outside the installation. No general key is written to a store event, config head or Snapshot.config, and a receipt never invents an event/writer. Manual file edits take effect on next read or restart; a retry reconciles its original effect and cannot overwrite a later manual edit. The result distinguishes saved file readback from pending host application. It never writes a project override. General settings reject `-p` as inapplicable. Each ConfigKeyMeta marks human_only: true for profiles/permissions, capture/privacy policy, listener/security keys and agent.<A>.can-create; those writes require the same outside-agent-tree owner terminal check as other human-only actions. Non-security keys do not gain a blanket human-only requirement.
 
 `agent.<AGENT>.profile`, `.model` and `.can-create` are explicit durable **agent record** updates exposed through `config get/set`, not another configuration source. Only these selectors accept owner project resolution (`-p` when needed); they update/read the canonical agent row with its revision and commit receipt. `.can-create` defaults false, profile/model are the saved identity's values. Flag choices for an invocation do not silently change those saved values. Grants are checked against the current record, not a stale config snapshot. `config list` lists file settings; `agent show` reports saved agent fields.
 
 ### 7.4 Precedence and application
 
-For general settings: CLI flag > documented environment variable > selected `config.toml` > built-in default. Configuration is never read from cwd, the repository or the binary folder. A saved named profile is the only bypass opt-in, explicitly selected for that agent; neither default configuration nor doctor repair selects bypass. Atlas stays disabled by default in both compositions. A successful `config set atlas.enabled true` notifies an active host after readiness; restart recovers from the file. Its cold index is a transient child capped below the section 80 budget, never work that blocks host readiness.
+For general settings: CLI flag > documented environment variable > selected `config.toml` > built-in default. Configuration is never read from cwd, the repository or the binary folder. A saved named profile is the only bypass opt-in, explicitly selected for that agent; neither default configuration nor doctor repair selects bypass. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable. A successful standalone `config set atlas.enabled true` notifies an active host after readiness; restart recovers from the file. Its cold index is a transient child capped below the section 80 budget, never work that blocks host readiness.
+
 ### 7.5 Renamed-command refusal table
 
 Static data in `se/src/renamed.rs`, matched on the first one or two argv tokens before clap. Output: `renamed` (exit 64), the literal template, no handler, no data access, no argument forwarding.
@@ -705,7 +758,7 @@ Every hazardous action prints a concrete plan **before effects**: affected IDs/p
 | `se restore` | owner + human-presence; newest independently verified valid automatic backup, exact stop/revocation and loss range | preserve corrupt source unchanged; restore history only by this named operation; no salvage or implicit doctor restore; unresolved loss counts are labelled unknown and require diagnosis |
 | `se credential rotate` | owner + human-presence; exact credentials and agent sessions invalidated | replace/read back machine credential and durable revocations; end/revoke named affected sessions; never a configuration repair |
 | `se doctor --fix CHECK-ID` | owner + human-presence; one currently diagnosed supported check, old/new owned config, side effects | no broad repair sweep, history restore, credential rotation or weakening permissions; changed user edits refuse; reread after the single repair |
-| `se uninstall` | owner + human-presence; owned install/integrations, agents/credentials, exact managed PATH entries | stop/revoke/read back, remove only owned installed files/integrations, restore prior managed PATH; preserve user repositories/history/backups/provider transcripts; J5 verifies fresh-shell PATH restoration |
+| `se uninstall` | owner + human-presence; owned install/integrations, agents/credentials, exact managed PATH entries | first ordinary graceful down: exact owned-agent stop witnesses and saved resume references, then print achieved stop facts; only afterward remove owned installation/integrations and restore managed PATH; unresolved stops prevent removal, user work/history remains |
 
 Automatic backups run at start-of-day and clean shutdown, plus the verified backup before migration. A backup failure is surfaced; it cannot silently license migration/restore. Restoration selects the newest **valid**, re-opened backup, preserves the corrupt source and reports the actual lost interval. There is no public manual-backup operation or event-log salvage in this build.
 
@@ -713,7 +766,9 @@ History search is a bounded streamed scan with a byte/time window and continuati
 
 `se down` stops all owned agents and runtime on each OS and renders achieved stop witnesses plus original-conversation resume argv. It cannot report success then say agents remain running. Failed/unknown stop witnesses report incomplete facts. Default SE Code exit with live agents instead transfers to detached `se up`; that daemon exits ten minutes after its last live agent. Embedded idle process measurements apply when no agent is live. Embedded session binding uses an in-process handle, adds no credential-issued/activated commits, and still includes runtime.owner/session activation/new-schema FULL cost in E2.
 
-The product is complete only after real Claude and Codex pass all five journeys on clean Windows, Linux and macOS in standalone and embedded compositions. Windows/Linux is intermediate; the borrowed-Mac qualification runs before alpha release, without delaying the build. Atlas is optional, default disabled, built after journeys/handover and never blocks a milestone; forget and live handover remain before alpha. Numerical budgets live only in section 80, size/build order in 95.
+Install/uninstall scripts and SE Code's installer invoke this same `se uninstall` operation rather than reimplementing it. It never kills an agent without the ordinary stop witness. Host-owned file-only plans/readbacks are retained under protected STATE/receipts, outside the replaced database or removed installation, as specified in 20; they supply keyed retry evidence, never a forged event/writer.
+
+The product is complete only after real Claude and Codex pass all five journeys on clean Windows, Linux and macOS in standalone and embedded compositions. Windows/Linux is intermediate; the borrowed-Mac qualification runs before alpha release, without delaying the build. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable. Atlas is built after journeys/handover and never blocks a milestone; forget and live handover remain before alpha. Numerical budgets live only in section 80, size/build order in 95.
 
 ---
 
@@ -774,7 +829,7 @@ Exact field paths for the families the journey runner judges. `$` is the payload
 | `$.profile.keys_dir` | string | yes | folder that holds the machine credential |
 | `$.profile.human_id` | Id | yes | equal to `owner.human_id` |
 | `$.profile.agent_id` | Id | yes | equal to `agent.id` |
-| `$.profile.native_server_port` | int | yes | port of the loopback listener |
+| `$.profile.native_server_port` | int | yes | selected per-user loopback port; init hash in 20000–29999, persisted as runtime.listen_port |
 | `$.integrations[]` | array | yes | edits StateEngine owns outside the store; empty for managed launches |
 | `$.integrations[].path` | string | yes | file edited |
 | `$.integrations[].entry` | string | yes | the marked key or block |
@@ -794,7 +849,7 @@ Exact field paths for the families the journey runner judges. `$` is the payload
           "permission_profile":{"name":"default","sandbox":"workspace-write","approval":"on-request","bypass":false}},
  "profile":{"schema":"stateengine-init/v1","project":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","repo_root":"C:\\Users\\ana\\src\\app",
             "registry_root":"C:\\Users\\ana\\AppData\\Local\\StateEngine","keys_dir":"C:\\Users\\ana\\AppData\\Local\\StateEngine\\keys",
-            "human_id":"hu_0192f3a0-1111-7aaa-8bbb-000000000002","agent_id":"ag_0192f3a0-1111-7aaa-8bbb-000000000003","native_server_port":3221},
+            "human_id":"hu_0192f3a0-1111-7aaa-8bbb-000000000002","agent_id":"ag_0192f3a0-1111-7aaa-8bbb-000000000003","native_server_port":24731},
  "integrations":[],"changed":["project registered","agent main created","machine credential created"],
  "next":{"text":"Open your first agent","command":"se launch main","argv":["se","launch","main"]},
  "launch":null}
@@ -893,7 +948,7 @@ These counters cover the host process. When `$.runtime.host` is `daemon`, that p
 {"schema":"se.status/v1","scope":"project","generated_at":"2026-10-30T12:05:00.000000Z","version":"0.1.0",
  "setup":{"state":"configured","home":"/home/ana/.local/state/stateengine","reason":null},
  "runtime":{"state":"running","host":"daemon","process":{"pid":4120,"started_at":"2026-10-30T12:02:11.250000Z","exe":"/home/ana/.local/bin/se","machine_id":"m-6a1f"},
-            "generation":7,"endpoint":"127.0.0.1:3221","version":"0.1.0","observed_at":"2026-10-30T12:05:00.000000Z",
+            "generation":7,"endpoint":"127.0.0.1:24731","version":"0.1.0","observed_at":"2026-10-30T12:05:00.000000Z",
             "resources":{"self_voluntary_switches":1843,"self_involuntary_switches":12,"cpu_user_us":412000,"cpu_system_us":198000,
                          "rss_bytes":9437184,"sampled_at":"2026-10-30T12:05:00.000000Z","method":"linux:getrusage(RUSAGE_SELF)+/proc/self/statm"}},
  "project":{"state":"present","value":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app","root":"/home/ana/src/app","registered_at":"2026-10-30T12:00:01.000001Z"}},
@@ -1079,7 +1134,7 @@ Human text follows `enumeration`: `complete` prints the count ("2 processes stil
               "session_id":"ses_0192f3c8-0000-7000-8000-00000000000e","preview":false},
  "generated_at":"2026-10-30T12:41:00.000000Z","since":null,"complete":false,"budget":{"limit_bytes":32768,"used_bytes":30114},
  "working_state":{"state":"present","value":{"text":"Reviewing tx.rs for main; next: reply with findings","revision":4,"updated_at":"2026-10-30T12:20:11.000000Z"}},
- "unread":{"items":[],"consistency":"live-keyset","window":{"from":null,"to":null,"limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null},
+ "unread":{"items":[],"window":{"from":null,"to":null,"limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null},
  "required_reads":[{"kind":"message","id":"msg_0192f3b0-0000-7000-8000-000000000101","why":"handoff addressed to you, not yet acknowledged"}],
  "decisions":{"governing":[{"id":"dec_0192f3a9-0000-7000-8000-000000000050","key":"api.versioning","statement":"Breaking JSON changes bump the family major.","ratified_at":"2026-10-30T12:10:00.000000Z"}],"pending":0},
  "recent_turns":[{"event_id":"ev_0192f3bf-0000-7000-8000-0000000001ff","at":"2026-10-30T12:19:41.000000Z","role":"assistant","preview":"Found two issues in commit()…"}],
@@ -1340,9 +1395,16 @@ The judged readback for anything a hook, integration or command recorded. Captur
 | `$.read_at_seq` | int | The store position this read was taken at. |
 | `$.payload` | object | Kind-specific, below. |
 
-For `kind: "session.turn"`, `$.payload` always carries `session_id` Id; `turn_id` string \| null (the provider's id when it has one); `provider` `"claude"` \| `"codex"` \| `"secode"`; `provider_session` string \| null; `role` `"user"` \| `"assistant"`; `source` `"hook"` \| `"transcript"` \| `"app-server"` \| `"integration"`; `occurred_at` Time \| null; and `body` `{"text": string, "bytes": int, "sha256": string, "complete": bool}`. `complete: false` only when the stored body hit the 1 MiB cap. A suppressed turn has no `session.turn` event; its suppression-count event has `kind: "session.turn_suppressed"` and `payload.count`.
+For `kind: "session.turn"`, `$.payload` always carries `session_id` Id; `turn_id` string \| null (the provider's id when it has one); `provider` `"claude"` \| `"codex"` \| `"secode"`; `provider_session` string \| null; `role` `"user"` \| `"assistant"`; `source` `"hook"` \| `"transcript"` \| `"app-server"` \| `"integration"`; `occurred_at` Time \| null; and `body` `{"text": string, "bytes": int, "sha256": string, "complete": bool}`. `complete: false` is retained only for explicitly identified legacy/partial capture with disclosed omissions. New trusted captures above the 1 MiB store cap refuse without advancing their source cursor; public session.turn rejects above 128 KiB before an effect. A suppressed turn has no `session.turn` event; its suppression-count event has `kind: "capture.suppressed"` and `payload.count`.
 
 `se.history-page/v1` is a labelled live-keyset `Page<se.event/v1 without $.schema>` (A.0) plus `$.schema` and `$.read_at_seq`. Filters: `--session ID`, `--kind KIND` (repeatable), `--agent A`, `--since-seq N`. Order is ascending `seq`.
+
+The store query carries `session: Option<SessionId>` and exact
+`kinds: Vec<EventKind>` alongside agent/since filters. The exact capture kind is
+`session.turn` throughout store, wire and this appendix. Filtering is applied to
+indexed, bounded store reads before paging, never by reading a broad page and
+post-filtering. An empty filtered page therefore has the declared completeness
+and continuation semantics. Runtime-private kinds remain excluded before reading.
 
 **How an outside judge checks a captured turn (B9 and J3):** drive the real integration exactly as its provider does (Claude hooks/transcript, Codex app-server or SE Code direct capture; section 40), then run `se history --session SESSION_ID --kind session.turn --json` from outside the writer. The turn must appear once with the expected `role`, `body.sha256` and `writer`. Running the same hook again must not add a second row (the turn receipt says `duplicate`).
 
@@ -1371,7 +1433,7 @@ not a new durable phase or typed-ID confirmation.
 | `se.repair/v1` | `check_id`, `applied[]`, `skipped[]`, `readbacks[]`, `remaining_checks[]` | exactly the one diagnosed CHECK-ID; no restore/rotation; complete only after owned config readback; user-edited conflicts remain visible |
 | `se.restore/v1` | `backup {path, schema, head_seq, verified_at}`, `preserved_source {path, witness}`, `lost {from_seq, to_seq, count: Read<int>}`, `stops[]`, `revocations[]`, `restored_store {schema, head_seq, witness}` | newest valid automatic backup independently reopened; corrupt source preserved; the plan names stop/revocation and actual loss before replacement; no event salvage |
 | `se.credential-rotation/v1` | `revoked[] {credential_id, session_id, witness}`, `new_credential {credential_id, witness}`, `stops[]` | no credential bytes; verify new protected credential and every named revocation/stop; partial effects remain pending/incomplete |
-| `se.uninstall/v1` | `install_files[] {path, outcome, witness}`, `integrations[] {path, entry, outcome, witness}`, `stops[]`, `revocations[]`, `path {scope, before_entries, after_entries, witness}`, `preserved[]` | only owned install/integration/PATH entries removed/restored; fresh-shell PATH readback required; preserved repositories, Git, history, backups and provider transcripts named; any unresolved obligation makes complete false |
+| `se.uninstall/v1` | `install_files[] {path, outcome, witness}`, `integrations[] {path, entry, outcome, witness}`, `stops[]`, `revocations[]`, `path {scope, before_entries, after_entries, witness}`, `preserved[]` | ordinary graceful down and saved resume references must be witnessed and printed first; scripts/SE Code installer invoke this one operation; only then owned install/integration/PATH entries removed/restored with fresh-shell PATH readback; preserved repositories, Git, history, backups and provider transcripts named; any unresolved obligation makes complete false |
 
 Store-committing subresults carry their event/writer stamps from A.0. A file-only
 readback has a Witness, never a manufactured event or writer. Secret header-helper
