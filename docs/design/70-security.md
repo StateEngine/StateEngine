@@ -234,6 +234,7 @@ and tested in E4 before the attended product path is accepted; do not silently r
 claim that an original URL proves the final origin.
 
 ### 4.4 IPC
+- Provider Unix socket rendezvous directories follow 00 §5.4 and 40 §9.4: per-launch under run, with a verified owner-only short-path fallback when needed; on Windows use the exact protected, inheritable user-only DACL (no inherited SYSTEM grant), connect to witness readiness within its deadline, then remove socket/directory after exact listener/proxy exit.
 - **Unix:** socket in a 0700 directory (00 §5.4) whose owner is checked before bind; a stale socket is
   replaced only under `runtime.lock`. Peer check: `SO_PEERCRED` (Linux), `LOCAL_PEERCRED` +
   `LOCAL_PEERPID` (macOS); another uid refuses.

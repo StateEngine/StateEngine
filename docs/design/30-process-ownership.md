@@ -1450,8 +1450,16 @@ startup/launch/write timing and memory with actual FULL barriers. E7 covers
 SSH, Docker and WSL2, unavailable pidfds/delegation and a deliberate setsid/
 double-fork escape. Default Linux launch remains uncontained when delegation
 is unavailable; its group-empty witness cannot assert every descendant gone.
-E5 evaluates stock Codex app-server --listen as a simplification only if it
-removes an entire mechanism; it does not remove Claude's required native port.
+E5 stock Codex 0.163 headless stdio and private Unix --listen pass on Linux and
+Windows (native Windows 16/16 and 26/26), with saved-thread resume, real work,
+a separate CLI write-boundary denial and exact captured process exit. The
+actual app-server write-boundary follow-up also passes on Linux and native
+Windows stdio (40 §9.4). The private listener still requires a stock proxy and
+WebSocket framing, so it removes no whole
+mechanism: retain the Windows stdio arena and Claude's required native port.
+Section 40 §9.4 defines the saved-profile policy, shell and private-path contract;
+these provider proofs do not qualify native descendant containment or the Rust
+implementation.
 Mac's native identity/group/window/exit/transfer paths are qualified in the
 borrowed-Mac campaign before alpha, with both providers and embedded/standalone
 journeys. An earlier Windows/Linux pass is an intermediate milestone.

@@ -1232,43 +1232,67 @@ qualify stock transport behavior. Never launch silently without working tools.
 
 Use per-launch MCP/helper configuration and user's existing CODEX_HOME/login;
 no managed replacement home, hooks.json injection, fork or automatic approval.
-Headless thread/start and thread/resume set sandbox=workspace-write,
-approvalPolicy=never and command network access disabled. `never` refuses
+Resolve the agent's saved named profile through [50 §7.2](50-surface-and-errors.md#72-configtoml-user-scope)
+before launch; the provider adapter never hardcodes or widens its policy.
+Validate installed-provider/profile support before work; unsupported choices
+refuse provider-incompatible instead of silently drifting on start or resume.
+The default headless Codex profile resolves to workspace-write, approval never
+and network off. Explicit read-only remains read-only; network follows the
+profile's network key; full access requires a saved named bypass profile.
+Use that same resolved policy for thread/start, thread/resume and native
+LaunchPolicy, and report it in init/launch receipts. Codex `never` refuses
 escalation; it does not grant permissions, approve commands or disable the
 sandbox. Retain a supported, working native sandbox; readiness/setup or command
 creation failure remains a visible launch/provider failure. Do not silently
 change to full access or a weaker sandbox implementation to make work succeed.
-Attended on-request approvals require a genuine user decision through the owned
-UI; an unsupported request on a headless connection remains a visible refusal.
+Profile-selected on-request approvals require a genuine user decision through
+the owned attended UI; an unsupported request on a headless connection remains
+a visible refusal rather than silently overriding the saved approval policy.
 
-On native Windows, select a sandbox-compatible unpackaged PowerShell in the
-child environment and verify the actual command shell. Store PowerShell under
+On native Windows, resolve an unpackaged pwsh 7 under Program Files first, then
+System32 powershell.exe under the Windows directory. Reject a shell at a
+WindowsApps or AppX path, or with a package identity. If neither candidate
+qualifies, refuse before provider launch with provider-incompatible and the
+remedy "install the PowerShell MSI". Select it only in the child environment
+and read back the shell Codex actually used. Store PowerShell under
 WindowsApps failed CreateProcessAsUserW with access denied before requesting an
 unsandboxed retry; the unpackaged system PowerShell performed the same workspace
 work under the sandbox. Change only the launch environment, preserving the
-user's global PATH, configuration, login and native sandbox selection. Isolate
-edition-specific helper environments if a helper uses Windows PowerShell 5.1
-under a pwsh 7 parent; native ACL operations do not depend on PowerShell modules.
+user's global PATH, configuration, login and native sandbox selection. Never
+fall back to wider access when shell selection or actual execution fails.
 
-Private Unix listeners use a newly created, current-user-owned rendezvous
-directory: 0700 on Linux; on Windows, a protected DACL with exactly one
-current-user FullControl allow ACE inheritable by files and directories. Create
+Private Unix listeners use a newly created, per-launch rendezvous directory
+under the [00 §5.4 run directory](00-overview-and-invariants.md#54-paths).
+If the encoded socket path exceeds the platform/provider limit, use a shorter
+owner-only per-launch directory under the OS runtime/temp location; this is a
+socket-only path-length fallback, not another state/config home. Pin and record
+the exact chosen path; refuse if no private path fits instead of truncating it.
+The directory is current-user-owned: 0700 on Unix; on Windows, a protected DACL
+with exactly one current-user FullControl allow ACE inheritable by files and
+directories. Create
 the restrictive ACL with the directory and read it back before launch; refuse
 links/reparse directories, inherited/foreign grants or an existing untrusted
 directory. Never repair a shared directory's ACL. Record the exact listen and
 proxy socket paths. Readiness is an actual stock-proxy connection, verified
 WebSocket Upgrade and initialize/initialized handshake, with bounded startup
-retries and retained causes. Do not infer Windows AF_UNIX readiness from
-exists/stat; failed probes must be closed and their exact process exit observed.
+retries bounded by the existing launch readiness deadline and retained causes.
+Do not infer Windows AF_UNIX readiness from exists/stat; failed probes must be
+closed and their exact process exit observed. After the exact listener/proxies
+exit, remove their socket and owned rendezvous directory, including the short
+fallback; retain an explicit cleanup failure rather than claiming removal.
 
 E5 stock 0.163 headless proofs pass stdio and private Unix listeners on Linux
 and Windows. Native Windows stdio passed 16/16 and Unix 26/26: actual workspace
-write/readback, outside-write denial, canonical item/turn capture, exact saved
-thread restart/resume and recall, stale-turn refusal, exact-turn steering,
-interrupted completion and captured process exit; Unix additionally proved
-same-server reconnect. These qualify the provider seam, not the Rust launch
-implementation, native descendant containment, network isolation, macOS or an
-attended Windows UI. Retain the Windows stdio arena: the private listener still
+write/readback, canonical item/turn capture, exact saved-thread restart/resume
+and recall, stale-turn refusal, exact-turn steering, interrupted completion and
+captured process exit; Unix additionally proved same-server reconnect. Those
+transport runs checked outside writes through a separate stock CLI sandbox
+child. Additional actual app-server command-turn probes pass on both Linux
+transports and Windows stdio (17/17): the unchanged fixture's command reports
+OS denial and an outside reader confirms the canary absent. These qualify the
+measured default-profile provider seam, not other saved profiles, the Rust
+launch implementation, native descendant containment, network isolation,
+macOS or an attended Windows UI. Retain the Windows stdio arena: the private listener still
 needs the stock proxy and WebSocket framing, so no whole-mechanism removal is
 proved by --listen.
 

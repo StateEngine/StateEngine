@@ -291,7 +291,7 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 | meta.version | `se --version` | `stateengine 0.1.0 (commit a1b2c3d)` | `se.version/v1` |
 | meta.help | `se help [PATH...] [--all]`; `se PATH --help` | usage, args, examples | `se.help/v1` |
 | meta.schema | `se schema [OP]` | op table; with OP its schemas | `se.schema-catalogue/v1` |
-| project.init | `se init [--repo DIR] [--name NAME] [--agent NAME] [--provider PROVIDER] [--model MODEL] [--launch]` — `--repo` default cwd; `--name` default dir name; `--agent` default `main`; `--provider` default `[launch] provider` (`claude`) | `Adopted ~/src/app as "app" (existing Git repo, 214 commits kept).`<br>`Agent "main" (claude) is ready. Next: se launch main` | `se.init/v1` (`profile.schema = stateengine-init/v1`) |
+| project.init | `se init [--repo DIR] [--name NAME] [--agent NAME] [--provider PROVIDER] [--model MODEL] [--launch]` — `--repo` default cwd; `--name` default dir name; `--agent` default `main`; `--provider` default `[launch] provider` (`claude`) | `Adopted ~/src/app as "app" (existing Git repo, 214 commits kept).`<br>`Agent "main" (claude) is ready. Next: se launch main`<br>`Profile default: workspace-write, approval on-request, network off, bypass false. Enable network: se config set profiles.default.network true` | `se.init/v1` (`profile.schema = stateengine-init/v1`) |
 | project.remove | `se remove [-p P \| --all] [--keep-integrations]` (human-only) | `Stopped 2 agents (witnessed). Removed integrations: .mcp.json entry. Kept: history, repo files. Reinstall later with se init.` | `se.remove/v1` |
 | project.status | `se status [-p P \| --all]`; bare `se` | `app — runtime up (daemon 0.1.0) · 2 agents: main running (claude), rev stopped · 3 unread for you · next: se msg inbox` | `se.status/v1` |
 | doctor.inspect | `se doctor [-p P]` | `✓ store  ✓ credential  ✗ claude hooks: entry edited by you  ! containment: uncontained (no systemd user manager)` + `fix:` lines | `se.diagnosis/v1` |
@@ -694,7 +694,8 @@ profile = "default"
 
 [profiles.default]                # built in; may be overridden but never set bypass
 sandbox = "workspace-write"       # read-only | workspace-write
-approval = "on-request"           # on-request | untrusted | never (never needs bypass)
+network = false                   # command network access; opt in with true
+# approval = "on-request"         # optional explicit policy; defaults described below
 
 # [profiles.NAME]                 # user-defined; the ONLY place bypass can appear
 # bypass = true                   # full permission/sandbox bypass, chosen by name
@@ -702,6 +703,28 @@ approval = "on-request"           # on-request | untrusted | never (never needs 
 [atlas]
 enabled = false                   # opt-in in this file; no project settings layer
 ```
+
+The agent saves its profile name. One resolver derives the effective sandbox,
+approval, network and bypass policy from that named profile before launch or
+resume; provider adapters consume the resolved policy without replacing its
+values. Omitted sandbox/network keys default to workspace-write/false. Omitted
+approval defaults to never for headless Codex and on-request for attended Codex
+and Claude; an explicit profile approval value takes precedence. A read-only
+profile stays read-only. Supported approval values are on-request, untrusted
+and never, subject to the installed provider's capability checks. For Codex,
+never denies escalation and is legal without bypass; any provider setting
+that disables permissions or sandboxing requires the saved named bypass opt-in.
+Only `[profiles.NAME] bypass = true`, explicitly selected for the agent, permits
+full access; network true is a separate explicit choice, not a bypass opt-in.
+If the installed provider cannot honor the complete resolved policy, refuse
+provider-incompatible before work rather than widening writes or network.
+
+Init and launch print and return the effective named profile, sandbox, approval,
+network and bypass values, rather than a fixed sample default. Init resolves for
+its requested launch mode, or the next default launch when not launching; each
+actual launch resolves again. Init also prints the exact network opt-in command
+for that profile: `se config set profiles.NAME.network true`. Profile/security
+writes retain §7.3's human-only check; enabling network never widens write access.
 
 `runtime.listen_port` is persisted at init from a deterministic per-user hash in
 20000–29999, probing candidates in that range if occupied and naming exhaustion
@@ -837,6 +860,7 @@ Exact field paths for the families the journey runner judges. `$` is the payload
 | `$.agent.permission_profile.name` | string | yes | saved profile name (`default`) |
 | `$.agent.permission_profile.sandbox` | `"read-only"` \| `"workspace-write"` \| `"bypass"` | yes | effective sandbox |
 | `$.agent.permission_profile.approval` | string | yes | effective approval policy |
+| `$.agent.permission_profile.network` | bool | yes | effective command network access; false by default |
 | `$.agent.permission_profile.bypass` | bool | yes | false unless a named bypass profile was chosen |
 | `$.profile` | object | yes | compatibility block for `stateengine-init/v1` decoders |
 | `$.profile.schema` | `"stateengine-init/v1"` | yes | |
@@ -863,7 +887,7 @@ Exact field paths for the families the journey runner judges. `$` is the payload
  "owner":{"human_id":"hu_0192f3a0-1111-7aaa-8bbb-000000000002","os_user":"DESKTOP-1\\ana"},
  "home":"C:\\Users\\ana\\AppData\\Local\\StateEngine",
  "agent":{"id":"ag_0192f3a0-1111-7aaa-8bbb-000000000003","name":"main","outcome":"created","provider":"claude","model":null,
-          "permission_profile":{"name":"default","sandbox":"workspace-write","approval":"on-request","bypass":false}},
+          "permission_profile":{"name":"default","sandbox":"workspace-write","approval":"on-request","network":false,"bypass":false}},
  "profile":{"schema":"stateengine-init/v1","project":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","repo_root":"C:\\Users\\ana\\src\\app",
             "registry_root":"C:\\Users\\ana\\AppData\\Local\\StateEngine","keys_dir":"C:\\Users\\ana\\AppData\\Local\\StateEngine\\keys",
             "human_id":"hu_0192f3a0-1111-7aaa-8bbb-000000000002","agent_id":"ag_0192f3a0-1111-7aaa-8bbb-000000000003","native_server_port":24731},
@@ -871,6 +895,10 @@ Exact field paths for the families the journey runner judges. `$` is the payload
  "next":{"text":"Open your first agent","command":"se launch main","argv":["se","launch","main"]},
  "launch":null}
 ```
+
+For a default headless Codex launch, the effective permission profile instead
+contains `"approval":"never","network":false,"bypass":false`: escalation is
+denied, not bypassed. The Claude example above keeps its on-request policy.
 
 ### A.2 `AgentRow` and `se.agent-page/v1` — `se agent list`
 
@@ -917,6 +945,12 @@ Exact field paths for the families the journey runner judges. `$` is the payload
 ```
 
 `se.launch/v1` carries the same pair for the agent it launched, at `$.containment` and `$.containment_cause`, with the same values and the same rule: launch never refuses for containment, and an `uncontained` launch always names its cause. On Linux the host decides on the first launch it serves: it asks the systemd user manager for one delegated transient scope for agents (`systemd-run --user`, the pattern SE Code already uses) and places every later agent in it; when there is no user manager or no delegation it records the probe cause and every agent it launches is `uncontained` until the host restarts.
+
+`se.launch/v1` also requires `$.permission_profile` with the same five fields
+and types as init's `$.agent.permission_profile`: name, sandbox, approval,
+network and bypass. These are the actual resolved values used for this launch,
+including read-only and named-profile choices. Human launch output prints them;
+Codex approval never with bypass false is an ordinary sandboxed policy.
 
 ### A.3 `se.status/v1` — `se status`, bare `se`, `stateengine_status`
 
