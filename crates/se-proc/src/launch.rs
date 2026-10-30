@@ -24,8 +24,7 @@ pub struct ResourceLimits {
     pub max_lifecycles: u32,
     pub max_diagnostic_members: u32,
     pub max_observation_bytes: u64,
-    /// Provider-buffer budget already charged to section 80; not extra custody RSS.
-    #[cfg(windows)]
+    /// Existing provider-buffer budget, not extra custody RSS; unused on Unix.
     pub max_stdio_buffer_bytes: u64,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
