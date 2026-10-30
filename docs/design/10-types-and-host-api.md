@@ -748,7 +748,7 @@ epoch and adoption chain as specified after the table:
 | Direction | Native adapter and checkpoint.owner | Freeze semantics |
 | --- | --- | --- |
 | SE Code → Standalone | native.epoch() == plan.source; checkpoint.owner is that SE Code source epoch | Fence participating live native routes, immediately interrupt them and prove exact idle; retain their original queue before SE Code exits |
-| Standalone → SE Code | native.epoch() == plan.successor == destination.epoch; checkpoint.owner is that receiving SE Code epoch | Reopen the same durable dormant queue, reconcile any prior open transfer first, then freeze its participating targets before any new-G admission/promotion or callbacks; do not pretend the daemon's epoch owns the native queue |
+| Standalone → SE Code | native.epoch() == plan.successor == destination.epoch; checkpoint.owner is that receiving SE Code epoch | Reopen the same durable dormant queue; the factory first settles any predecessor transfer's fence using its verified terminal outcome, then starts the new transfer and freezes its participating targets before any new-G admission/promotion or callbacks; do not pretend the daemon's epoch owns the native queue |
 
 HandoverServices has no proprietary store reader and **does not verify runtime
 ownership events or FULL phases**. Those checks belong exclusively to the factory,
@@ -805,6 +805,11 @@ can remove this fence, and it never removes independent holds.
 | Prepared/ReadyToClaim, no claim | Verified pre-claim abort/lease recovery commits FULL Aborted before native fence removal; deadline/cancellation alone never clears it |
 | Claimed/Activated, receiver lost | One checked cold runtime.owner FULL event carries RuntimeRecoveredTransfer and atomically sets the owner head to the original transfer/Recovered, with fresh activated custody/capture and queue-cut proof; its own EventId is the completion reference, and old peers/generations stay immutable |
 | Another plan/key while this fence exists | Ordinary freeze/handover refuses runtime-handover-in-progress and names the open TransferId; it does not overwrite, stack or steal the fence, even for a proposed reverse plan |
+
+RuntimeHandoverInProgress keeps its catalog generation detail; the returned
+ApiError.message must also name the exact open TransferId from the retained
+fence, not the attempted request key. This is diagnostic identity, not authority
+to settle the fence; the factory still verifies the persisted plan and outcome.
 
 An ordinary second plan, including a reverse request, cannot bypass an open
 native fence. Checked receiver-loss recovery first accounts for that original
