@@ -1,1 +1,15 @@
-//! Owned-process lifecycle per OS (Windows job objects, Linux pidfd + cgroup v2, macOS kqueue). The only crate allowed unsafe code.
+//! Compile-only process-ownership contract. There is no backend implementation.
+//!
+//! See docs/design/30-process-ownership.md for normative semantics. The public
+//! traits declare future functions without executable stub bodies. Native
+//! resource layouts are intentionally opaque; no handle is Clone or Default.
+
+mod error;
+mod identity;
+mod launch;
+mod ownership;
+
+pub use error::*;
+pub use identity::*;
+pub use launch::*;
+pub use ownership::*;
