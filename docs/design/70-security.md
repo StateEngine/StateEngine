@@ -115,8 +115,8 @@ Five layers, each of which catches a different mistake:
    checks above are human-presence mistake/drift checks, not same-user adversary proof. In SE Code,
    the UI passes a `HumanPresence` token created by a UI gesture; tool calls never carry one.
 
-   Security keys include permission profiles, full-bypass opt-in,
-   `runtime.listen_port` and `agent.<A>.can-create`. The closed key catalogue carries
+   Security keys include permission profiles, full-bypass opt-in, capture/privacy
+   policy, `runtime.listen_port` and `agent.<A>.can-create`. The closed key catalogue carries
    `human_only` **per key**; `config.set` is not given one operation-wide boolean
    that would either exempt a security key or block ordinary configuration. CLI,
    linked UI and repair paths use the same key classification and presence rule.
@@ -252,7 +252,6 @@ claim that an original URL proves the final origin.
 | --- | --- | --- |
 | State, run and log directories | 0700, owner = euid, checked on every open | Explicit protected DACL: user SID full control + SYSTEM; inheritance from parent disabled |
 | `state.db`, `-wal`, `-shm`, automatic backups, `atlas.db` | 0600 through owner-only per-file creation and verified SQLite side-file modes; no embedded process umask change | Inherit the directory's protected DACL; read it back |
-| File-only `STATE/receipts/` intent/readback journal | 0700 directory, 0600 records, no-follow owner checks; no secret/body payload | Protected user-only directory/file DACL read back |
 | `credential`, pins, `launch/<id>/*`, `endpoint.json` | 0600, created `O_EXCL` | Created with explicit security attributes; DACL read back |
 | Socket / pipe | Socket inside the 0700 directory | Pipe DACL as §4.4 |
 | Support bundle | 0600 at the user's chosen path | Created with the user-only DACL |
@@ -316,9 +315,8 @@ Human-only actions retain §2.3's existing presence checks and same-user limit.
 Install/uninstall scripts and SE Code's installer call this same `se uninstall`
 path; they do not reimplement shutdown or kill agents without the stop witness.
 Incomplete stop remains incomplete and blocks removal of required custody resources.
-The protected file-only retry journal (§20) survives uninstall and DB restore,
-with its location printed; it records original plans and achieved readbacks,
-never a secret, credential, actor grant or substitute native witness.
+File-only retry reconciliation follows §40 §9.5; it adds no journal,
+authority or substitute native witness.
 
 Automatic backups run at start-of-day and clean shutdown under section 20's single rule.
 No public manual backup or partial event-log salvage engine is advertised for alpha.
@@ -333,7 +331,8 @@ No public manual backup or partial event-log salvage engine is advertised for al
   resolved Tokio and SQLite links=sqlite3 package; `cargo tree -d` checks shared-package duplication.
   Tokio is confined to se-host. Core/proc and the hostless client remain synchronous;
   se-store exposes futures only at its writer boundary. The async host awaits writer
-  completion; only the hostless CLI may use `wait_blocking` (§40 §4).
+  completion between blocking-pool planning/continuation jobs; the hostless CLI
+  appends synchronously through the same transaction engine (§40 §4).
 - A new direct dependency needs one review sentence on why std or an existing dep can't do it. No build
   script that downloads. Release builds run `--locked --offline` from a vendored mirror.
 - **No outbound network:** `cargo tree -i` finds no `rustls`, `native-tls`, `openssl`, `reqwest` or hyper
