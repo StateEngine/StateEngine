@@ -1,35 +1,38 @@
 # 30. Native process ownership (`se-proc`)
 
-Architecture review revision, 2026-10-30. **Compile-only: no backend, runtime
-behavior, native performance qualification or author tests.** This supersedes
-the earlier section 30 where it differs. It incorporates the 22 Opus returns,
-Sol R1–R6, Opus N1–N10 and Prime's latest Linux decision: prefer delegated
-cgroups and automatically request them on first agent launch; absent delegation
-uses an explicitly **uncontained** process group. Optional Landlock/seccomp is
-section 70 hardening; Unix windows and live host handover are in alpha; macOS
-uses process groups, native identity rechecks and tracked-member witnesses.
+Design reconciliation, 2026-10-30. **Declarations only: no product backend or
+author tests.** Linux prefers delegated cgroups and automatically requests
+them on first agent launch; absent delegation launches an explicitly
+uncontained process group. Optional Landlock/seccomp remains named policy.
+Unix windows and live handover are required before alpha. Mac implementation
+and native qualification run in the borrowed-Mac campaign after the earlier
+Windows/Linux milestone, with all three OSes required before shipment.
 
 ## 1. Purpose, scope and ownership
 
 `se-proc` distinguishes a stored process claim, an exact OS instance, a native
 custody scope, a stop request and an outside exit witness. It serves the
-existing OPS process/agent/runtime custody operations. It adds no public
+agent launch/stop/wake and runtime custody operations. Native process readers
+and pins serve those adapters; process.start/control/list and their MCP tools
+are absent from the public product surface. It adds no public
 command, tool, PID killer, process-per-agent owner, Node/PowerShell dependency,
 remote compute or generic process census. Observation never grants authority.
 
 The host authorizes, owns durable events/CAS, conversation state, provider
 readiness, graceful stop, pipe buffers and the runtime lease. This crate owns
 native pins, scope resources, native launch steps, exit-event sources and OS
-readbacks. No transaction spans an OS call. Arena resources live above service
+readbacks. The core remains synchronous; the host owns its async custody executor.
+No transaction spans an OS call. Arena resources live above service
 generations. `ProcessRecord.state` is the arena's last native phase, **not** a
 claim that a store transition committed. The store owns its durable state and
 revision; a receipt joins both explicitly.
 
 Dependency direction after shared contracts settle is `se-proc -> se-types`;
 libc/windows-sys are target-specific bindings, not workspace-layer dependencies.
-This compile-only crate has no dependency yet because supplied se-types has
-no definitions. Local ID declarations are proposed common IDs to replace with
-canonical re-exports before implementation, never a parallel ID system. Only
+The declaration appendix is joined to canonical shared IDs/encodings before
+implementation, with native pins staying private. Local proposal declarations
+do not establish a second common ID system. Library dependencies use caret
+ranges and target-specific bindings; this crate does not link Tokio. Only
 se-proc may contain unsafe implementations; each eventual block must justify
 resource ownership, pointer lifetime/alignment and thread/fork safety.
 
@@ -444,6 +447,38 @@ Native names are fixed and reconstructible from this durable reservation:
 * Windows job: `Local\\SE-<host-id-32hex>-<lifecycle-32hex>-<scope-nonce-32hex>`.
   A name collision refuses; it never adopts an existing job by name.
 
+### Launch commit grouping
+
+Three causal store barriers cover ordinary agent launch; each groups the facts
+already known at that point, never a native call inside the transaction:
+
+| Barrier | Facts committed together | Crash boundary |
+| --- | --- | --- |
+| C1 FULL | LaunchReservation, prepared session and prepared credential issuance when an external credential is required | Before even an empty scope or helper exists; prepared credentials admit no ordinary operation |
+| C2 | Actual ScopeCheckpoint (`scope-prepared`) | Before begin_launch; exact scope cleanup remains possible without a published root |
+| C3 FULL | Actual observed ProcessRecord/root, trusted first-use credential activation, session activation/readiness and incumbent revocation when required | After real exec/selected-conversation evidence; before authenticating ordinary work or reporting launch ready |
+
+The host may attach the retained transport and obtain provider identity/readiness
+while C3 is pending, but gates ordinary authenticated calls and launch success
+until C3 commits. Failed C3 keeps the real child, pending credential/session and
+native observations available for reconciliation; it never fabricates rollback
+or repeats a launch under a new request identity after a lost reply. The public
+mutation identity is created before first send and reused across uncertain retries.
+
+**Four-commit exception:** Unix terminal attach, macOS and Linux uncontained
+helper paths add a separate durable RootCheckpoint between C2 and C3, before
+`authorize_exec`. Removing it permits vendor execution without recoverable
+native start/group identity; moving it into C3 either authorizes before durable
+proof or falsely calls an unexecuted child Running. This exception is counted
+in E3 and in the launch target, not hidden as provider startup. Cancellation,
+failed-start cleanup and stop use their own required crash-safe transitions;
+three is the successful ordinary-launch count, not a cap on recovery records.
+
+Embedded in-process binding issues no credential events. Required runtime.owner,
+session-activation and new-schema FULL commits remain, with their actual cost
+reported in section 80/E2. Standalone credential preparation and activation
+are batched into C1/C3 instead of adding serial security transactions.
+
 `prepare_launch` inserts its Starting arena slot **before** any native effect,
 creates an exclusive scope (no vendor child) and returns PreparedScope with an opaque
 PreparedLaunch, OwnedProcess reference and ScopeCheckpoint. The checkpoint
@@ -503,7 +538,7 @@ root_checkpoint exposes a pending attach/start identity even before a complete
 record exists; a callback/operation panic cannot hide that child from cleanup. It is a bounded
 **complete arena** view with revision, not a machine census; at configured cap
 it refuses a new slot instead of hiding entries. The host merges this with
-store rows for process.list, pending effects, drain and crash cleanup. The
+store rows for agent status/list, pending effects, drain and crash cleanup. The
 public operation still supplies Page/Window if it paginates the merged result.
 
 ### 3.1 State transitions, including refusal and natural exit
@@ -734,7 +769,7 @@ status comes from GetExitCodeProcess after its handle is signalled; STILL_ACTIVE
 is not confused with an actual code 259 until signalled. No synthetic count.
 
 `spawn_runtime` is a **stateless host-private bootstrap**, not unowned
-process.start. Windows se up from SE Code uses CREATE_BREAKAWAY_FROM_JOB |
+arbitrary process launcher. Windows se up from SE Code uses CREATE_BREAKAWAY_FROM_JOB |
 DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
 explicit null/ready streams and no agent job-list attribute. The new process
 becomes the one standalone runtime and acquires runtime.lock; the initiating
@@ -962,7 +997,7 @@ proved no-child effect may return remaining=None; unreadable identity does
 not make a created child vanish. The private helper closes unrelated FDs, obtains
 a native start pin and reports the actual runtime PID, never a manager/launcher
 PID. A helper crash/EOF before ownership commit makes the runtime exit without
-admitting agents. No generic public unowned process.start is introduced.
+admitting agents. No generic public unowned process launch is introduced.
 
 On Linux with a user manager, invoke its transient **service** mode (no --wait,
 --pipe or --pty keeper) for the native bootstrap, using fixed argv and a
@@ -1043,9 +1078,18 @@ The new runtime starts detached through spawn_runtime, proves exact PID/start
 and same-user IPC, and remains standby while the old owner holds runtime.lock.
 Host section 40 controls hold/interrupt/active-map, store flush/CAS and one-time
 input/delivery settlement; native handle transfer does not replace that barrier.
-No input is offered by both generations during transfer. B8 is <=500 ms,
-timed from cutover start after the participating agents are interrupted to
-exact idle; quiescence time is reported separately.
+No input is offered by both generations during transfer. B8 is defined in
+section 80 and timed from cutover start after participating agents are
+interrupted to exact idle; quiescence time is reported separately. The source
+writer is drained and joined before exclusive maintenance commits FULL Prepared.
+The durable phases are Prepared, Claimed, Finished, Aborted and Recovered.
+ReadyToClaim and Activated are not additional durable commits; native activation
+is retained in memory until Finished binds its actual receipt, final capture/
+queue cut and independently verified source-resource closure. Destination
+consumers remain disabled until that FULL Finished commit. Aborted preserves
+proved pre-claim source restoration; Recovered establishes a checked fresh
+owner for a claimed transfer. Combining those outcomes would erase who owns
+the native resources after a crash.
 
 The native two-phase protocol is:
 
@@ -1105,9 +1149,11 @@ The native two-phase protocol is:
    generation, never freed pointers. A pre-Claimed abort restores the source
    association and rereads; after Claimed, ownership cannot return to the source.
    Source commit_transfer verifies the receipt and closes its copies
-   only after receiver ownership is established. The source host then drops
+   only after receiver ownership is established. The source host also drops
    its gated harness originals; its transfer duplicate alone never stood in
-   for those originals. Job handles **overlap**, so
+   for those originals. The host retains the receipt, independently proves
+   closure of both sets of source resources, and commits FULL Finished before
+   enabling any destination consumer. Job handles **overlap**, so
    KILL_ON_CLOSE never sees an unintended zero-handle interval.
 5. **Only before Claimed** (section 20's durable ownership CAS), the **host**
    proves the pre-Claimed phase and still-valid source lease from the protected
@@ -1134,7 +1180,8 @@ The native two-phase protocol is:
    reconciliation; an unproved transfer is never ordinary crash-policy proof.
    Source death or a broken channel wakes that reconciliation. Only separately
    proved full owner loss permits section 20's cold recovery policy. After
-   activation, returned Files belong to the successor harness; any later
+   activation, returned Files remain gated until FULL Finished and then belong
+   to the successor harness; any later
    authorized reversal is a new transfer, not resurrection of the old source.
 
 Provider stdin/stdout/stderr and host-owned PTY masters transfer with exact
@@ -1175,7 +1222,8 @@ mismatch is shared internal with a report ID, not an unwrap or guessed map.
 
 The section 50 mapper is exhaustive over these internal causes. Existing
 section 50 wire code/class/remedy owns the output, including surrounding
-operation context (agent/observation IDs); se-proc does not invent those IDs.
+operation context (agent/lifecycle/session); se-proc does not invent public
+observation-ID selectors or a second process-control surface.
 
 | Internal cause(s) | Section 50 wire code | Structured context / remedy |
 | --- | --- | --- |
@@ -1183,11 +1231,11 @@ operation context (agent/observation IDs); se-proc does not invent those IDs.
 | ExecutableMissing | command-not-found (or provider-cli-not-found in resolver) | program; correct executable path |
 | CwdOutsideWorkspace | cwd-outside-workspace | cwd/workspace; use allowed workspace |
 | EnvironmentDenied | env-key-not-allowed | key only; drop denied key |
-| IdentityChanged | process-identity-changed | pid, expected_start, found_start; original instance mismatch refusal, not the old `pid-reused` spelling; scope-only exited-root cleanup is separate §4 |
-| IdentityUnreadable | process-identity-unreadable | pid + native reason; retry/doctor, never absent |
+| IdentityChanged | Agent launch/rebind refusal or stop-unwitnessed, selected by the section-50 mapper | pid, expected_start, found_start; original-instance mismatch, with scope-only exited-root cleanup kept separate (§4) |
+| IdentityUnreadable | Agent launch/recovery refusal or stop-unwitnessed, selected by the section-50 mapper | pid + native reason; retry/doctor, never absent |
 | UnsupportedPlatform | window-unavailable for window; spawn-failed for unsupported native capability | tried adapters or program/native capability; choose supported mode/system |
 | ContainmentUnavailable | spawn-failed only when a requested strict scope cannot be provided | path/probes/native cause; default Linux BestAvailable launches uncontained instead and emits the status fact below |
-| ContainmentChanged, ContainmentEscape, ScopeUnreadable, RecoveryUnproved | stop-unwitnessed for agent; stop-deadline-exceeded for expired process stop; process-identity-unreadable for inspect | preserve scope/remaining/native cause; no empty claim |
+| ContainmentChanged, ContainmentEscape, ScopeUnreadable, RecoveryUnproved | stop-unwitnessed/stop-partial for agent stop; contextual agent launch/recovery refusal otherwise | preserve scope/remaining/native cause; no empty claim |
 | HardeningUnavailable | spawn-failed with optional hardening cause | choose a supported requested hardening profile; default alpha launch does not require it |
 | BreakawayDenied | job-breakaway-refused | exact parent/caller job; use a terminal outside that job or grant explicit BREAKAWAY_OK; se up inside the same strict job cannot cure it |
 | LaunchFailed | spawn-failed (or launch-failed after provider startup) | program/native cause or provider exit/status/stderr context; retain failed-launch cleanup |
@@ -1195,16 +1243,16 @@ operation context (agent/observation IDs); se-proc does not invent those IDs.
 | DuplicateLifecycle | launch-in-flight / agent-already-running as observed | existing lifecycle/result; do not duplicate |
 | HostChanged | runtime-handover-in-progress during transfer; runtime-not-running after actual loss | current owner/plan; wait for ready or start runtime/recovery |
 | GenerationChanged | session-generation-mismatch | expected/current; reread and retry |
-| StopDispatchFailed | stop-unwitnessed or stop-deadline-exceeded if still unproved at deadline | retain native error even if independent witness completes later |
-| StopIncomplete | stop-deadline-exceeded for process, stop-unwitnessed/stop-partial for agents | observation/deadline_ms/labelled remaining; retain state/custody |
+| StopDispatchFailed | stop-unwitnessed/stop-partial with the original deadline and cause | retain native error even if independent witness completes later |
+| StopIncomplete | stop-unwitnessed/stop-partial for agents | observation/deadline_ms/labelled remaining; retain state/custody |
 | ResourceLimit | input-too-large for input bounds; spawn-failed for native admission/capacity | resource/limit; release witnessed terminal scopes or retry, never truncate |
 | IllegalTransition, StopTokenConsumed, LockPoisoned, OperationPanicked, CallbackPanicked | internal (task-failed when reported by host task) | state/action or report_id/location, retained quarantined slot; doctor bundle |
 | StopTokenExpired | session-generation-mismatch if stale generation, otherwise deadline-exceeded | token generation/deadline; prepare a fresh authorized request, no signal |
 
-`observation-not-yours`, `bare-pid-refused` and authority/validation errors from
-50 §6.11 remain host admission checks **before** this native API. They are not
-missing native error variants. ProcessAbsent was removed: measured absence
-is a ProcessRead/ProcessObservation fact, never an ambiguous native error.
+Creator/session/lifecycle authority is checked by host admission before the
+native API. Retired process verbs, observation selectors and their public error
+codes are not retained by this internal mapping. Measured native absence stays
+a ProcessRead/ProcessObservation fact, never an ambiguous native error.
 The former `cgroup-delegation-missing` refusal/status fact is retired.
 Section 50 A.3 exposes `session.containment` and
 `session.containment_cause`; its A.10 `custody.linux-cgroup` doctor warning
@@ -1226,7 +1274,8 @@ manager, so a failed manager probe cannot downgrade that successful root.
 Keep the exact native reason in the doctor finding; never collapse unreadable
 into absent. Every uncontained launch has one of these non-null causes; all
 other containment values have null cause. No extra wire spelling is introduced.
-T14's wire spelling is process-identity-changed; section 90 now uses it.
+T14 exercises the agent adapter's contextual identity refusal; it does not
+restore a retired process-control wire code.
 
 ### 7.1 Remaining counts and human output
 
@@ -1248,14 +1297,13 @@ Human defaults coordinated with section 50:
   identified, enumeration incomplete". Empty known_live is not zero remaining.
 * Unknown scope: "Cannot confirm scope exit: <native cause>".
 
-`stop-deadline-exceeded` retains its existing wire code; section 50's detail
-schema must add population/enumeration metadata alongside remaining[], and
-its count renderer must use these rules. Its delegation entry must report
-uncontained status after automatic probing, with optional doctor advice;
-manual delegation is not a prerequisite to the normal launch.
-These are explicit sibling contract edits requested from Prime, not silently
-new wire codes. A later --deadline retry may choose a new deadline, but a
-single token/request cannot extend its deadline mid-flight.
+Section 50's agent-stop detail includes population/enumeration metadata beside
+remaining[], and renders counts using these rules. The delegation status is
+uncontained after automatic probing, with optional doctor advice; manual
+configuration is not a prerequisite to normal launch. A new authorized stop
+retry may choose a fresh deadline, but one token/request never extends its
+original deadline mid-flight. Runtime down renders the achieved stop facts and
+saved resume command, never a claim that its stopped agents are still running.
 
 ### 7.2 Exit status and crash wording
 
@@ -1324,25 +1372,16 @@ to input-too-large, native capacity pressure maps to spawn-failed with typed
 Capacity cause and a release/retry remedy. It never maps to a nonexistent
 wire `retry` code or a success with omitted custody.
 
-Targets remain section 80's: <=50 ms StateEngine launch work excluding provider
-startup, <=50 ms stop CPU/CLI work plus 5 s graceful and <=500 ms forced wait,
-<=500 ms handover without changed agent identity/input duplication, native
-identity p95 <1 ms, idle event waits with no polling. Runtime open contributes
-<=2 ms synchronous native setup; re-adoption after ready is bounded and
-reported. Instant deadline does not invent wall-clock guarantees across sleep.
-The launch latency allocation explicitly includes **serial writer commits**;
-causally separated barriers are never collapsed into one transaction around OS
-calls. Ordinary kernel launch: reserve <=5 ms + scope-prepared <=5 ms + Running
-<=5 ms =15 ms writer time; native setup/readback <=15 ms; host dispatch/IPC
-<=8 ms; notification/record processing <=5 ms; contingency <=7 ms: **50 ms**.
-Mac/terminal/uncontained helper paths add a RootCheckpoint commit (5 ms), using
-5 ms of that contingency: **50 ms** with 2 ms spare. Writer batching with other
-requests may reduce cost but cannot delay these commits beyond their allocation.
-Cold user-manager/helper scope acquisition is charged inside native setup,
-not relabelled provider startup; if it exceeds 15 ms or commits exceed budget,
-the <=50 ms target is unmet and must be measured/reported before qualification.
-No NORMAL/commit durability semantics are weakened to satisfy this arithmetic.
-These are design allocations/targets, not measurements of these declarations.
+Section 80 owns the launch, stop, identity, runtime-open and handover targets;
+this chapter does not publish a second budget table. The ordinary launch chain
+includes C1 FULL, C2 and C3 FULL; helper paths also pay the RootCheckpoint
+barrier. E3 measures each serial commit, native setup/readback, host dispatch,
+provider handshake separately, and charges the cold manager/delegation probe
+to the first Linux launch. Warm and first-launch targets remain unchanged.
+No 5 ms-per-commit arithmetic or presumed batching proves those targets; the
+measured FULL path may exceed them. E2/E3 must report that miss before build
+qualification. Never weaken durability, drop a crash barrier, hold a transaction
+across native work or relabel setup as provider time to make a target pass.
 
 ## 9. Journeys, mirror paths and reviewer-owned checks
 
@@ -1382,93 +1421,43 @@ blocking-pool starvation; (h) sink panic/poison/quarantined-slot reconciliation;
 handle/stream handover, receiver/source crashes and no zero-job-handle gap.
 All targets are native-qualified later; this candidate claims only compilation.
 
-## 10. Cross-section contract changes and open integration work
+## 10. Integration and qualification
 
-Prime has been asked to route these **concrete sibling-owner edits** while
-this section/API is corrected; no other crate or owner's doc is edited here:
+The native crate is internal to agent/runtime adapters. Section 50 generates
+public errors/status and truthful containment/exit bounds; section 70 owns
+optional hardening and same-user policy. Section 40 owns async execution,
+provider framing, holds/input/capture/debt, runtime lease and store barriers.
+Its real-provider transport consumes section 2.3's safe Windows port and the
+host's Unix reactor; no Tokio runtime or second native owner is inserted here.
+Section 90 qualifies the generated public agent paths rather than retired
+process commands. Without pidfds, a native start/identity exit readback reports
+its actual witness method and group/tracking bound instead of pidfd-exit.
 
-* Section 50: same wire catalogue, labelled population/enumeration metadata
-  alongside remaining[], count-safe human wording, containment/containment_cause
-  plus the custody.linux-cgroup doctor warning, correct job-breakaway-refused
-  remedy (outside the strict caller job), structured identity/recovery causes.
-  No new wire spelling.
-* Section 70: optional Landlock/seccomp policy belongs there, not a mandatory
-  alpha launch guard. Same-user deliberate migration/escape is stated honestly.
-* Sections 00/40/80: one Windows IOCP collector replacing registered wait-pool
-  wording; Linux/macOS AsyncFd integration; 0.2 MB custody share; native
-  transfer plus provider-stream/hold/interrupt/active-map/lease barriers align.
-* Section 90: T14 now uses process-identity-changed; macOS's deliberate escape
-  test must reflect the ratified group/tracked bound, rather than assert an
-  unescapable-tree promise. Normal J2/J5 and ordinary descendant stop remain
-  supported outcomes, not successful refusals.
-* Before native qualification, reconcile Linux without pidfds (§5.2) with
-  section 50's closed witness-method set and section 90 T28, which currently
-  name pidfd-exit+pgid-empty for every uncontained stop. A start/image-based
-  exit readback must carry its actual method and stated group/tracking bound;
-  it cannot be labelled pidfd-exit. Prime owns the shared surface/runner
-  alignment; this remaining qualification gap does not reopen accepted design.
-* Section 10: canonical ID/error/path types replace this compile-only proposal's
-  local declarations before implementation. No serializable record becomes
-  a custody constructor. Native peer/ACL primitives from section 70 belong to
-  the integrated se-proc unsafe seam; they do not silently gain implementations
-  in this signature-only process revision.
+The throwaway continuous-writer experiment passes Linux 3/3 and native Windows
+11 3/3: two-way transfer, staged source loss and pre-claim destination loss,
+2,097,152 ordered stdout bytes per case with no loss or duplication. Real stock
+Codex 0.166 and Claude 2.1.314 each also pass A→B→A mid-turn transfer on both
+systems, retaining PID/start and conversation and recalling the first prompt's
+marker in a second answer. These observations support the native stdio arena;
+they do not replace product implementation or qualification. The observer owns
+framing/phase choices, and the fixture job uses suspended create/assign rather
+than the product JOB_LIST path. Raw proof directories are listed in section 80.
 
-No additional product decision is requested for Linux hardening/delegation,
-macOS scope, Unix windows or live handover: Prime has settled them. Native
-qualification and integrated shared type signatures remain review/implementation
-work. The design-first stop remains binding until architecture approval.
+E1 still qualifies job completion-port reassociation and abort, 100 traffic
+loops, exact resource closure and every product crash phase; E2/E3 qualify
+startup/launch/write timing and memory with actual FULL barriers. E7 covers
+SSH, Docker and WSL2, unavailable pidfds/delegation and a deliberate setsid/
+double-fork escape. Default Linux launch remains uncontained when delegation
+is unavailable; its group-empty witness cannot assert every descendant gone.
+E5 evaluates stock Codex app-server --listen as a simplification only if it
+removes an entire mechanism; it does not remove Claude's required native port.
+Mac's native identity/group/window/exit/transfer paths are qualified in the
+borrowed-Mac campaign before alpha, with both providers and embedded/standalone
+journeys. An earlier Windows/Linux pass is an intermediate milestone.
 
-## 11. Return coverage
+No product backend or author test is introduced by this reconciliation.
 
-| Review item | Concrete correction |
-| --- | --- |
-| Opus 1 | §7 exhaustive internal-to-section-50 map; no invented wire codes, T14 spelling aligned |
-| 2 | ProcErrorDetail Identity/Stop/Scope/State/Token/Generation/Host/Capacity/Internal plus NativeFailure |
-| 3 | RemainingScope and labelled best-effort enumeration; §7.1 count-safe renderers and sibling schema request |
-| 4 | witness_exit plus release for natural, graceful, prepared and rollback paths |
-| 5 | commit Exited → release → acknowledgment; exact bounded ReleaseExitedScope reaper |
-| 6 / Sol R1 | durable LaunchReservation + ScopeCheckpoint + RootCheckpoint; no-root RecoverySource/RootWitness; before-exec durable barrier |
-| 7 | §4 scope-only stop after proved original-root exit/reuse; no signal to replacement by PID |
-| 8 | wait_stopped removed; one host-owned immutable request deadline |
-| 9 | begin_launch/poll_launch/authorize_exec and watch_exit+witness_stop, no deadline-long blocking waits |
-| 10 | one IOCP for all Windows job exit/active-zero/control events; no registered wait pool |
-| 11 | §8 200,000-byte custody share and existing fixed thread/reactor budget |
-| 12 | stateless safe NativeProcessApi::read_process declaration, no Runtime/HostInstance dependency |
-| 13 | complete bounded arena_snapshot includes Starting/quarantined/unpublished slots |
-| 14 | §4.2 panic=unwind, pre-effect arena insertion, catch_unwind and poisoned-slot quarantine |
-| 15 | cgroup alpha guarantee; named unrestricted opt-in remains launchable; hardening optional/section 70 |
-| 16 | spawn_runtime + Windows explicit detached flags, distinct from JOB_LIST agent launch |
-| 17 / Sol R2 | explicit console/PTY WindowSpec and mode-dependent standard streams, no NUL TUI |
-| 18 | internal IllegalTransition, StopTokenExpired/Consumed, LockPoisoned/OperationPanicked/CallbackPanicked, RecoveryUnproved |
-| 19 | arena vs durable state separated; StopUnproved after post-CAS refusal; repeated handle references are not duplicate native owners |
-| 20 | Capability unavailable retains complete ProcError/native cause |
-| 21 | native Linux floor and automatic helper delegation on first launch, explicit uncontained fallback when unavailable |
-| 22 | ExitStatus code/signal/unavailable carried to observations/terminal records; crash vs intentional stop is host-classified |
-| Sol R3 | Unix windows §5.4 and live bidirectional native/stream handover §6 are in alpha |
-| Sol R4 | supported macOS group/kqueue/recheck/tracked-witness design with deliberate-escape/native-race bound, no Mach entitlement requirement |
-| suggestions | callback generation/sequence; Instant suspend bound; ENOSYS-only clone3 fallback; explicit wt broker check; macOS types support the ratified path |
-
-### 11.1 Final confirmation items
-
-| Item | Folded correction |
-| --- | --- |
-| N1 | safe plain NativeProcessApi, no extern block or unresolved foreign symbols |
-| N2 | §8 serial 3/4-commit allocation, cold manager time charged, no OS call inside a transaction |
-| N3 | PreparedStop + Starting stop CAS before cancel_launch dispatch; post-CAS refusal retained |
-| N4 | immediate lifecycle reread on provider/terminal completion; orphan cleanup <=1 s timer; explicit otherwise-15-minute discovery bound |
-| N5/N6 + Alpha | §5.2 lazy helper-only delegated scope without moving embedded host; §5.5 all-OS runtime detachment/races; default uncontained fallback and sibling status change |
-| N7 | TerminalAttach entry distinct from clone3 errno; LinuxProcessGroup for uncontained native entry |
-| N8 | §8 precise active admissions, empty cleanup debt in store, no retained full slot for failed rmdir |
-| N9 | remove ProcessAbsent; native absence remains a successful measured fact |
-| N10 | separate ProcessTransfer trait from ProcessRuntime |
-| Sol R5 | ActivatedTransfer owns streams after host barrier; discard_transfer closes only staged duplicates before activation, source originals remain |
-| Sol R6 | persisted machine/startup nonce; RuntimeChild readiness commit, retained-pin failure, abort, outside witness and release |
-
-Final confirmation still checks design/declarations only. Native BREAKAWAY +
-JOB_LIST behavior under a strict parent, IOCP rebinding, last-job-handle timing,
-bootstrap acknowledgment races, Linux fallback and latency/RSS remain unqualified.
-
-## 12. Primary native references
+## 11. Primary native references
 
 These sources support OS facts, not claims that the proposed backend or
 native journeys are implemented:

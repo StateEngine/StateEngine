@@ -1,9 +1,21 @@
 # 80 — Performance budgets
 
-Status: deep design, 2026-10-30. Precedence as in 00. The journey runner's budget probes
-(`journeys/budgets.mjs`, `metrics.mjs`, `reaped.mjs`, `embedded.mjs` on `seat-5d/journey-runtime-budgets`,
-head `32bbabfcde6`) are the measuring instrument; this section says what they measure, how each
-component spends the budget, and which design rules keep it spent that way.
+Design reconciliation, 2026-10-30. This is the canonical budget table for the
+Rust product. Section 90 names the independent Rust runner and its actual
+probe coverage; missing probes are unqualified, never passing measurements.
+The Node engine remains the factory's private implementation and has no
+runner-parity or fleet-cutover obligation in this product plan.
+
+Windows/Linux are intermediate milestones. Release requires the five journeys
+with real Claude and Codex on Windows, Linux and the borrowed-Mac campaign,
+including standalone and embedded SE Code. Mac implementation does not delay
+the earlier build, but native Mac qualification precedes alpha shipment.
+
+The embedding target is the Rust `secode-server` in `E:\rust-secode`,
+`crates/secode-product`, branch dev at `58e8a145f`; the CLI/install owner is
+`crates/secode-cli`, and the TUI is `crates/secode-tui-r`. S3 linked a private
+copy of that server; its existing measurements are not an unrelated TypeScript
+host or a complete first-bound/after-task qualification.
 
 All budgets cover everything StateEngine adds, helpers included, and exclude the agent CLIs. Bytes are
 decimal, as in the runner (`30 MB` = 30,000,000 bytes).
@@ -14,17 +26,17 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | --- | --- | --- | --- | --- |
 | B1 | Memory added inside SE Code | ≤ 30,000,000 bytes | A/B against a baseline SE Code server | `embedded A/B` |
 | B2 | Startup added to SE Code | ≤ 100 ms, including the first bound session | Spawn to complete authenticated `/api/session` response | `embedded A/B` |
-| B3 | Processes added | 0 embedded; exactly 1 standalone; 0 added per agent | Outside inventory by exact pid + birth | `standalone persistent processes`, `persistent processes after 1/2 seat(s)` |
+| B3 | Persistent processes added | 0 while embedded with no live agent; exactly 1 standalone or detached handback daemon; 0 persistent helpers per agent | Outside inventory by exact pid + birth; include the daemon after SE Code exits | `standalone persistent processes`, `persistent processes after 1/2 seat(s)` |
 | B4 | Standalone memory | ≤ 25,000,000 bytes with one live session, after one real agent task | Sum over every attributed StateEngine process | `standalone RSS one session` |
 | B5 | Idle CPU | < 0.1% of one core (< 60 ms CPU per 60 s) | All StateEngine processes, 60 s with no product queries | `idle no session`, `idle one session` |
 | B6 | Idle wakeups | ≤ 1/s with no session; ≤ 2/s with one | Same | Same |
 | B7 | CLI reads | p95 strictly < 20 ms, 30 runs each of `--version`, `status`, `agent list`, `msg inbox`, `msg list`, `decision list` | Spawn to process exit | `CLI --version`, `CLI contextual read verbs` |
 | B8 | Re-adoption after handover or restart | ≤ 500 ms, no lost or doubled input | Cutover start (after participating agents are interrupted to exact idle) to every live session re-adopted; quiescence time reported separately | **Not yet probed** (§2.6) |
-| B9 | CLI writes | p95 ≤ 20 ms through a running host (Prime decision, measured 7.5–11 ms) | Spawn to exit | **Not yet probed** |
+| B9 | CLI writes | p95 ≤ 20 ms through a running host | Spawn to exit, including IPC/queue/commit/receipt | Native CLI probe required; current writer spike FAILS (§3.6) |
 
 B1 and B2 are Alpha's requirements. The rest are plan decisions. Budget failures make the Rust run exit
-nonzero even when every behavior row passes; the Node profile reports the same probes without
-enforcement.
+nonzero even when every behavior row passes. Measurements include embedded
+first binding and a sample after one real task, context, mail and tool use.
 
 Long operations have their own targets, measured on StateEngine's share only:
 - **Launch:** request to child spawned, identity pinned and recorded ≤ 50 ms (Linux prototype: 15 ms,
@@ -33,10 +45,15 @@ Long operations have their own targets, measured on StateEngine's share only:
   transient scope creation, estimated at ~20–60 ms (not yet measured; the runner records it as its own
   line), so the first launch's target is ≤ 110 ms and every later launch stays ≤ 50 ms. When the probe
   finds no user manager or delegation, the probe's cost is paid once, and the `uncontained` fallback
-  adds no cgroup cost to any launch: the agent only gets its own process group.
+  adds no cgroup cost to later launches: the agent gets a tracked process group,
+  explicitly uncontained. Absence of delegation never refuses default launch;
+  setsid/double-fork escapes remain outside the stated stop bound.
 - **Stop:** identity recheck, stop and outside confirmation ≤ 50 ms of CLI time (prototype: ~4 ms each),
   plus the graceful deadline (5 s) and at most 500 ms of forced stop.
-- **Atlas** (standalone only): cold index peak ≤ 64 MB in its own process (§3.2); save-to-searchable
+- **Native custody setup:** identity-read p95 < 1 ms and synchronous runtime-open
+  setup ≤ 2 ms. These retained design targets exclude the separately reported
+  async readiness/re-adoption wait; native qualification is still required.
+- **Atlas** (standalone only, opt-in and off the milestone path): cold index peak ≤ 64 MB in its own process (§3.2); save-to-searchable
   ≤ 200 ms (prototype 67 ms); query p95 ≤ 50 ms (prototype 7–16 ms); zero idle wakeups once settled.
 
 ## 2. How the runner measures
@@ -89,20 +106,41 @@ rule (no thread churn at idle, §4). Proposed: run the host in a test-owned job 
 The observer runs `proc_pid_rusage(RUSAGE_INFO_V0)` and reads `ri_pkg_idle_wkups + ri_interrupt_wkups`.
 These are task-level counts that include exited threads.
 
-**Defect to fix before the Mac campaign:** the observer divides `ri_user_time + ri_system_time` by 1e9.
-Those fields are in Mach absolute-time units. On Apple Silicon one unit is 125/3 ns, so CPU is
-understated about 41.7 times. Scale by `mach_timebase_info` first. The fix belongs to the runner owner.
+The native runner records each field's units and applies any required native
+time conversion before reporting seconds. Unit correctness is checked against
+the actual observer; no unverified existing-runner defect is assumed.
 
-### 2.6 Embedded A/B, and probes still missing
-- **Embedded today:** 8 alternating A/B pairs, fresh profiles, every pair must pass. Gap: memory is
-  sampled at readiness, but the budget means after real resume, mail and tool use; add a sample after
-  one J2-style task inside SE Code.
-- **B8 (proposed):** three live agents, one mid-turn, a message sent during the switch; trigger SE Code
-  starting under a running daemon, then a host kill and restart. The mid-turn agent is interrupted to
-  exact idle first; record that quiescence time separately. Time from cutover start to `status` showing
-  every session adopted, with pid and birth unchanged from outside; then exactly one delivery and reply
-  per message.
-- **B9:** add `msg send`, `decide` and `hook claude stop` once Jimmy sets the number.
+### 2.6 Early proofs and coverage
+- **E2 / B1/B2:** new and existing stores on Windows with Defender, inside the
+  actual Rust SE Code server. Include first bind, required FULL commits,
+  supported startup migration/backup when applicable, and after-task memory.
+  Existing eight-pair readiness-only A/B measurements do not prove this boundary.
+- **E1 / B8:** both handover directions, source and destination loss around every
+  durable phase, job-port reassociation/abort and 100 traffic loops. Interrupt
+  participating agents to exact idle and report quiescence separately; include
+  every subsequent serial FULL/lease/capture/queue barrier in the timed cutover.
+  Outside PID/birth, post-transfer work and exact-once input/debt settlement
+  are required. A cold restart replacing a Windows agent is a separate case,
+  not unchanged-instance live handover.
+- **E3 / B9:** measure the complete native CLI/IPC host writer on ext4 and NTFS,
+  retaining ordinary/FULL mix, queue, batch, SQL, COMMIT, sync/checkpoint and
+  receipt timings. The fixed target is B9; neither a fast refusal nor an
+  in-process producer substitutes for the CLI sample. The launch slice also
+  measures section 30's three barriers and four-commit helper exception.
+- **E4–E9:** attended mail, Codex modes, non-fleet user-history import, Linux
+  containment from SSH/Docker/WSL2, cold Windows hook startup and the actual
+  SE Code composition precede the broad build. Cold-hook routing is decided
+  after E8 rather than inferred from a Linux direct-hook sample.
+
+Native writer transfer passed Linux 3/3 and Windows 11 3/3, each with 2,097,152
+ordered bytes and no loss/duplication at the named cuts. Real Codex 0.166 and
+Claude 2.1.314 each also pass two-way mid-turn process/conversation transfer
+on Linux and Windows, then recall the first prompt's marker in a second answer.
+Those throwaway observers retain protocol framing/phase decisions. They do not
+qualify product store/lease/queue/capture integration, job-message reassociation,
+all crash phases, cancellation, RSS or B8. Raw results: `5p-native-handover-spike-
+20261030/{linux-r2,windows-pc-run-a}` and `5p-provider-handover-spike-20261030/
+{linux-r1,windows-pc-run-a}` under `/mnt/nvme/stateengine`.
 
 ## 3. Allocation per component
 
@@ -120,9 +158,9 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Listener and MCP buffers (1 MiB body cap, ≤ 2 large bodies at once) | 2.5 MB | §4 |
 | Capture: 256 KiB read buffer × 2 active + parsing | 1.0 MB | Bounded transcript reads |
 | Transcript watcher | 0.5 MB | Live sessions' directories only |
-| Process custody state | 0.2 MB | Handles plus job/cgroup records; on Windows this includes the one shared IOCP collector per host, with no registered-wait pool and no other custody stack |
+| Process custody state | 0.2 MB | Handles, job/cgroup records and one Windows IOCP collector's state per host; stack charged once below, no registered-wait pool |
 | Resume assembly: 64 KiB budget × 4 concurrent | 0.5 MB | Byte-budgeted packet |
-| Allocator slack | 2.0 MB | |
+| Fixed native/writer thread stack pages and allocator slack | 2.0 MB | Count every added committed stack page in E2; SE Code's existing reactor is not a second runtime |
 | **Spend** | **20.0 MB** | Measured minimal core: 1.4 MB |
 | Reserve | 10.0 MB | Atlas is off in embedded |
 | **Total** | **30.0 MB** | |
@@ -131,48 +169,74 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Component | Allocation | Baseline / basis |
 | --- | ---: | --- |
 | `se` code pages and system libraries | 5.0 MB | Prototype owners 2.7–3.8 MB in total; Rust MCP server 5 MB |
-| tokio `current_thread` + blocking pool (max 2 threads) | 1.0 MB | |
+| tokio `current_thread`, blocking pool (max 2), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
 | SQLite page cache: writer + 1 reader × 2 MB | 4.0 MB | CLI reads go straight to the file and don't need host readers |
 | SQLite connections, schema, statements | 1.0 MB | |
 | Sessions, mail, listener/MCP, capture + watcher, custody, resume | 6.5 MB | Same per-item figures as 3.1 |
-| Atlas in-host: queries and single-file updates after first use | 2.0 MB | One closed-when-idle connection plus one parser |
+| Optional Atlas in-host: queries and single-file updates after config opt-in | 2.0 MB | One closed-when-idle connection plus one parser |
 | Allocator slack | 1.0 MB | |
 | **Spend** | **20.5 MB** | Prototypes measured 4–12 MB |
 | Reserve | 4.5 MB | |
 | **Total** | **25.0 MB** | |
 
-**Atlas conflict, with a proposal for section 60.** The prototype indexer peaked at 20 MB and settled at
-11 MB in-process. If an agent touches Atlas during J2, that alone breaks B4. Proposal: the **cold
-index** runs as a transient `se atlas index` child inside the host's job or cgroup, at background
-priority, and exits when done. Its peak never lands in the daemon, and B3 holds because the child is
-not persistent. The host keeps only queries and single-file re-parses, under the 2 MB line. The per-file
-parse budget (§4) keeps one huge file from spiking memory: the prototype's 958 KB file reached 59 MB.
+Atlas is built after the journeys and live handover pass, ships disabled,
+and never holds a milestone. Explicit config opt-in admits its cold index as
+a transient background child; it is not triggered by an ordinary first query.
+The child has a separate cold-window cap and exits after indexing; resident
+queries/incremental updates stay in the allocation above. The runner reports
+that window separately and measures B4 outside it. The prototype's large-file
+peak makes the per-file admission/deadline mandatory, not already qualified.
 
-### 3.3 Embedded startup (B2: 100 ms)
-| Step | Allocation |
-| --- | ---: |
-| Store open: WAL, `application_id`/`user_version` check, no migration | 4 ms |
-| Pending-effects scan (indexed, bounded) | 2 ms |
-| Projects and profiles load | 2 ms |
-| `runtime.lock`, `endpoint.json`, listener and IPC bind | 2 ms |
-| Tool catalogue (schemas generated at build time, served as static JSON) | 1 ms |
-| First session bind: one write transaction; credential and session activation are security events, so it commits with `synchronous=FULL` (one fsync; measure on Windows with Defender) | 8 ms |
-| First session continuity: bounded resume read | 8 ms |
-| **Spend** | **27 ms** |
-| Reserve: Defender, cold page cache, brand-new store (schema in one transaction + WAL switch) | 73 ms |
+### 3.3 Embedded startup (B2)
 
-Baseline: 75 ms p95 on an existing store and 96 ms on a new store, both under `FULL` sync with 3 and 7
-disk syncs. `NORMAL` removes most of those syncs. Re-adoption, Codex reconnect, the start-of-day backup
-and Atlas all run **after** ready.
+An embedded session uses an in-process bound handle and emits no credential
+issuance/activation events. It still pays required FULL runtime.owner, actual
+session activation and new-schema publication. Runtime ownership must commit
+before the writer admits work; first-session activation is not acknowledged
+before its own commit. There is no independent token-minting service or
+credential work hidden outside the first-bind interval.
 
-### 3.4 Re-adoption (B8: 500 ms, 50 sessions)
-Timed from cutover start, after participating agents are interrupted to exact idle (quiescence is
-reported separately and is not in this budget). Drain the predecessor and flush the writer: 50 ms. Lock transfer and store open: 15 ms. Identity
-recheck and pin (~10 µs each) plus parallel harness reconnects: 50 ms. Delivery debt from durable marks,
-1 ms per session: 50 ms. **Spend 165 ms; reserve 335 ms.** "No doubled input" comes from durable marks
-and message ids on every offer, not from timing (section 40).
+| Critical-path work | Current spend status |
+| --- | --- |
+| Native setup, store/header checks and supported upgrade path | Measure in E2; upgrade includes verified pre-migration backup and refuses an active old host with the se down remedy |
+| Initial runtime.owner | One required FULL barrier; no 8 ms fsync assumption |
+| First embedded session activation | One required FULL barrier; no credential.issued/credential.activated barriers |
+| New store/schema publication | Additional required FULL on a fresh store; report its actual ordering/count |
+| Bounded effects/profile load, IPC/native setup, static catalogue and first continuity | Measure with the same build and store; count every serial step |
+| **Spend / reserve** | **Unallocated until E2; no claimed headroom** |
 
-### 3.5 CLI read (B7: < 20 ms)
+Historical S4 FULL transaction p95 was 41–49 ms; NORMAL hosted hooks were
+7.5–11 ms end-to-end in a different workload. Neither is a current Windows
+FULL cost or permission to subtract syncs from the required contract. Two
+serial FULL barriers already consume most of B2 at the historical cost,
+before other setup; a fresh store adds another. E2 must report the real
+critical path and any miss. The old 75/96 ms readiness-only prototype and
+an 8 ms assumed first-bind commit do not establish this revised boundary.
+
+Startup migration is automatic only in the sole owning host after a verified
+pre-migration backup; too-new/unsupported formats refuse, and an active older
+host requires se down first. Migration cost is visible, never relabelled as
+provider startup. Routine start-of-day and clean-shutdown backups use the one
+section-20 rule; the pre-migration copy is an additional required safety step.
+
+### 3.4 Re-adoption (B8)
+
+Quiescence is measured separately; the cutover interval starts after exact
+idle. Source drain/flush and FULL Prepared, exclusive lease transfer and FULL
+Claimed, native activation/source closure/capture/queue proof and FULL Finished
+are serial costs wherever they fall inside that interval. Destination consumers
+remain disabled until Finished; activated handles alone are not a finished
+handover. Aborted restores proved pre-claim custody, while Recovered is the
+fresh-owner outcome of a claimed transfer: these distinct crash facts remain.
+There are five durable outcomes, with three on a successful path, not a
+seven-FULL-commit plan or a relabelled four-value crash rule.
+
+The prior 165 ms spend/335 ms reserve was not measured with those FULL barriers
+and is withdrawn. E1/E2/E3 supply native, storage and queue timings before
+reserve is allocated. Exact input/debt IDs and outside ownership readback,
+not a duration, establish no loss or duplication.
+
+### 3.5 CLI read (B7)
 | Step | Linux | Windows |
 | --- | ---: | ---: |
 | Process create, loader, static init | 1.5 ms | 5.0 ms (bare start measured at 3 ms) |
@@ -185,13 +249,47 @@ and message ids on every offer, not from timing (section 40).
 
 Windows has the thinner margin, which is one more reason to sign the binary (lighter Defender scanning).
 
-### 3.6 Per-operation latency
-| Operation | Target | Baseline |
-| --- | --- | --- |
-| CLI write through the host (B9) | p95 ≤ 20 ms | Hook through host: 7.5 ms typical, 9 ms worst |
-| MCP tool, server side, 8 agents at once | reads p95 ≤ 5 ms, writes ≤ 15 ms | Writes 11 ms worst with 8 agents |
-| `se hook claude stop` | p95 ≤ 20 ms plus bounded transcript bytes | 7.5/9 ms through host; 52–76 ms direct, which is why hooks go through the host |
-| 20-agent write burst | worst ≤ 100 ms, no lost writes | 22 ms typical, 77 ms worst |
+### 3.6 Per-operation timing and the open E3 result
+
+B9's sole threshold is in §1. Hosted MCP/hook and burst timings are useful
+component measurements, but their RPC/body/startup boundaries must be named;
+none establishes a complete native CLI latency by renaming an in-process call.
+Retained component targets are server-side MCP reads p95 ≤ 5 ms and writes
+≤ 15 ms with eight agents, and a 20-agent burst worst-case ≤ 100 ms with no
+lost writes. Hosted Claude stop-hook overhead uses B9's target plus bounded
+transcript processing. These are targets requiring the real mixed workload;
+the earlier narrow-hook timings do not qualify them.
+The ordinary writer drains already queued work without a timer/gather window;
+a mixed batch takes FULL when any closed-FULL member is present.
+
+The retained mixed-workload Python spike used 4,944 writes/run (611 NORMAL
+and 7 FULL per cycle), a persistent writer and real schema/payload shapes.
+Serial end-to-end producer p95 is 37.47 ms; 20-client p95 is 66.92 ms: **FAIL**.
+Serial queue-to-transaction p95 is 0.108 ms, append p95 2.436 ms and
+COMMIT-plus-restore p95 35.942 ms. With 20 clients, batch median/p95/max is
+10/17/18 and transaction p95 is 53.266 ms; max-per-batch queue delay p95 is
+52.244 ms. These quantiles are separate observations, not additive percentiles.
+Per-request queue p95 is 45.740 ms. Policy-FULL requests are 1.133% in both
+runs; mixed batches promote 383 NORMAL requests, making actual FULL execution
+8.879% of the 20-client requests. The clock ends at the writer's commit/restore
+endpoint before acknowledgment delivery, and there is no network/client-process
+round-trip, so it cannot attribute those costs or claim B9 acceptance. NORMAL
+groups also have slow commits; FULL share alone is insufficient as a cause.
+Recurrent slow NORMAL commits suggest a checkpoint/storage candidate, not a
+measured fsync explanation. The older S4 prototype used one cached hooks INSERT,
+fixed durability and a one-ms gather window; it did not exercise this schema's
+per-operation links, temporal writes, savepoints or mode restore. Comparing
+those p95 values alone cannot identify language, device or batching as cause.
+
+Nell owns every writer/schema rerun. Independent decomposition compares
+per-commit fsync/checkpoint time, batching, SQL/restore, queue wait, full client
+round-trip and FULL share against the older prototype, then ext4 versus NTFS.
+Keep the current durability/checkpoint baseline and all failures before diagnostic
+variants. E3 must identify the cause and report the unchanged B9 result; no
+new budget number or passing reserve is inferred from a faster median.
+Raw initial data: `/mnt/nvme/stateengine/nell-import-rehearsal-20261030/
+benchmark-result.json`, `bench-*-samples.json`. Independent retained-sample
+analysis: `/mnt/nvme/stateengine/5p-e3-write-decomposition-20261030/`.
 
 ### 3.7 Idle wakeups (B6)
 | Source | No session | One session |
@@ -200,28 +298,32 @@ Windows has the thinner margin, which is one more reason to sign the binary (lig
 | Transcript watcher (live sessions only, events on writes only) | — | 0 |
 | Attended Claude long-poll re-armed every 25 s (Claude's HTTP fetch ends at 30 s), per attended Claude session | — | 0.04/s |
 | Safety catch-up sweep every 15 min, only with ≥ 1 live session | — | 0.0011/s |
-| Auto-started daemon exit timer (10 min after last session and client) | one wake | — |
+| Auto-started/handback daemon exit timer (10 min after last live agent) | one wake | — |
 | Blocking-pool threads exiting after keep-alive | ≤ 2, once | ≤ 2, once |
 | **Expected** | **≈ 0.002/s** | **≈ 0.003/s, plus 0.04/s per attended Claude session** |
 | Ceiling | 1/s | 2/s |
 
 The ceiling is far above the expected value. A measured rate above 0.05/s plus 0.04/s per attended Claude session passes the budget but
-means a timer or poll got in, and the reviewer treats it as a defect.
+means a timer or poll got in, and the reviewer treats it as a defect during
+settled idle. Section 30's single coalesced live-cleanup timer is active work:
+at most one root/accounting read per second per orphaned scope, cancelled on
+emptiness or cleanup deadline. Report its wakeups/read cost while it runs;
+do not label that interval settled idle or hide it in the baseline expectation.
 
 ## 4. Design rules that protect the budgets
 
 | Rule | Protects |
 | --- | --- |
-| **No polling.** Every replaced loop stays gone: 250 ms mail door, 1.5 s watcher, 15 s supervisor tick, 60 s projection drain, 10 min Atlas renew, 1 h capture canary. Process exits arrive as OS events, mail as `watch` bumps after commit, files as OS file events. `notify`'s poll watcher is never used: on a filesystem without events, capture relies on the harness signal and reports the watcher as unavailable. | B5, B6 |
-| **No timer without a live session,** except the auto-start exit timer (00 open item 6). Log rotation happens on write, never on a clock. | B6 |
+| **No idle polling.** Every replaced loop stays gone: 250 ms mail door, 1.5 s watcher, 15 s supervisor tick, 60 s projection drain, 10 min Atlas renew, 1 h capture canary. Process exits arrive as OS events, mail as `watch` bumps after commit, files as OS file events. The live-session safety catch-up and attended renewal in §3.7 remain explicit measured costs. `notify`'s poll watcher is never used: on a filesystem without events, capture relies on the harness signal and reports the watcher as unavailable. | B5, B6 |
+| **No timer without a live session,** except the auto-start/handback exit timer. Log rotation happens on write, never on a clock. | B6 |
 | **Fixed thread set at idle.** The writer is a named `std::thread`, not a pool thread. Standalone blocking pool capped at 2. No per-session threads. Windows process exits for all jobs arrive on one shared IOCP collector per host; no registered-wait thread pool. | B6, Windows bound |
 | **Bounded SQLite:** `cache_size=-2000` per connection, `mmap_size=0` (mapped pages would inflate RSS without a ceiling), statement cache 32, `temp_store=FILE`, `journal_size_limit` 4 MiB, `TRUNCATE` checkpoint at clean shutdown. | B1, B4 |
-| **Batched writer, WAL `NORMAL`:** block on receive, drain whatever is queued (up to 256), one `BEGIN IMMEDIATE … COMMIT`. No gather window, so no latency or timer is added. Autocheckpoint is commit-driven. | B9, burst, B2 |
-| **Bounded everything else:** channels bounded with `Lagged{resume_from}` on overflow; pages default 100 and max 1,000 rows; message bodies in lists budgeted at 64 KiB with an explicit incomplete flag; 1 MiB frames and bodies. | B1, B4 |
+| **Batched writer, explicit durability:** block on receive, drain whatever is queued (up to 256), one `BEGIN IMMEDIATE … COMMIT`. No gather window, so no latency or timer is added. Autocheckpoint is commit-driven. Ordinary batches use NORMAL; credential/session/runtime/security transitions and decision ratify/reject/retract/supersede require FULL. NORMAL can lose several recent commits on power/OS loss, not an application crash. | B9, burst, B2 |
+| **Bounded everything else:** channels bounded with `Lagged{resume_from}` on overflow; pages default 100 and max 1,000 rows; one shared DTO limit per kind: message body 32 KiB, working state 16 KiB; list/page budgets expose incompleteness and never truncate a body; transport frames retain their separately bounded envelope. | B1, B4 |
 | **Bounded transcript reads:** read from the stored byte offset in 256 KiB chunks and parse line by line. A line over 4 MiB gets an `oversized-line` verdict (G4/G5). Never load a whole transcript. | B1, B4, hooks |
 | **Lazy startup:** Atlas, Codex reconnect, re-adoption and the start-of-day backup run after ready. The backup uses SQLite's online backup API in 64-page steps on a background read connection, never holding the writer. It holds one read transaction for the whole copy, so it reads one stable WAL snapshot and never restarts when the writer commits. While that snapshot pins the WAL, the 16 MiB high-water rule defers checkpointing instead of raising `store-backpressure`; if the WAL reaches 64 MiB the backup aborts, releases its snapshot and retries at the next start-of-day. A backup never stalls the writer. Tool schemas are built at compile time. | B2 |
 | **A lean CLI:** no async runtime, no TLS, no network, no subprocess (no `git`, no PowerShell), no process census. `status` reads `endpoint.json` and checks the host pid's identity natively instead of making an IPC round trip. | B7 |
-| **Atlas budgets:** start on first use; cold index in a transient child (§3.2); files over 512 KiB skipped with a recorded `skipped: size` fact; per-file parse deadline 200 ms (tree-sitter progress callback); one parse at a time; the search index holds names and paths, not bodies; its own `atlas.db`. | B4, B6 |
+| **Atlas budgets:** disabled by default, explicit config opt-in after core journeys/handover; cold index in a transient child (§3.2); files over 512 KiB skipped with a recorded `skipped: size` fact; per-file parse deadline 200 ms (tree-sitter progress callback); one parse at a time; the search index holds names and paths, not bodies; its own `atlas.db`. | B4, B6 |
 | **Smaller events:** trim the prototype's ~2 KB per event toward ≤ 600 B median for non-turn events (00 open item 3); a review signal. | Disk, cache hit rate |
 
 ## 5. When a budget is missed
@@ -232,18 +334,39 @@ means a timer or poll got in, and the reviewer treats it as a defect.
    (small) landing batch.
 3. **Classify:** a *product regression* goes to the author whose §3 line overran; an *environment*
    cause (first-run Defender, another process) must show in the retained diagnostics, and the next run
-   must pass; a *measurement defect* (like the macOS CPU units) goes to the runner owner with
-   independent review, and Node must pass the same runner commit.
+   must pass; a *measurement defect* goes to the runner owner with
+   independent review, and the independent Rust runner records the correction; Node parity is outside this product plan.
 4. **Fix in this order:** remove the cause (a poll, an unbounded buffer, a sync on the critical path);
    then move the work off the critical path (lazy or after ready); only then move allocation between
    components inside the total, as a doc change with one sentence of reason.
 5. **A missed budget blocks the landing batch,** exactly like a failed behavior row.
 6. **Totals don't move without their owner** (B1, B2 Alpha; the rest Jimmy). A structural miss reopens
-   the fallbacks: a sidecar if embedding can't meet B1/B2; the transient Atlas indexer for B4.
+   the fallbacks: reconsider composition with Alpha if embedding misses B1/B2; optional Atlas remains off and its cold child is separately bounded.
 7. **Self-reports are not evidence.** `status` and `doctor --bundle` may show the host's own memory and
    session counts for support; budgets are judged only from outside (G8).
 
 
-## Decision: Atlas cold-index window (Prime, 2026-10-30)
+## 6. Composition and release boundary
 
-The 25 MB standalone ceiling (B4) is the steady-state budget for the daemon and its resident helpers. Atlas's first full index is an explicit exempt window: it runs in a separate short-lived child process at background OS priority, with its own hard cap of 64 MB peak, and exits when the index completes. The journey runner reports that window separately and measures B4 outside it. Incremental Atlas updates run in the host and stay inside B4. The host defers a cold index only under machine memory pressure, and Atlas status says so. Atlas is not part of any journey, so the journeys measure B4 with no cold index running.
+While SE Code hosts StateEngine, the library adds no permanent helper or
+per-agent owner. B3's embedded-zero inventory is measured with no live agent;
+ordinary provider CLIs are excluded and transient StateEngine helpers are
+reported. Default SE Code exit with live agents performs live handback to one
+detached se up daemon; that process is now standalone and counts in B3/B4.
+It exits ten minutes after its last live agent. Explicit se down still stops
+agents on Windows, Linux and macOS; no handover exception changes that verb.
+
+Only se-host owns Tokio/async runtime composition; se-proc supplies safe native
+reactor ports without linking Tokio. Library dependencies use caret ranges;
+SE Code's Tokio 1 / rusqlite 0.40 bundled graph must share one SQLite links
+version. Listener dependencies use Hyper directly or an Axum range admitting
+SE Code API's 0.8.9. Memory/startup are measured in that actual linked graph.
+The embedded library never changes process umask: owner-only file and WAL/SHM
+modes are set and read back on each created file.
+
+The release sequence is the assembled section 95: early proofs and runner;
+unsigned install/uninstall; Claude vertical journeys; both providers and
+Windows/Linux standalone; embedded/handover/forget/signing; optional Atlas and
+native Mac qualification. Size comes from section 95's generated total, not a
+second allocation or a promised calendar. Alpha is not complete at the earlier
+Windows/Linux milestone.
