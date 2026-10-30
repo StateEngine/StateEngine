@@ -473,7 +473,7 @@ The table below mirrors `crates/se-types/src/error/catalog.rs`; typed detail fie
 | import-format-unsupported | R | path: String, found: String, supported: Vec<String> | {path} is format {found}; supported: {supported} | upgrade Node StateEngine first, then import |
 | import-source-active | R | path: String, pid: Option<u32> | the old StateEngine is still running on {path} | stop it with the old `se down`, then retry |
 | integration-failed | R | subject: String, reason: String, next_step: String | Integration {subject}: {reason} | {next_step} |
-| job-breakaway-refused | R | parent: String | Windows won't let the agent outlive {parent} | Use `se up` first, then launch |
+| job-breakaway-refused | R | parent: String | Windows won't let the agent outlive {parent} | Launch from a terminal outside {parent}'s job, or have that job permit explicit JOB_OBJECT_LIMIT_BREAKAWAY_OK; `se up` inside the same strict job does not help |
 | launch-failed | R | subject: String, reason: String, next_step: String | Launch {subject}: {reason} | {next_step} |
 | listener-unavailable | R | subject: String, reason: String, next_step: String | Listener {subject}: {reason} | {next_step} |
 | project-removed | R | project: ProjectId, at: UnixMicros | project {project} was removed at {at} | re-adopt: → `se init --repo {root}` |
