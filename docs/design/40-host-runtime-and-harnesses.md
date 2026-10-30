@@ -1,1207 +1,1121 @@
 # 40 — Host runtime and harnesses
 
-Status: design candidate; no runtime implementation or production qualification.
-Owner: Vera. Design-first assignment: `msg-4c7d56b553b90440a977c9e0`;
-priority correction: `msg-9657215aa7eab8611485c076` and
-`msg-ab5565a9cf46b93e6b552c91`. Base: `ee4b9bcaae555af60e5e7b7904c5ec5e251c0526`.
-Verification tier: kernel boundary design, qualified here by compiling declarations;
-reviewers own executable tests and the five journey scripts. No new gate machinery.
+Design candidate, not runtime implementation or qualification. Owner: Vera.
+Base: accepted main `b14e68bbb76a8b0674e41ad7968c5b2da0b8d6b6`.
+This revision folds Prime's Opus return `msg-1f35564dbeb211d846bf5f9c` and Sol's
+`msg-8e0ac6e98350f404c9abe25f`. Verification tier: kernel boundary design;
+compiling declarations here, journey/black-box checks owned by reviewers.
 
-The outcome is one StateEngine host, embedded or standalone, that launches real
-agents, captures their work, resumes the same conversations and delivers mail
-without losing holds, confusing an offer with a read, or stealing another process.
-This chapter specifies runtime ownership and adapter behavior. It does not claim
-that declaring a trait implements any of those outcomes.
+## 1. Outcome, boundaries and source of truth
 
-## 1. Governing contracts, scope and ownership
+One StateEngine host runs inside SE Code or as one standalone daemon. It launches
+real Claude/Codex agents, captures their work, resumes their original conversations
+and delivers mail without confusing an offer with a read or a PID with custody.
+The host implements the accepted [operation inventory](../OPS.md),
+[types/linked API](10-types-and-host-api.md), [store](20-data-model.md) and
+[process ownership](30-process-ownership.md). Shared sections 00, 70 and 80 in
+Prime's design bundle govern architecture, security and budgets; Prime's review
+decisions settle the conflicts called out below. Drafts 01–05 are background.
 
-The accepted [operation inventory](../OPS.md), [types and linked API](10-types-and-host-api.md),
-[data model](20-data-model.md) and [process ownership](30-process-ownership.md)
-control their respective boundaries. In particular:
+* se-core owns identity, permissions and the single closed operation executor;
+  se-store owns events, snapshots, the writer, migration and backup; se-proc owns
+  native identity, containment, peer credentials, ACLs and native unsafe code.
+* se-host owns supervision, process coordination, provider adapters, capture,
+  IPC/HTTP and the proprietary implementation of SE Code's linked API. The binary
+  owns argv/environment, human rendering and transient entry points.
+* The registry has 59 operations and 26 MCP tools. Private handover, hook and
+  lifecycle protocols add no user command, tool, generic dispatcher or actor flag.
+* Hosted writes use the exclusive runtime lease and one store writer. Direct
+  writes use the same transaction path under a shared lease only with no host.
+  The accepted fixed security-event set commits FULL; ordinary writes use NORMAL.
+  Ordinary startup never migrates: supported older schema requires the explicit
+  owner-approved section-20 upgrade/maintenance path with the old host down.
+* **Live standalone↔SE Code handover is in alpha.** Its retained coordinator uses
+  section 30 and section 10's factory/native transfer seam. Iris owns the small
+  linked-API amendment; the earlier API exclusion does not defer this requirement.
+* SE Code has one native input queue. The concrete adapter uses HostServices;
+  no parallel NativeQueue trait or translated native DTO family. A transfer fence
+  is distinct from a human/takeover hold and cannot clear either.
+* Windows uses KILL_ON_JOB_CLOSE | BREAKAWAY_OK, never SILENT. Unstaged full host
+  loss closes the last job handles and ends ordinary members. Same-process
+  generation replacement and staged overlapping-handle handover are different.
 
-* The registry has 59 operations and 26 MCP tools. Transport handshakes, hooks and
-  internal native nudges do not create public operations.
-* The store has one hosted writer while the exclusive runtime lease is held;
-  direct writes use the same store transaction implementation under a shared
-  runtime lease only when no host owns that home. The older direct-everywhere
-  draft is superseded. The fixed security-event set uses FULL; ordinary commits
-  use NORMAL. Caller-selected durability is forbidden. Ordinary activation never
-  migrates a store; only section 20's explicit owner-approved upgrade may do so.
-* The SE Code-owned permissive API is the section-10 proposal until Alpha lands
-  its real crate. HostServices feeds SE Code's existing input queue. There is no
-  second queue, subscribe/settle protocol, private copy of its executor or mail
-  server inside SE Code.
-* se-proc owns native process identity, containment, reservation, launch, stop and
-  outside witnesses. Host code never replaces these with PID/name matching.
-* Accepted sections override the synthesized plan and original `01`–`05` drafts
-  where those drafts disagree. No live daemon/SE Code handover is in alpha.
+No factory tooling, PostgreSQL multiplayer, remote HTTP, provider login manager,
+telemetry, Node runtime, dynamic plugins or new permission bypass is introduced.
+Atlas is absent embedded; standalone reserves its section-80 share. Agent CLIs
+and their tools are separate provider processes, not extra StateEngine processes.
 
-`se-host` is the proprietary adapter/composition crate: runtime supervision,
-filesystem ownership, local IPC/HTTP, harness translation and the linked-API
-implementation. `se-core` owns authorization and operation semantics; se-store
-owns commits, snapshots and recovery; se-proc owns process custody. Host adapters
-call these owners rather than importing CLI rendering or generating floor rows.
-The binary owns argument parsing, presentation, daemon entry and transient hook
-entry. SE Code owns its runtime, native session execution and prompt queue.
+### 1.1 Evidence and limits
 
-Out of scope: factory agents/campaigns/gates, PostgreSQL multiplayer, remote HTTP,
-provider authentication management, telemetry, arbitrary runtime plugins, a
-second runtime, a terminal emulator, and a new permission bypass mode. Atlas is
-optional standalone work with a separate database/budget and is absent embedded.
-Provider CLIs and their tools remain provider processes; the one-process promise
-counts StateEngine processes, not Claude/Codex or user tool subprocesses.
+The Linux S4 prototype exercised real Claude 2.1.312 command hooks and stock
+Codex 0.166 app-server tasks, capture, mail/steer and same-conversation resume.
+Hosted NORMAL sequential hook p95 was 8.3–9.5 ms; concurrent p95 10.966 ms, with
+8/200 above 20 ms, maximum 65.199 ms. Direct hooks took roughly 90–101 ms; FULL
+hosted p95 47.9–56.9 ms. Zero acknowledged ordinary writes were lost in 100 exact
+writer-process kills: process-crash evidence, never power-loss durability.
+Project-local records `vera-s4-socket-20261030/REPORT.txt` and
+`vera-s4-normal-20261030/REPORT.txt` are prototypes, not shipped dependencies.
+Attended Claude mod push, Windows/macOS transports, native custody and embedded
+RSS are **not** established by those results or this declaration candidate.
 
-### 1.1 Evidence behind the choices
+## 2. Compile-only surface and implementation shape
 
-The Linux S4 prototype used real Claude 2.1.312 hooks and stock Codex 0.166
-app-server: task, capture, mail/steer and same-conversation resume worked there.
-The direct hook fallback took roughly 90–101 ms. Hosted NORMAL sequential hook
-p95 was 8.3–9.5 ms; FULL was 47.9–56.9 ms. Concurrent NORMAL p95 was 10.966 ms,
-but 8/200 operations exceeded 20 ms, maximum 65.199 ms. Acknowledged ordinary
-commits survived 100 exact writer-process kills with no observed loss. This is
-process-crash evidence, never a power-loss claim or a Windows/macOS result.
-Artifacts are project-local prototype records, not shipped dependencies:
-`vera-s4-socket-20261030/REPORT.txt` and `vera-s4-normal-20261030/REPORT.txt`.
+Canonical declarations are actual compiling Rust, with no method bodies, defaults,
+panic placeholders, test code or executable backend. The exact linked public
+HostFactory/Host/HostServices signatures remain solely in
+[the section-10 API proposal](secode-stateengine-api.rs), compiled independently
+with [its commercial constructor signature](commercial-factory.rs). Alpha owns
+that permissive crate; replace the proposal with its published dependency at
+integration. No proprietary copy is promoted to a second public API.
 
-These results motivate the accepted store writer and incremental hooks. They do
-not waive the CLI target or authorize weakening FULL activation/revocation.
-No Windows/macOS app-server transport, macOS containment or embedded RSS result
-is inferred from the Linux prototype.
-
-## 2. Canonical compile-only Rust surface
-
-The exact public declarations are the source files below. They are normative
-parts of this design and compile in the workspace, rather than pseudocode copies
-that can drift from the crate. There are no function implementations, default
-method bodies, panic placeholders or test implementations in se-host.
-
-| Source | Public declarations and responsibility |
+| Canonical source | Types / actual polymorphism |
 | --- | --- |
-| [model.rs](../../crates/se-host/src/model.rs) | HostFuture, EmbeddedFactoryBuilder, HostKind, HostPhase, HostConfig, HostLimits, ListenerConfig, Cancellation, CallContext, OpenContext, SessionIdentity, VerifiedCaller, BoundSession, HostStatus, DrainReport, RestartRequest, RestartReason, FaultReport, FaultStage |
-| [runtime.rs](../../crates/se-host/src/runtime.rs) | PreparedRuntime, Integration, Adoption, AdoptionOutcome, RuntimeFactory, HostControl, RuntimeFilesystem |
-| [session.rs](../../crates/se-host/src/session.rs) | HarnessKind, SessionPhase, Activity, MailTarget, HoldReason, HoldWitness, InterruptReport, ActiveExecution, BindingEligibility, BindingState, MailNotice, NativeAdmission, NoticeOutcome, NativeQueue, SessionLease, SessionGrant, SessionView, TakeoverRequest, TakeoverTicket, TakeoverReport, SessionControl, CaptureRole, CaptureInput |
-| [harness.rs](../../crates/se-host/src/harness.rs) | ProviderVersion, ProbeRequest, ConfigPlan, IntegrationEdit, OwnedLaunchFile, HarnessLaunch, HarnessBinding, BindingWitness, LaunchOutcome, OfferStage, OfferWitness, BellOutcome, TranscriptSource, HarnessStop, Harness, ClaudeHookKind, ClaudeHookInput, HookOutput, ClaudeHookAdapter, CodexTransport, CodexInvocation |
-| [ipc.rs](../../crates/se-host/src/ipc.rs) | IpcEndpoint, EndpointRecord, PeerProof, ServerChallenge, IpcPlatform, ClientHello, PresentedAuthority, ServerHello, AuthorizedConnection, RawOperation, AdmittedOperation, OperationOutput, IpcRequest, IpcEnvelope, LocalAdmission, OperationDispatcher, HttpRequestHead, HttpChannel, LocalListener |
+| [model.rs](../../crates/se-host/src/model.rs) | HostFuture; HostKind, HostPhase, HostConfig, HostLimits; ListenerConfig; concrete CancellationState; CallContext, OpenContext; SessionIdentity; opaque VerifiedCaller/BoundSession; HostStatus; DrainReport; RestartRequest, RestartReason; FaultReport, FaultStage |
+| [runtime.rs](../../crates/se-host/src/runtime.rs) | Concrete HostFactoryAdapter, HostAdapter, SecodeAdapter, HandoverCoordinator, LaunchCoordinator, ExitBridge, ReactorAdapter; ConfigureFactory pointer; PreparedRuntime/Integration; Adoption, AdoptionOutcome; HandoverIntent, HandoverState, HandoverPhase |
+| [client.rs](../../crates/se-host/src/client.rs) | Tokio-free ClientOptions, BlockingIpcClient, BlockingConnection; BlockingTransport (Unix/Windows implementations); synchronous RuntimeFilesystem (three OS implementations) |
+| [ipc.rs](../../crates/se-host/src/ipc.rs) | IpcEndpoint/EndpointRecord; BorrowedChannel; PeerProof, ServerChallenge; IpcPlatform (three OS implementations); ClientHello, ServerHello, AuthorizedConnection, RawOperation, AdmittedOperation, OperationOutput, IpcRequest, IpcEnvelope; PresentedAuthority; concrete AdmissionAdapter, Dispatcher, HttpListener; HttpRequestHead, HttpChannel |
+| [session.rs](../../crates/se-host/src/session.rs) | HarnessKind; SessionPhase/Activity/HoldReason; provider-only ProviderNotice; SessionLease/Coordinator; TakeoverRequest, TakeoverTicket, TakeoverReport; trusted TranscriptPin; CaptureRole/Input |
+| [harness.rs](../../crates/se-host/src/harness.rs) | Harness (Claude/Codex implementations); ProviderVersion/ProbeRequest; ConfigPlan/IntegrationEdit/OwnedLaunchFile; HarnessRequest, HarnessAttach, HarnessBinding; ProviderIo/Transport/Invocation/Interrupt; BindingWitness/LaunchOutcome; OfferStage, OfferWitness, BellOutcome; TranscriptSource; ClaudeHookKind/Input/Output/Adapter; CodexTransport, CodexInvocation |
 
-These are internal proprietary Rust interfaces, not another version of the linked
-public API or JSON schemas. Their fields deliberately do not implement serde;
-a protected transport codec performs validated conversion. Shared IDs, NativePath,
-Read, Window, receipts, errors and ProcessInstance come from se-types; store and
-process types are referenced directly. Opaque handles have crate-private fields
-and cannot be reconstructed from actor/session strings by an external caller.
-Same-process callers are trusted under the project trust rule; these handles
-prevent mistakes, not hostile code already owning the process.
+Concrete adapters have opaque layout declarations. They implement the existing
+linked/core contracts at implementation time; they do not expose a second set
+of public service methods now. The implementation stages named in this chapter
+are private module responsibilities unless an existing canonical trait declares
+them. Native queue receipt/target/hold types and error variants are section 10's
+canonical types, not renamed host replicas. Shared IDs, Read/Page/Window/errors
+and process/store types are referenced from their owners.
 
-### 2.1 Composition and dependency versions
+HostFuture is an object-safe Send future only for genuine provider polymorphism.
+CallContext carries required generation, timeout and concrete cancellation state.
+OpenContext/ClientOptions alone allow unknown generation. RestartRequest has key
+and reason; **the authoritative old G comes from call options**, not another
+request field. A Drained report's G is a witness to compare, not another selector.
+Opaque handles prevent mistaken reconstruction from JSON, not hostile in-process
+code already inside the project trust boundary. Secret-bearing values have no
+public serde/Debug path; typed DTO validation bounds every vector/string.
 
-The commercial entry must have section 10's exact constructor type, recorded in
-[commercial-factory.rs](commercial-factory.rs): a supplied
-`tokio::runtime::Handle` produces `Arc<dyn secode_stateengine_api::HostFactory>`.
-`EmbeddedFactoryBuilder<Factory>` is its compiling generic function-pointer shape;
-substitute the upstream trait object when Alpha publishes the actual dependency.
-This candidate does not vendor the permissive proposal as a second crate, nor
-pretend an unimplemented commercial function is usable.
+ProviderIoPlatform, ProviderStream, StreamRead and StreamWrite in harness.rs are the genuine
+Unix/Windows evented-stream port and its bounded data shapes, not a native queue.
 
-`RuntimeFactory::configured` is the proprietary configuration port: retain the
-explicit Handle/config without I/O, worker creation or native callbacks. The
-constructor has no ambient process/environment authority. The declaration-only
-workspace pins Tokio 1.53.3 with `rt` to compile Handle. At embedding integration,
-the exact Tokio package must match SE Code's selected pin; do not ship duplicate
-Tokio or bundled SQLite versions. Only the composition crate depends on Tokio;
-its types do not enter the permissive API. The dependency adds a real runtime
-handle contract, not a second executor. Inspect `cargo tree -d` with the actual
-SE Code composition before claiming shared-runtime memory.
+### 2.1 Module tree and line allocation
 
-All async and blocking jobs use the retained Handle explicitly. No ambient
-`tokio::spawn`, `Handle::current`, `Runtime::new`, nested executor or `block_on`
-in callbacks/Drop. Standalone composition creates one current-thread executor;
-embedded composition creates none. Tokio's [Handle contract](https://docs.rs/tokio/latest/tokio/runtime/struct.Handle.html)
-provides explicit spawning on the supplied runtime. I/O/time features belong to
-the eventual composition build; they are not enabled to hide implementations in
-this declaration candidate.
+Future implementation layout, estimates not correctness caps; totals count host
+work only, excluding se-core/store/proc and the permissive API. No file is planned
+above 500 lines. A directory total below is spread over the listed responsibilities.
 
-### 2.2 Common call and result contract
+```text
+se-host/src/
+  lib.rs + model.rs                         250  composition/data only
+  client/{endpoint,lease,wire,auth,mod}.rs   750  blocking common client, native ports
+  runtime/{factory,generation,tasks,
+           shutdown,handover,mod}.rs       1550  retained ownership and recovery
+  process/{launch,stop,recovery,events,
+           reactor,io,mod}.rs              1350  ProcessRuntime consumer
+  session/{state,takeover,mail,mod}.rs      1050  binding and indexed notice debt
+  capture/{pins,reader,watch,mod}.rs         650  incremental trusted sources
+  harness/{mod,config,claude_launch,
+           claude_hook,claude_mail,
+           codex_rpc,codex_input,
+           codex_capture,secode}.rs        1900  provider-specific translation
+  http/{server,admission,mcp,mail,mod}.rs    1000  one bounded HTTP server
+  integration/{install,remove,mod}.rs        400  owned edit/readback
+                                           ----
+                                           8900 Rust lines
+provider-native Claude mod JS               200–350 lines, no Node process
+```
 
-`HostFuture<'a,T>` is an object-safe boxed Send future yielding the shared Result.
-`OpenContext` alone permits unknown generation; `CallContext` requires the exact
-known generation, relative timeout and cancellation handle. At admission, convert
-timeout once to a monotonic deadline; subsequent stages use remaining time and
-never reset it. Zero/overflow or policy-exceeding bounds refuse. Cancellation is
-cooperative, checked before mutation and at bounded work boundaries. It cannot
-undo a commit or prove an uncertain external effect did not happen.
+The six current declaration modules are not a mandate to put all eventual
+runtime code in six files. Public API changes follow section 10's exact-version
+and major-version rule, not an independent adapter-version policy.
 
-`Cancellation::is_cancelled` and `HostControl::status` are nonblocking snapshots.
-`cancelled` parks a future without a polling timer. Read::Absent requires a
-successful lookup; Unreadable, Unknown and Present(None) retain their different
-meanings. Page bounds include the serialized wrapper, JSON escaping, windows,
-markers and error details; never fit an array and then append unbudgeted metadata.
-No growing vector, body or diagnostic list escapes policy limits.
+## 3. Process coordinator and store ordering
 
-`VerifiedCaller` is core admission, `BoundSession` adds current capability,
-identity and revision, `SessionLease` is exclusive in-flight launch ownership,
-`HarnessBinding` is retained adapter/custody state, and `TakeoverTicket` identifies
-one durable keyed replacement intent. None is a token encoded by a client.
-`SessionGrant.capability` is returned once through protected transport, never Debug
-or telemetry. Exact replay returns receipt facts, not regenerated secret bytes.
+LaunchCoordinator alone consumes ProcessRuntime. A Harness produces configuration
+and provider invocation and attaches to an already owned process. HarnessRequest
+has identity, profile/policy/mode, executable/cwd, explicit resume, initial input,
+protected launch credential and stable key. It contains no native launch authority.
+ProviderInvocation is literal argv/environment; ProviderIo splits explicit child
+StandardIo Files from a retained host ProviderTransport. HarnessAttach receives
+the real process reference/record, transport and trusted transcript pin. Arena
+ownership remains with se-proc; the reference is not a second native owner.
 
-## 3. Runtime ownership and task model
+### 3.1 Launch order (no transaction spans native work)
 
-### 3.1 One owner per home
-
-One canonical local state home, selected by owner configuration, has
-`runtime.lock` and `endpoint.json` beside the SQLite database. RuntimeFilesystem
-owns their OS security and native file-lock implementation. Endpoint records are
-routing hints, never lease or process proof. A PID existing, a stale socket, a
-port responding or an elapsed timeout cannot establish ownership.
-
-| Method | Required behavior |
-| --- | --- |
-| acquire_host | Exclusive OS lease for the canonical home, retained through writer/task closure; bounded wait for existing direct-client shared leases; never steal |
-| acquire_direct | Shared OS lease, only when no exclusive owner; retained until direct connection/transaction closes; cannot outlive it through an unowned writer |
-| endpoint | Bounded read/validate of protected record; absent, unreadable and malformed remain distinct; no connect-or-repair side effect |
-| publish | Require matching exclusive lease/epoch; atomically install only the owned record/socket after bind/security readback; report actual endpoint |
-| unpublish | Compare actual epoch/owned record under the retained lease; remove only our endpoint, preserve a changed/foreign entry |
-
-The lease implements se_store::RuntimeLease and returns its actual store,
-generation and host/direct identity. The worker owns an Arc of that lease.
-Unlinking a lock pathname never unlocks a held native lock or authorizes a new
-writer. Resolve/protect the home without following attacker-replaced path
-components; refuse network/synced unsupported storage under section 20.
-
-A CLI reader uses a bounded read-only SQLite snapshot. A mutation with a live
-host uses IPC; while no host owns the home it acquires a shared lease and calls
-the same DirectStore transaction path. On an acquisition race it re-resolves the
-owner, bounded by the original deadline. It never silently falls back to a direct
-writer after an IPC error while an exclusive host still exists. A custody command
-requires a host: launch automatically starts standalone when appropriate; a
-hostless stdio MCP custody request returns CustodyUnavailableHostless. Offline
-inspection remains available; no hostless PID kill shortcut is added.
-
-SE Code attach while standalone owns the home reports RuntimeOwnedElsewhere with
-the actual owner. Standalone cannot kill SE Code to obtain its lease. Host
-migration is explicit stop, witness closure, then start/adopt; live handover from
-the original draft is deferred. Duplicate opens on one healthy factory share
-only its registered owner; a second independent factory cannot impersonate it.
-
-### 3.2 Resource ownership
-
-| Resource | Owner / lifetime / closure proof |
-| --- | --- |
-| Tokio runtime | SE Code or standalone composition; engine never stops an embedding runtime |
-| Runtime lease, endpoint and admission gate | Generation-independent factory supervisor; release only after real closure |
-| HostStore / se-writer | Store start_writer consumes HostStore; WriterOwner/client/CommitWait remain its only write API |
-| Native containment and process handles | se-proc arena; retained across generation replacement until explicit stop/adoption |
-| Vendor stdin/stdout, WebSocket, transcript watch | Supervisor-retained transport arena; generation tasks borrow routes, Drop does not close them accidentally |
-| Session coordinator | One async task per active route, selects committed-mail watch, provider/process events, capture and control |
-| Mail pump | Bounded per-recipient ID debt lookup; coalesced high-water notification, no body queue |
-| HTTP/local IPC | One listener each per home; bounded connections, per-request authorization |
-| Capture watcher | One shared native watch service over live transcript directories; no polling scan |
-| Backup | Store factory read connection with shared BackupContext; one bounded work-driven job |
-
-The supervisor is not an immortal second runtime or per-seat process. It is
-retained factory state and a small supervised task set on the supplied executor.
-An owned task fault is joined and reported; it cannot disappear while status
-stays Ready. A bounded shared blocking pool runs store reads/maintenance and native
-operations that cannot complete promptly. Maximum two admitted blocking jobs by
-default; no per-session blocking worker or readiness sleep in that pool.
-
-The single store writer OS thread and section-30 native collector are counted
-exceptions to async task execution, not new host-owned copies. No store
-transaction, process lock, session mutex or native queue lock spans await or an
-external effect. Snapshot bytes are released before rendering/tool callbacks.
-Backpressure refuses/bounds admissions before allocating unbounded work; committed
-debt stays in the store and is visible when memory pressure prevents delivery.
-
-### 3.3 Writer, backup and shutdown ordering
-
-Activation validates/opens a compatible schema with exclusive custody, calls
-HostStore::start_writer once, obtains WriterOwner::client, and awaits each WriterClient::submit
-completion. Only se-store creates commit receipts after COMMIT. Watch high-water
-bumps occur after the actual commit; a lost bump is recovered from indexed debt,
-not by claiming the write failed. Security events use the accepted fixed FULL
-set even if that misses the 20 ms target on a particular disk.
-
-WriterOwner::flush is a barrier over accepted work. Draining consumes the writer
-and awaits its drain/join result to regain the unique maintenance HostStore;
-join/close runs on the supplied bounded blocking facility where needed. Store
-recovery after a writer panic verifies integrity and original request keys before
-new writes. A joined panicked worker proves termination, never COMMIT outcome.
-
-An older supported schema returns StoreMigrationRequired before writer start;
-auto-start/status never upgrades it. The existing explicit owner doctor.repair
-or application-upgrade path, with the old host down, holds the exclusive lease,
-uses the accepted MigrationApproval/plan/backup protocol and validates the result
-before a normal host activates. No new upgrade command or automatic approval.
-
-Daily/startup rotation begins after readiness, never in a CLI write. The same
-opaque BackupContext coordinates the writer and factory backup. Whole-copy stable
-snapshot, 64-page steps and the accepted 64 MiB WAL pressure cancellation apply.
-Cancel the backup rather than backpressuring ordinary writes; automatic retry is
-the next start-of-day, never another attempt in this run. No minute timer or new backup per
-hook. Migration/erasure/checkpoint use the drained maintenance owner as required
-by section 20; a copy handle cannot bypass the live writer.
-
-Shutdown gates new mutations, fences native generation callbacks, records all
-accepted work/debt, joins generation tasks, flushes/drains/joins the writer, then
-closes owned listeners/resources and releases the lease. `DrainReport` is checked
-against the supervisor's actual state; caller-supplied booleans do not authorize
-close/restart. Pending durable effects are counted and named. Drained can retain
-a safely owned maintenance handle; Closed requires actual release. Dropping any
-public handle is nonblocking and supplies none of these witnesses.
-
-## 4. Generation state machine and recovery
-
-HostEpoch describes native service/process identity; Generation describes an
-engine service lifetime. Session/conversation identity survives a generation.
-A new engine generation does not mean new model input, new conversation, cleared
-hold or duplicate message. `HostStatus` reports exact epoch/G/phase and bounded
-blockers plus aggregate obligations, never another generation's health.
-
-| From | Input / condition | Next / effect |
+| Step / owner | Store boundary | Native/provider call and retained result |
 | --- | --- | --- |
-| No published handle | configured then prepare, read-compatible store and lease | Prepared returned, no writer/native mutation/callback |
-| No published handle | absent/unreadable/foreign/newer store, preparation panic | Explicit Read/error; cleanup retains preparation custody until released |
-| Prepared | Caller registers handle/G, fresh generation-bound services and correct epoch, activate | Activating; first permitted worker/native mutation, no automatic schema migration |
-| Prepared | Invalid integration/G/epoch/features before start | Prepared plus error, no partial activation |
-| Prepared | Explicit drain without activation | Draining then Drained; no invented writer |
-| Activating | Ownership/schema/services verified, all routes resolved | Ready |
-| Activating | Some route adoption/debt unresolved | Recovering; unaffected routes work |
-| Activating | Global resource failure after resource start | Poisoned, named partial facts retained |
-| Ready | Route becomes unresolved | Recovering with bounded route-specific facts |
-| Recovering | All required route obligations resolved | Ready |
-| Activating/Ready/Recovering | Caught edge/task fault | Poisoned; gate G, wake health wait, retain exact resources/debt |
-| Ready/Recovering | Explicit drain after native routing fence closes | Draining |
-| Draining | Tasks joined, writer flushed/drained, durable unfinished effects accounted | Drained |
-| Draining | Deadline/live task/unreadable closure | Remain Draining; RuntimeDrainTimeout, no release |
-| Drained | close with matching actual report | Closed after writer/resource closure and lease release |
-| Drained/Poisoned | Factory restart with old G + stable key | Independently close/quarantine old resources, prepare G+1 only after safe closure |
-| Restart closing | Unjoined writer/task or unreadable custody | Old ownership retained; explicit failure, no successor writer |
-| Fresh Prepared | Register handle/fresh services then activate | Ready/Recovering by same rules |
-| Closed | Repeated close of the same handle | Original closed result, no new resources |
+| Core/coordinator admission | Verify caller/creator grant/profile/resume, expected revision; reserve session/launch | Probe provider before changing incumbent; bypass only saved named opt-in |
+| Coordinator reserve | Commit Reserved LaunchReservation, exact nonce/parent/host/G, before any native effect | ProcessRuntime::prepare_launch inserts arena Starting slot then creates scope, no vendor child |
+| Coordinator checkpoint | Commit returned ScopeCheckpoint (`scope-prepared`) and revision | Retain PreparedScope.process and PreparedLaunch; no begin before successful commit |
+| Coordinator native start | Recheck reservation/G and exact prepared checkpoint | begin_launch consumes prepared + LaunchSpec, including ExitBridge; Pending retains ticket/process; failures retain remaining custody |
+| Coordinator event wait | No held store/native lock | Arm native watch/readiness, immediately poll_launch; await coalesced notice or original deadline, then poll again; no sleep loop |
+| Coordinator pre-exec barrier | On AwaitingExecCommit, commit RootCheckpoint: real pre-exec identity/group/intended image | Only then authorize_exec; applies to macOS/terminal attach and any required native barrier |
+| Coordinator root publication | Commit actual returned ProcessRecord/root image/state using CAS, never intended executable as observed image | Started includes actual exec observation; keep arena/process/streams even if commit fails |
+| Harness attach | Credential/binding uses verified selected conversation and current reserved lifecycle, FULL security commit | attach receives HarnessAttach; validates native conversation and accepts work; actual echo/readiness required for LaunchOutcome |
+| Coordinator publish readiness | Commit actual session/binding/readiness facts and cursor as applicable | Return real conversation/lifecycle and complete resume instruction, not PID-only success |
+| Coordinator natural/failed exit | Read outside witness, commit Exited plus original exit/scope evidence | Only after commit call release; failed release stays indexed cleanup debt |
 
-All unlisted transitions refuse. Old handles remain fenced and never become the
-new Ready handle. No private method on a Poisoned Host is necessary for recovery.
+Windows begin_launch associates the job **at creation** using
+PROC_THREAD_ATTRIBUTE_JOB_LIST and explicit CREATE_BREAKAWAY_FROM_JOB, not a
+create-then-assign race. Its job has KILL_ON_JOB_CLOSE | BREAKAWAY_OK, never SILENT.
+Required caller breakaway failure refuses without retrying weaker policy. Linux
+BestAvailable lazily requests the approved user-manager delegation on first launch;
+without it, select the explicit Uncontained group with reason, never refuse default
+launch merely because delegation is absent. Explicit KernelScope may still refuse.
+macOS uses the accepted tracked-group policy and before-exec root checkpoint.
+The se-proc state/checkpoint schema is referenced, not locally redefined.
 
-### 4.1 Runtime port method contracts
+Cancellation while Starting: coordinator retains the process/ticket, calls
+prepare_stop to obtain PreparedStop, commits **Starting -> StopRequested** with
+revision CAS, then calls cancel_launch(ticket, prepared). Failed CAS dispatches
+nothing; post-CAS native failure becomes StopUnproved with retained cleanup.
+Dropping a future never abandons an OS effect already entered. A checkpoint-commit
+failure cannot authorize vendor execution; revoke helper authorization, witness
+scope/root closure and commit cleanup before release.
 
-`RuntimeFactory::prepare` performs bounded read-only validation and may hold a
-preparation lease. It returns Read<PreparedRuntime>, not automatic initialization.
-`PreparedRuntime` carries host, epoch and proposed/known generation; activation
-publishes generation facts through the accepted store protocol. No background
-worker can begin after a failed/cancelled preparation.
+### 3.2 Exit notifications, stop and catch-up
 
-`RuntimeFactory::restart` uses supervisor-owned resource handles, not calls to
-old Host::drain/close. Validate exact old G/state/restart key, fence G, reconcile
-in-flight keyed outcomes, stop/join old work, and prepare one successor. Exact
-retry returns that same successor/result, never G+2. Reuse with changed request
-is IdempotencyKeyReused. A live unjoinable worker cannot be portably abandoned:
-return a named RuntimeDrainTimeout/TaskFailed with controlled process-restart
-remedy while ordinary SE Code can remain usable. Never release its lease.
+ExitBridge implements the accepted ExitSink. It sends only bounded/coalesced
+lifecycle/G/sequence nudges, holds no arena/store lock and wraps its entry in
+catch_unwind. Stale G and duplicate/older sequence are ignored for routing, never
+used as a stop witness. A callback panic records MonitorFailed/TaskFailed and
+wakes independent supervision; it cannot unwind through a native callback or
+kill the shared Windows collector. Native collector/lease invariant failure is a
+host-wide fault; one recipient's callback failure is route-local.
 
-| HostControl method | Behavior |
-| --- | --- |
-| status | Nonblocking exact-handle snapshot; counts are actual cached committed state, unknown detail is a blocker |
-| wait_status(after,cx) | Notification-driven phase change; immediately return if current differs, otherwise wait; timeout/cancel is error, not a manufactured transition |
-| activate | Validate registration/integration/epoch/G; idempotent same source; may not replace services of an already active generation |
-| poison | Record known stage/incident, gate G and retain obligations; no rollback fiction or private panic payload |
-| native_state_changed | Validate target/G, schedule bounded binding/notice reconciliation; no body, admission ACK or hold release |
-| adoptions | Owner-authorized bounded per-route recovery outcomes, preserving unreadable/unknown |
-| drain | Close admission, join/flush using original deadline, return truthful report only when complete |
-| close | Check actual Drained state/report; explicit join/release, idempotent; never create another generation |
+After watch_exit registration, immediately reobserve progress/root/scope to close
+the exit-before-subscribe race. On each event or deadline, use observe,
+witness_exit or witness_stop; notifications are never emptiness evidence. Provider
+EOF, terminal/attach-channel close, harness completion or actual root-handle
+signal schedules a targeted native read within 50 ms. LeaderExited with possible
+members arms one **coalesced live cleanup timer**, at most one read/second/scope;
+stop it on empty scope or completed cleanup deadline. Active stop does a final
+read at its original deadline even if no event arrived.
 
-`Integration::Secode` requires the exact native HostEpoch and a fresh NativeQueue
-adapter bound to G. Its wrapper checks both supplied G and native current fence
-inside each serialized native transition. Old queued calls fail before mutation;
-an already-entered native transaction completes atomically and is recovered by
-key. Integration::Standalone uses provider transports and no SE Code queue.
+The runtime supervisor owns **one 15-minute live-work catch-up**, armed only while
+at least one live session exists, per accepted sections 30/80. It walks bounded
+indexed live lifecycles/capture cursors/debt and rereads native state; it never
+scans the whole floor or machine process table. Coalesce missed ticks rather than
+bursting. A missing final job event without any other trigger can take that long
+to discover: this residual is not prompt-exit evidence. This explicit safety
+sweep is not the retired per-seat mail/process polling loop. Capture uses harness
+signals first and the same bounded catch-up as repair of missed native events.
 
-Panic containment requires unwind at the embedding boundary, including future
-construction and every poll. Task panics reach the supervisor and health change.
-Abort/OOM/OS kill require process-restart adoption; no API can catch them. A
-captured incident ID is nonsecret. SE Code explicitly closes engine services
-before shutting down its supplied runtime; Drop never blocks to compensate.
+Activation calls arena_snapshot to include unpublished/Starting/quarantined slots,
+then merges that bounded native view with indexed store phases. Cold recovery
+passes the actual tagged Reserved/ScopeCheckpoint/RootCheckpoint/Record to
+plan_recovery and recover; do not create a fake complete record with PID zero.
+Same-process generation recovery re_adopt's verified records/from/to G while
+retaining arena resources. Exited-but-unreleased rows are re-witnessed and released.
+Unreadable ownership blocks that route; a historical imported PID is never custody.
 
-## 5. Local IPC, authority and wire formats
+## 4. Executor, blocking and native thread accounting
 
-### 5.1 Protected endpoint and peer proof
+All async work uses the supplied Tokio Handle. No ambient spawn/current handle,
+nested runtime or block_on. Embedded creates no runtime; standalone has one
+current-thread executor. Constructor stores Handle without I/O/spawn. Tokio is
+optional behind `runtime`; client-only builds have no Tokio dependency. The
+current declaration pin compiles Handle; actual composition must match SE Code's
+exact Tokio/SQLite versions. No library installs a global tracing subscriber.
 
-Linux uses a Unix-domain stream socket in an owner-only runtime directory, socket
-0600 and directory 0700. macOS uses the same protected namespace and native peer
-credential API. Windows uses a local named byte-mode pipe with an explicit
-current-user SID DACL, remote clients rejected and the server identity verified.
-No world-readable temp socket, abstract globally named unauthenticated endpoint,
-TCP hook bridge, inherited permissive ACL or fallback port is permitted.
-
-EndpointRecord is `schema=1`, address, native HostEpoch, exact ApiVersion,
-package_version and executable image SHA-256. NativePath uses section 10's
-lossless OS encoding, not lossy UTF-8 conversion. The protected JSON record has
-those exact snake_case fields; `address` is `{kind:"unix_socket",path:NativePath}`
-or `{kind:"windows_pipe",name:string}`. Store no bearer or machine secret there.
-HostEpoch supplies the full shared process instance; no extra PID-only identity.
-The file is bounded to 16 KiB and atomically replaced with owner security checked
-before publication. Reject duplicate/unknown fields and unsupported schema/API.
-
-IpcPlatform::peer obtains proof from the already-open channel, never a request's
-uid/SID/PID. IpcPlatform::verify_server additionally checks the endpoint's actual
-native process identity against that channel. Linux uses SO_PEERCRED plus pinned
-process-start identity; macOS uses peer UID/GID and available kernel PID/audit
-identity, refusing any stronger assertion it cannot establish. Windows queries
-pipe server/client PID, token SID and process start/image through native handles.
-The safe port returns opaque PeerProof; native unsafe code belongs to the process
-platform owner, not a new unsafe host implementation. Lack of a required native
-identity primitive is an explicit admission failure, not same-user trust.
-
-Same OS user is necessary, insufficient owner authority: agents run as that user
-too. Core combines native proof with machine-credential owner proof or a verified
-session/launch capability. Human-only commands additionally require an interactive
-terminal outside owned agent ancestry. An unreadable ancestry check refuses that
-power; it does not quietly select owner. Invalid/revoked/expired session authority
-never becomes owner, even on a previously owner-authenticated connection.
-
-### 5.2 Framing and handshake v1
-
-Local IPC is a stream of **four-byte unsigned big-endian payload length followed
-by exactly that many UTF-8 JSON bytes**. Length excludes prefix. No newline,
-compression, executable object serialization or arbitrary Rust type name.
-Reject length zero, more than 1,048,576 request bytes, malformed UTF-8/JSON,
-duplicate fields, nesting beyond 64, unknown frame kind and truncated EOF before
-dispatch. Readers never allocate directly from an unchecked length. Each
-connection has at most one outstanding operation; clients needing parallelism
-open bounded separate channels. Response writes are serialized complete frames.
-
-Sequence:
-
-1. Server obtains peer proof and client verifies the server before secrets flow.
-2. Server sends `challenge`: exact API version, epoch, random 32-byte one-use
-   nonce and image digest (`ServerChallenge`). Nonces/digests encode lowercase
-   fixed-length hex. Challenge reveals no private history.
-3. Client sends `hello`: `version`, optional `expected_generation`,
-   `maximum_reply_bytes`, and protected `authority`. Owner authority contains a
-   fresh client nonce and HMAC-SHA256 proof. The MAC covers a domain-separated,
-   length-prefixed canonical encoding of `se.ipc.owner/v1`, API, server epoch and
-   image digest, server nonce, client nonce and verified peer identity. The server
-   challenge is channel-bound and consumed once. The machine secret never crosses
-   IPC. Session/launch variants send their protected capability only after server
-   verification; frame logging is forbidden.
-4. Server validates version equality, home/user, proof and current credential
-   scope/revision; sends `ready`: version, epoch, generation, effective
-   maximum_reply_bytes (`ServerHello`). The effective cap is the smaller policy
-   and request, never below space for a complete typed error. Wrong expected G
-   returns SessionGenerationMismatch, not automatic rebind.
-5. Calls carry `kind:"call"`, `version`, positive connection-local `request_id`,
-   `generation`, optional protected `authority`, and `request`. Allowed request
-   tags are `operation`, `hook`, `nudge`; they map exactly to IpcRequest.
-6. A reply echoes `request_id`, API/G and either `result` or `error`, never both.
-   Result is OperationOutput or hook/nudge result; error is shared ErrorEnvelope.
-   No success envelope is emitted before COMMIT/outside facts it claims.
-
-Operation request fields are `name`, `arguments` and optional `key`; only the
-closed operation registry can decode them to AdmittedOperation. Hook request
-carries exactly the ClaudeHookInput mapping below, not arbitrary event dispatch.
-Nudge carries only committed `through` sequence; it cannot supply an actor,
-message body, delivery result or write batch. All frames reject unknown fields;
-absence of optional authority retains only that connection's admitted principal,
-not ambient owner. A supplied authority is verified anew with no fallback. Both
-binding revocation and generation are rechecked on every operation. Authority can
-be narrowed per call; multiplexed session switching requires an explicit valid
-per-call credential and cannot inherit another principal's last request.
-
-The default local result cap is 262,144 bytes; hard cap 1,048,576. MCP adapts to
-32,768 bytes by default, including its JSON-RPC/content/structured wrapper.
-Request IDs deduplicate transport responses only within this connection; durable
-mutations require the operation's stable idempotency key. After a broken reply,
-repeat the same key or read its receipt. An unknown outcome is never a fresh key.
-
-### 5.3 IPC ports and error direction
-
-| Port | Contract |
-| --- | --- |
-| LocalAdmission::connect | Validate native PeerProof + hello under current G; issue AuthorizedConnection and negotiated ready frame |
-| LocalAdmission::caller | Reverify supplied or connection authority, revocation, current scope and G for this call |
-| LocalAdmission::session | Require an actual bound session, no claimed IDs/owner substitution |
-| OperationDispatcher::decode | Registry validation, unknown-field refusal, auth/effect/runtime policy; only producer of AdmittedOperation |
-| OperationDispatcher::dispatch | Invoke the single core executor; no second CLI or MCP semantic implementation |
-
-Handshake/idle-write budgets are five seconds; ordinary calls have a 30-second
-maximum unless the registered operation has an explicit longer custody deadline.
-An external provider launch may return pending readiness rather than occupy an
-unbounded transport call. A cancellation closes only that request's wait and
-retains accepted work/debt under supervisor custody. A mid-frame disconnect
-causes no dispatch; a post-COMMIT disconnect leaves a recoverable committed key.
-Oversized responses fail before a read marker is committed; no invalid JSON cuts.
-
-## 6. Sessions, launch and takeover
-
-SessionIdentity is durable project/agent/session. ProviderSessionId identifies
-one real vendor conversation. LifecycleId identifies se-proc custody.
-Native MailTarget adds SE Code native session/epoch and binding fingerprint.
-These identifiers are different dimensions, never interchangeable strings.
-`SessionView` retains Read facts for unavailable activity/conversation/lifecycle/
-target; Ended is not inferred from an unreadable process query.
-
-| From | Trigger and required witness | Next |
+| Work | Execution and owner | Bound / section-80 accounting |
 | --- | --- | --- |
-| None | Authorized keyed binding/launch reservation, expected absent/CAS revision | Prepared |
-| Prepared | Process reservation and launch or native binding start | Starting |
-| Prepared | Owner revokes/cancels before start | Revoked or Ended, actual intent recorded |
-| Starting | Real provider/native binding, consent, readiness and FULL activation verified | Active |
-| Starting | Readiness still unproven/deadline | RecoveryPending; child remains owned, launch reports pending |
-| Starting | Verified failed/closed launch and durable end | Ended; no readiness claim |
-| Active | Durable human/takeover/revocation hold | Holding |
-| Holding | Exact point observation proves no execution while same hold applies | Held |
-| Held | Genuine human input promotes under still-valid native binding | Active; engine cannot synthesize this trigger |
-| Active/Holding/Held | Explicit stop/end | Ending; hold first when queue/execution exists |
-| Ending | Outside process closure + flush/end commit, or actual native end | Ended |
-| Any nonterminal | Explicit capability/target revocation commit | Revoked; process effect tracked separately until witnessed |
-| Any live state | Restart/crash/unknown target/custody | RecoveryPending; prior hold/revocation persisted separately |
-| RecoveryPending | Exact binding + strong custody/native observations | Actual Active/Held/Revoked/Ended, never unconditional Active |
+| Session state/mail/control, IPC/HTTP, vendor JSON framing | Supplied executor tasks, one coordinator/session | ~50 KB/session, no thread/session; session/mail/listener lines §3.1 |
+| SQLite writes | One named se-writer OS thread, se-store owns it | Blocks on bounded receive; store lines, no shared-pool occupation |
+| Foreground DB reads, transcript chunks, config filesystem, CreateProcess/native finite steps | Shared blocking pool, at most two admitted jobs | Never run sync file reads/CreateProcess on standalone executor; finite work only |
+| Whole-copy backup / close_clean | One background/maintenance blocking slot for its entire synchronous call | At most one; reserve the other slot for foreground work; not a per-step fake async call |
+| Unix process and watch events | Existing Tokio AsyncFd/kqueue reactor via ReactorAdapter implementing NativeReactor | se-proc HostConfig.reactor supplied; no Unix collector thread |
+| Windows native job/process completion | One existing se-proc IOCP collector thread per host | §80 custody 0.2 MB includes collector; no RegisterWait pool or second collector |
+| Windows provider stdin/out/err | Overlapped named-pipe host ends and IOCP readiness, bounded buffers | No tokio::fs::File/blocking read wrapper or thread per pipe; detailed below |
+| Transcript watch | inotify FD / kqueue vnode / overlapped directory events on existing reactor | No notify-owned helper thread; §80 watcher 0.5 MB includes state, not an omitted stack |
+| Optional Atlas | Accepted standalone Atlas worker only after use | §80 standalone 2 MB in-host share; cold-index child has separate approved 64 MB window |
 
-All unlisted transitions refuse. Revoked/Ended cannot be revived by a reconnect;
-a legitimate new binding gets a fresh session/capability. Activity is orthogonal:
-Idle -> Executing on real turn start; Executing -> Interrupting after accepted
-interrupt request; either -> Idle only on authoritative completion/absence.
-Unknown/unreadable activity cannot transition to Idle by timeout. Native
-BindingEligibility is Eligible, Held(reason), Revoked; revocation dominates.
-Human resume can clear a hold only while the native target remains valid.
+On Unix ReactorAdapter takes the owned File from NativeReactor::register, installs
+AsyncFd with requested read/priority interest on the supplied Handle, calls the
+safe NativeReadiness callback, and retains NativeRegistration until cancellation
+and in-flight callback completion. No native lock is held during callback.
 
-### 6.1 Launch ordering and permission mirrors
+Windows stdio is explicitly evented: provider-side StandardIo Files are the
+specified inheritable child endpoints; host endpoints use FILE_FLAG_OVERLAPPED.
+The safe native stream bridge uses the **existing per-host IOCP collector** for
+completion and wakes the host's Tokio tasks. This avoids an unsafe raw-handle
+conversion in se-host and extra per-pipe blocking workers; it is the same counted
+collector, not a new pool. Native creation, ACL and overlapped read/write lifetime
+code belongs to se-proc's platform owner; host io.rs owns framing/buffer/deadline
+coordination. Async operation buffers stay pinned/owned until actual completion
+or cancellation completion, never freed merely because a caller future drops.
+This is the native-collector implementation of the review's evented-stdio
+requirement; no claim that an ordinary File magically becomes async. Safe port
+signatures for this bridge are part of the host/provider IO contract, and its
+native implementation must be integrated with the section-30 owner before build.
 
-For owner or creator-authorized target, core resolves agent/profile/conversation
-and obtains a revision-bound SessionLease before creating native work. Current
-create grant plus immutable same-project `created_by` is required for a session
-to control its direct child. No grandchild/all-agent authority or private inbox
-inspection follows from creation. Self rules remain OPS rules on both CLI/MCP.
+ProviderIoPlatform.open takes the actual prepared OwnedProcess reference and
+session identity, so it cannot create unowned stream resources from an ID alone.
+The agreed native bridge is ProviderStdioApi: create_stdio against the already
+prepared OwnedProcess -> StandardIo + opaque port; begin_read/begin_write return
+retained tickets; take_completion returns Pending or exactly-once bytes/EOF/write
+count/error; cancel is request-only; begin_close cancels/drains asynchronously.
+release_operation requires a terminal taken result; release_stdio requires a
+closed witness and no unreleased operations. stdio_state retrieves bounded current-
+generation port/ticket references after future drop/re-adoption. One operation per
+stream, global byte cap, no EOF from cancellation. This is the signature agreement
+with 5p, now declared in the section-30 amendment; it is not an implemented backend.
 
-Provider probe/config validation occurs before incumbent interruption or
-credential rotation. The safe saved profile determines se_proc::LaunchPolicy;
-bypass requires an explicitly named persisted opt-in. CLI and MCP, attended and
-headless, use the same policy. No environment variable, provider flag default or
-retry silently weakens it. No global provider credential/config mutation.
+After successful launch, drop the host's copies of child StandardIo; retaining
+them would suppress real EOF. A Windows read completion with ERROR_BROKEN_PIPE,
+ERROR_PIPE_NOT_CONNECTED or ERROR_HANDLE_EOF reports its actual prefix followed
+by EOF/Complete; every other failure remains an error and cancellation is never
+EOF. The host delivers a prefix once before exposing the retained terminal EOF.
+finish_input finishes any accepted stdin write, then requests the native stdin
+half-close and awaits its witness while stdout/stderr reads stay live. All-stream
+close is a separate cancel/drain operation; neither future drop nor stdin close
+may discard output/completion buffers. These are section 30's reviewed EOF and
+half-close requirements, not a synthetic empty-read convention.
 
-The process path uses section 30's reservation, persistent lifecycle/scope
-checkpoint, suspended/pre-exec custody barrier and authorized execution ordering.
-No user/vendor code executes before containment and durable launch ownership.
-An attended terminal bootstrap uses its one-use protected registration channel,
-never a bearer in argv. Headless uses the same process owner without a window.
-The terminal/window opening is not agent readiness. Keep partial failures owned;
-never drop a child handle to turn failure into apparent absence.
+For directory events use native sources on these same reactors; do not quietly
+select notify's extra thread or poll watcher. If events are unavailable, expose
+watcher unavailable and rely on real hook/completion plus the bounded live catch-up.
+No extra uncounted watcher thread is reserved. CreateProcess and transcript
+256-KiB chunk reads run as bounded blocking jobs. Exec/provider readiness awaits
+native events outside the pool. A stuck kernel call retains its slot and custody,
+reports pending and cannot be killed by terminating a host thread.
 
-Establish the exact provider-native conversation selection and owned process/
-native target before enabling the binding/capability under FULL. For Claude new
-launch, select the provider-supported explicit session UUID in the owned argv;
-resume uses the verified saved ID. The launch coordinator establishes that
-binding under its trusted reservation before authorizing provider execution.
-The session-start hook checks the actual echoed conversation/process against
-it and performs only a read; mismatch returns no private context and triggers
-coordinator-side revocation. Codex can obtain the real thread ID before starting
-a turn. Neither preparation is a launch-readiness claim: LaunchOutcome still
-requires the actual provider echo/binding and acceptance of work. No session-start
-read implicitly calls begin or activates a credential. A lost capability reply
-cannot replay secret bytes: trusted rebind uses fresh key and expected revision,
-revokes prior capability, and preserves the conversation. Credential first-use
-activation is one keyed transaction with scope/revision checks. Prepared launch
-credentials expire at ten minutes; expiration is checked at use, not by a timer.
+The two blocking slots use a common admission arbiter: one reserved foreground,
+one eligible background. Only one backup/maintenance job may run, including
+across generations; cancellation does not free its permit until it actually ends.
+Drain cancels and joins backup before queueing close_clean on that background
+slot. Store worker join is awaited without blocking the executor, after native
+coordination; foreground slot remains available for status/recovery reads.
 
-Default launch resumes a saved provider conversation; `--new` alone requests a
-new one. Missing/unverifiable reference refuses with an explicit new-conversation
-alternative. Provider changes cannot pretend to resume another provider's thread.
-Readiness means the bound agent actually accepts work, not merely PID/port exists.
+Every public entry is catch_unwind protected, including future construction and
+polling. Mutex poison maps to Internal and retains/quarantines its actual owned
+resources; it is never cleared into Running. A session task restarts **at most
+three times in a rolling 60 seconds**, recovering its original keys/cursors first;
+then it is failed by name in status, with its custody/debt retained. Non-writer
+listener/capture/session/adapter faults fence only affected routes. **Only writer,
+runtime lease or shared native collector faults poison the generation**, per
+Prime's decision. A public fault in these ownership domains uses independent
+factory recovery; ordinary API/session panics return Internal/EnginePanicked and
+route-local failure rather than poisoning unrelated sessions. Iris's section-10
+amendment mirrors this reconciled policy at the linked boundary; existing restart
+generation fences remain. panic=unwind is required;
+abort/OOM/OS kill use cold recovery.
 
-### 6.2 Takeover algorithm
+## 5. Ownership, generation restart and shutdown
 
-Takeover crosses store/native/process boundaries using durable keyed intents;
-no transaction spans callbacks. SessionControl::prepare_takeover validates caller,
-profile, expected binding Revision, generation and exact conversation choice,
-commits a replacement intent/reservation and returns one opaque ticket.
-SessionControl::finish_takeover performs the following recoverable steps:
+RuntimeFilesystem is synchronous in client.rs. endpoint(deadline) and
+acquire_direct(deadline) require **no generation**; acquire_host likewise obtains
+native custody before G is known. publish/unpublish require the retained actual
+lease and exact owned epoch. Async host wrappers call finite native/filesystem
+work through the supplied blocking arbiter; they never make CLI bootstrap async.
+The full blocking client (discovery, peer/server proof, framing, owner MAC and
+receipt decode) lives in client/, builds with no default features and no Tokio,
+and owns no executor. ClientOptions.expected_generation is optional until hello;
+post-handshake IpcEnvelope always carries the discovered exact G.
 
-1. Re-read the ticket/reservation/current binding and native target. On conflict,
-   stop before changing the incumbent; never update by unchecked overwrite.
-2. NativeQueue::hold commits the predecessor's session-wide/per-input hold even
-   if zero mail is pending. Validate target, original key, event and sequence.
-3. NativeQueue::interrupt verifies that exact durable hold before signalling.
-   InterruptReport.requested proves request admission only, not idle or exit.
-4. NativeQueue::active must return **Read::Present(None)** for that exact target,
-   epoch and G. Absent, Unreadable, Unknown, empty diagnostic pages and elapsed
-   deadlines do not prove no execution.
-5. Where an owned provider/client lifecycle must stop, se-proc proves exact
-   instance and required descendant absence under the original containment scope.
-6. Recheck reservation/G/revision, then NativeQueue::select atomically checks all
-   superseded targets still held and not executing, revokes them and selects the
-   successor. Read back the exact selected binding. A human resume between the
-   point read and select makes select refuse rather than overlap execution.
-7. Only after these witnesses commit/enable the successor binding under FULL and
-   return TakeoverReport with actual activation event/predecessor/hold facts.
+One protected runtime.lock has shared direct-client and exclusive host modes.
+A direct writer retains its shared lease until transaction/connection closure;
+the writer thread retains an Arc of the exclusive lease until actual join. A
+stale endpoint/PID, missing pathname, timeout or caller-supplied report cannot
+steal a lock. IPC failure under a live exclusive lease cannot fall through to a
+direct write. Read-only snapshots remain available without the host. Hostless
+stdio custody requests refuse CustodyUnavailableHostless; legal launch can
+bootstrap the standalone host through section-30 NativeProcessApi spawn_runtime,
+commit_runtime with authenticated readiness, or abort/witness/release_runtime.
+The exact RuntimeChild stays pinned through that outcome.
 
-The opaque ticket is recoverable by original key; dropping it does not cancel
-native effects. `SessionControl::fail_takeover` records the intent's failure and
-preserves actual custody/debt/hold; it **cannot release a hold**, select a target,
-re-enable a predecessor or claim successful takeover. If the human has already
-changed native state, report that state without re-holding as cleanup. Failed
-replacement after an intact hold is shown as awaiting human input. There is no
-abort/release-hold escape, automatic reconnect resume or synthetic human action.
+Factory preparation is read-only, returns absent/unreadable/version error
+truthfully, and starts no writer/callback/native effect. SE Code registers the
+Prepared Host/G and fresh immutable generation-fenced services before activate.
+Missing store does not implicitly init. Ordinary incompatible/older schema
+refuses; explicit owner-approved migration is a distinct offline maintenance
+path with its accepted approval/backup contract. Same-factory duplicate healthy
+open shares the registered owner; an independent live owner refuses.
 
-Standalone provider takeover uses the same intent/generation/CAS and se-proc
-outside-stop rules. Its hold is a durable host admission gate, and native provider
-interrupt/completion is still verified. It cannot claim the SE Code-specific
-HostServices atomic select witness; successful outside closure supplies the
-standalone predecessor exclusion witness instead.
-
-## 7. Mail, native queue and capture
-
-### 7.1 Independent facts
-
-Message commit, offered notice, native queue admission, delivered model input,
-recipient read, dismissal, reply and task completion are separate facts. No host
-restart, owner inspection, full list, EOF, successful callback or empty unread
-page can manufacture another fact. `message.list`/inbox including full bodies is
-read-only in this Rust contract. Only recipient-bound message.read/ack/dismiss
-changes its disposition; owner inspection cannot impersonate the recipient.
-
-| Debt state | Input / witness | Next / durable action |
+| From | Trigger | Next / actual effect |
 | --- | --- | --- |
-| Unoffered | Message COMMIT | Recipient watch bump; bounded indexed debt exists even if no session |
-| Unoffered | Reserve distinct (session,message) set for stable NoticeId | Pending intent with target, digest, cursor before callback |
-| Pending | Provider transport writes complete notice frame | Offered, still unread; uncertain acceptance remains visible |
-| Pending | SE Code Admitted/Replayed exact native result | Record original native admission once; still unread, promotion not presumed |
-| Pending/Offered | Held or Refused | Keep original intent/debt and cause; no offer cursor/read advance from refusal |
-| Pending/Offered | Lost reply, panic, timeout | Uncertain, query exact-key status before retry |
-| Uncertain | Verified original admission/input witness | Record original result, no duplicate queue input |
-| Uncertain | Exact successful Absent and eligible target | Retry original ID/digest, never invent replacement ID |
-| Uncertain | Unreadable/Unknown | Remain uncertain; surface cause, no absence inference |
-| Offered/admitted | Actual provider/native promotion input evidence | Delivered; retain witness correlation, still not recipient read |
-| Any unresolved | Genuine human eligibility/control-plane event | Recheck actual binding/status and retry original eligible debt |
-| Any | Recipient complete read/explicit ack | Idempotent recipient read marker; no completion claim |
-| Any | Recipient dismiss | Dismissal marker; no read claim |
-| Any | Permanent revocation | Preserve debt/history; new legitimate target has a new explicit intent |
+| Unopened | Valid read-only prepare | Prepared, possibly held preparation lease; no worker/native mutation |
+| Prepared | Registered correct G/epoch/services, activate | Activating; start compatible store writer/resources |
+| Prepared | Invalid source/G before resource start | Prepared + error |
+| Activating | Initial authenticated first bind/continuity ready | Ready, with route recovery exposed separately |
+| Activating/Ready | Indexed routes need reconciliation | Recovering; unaffected routes work |
+| Recovering | Required route reconciliation done | Ready |
+| Any owned active state | Writer/lease/collector ownership fault | Poisoned, gate G and retain resources |
+| Prepared/Ready/Recovering | Explicit drain, native G fenced first | Draining |
+| Draining | All generation tasks joined, unfinished effects durable, writer drained | Drained, still owned until close |
+| Draining | Deadline/live work/unreadable closure | Remain Draining with named blockers |
+| Drained | Actual matching close | close_clean/checkpoint/resource closure, then Closed |
+| Drained/Poisoned | Independent factory restart of exact call G + stable key | Close old resources safely, fresh Prepared G+1 |
+| Restart closure | Unjoined worker/unsafe ownership | Old quarantined ownership retained; no new writer |
+| Closed | Same-handle close retry | Original result, no reopened resources |
 
-A body too large for a complete message.read response is explicitly incomplete
-and cannot mark that truncated content as read. Fit the entire final envelope
-before committing its read marker. An explicit ACK is the recipient's deliberate
-acknowledgment even if it did not fetch a body. SessionControl::acknowledge requires
-BoundSession, exact recipient, key and current G; it shares the core operation.
-Body text never enters wake notices; the recipient retrieves it through its own
-authenticated tools. No polling delivery process or stale inbox window can hide
-older unresolved debt: lookup uses the recipient's indexed debt with bounded
-continuation rather than a newest-N floor scan.
+All unlisted transitions refuse. HostStatus reports its own G/epoch/phase and
+bounded real blockers/counts; status/negotiated/health are nonblocking snapshots.
+Lifecycle wait is event-driven, not a mail stream. Old handles stay fenced. The
+factory supervisor independently retains writer/task/native resources; restart
+never calls a poisoned Host object's drain/close. Exact restart retry returns the
+same successor, not G+2. A truly stuck writer cannot be killed/abandoned in process:
+retain lease, name blocker and require controlled application restart. A joined
+panicked writer proves termination, not transaction outcome; integrity and
+original-key readback precede reuse.
 
-### 7.2 NativeQueue mapping, exact witness validation
+Shutdown order: gate new admissions; fence native G; stop/revoke or hand over
+owned sessions according to the selected operation; persist debt/capture offsets;
+cancel/join route tasks and backup; flush accepted writer work; consume/await
+WriterOwner::drain and its join to regain unique HostStore; run synchronous
+**HostStore::close_clean** on the maintenance slot (TRUNCATE checkpoint, backup
+result and actual close); close native/listener resources; unpublish our exact
+endpoint; release the actual lease. Failure at any step retains named obligations
+and cannot emit a successful drained/closed report. Backup errors remain explicit.
+Drop does not join, flush, wait, block_on or supply a closure witness.
 
-NativeQueue is a proprietary adapter of accepted section-10 HostServices, not an
-alternative provider-input queue. HarnessKind::Secode selects this binding path;
-the external Harness trait is for Claude/Codex, not an extra SE Code subprocess.
+The standalone **auto-start** supervisor owns one ten-minute exit timer, armed
+only after the last live session and client end. Any new session/client cancels
+it. On expiry recheck emptiness then use the same shutdown path; explicit se up
+never auto-exits. Do not combine this timer with the 15-minute live catch-up:
+catch-up exists with live sessions, exit timer only with none. No timer/session.
+Deadlines use Instant plus a suspend/resume boundary check: on OS resume recheck
+actual identity and the original requested wall/awake bounds; Instant can exclude
+suspend, so a resumed stop is not silently granted a fresh full interval.
 
-| NativeQueue method | Section-10 owner method / exact result |
-| --- | --- |
-| hold | hold: target/hold reason/key, durable session-wide and per-input hold even with zero pending input |
-| interrupt | interrupt: same held witness still active before signal, requested only |
-| active | active_session: authoritative point result for this exact target; only Present(None) proves no active execution |
-| binding | binding_state: actual eligibility/activity and monotonic native revision |
-| select | update_mail_target Select: atomic target CAS, every superseded route held/nonexecuting, preserve human holds |
-| revoke | update_mail_target Revoke: permanent revocation without clearing held pending input |
-| adopt | adopt_binding: verify persisted prior fingerprint/identity/epoch mapping, CAS into current epoch; retain original admissions/holds/revocation |
-| offer | deliver_notice: IDs only into the existing durable pending-input queue |
-| notice | notice_status: keyed lookup after uncertainty, never a new input/settlement |
+### 5.1 Exact per-OS close/crash behavior
 
-MailTarget is epoch/native session/durable identity/fingerprint. MailNotice holds
-stable NoticeId, that target, ordered distinct MessageIds, through Cursor and
-SHA-256 digest. Use section 10's versioned canonical digest over store/project/
-agent, durable SessionId, native HostSessionId, ordered IDs and durable cursor;
-transient service/process generations are excluded. Epoch is checked separately.
-A changed payload under one NoticeId is IdempotencyKeyReused. Bound default batch:
-at most 32 IDs and 8 KiB encoded notice, lower if consumer budget requires it.
-
-NativeAdmission contains actual committed epoch, original notice/target/pending
-ID/digest/event and admitted/committed Sequence values. Check equality of all
-identity/digest/key fields against the reserved intent, accepted event ordering
-and original admission sequence. Never mint a native ID or synthesize a receipt
-from an HTTP status. On adoption preserve original committed epoch/event/sequence;
-a verified native adoption map links it to the current target. Held carries a
-real HoldWitness; Refused carries ErrorBody; neither acknowledges admission.
-
-A callback ACK proves native queue commit, not promotion. Section 10 exposes no
-new promotion settlement API, so StateEngine leaves `delivered` unwitnessed unless
-an actual captured native/provider input correlation supplies that fact or the
-recipient itself reads/acks. It must not fabricate a promotion event to fill a
-status column. SE Code continues to promote its own queued steer at safe boundaries
-and ordinary input only at idle. Native eligibility nudges contain no bodies and
-merely schedule exact binding/notice readback.
-
-Every callback checks immutable wrapper G and native current fence inside its
-serialized atomic transition. No await escapes a half-applied native hold/target/
-queue commit. The host never holds a store transaction while waiting. Reconnect,
-fresh mail and engine restart do not clear a human hold. A Held/Refused/Unknown
-route blocks only its own delivery; other admitted sessions continue.
-
-### 7.3 Scheduling and capture records
-
-At activation, committed pending-effect and per-recipient debt indexes drive
-bounded reconciliation. Live commits signal coalesced high-water watches. One
-session coordinator fairly drains at most one bounded batch per scheduling turn;
-a busy recipient cannot monopolize the writer. Limits constrain resident notice
-IDs, not durable mailbox size. If a queue is full, retain debt and report pending;
-never discard the oldest unread message. Retries are triggered by actual work,
-native eligibility change, authenticated repair or a recorded bounded retryable
-failure, not an idle timer. There is no floor-wide poll or per-seat HTTP daemon.
-
-CaptureInput validates provider conversation, stable vendor_turn ID, role,
-consent, canonical Body and source_digest before commit. The dedupe key includes
-provider conversation, vendor event/item, role and content digest; changed bytes
-under a reused identity are an error, never silently replaced. Turn text has
-section-20 storage limits and can use staged streaming outside transactions.
-CaptureRole User/Assistant/Tool does not authorize impersonating a human.
-
-TranscriptSource identifies a real file when one exists, next committed byte
-offset, conversation and file incarnation digest. Read incrementally in bounded
-chunks. Commit captured turns and cursor advancement atomically; a decode/write
-failure leaves the old cursor. Incomplete final JSON line waits for a real
-change/close signal; malformed complete lines are explicit unreadable facts.
-Rotation/truncation preserves old captured events and records the mismatch before
-new incarnation handling. No zero-offset reset, full transcript reread each hook
-or catch-and-return-empty. Provider completion/hook is the primary signal; one
-shared native watch catches missed events with an event-armed debounce, never a
-periodic scan. Consent missing suppresses capture visibly and grants no history.
-
-## 8. Harness ports and owned configuration
-
-| Harness method | Required semantics |
-| --- | --- |
-| kind | Closed provider kind; composition selects Claude or Codex implementation, no dynamic loader |
-| probe | Resolve the configured actual executable, execute bounded version/protocol probe, return ProviderVersion; reject old/unrecognized/missing required capability before takeover |
-| configuration | Produce ConfigPlan for this exact launch/profile without applying it; no global provider authentication changes |
-| launch | Consume session reservation into retained process/transport custody; return LaunchOutcome only with BindingWitness from actual conversation/readiness |
-| adopt | Verify supplied prior binding against live process/native transport and provider conversation; Read::Absent/Unreadable/Unknown remain distinct |
-| bell | Attempt one stable IDs-only notice; return BellOutcome with actual stage or Held/Refused, not a fabricated SE Code queue admission |
-| transcript | Return actual TranscriptSource or honest absence/unreadable state; no guessed vendor path |
-| capture | Bound identity/consent/source/dedupe through core/store, committed receipt only after writer completion |
-| graceful_stop | Provider graceful request followed by se-proc outside witness; Exited/Bounded preserve exact StopWitness, StillOwned names why closure is incomplete |
-
-ProviderVersion carries kind, actual executable NativePath, version text and
-selected protocol version. ProbeRequest.command is a native literal PathBuf,
-not shell source. A probe has a five-second cap and 16 KiB bounded diagnostic
-output; stdout/stderr are never parsed through a pipeline that loses exit status.
-Cache only by executable identity/version plus host generation; changed bytes
-invalidate it. Required features are checked in addition to semver. The initial
-qualification floor is Claude mods-capable 2.1.287 and Codex HTTP-tools-capable
-0.163.0, based on the existing journey work; no claim every build above that
-number implements an optional private attended transport. Unknown version is a
-refusal with path and remedy, not optimistic compatibility.
-
-HarnessStop::Exited maps only a se-proc Complete observation with its stated
-achieved containment guarantee. Bounded is incomplete at the requested guarantee,
-even if the root exited; it cannot satisfy all-descendant absence or successful
-Remove. Retain its scope/unknown descendants and legal retry in the user result.
-
-HarnessLaunch contains exact session lease/identity, executable/cwd, saved profile,
-se-proc policy/mode, explicit resume Read, initial bounded Body, protected launch
-credential and stable key. Unknown/Unreadable resume is an error; it does not
-mean new conversation. OwnedLaunchFile contains protected Secret bytes; neither
-it nor HarnessLaunch is Debug/serialized to a public receipt. IntegrationEdit
-contains path, owned key, expected prior digest Read and replacement bytes;
-ConfigPlan has owned edits and ephemeral launch files, not a generic file writer.
-
-Apply a plan with no-follow path checks, compare expected entry/file digest,
-write atomically and read back. Record ownership only for the exact installed
-key/marker bytes. Preserve unrelated keys, comments where format permits, user
-files, Git history, global provider login and existing CODEX_HOME. Unreadable
-prior bytes are not absent. Conflicting edits return IntegrationConflict without
-overwrite. Managed launch uses per-launch settings; persistent edits are reserved
-for explicit unmanaged adoption/repair and are reversible by their recorded owner.
-
-Removal first stops/revokes the actual route, then removes only matching owned
-entries/files and reads the result back. Changed user bytes are retained with a
-conflict, not overwritten by an old full-file backup. Never recursively remove a
-provider home or a directory that gained foreign entries. A secret file's unlink
-is not credential revocation; revoke first. Remove preserves work/history and is
-separate from explicit store.forget erasure.
-
-OfferWitness contains notice, durable identity, actual conversation, digest,
-OfferStage and Read of correlated vendor event. TransportWritten is just a full
-frame/request accepted by the transport. InputAccepted additionally requires the
-provider's matching input/turn response or captured input event. Neither is
-recipient read. Missing vendor correlation stays Unknown, never a fake event ID.
-BellOutcome::Held has an actual hold reason; Refused has the shared precise cause.
-
-### 8.1 Claude launch and command-hook protocol
-
-Managed launch composes literal arguments from the validated profile and actual
-CLI feature probe. Use per-launch `--settings`, `--mcp-config` and `--plugin-dir`
-files/paths as supported, without adding StateEngine secrets to argv. Their
-contents refer to the installed `se` binary and protected credential handoff;
-no worktree path, fleet identity, bundled Node or machine-specific drive appears.
-Headless uses the provider's stream-json input/output mode and persistent stdin;
-attended uses the user's terminal and plugin. Both retain default permission and
-sandbox behavior. Never append dangerous skip-permission flags on retry. A
-saved bypass profile maps only its explicitly requested semantics.
-
-The four closed native hook mappings are SessionStart -> `session-start`,
-UserPromptSubmit -> `prompt`, Stop -> `stop`, StopFailure -> `stop-failure`, all
-through `se hook claude EVENT`. Native stdin JSON is bounded to 1 MiB and mapped
-to ClaudeHookInput: expected event kind, `session_id` conversation, real
-`transcript_path` NativePath and bounded vendor payload. The integration resolves
-its protected binding/capability outside the model payload and verifies matching
-conversation, process lifecycle, project, agent, consent and G. Payload identity
-strings alone never bind. No arbitrary event or shell command is accepted.
-
-ClaudeHookAdapter::hook returns HookOutput: protocol stdout, actual capture event
-Read and optional explicit failure. SessionStart is read-only: return bounded
-context JSON `hookSpecificOutput` with the matching native `hookEventName` and
-`additionalContext`. Prompt captures newly available user input under its real
-vendor identity and may return bounded additional context. Stop/StopFailure
-incrementally capture completed transcript records and return **empty stdout**;
-no decision/block/continue field, recursive prompt or synthetic turn is emitted.
-Native hook field/event semantics are taken from the installed version and the
-[Claude hook reference](https://code.claude.com/docs/en/hooks).
-
-The binary preserves provider availability by exiting zero for hook-adapter
-failure with a bounded nonsecret stderr diagnostic. This is explicitly not a
-capture success receipt. Keep cursor/debt unchanged on failure and expose the
-actual failed/suppressed capture through status. If persistence is itself broken,
-report that diagnostic rather than claiming a durable failure record exists.
-An invalid pre-decode payload uses the shared input error; HookPayloadInvalid
-is used only when an actual trusted event reference is available for its typed
-detail. No invented event ID satisfies an error constructor.
-
-Hosted hooks use short IPC calls to the existing writer; session-start uses a
-bounded read. When no host owns the home, a transient hook may take a shared
-lease and use the same direct transaction implementation, within its deadline.
-It cannot race an exclusive writer or silently substitute unauthenticated private
-context. Host-not-ready/fence errors carry retry/readback facts; provider stdout
-stays valid. Full store sync and cold process startup are measured separately;
-no claim that the slower direct fallback already meets 20 ms.
-
-### 8.2 Claude mod JS and headless input
-
-The shipped plugin is a small provider-native JS adapter, not a Node process or
-operation executor. Manifest plus `hooks/hooks.json` module registration loads
-its `register(on,options)` entry. It holds only its session-scoped renewable
-credential, one cancellation-aware wait and the last committed change cursor.
-It does not read another agent's mailbox, execute commands, manage grants or
-persist message bodies. API types come from the installed Claude build.
-
-Attended idle flow: authenticate to the local listener, arm one internal
-change wait after the known cursor, receive bounded NoticeId/message-ID metadata,
-and submit attributed mod text telling the agent to read its inbox. A successful
-submit records only the stage the real API proves. Never set `asUser:true` to
-impersonate a human or clear holds. No body/credential in the prompt. Submission
-runs after a blocking hook returns, avoiding a hook waiting on its own prompt.
-While execution is active, retain notice debt until a safe supported steer/idle
-boundary rather than starting a concurrent turn. Session end, human stop or
-revocation cancels the wait and preserves held debt.
-
-The [current mods reference](https://code.claude.com/docs/en/plugins/mods/reference)
-limits an entire HTTP fetch to 30 seconds and warns that installed types are
-canonical. Therefore this design uses at most **25 seconds** per change wait;
-the old draft's 25-minute request is not implementable on that API. This creates
-up to 2.4 timeout renewals/minute per attended Claude session. They are vendor
-request renewal, not database polling, but they still count in measured CPU and
-wakeups. No idle-cost acceptance is claimed until the real client meets <0.1%
-CPU including renewal. A longer future supported wait may replace it only after
-version probing and journey qualification; no undocumented timeout assumption.
-
-The wait response contains no message body and is never a read marker. Zero debt
-at timeout returns an explicit unchanged result, not source absence. One wait per
-session is enforced; reconnect reuses the stable intent/status readback. The
-server never redirects, and the mod verifies the final private origin before
-accepting a response. The registered local route cannot be a generic fetch proxy.
-Do not place a bearer in a URL or follow a server-selected remote endpoint.
-
-Headless Claude receives complete stream-json input frames on the supervisor-
-owned persistent stdin. Stdin write success is TransportWritten; a correlated
-native input echo/capture is InputAccepted. The coordinator serializes input and
-respects human/takeover holds. EOF may cause provider exit; generation-only
-restart keeps the transport arena alive. After actual process loss, resume the
-verified original conversation only after required old-scope absence. Never spawn
-one query/helper per message or claim cold restart preserves a still-live pipe.
-
-### 8.3 Codex app-server protocol
-
-CodexInvocation holds actual executable, literal OsString argv, selected transport
-and optional private endpoint. Required headless path is stock
-`codex app-server --listen stdio://`, bidirectional newline-delimited JSON.
-Optional attended/reconnect path uses a private `unix://PATH` endpoint and the
-real WebSocket upgrade, never raw JSONL written to a Unix socket. The
-[official app-server contract](https://learn.chatgpt.com/docs/app-server) documents
-that distinction and labels WebSocket transport experimental. Alpha qualification
-must exercise the installed stock build; Linux prototype success supplies no
-Windows/macOS transport guarantee. No unsecured TCP fallback is substituted.
-
-Protocol sequence and host obligations:
-
-| Step | Request/notification | Required host action |
-| --- | --- | --- |
-| Connect | initialize request, then initialized notification | Once per connection; identify client/capabilities, validate negotiated protocol and provider version |
-| New conversation | thread/start | Explicit safe cwd/model/approval/sandbox/MCP config; persist actual returned thread.id before claiming a resume reference |
-| Existing conversation | thread/resume with exact saved threadId | Check actual returned thread identity and existing status; never substitute thread/start after a failure |
-| Real work/idle mail | turn/start with threadId and text input items | Serialize against actual activity; preserve NoticeId correlation and returned turn ID |
-| Mid-turn mail | turn/steer with threadId, expectedTurnId and attributed text input | Require exact active turn; stale response re-reads actual status before deciding retry, no new notice key |
-| Capture | item/started, item/completed, turn/completed | Join real item/turn/thread identity; capture bounded user/assistant/tool records and final status, not just deltas as independent turns |
-| Interrupt | turn/interrupt for exact threadId/turnId | Hold first; response is request ACK only; wait for authoritative completion/status and outside process closure where required |
-| Reconnect | initialize/initialized, exact thread/resume or read | Verify actual saved thread/status; reconcile original pending input before retry |
-
-Wire frames have `id`, `method`, `params` requests and correlated result/error
-responses; the vendor omits the JSON-RPC version header. Notifications omit id.
-These protocol names are provider API calls, not new StateEngine public operations.
-Use generated schemas for the qualified provider version; bound JSON size/depth,
-redact errors and never accept an unknown response as readiness. A code-mode
-provider may not expose tools under older versions; probe before launch so the
-user receives ProviderCliTooOld/ProviderProtocolUnsupported rather than an agent
-silently working without its coordination tools.
-
-StateEngine-managed MCP configuration is supplied per launch/thread where the
-qualified version supports it. The header helper is installed `se mcp token` with
-protected authority, never a bearer argument or per-seat replacement CODEX_HOME.
-The user's existing provider login/home remains authoritative. Missing transport
-or per-launch config capability is a visible protocol refusal, never a forked
-Codex binary, hooks.json injection or a second state root to hide missing auth.
-
-Vendor requests for approval/permissions are routed to the actual interactive
-owner or the saved safe profile's supported provider policy. Headless cannot
-invent approvals; it reports waiting/refusal/pending when no legal decision path
-exists. Turn completion is not process exit or task success; inspect actual final
-status and the requested external effect. App-server/server/client process
-custody stays in se-proc; stderr has a bounded redacted tail, not unlimited logs.
-
-### 8.4 Direct SE Code binding
-
-Embedded SE Code calls the section-10 typed HostFactory/Host API directly. It
-registers Prepared host/G before activate and supplies its exact native epoch
-and generation-fenced HostServices adapter. Native model tool calls always use
-BoundSession. OwnerAuthority is trusted native control-plane intent, never a
-model argument or a serialized owner flag. There is no generated local MCP
-config, mail HTTP hop, StateEngine child or per-agent CLI helper in this path.
-
-Open project is an authorized existing lookup. Bind verifies native target,
-conversation, consent, expected binding revision and exact identity. Capture
-uses the canonical native vendor event/capture API, not transcript scraping if
-there is no file. Tools/continuity use the same core operation registry and body
-windows as standalone. Native queue/callbacks follow section 7. Opaque API errors
-preserve the engine cause/remedy without linking proprietary types into SE Code's
-permissive crate. The public stub immediately returns NotIncluded with a plain
-manual remedy; normal SE Code remains usable.
-
-## 9. MCP and listener security
-
-One runtime-owned HTTP listener binds literal **127.0.0.1** only; the accepted
-catalog currently refuses other addresses, including a guessed IPv6 alternate.
-Port comes from protected product configuration, never fleet defaults. Validate
-all listening sockets before publication. A port in use is ListenerPortInUse;
-there is no silent port change that leaves installed clients pointing elsewhere.
-No floor-push, mail-door, warm-backend or separate listener process is retained.
-
-Admission order is fixed so browser-origin or Host attacks never reach private
-lookups: parse bounded head -> origin-form target -> exact Host allowlist ->
-Origin -> method/content/Accept -> credential -> typed operation authorization.
-Allow Host `127.0.0.1:P` or `localhost:P` for this actual port only; reject duplicate
-Host, userinfo, absolute-form targets, alternate IP spellings, trailing-dot/DNS
-aliases and forwarded-header authority. Origin is absent or this exact local
-origin after normal URL parsing, never wildcard/reflected CORS or suffix matching.
-An allowed local Host alone grants no credential authority.
-
-| Route | Method / auth / payload / effect |
-| --- | --- |
-| `/mcp` | POST plus negotiated Streamable HTTP methods; per-call session bearer in protected headers, closed JSON-RPC/tools registry; no actor/project override in tool input |
-| `/stateengine/livez` | GET; non-private availability/version only, no projects, conversations, mail counts or readiness-as-task-success |
-| `/stateengine/local-http-proof` | POST bounded nonce challenge; machine-credential HMAC proof of exact image/epoch/G/channel origin, no secret returned; replay-bound/rate-limited |
-| `/stateengine/mcp-token` | POST authenticated helper only, no-store protected bearer result; never a model tool or anonymous token mint |
-| `/stateengine/mail/next_change` | POST bound Claude integration only; one ≤25 s change wait, bounded cursor/IDs, no body/read marker, not a public mail operation |
-
-The public livez/proof exceptions contain no private data. Credential-required
-routes reject missing/invalid/revoked credentials before dispatch; no anonymous
-fallback to a previously used session. Prepared launch credential first-use
-activation and renewable session credentials follow core's credential record,
-scope, revision, expiry, FULL activation/revocation and constant-time verifier
-rules. Preserve supported sec1/selp-/sels- credential compatibility only through
-that verifier; they are not public IDs. Never place secrets in URL/query, process
-argv, stdout intended for humans, error cause text, support bundles or logs.
-
-Protected credential handoff is managed-launch state, not a new global config:
-use the platform's explicitly inherited restricted handle/channel or an owned
-short-lived secret file allowed by the saved sandbox profile. Only its nonsecret
-handle/path reference reaches the provider/helper configuration. Verify binding
-and process lineage when exchanging launch authority; a claimed PID or copied
-session label cannot redeem it. Restrict handle inheritance to the intended
-launch path. A required credential handoff incompatible with that profile is a
-visible refusal, never permission relaxation. Secret-file bytes are owner-only,
-excluded from diagnostics, revoked before cleanup, and retained only as long as
-the declared helper needs them. No machine credential is handed to a model or
-provider process to make owner requests on its behalf.
-
-The HTTP proof response is server authentication only. Domain-separate its HMAC
-as `se.http.server/v1` from IPC/client owner proof and any `se.http.owner/v1`
-request proof. Bind challenge, exact origin/route, image, epoch and G with bounded
-one-use nonces. It cannot be replayed as an owner request or used as an HMAC oracle
-for credential issuance. HTTP token exchange accepts an already proved protected
-launch/session helper, never anonymous server-proof bytes as caller authority.
-
-LocalListener::admit_head returns opaque HttpChannel only after syntactic/origin
-admission; it does not authorize a tool. authenticate verifies PresentedAuthority
-and returns the per-call VerifiedCaller. status is a nonprivate local snapshot
-used by trusted composition; the HTTP adapter redacts it for public livez.
-stop gates new connections and joins actual listener work under the deadline.
-
-Defaults: at most 64 total IPC/HTTP connections, 16 KiB HTTP headers, 1 MiB body,
-64 JSON nesting, ten-second headers, 30-second ordinary request and one outstanding
-mail wait per session. The header/body deadline remains absolute under slow
-streaming. Enforce actual bytes even without Content-Length; reject ambiguous
-framing/duplicate length and unsupported content coding. Errors retain typed
-cause/remedy but redact secrets/private input. Authorization headers are never
-request logs. Backpressure is bounded refusal, not unlimited spawned tasks.
-
-MCP initialize/ping/catalogue are protocol behavior, not owner powers. tools/list
-advertises only available authorized registry rows, with generated schemas and
-bounded full response; no unknown tool aliases or actor override fields. Each
-call verifies its current capability, including stdio or a multiplexed HTTP
-connection. Structured output and text are rendered from one typed outcome;
-measure the final wire result, including both content copies and envelope. If a
-full first item cannot fit, return InputTooLarge with a legal larger-budget or
-explicit read alternative. Never silently trim a complete body or mutate markers
-after budgeting. Protocol errors use standard JSON-RPC errors; domain failures
-retain the shared ErrorEnvelope rather than becoming a successful empty result.
-
-A hostless stdio server may perform authorized reads/direct writes under the
-shared lease and same core/store path. It advertises push unavailable and refuses
-custody operations. It does not impersonate a resident delivery owner. Installed
-provider MCP configuration must be qualified through actual tool discovery and
-call, not merely a reachable endpoint. Remote access, OAuth proxying and exposing
-machine credentials through a browser are outside alpha.
-
-## 10. Process adoption and OS differences
-
-Cold activation walks bounded indexed live-session/effect records, not the
-machine process table or all historical turns. For each route validate store
-incarnation, project/agent, credential revocation, saved conversation and native
-binding revision; then ask se-proc to reobserve/pin full process identity and
-containment. Its checkpoint schema and lifecycle state machine remain section 30's
-single source. Host conversion persists the full checkpoint and required compact
-containment metadata without inventing another process/lease schema.
-
-Adoption reports are Pending, Reattached, Held, Revoked, Exited or
-Unreadable(ErrorBody). Pending is unresolved work, Exited requires actual outside
-absence, and Unreadable cannot become Exited. An imported historical process row
-provides no present custody. A recreated native session requires exact persisted
-fingerprint/epoch adoption mapping, never just an equal display name/thread ID.
-A held route adopts as held; revoked stays revoked. On uncertain notice delivery,
-query the original target/NoticeId before retrying. Absence under an old epoch is
-not absence under an arbitrary new target.
-
-| Concern | Windows | Linux | macOS |
+| Event | Windows | Linux | macOS |
 | --- | --- | --- | --- |
-| Process identity | Native process handle, creation FILETIME, image/argv identity; no PowerShell per check | Boot/start identity, pidfd when available, exe/argv and native events | Native start identity and process observation; unreadable fields stay unreadable |
-| Containment | Named section-30 job, no KILL_ON_CLOSE; own suspended launch assigned before execution | Section-30 cgroup/scope where available, recorded identity and pre-exec barrier | Section-30 tracked containment/group with declared escape limitations; never stronger than its witness |
-| Host job ancestry | Required breakaway refusal is explicit; do not retry without containment | No terminal-owned implicit custody | Native terminal bootstrap must prove exact registered process |
-| IPC | Current-user local named pipe DACL, peer SID/PID/start verification | Protected Unix socket + SO_PEERCRED/start verification | Protected Unix socket + native peer credentials/PID facilities |
-| Exit/watch | Native completion/handle wait and job accounting | pidfd/cgroup/inotify events | Native process/file events; no polling replacement |
-| Attended terminal | Native owned console/terminal path, exact bootstrap registration | Terminal adapter and owned attach/exec registration | Terminal.app adapter and owned registration, literal argument handling |
-| Codex transport | Stdio headless required; private attended transport capability must be demonstrated on stock build | Stdio supported prototype path; private Unix WebSocket optional qualification | Stdio headless required; Unix WebSocket/terminal attach must be qualified |
-| Path encoding | Lossless UTF-16 NativePath, verified ACL/no reparse traversal | Lossless byte path, no-follow/owner permissions | Lossless native path, no-follow/owner permissions |
+| Explicit se down | Graceful stop then exact job stop/witness; final last-handle close enforces KILL_ON_CLOSE for ordinary members; save original conversation for relaunch | Stop exact owned cgroup or explicitly Uncontained group at achieved guarantee, witness and record; preserve resume reference | Stop exact owned group/tracked members at accepted bound; preserve original conversation; incomplete tracking remains incomplete |
+| Unstaged host crash/full process loss | Last job handles close and ordinary members end; cold successor proves old closure and resumes saved conversation under a **new lifecycle**, never reopens job name as authority | Cgroup/group may survive, pipes may EOF; reobserve exact old identity/scope and verify transport/conversation before adoption or same-conversation replacement | Group may survive, pipes may EOF; same exact tracked/native proof, no global-descendant guarantee |
+| Normal SE Code exit with handover configured | Staged overlapping-handle handover below keeps jobs/PIDs and streams alive; if handover fails, retain source until resolved or explicitly stop, never silently drop last handles | Staged FD/scope transfer preserves actual PIDs/streams where supported; failure is visible | Staged streams/PTY and protected-record transfer, re-register native events; preserve achieved tracked bound |
+| Normal exit choosing explicit stop | Same stop policy as se down | Same stop policy as se down | Same stop policy as se down |
+| Same-process generation restart | Arena/job/pipe resources stay with supervisor, no last-handle interval | Arena/FDs stay retained | Arena/FDs stay retained |
 
-No host shutdown automatically invokes a kill-on-Drop containment policy. A
-same-process generation restart retains its transport/process arena; a process
-crash loses pipes and may cause provider EOF exit. If the provider exits, preserve
-captured history and resume its verified original conversation after old-scope
-closure. If it survives, adopt only with actual custody/transport proof; never
-start a duplicate worker because reconnection is difficult. A stale/reused PID
-is a refusal, not a candidate to kill. Se-proc's observed group-empty result
-cannot prove descendants that escaped that group are absent. Stop/Remove report
-incomplete scope exactly as that process owner requires.
+Explicit Windows breakaway descendants are outside the stated ordinary-job bound;
+the receipt retains that limitation. Successful staged handover is the narrowly
+proved exception to full-host-loss behavior, not a reversal of KILL_ON_CLOSE.
+An unproved live job/foreign retained handle after unplanned loss blocks automatic
+replacement. Linux/macOS provider EOF can require original-conversation resume
+rather than process preservation; never start a duplicate while old scope closure
+or transport ownership is unknown.
 
-Without a supported private attended Codex attach on a platform, expose a clear
-ProviderProtocolUnsupported or WindowUnavailable with the supported detached
-launch path. This is a bounded implementation fallback, **not acceptance of a
-missing required journey**: all alpha-supported modes still need their real
-platform witnesses. The design cannot confer vendor transport support.
+## 6. Live handover: standalone ↔ SE Code
 
-## 11. Errors raised at this boundary
+HandoverCoordinator owns the host half; ProcessTransfer owns native staging. A
+trusted source/standby control protocol carries HandoverIntent/State over native
+peer-authenticated IPC, not an agent-callable IpcRequest. The factory's retained
+handover entry initiates this protocol independently of the Host handle;
+open/restart cannot substitute for it and close cannot precede native staging.
+It adds no model operation. The source and
+successor HostEpoch/full native identity, old/new G, transfer nonce/key, expected
+store revision and deadline are bound into one durable intent. The successor is
+started detached/pinned by NativeProcessApi and stays Standby without a writer,
+lease or delivery/input consumer while source owns runtime.lock.
 
-Use existing se_types::Code/Detail/ErrorBody and their typed cause fields; no
-ad hoc string error namespace. Domain error text and remedies are rendered by
-the shared registry for CLI/MCP/library. Preserve underlying nonsecret OS cause
-locally with SeError; do not expose raw secret-bearing stderr/argv. This table
-names the host's causes and legal next action. Specific detail fields remain the
-canonical catalog, not a second untyped map. Upstream store/process codes pass
-through without relabeling unreadable as unavailable/absent.
-
-| Code(s) | Cause here | Remedy / retry direction |
-| --- | --- | --- |
-| usage-invalid-value, input-unknown-field, input-too-large | Invalid frame/options/closed operation, cap cannot fit item or payload | Correct input/budget using registry schema; no dispatch/read marker |
-| api-version-unsupported | Exact linked or IPC API mismatch | Upgrade older side; no range negotiation/source swap |
-| runtime-version-mismatch | Different running package/image protocol | Controlled down/closure then matching version; no forced takeover |
-| os-user-mismatch | Kernel peer/home ownership differs | Use own home/user; never trust claimed SID/UID |
-| machine-credential-missing / machine-credential-unreadable | Owner proof cannot load its real secret | init/doctor as appropriate, no owner fallback |
-| owner-required / human-terminal-required | Session requested owner/human-only operation or ancestry unproven | Genuine owner terminal; no flag bypass |
-| listener-admission-refused | Host/Origin/target/auth/native peer proof rejected | Reconnect through protected local integration; no remote URL fallback |
-| listener-non-loopback / listener-port-in-use | Invalid address or actual bind conflict | Correct explicit runtime config, preserve incumbent |
-| ipc-unavailable | Channel/socket/pipe/protected endpoint unavailable | Inspect actual status/owner, bounded reconnect; do not direct-write under live host |
-| runtime-not-running / custody-unavailable-hostless | No admitted resident custody owner | up/launch-supported auto-start, no PID shortcut |
-| runtime-owned-elsewhere | Another actual factory/daemon holds home | Close named owner through its legal route; no timeout theft |
-| runtime-start-failed / runtime-start-pending | Start failed or readiness still pending | Status/doctor with bounded actual diagnostics; never launch-success on PID alone |
-| runtime-handover-in-progress | G fenced during replacement | Retry when ready with original key; not live host migration |
-| runtime-drain-timeout / runtime-stop-unwitnessed | Unjoined tasks/writer or absent outside host-stop witness | Retain lease/custody; inspect/retry, controlled process restart if truly stuck |
-| session-generation-mismatch | Old G at operation/native callback | Reopen/rebind through trusted control plane and reconcile original key |
-| session-binding-unproven / session-required | Claimed conversation/session lacks protected binding | Legal launch/begin/rebind, no private neutral-context fallback |
-| capability-invalid / revoked / expired | Credential fails current verifier/revision/expiry | Authenticated renewal/relaunch as applicable; never owner fallback |
-| session-unknown / session-already-ended | Actual missing/ended bound session | Inspect/rerun legal launch; absence is not activation |
-| grant-required / tool-not-available / tool-unknown | Missing creator grant or non-registry/tool scope | Owner grant/available catalogue; no target actor override |
-| project-conflicts-session / message-scope-denied / not-recipient | Claimed scope/read marker exceeds caller | Drop conflicting selector or inspect as owner without recipient markers |
-| revision-conflict / launch-in-flight / agent-already-running | CAS changed or exact active reservation/incumbent | Reread actual binding/intent; preserve original key and incumbent |
-| idempotency-key-reused | Same durable key/notice ID, changed canonical request | New authorized operation/key; never overwrite original result |
-| provider-cli-not-found / too-old / unrecognized | Actual executable missing/unqualified version | Install/upgrade/configure real CLI; probe before disturbing incumbent |
-| provider-protocol-unsupported / codex-app-server-failed | Required feature absent or real RPC phase failed | Upgrade/fix provider; use explicitly supported mode, no TCP/bypass substitution |
-| provider-change-breaks-resume / resume-reference-missing / unverifiable | Saved conversation cannot legally resume | Inspect and explicitly choose --new if desired; no silent fresh thread |
-| launch-failed / launch-readiness-timeout | Real exit or unresolved provider readiness | Fix provider or inspect owned pending launch; no child abandonment |
-| window-unavailable / job-breakaway-refused | Terminal missing or required safe containment impossible | Detached supported launch/up route; no weakened job policy |
-| stop-unwitnessed / stop-partial / stop-deadline-exceeded | Exact root/descendant closure incomplete | Inspect remaining exact observations, retry bounded stop; never name kill |
-| process-identity-changed / unreadable / bare-pid-refused | Reused/missing strong identity | Reobserve exact owned lifecycle; no action on uncertain PID |
-| integration-conflict / write-failed / readback-mismatch | User changed owned entry, filesystem failed or bytes differ | Preserve edits; doctor/explicit repair, no stale backup overwrite |
-| capture-consent-missing / turn-invalid | No consent or invalid canonical vendor capture | Obtain explicit capture choice/fix integration; no private turn ingestion |
-| transcript-unreadable / truncated / hook-payload-invalid | Actual source inaccessible/rotated or trusted payload malformed | Preserve cursor/history, diagnose real source; hook exit 0 is not capture proof |
-| remove-incomplete | Some revocation/stop/config cleanup unproven | Report each residual and retry idempotently; preserve user work |
-| deadline-exceeded / cancelled | Bounded wait ended; outcome may already have committed | Original-key readback/status before retry, no new effect key |
-| task-failed / internal | Supervised panic/invariant failure in known G/stage | Poison/fence G, preserve incident and use independent factory recovery |
-
-StoreAbsent/Unreadable/TooNew/MigrationRequired/Busy/DiskFull/ReadOnly/Corrupt,
-backup/recovery and erasure codes retain section-20 semantics. In particular,
-FULL sync failure is never a successful security commit, and an unreadable
-pending-effect query never reports zero debt. A poison condition maps to the
-accepted precise engine error plus linked ApiFailure::GenerationPoisoned or
-EnginePanicked; do not invent an unregistered se-types code to match that label.
-Errors block their affected route unless the host-wide writer/ownership boundary
-itself is unsafe, in which case mutations are globally gated.
-
-## 12. Performance allocation and bounded work
-
-Hard shared targets: ≤30,000,000 added RSS bytes embedded, ≤100 ms added startup,
-<0.1% settled idle CPU, no StateEngine Node, no per-seat engine process, CLI
-<20 ms. Standalone planning envelope is ≤25,000,000 attributable RSS bytes so its
-own executor/allocator cannot consume the embedded margin. These are targets to
-measure through journeys, not results established by cargo check.
-
-| Resource | Section-40 allocation / bound |
+| Phase | Source / receiver / store / native barrier |
 | --- | --- |
-| Host/transport/IPC/HTTP code, allocator and task state | 5 MiB resident planning share |
-| Store buffers/caches/writer stack | 8 MiB shared reservation; section 20 controls exact cache/connection use |
-| Process custody/reactor/native collector | 2 MiB reservation; section 30 controls native implementation |
-| Native watch + session state + ID-only notice debt | 2 MiB; no retained transcript/message bodies per session |
-| Shared blocking stacks/buffers | 4 MiB planning reserve for two admitted jobs; account actual runtime stacks |
-| Remaining startup/embedding overhead | Standalone ~2.8 MiB margin; embedded larger shared-runtime margin |
+| SourceGated | Validate/retain keyed request and expected current owner; gate new custody/delivery, finish already accepted launches/capture/debt, then install transfer-scoped native admission/promotion fence, interrupt and prove exact idle; source still owns lease/resources |
+| Standby | Verify exact successor peer/PID/birth/API/home and native ready channel; receiver is read-only, no callbacks/queue promotion |
+| Staged | After source capture/debt heads and full-frame input/output boundaries freeze, duplicate stream/PTY descriptors and call begin_transfer; transfer_manifest reads actual native nonce/manifest/digest, receiver accept_transfer verifies/stages inactive copies |
+| BarrierCommitted | Seal FULL Prepared with final immutable manifest/nonce/frozen_at after all accepted work is finished; drain/join writer, then record FULL ReadyToClaim on drained maintenance; frozen data cannot change afterward |
+| LeaseTransferred | Source closes readers/backup/context and releases exclusive runtime.lock after ReadyToClaim; successor acquires lease and records FULL Claimed on maintenance with exact owner-generation/head CAS before any destination writer/native consumer |
+| Activated | Receiver verifies lease/CAS/native manifest, calls activate_transfer once and obtains streams/receipt; record FULL Activated on maintenance before starting writer or input/capture consumers; register/read around event reassociation, fresh G services and original-notice recovery precede new offers |
+| Acknowledged | Persist/read back keyed destination activation receipt and original admission/capture heads; source verifies exact receipt plus current ownership barrier, calls commit_transfer and closes its now-gated originals |
+| Finished | Source endpoint/resources close and it exits; destination remains unique active owner; all debts/holds/current consumer ownership visible |
+| Aborted | Before Claimed and before native activation: source abort_transfer and receiver discard_transfer staged copies; restore source only after actual lease/owner/G validation; settle only this transfer fence and preserve all human/takeover/revocation holds |
+| RecoveryPending | Lost ACK, peer death, ambiguous CAS/lease/stream state; no guessed rollback or second consumer; reconcile exact transfer/receipt/native state |
 
-These planning reservations total 21 MiB (~22.02 MB), leaving margin under 25 MB;
-measure shared pages/RSS and incremental embedding consistently, never add unlike
-PSS/private-working-set counters to claim a pass. A pooled buffer counts once;
-concurrent per-connection maxima are not all preallocated. Under pressure reject
-new in-memory work before exhausting the aggregate cap, retaining durable debt.
-Any store/process budget correction is reconciled in the aggregate before release.
+The ownership row is a CAS and key in the store, not permission to bypass the
+OS lock. Between source release and destination claim neither may write/input.
+A racing third owner sees committed transfer state and refuses ordinary activation;
+it cannot ignore the pending destination. If destination cannot acquire/claim,
+source may reclaim only after native peer/death proof and a new checked owner CAS
+under exclusive lease, while native transfer is still pre-activation. If receiver
+already activated, rollback is a **new reverse transfer**, never source takeover
+on timeout. Uncertainty gates affected work and remains visible.
 
-Default HostLimits: 128 sessions, 64 connections, 1 MiB aggregate resident queued
-payload, 32 notice IDs/session, 512 aggregate resident notice IDs, 262,144 local
-response bytes and two blocking jobs. Validate all NonZero fields against these
-policy ceilings before allocation; session/task metadata targets ≤8 KiB/session.
-Provider transcript buffers and response bodies are streamed/bounded globally,
-not allocated at 1 MiB × 64 connections. A caller cannot select a larger profile
-that silently breaks the process memory budget. Model/provider memory is outside
-the engine share but is reported separately in journey measurements.
+Before sealing a native route, the transfer-scoped fence -> interrupt -> exact
+Present(None) precedes final target selection; target/G/fence/no-execution are
+rechecked inside the native atomic transition. Never reuse Takeover/HumanStop
+then automatically unhold it. Settle only the matching transfer fence after
+verified activation or pre-claim abort. Do not clear a human hold to make handover appear live.
+A resumed human invalidates the stale absence barrier; re-read/retry legally.
+Host-only delivery is frozen before native transfer. SE Code freezes its sole
+queue's admission/promotion and retains its complete pending state under its
+native handover seam through destination acknowledgment; store message debt is
+not a substitute for lost native pending input. Original queue admissions, target adoption mapping,
+NoticeId/digest and capture cursor are carried; receiving callbacks use a fresh
+G wrapper after its registration/activation, not an old Arc silently rebound.
 
-Startup envelope: config/home/version/lease checks ≤10 ms; store validation/open
-≤20 ms; IPC/listener/native watch ≤10 ms; initial bounded 50-route custody
-inspection ≤30 ms; composition margin ≤30 ms. Expensive reconnect/debt and backup
-work continues in Recovering after truthful readiness, with route status visible.
-Never call all routes Ready merely to stop the startup clock. New schema migration
-is separately explicit and not counted as a normal warmed compatible open.
+Only source consumes provider stdout/capture until the freeze head commits. Its
+read task then parks at that exact offset/frame boundary before descriptor
+transfer. Receiver stages files without reading; activate_transfer returns them
+exactly once after the lease/ownership barrier. Receiver resumes from the frozen
+cursor and dedupe keys. No EOF interval on transferred stdin, no concurrent
+readers, no duplicate prompt/captured turn. A missing required stream means
+handover failed, not native-PID-only success. Source originals remain retained
+through verified receipt; Windows job handles overlap across the whole transition.
 
-Ordinary CLI budget: parse/open ≤5 ms, bounded auth/read or one IPC round trip
-≤10 ms, render/write ≤5 ms, with total strictly <20 ms on qualified machines.
-Cold direct writes and FULL security commits currently have contrary prototype
-evidence; they remain named performance risks for qualification. We do not weaken
-durability, omit auth or hide writes in a background unacknowledged queue to pass.
-Launch/stop include external readiness/exit and expose actual pending deadlines;
-provider/model generation latency is reported separately from engine dispatch.
+Failure recovery:
 
-Zero sessions means no per-seat timers, transcript watches or mail waits. Idle
-live sessions park on OS events and coalesced commit watches. No 250 ms mail loop,
-1.5 s process poll, minute projection drain, hourly canary or atlas tick returns.
-Claude's bounded vendor HTTP renewal is the explicit exception in section 8.2,
-counted in idle CPU/wakeup measurements; zero-wakeup marketing would be false.
-Busy/debounce/retry timers exist only while that work is outstanding and cancel
-when it resolves. Request expiry is checked on use and has no periodic sweeper.
+* Before accept/staging: original source retains custody and may abort the intent;
+  receiver closes its own standby resources, no input was accepted there.
+* Staged receiver crash before activation: verify exact peer exit, discard/revoke
+  that staged attempt and restore source native association/lease only through
+  checked abort. Do not leak a staged Windows handle that keeps jobs alive forever.
+* Source crash before committed ownership barrier: receiver may not activate on
+  channel EOF alone. Verify durable transfer plus source exit/lease availability;
+  otherwise discard staged resources and apply ordinary crash policy.
+* Source crash after barrier: receiver uses exact intent/CAS/lease/native manifest
+  to complete the same activation. If proof fails, RecoveryPending; no invented
+  successor or arbitrary descriptor adoption.
+* Activation reply lost: query durable transfer/receipt/current owner and native
+  staged state with original key. Successful activation is never repeated to get
+  a second stream set. Source never aborts an already activated receiver.
+* Receiver crash after activation before ACK: source originals stay gated; prove
+  receiver state/exit and recover through cold/reverse ownership protocol, never
+  ungate source on elapsed timeout. Windows may retain jobs via source handles
+  only while this bounded recovery is owned; unresolved staged copies are closed
+  once their committed transfer cannot be proved, applying ordinary crash policy.
 
-Implementation estimate: 8–11k Rust lines for this host/harness/listener scope,
-plus roughly 200–350 provider-native mod JS lines. se-proc/platform and store
-implementation are separately owned, not counted again. Module decomposition is
-by ownership above, with narrow composition glue; estimates are review signals,
-not a reason to sacrifice correctness or pad code. Current se-host base is a
-one-line empty crate; this candidate adds declarations in five focused modules
-rather than a runtime god file. No existing Node hotspot changes.
+Before Prepared, staging has no committed transfer authority. If source dies or
+staging times out before that first FULL seal, receiver closes the uncommitted
+inactive copies and ordinary OS crash policy applies; actual native holds/debt
+remain. No receiver may activate from an uncommitted request or channel EOF.
+This is Prime's reconciled drain/freeze-before-Prepared order
+(msg-cf8e46cdeebb8fd10816bdc7), not a final-manifest mutation at ReadyToClaim.
 
-## 13. Five journeys and implementation acceptance
+The source obtains actual TransferManifest from the safe read-only
+ProcessTransfer::transfer_manifest(&TransferOffer) accessor admitted in
+msg-0e942ce53c74c86b78080306. Its transfer nonce/digest bind Prepared; native handles
+remain private. Do not invent a source nonce or infer the manifest from PID lists.
+TransferManifest.transfer is the se-proc-generated native nonce, not the store
+transfer RecordId. The host records that exact value. The host proves pre-Claimed
+from the current durable head under its actual lease before requesting abort or
+discard; se-proc checks its retained native facts, not SQL. Failed restoration
+retains the borrowed offer/import for keyed reconciliation and retry.
 
-The acceptance oracle is the five real scripts on clean Windows, macOS and Linux,
-with Claude and Codex where applicable, standalone and actual embedded SE Code.
-Reviewers add only targeted black-box checks where a false success is plausible;
-this author writes no tests or new gate system. Compiling declarations proves
-interface consistency only. No running process is redeployed by this candidate.
+The accepted native Windows IOCP reassociation/readbacks and Unix SCM_RIGHTS/
+kqueue steps are section 30's contract. Handover state never substitutes a
+manifest hash for outside process/resource proof. B8 ≤500 ms is a target, still
+unmeasured; bounded slow failure reports pending/refusal rather than overlapping
+owners to meet the clock.
 
-| Journey | Host/harness behavior the real script must show | Discriminating failure observation |
+Before releasing the source lease, gate/close the old public listener and endpoint
+after draining their calls; the authenticated private transfer connection remains
+owned until settlement. The destination binds the persisted port/socket/pipe and
+publishes its checked endpoint only under its new lease/claim. Old long-polls
+return retry with no admission/read claim. Bind conflict cannot change the port
+silently or revive old G: keep RecoveryPending and use proved forward/cold recovery
+or a new reverse transfer. No public listener socket is assumed to transfer when
+the section-30 manifest contains only process/stream resources.
+
+Freeze drains outstanding native reads to an actual complete frame boundary;
+partial buffers remain with the source parser/vault. If the boundary cannot be
+proved within the original deadline, refuse before claim and preserve the source
+buffers/consumers for checked abort. Never discard a consumed partial JSON frame
+or start a receiver reader while a source native read may still complete.
+
+### 6.1 Store record agreement (Nell owns the amendment)
+
+Reuse existing store/incarnation/actor/request-key envelope and record Revision;
+add no config key or JSON side-file authority. Host request fields are transfer RecordId, source/successor HostEpoch (full
+process identity), old/new engine Generation, expected owner revision, request
+key, deadline_at UnixMicros and bounded requested timeout. HandoverState keeps
+optional actual native nonce/manifest digest/frozen revision only during transient
+preparation; all three are required before sealing **Prepared**, immutable
+thereafter, and never filled with zero/fake identities. Native descriptor roles/process records use the exact
+section-30 canonical manifest digest; frozen_at binds store capture/debt heads.
+No raw handle, body or credential is in that record.
+
+| Durable phase (all FULL + current-owner-G/record CAS) | Host observations / crash rule |
+| --- | --- |
+| Prepared | New admission frozen; accepted launches/capture/debt finished, transfer fence/idle proved and inactive copies staged before sealing immutable fields; source still owns G; only proved pre-claim abort restores it |
+| ReadyToClaim | Only writer/reader/backup drain and lease release remain after Prepared; record on drained HostStore; destination may acquire released exclusive lease and claim the exact transfer, no third owner |
+| Claimed | Destination owns target G under exclusive lease before native activation; recover same transfer after peer/lease/manifest proof, never source timeout rollback |
+| Activated | Actual native activation receipt persisted FULL **before destination input/capture consumers run**; lost ACK is keyed readback; a crash cannot justify fresh stream activation/input |
+| Finished | Source verified destination receipt/owner and committed native transfer, then closed originals; destination remains owner |
+| Aborted | Only before Claimed and native activation, after checked source/lease recovery or while source retained it; retain real human holds/debt |
+
+Acknowledged/LeaseTransferred/RecoveryPending are bounded host observations, not
+extra durable owner phases. Exact phase retries use stable per-transition keys
+derived from the original request, transfer and phase; changed fingerprints
+refuse. Elapsed deadline permits failure reporting, never lease/owner theft.
+On native activation success but lost durable Activated reply, resolve the exact
+phase/request and native receipt before any consumer starts. If actual native
+activation cannot be proved after peer loss, cold recovery remains explicit
+rather than inventing an abort or a second set of streams. The record's immutable
+peer/generation/nonce/digest binding and legal transition checks belong to Nell's
+store amendment; the host supplies real outside facts and holds the OS lease.
+
+## 7. Client transport, provenance and HTTP
+
+### 7.1 Synchronous discovery and local framing
+
+BlockingIpcClient uses RuntimeFilesystem.endpoint without G, verifies actual
+native owner and server, performs handshake, then sends exact-G calls through
+BlockingTransport. Its Unix and Windows implementations are blocking native I/O
+with one absolute deadline; Ctrl-C/cancellation cannot reset it or undo COMMIT.
+The host's async endpoint/lease wrappers use the same native backend under bounded
+blocking admission, not another lock/write implementation. Initial unknown G is
+legal; an invented zero/one generation is not.
+
+EndpointRecord schema 1 contains address, HostEpoch/full instance, separate engine
+generation, host kind, optional listener port, exact API, package version and
+image digest. Protected endpoint.json is ≤16 KiB, atomic,
+no credentials, address tagged unix_socket/native path or windows_pipe/name.
+NativePath is lossless bytes/UTF-16. It is a routing hint, not custody. Unix socket
+is in verified-owner 0700 directory, socket 0600. Windows server requires
+**FILE_FLAG_FIRST_PIPE_INSTANCE**, **PIPE_REJECT_REMOTE_CLIENTS** and the accepted
+user-only pipe DACL. A preexisting instance refuses, never joins the squatter.
+Windows clients set **SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION before
+connecting**, then verify GetNamedPipeServerProcessId plus exact start/image/SID;
+server checks GetNamedPipeClientProcessId and actual token SID. Linux uses
+SO_PEERCRED; macOS LOCAL_PEERCRED + LOCAL_PEERPID. ACL/peer/native unsafe code
+belongs to se-proc; IpcPlatform accepts BorrowedFd/BorrowedHandle, not ownership
+conversion of an async stream into std::fs::File. The process-platform owner is
+5p, the accepted section-30 maintainer; no unsafe code is added in se-host.
+
+Wire v1: four-byte unsigned big-endian length, then that many UTF-8 JSON bytes,
+maximum 1 MiB request; reject zero/oversize, malformed UTF-8/JSON, duplicate or
+unknown fields, depth >64 and incomplete EOF **before dispatch**. One outstanding
+operation/connection; serialize complete response frames. Default local result
+cap 262,144 bytes, hard max 1 MiB; MCP default 32,768 including its final wrapper.
+Do not slice encoded JSON or append unbudgeted marker/window metadata.
+
+Handshake: native peer/server proof first; server sends ServerChallenge(API,
+epoch, image digest, fresh 32-byte nonce); client sends ClientHello(exact API,
+optional expected G, reply cap, protected authority); server sends ServerHello
+with actual G/epoch and effective cap. OwnerProof MAC is HMAC-SHA256 over
+length-prefixed `se.ipc.owner/v1`, API, epoch/image, server nonce, fresh client
+nonce and verified peer identity. Challenge is channel-bound/one-use; machine
+secret never crosses IPC. Session/Launch bytes travel only after server proof,
+never in logs. Exact API equality, not minor-range negotiation.
+
+Call envelope contains API, positive request_id, discovered G, optional per-call
+authority and Operation or Hook. Operation has registry name, closed arguments,
+optional stable key; decode once to AdmittedOperation then invoke core. Hook is
+the fixed Claude operation mapping. **No Nudge request remains**: in-host commits
+already wake debt, while direct writes are recovered at activation. Reply echoes
+id/API/G and either typed result or ErrorEnvelope. Transport IDs are not durable
+idempotency keys. Broken post-COMMIT reply resolves by original operation key.
+Five-second hello/write bounds, 30-second ordinary call ceiling; registered
+custody deadlines may return truthful pending rather than block forever.
+
+### 7.2 Owner provenance on every path
+
+| Path | Owner possible? | Mandatory authority provenance |
 | --- | --- | --- |
-| J1 Install | Actual signed/downloaded binary; --version/help from fresh terminal without Node/provider requirement | Absent config/provider is clear onboarding, not private runtime access or fake installed version |
-| J2 Adopt | Existing files/Git unchanged; init creates/adopts owned integration; safe real Claude/Codex agent writes requested artifact; actual MCP tool call and captured turn | Old/missing CLI refuses before takeover; permission approval remains real; partial readiness retains owned process and no success claim |
-| J3 Come back | Close/stop through actual outside witness; new host/generation/process resumes exact saved conversation and recalls prior task; original-key debt/capture recovered | Invalid resume reference refuses; held session stays held; writer/process crash after ACK does not lose ordinary process-crash-committed history |
-| J4 Two agents | Authenticated agent/creator handoff commits once, wakes intended route, recipient reads/acks through actual tools and does requested work; user sees separate offer/read/result facts | Held/refused callback preserves debt; lost reply retries original NoticeId; huge body/marker metadata stays within final wire cap; no other agent's mailbox/owner authority |
-| J5 Remove | Hold/revoke, exact root/descendant stop witness, matching owned config/secret exposure removed; user work/history preserved | Reused PID, unreadable scope or user-edited config yields named residual/incomplete removal; no broad process kill or recursive home wipe |
+| CLI over peer-authenticated IPC | Yes | Correct OS user + machine proof, **outside every managed agent tree**, no present session authority/provider marker; ancestry checked by native process owner |
+| Hostless direct CLI | Yes | Same native self/ancestry and machine-credential checks before shared lease/admission; unreadable ancestry refuses Owner |
+| HTTP MCP or stdio model tool | **Never** | Verified current session/launch-derived bearer per call; OwnerProof variant explicitly refuses |
+| Helper token issuance | Session helper, or legal CLI owner route only | Same session/ancestry/provenance rules; protected IPC, not browser/HTTP issuance |
+| Trusted SE Code native UI | Yes | In-process OwnerAuthority from native control plane; human-only operations additionally require its UI-gesture HumanPresence token |
 
-Targeted failure actions at these same seams: mismatched G after restart; panic
-before/after native/store commit; cold prepare cancellation; crash after launch
-reservation/scope checkpoint but before execution; lost native queue ACK; held
-zero-mail predecessor takeover; human resume between absence/select; unreadable
-point query; wrong Host/Origin/bearer/OS peer; live unjoinable writer; transcript
-rotation; concurrent final-envelope read budgeting; revoked creator grant;
-provider unavailable/old; disk full/FULL failure; and user-modified removal entry.
-These are required truths to exercise during implementation review, not a request
-to author sixteen independent harnesses or add test-process ceremony now.
+Removing SE_SESSION does not grant owner: job membership, cgroup subtree, managed
+session/group/parent chain and present provider markers still withhold it.
+Absent markers prove nothing. Invalid/expired/revoked **present** session authority
+refuses; no owner/cwd/default fallback. Unreadable ancestry refuses owner for
+ordinary owner-only operations too, not only destructive/human-only verbs.
+Human-only CLI actions additionally require console/TTY stdin and stdout outside
+agent trees and no SE_SESSION. Native UI HumanPresence is separate from CLI TTY;
+model tools cannot construct either. This is the accepted mistake/drift boundary,
+not an attempt to sandbox a hostile same-UID program.
 
-Mirror coverage: CLI/MCP/library share typed operation/auth/receipt semantics;
-attended/headless share safe profiles, leases, conversation/capture and stop;
-Claude/Codex share Harness but use real provider-specific input evidence;
-standalone/embedded share durable intents and generation rules while SE Code
-alone uses NativeQueue; sync CLI/direct readers and async host writers preserve
-Read/Page/Window/errors; read paths never create write/disposition effects except
-the explicitly mutating message.read operation. Each journey result names actual
-platform/mode and any exempt unexercised path; one Linux success is not all mirrors.
+AdmissionAdapter/Dispatcher are concrete common implementations of these stages,
+not polymorphic public service traits. Every call, including multiplexed session
+calls, rechecks G, credential revocation/binding revision and scope. A supplied
+invalid authority never falls back to connection authority. Creator control is
+only the current can-create grant plus immutable same-project direct created_by;
+no grandchildren/all-agent privilege or private mailbox read follows from it.
 
-## 14. Open qualification questions and design defaults
+### 7.3 HTTP inventory and concrete parser
 
-These do not authorize implementation shortcuts. They are visible integration
-risks for reviewers/maintainers, with safe behavior already specified above.
+Use the **same pinned hyper 1 server-only HTTP crate already linked by SE Code**,
+with its existing Tokio integration; no independent HTTP parser or TLS/client
+stack. Standalone uses that same server stack. Confirm exact package unification
+in the combined consumer. Only if the embedding host links no HTTP crate may the
+maintainer choose a separately reviewed minimal parser; this candidate does not
+hand-roll HTTP. No hidden process/server per agent.
 
-1. **Actual SE Code dependency pins/API publication (Alpha + host composition).**
-   Replace the proposal with the upstream permissive crate and align Tokio and
-   SQLite packages exactly. The constructor function then uses that real trait.
-   Compile the combined consumer; declaring a generic pointer is not that witness.
-2. **Native peer-proof implementation (process platform owner + host).** The safe
-   IpcPlatform seam requires real named-pipe/Unix credential and process proof on
-   each OS, including macOS limitations. Unsupported stronger identity refuses;
-   do not emulate proof from request fields or add unsafe host code.
-3. **Attended stock Codex private attach (harness qualification).** Verify private
-   transport/auth/reconnect and terminal behavior on Windows/macOS. Stdio headless
-   remains the supported baseline, not evidence of attended support. Optional
-   vendor transport cannot be assumed production-stable because it exists.
-4. **Claude mod renewal versus idle budget (harness qualification).** The verified
-   30-second fetch ceiling invalidates 25-minute waits. Measure 25-second renewal
-   under settled real sessions against <0.1% CPU. If it fails, bring the measured
-   vendor/API constraint to the lead; do not hide CPU or substitute polling.
-5. **CLI and security latency on real disks (store/host qualification).** Existing
-   Linux direct/FULL data exceeds 20 ms. Preserve the fixed durability/authority
-   contract and report cold/direct/security costs separately; optimize actual
-   critical paths before claiming the hard budget.
-6. **Crash survival versus resume on every OS (process/harness qualification).**
-   Demonstrate native scope persistence, pipe EOF behavior, original conversation
-   resume and descendant absence. Recovery may truthfully remain incomplete where
-   platform custody is unprovable; alpha cannot call that a passed required path.
+Admission order: bounded parse -> origin-form target -> exact Host/port ->
+Origin/Sec-Fetch-Site -> method/media -> credential -> core scope. Host is exactly
+127.0.0.1:P or localhost:P; Origin absent or exact local http origin, never null,
+suffix matching, alternate IP spellings, wildcard/reflected CORS or forwarded
+headers as authority. HttpRequestHead carries **sec_fetch_site**: if present,
+only same-origin or none is legal. Missing Origin cannot erase a cross-site
+fetch signal. No Access-Control-* header is emitted. OPTIONS always 405.
 
-Implementation freedom remains in private helper names, bounded collection and
-watch implementation, batching/fairness mechanics and focused module layout.
-Changing canonical authority, callback ordering, durable witness meaning, closed
-public operation/API surface or safe failure direction requires review by its
-owner. This candidate changes no runtime, config, listener or deployment; future
-implementation must be integrated by Prime, deployed in actual products and
-witnessed through these consumers before it becomes operational evidence.
+| Route | Alpha method / authority / result |
+| --- | --- |
+| `/mcp` | **POST only**, Content-Type application/json; return application/json only, no SSE; GET/OPTIONS 405; bound session per call, never Owner |
+| `/stateengine/mail/next_change` | GET, session bearer, one parked ≤25 s Claude wait; bounded IDs/cursor only, no marker or body |
+| `/stateengine/livez` | GET, anonymous `{ok,api}` only; no private counts/projects/readiness fiction |
+| `/stateengine/local-http-proof` | POST JSON anonymous bounded challenge, server-auth HMAC only; no token issuance/owner grant |
+
+There is **no HTTP mcp-token route**. Installed `se mcp token` issues over the
+existing protected IPC operation only. Before returning headers it verifies the
+listener's challenge proof so a squatting port gets no bearer. Separate HMAC
+domains `se.http.server/v1` and any owner/client request proof; bind nonce,
+image/epoch/G/origin and consume challenges once. Server proof cannot be replayed
+as client authority. Token/credential bytes never enter query/argv/environment,
+model context, telemetry, errors or support bundles; SE_SESSION is only a handle,
+with actual secret in the accepted owner-only pin or protected native channel.
+
+Limits from shared 70/80: 16 KiB headers, 1 MiB body, depth 64, ten-second headers,
+30-second ordinary request; reject duplicate length/ambiguous framing/coding and
+count actual bytes regardless of Content-Length. **64 active connections plus a
+separate parked-wait cap equal to session cap**, one wait/session, replacement
+cancels its predecessor. Parked waits do not consume the 64 active slots; cap
+metadata/buffers within the mail/listener memory allocation and refuse overflow.
+The 25-second timeout rearm contributes **0.04/s per attended Claude session**;
+section 80 now includes it, plus the separate live catch-up/auto-exit timer.
+
+MCP discovery and schemas come from the closed OPS registry. tools/list/call
+scope is bound identity, no project/actor overrides. One typed outcome feeds text
+and structured content; budget the final complete JSON-RPC envelope, both copies,
+window and marker metadata. Listing, even full-body, is read-only. A first full
+item that cannot fit gets a precise budget error/remedy; do not silently truncate
+or mark unseen bytes read. Hostless stdio advertises push unavailable, supports
+legal reads/direct writes and refuses custody. Domain errors stay typed errors,
+not successful empty data. Actual tool discovery/call is required qualification.
+
+## 8. Session, takeover and mail state
+
+SessionIdentity is durable project/agent/session, ProviderSessionId a real vendor
+conversation, LifecycleId native custody; native HostSessionTarget also binds
+epoch/session/fingerprint. They are not interchangeable labels. Opaque
+SessionLease/TakeoverTicket retain actual keyed reservation intent, not caller
+claims. SessionCoordinator uses core/store plus the concrete provider/native
+adapters; there is no parallel SessionControl public trait.
+
+| Session from | Input / necessary fact | To |
+| --- | --- | --- |
+| None | Authorized prepared binding/launch at expected absent/CAS | Prepared |
+| Prepared | Process/native binding begins | Starting |
+| Prepared/Starting | Verified failed/cancelled launch and durable end | Ended, cleanup obligations retained until witnessed |
+| Starting | Actual provider/native binding, consent and FULL activation/readiness | Active |
+| Starting/live | Readiness deadline, crash or unknown native state | RecoveryPending, not absent/ended |
+| Active | Durable human/takeover/revocation hold | Holding |
+| Holding | Same-target point observation proves no execution | Held |
+| Held | Genuine human input promotion under valid target | Active; engine cannot synthesize it |
+| Active/Holding/Held | Explicit stop/end | Ending, hold first where execution/input exists |
+| Ending | Actual native end/outside closure and end commit | Ended |
+| Any nonterminal | Actual credential/target revocation | Revoked; process closure remains separate |
+| RecoveryPending | Exact custody/binding/native observations | Actual Active/Held/Revoked/Ended; never unconditional Active |
+
+Unlisted transitions refuse. Activity is orthogonal: Idle -> Executing on real
+turn start, Executing -> Interrupting on request, -> Idle only on actual completion.
+Unknown/unreadable is not idle. Native Eligible/Held/Revoked is section 10's state;
+revocation cannot be cleared by a human resume/reconnect. A new legitimate binding
+gets fresh revision/capability and preserves applicable human holds.
+
+Takeover: commit replacement reservation; durably hold predecessor even with no
+pending mail; interrupt only against that HoldReceipt; require exact
+active_session **Present(None)**; perform required se-proc outside client/scope
+stop; recheck intent/G/revision; final native Select atomically rechecks all
+superseded targets held/nonexecuting, revokes/selects; read back selection; only
+then enable/commit successor FULL binding. Paged active_sessions, interrupt ACK,
+Absent/Unknown/Unreadable and timeout never prove no execution. Human resume
+between point read and Select makes Select refuse. Cross-store effects are keyed
+intents, never a transaction spanning callbacks. Aborted takeover records failure
+without releasing holds/re-enabling predecessor; actual native state is reported,
+not re-held as cleanup. Standalone uses durable host admission hold plus outside
+process exclusion; it cannot claim a SE Code Select witness it did not obtain.
+
+### 8.1 Single native queue and durable debt
+
+SecodeAdapter calls canonical HostServices hold/interrupt/active_session/
+binding_state/adopt_binding/update_mail_target/deliver_notice/notice_status with
+exact target/epoch and generation-fenced ServiceOptions. Its concrete translation
+checks every shared/permissive ID/range/fingerprint. No duplicate public native
+queue trait or alternative pending-input queue exists. MailNotice/native admission
+shapes and canonical digest are the accepted section-10 definitions: ordered
+IDs, stable intent and cursor, no bodies; transient generations excluded from
+digest, epoch checked separately. Hold/Refused never acknowledges admission.
+
+| Debt state | Observation | Result / retry |
+| --- | --- | --- |
+| Unoffered | Message COMMIT | Indexed recipient debt and coalesced watch, even with no live session |
+| Unoffered | Reserve distinct session/message set | Stable NoticeId/digest/target/cursor intent before callback |
+| Pending | Native Admitted/Replayed, matching original target/key/digest/event/sequence | Record original queue admission once; still unread, not presumed promotion |
+| Pending | Provider complete transport frame | Offered only; matching actual input acceptance may later establish delivered |
+| Pending/Offered | Held/Refused | Keep intent/debt/cause; no admission/read cursor advance |
+| Uncertain | Lost reply/panic/deadline | Query original notice_status before retry, never allocate a new key |
+| Uncertain | Exact successful Absent + eligible target | Retry original ID/digest; Unknown/Unreadable retain uncertainty |
+| Held | Genuine native human eligibility event | Re-read binding/status, retry same debt; restart/mail/reconnect never unholds |
+| Offered/admitted | Real correlated native/provider promotion/input | Delivered; still not recipient read |
+| Any | Recipient complete message.read or explicit ack | Durable attributable read marker |
+| Any | Recipient dismiss | Dismissed, not read/completed |
+| Any | Permanent target revocation | Preserve original history/debt; new legitimate target gets a new explicit intent |
+
+Native admission proves durable queue commit, not promotion. Section 10 has no
+promotion settlement call; without actual captured input correlation or recipient
+read/ack, leave delivered unwitnessed. Validate original committed epoch/event/
+sequence through the verified adoption map; never rewrite an old admission as a
+fresh generation's event. Native state nudges contain no bodies/ACK and merely
+schedule reconciliation. Only SE Code promotes its existing queue at safe
+steer/idle boundaries. Each callback checks immutable wrapper G and current native
+fence inside the atomic native transition; no lock/transaction spans an await.
+
+Recipient debt is oldest unresolved indexed work, not newest-N floor rows.
+Bound batches ≤32 IDs/8 KiB; coalesce watches and schedule fairly. Resident caps
+do not cap durable mailboxes; pressure retains debt and reports pending. No idle
+retry loop. Activation, real commits, actual eligibility/repair and the bounded
+live catch-up trigger work. All full lists are read-only; owner inspection cannot
+manufacture recipient read. Explicit recipient read budgets the final response
+before marking; incomplete body does not mark omitted content read. ACK is a
+separate deliberate recipient acknowledgment, not task completion or reply.
+
+## 9. Provider modes, capture pinning and configuration
+
+### 9.1 Harness API semantics and mode matrix
+
+Harness::kind selects closed Claude/Codex implementations. probe bounds actual
+executable/version/feature output to 16 KiB/five seconds and refuses missing/old/
+unrecognized protocol **before** disturbing an incumbent. configuration produces
+a plan without applying it. invocation produces literal provider argv/environment,
+never spawns. attach takes the real owned-process reference/record/transport and
+proves conversation/readiness; adopt verifies the same facts after recovery.
+bell returns actual Offered/Held/Refused, transcript returns a trusted source,
+capture uses core consent/dedupe/store commit, and graceful_stop returns only
+ProviderInterrupt request evidence. LaunchCoordinator alone obtains native stop/
+exit witnesses. ProviderInterrupt.requested and provider completion are not scope
+absence. Stream/native ownership never moves merely on trait-object Drop.
+
+ProviderIoPlatform is genuine Unix/Windows native I/O polymorphism: open creates
+explicit child Files and retained host transport; read yields bounded bytes or
+actual EOF; read failure retains any partial bytes and structured cause, write
+reports actual completed byte count plus failure when present; close awaits native
+completion/cancellation. Outer errors occur before an operation is accepted or
+when no completion can yet be proved; a completed cancelled/failed native read or
+write returns its retained partial-data/count result rather than losing it inside
+an unstructured error. Coordinator framing requires all bytes of one frame
+before TransportWritten. Native outstanding buffers remain owned on future drop.
+ProviderStream selects stdin/stdout/stderr; no unbounded provider log. These safe
+contracts keep native unsafe/IOCP work below the host without a Tokio dependency
+in se-proc or a thread per pipe. Native bridge implementation is coordinated with
+the section-30 maintainer; no backend is implemented in this design.
+
+| Mode | Capture source | Mail path | Interrupt / liveness |
+| --- | --- | --- | --- |
+| Claude headless | **Pinned transcript + command hooks are authoritative**; stream-json supplies activity/input correlation only, not duplicate captured turns | Serialized persistent stream-json stdin; complete write is offered, correlated real input acceptance is delivered | Provider supported control/stdin graceful request plus coordinator native stop; process/root/scope and stream events, no polling |
+| Claude attended | Same pinned transcript/hooks; native directory events and live catch-up recover missed hooks | Small provider-native JS mod, one authenticated GET wait, attributed prompt after safe idle boundary | Genuine human stop/hold plus provider/native control; terminal/process/native binding events |
+| Codex stdio headless | Actual app-server completed item/turn IDs, optional **pinned** rollout as catch-up only | turn/start idle, turn/steer exact active turn; real response/input correlation | turn/interrupt request then actual turn completion; process and exact scope remain separate |
+| Codex private WebSocket attended | Same canonical app-server item/turn capture, no duplicate hook ingestion | Same RPC through actual WebSocket-over-UDS transport and stock remote UI | Same RPC/native witnesses; private transport/terminal attach separately qualified on each OS |
+| SE Code embedded | Direct canonical capture_turn with native event identity; no invented transcript file | Its existing native input queue via concrete SecodeAdapter | Durable hold -> interrupt -> exact point active state; native source fence/epoch and custody where applicable |
+
+**Windows Codex supported stranger path is explicit:** `se launch AGENT --detach`
+starts stock app-server over stdio with the normal user's existing login/home,
+safe permissions, real tools and saved-thread resume. The same mode is available
+on all OSes and is the headless journey baseline. Attended Windows Codex requires
+the stock build's qualified private attach capability; until demonstrated, that
+mode refuses ProviderProtocolUnsupported/WindowUnavailable with the detached
+command. This is an honest supported fallback, **not** a passed attended alpha
+requirement; windowed support remains a release qualification obligation.
+
+### 9.2 Trusted transcript pin is the only read authority
+
+TranscriptPin is created by trusted bind from the host-controlled provider launch
+configuration/native conversation and known provider source resolver, or an
+explicit owner-adopted validated source. It binds exact identity, conversation,
+NativePath and file incarnation/identity. The hook's **claimed_transcript is
+untrusted**, even with a valid session credential. Resolve it without following
+links and require equality with the already pinned source. A different path,
+symlink/reparse target, foreign conversation/incarnation or non-regular file
+refuses **before any file bytes are read or capture is staged**. If the pin is
+missing/unreadable, capture is unavailable; a hook cannot supply a replacement.
+Do not read arbitrary files from `payload.transcript_path` or treat capability
+possession as filesystem-read authority.
+
+The pin retains an open native source handle in the supervisor. file_identity is
+SHA-256 of the canonical stable native file-ID tuple (Unix device/inode or Windows
+volume/file ID), not a hash of growing contents or merely the pathname. Compare
+the opened handle against that retained pin; ordinary append does not invalidate
+identity. File bytes/content digest belong to individual capture records.
+
+Open only the pinned regular file with no-follow/native handle identity checks,
+size bounds and chunk reads. A path replaced between check/open is caught by
+handle identity comparison; accepted rotation requires a trusted provider/owner
+rebinding transition, never hook-path substitution. TranscriptSource reports the
+pinned path, actual next committed offset and incarnation. Incremental 256 KiB
+chunks, complete-line decoding and accepted storage limits apply; a vendor line
+above section 80's 4 MiB ceiling gets an explicit oversize verdict. Captured turn
+and cursor advancement commit together. Decode/IO/write failures retain old
+cursor; incomplete final line waits for a real signal, not a timer scan.
+
+CaptureInput validates conversation, stable vendor_turn/item ID, role, consent,
+canonical Body and digest; natural dedupe retains original event. Changed content
+under one identity is an explicit error. Rotation/truncation preserves old turns
+and reports actual mismatch, never resets offset and silently replays the file.
+Erased content cannot be resurrected by catch-up. No body text enters diagnostics.
+Consent missing is visible suppression, not success or private context access.
+
+### 9.3 Claude launch, hooks and mod
+
+Use qualified per-launch --settings/--mcp-config/--plugin-dir inputs, safe profile
+flags and explicit --session-id for new selected conversation or verified --resume
+for existing. No global settings/login mutation, forked CLI or bearer argv/env.
+Bind under the owned pre-exec/native reservation before session-start private
+context; session-start only validates actual echoed identity and reads. Mismatch
+returns no private context and schedules coordinator revocation. A readiness
+result still requires real provider echo/acceptance, not prepared argv alone.
+Initial version floor is the established mods-capable Claude 2.1.287, with exact
+required features checked; version number alone does not prove a private API.
+
+Fixed native mappings: SessionStart -> session-start, UserPromptSubmit -> prompt,
+Stop -> stop, StopFailure -> stop-failure through `se hook claude EVENT`, bounded
+1 MiB stdin, no arbitrary event. ClaudeHookInput has kind, real conversation,
+untrusted claimed transcript and bounded payload. Authority comes from protected
+binding, not payload IDs. Concrete ClaudeHookAdapter uses the pinned-source rule.
+Session-start returns matching hookSpecificOutput/additionalContext only; prompt
+captures real new input and may add bounded context; stop/stop-failure capture
+incrementally and return **empty stdout**, no block/continue/recursive turn.
+The [native hook reference](https://code.claude.com/docs/en/hooks) defines vendor
+field semantics; implementation checks the installed supported version.
+
+Hook failure exits zero for provider availability with bounded nonsecret stderr,
+but HookOutput carries actual captured Read/failure and status exposes failed/
+suppressed capture. Zero exit is never capture evidence. If persistence itself
+fails, do not claim a durable diagnostic exists. Hosted hook writes go through
+existing writer. With no owner, bounded auto-start may be attempted; if unavailable
+within hook deadline, same transaction code under shared direct lease is the
+legal fallback. No direct write while an exclusive host still exists.
+
+Attended plugin is ~200–350 lines of provider-native JS, no Node process/executor.
+Manifest plus hooks module registration uses the installed API types. One
+credential-scoped wait returns IDs/cursor only. Submit attributed mod text after
+blocking hook returns; never `asUser:true`, body/secret prompt injection or
+concurrent ordinary turn. Human stop/session end/revocation cancels its wait;
+new mail/reconnect/restart cannot clear hold. The [mods API](https://code.claude.com/docs/en/plugins/mods/reference)
+limits an entire HTTP fetch to 30 seconds: use ≤25 s waits, **0.04/s renewal per
+attended session**, as updated in 70/80. One wait per session, own cap outside 64.
+No 25-minute promise or unproven attended-push/idle measurement. Server never
+redirects; plugin verifies private final origin and never sends bearer in URL.
+
+### 9.4 Stock Codex RPC and direct SE Code
+
+Headless baseline: stock `codex app-server --listen stdio://`, newline JSON.
+Private unix://PATH is WebSocket HTTP Upgrade, not JSONL over a socket. No
+unsecured TCP fallback. The [app-server contract](https://learn.chatgpt.com/docs/app-server)
+labels WebSocket experimental; qualify installed-version schemas and actual OS.
+
+Sequence: initialize once -> initialized; thread/start for explicit new or
+thread/resume exact saved threadId; persist actual returned thread.id; turn/start
+idle with safe model/cwd/approval/sandbox/MCP config; turn/steer busy with exact
+expectedTurnId; capture actual completed item/turn IDs and status; interrupt exact
+thread/turn then await actual completion, not just request ACK. Reconnect repeats
+handshake and exact saved-thread verification, resolving original notice status
+before retry. Vendor frames omit JSON-RPC version header; response IDs correlate,
+notifications omit id. Bound framing, stderr and item content. Older than the
+established 0.163 HTTP-tools floor or lacking required feature refuses before
+launch, never runs silently without coordination tools.
+
+Use per-launch MCP/helper configuration and user's existing CODEX_HOME/login;
+no managed replacement home, hooks.json injection, fork or automatic approval.
+Headless unsupported approval reports pending/refusal rather than inventing a
+human decision. Turn completion is separate from process exit/task effect.
+
+Embedded SE Code registers the Prepared Host/G before activate, supplies exact
+native epoch/fresh fenced services and calls canonical linked methods directly.
+Model tools use BoundSession; native UI alone supplies trusted OwnerAuthority and
+HumanPresence where required. No StateEngine child, MCP config hop, mail HTTP
+hop or parallel queue. API errors retain opaque engine cause/remedy without
+proprietary type dependencies in the permissive crate; the public stub returns
+NotIncluded visibly while ordinary SE Code stays usable.
+
+### 9.5 Owned configuration and remove
+
+ConfigPlan is owned edits plus ephemeral files, not a generic writer. IntegrationEdit
+has path/key/expected prior digest/replacement **nonsecret** bytes; secrets use
+OwnedLaunchFile's protected Secret. Compare actual prior entry, no-follow path,
+atomic write and outside digest readback before claiming install. Preserve unrelated
+keys/comments, repository files/Git and provider auth. Unknown/unreadable is not
+absent. Modified owned entries refuse IntegrationConflict rather than overwrite
+from an old full-file backup. Remove holds/revokes/stops exact owned instances,
+then removes only matching owned entries/secret exposure with readback; preserve
+foreign additions and history. Credential revoke precedes unlink; cleanup failure
+is RemoveIncomplete, not a claim every process/file vanished. Erasure is separate.
+
+## 10. Performance allocation: section 80 is authoritative
+
+Numbers are decimal MB and targets, not cargo-check results. All attributed
+helpers count; provider/model processes are reported separately. B1 embedded
+≤30 MB; B2 ≤100 ms includes the **first complete authenticated session response**;
+B3 zero persistent StateEngine processes embedded/one standalone/none per agent;
+B4 ≤25 MB standalone **with one live session after real work**; B5 <0.1% of one
+core; B6 ≤1 wake/s with none, ≤2/s with one. B7 CLI reads p95 <20 ms across all
+30 samples; B9 writes through a running host p95 ≤20 ms; do not falsely extend
+that to already-slow cold direct/FULL security writes. Native custody/readiness
+and model latency are measured separately with section 80's launch/stop targets.
+
+### 10.1 Memory rows, mapped without a second budget
+
+| Section-80 §3.1 embedded row | MB | Host responsibility |
+| --- | ---: | --- |
+| Code pages | 4.0 | Host/core/store/proc touched code, shared once |
+| SQLite page caches | 6.0 | Writer + two lazy readers ×2; store owns cap |
+| SQLite connection/schema/statements | 1.5 | Exactly the accepted allocation; no connection/session |
+| Sessions, 16 ×~50 KB | 0.8 | One async coordinator/session including task overhead, not the previous 8 KiB estimate |
+| Mail watches/subscriptions | 1.0 | IDs/coalesced watches, parked-wait metadata included |
+| Listener/MCP buffers | 2.5 | ≤2 large bodies at once, global byte permits |
+| Capture buffers/parsing | 1.0 | Two active 256 KiB chunks plus bounded parsing |
+| Transcript watcher | 0.5 | Reactor/native state, **no extra notify thread** |
+| Native custody including Windows collector | 0.2 | No invented 2 MiB reservation or second collector |
+| Resume assembly | 0.5 | Four bounded assemblies |
+| Allocator slack | 2.0 | Account actual allocation/stack RSS, not virtual reservation |
+| Spend / reserve / total | 20 / 10 / 30 | Atlas absent embedded |
+
+Standalone follows **§80 §3.2 exactly**: code/libraries 5 MB, current-thread Tokio
+and ≤2 blocking threads 1 MB, SQLite page caches 4 MB, connections/statements
+1 MB, sessions/mail/listener/capture/watch/custody/resume 6.5 MB, **optional
+in-host Atlas 2 MB**, allocator 1 MB: spend 20.5 MB, reserve 4.5 MB, total 25 MB.
+Atlas cold-index child has its separately approved 64 MB transient window; not a
+hidden persistent helper or a reason to erase its 2 MB steady-state reservation.
+Native/worker resident stacks are charged to these rows/reserve; virtual stack
+address space is not RSS, and no stack is omitted because it is a thread.
+
+Defaults are **16 sessions**, 64 active connections, **16 separately parked mail
+waits**, 1 MiB aggregate resident queued payload, 32 notice IDs/session, 512 IDs
+aggregate, 262,144 local reply bytes and two admitted blocking jobs. This replaces
+the old unbudgeted 128-session default. Embedded may explicitly negotiate up to
+128 only against its reserve: 128×50 KB=6.4 MB, +5.6 MB over the 16-session row,
+20+5.6=25.6 MB before the remaining reserve; all other aggregate caps stay fixed.
+Standalone policy stays at 16 until an independently measured within-B4 allocation
+is approved. A cap is admission/backpressure, not preallocation; durable debt
+retains overflow and no oldest unread item is dropped. Parked connection buffers
+are small ID metadata, not 1 MiB per wait. Enforce global body/buffer permits.
+
+### 10.2 Startup rows and deferred adoption
+
+| Section-80 §3.3 step | ms | Host behavior |
+| --- | ---: | --- |
+| Compatible store open/header/WAL | 4 | No implicit migration |
+| Indexed bounded pending-effects discovery | 2 | Schedule, do not drain every route before response |
+| Projects/profiles | 2 | Bounded initial selection |
+| Runtime lease/endpoint/listener/IPC | 2 | Actual owner/security checks |
+| Static tool catalogue | 1 | Generated schemas, no runtime catalogue construction |
+| First session FULL binding/credential activation | 8 | Actual fsync, no early ACK |
+| First bounded continuity | 8 | Real authenticated response before B2 endpoint |
+| Spend / reserve / total | 27 / 73 / 100 | Reserve covers cold/Defender/new-store cost, not waived work |
+
+Nell's runtime.owner amendment adds an explicit FULL owner-publication commit
+before start_writer. Charge that real work to §80 §3.3's 73 ms reserve (the
+27 ms nominal table predates this amendment), not outside B2 or invisibly inside
+first-bind timing. The outside authenticated-response measurement includes both
+owner publication and first-session FULL activation; their combined cost remains
+unqualified and can fail the unchanged 100 ms ceiling.
+
+Re-adoption, Codex reconnect, backup and Atlas run **after that first ready
+response**, with explicit per-route Recovering/status; no 50-route native census
+on B2's critical path. Initial readiness is not a claim all old agents are ready.
+B8 re-adoption/handover remains ≤500 ms target (§80 §3.4: 165 ms planned spend,
+335 reserve), unmeasured. Do not defer the first FULL bind/continuity outside B2
+or fabricate missing adoption success to stop the clock.
+
+CLI read spend is section 80 §3.5 (Linux 7.5 ms, Windows 13 ms plus reserve);
+status uses synchronous protected endpoint + exact native identity, not a runtime
+or census. Ordinary write/command-hook, MCP and burst targets are §3.6; direct
+and FULL prototype tails remain contrary evidence requiring qualification, not
+weaker sync/auth. A missed budget blocks release rather than prompting a rerun
+until green. Observer definitions stay section 80's per-OS outside measurements.
+
+### 10.3 Idle and work-triggered maintenance
+
+Use §80 §3.7: executor/writer/accept/collector blocked; native watch events only;
+**0.04/s per attended Claude wait renewal**; one live 15-minute catch-up about
+0.0011/s; one auto-start exit timer after ten empty minutes. Expected baseline
+~0.002/s no session, ~0.003/s plus 0.04/s per attended session; >0.05/s plus the
+attended contribution is a defect even if under the hard ceiling. No claim of
+zero wakeups with the vendor's bounded request API. Shared 70/80 are already
+updated by Prime; section 40 supersedes any stale 25-minute text in the bundle.
+
+Backup starts after readiness; use the accepted shared BackupContext, one stable
+read transaction, 64-page steps, abort at 64 MiB WAL pressure instead of blocking
+writes, release pin and retry only next start-of-day. Its synchronous job keeps
+one background permit throughout; the other remains foreground. No per-command
+backup, minute retry, database watcher, 250 ms mail loop, 1.5 s process loop,
+15 s organ tick, projection timer or hourly canary. Explicit live catch-up and
+empty auto-exit are the only stated supervisor timers; active stop/debounce/retry
+has a work-bound lifetime and cancels when resolved.
+
+## 11. Error direction and required witnesses
+
+One shared Code/Detail/ErrorBody/ErrorEnvelope catalog, typed remedy and real
+cause. No new free-form wire strings. Store/proc domain causes preserve exact
+context through the section-50 mapper. Read::Absent requires an authorized actual
+lookup; Unknown/Unreadable/Present(None) remain distinct. Page/Window preserve
+omissions, unreadables and progressing cursors. A post-COMMIT lost response or
+cancelled wait is keyed readback, not proof of rollback. Secret-bearing raw
+stderr/argv/native payload never enters errors/bundles.
+
+| Boundary | Existing codes raised / cause / legal remedy |
+| --- | --- |
+| Input/wire | usage-invalid-value, input-unknown-field, input-too-large: fix closed schema/budget; no dispatch/marker on invalid input |
+| API/version | api-version-unsupported, runtime-version-mismatch: upgrade matching side; no negotiation bypass |
+| Native peer/owner provenance | os-user-mismatch, listener-admission-refused, owner-required, human-terminal-required: correct user/native owner route; never ambient fallback |
+| Credential | machine-credential-missing/unreadable, capability-invalid/revoked/expired, session-binding-unproven: authenticated init/repair/renewal/rebind, no owner conversion |
+| Runtime | runtime-not-running, custody-unavailable-hostless, runtime-owned-elsewhere, runtime-start-failed/pending: legal up/actual-owner inspection, not a PID shortcut |
+| Generation/shutdown/handover | session-generation-mismatch, runtime-handover-in-progress, runtime-drain-timeout, runtime-stop-unwitnessed: re-read exact key/G/ownership; retain unsafe custody; controlled restart for unjoinable worker |
+| CAS/scope | revision-conflict, idempotency-key-reused, launch-in-flight, agent-already-running, grant-required, message-scope-denied, not-recipient: re-read/current authorization, preserve incumbent/original receipt |
+| Provider | provider-cli-not-found/too-old/unrecognized, provider-protocol-unsupported, codex-app-server-failed, resume-reference-missing/unverifiable, provider-change-breaks-resume: install/fix/explicit --new where desired, never silent fresh thread |
+| Process | process-identity-changed/unreadable, bare-pid-refused, job-breakaway-refused, window-unavailable, launch-failed/readiness-timeout, stop-unwitnessed/partial/deadline-exceeded: exact outside observation and legal supported mode; no weakened containment/name kill |
+| Capture/config/remove | transcript-unreadable/truncated, hook-payload-invalid, capture-consent-missing, turn-invalid, integration-conflict/write-failed/readback-mismatch, remove-incomplete: preserve cursor/foreign bytes/history, repair actual pin/config; hook exit zero is not capture proof |
+| Failure/cancellation | deadline-exceeded, cancelled, task-failed, internal: original-key outcome readback, named route failure or ownership-domain poison as specified; mutex poison never success |
+
+A bounded se-proc stop is incomplete at the requested guarantee even if root
+exited; Complete retains its actual supported OS bound. Windows explicit escape,
+Linux Uncontained and macOS tracked-group limitations stay in the receipt. No
+ownerless lock reclamation, empty-page absence proof, callback self-witness or
+read-after-truncation claim satisfies a required effect. FULL security failure
+closes admission with an error, never silently drops revocation.
+
+## 12. Five journeys, mirrors and remaining integration work
+
+Reviewers own the real clean-Windows/macOS/Linux scripts, Claude/Codex and actual
+embedded/standalone composition. This author writes no tests or runtime bodies.
+Compile checks establish declarations only, not native, provider, resource or
+journey qualification. No deployment/config/listener changes occur here.
+
+| Journey | Real consumer witness / closest false success excluded |
+| --- | --- |
+| J1 Install | Real download/version in fresh terminal, no Node; absent provider/config gives honest onboarding, not fake provenance |
+| J2 Adopt | Existing work/Git preserved; safe real agent writes requested artifact and discovers/calls actual tools; PID/port alone is not readiness |
+| J3 Come back | Exact stop/crash/handover path for that OS; same saved conversation with demonstrated recall; original-key capture/debt recovery and no duplicate input |
+| J4 Two agents | Authorized send, actual target wake, recipient read/ack and performed work visible separately; Held/refused/lost ACK retain debt and huge metadata respects final wire cap |
+| J5 Remove | Hold/revoke + achieved exact scope stop + owned config readback; foreign edits, reused PID or unreadable tracking remain named residuals, not broad kill/wipe |
+
+Targeted review cases are the admitted return teeth, not a new test estate:
+Starting cancellation before/after CAS; crash at each checkpoint and transfer
+phase; lost activation ACK; actual Windows last-handle termination versus staged
+handle overlap; native task/sink panic isolation; owner CLI inside an agent tree
+with SE_SESSION removed; wrong Host/Origin/Sec-Fetch-Site/pipe instance/SQOS;
+forged hook transcript path; wrong-G delayed callback; human resume between
+absence/Select; held zero-mail predecessor; stuck writer; disk-full/FULL failure;
+transcript rotation; final wire budgeting and user-edited removal entry.
+
+Mirror coverage is explicit: CLI/MCP/library share core semantics but transport
+owner authority differs; sync CLI/hooks have no Tokio; async host uses the supplied
+runtime; attended/headless and Claude/Codex use the mode matrix; SE Code alone has
+native queue callbacks; standalone/embedded share debt/generation and staged
+handover barriers; actual read and write/disposition remain separate. Platform
+results name their exact exercised mode; Linux prototype cannot qualify Windows.
+
+Integration obligations still requiring owner review/measurement:
+
+1. **Accepted section 20** supplies the typed FULL runtime-owner/transfer CAS,
+   private runtime_ownership_fact maintenance read and non-secret runtime_owner
+   head. The field/phase mapping in §6.1 consumes those declarations; native
+   witness, FULL durability and crash behavior still need implementation proof.
+2. **5p, section-30 process maintainer**, owns native peer/ACL and the safe overlapped
+   IOCP stream bridge admitted in msg-11c68ce01adf4ca9f6d93894. ProviderIoPlatform describes the host side; native create/read/
+   cancel completion lifetimes and single-collector integration need its matching
+   safe port before a backend is built. No host unsafe or second collector.
+3. **Alpha + host composition** publish the permissive linked API, unify actual
+   Tokio/hyper/SQLite packages, catch unwinds and apply the reconciled route-local
+   versus writer/lease/collector poison policy at the existing boundary.
+4. **Provider/platform qualification** proves attended Claude mod prompt/hold
+   behavior and idle cost, private Codex attended transport on every OS, native
+   scope/EOF/resume, real live handover, B1/B2/B4/B7/B8/B9. Explicit detached
+   Windows Codex path is supported design, not a waiver of windowed alpha work.
+
+Private helper/layout/batching choices remain implementation freedom within these
+truth/authority/lifecycle/resource bounds. A public API/schema/ownership change
+belongs with its owner; no signature compilation substitutes for real outside
+witnesses. Prime alone integrates and lands the resulting complete candidate.

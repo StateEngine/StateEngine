@@ -1,6 +1,10 @@
-use crate::{BoundSession, CallContext, ClaudeHookInput, HostFuture, HostStatus, VerifiedCaller};
+use crate::ClaudeHookInput;
 use se_types::{ApiVersion, Generation, HostEpoch, IdempotencyKey, NativePath, Secret};
-use std::{fs::File, num::NonZeroU32};
+use std::num::NonZeroU32;
+#[cfg(unix)]
+pub type BorrowedChannel<'a> = std::os::fd::BorrowedFd<'a>;
+#[cfg(windows)]
+pub type BorrowedChannel<'a> = std::os::windows::io::BorrowedHandle<'a>;
 
 #[derive(Clone, Debug)]
 pub enum IpcEndpoint {
@@ -12,6 +16,9 @@ pub struct EndpointRecord {
     pub schema: u16,
     pub address: IpcEndpoint,
     pub epoch: HostEpoch,
+    pub generation: Generation,
+    pub kind: crate::HostKind,
+    pub listener_port: Option<u16>,
     pub api: ApiVersion,
     pub package_version: String,
     pub image_sha256: se_types::Sha256,
@@ -29,10 +36,10 @@ pub struct ServerChallenge {
 /// Safe port to native credential acquisition. No caller-supplied uid/PID/SID
 /// is proof; the implementation obtains it from this already-open channel.
 pub trait IpcPlatform: Send + Sync {
-    fn peer(&self, channel: &File) -> se_types::Result<PeerProof>;
+    fn peer(&self, channel: BorrowedChannel<'_>) -> se_types::Result<PeerProof>;
     fn verify_server(
         &self,
-        channel: &File,
+        channel: BorrowedChannel<'_>,
         endpoint: &EndpointRecord,
     ) -> se_types::Result<PeerProof>;
 }
@@ -74,7 +81,6 @@ pub struct OperationOutput {
 pub enum IpcRequest {
     Operation(RawOperation),
     Hook(ClaudeHookInput),
-    Nudge { through: se_types::Sequence },
 }
 pub struct IpcEnvelope {
     pub version: ApiVersion,
@@ -83,36 +89,13 @@ pub struct IpcEnvelope {
     pub authority: Option<PresentedAuthority>,
     pub request: IpcRequest,
 }
-pub trait LocalAdmission: Send + Sync {
-    fn connect<'a>(
-        &'a self,
-        peer: PeerProof,
-        hello: ClientHello,
-        cx: CallContext,
-    ) -> HostFuture<'a, (AuthorizedConnection, ServerHello)>;
-    fn caller<'a>(
-        &'a self,
-        connection: &'a AuthorizedConnection,
-        authority: Option<PresentedAuthority>,
-        cx: CallContext,
-    ) -> HostFuture<'a, VerifiedCaller>;
-    fn session<'a>(
-        &'a self,
-        caller: &'a VerifiedCaller,
-        cx: CallContext,
-    ) -> HostFuture<'a, BoundSession>;
+/// Concrete common adapters; authorization/dispatch signatures remain the
+/// canonical core/linked-API contract, not parallel public service traits.
+pub struct AdmissionAdapter {
+    pub(crate) _private: (),
 }
-pub trait OperationDispatcher: Send + Sync {
-    fn decode(
-        &self,
-        caller: &VerifiedCaller,
-        operation: RawOperation,
-    ) -> se_types::Result<AdmittedOperation>;
-    fn dispatch<'a>(
-        &'a self,
-        operation: AdmittedOperation,
-        cx: CallContext,
-    ) -> HostFuture<'a, OperationOutput>;
+pub struct Dispatcher {
+    pub(crate) _private: (),
 }
 #[derive(Clone, Debug)]
 pub struct HttpRequestHead {
@@ -120,6 +103,7 @@ pub struct HttpRequestHead {
     pub target: String,
     pub host: String,
     pub origin: Option<String>,
+    pub sec_fetch_site: Option<String>,
     pub content_type: Option<String>,
     pub accept: Option<String>,
     pub declared_bytes: Option<u64>,
@@ -127,14 +111,6 @@ pub struct HttpRequestHead {
 pub struct HttpChannel {
     pub(crate) _private: (),
 }
-pub trait LocalListener: Send + Sync {
-    fn admit_head(&self, head: HttpRequestHead) -> se_types::Result<HttpChannel>;
-    fn authenticate<'a>(
-        &'a self,
-        channel: &'a HttpChannel,
-        authority: PresentedAuthority,
-        cx: CallContext,
-    ) -> HostFuture<'a, VerifiedCaller>;
-    fn status(&self) -> HostStatus;
-    fn stop<'a>(&'a self, cx: CallContext) -> HostFuture<'a, ()>;
+pub struct HttpListener {
+    pub(crate) _private: (),
 }

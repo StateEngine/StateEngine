@@ -1,6 +1,7 @@
 //! Compile-only host design; no runtime, provider or listener implementation.
 //! Canonical declarations for docs/design/40-host-runtime-and-harnesses.md.
 //! The separately owned permissive linked API remains section 10's contract.
+pub mod client;
 mod harness;
 mod ipc;
 mod model;

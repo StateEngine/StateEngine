@@ -1,11 +1,7 @@
-use se_types::{AgentId, Generation, HostEpoch, IdempotencyKey, NativePath, ProjectId, SessionId};
+use se_types::{AgentId, Generation, HostEpoch, NativePath, ProjectId, SessionId};
 use std::{future::Future, num::NonZeroU32, pin::Pin, sync::Arc, time::Duration};
 
 pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = se_types::Result<T>> + Send + 'a>>;
-/// Instantiate Factory with the section-10 upstream dyn HostFactory. This does
-/// not copy that permissive API into the proprietary crate or implement it.
-pub type EmbeddedFactoryBuilder<Factory> = fn(tokio::runtime::Handle) -> Arc<Factory>;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HostKind {
     Standalone,
@@ -32,7 +28,8 @@ pub struct HostConfig {
 #[derive(Clone, Debug)]
 pub struct HostLimits {
     pub sessions: NonZeroU32,
-    pub connections: NonZeroU32,
+    pub active_connections: NonZeroU32,
+    pub parked_mail_waits: NonZeroU32,
     pub resident_queue_bytes: NonZeroU32,
     pub session_notice_ids: NonZeroU32,
     pub aggregate_notice_ids: NonZeroU32,
@@ -44,19 +41,19 @@ pub enum ListenerConfig {
     Disabled,
     Loopback { port: u16 },
 }
-pub trait Cancellation: Send + Sync {
-    fn is_cancelled(&self) -> bool;
-    fn cancelled(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+/// Concrete cancellation state; the linked API's Cancellation trait is canonical.
+pub struct CancellationState {
+    pub(crate) _private: (),
 }
 pub struct CallContext {
     pub generation: Generation,
     pub timeout: Duration,
-    pub cancellation: Arc<dyn Cancellation>,
+    pub cancellation: Arc<CancellationState>,
 }
 pub struct OpenContext {
     pub expected_generation: Option<Generation>,
     pub timeout: Duration,
-    pub cancellation: Arc<dyn Cancellation>,
+    pub cancellation: Arc<CancellationState>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SessionIdentity {
@@ -64,7 +61,6 @@ pub struct SessionIdentity {
     pub agent: AgentId,
     pub session: SessionId,
 }
-/// Issued only by the core admission adapter; never decoded from actor fields.
 pub struct VerifiedCaller {
     pub(crate) _private: (),
 }
@@ -91,8 +87,7 @@ pub struct DrainReport {
     pub pending_notices: u64,
 }
 pub struct RestartRequest {
-    pub generation: Generation,
-    pub key: IdempotencyKey,
+    pub key: se_types::IdempotencyKey,
     pub reason: RestartReason,
 }
 #[derive(Clone, Debug)]
@@ -110,7 +105,9 @@ pub enum FaultStage {
     Session,
     Capture,
     Writer,
+    Lease,
     Callback,
+    Collector,
     Listener,
     NativeProcess,
 }

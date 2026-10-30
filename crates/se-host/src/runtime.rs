@@ -1,12 +1,35 @@
-use crate::{
-    CallContext, DrainReport, FaultReport, HostConfig, HostFuture, HostStatus, IpcEndpoint,
-    NativeQueue, OpenContext, RestartRequest,
-};
-use se_types::{Generation, HostEpoch, Page, PageRequest, Read};
-use std::sync::Arc;
+use se_types::{Generation, HostEpoch, IdempotencyKey, Read};
+use std::time::Duration;
 
-pub struct PreparedRuntime<H> {
-    pub host: H,
+/// Concrete implementations of section 10's HostFactory and Host. Their public
+/// method signatures live only in the canonical linked API proposal, not here.
+pub struct HostFactoryAdapter {
+    pub(crate) _private: (),
+}
+pub struct HostAdapter {
+    pub(crate) _private: (),
+}
+/// Concrete translation of section 10 HostServices, never a second input queue.
+pub struct SecodeAdapter {
+    pub(crate) _private: (),
+}
+pub struct HandoverCoordinator {
+    pub(crate) _private: (),
+}
+pub struct LaunchCoordinator {
+    pub(crate) _private: (),
+}
+pub struct ExitBridge {
+    pub(crate) _private: (),
+}
+pub struct ReactorAdapter {
+    pub(crate) _private: (),
+}
+#[cfg(feature = "runtime")]
+pub type ConfigureFactory =
+    fn(tokio::runtime::Handle, crate::HostConfig) -> se_types::Result<HostFactoryAdapter>;
+pub struct PreparedRuntime {
+    pub host: HostAdapter,
     pub epoch: HostEpoch,
     pub generation: Generation,
 }
@@ -14,7 +37,7 @@ pub enum Integration {
     Standalone,
     Secode {
         epoch: HostEpoch,
-        services: Arc<dyn NativeQueue>,
+        adapter: SecodeAdapter,
     },
 }
 #[derive(Clone, Debug)]
@@ -32,66 +55,39 @@ pub enum AdoptionOutcome {
     Exited,
     Unreadable(se_types::ErrorBody),
 }
-/// Generic store types preserve accepted se-store ownership and writer APIs.
-/// No raw SQLite connection, second writer queue or fake drain receipt lives here.
-pub trait RuntimeFactory: Send + Sync {
-    type Store: se_store::HostStore;
-    type Host: HostControl;
-    fn configured(runtime: tokio::runtime::Handle, config: HostConfig) -> se_types::Result<Self>
-    where
-        Self: Sized;
-    /// Preparation only: version/read compatibility, no writer or callbacks.
-    fn prepare<'a>(&'a self, cx: OpenContext) -> HostFuture<'a, Read<PreparedRuntime<Self::Host>>>;
-    /// Uses independently retained resource handles, never a poisoned host method.
-    fn restart<'a>(
-        &'a self,
-        request: RestartRequest,
-        cx: CallContext,
-    ) -> HostFuture<'a, Read<PreparedRuntime<Self::Host>>>;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HandoverPhase {
+    SourceGated,
+    Standby,
+    Staged,
+    BarrierCommitted,
+    LeaseTransferred,
+    Activated,
+    Acknowledged,
+    Finished,
+    Aborted,
+    RecoveryPending,
 }
-pub trait HostControl: Send + Sync {
-    fn status(&self) -> HostStatus;
-    fn wait_status<'a>(
-        &'a self,
-        after: crate::HostPhase,
-        cx: CallContext,
-    ) -> HostFuture<'a, HostStatus>;
-    fn activate<'a>(
-        &'a self,
-        integration: Integration,
-        cx: CallContext,
-    ) -> HostFuture<'a, HostStatus>;
-    fn poison<'a>(&'a self, fault: FaultReport, cx: CallContext) -> HostFuture<'a, HostStatus>;
-    fn native_state_changed<'a>(
-        &'a self,
-        target: crate::MailTarget,
-        cx: CallContext,
-    ) -> HostFuture<'a, ()>;
-    fn adoptions<'a>(
-        &'a self,
-        caller: &'a crate::VerifiedCaller,
-        page: PageRequest,
-        cx: CallContext,
-    ) -> HostFuture<'a, Page<Adoption>>;
-    fn drain<'a>(&'a self, cx: CallContext) -> HostFuture<'a, DrainReport>;
-    fn close<'a>(&'a self, report: DrainReport, cx: CallContext) -> HostFuture<'a, DrainReport>;
+#[derive(Clone, Debug)]
+pub struct HandoverIntent {
+    pub transfer: se_store::RecordId,
+    pub source: HostEpoch,
+    pub successor: HostEpoch,
+    pub from: Generation,
+    pub to: Generation,
+    pub key: IdempotencyKey,
+    pub expected: se_store::Revision,
+    pub timeout: Duration,
+    pub deadline_at: se_types::UnixMicros,
 }
-pub trait RuntimeFilesystem: Send + Sync {
-    /// Store RuntimeLease implementation is owned by this adapter, not SQL.
-    type Lease: se_store::RuntimeLease;
-    fn acquire_host<'a>(&'a self, cx: OpenContext) -> HostFuture<'a, Arc<Self::Lease>>;
-    fn acquire_direct<'a>(&'a self, cx: OpenContext) -> HostFuture<'a, Arc<Self::Lease>>;
-    fn endpoint<'a>(&'a self, cx: CallContext) -> HostFuture<'a, Read<crate::EndpointRecord>>;
-    fn publish<'a>(
-        &'a self,
-        endpoint: crate::EndpointRecord,
-        lease: Arc<Self::Lease>,
-        cx: CallContext,
-    ) -> HostFuture<'a, IpcEndpoint>;
-    fn unpublish<'a>(
-        &'a self,
-        epoch: HostEpoch,
-        lease: Arc<Self::Lease>,
-        cx: CallContext,
-    ) -> HostFuture<'a, ()>;
+/// Native transfer nonce is private peer-binding material, never Debug output.
+#[derive(Clone)]
+pub struct HandoverState {
+    pub intent: HandoverIntent,
+    pub phase: HandoverPhase,
+    pub native: Read<se_proc::TransferReceipt>,
+    pub native_nonce: Option<[u8; 16]>,
+    pub manifest_sha256: Option<se_types::Sha256>,
+    pub frozen_at: Option<se_store::Revision>,
+    pub unresolved: Vec<se_types::ErrorBody>,
 }

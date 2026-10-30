@@ -1,6 +1,6 @@
 use crate::{
-    BoundSession, CallContext, CaptureInput, HarnessKind, HoldReason, HostFuture, MailNotice,
-    SessionIdentity, SessionLease,
+    BoundSession, CallContext, CaptureInput, HarnessKind, HoldReason, HostFuture, ProviderNotice,
+    SessionIdentity,
 };
 use se_types::{Body, IdempotencyKey, NativePath, ProviderSessionId, Read, Secret, Sha256};
 use std::{ffi::OsString, path::PathBuf};
@@ -31,9 +31,8 @@ pub struct OwnedLaunchFile {
     pub path: NativePath,
     pub contents: Secret,
 }
-pub struct HarnessLaunch {
+pub struct HarnessRequest {
     pub identity: SessionIdentity,
-    pub lease: SessionLease,
     pub executable: NativePath,
     pub cwd: NativePath,
     pub profile: se_store::Profile,
@@ -43,6 +42,74 @@ pub struct HarnessLaunch {
     pub initial_input: Body,
     pub launch_credential: Secret,
     pub key: IdempotencyKey,
+}
+pub struct ProviderTransport {
+    pub(crate) _private: (),
+}
+pub struct ProviderIo {
+    pub child: se_proc::StandardIo,
+    pub host: ProviderTransport,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProviderStream {
+    Input,
+    Output,
+    Error,
+}
+pub enum StreamRead {
+    Bytes(Vec<u8>),
+    Eof,
+    Failed {
+        bytes: Vec<u8>,
+        error: se_types::ErrorBody,
+    },
+}
+pub struct StreamWrite {
+    pub completed_bytes: u32,
+    pub failure: Option<se_types::ErrorBody>,
+}
+/// Genuine Unix/Windows evented I/O implementations. The Windows implementation
+/// wraps se-proc's safe native IOCP bridge; no blocking File wrapper or raw-handle
+/// conversion is performed by se-host.
+pub trait ProviderIoPlatform: Send + Sync {
+    fn open(
+        &self,
+        owner: &se_proc::OwnedProcess,
+        identity: &SessionIdentity,
+    ) -> se_types::Result<ProviderIo>;
+    fn read<'a>(
+        &'a self,
+        transport: &'a ProviderTransport,
+        stream: ProviderStream,
+        maximum_bytes: std::num::NonZeroU32,
+        cx: CallContext,
+    ) -> HostFuture<'a, StreamRead>;
+    fn write<'a>(
+        &'a self,
+        transport: &'a ProviderTransport,
+        bytes: Vec<u8>,
+        cx: CallContext,
+    ) -> HostFuture<'a, StreamWrite>;
+    /// Finish an accepted stdin write and close only host stdin; output reads live.
+    fn finish_input<'a>(
+        &'a self,
+        transport: &'a ProviderTransport,
+        cx: CallContext,
+    ) -> HostFuture<'a, ()>;
+    fn close<'a>(&'a self, transport: &'a ProviderTransport, cx: CallContext)
+    -> HostFuture<'a, ()>;
+}
+pub struct ProviderInvocation {
+    pub executable: NativePath,
+    pub arguments: Vec<OsString>,
+    pub environment: se_proc::Environment,
+}
+pub struct HarnessAttach {
+    pub request: HarnessRequest,
+    pub process: se_proc::OwnedProcess,
+    pub record: se_proc::ProcessRecord,
+    pub transport: ProviderTransport,
+    pub transcript: Read<crate::TranscriptPin>,
 }
 pub struct HarnessBinding {
     pub(crate) _private: (),
@@ -86,10 +153,10 @@ pub struct TranscriptSource {
     pub incarnation: Sha256,
 }
 #[derive(Clone, Debug)]
-pub enum HarnessStop {
-    Exited { witness: Box<se_proc::StopWitness> },
-    Bounded { witness: Box<se_proc::StopWitness> },
-    StillOwned { reason: se_types::ErrorBody },
+pub struct ProviderInterrupt {
+    pub conversation: ProviderSessionId,
+    pub requested: bool,
+    pub vendor_event: Read<String>,
 }
 /// Closed enum selection is performed by composition; no dynamic plugin loader.
 /// Partial launch failure remains owned by the process arena, never dropped.
@@ -102,12 +169,17 @@ pub trait Harness: Send + Sync {
     ) -> HostFuture<'a, ProviderVersion>;
     fn configuration<'a>(
         &'a self,
-        request: &'a HarnessLaunch,
+        request: &'a HarnessRequest,
         cx: CallContext,
     ) -> HostFuture<'a, ConfigPlan>;
-    fn launch<'a>(
+    fn invocation<'a>(
         &'a self,
-        request: HarnessLaunch,
+        request: &'a HarnessRequest,
+        cx: CallContext,
+    ) -> HostFuture<'a, ProviderInvocation>;
+    fn attach<'a>(
+        &'a self,
+        request: HarnessAttach,
         cx: CallContext,
     ) -> HostFuture<'a, LaunchOutcome>;
     fn adopt<'a>(
@@ -118,7 +190,7 @@ pub trait Harness: Send + Sync {
     fn bell<'a>(
         &'a self,
         binding: &'a HarnessBinding,
-        notice: &'a MailNotice,
+        notice: &'a ProviderNotice,
         cx: CallContext,
     ) -> HostFuture<'a, BellOutcome>;
     fn transcript<'a>(
@@ -136,7 +208,7 @@ pub trait Harness: Send + Sync {
         &'a self,
         binding: &'a HarnessBinding,
         cx: CallContext,
-    ) -> HostFuture<'a, HarnessStop>;
+    ) -> HostFuture<'a, ProviderInterrupt>;
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClaudeHookKind {
@@ -148,7 +220,7 @@ pub enum ClaudeHookKind {
 pub struct ClaudeHookInput {
     pub kind: ClaudeHookKind,
     pub conversation: ProviderSessionId,
-    pub transcript: NativePath,
+    pub claimed_transcript: NativePath,
     pub payload: serde_json::Value,
 }
 pub struct HookOutput {
@@ -156,13 +228,8 @@ pub struct HookOutput {
     pub captured: Read<se_types::EventId>,
     pub failure: Option<se_types::ErrorBody>,
 }
-pub trait ClaudeHookAdapter: Send + Sync {
-    fn hook<'a>(
-        &'a self,
-        session: &'a BoundSession,
-        input: ClaudeHookInput,
-        cx: CallContext,
-    ) -> HostFuture<'a, HookOutput>;
+pub struct ClaudeHookAdapter {
+    pub(crate) _private: (),
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CodexTransport {
