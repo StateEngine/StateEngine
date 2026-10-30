@@ -105,17 +105,25 @@ pub struct RuntimeHandoverRecord {
     pub manifest_sha256: [u8; 32],
     pub frozen_at: Revision,
     pub deadline_at: UnixMicros,
+    /// Present only for Finished; verified before ordinary consumers start.
+    pub completion: Option<Box<RuntimeHandoverCompletion>>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeHandoverPhase {
     Prepared,
-    ReadyToClaim,
     Claimed,
-    Activated,
     Finished,
     Aborted,
     /// Terminal resolution recorded inside the fresh FULL runtime.owner fact.
     Recovered,
+}
+/// Finished binds native activation and outside source-resource closure in one FULL fact.
+#[derive(Clone)]
+pub struct RuntimeHandoverCompletion {
+    pub activated_custody_sha256: [u8; 32],
+    pub capture_at: Revision,
+    pub queue_cut_sha256: [u8; 32],
+    pub source_closed_sha256: [u8; 32],
 }
 /// Binds checked cold ownership to the original transfer without rewriting peers.
 /// The enclosing event header is the new owner/completion EventId.
@@ -247,55 +255,11 @@ pub struct BackupReport {
     pub retained: Vec<BackupGeneration>,
     pub removed: Vec<RecordId>,
 }
+/// Post-backup range lost on explicit restore; None means its upper bound is unknown.
 #[derive(Clone, Debug)]
-pub struct MigrationPlan {
-    pub fingerprint: [u8; 32],
-    pub from: u32,
-    pub to: u32,
-    pub source: StoreId,
-    pub required_bytes: u64,
-}
-#[derive(Clone, Debug)]
-pub struct MigrationApproval {
-    pub owner: HumanId,
-    pub plan_fingerprint: [u8; 32],
-    pub trigger: MigrationTrigger,
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MigrationTrigger {
-    ExplicitOwnerCommand,
-    ExplicitUpgrade,
-}
-#[derive(Clone, Debug)]
-pub struct MigrationReport {
-    pub schema_version: u32,
-    pub incarnation: u64,
-    pub backup: BackupGeneration,
-}
-#[derive(Clone, Debug)]
-pub struct RecoveryGap {
-    pub from: Option<Revision>,
-    pub to: Option<Revision>,
-    pub source_offset: Option<u64>,
-    pub reason: String,
-}
-#[derive(Clone, Debug)]
-pub struct SalvagePlan {
-    pub source_store: Option<StoreId>,
-    pub target_store: StoreId,
-    pub source: PathBuf,
-    pub candidate: PathBuf,
-    pub source_sha256: [u8; 32],
-    pub required_bytes: u64,
-}
-#[derive(Clone, Debug)]
-pub struct SalvageReport {
-    pub candidate: PathBuf,
-    pub source: Option<StoreId>,
-    pub target: StoreId,
-    pub recovered_events: u64,
-    pub gaps: Vec<RecoveryGap>,
-    pub complete: bool,
+pub struct RestoreLoss {
+    pub after: Revision,
+    pub prior_head: Option<Revision>,
 }
 #[derive(Clone, Debug)]
 pub enum EraseField {
@@ -339,10 +303,23 @@ pub struct ErasureReport {
     pub erased_fields: Vec<EraseTarget>,
     pub residuals: Vec<ResidualCopy>,
 }
+/// User history only; no fleet/runtime/configuration repair protocols.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportFamily {
+    Projects,
+    Owners,
+    Agents,
+    Profiles,
+    Messages,
+    Decisions,
+    WorkingState,
+    Conversations,
+    Turns,
+}
 #[derive(Clone, Debug)]
 pub struct ImportCheckpoint {
     pub import: RecordId,
-    pub family: String,
+    pub family: ImportFamily,
     pub source_key: Vec<u8>,
     pub source_sha256: [u8; 32],
     pub byte_offset: u64,
