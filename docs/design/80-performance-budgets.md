@@ -291,61 +291,77 @@ Windows has the thinner margin, which is one more reason to sign the binary (lig
 
 ### 3.6 Per-operation timing and the open E3 result
 
-B9's sole threshold is in §1. Hosted MCP/hook and burst timings are useful
-component measurements, but their RPC/body/startup boundaries must be named;
-none establishes a complete native CLI latency by renaming an in-process call.
-Retained component targets are server-side MCP reads p95 ≤ 5 ms and ordinary
-writes ≤ 15 ms with eight agents, and a 20-agent burst worst-case ≤ 100 ms with no
-lost writes. Hosted Claude stop-hook processing uses B9's complete boundary, including its
-bounded transcript work; report input bytes without subtracting that work. FULL
-command samples use their own row; FULL MCP mutations are reported separately
-from the ordinary MCP write target, with no claim of CLI acceptance from a
-server-only interval.
-These are targets requiring the real mixed workload;
-the earlier narrow-hook timings do not qualify them.
-The ordinary writer drains already queued work without a timer/gather window;
-a mixed batch takes FULL when any closed-FULL member is present.
+B9 and FULL-command thresholds are defined only in §1. Server-side MCP reads
+retain p95 ≤ 5 ms and ordinary writes ≤ 15 ms with eight agents; a 20-agent
+burst retains worst-case ≤ 100 ms with no lost writes. Hosted Claude stop-hook
+processing uses B9's complete boundary, including bounded transcript work.
+FULL command samples use their own row; server-only timings never establish
+CLI acceptance. The writer drains queued work without a gather timer; a mixed
+batch takes FULL when any closed-FULL member is present.
 
-The retained mixed-workload Python spike used 4,944 writes/run (611 NORMAL
-and 7 FULL per cycle), a persistent writer and real schema/payload shapes.
-Serial producer p95 is 37.47 ms; 20-client p95 is 66.92 ms. The retained run
-**fails the ordinary-write target as a mixed component observation**; it does
-not separately qualify the newly explicit FULL-command boundary or any native
-CLI command. Policy-NORMAL request p95 is 37.73/66.91 ms respectively, so
-separating FULL commands does not make this contrary ordinary-path evidence pass.
-Serial queue-to-transaction p95 is 0.108 ms, append p95 2.436 ms and
-COMMIT-plus-restore p95 35.942 ms. With 20 clients, batch median/p95/max is
-10/17/18 and transaction p95 is 53.266 ms; max-per-batch queue delay p95 is
-52.244 ms. These quantiles are separate observations, not additive percentiles.
-Per-request queue p95 is 45.740 ms. Policy-FULL requests are 1.133% in both
-runs; mixed batches promote 383 NORMAL requests, making actual FULL execution
-8.879% of the 20-client requests. The clock ends at the writer's commit/restore
-endpoint before acknowledgment delivery, and there is no network/client-process
-round-trip, so it cannot attribute those costs or claim B9 acceptance. NORMAL
-groups also have slow commits; FULL share alone is insufficient as a cause.
-Recurrent slow NORMAL commits suggest a checkpoint/storage candidate, not a
-measured fsync explanation. The older S4 prototype used one cached hooks INSERT,
-fixed durability and a one-ms gather window; it did not exercise this schema's
-per-operation links, temporal writes, savepoints or mode restore. Comparing
-those p95 values alone cannot identify language, device or batching as cause.
+The initial Python mixed-workload spike remains contrary evidence: 4,944
+writes/run, producer p95 37.47 ms serial and 66.92 ms with 20 clients. Serial
+COMMIT-plus-restore p95 was 35.942 ms; actual FULL execution grew from 1.133%
+of requests to 8.879% under mixed grouping. Its clock excluded acknowledgment
+delivery and CLI/socket costs. All samples and the independent decomposition
+remain retained; these numbers did not establish a language or device cause.
 
-Nell owns every writer/schema rerun. Independent decomposition compares
-per-commit fsync/checkpoint time, batching, SQL/restore, queue wait, full client
-round-trip and FULL share against the older prototype, then ext4 versus NTFS.
-Keep the current durability/checkpoint baseline and all failures before diagnostic
-variants. The baseline is **commit-driven autocheckpoint**, with 16 KiB pages
-and 256-page autocheckpoint as specified in section 20. Checkpoint work inside
-COMMIT is a hypothesis until the independent sync/checkpoint decomposition
-supports it; this design does not move checkpoints to a separate worker or
-remove their latency from the measured commit. Any supported policy change
-is reviewed once and applied consistently across sections 20/40/80/95, preserving
-the required NORMAL/FULL durability and reporting its queue, WAL and memory costs.
-E3 must identify the cause and report B9 and FULL-command results
-separately; no passing reserve is inferred from a faster median or a reclassified
-command.
-Raw initial data: `/mnt/nvme/stateengine/nell-import-rehearsal-20261030/
-benchmark-result.json`, `bench-*-samples.json`. Independent retained-sample
-analysis: `/mnt/nvme/stateengine/5p-e3-write-decomposition-20261030/`.
+The native prepared-SQL follow-up retains 29 runs/143,376 requests on Linux
+ext4/NVMe and Windows NTFS with Defender/realtime protection enabled. All
+168 manifest hashes, raw group/request quantiles and 29 separate count/
+integrity/FK witnesses were independently checked. The original, reduced and
+one-INSERT control preserve identical 1,464,144 payload bytes, kind order and
+56 policy-FULL ratifications/run. Builtin 256-page baseline ACK p95 in ms:
+
+| Frozen SQL shape | Linux serial / 20 outstanding | Windows serial / 20 outstanding |
+| --- | --- | --- |
+| Original schema | 17.38 / 47.86 (repeat 56.62) | 4.35 / 88.86 (repeat 27.42) |
+| Chain/non-mail-temporal subtraction | 35.86 / 69.89 | 3.93 / 10.52 (repeat 11.97) |
+| Same-payload one-INSERT control | 0.21 / 9.17 | 0.06 / 0.85 |
+
+These are storage-worker observations, not acceptance budgets. In reduced
+20-window baselines, queue p95 is 50.139 ms Linux and 6.941 ms Windows;
+actual FULL execution is 5.704%/5.643% of requests after promotion. Restoration
+and in-process ACK delivery are small here. The Windows original run includes
+a 2,056-ms COMMIT; its repeat is retained. Sequential runs, different SQLite
+versions and scheduling do not establish a schema-only speedup or the exact
+historical slowdown factor.
+
+Checkpoint diagnostics replace the builtin hook with a timed passive callback
+at the same threshold; they are separate runs, not an unmodified observer.
+[SQLite documents that hook replacement](https://sqlite.org/c3ref/wal_autocheckpoint.html).
+In final untraced reduced Linux serial/20 runs, checkpoints consume 59.5%/62.2%
+of summed COMMIT wall time; every 25/25 and 37/37 COMMITs over 20 ms includes
+one. Serial callback WAL-frame counts sum to 121,530 versus control 5,122
+(23.7×); these are reported frames at callbacks, not measured copied frames
+or physical bytes. Linux traced WAL fsync p95 is 30.575/29.559 ms, main-DB
+17.877/17.851 ms, with tracing overhead retained. Windows physical sync-call
+timing is unavailable; callback time cannot stand in for FlushFileBuffers.
+Raising the diagnostic threshold to 1,024 pages leaves Linux 20-window ACK
+p95 57.45/82.33 ms (original/reduced), supporting no policy change.
+
+The richer WAL/checkpoint work, measured Linux sync cost and ensuing queueing
+are demonstrated tail contributors in these runs. Restoration or client RTT
+does not explain them; real CLI/IPC RTT was not exercised. Prepared SQL omits
+codec/auth/ID/hash construction, preloads the fixture, uses a 128-statement
+cache instead of the planned 32 and retains historical capture labels. It
+qualifies neither the later session.turn/config-subtracted DDL nor a native
+running host, the three B9 commands or five FULL families. Windows worker
+p95 below a target does not establish product PASS. No B1/B2/B8 or first-bind/
+handover spend is inferred from these mixed-workload quantiles.
+
+Keep **commit-driven autocheckpoint**, 16 KiB pages and 256 pages, as the
+section-20 baseline. The measured contribution does not justify moving
+checkpoints to a worker, hiding their latency, or weakening NORMAL/FULL.
+Nell owns writer/schema reruns; any supported policy change is reviewed once
+and applied consistently across 20/40/80/95 with queue/WAL/memory costs. Complete
+E3 still requires the approved real host/command consumer and both sampling
+classes; it remains unqualified, with the Linux ordinary component over target.
+
+Raw data: `/mnt/nvme/stateengine/nell-import-rehearsal-20261030/` (initial),
+`/mnt/nvme/stateengine/nell-e3-write-latency-20261030/` (native).
+Independent analysis: `/mnt/nvme/stateengine/5p-e3-write-decomposition-20261030/
+NATIVE-REPORT.txt`, `native-decomposition.json` and `analyze-native.py`.
 
 ### 3.7 Idle wakeups (B6)
 | Source | No session | One session |
