@@ -115,7 +115,6 @@ codes! {
     LaunchFailed => ("launch-failed", Refused) { agent: AgentId, provider: String, exit_code: Option<i32>, stderr_tail: String } => "{provider} exited during launch: {stderr_tail}", "fix the provider error, then → `se launch {agent}`";
     WindowUnavailable => ("window-unavailable", Refused) { tried: Vec<String> } => "no terminal window could be opened ({tried})", "Use `se launch AGENT --detach`, or set `launch.terminal`";
     JobBreakawayRefused => ("job-breakaway-refused", Refused) { parent: String } => "Windows won't let the agent outlive {parent}", "Use `se up` first, then launch";
-    CgroupDelegationMissing => ("cgroup-delegation-missing", Refused) { path: String } => "Linux cgroup delegation is off ({path})", "enable systemd user delegation (`Cmd::Manual`, exact text in doctor)";
     CodexAppServerFailed => ("codex-app-server-failed", Refused) { phase: String, reason: String } => "Codex app-server failed at {phase}: {reason}", "Use `se doctor`";
     WakeNotRunning => ("wake-not-running", Refused) { agent: AgentId } => "{agent} isn't running, so there is nothing to wake", "Use `se launch {agent}`";
     StopUnwitnessed => ("stop-unwitnessed", Incomplete) { agent: AgentId, pid: u32, reason: String } => "stop sent but {agent}'s exit isn't confirmed", "Use `se agent show {agent}`, then `se stop {agent}`";
@@ -150,13 +149,16 @@ codes! {
     StopDeadlineExceeded => ("stop-deadline-exceeded", Incomplete) { observation: ObservationId, deadline_ms: u64, remaining: Vec<String> } => "{remaining.len} processes still alive after {deadline_ms} ms", "retry with a longer `--deadline`";
     AtlasIndexAbsent => ("atlas-index-absent", Refused) { project: ProjectId } => "no code index for {project} yet", "Use `se config set atlas.enabled true -p P` (indexes in the background; `se status` shows progress)";
     AtlasIndexing => ("atlas-indexing", Incomplete) { indexed: u64, total: u64 } => "index is {indexed}/{total} files; results may be partial", "retry later";
-    AtlasUnreadable => ("atlas-unreadable", Unreadable) { path: String, reason: String } => "can't read atlas.db: {reason}", "Use `se doctor --fix` (rebuilds the index)";
+    AtlasUnreadable => ("atlas-unreadable", Unreadable) { path: String, reason: String } => "can't read the index database atlas.db: {reason}", "Use `se doctor --fix` (rebuilds the index)";
     AtlasPathOutsideRoot => ("atlas-path-outside-root", Refused) { path: String, root: String } => "{path} is outside {root}", "use a project-relative path";
     AtlasPathUnknown => ("atlas-path-unknown", Unknown) { path: String } => "{path} isn't indexed", "Use `se atlas find PATH --kind path`";
     AtlasSymbolUnknown => ("atlas-symbol-unknown", Unknown) { symbol: String } => "no symbol `{symbol}`", "Use `se atlas find {symbol}`";
     AtlasSymbolAmbiguous => ("atlas-symbol-ambiguous", Usage) { symbol: String, candidates: Vec<String> } => "`{symbol}` names {candidates.len} symbols", "add `--path`";
     AtlasLanguageUnsupported => ("atlas-language-unsupported", Refused) { path: String, language: Option<String> } => "{language} files aren't parsed", "text search: `--kind text`";
-    AtlasFileOverBudget => ("atlas-file-over-budget", Refused) { path: String, size: u64, budget: u64 } => "{path} ({size}) exceeds the parse budget", "none; the file stays text-searchable";
+    AtlasFileOverBudget => ("atlas-file-over-budget", Refused) { path: String, size: u64, budget: u64 } => "{path} ({size}) exceeds the per-file parse budget", "none; the file stays text-searchable";
+    AtlasResourceBudget => ("atlas-resource-budget", Unavailable) { resource: String, requested: u64, available: u64 } => "Atlas can't index right now: {resource} needs {requested}, {available} available", "wait for memory pressure to ease, or use bounded text search → `se atlas find QUERY --kind text`";
+    AtlasParseFailed => ("atlas-parse-failed", Incomplete) { path: String, language: String, reason: String } => "Atlas couldn't parse {path} ({language}): {reason}", "results for this file use bounded text search; → `se doctor --bundle` to report the diagnostic";
+    AtlasSourceUnreadable => ("atlas-source-unreadable", Unreadable) { path: String, reason: String } => "Atlas can't read {path}: {reason}", "restore read access to the file";
     RepairNotSupported => ("repair-not-supported", Refused) { check: String } => "`doctor --fix` can't repair {check}", "follow the check's own fix line";
     RepairWouldWeakenDefaults => ("repair-would-weaken-defaults", Refused) { change: String } => "refusing to {change}: it weakens safety defaults", "change it yourself by named profile";
     BundleDestinationInvalid => ("bundle-destination-invalid", Usage) { path: String, reason: String } => "can't write the bundle to {path}: {reason}", "Use `se doctor --bundle PATH`";
