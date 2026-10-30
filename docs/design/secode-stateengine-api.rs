@@ -389,7 +389,7 @@ pub struct IssuedSession {
     pub identity: SessionIdentity,
     pub generation: Generation,
     pub binding_revision: Sequence,
-    pub capability: SessionCapability,
+    pub session: BoundSession,
     pub receipt: Receipt<SessionIdentity>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -413,11 +413,18 @@ pub struct ToolDefinition {
     pub input_schema: Value,
     pub output_schema: Value,
 }
+/// Registry-checked request identity; only capture/markers admit NaturalKey.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RequestIdentity {
+    ReadOnly,
+    Mutation(IdempotencyKey),
+    NaturalKey,
+}
 #[derive(Clone, Debug)]
 pub struct ToolCall {
     pub name: String,
     pub arguments: Value,
-    pub idempotency_key: Option<IdempotencyKey>,
+    pub identity: RequestIdentity,
 }
 #[derive(Clone, Debug)]
 pub struct ToolOutput {
