@@ -372,8 +372,8 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 - **No transaction across an await, and no host thread waits on the writer.** se-core is synchronous
   and never waits on a commit: a write returns `OpStep::Commit { batch, then }`, a typed continuation
   (not a closure holding a transaction). The host submits the batch to the writer, awaits the
-  `Completion` on its async task, then runs `then` to build the receipt. Only the hostless CLI calls
-  `wait_blocking`. se-store exposes futures only at the writer boundary; `Tx` is `!Send` and never
+  `Completion` (`CommitWait`) on its async task, then runs `then` with the `CommitReceipt`. The
+  hostless CLI's direct route gets the same receipt synchronously from `DirectStore::append`. se-store exposes futures only at the writer boundary; `Tx` is `!Send` and never
   leaves the writer thread.
 - One writer per store: the `se-writer` thread drains a bounded queue, groups what is waiting into one
   `BEGIN IMMEDIATE … COMMIT`, one `SAVEPOINT` per request so one failure rolls back only itself (20).
