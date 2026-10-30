@@ -1,6 +1,6 @@
 # 50 — Surface, output contracts, errors and configuration
 
-Deep design, 2026-10-30. Governs the `se` CLI, the MCP tool set, the library dispatcher, JSON output families, exit codes, the error catalog and configuration. Authority order: `rust-se/docs/OPS.md` (the reviewed allowlist) over this file over `03-api.md`. OPS.md lists **59 operations** (its header count; the brief said 60) and **25 MCP tools** (20 core + 5 Atlas). This section adds no operation. Where it has to choose something OPS.md leaves open (flag spellings, defaults, limits, names of schema families and error codes) the choice is marked as a decision here, and a seat implements it as written.
+Deep design, 2026-10-30. Defines the `se` CLI, MCP tools, synchronous core dispatcher, JSON families, errors and configuration. [OPS.md](../OPS.md) lists the admitted operation rows; the source registry generates CLI, MCP and linked exposure from them. Counts come from those rows, with no phantom tools for disabled Atlas. Rust is the shipped product; the Node engine remains private factory software, with no factory cutover or import in this plan.
 
 Crates: types and errors live in `se-types`; the registry, `Op` impls and dispatcher in `se-core` (`se_core::ops`); clap and renderers in the `se` binary; MCP framing in `se-host`. Nothing in `se-core` depends on clap at runtime except through the `clap::Args` derive on input structs (feature `cli`, on by default; SE Code builds with `default-features = false` and gets no clap).
 
@@ -16,7 +16,7 @@ pub trait Op: DeserializeOwned + JsonSchema + Validate + Send + 'static
 {
     const META: OpMeta;
     type Output: Serialize + JsonSchema + Render + ExitStatus + Send + 'static;
-    fn run(self, cx: Cx<'_>) -> impl Future<Output = Result<Self::Output, SeError>> + Send;
+    fn run(self, cx: &mut Cx<'_>) -> Result<OpStep<Self::Output>, SeError>;
 }
 
 pub struct OpMeta {
@@ -31,17 +31,16 @@ pub struct OpMeta {
     pub runtime: RuntimeNeed,
     pub feature: Feature,              // Core | Atlas
     pub family: Family,                // output schema family + major
-    pub since: ApiVersion,             // (1, 0) for every alpha op
+    pub since: ApiVersion,             // internal CLI/IPC introduction version
     pub journeys: &'static [Journey],
 }
 
 pub enum CliExposure {
     Leaf { path: &'static [&'static str], hidden: bool, select: Selector },
-    Many(&'static [CliLeaf]),          // process.control: inspect/stop
     RootFlag(&'static str),            // meta.version: "--version"
     None(Reason),
 }
-pub enum Selector { Always, Flag(&'static str), Fixed { field: &'static str, value: &'static str } }
+pub enum Selector { Always, Flag(&'static str) }
 pub enum McpExposure { Tool { name: &'static str, title: &'static str, description: &'static str }, None(Reason) }
 pub struct Reason(pub &'static str);   // non-empty, ≥ 12 bytes (const-checked)
 pub enum Auth { Owner, Session, Either }
@@ -51,11 +50,11 @@ pub enum RuntimeNeed { None, HostForWrites, Host, HostAutoStart }
 pub struct Family { pub name: &'static str, pub major: u16 }   // ("se.launch", 1)
 ```
 
-`Cx` carries the verified `Authority` (built only by the host or the CLI bootstrap, never deserialized), the resolved `ProjectCtx` (from the session for bound calls, from §2.2 otherwise), the store handle (`StoreRead` always; `StoreWrite` routed through the host writer when a host holds `runtime.lock`, direct otherwise — one store function either way), an optional `HostLink` for custody, a `CancellationToken`, a `Clock`, and the `Features` set. `Validate::validate(&self) -> Result<(), SeError>` enforces bounds the JSON Schema also states (lengths, ranges, enum closure) so a library caller that skips schema validation gets the same refusal.
+`Cx` contains verified authority, resolved project, synchronous store reader/writer access, clock and feature facts. It has no host future, async runtime or I/O callback. `Validate::validate(&self) -> Result<(), SeError>` enforces the same closed inputs and limits as JSON Schema. `OpStep<T>` is either `Complete(T)` or a typed `CustodyPlan<T>`; the latter describes admitted work for the host's async custody executor. Core validation, planning and store transactions are synchronous. A host worker invokes those same functions; no transaction or native lock spans an await. A hostless CLI uses the same store implementation when no host owns the lease; when a host owns it, the transport wrapper routes the request to that host before core execution. No core function waits for IPC or starts a runtime.
 
-**Writer stamp (Prime decision, 2026-10-30).** Every store commit records which writer made it: `WriterMode::Host { generation }` when the running host's writer committed it, `WriterMode::Direct` when the CLI committed with no host running. The store writes this onto the event row in the commit transaction and returns it in `Committed { receipt, wakes, writer }`. The dispatcher, not the op, copies it into the output's `writer` field. An `Op::run` cannot construct or override a `WriterMode`; the type has no public constructor outside `se-store`. Every output family that carries a store receipt includes `writer` (Appendix A.0 lists them), and the freeze check treats it as a required stable field. An outside observer proves routing by comparing `writer.host_generation` with `se status` `$.runtime.generation` and with the event read back through `se history --event`, which carries the same object. No timing is involved. MCP and SE Code calls always commit through a host, so they always report `host`. A replayed receipt reports the writer of the original commit.
+**Writer stamp (Prime decision, 2026-10-30).** Every store commit records which writer made it: `WriterMode::Host { generation }` when the running host's writer committed it, `WriterMode::Direct` when the CLI committed with no host running. The store writes this onto the event row in the commit transaction and returns it in `Committed { receipt, wakes, writer }`. The dispatcher, not the op, copies it into the output's `writer` field. An `Op::run` cannot construct or override a `WriterMode`; the type has no public constructor outside `se-store`. Every output family that carries a store receipt includes `writer` (Appendix A.0 lists them), and it is a required stable field. An outside observer proves routing by comparing `writer.host_generation` with `se status` `$.runtime.generation` and with the event read back through `se history --event`, which carries the same object. No timing is involved. MCP and SE Code calls always commit through a host, so they always report `host`. A replayed receipt reports the writer of the original commit.
 
-Owner-only selectors (an `AGENT` positional, `--all`) live in a flattened `OwnerSel<T>` field carrying `#[serde(skip)] #[schemars(skip)]`. They exist for the CLI and typed library callers and never appear in an MCP schema. A session call with a non-empty `OwnerSel` refuses `owner-required` before `run`.
+Owner-only selectors (`--all`, private-read previews) stay outside MCP schemas and refuse under session authority. For launch/stop/wake, CLI AGENT resolves to the same typed `target_agent_id` used by the MCP DTO; the creator-control check in §3.1 applies before `run`. A target is never an actor override.
 
 ### 1.2 The `ops!` list
 
@@ -84,11 +83,11 @@ ops! {
     decision.propose     => DecisionPropose,     decision.list    => DecisionList,
     decision.show        => DecisionShow,        decision.ratify  => DecisionRatify,
     decision.reject      => DecisionReject,      decision.retract => DecisionRetract,
-    decision.supersede   => DecisionSupersede,   process.start    => ProcessStart,
-    process.control      => ProcessControl,      process.list     => ProcessList,
+    decision.supersede   => DecisionSupersede,
     session.begin        => SessionBegin,        session.context  => SessionContext,
     session.turn         => SessionTurn,         session.end      => SessionEnd,
-    hook.claude          => HookClaude,          store.backup     => StoreBackup,
+    hook.claude          => HookClaude,          store.restore    => StoreRestore,
+    credential.rotate    => CredentialRotate,    installation.uninstall => Uninstall,
     store.import_node    => ImportNode,          store.forget     => Forget,
     #[cfg(feature = "atlas")] atlas.find => AtlasFind,
     #[cfg(feature = "atlas")] atlas.refs => AtlasRefs,
@@ -109,21 +108,20 @@ The `macro_rules!` expansion produces:
 | `fn from_matches(&ArgMatches) -> Result<AnyOp, SeError>` | leaf → `AnyOp` | `se` binary |
 | `fn tool_defs(&Principal, &Features) -> Vec<ToolDef>` | §1.4 | MCP `tools/list`, `Host::tools` |
 | `fn decode_tool(name: &str, args: Value) -> Result<AnyOp, SeError>` | serde with `deny_unknown_fields` | MCP `tools/call` |
-| `async fn dispatch(AnyOp, Cx<'_>) -> Result<AnyOutput, SeError>` | §1.5 | every surface |
-| `fn schema_catalogue(Option<&str>) -> SchemaCatalogue` | §1.6 | `se schema`, xtask |
+| `fn dispatch(AnyOp, &mut Cx<'_>) -> Result<AnyStep, SeError>` | §1.5 | every surface |
+| `fn schema_catalogue(Option<&str>) -> SchemaCatalogue` | §1.6 | `se schema`, MCP schemas |
 | `const` assertions | §1.7 | compile-time mirror rules |
 
-The typed library entry is `Host::call::<O: Op>(&self, &Authority, O) -> Result<O::Output, SeError>`; it goes through the same `dispatch` admission steps, monomorphised.
+The internal typed host wrapper awaits the custody executor when needed, while calling this same synchronous dispatcher. The SE Code-facing `Host::call_tool` signature is exactly [secode-stateengine-api.rs](secode-stateengine-api.rs); its version/DTO boundary is indexed in section 10. There is no second authorization implementation.
 
 ### 1.3 Clap generation
 
-Leaves are grouped by `path[0]` into subcommands (`msg` → `send`, `inbox`, …). Each leaf is `<T as clap::Args>::augment_args(Command::new(leaf))`, with doc comments as help (one source for CLI help and schema descriptions). Three shapes need care:
+Leaves are grouped by `path[0]` into subcommands (`msg` → `send`, `inbox`, …). Each leaf is `<T as clap::Args>::augment_args(Command::new(leaf))`, with doc comments as help (one source for CLI help and schema descriptions). Two shapes need care:
 
-* **Shared leaf, selector flag.** `doctor`, `doctor --fix`, `doctor --bundle [PATH]` are three ops on one leaf; the generator merges their args, puts the selector flags in one `ArgGroup` (`multiple(false)`), and `from_matches` picks the op whose `Selector::Flag` is present (else the `Always` one). Same for `history` / `history --event ID` and root `--version`.
-* **Fixed field.** `process inspect` and `process stop` both decode `ProcessControl` with `action` fixed to `inspect` / `stop`.
+* **Shared leaf, selector flag.** `doctor`, `doctor --fix CHECK-ID`, `doctor --bundle [PATH]` are three ops on one leaf; the generator merges their args, puts the selector flags in one `ArgGroup` (`multiple(false)`), and `from_matches` picks the op whose `Selector::Flag` is present (else the `Always` one). Same for `history` / `history --event ID` and root `--version`.
 * **Hidden.** `session *` and `hook claude` are `hide(true)`; `help --all` still lists them under "Integrations".
 
-Global flags are attached per leaf according to `Scope`: `-p/--project` only for `Project`/`ProjectOrAll`; `--home` for everything except `None`; `--json`, `-q`, `--no-color`, `-h` everywhere. A global flag on an op that does not take it refuses `flag-not-applicable` (no inert acceptance). Before clap runs, a static matcher checks argv against the rename table (§7.5) and returns `renamed`/`command-retired` without loading any handler.
+Global flags are attached per leaf according to `Scope`: `-p/--project` only for `Project`/`ProjectOrAll`; `--home` for everything except `None`; `--json`, `-q`, `--no-color`, `-h` everywhere. A global flag on an op that does not take it refuses `usage-unknown-flag` (no inert acceptance). Before clap runs, a static matcher checks argv against the rename table (§7.5) and returns `renamed`/`command-retired` without loading any handler.
 
 ### 1.4 MCP catalogue
 
@@ -131,15 +129,22 @@ Global flags are attached per leaf according to `Scope`: `-p/--project` only for
 
 ### 1.5 Dispatcher
 
-`dispatch` runs the same admission sequence for CLI, MCP and library:
+The transport wrapper and synchronous dispatcher use the same admission order for CLI, MCP, IPC and linked calls:
 
-1. Feature check → `feature-disabled` / `feature-not-built`.
-2. Authority check against `auth`/`anonymous` → `owner-required`, `session-required`.
-3. `human_only` → interactive TTY on stdin and stdout, and the process ancestry contains no launched agent lifecycle → else `human-terminal-required`.
-4. Project resolution (§2.2) or session project; a conflicting `-p` → `project-conflicts-session`.
-5. `Validate`.
-6. Runtime need: `Host` → `HostLink` or `runtime-not-running`; `HostAutoStart` → start `se daemon --detach`, wait for the endpoint file (deadline 10 s) → `runtime-start-pending`; `HostForWrites` → route writes to the host writer if the lock is held.
-7. `O::run(cx)`; on `Err`, authenticated refusals append `receipt.refused` per the data design.
+1. Resolve the registered operation, feature, authority and human-only policy. Refuse before any effect on failure.
+2. Resolve project from the bound session or §2.2. A conflicting owner selector refuses.
+3. Validate the closed DTO, UTF-8 limits, revision preconditions and required request identity. Wrong identity kind, unknown fields or changed-body key reuse refuse before effects.
+4. Inspect runtime requirements. Read-only/hostless store work stays synchronous. Writes route to the existing host writer when it owns the lease. For custody requiring a host, the adapter uses the **private runtime bootstrap**, waits up to ten seconds for readiness and retains the same request identity. There is no public `se daemon` command. Pending returns an explicit readiness/result handle, never a fabricated success.
+5. Synchronous `dispatch` validates/plans/commits through `se-core` and the canonical store functions. It returns a completed value or typed custody plan. The host async executor performs native custody and feeds measured results back through synchronous core/store transitions; it never holds a transaction over an await.
+6. Render achieved facts, including original writer on replay. Ordinary refusals return `se.error/v1` on the error channel **without appending a history event**. A prior commit or partial native effect remains an explicit receipt/pending fact, not a refusal erased from the record.
+
+### 1.5.1 Request identity and bounded inputs
+
+Every public mutation creates its request identity **before first send**. CLI generates and prints one per invocation (stderr before transmission and in the keyed result), and accepts `--key KEY` to retry after an uncertain outcome. MCP mutation input schemas require `idempotency_key` (1–128 bytes); linked and IPC inputs carry the same typed key. The linked ToolCall identity must equal the required `arguments.idempotency_key`; a mismatch refuses before effects. The decision domain key (`key`/CLI KEY) is distinct from this request key. A timeout, lost ACK, reconnect, writer handoff or rerun with `--key` retains it. Reusing it with a changed normalized operation/project/principal/body returns `idempotency-key-reused`, with no second effect. Custody/config/artifact operations also retain their keyed effect plan and readback, rather than repeating a spawn, rotation, restore or overwrite.
+
+Only captured turns/hooks and recipient read/ack/dismiss markers use the restricted natural-key path. Their source session/turn or recipient/message/marker identity must already exist before first send; changed content conflicts. Random keys cannot bypass those uniqueness rules. A marker retry returns its original event/writer. Native hook/header-helper stdout retains its consumed protocol; request keys are printed on stderr and retained in their private keyed result, never added as a fake provider header. Session begin/end, working-state, agent create/launch/stop/wake, decisions and owner repairs are keyed mutations, not natural-key exceptions. When a provider has no turn ID, its trusted capture adapter derives the stable identity from the pinned source incarnation/position before first send; a fresh random ID on retry is invalid. Read-only calls cannot provide a mutation identity to acquire authority.
+
+`se-types::MESSAGE_BODY_MAX_BYTES = 32 * 1024` and `WORKING_STATE_MAX_BYTES = 16 * 1024` are the single shared DTO limits. Schema generation, CLI stdin parsing, MCP, linked/IPC admission and store validation use them on UTF-8 bytes before any effect. Oversize messages/working state refuse `input-too-large`, never truncate. Preview budgets only affect explicitly labelled read output.
 
 ### 1.6 `se schema`
 
@@ -154,11 +159,11 @@ Expanded as `const _: () = { ... };` blocks using `const fn` byte comparison:
 * `auth == Owner` ⇒ `mcp` is `None` (MCP is session-bound).
 * `anonymous` ⇒ name ∈ {`meta.version`, `meta.help`, `meta.schema`}.
 * `human_only` ⇒ `auth == Owner` and `mcp` is `None`.
-* `CATALOGUE.len() == 54 + 5 * cfg!(feature = "atlas")`; MCP tool count `== 20 + 5 * atlas`. Changing the allowlist means editing OPS.md and these constants in the same commit.
+* Catalogue and MCP counts are derived from registry rows and feature/auth filtering. Changing the allowlist updates OPS.md and the source registry together; no separately maintained count assertion supplies authority.
 
-### 1.8 Schema freeze
+### 1.8 Version boundaries
 
-`cargo xtask schema --check` regenerates `schemas/v1/ops.json`, `schemas/v1/<family>.json` and `schemas/v1/errors.json` and diffs them against the committed files. It is a CI build check, not a test suite. Allowed without a version bump: a new optional output field; a new optional input field with a default; a new op (bumps API minor); a new error code. Fails without a family major bump: removing or renaming a field, changing a type, making an input required, adding an output enum variant to a family that does not declare `open_enum` for that field, removing an input enum variant, changing exit mapping. A major bump keeps the N-1 encoder (§4.3). `xtask schema --write` updates the files; review sees the diff.
+`se schema` and MCP schemas derive from the current DTOs. Every JSON family has its own explicit `schema` major; a breaking wire change changes that major. This first build has no schema-freeze tool, committed schema snapshots or N-1 encoders. The statically linked Rust API requires exact Cargo/API identity, not minor/range negotiation; section 10 indexes the exact declarations. The internal CLI/IPC framing identity is separate from that public Rust API and from each JSON family. Existing consumed adapter families remain explicit in §4.3.
 
 ---
 
@@ -170,19 +175,20 @@ Expanded as `const _: () = { ... };` blocks using `const fn` byte comparison:
 | --- | --- | --- | --- |
 | `-p, --project PROJECT` | name or `prj_` id | §2.2 | project-scoped ops only |
 | `--home DIR` | path | `SE_HOME`, else platform state dir | product state home; never a project |
-| `--json[=vN]` | optional major | current major | JSON on stdout; `=vN` pins a family major still served (§4.3) |
+| `--json` | bool | false | current family JSON on stdout, diagnostics on stderr |
+| `--key KEY` | 1–128 bytes | generated before send | mutating leaves only; reuse after an uncertain result (§1.5.1) |
 | `-q, --quiet` | bool | false | suppresses human success text; errors still print |
 | `--no-color` | bool | false | also `NO_COLOR`, `[output] color` |
 | `-h, --help` | bool | | generated help, loads no handler |
 | `-V, --version` | bool | | `meta.version`; accepts only `--json` |
 
-Removed root flags (`--registry-root`, `--project-root`, `--repo-root`, `--root`, `--actor`, `--agent-id`) refuse `legacy-root-flag` with the replacement.
+Removed root flags (`--registry-root`, `--project-root`, `--repo-root`, `--root`, `--actor`, `--agent-id`) refuse `usage-unknown-flag` with the replacement.
 
 ### 2.2 Project resolution (owner calls)
 
 1. `-p/--project`. 2. `SE_PROJECT`. 3. Canonical cwd lookup: canonicalize cwd (Windows: `GetFinalPathNameByHandleW`, case-folded drive; Unix: `realpath`), find the closest registered root that is an ancestor-or-self; exact path-component prefix, never substring. 4. `default_project` from config. 5. The sole registered project. 6. Else `project-required` listing the registered projects (up to 20, then a count).
 
-An unreadable registration at step 3 or two registrations at the same canonical root refuse (`registration-unreadable`, `cwd-registration-ambiguous`) instead of falling through. Lookup never creates. With `SE_SESSION` set, authority is that session: project and agent come only from the capability, owner-only ops refuse `owner-required`, and the owner credential is never consulted.
+An unreadable registration at step 3 or two registrations at the same canonical root refuse (`source-unreadable`, `selector-ambiguous`) instead of falling through. Lookup never creates. With `SE_SESSION` set, authority is that session: project and agent come only from the capability, owner-only ops refuse `owner-required`, and the owner credential is never consulted.
 
 ### 2.3 Bare `se`
 
@@ -203,10 +209,10 @@ StateEngine 0.1.0 — no project here yet.
 | `NAME` | 1–64 chars, `[A-Za-z0-9][A-Za-z0-9 ._-]*`, unique per project case-insensitively |
 | `PROVIDER` | `claude` \| `codex` |
 | `MODEL` | ≤128 bytes, passed to the provider and validated at launch |
-| `BODY`, `TEXT`, `STATEMENT` | UTF-8; `-` reads stdin. Message body ≤64 KiB, task ≤16 KiB, working state ≤16 KiB, statement ≤8 KiB, reason ≤2 KiB |
+| `BODY`, `TEXT`, `STATEMENT` | UTF-8; `-` reads stdin. Message body ≤32 KiB, task ≤16 KiB, working state ≤16 KiB, statement ≤8 KiB, reason ≤2 KiB |
 | `KIND` | `note` (default) \| `task` \| `question` \| `answer` \| `blocker` \| `done` \| `handoff` \| `finding`. Import maps `task-pointer`→`task`, `ruling-request`→`question` |
 | `KEY` | decision key `[a-z0-9][a-z0-9._-]{0,127}` |
-| `ID` | typed opaque id (`msg_`, `dec_`, `ev_`, `obs_`, `ses_`); imported legacy ids accepted as-is |
+| `ID` | typed opaque id (`msg_`, `dec_`, `ev_`, `ses_`); imported legacy ids accepted as-is |
 | `CURSOR` | opaque, project- and principal-bound |
 | `REV` | non-negative integer, or `absent` |
 | `QUERY` | 1–512 bytes |
@@ -227,18 +233,18 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 | project.remove | `se remove [-p P \| --all] [--keep-integrations]` (human-only) | `Stopped 2 agents (witnessed). Removed integrations: .mcp.json entry. Kept: history, repo files. Reinstall later with se init.` | `se.remove/v1` |
 | project.status | `se status [-p P \| --all]`; bare `se` | `app — runtime up (daemon 0.1.0) · 2 agents: main running (claude), rev stopped · 3 unread for you · next: se msg inbox` | `se.status/v1` |
 | doctor.inspect | `se doctor [-p P]` | `✓ store  ✓ credential  ✗ claude hooks: entry edited by you  ! containment: uncontained (no systemd user manager)` + `fix:` lines | `se.diagnosis/v1` |
-| doctor.repair | `se doctor --fix [-p P]` | `Applied 1, skipped 1 (your edit kept), refused 0. Re-read: ok.` | `se.repair/v1` |
+| doctor.repair | `se doctor --fix CHECK-ID [-p P]` (human-only; prints plan first) | `Plan: integration repair; agents ended 0, credentials rotated 0, events lost 0. Applied 1 check. Re-read: ok.` | `se.repair/v1` |
 | doctor.bundle | `se doctor --bundle [PATH]` (default `./se-support-<utc>.zip`) | `Wrote se-support-20261030T1201Z.zip (412 KB, 31 files, no turn or message text, no secrets). Nothing was uploaded.` | `se.support-bundle/v1` |
-| config.get | `se config get KEY [-p P] [--origin]` | `launch.provider = codex  (project app)` | `se.config-value/v1` |
-| config.set | `se config set KEY VALUE [-p P]` | `launch.provider: claude → codex (project app)` | `se.config-receipt/v1` |
-| config.list | `se config list [-p P] [--origin]` | aligned `key = value  (origin)` | `se.config-page/v1` |
+| config.get | `se config get KEY [--origin]` (`-p P` only for `agent.<A>.*`) | `launch.provider = codex  (config.toml)` | `se.config-value/v1` |
+| config.set | `se config set KEY VALUE` (`-p P` only for `agent.<A>.*`) | `launch.provider: claude → codex (config.toml; read back)` | `se.config-receipt/v1` |
+| config.list | `se config list [--origin]` | aligned `key = value  (origin)` | `se.config-page/v1` |
 
 **Runtime, agents, continuity**
 
 | Op | Command line | Human output | Family |
 | --- | --- | --- | --- |
 | runtime.up | `se up [--foreground]` | `StateEngine running (daemon, pid 4120, generation 7, 127.0.0.1:3221).` | `se.runtime-start/v1` |
-| runtime.down | `se down` | `Stopped the daemon (witnessed). Agents still running: main — stop them with se stop main.` | `se.runtime-stop/v1` |
+| runtime.down | `se down` | `Stopped main and the daemon (witnessed). Resume the conversation: se launch main` | `se.runtime-stop/v1` |
 | mcp.serve | `se mcp [--stdio]` (stdio is the only transport; flag is explicit for clients) | none (JSON-RPC on stdout) | MCP protocol |
 | mcp.token | `se mcp token` | `{"Authorization":"Bearer sels-…"}` | header map (Claude `headersHelper` protocol; no `schema` key) |
 | agent.list | `se agent list [-p P]` | table: name, id, provider/model, state, conversation, `resume:` command | `se.agent-page/v1` |
@@ -252,7 +258,7 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 | working_state.get | `se working-state [--agent AGENT]` | text + `revision 12` or `no working state yet` | `se.working-state/v1` |
 | working_state.set | `se working-state set TEXT --expect REV [--agent AGENT]` | `Saved revision 13.` | `se.working-state-receipt/v1` |
 | history.search | `se search QUERY [--kind turn\|message\|decision]... [--since TIME] [--until TIME] [--agent AGENT] [--limit N] [--cursor C]` | hits: time, kind, who, snippet, `history --event` id | `se.search-page/v1` |
-| history.list | `se history [--agent AGENT] [--since CURSOR] [--limit N]` | chronological turns/messages/decisions | `se.history-page/v1` |
+| history.list | `se history [--agent AGENT] [--session ID] [--kind KIND]... [--since-seq N] [--since CURSOR] [--limit N] [--cursor C]` | chronological turns/messages/decisions | `se.history-page/v1` |
 | history.event_read | `se history --event ID` | the event, provenance, `read from store at seq N` | `se.event/v1` |
 
 **Messages and decisions**
@@ -275,21 +281,20 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 
 `--expect` defaults to the revision read at command start; the CLI re-reads and shows the statement before a human-only change, so the default is not a blind overwrite.
 
-**Process custody, integrations, data, Atlas**
+**Integrations, owner recovery and optional Atlas**
 
 | Op | Command line | Human output | Family |
 | --- | --- | --- | --- |
-| process.start | `se process start [--cwd DIR] [--env KEY=VALUE]... -- COMMAND ARGS...` | `Started obs_… (pid 9132, started 12:01:07Z).` | `se.process-receipt/v1` |
-| process.control | `se process inspect --observation O`; `se process stop --observation O [--deadline MS]` (default 5000, max 30000) | `obs_…: running (identity rechecked)` / `stopped, 3 processes gone (witnessed)` | `se.process-observation/v1`, `se.process-stop/v1` |
-| process.list | `se process list [-p P] [--limit N]` | instances with `observed running at T` / `unknown` | `se.process-page/v1` |
 | session.begin | `se session begin --agent AGENT --source claude\|codex\|secode --provider-session ID [--incognito]` (hidden; stdout must be a pipe) | none | `se.session-begin/v1` |
 | session.context | `se session context [--budget BYTES] [--since CURSOR]` (hidden; capability from `SE_SESSION` or stdin line 1) | none | `secode.session-context-v1` |
 | session.turn | `se session turn` (hidden; stdin one `se.turn/v1` JSON object ≤1 MiB) | none | `se.turn-receipt/v1` |
 | session.end | `se session end [--session ID] --reason REASON --expect-generation N` (hidden) | none | `se.session-end/v1` |
 | hook.claude | `se hook claude session-start\|prompt\|stop\|stop-failure` (hidden; native stdin) | Claude hook stdout protocol | Claude hook protocol |
-| store.backup | `se backup [PATH]` (default `$SE_HOME/backups/state-<utc>.db`) | `Backed up to …db (184 MB, schema 3, verified by re-open).` | `se.backup/v1` |
+| store.restore | `se restore` (human-only) | prints newest valid automatic backup, events lost, affected agents/credentials; preserves corrupt source and reports verified restore | `se.restore/v1` |
+| credential.rotate | `se credential rotate` (human-only) | prints credentials revoked and affected agents; independently verifies new credential and revocations | `se.credential-rotation/v1` |
+| installation.uninstall | `se uninstall` (human-only) | stops owned agents/runtime, removes owned install/integrations and restores managed PATH entries; preserves repositories/history | `se.uninstall/v1` |
 | store.import_node | `se import --from-node PATH` | per family: read/imported/duplicate/unreadable/dropped; originals untouched | `se.import/v1` |
-| store.forget | `se forget --event ID [--event ID]...` (human-only; asks to type the first id) | erased bodies, index rows, file pages; named residual copies | `se.erasure/v1` |
+| store.forget | `se forget --event ID [--event ID]...` (human-only; prints exact erase plan first) | erased bodies/projections, WAL/cache readback, no resurrection; named residual copies | `se.erasure/v1` |
 | atlas.find | `se atlas find QUERY [--kind symbol\|text\|path] [--in PATH] [--limit N]` | `src/store/tx.rs:41 fn commit (symbol, resolved)` | `se.code-hits/v1` |
 | atlas.refs | `se atlas refs SYMBOL [--path PATH] [--limit N] [--cursor C]` | sites with enclosing symbol and `resolved`/`name-only` | `se.code-refs/v1` |
 | atlas.impact | `se atlas impact SYMBOL [--path PATH] [--depth 1..3]` (default 2) | dependents by hop, tests, omitted frontier | `se.impact/v1` |
@@ -302,31 +307,30 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 
 ## 3. MCP tool set
 
-Session-bound: no tool takes `project_id`, `agent_id`, `actor`, or an authority field. The session comes from the HTTP bearer (`selp-`/`sels-`, one principal per connection) or, on stdio and in SE Code, per-call `_meta["stateengine.session-capability-v1"]` (`sec1.…`). Invalid or revoked → error, never a fallback. Every tool's auth is **session**. Common errors on every tool: `session-required`, `capability-invalid`, `capability-revoked`, `capability-expired`, `input-unknown-field`, `usage-invalid-value`, `input-too-large`, `store-unreadable`, `store-busy`, `internal`. The table lists the rest.
+Session-bound: no tool takes an actor/authority override or project selector. External HTTP uses the authenticated bearer; stdio uses verified per-call session metadata. The statically linked SE Code caller uses its generation-bound in-process `BoundSession`, **not a minted credential or bearer**. Invalid/revoked authority refuses without owner fallback. `target_agent_id` is only a creator-control destination (§3.1), never the authenticated actor. Every tool's auth is session. Common failures include `session-required`, `capability-invalid`, `input-unknown-field`, `usage-invalid-value`, `input-too-large`, `store-unreadable`, `store-busy`, `internal`; keyed mutations also require their caller-retained identity (§1.5.1).
 
 | Tool | Description (verbatim) | Input | Output | Extra errors |
 | --- | --- | --- | --- | --- |
 | `stateengine_whoami` | "Who you are in StateEngine: your project, agent identity, session and what you are allowed to do." | — | `Principal`: project{id,name}, agent{id,name}, session{id,source,generation}, grants[], binding | — |
-| `stateengine_status` | "Your project at a glance: runtime, your agent's state, unread messages, pending decisions and the suggested next step." | — | `Status` (session view) | `runtime-version-mismatch` |
+| `stateengine_status` | "Your project at a glance: runtime, your agent's state, unread messages, pending decisions and the suggested next step." | — | `Status` (session view) | `runtime-incompatible` |
 | `stateengine_resume` | "Restore your context after a restart or compaction: working state, unread mail, required reads and what was left out. Pass `since` from the last result to get only what changed." | `since?` cursor, `byte_budget?` int 1024–1048576 (32768) | `Resume`: principal, status ready/needs_read/integrity_blocked, working_state, unread[], required_reads[], omissions[], next_cursor, complete | `cursor-invalid`, `cursor-expired` |
-| `stateengine_working_state_set` | "Replace your working-state note (what you are doing, what is next). Send the revision you last read as `expect`, or \"absent\" for the first write." | `text` ≤16 KiB, `expect` int\|"absent" | `WorkingStateReceipt`: revision, committed\|conflict, current_revision | `revision-conflict` |
+| `stateengine_working_state_set` | "Replace your working-state note (what you are doing, what is next). Send the revision you last read as `expect`, or \"absent\" for the first write." | `text` ≤16 KiB, `expect` int\|"absent", `idempotency_key` 1–128 | `WorkingStateReceipt`: revision, committed\|replayed, current_revision; conflicts use se.error/v1 | `revision-conflict` |
 | `stateengine_search` | "Search your project's history (turns, messages, decisions) you are allowed to see. Results are pointers; read an event with stateengine_event_read before relying on it." | `query` 1–512, `kinds?` [turn,message,decision], `since?`/`until?` RFC 3339, `limit?` 1–50 (20), `char_budget?` 500–32000 (8000), `cursor?` | `Page<SearchHit>`: event_id, kind, at, who, snippet; window | `cursor-invalid` |
-| `stateengine_event_read` | "Read one committed event back from the store by id, with its provenance." | `event_id` | `Read<HistoryEvent>` | `event-unknown`, `event-unreadable` |
-| `stateengine_msg_send` | "Send a message to another agent in your project, or to `owner` (the human). The result says it was committed; it does not mean it was read." | `to` (name/id/`owner`), `body` ≤64 KiB, `kind?` (note), `refs?` ≤20 ids, `reply_to?`, `idempotency_key?` ≤128 | `MessageReceipt`: message_id, event_id, state committed\|deduplicated, delivery pending\|offered\|not-running | `recipient-unknown`, `reply-target-unknown`, `idempotency-key-reused` |
+| `stateengine_event_read` | "Read one committed event back from the store by id, with its provenance." | `event_id` | `Read<HistoryEvent>` | `target-unknown`, `source-unreadable` |
+| `stateengine_msg_send` | "Send a message to another agent in your project, or to `owner` (the human). The result says it was committed; it does not mean it was read." | `to` (name/id/`owner`), `body` ≤32 KiB, `kind?` (note), `refs?` ≤20 ids, `reply_to?`, `idempotency_key` 1–128 | `MessageReceipt`: message_id, event_id, state committed\|deduplicated, delivery pending\|offered\|not-running | `target-unknown`, `idempotency-key-reused` |
 | `stateengine_msg_list` | "List messages you sent or received. Default: unread messages addressed to you, oldest first, with body previews. Set `full` to get complete bodies; listing never marks anything read (use stateengine_msg_read for that). `complete` tells you whether anything was left out." | `view?` unread\|all (unread), `box?` inbox\|sent (inbox), `from?`, `kind?`, `full?` bool (false), `limit?` 1–100 (20), `preview_chars?` 0–4000 (400; not allowed with `full`), `cursor?` | `se.message-page/v1` (A.5): id, from, to, kind, at, disposition, `body.text`, `body.complete` (true for every row when `full`); a page holds at most 256 KiB of bodies, with the rest via `cursor` | `cursor-invalid`, `usage-conflicting-flags` (`full` with `preview_chars`) |
-| `stateengine_msg_read` | "Read one message in full and mark it read." | `id` | `MessageRead`: message, body_complete, marker{state committed\|already, at} | `message-unknown`, `not-recipient` |
-| `stateengine_msg_ack` | "Acknowledge a message you have handled. This records that you read it; it is not a reply." | `id`, `idempotency_key?` | `DispositionReceipt` | `message-unknown`, `not-recipient` |
-| `stateengine_msg_dismiss` | "Dismiss a message without marking it read. It stays in history." | `id`, `idempotency_key?` | `DispositionReceipt` | `message-unknown`, `not-recipient` |
-| `stateengine_decision_propose` | "Propose a project decision for the human to approve. You cannot approve it yourself. `supersedes` proposes replacing an existing decision." | `key`, `statement` ≤8 KiB, `rationale?` ≤8 KiB, `supersedes?`, `idempotency_key?` | `DecisionReceipt`: id, state pending | `decision-key-invalid`, `decision-unknown`, `idempotency-key-reused` |
+| `stateengine_msg_read` | "Read one message in full and mark it read." | `id` | `MessageRead`: message, body_complete, marker{state committed\|already, at} | `target-unknown`, `not-recipient` |
+| `stateengine_msg_ack` | "Acknowledge a message you have handled. This records that you read it; it is not a reply." | `id` (restricted natural marker key) | `DispositionReceipt` | `target-unknown`, `not-recipient` |
+| `stateengine_msg_dismiss` | "Dismiss a message without marking it read. It stays in history." | `id` (restricted natural marker key) | `DispositionReceipt` | `target-unknown`, `not-recipient` |
+| `stateengine_decision_propose` | "Propose a project decision for the human to approve. You cannot approve it yourself. `supersedes` proposes replacing an existing decision." | `key`, `statement` ≤8 KiB, `rationale?` ≤8 KiB, `supersedes?`, `idempotency_key` 1–128 | `DecisionReceipt`: id, state pending | `usage-invalid-value`, `target-unknown`, `idempotency-key-reused` |
 | `stateengine_decision_list` | "List project decisions. Pass `id` for one decision; `pending` for proposals awaiting approval; `history` to include retracted and superseded ones." | `id?`, `pending?` bool, `history?` bool, `limit?` 1–100 (20), `cursor?` | `Page<Decision>` | `cursor-invalid` |
-| `stateengine_agent_create` | "Create a new agent identity in your project (requires the agent-create permission). This does not start it." | `name`, `provider` claude\|codex, `model?`, `profile?` (saved, non-bypass) | `AgentReceipt`: agent{id,name}, created\|existing | `grant-required`, `agent-name-taken`, `agent-name-invalid`, `profile-unknown`, `bypass-not-opted-in` |
+| `stateengine_agent_create` | "Create a new agent identity in your project (requires the agent-create permission). This does not start it." | `name`, `provider` claude\|codex, `model?`, `profile?` (saved, non-bypass), `idempotency_key` 1–128 | `AgentReceipt`: agent{id,name}, created\|existing | `grant-required`, `state-conflict`, `usage-invalid-value`, `configuration-invalid`, `bypass-not-opted-in` |
 | `stateengine_agent_status` | "Your agent's lifecycle, conversation, capture and resume facts." | — | `Read<AgentStatus>` | — |
-| `stateengine_agent_launch` | "Start or resume your agent's conversation through the runtime. Resumes by default; `new: true` starts a fresh conversation." | `new?` bool, `model?`, `task?` ≤16 KiB, `detach?` bool (true) | `LaunchResult` | `runtime-not-running`, `agent-already-running`, `launch-in-flight`, `resume-reference-missing`, `resume-reference-unverifiable`, provider errors |
-| `stateengine_agent_stop` | "Stop your own agent process after the current turn. Returns the exact command that resumes this conversation." | — | `StopReceipt` | `runtime-not-running`, `stop-unwitnessed` |
-| `stateengine_process_start` | "Start a process you own (literal argv, no shell). Returns an observation handle for stateengine_process_stop." | `argv` [1–256 strings], `cwd?` workspace-relative, `env?` map ≤32 keys | `ProcessReceipt` | `custody-unavailable-hostless`, `command-not-found`, `spawn-failed`, `cwd-outside-workspace`, `env-key-not-allowed` |
-| `stateengine_process_stop` | "Inspect or stop a process you started, by observation handle. Stop re-checks identity and confirms the whole tree is gone." | `action` inspect\|stop, `observation`, `deadline_ms?` 0–30000 (5000) | `ProcessObservation` \| `ProcessStop` | `observation-unknown`, `observation-not-yours`, `process-identity-changed`, `process-identity-unreadable`, `stop-deadline-exceeded` |
-| `stateengine_session_turn` | "Record one conversation turn for this session (used by integrations, not for notes)." | `role` user\|assistant, `content` ≤1 MiB, `occurred_at`, `provider_session_id`, `turn_id?`, `event_id?`, `source` claude\|codex\|secode | `TurnReceipt`: captured\|duplicate\|suppressed, event_id | `capture-consent-missing`, `turn-invalid`, `session-generation-mismatch` |
-| `stateengine_atlas_find` | "Find code by symbol name, text or path in your project. Each hit says whether it was resolved or matched by name only." | `query`, `kind?` symbol\|text\|path (symbol), `in?` path prefix, `limit?` 1–50 (20) | `Page<CodeHit>` + index_state | `feature-disabled`, `atlas-index-absent`, `atlas-unreadable` |
+| `stateengine_agent_launch` | "Start or resume your own agent, or a directly created agent while you hold agent-create permission. Resumes by default; new starts a fresh conversation." | `target_agent_id?` Id, `new?` bool, `model?`, `task?` ≤16 KiB, `detach?` bool (true), `idempotency_key` 1–128 | `LaunchResult` | `runtime-not-running`, `agent-already-running`, `launch-in-flight`, `resume-reference-missing`, `resume-reference-unverifiable`, provider errors |
+| `stateengine_agent_stop` | "Stop your own agent, or a directly created agent while you hold agent-create permission. Returns the exact command that resumes this conversation." | `target_agent_id?` Id, `idempotency_key` 1–128 | `StopReceipt` | `runtime-not-running`, `stop-unwitnessed` |
+| `stateengine_agent_wake` | "Offer pending mail to a running agent you directly created while you hold agent-create permission. Does not launch it or mark mail read." | `target_agent_id` Id, `idempotency_key` 1–128 | `WakeReceipt` | `grant-required`, `owner-required`, `wake-not-running` |
+| `stateengine_session_turn` | "Record one conversation turn for this session (used by integrations, not for notes)." | `role` user\|assistant, `content` ≤1 MiB, `occurred_at`, `provider_session_id`, `turn_id` (stable provider/source identity before first send), `event_id?`, `source` claude\|codex\|secode | `TurnReceipt`: captured\|duplicate\|suppressed, event_id | `capture-consent-missing`, `usage-invalid-value`, `state-conflict` |
+| `stateengine_atlas_find` | "Find code by symbol name, text or path in your project. Each hit says whether it was resolved or matched by name only." | `query`, `kind?` symbol\|text\|path (symbol), `in?` path prefix, `limit?` 1–50 (20) | `Page<CodeHit>` + index_state | `feature-unavailable`, `atlas-index-absent`, `atlas-unreadable` |
 | `stateengine_atlas_refs` | "Who uses this symbol: imports, calls and type references." | `symbol`, `path?`, `limit?`, `cursor?` | `Page<Reference>` | + `atlas-symbol-unknown`, `atlas-symbol-ambiguous` |
 | `stateengine_atlas_impact` | "What could break if this symbol changes: dependents up to 3 hops, with tests that reference them." | `symbol`, `path?`, `depth?` 1–3 (2), `budget?` | `Impact` | + `atlas-symbol-unknown`, `atlas-symbol-ambiguous` |
 | `stateengine_atlas_changes` | "Code changes since you last looked (or since a cursor/commit/time)." | `since?`, `limit?`, `cursor?` | `Page<CodeChange>` | + `cursor-invalid` |
@@ -334,7 +338,9 @@ Session-bound: no tool takes `project_id`, `agent_id`, `actor`, or an authority 
 
 Framing: success is `structuredContent` (the family object) plus one text block (the human rendering). A domain error is `isError: true`, `structuredContent` = `se.error/v1`, text = the human error with its `fix:` line; a remedy that is a tool call carries `remedy.tool {name, arguments}`. Protocol errors stay JSON-RPC: unknown tool and malformed frames `-32602`/`-32600`, unknown method `-32601`, unsupported protocol revision `-32022`. Schema-invalid arguments are tool errors (`isError`), so the model can correct them.
 
-Open item, not decided here: OPS.md makes session `agent_launch`/`agent_stop` act on self only. Delegated launch of an agent the caller just created (an obvious J4 shape) needs an OPS.md amendment first.
+### 3.1 Creator control
+
+Authenticated A must currently hold `agent.<A>.can-create`, and the same-project target must have immutable `created_by == A`. Launch/stop omit `target_agent_id` for self; wake requires it. Owner CLI resolves the ordinary AGENT selector to the same target. Grandchildren, other creators' helpers, imported unknown creators and `--all` are owner-only. Grant revocation removes this authority; rename/profile changes do not change creator. Control grants no private read, inbox or continuity access to the target. The generated catalogue contains 24 tools when Atlas is built and enabled, 19 without Atlas; actual per-session exposure additionally follows grants.
 
 ---
 
@@ -342,43 +348,43 @@ Open item, not decided here: OPS.md makes session `agent_launch`/`agent_stop` ac
 
 ### 4.1 Envelope rules
 
-Every JSON object printed by `--json`, returned as MCP `structuredContent` or exported by `se schema` carries `"schema": "<family>/v<major>"` as its first key. `Read<T>` serializes as `{"state":"present","value":…}` \| `{"state":"absent","checked":"…"}` \| `{"state":"unreadable","source":"…","reason":"…"}` \| `{"state":"unknown","what":"…"}`. `Page<T>` serializes as `{"items":[…],"window":{"from":C,"to":C,"limit":n,"complete":bool,"omitted":{"count":n|null,"reason":"limit|budget|unreadable|source-incomplete"}},"next":C|null}`. Receipts carry `event_id`, `state` (`committed`/`replayed`/`refused`/`pending`) and any delivery fact separately. Unknown output fields must be ignored by consumers; stable fields never change meaning within a major.
+Every top-level product JSON result printed by `--json`, returned as MCP `structuredContent` or exported by `se schema` carries `"schema": "<family>/v<major>"` as its first key. `Read<T>` serializes as `{"state":"present","value":…}` \| `{"state":"absent","checked":"…"}` \| `{"state":"unreadable","source":"…","reason":"…"}` \| `{"state":"unknown","what":"…"}`. `Page<T>` serializes as `{"items":[…],"window":{"from":C,"to":C,"limit":n,"complete":bool,"omitted":{"count":n|null,"reason":"limit|budget|unreadable|source-incomplete"}},"next":C|null}`. Receipts carry `event_id`, `state` (`committed`/`replayed`/`refused`/`pending`) and any delivery fact separately. Unknown output fields must be ignored by consumers; stable fields never change meaning within a major.
 
 ### 4.2 Families
 
 | Family | Op(s) | Stability | Key consumer |
 | --- | --- | --- | --- |
 | `se.version/v1` | meta.version | **stable** | SE Code installer, J1 runner |
-| `se.help/v1`, `se.schema-catalogue/v1` | meta.help, meta.schema | **stable** | factory tooling |
+| `se.help/v1`, `se.schema-catalogue/v1` | meta.help, meta.schema | **stable** | API consumers |
 | `se.principal/v1` | identity.whoami | **stable** | agents |
 | `se.init/v1` (+ `stateengine-init/v1` profile) | project.init | **stable** | SE Code onboarding, J2 |
 | `se.remove/v1` | project.remove | stable | J5 runner |
-| `se.status/v1` | project.status | **stable** | SE Code, factory |
+| `se.status/v1` | project.status | **stable** | SE Code, CLI |
 | `se.diagnosis/v1`, `se.repair/v1`, `se.support-bundle/v1` | doctor.* | evolving | humans |
 | `se.config-value/v1`, `se.config-receipt/v1`, `se.config-page/v1` | config.* | stable | |
 | `se.runtime-start/v1`, `se.runtime-stop/v1` | up/down | stable | SE Code handover |
-| `se.agent-page/v1`, `se.agent-receipt/v1`, `se.agent-status/v1` | agent.* | **stable** | SE Code, factory |
-| `se.launch/v1` | agent.launch | **stable** | SE Code, factory |
-| `se.stop/v1` (`receipt: "seat-stop/v1"`, `resume.command`) | agent.stop | **stable** | factory, J3 |
+| `se.agent-page/v1`, `se.agent-receipt/v1`, `se.agent-status/v1` | agent.* | **stable** | SE Code, CLI |
+| `se.launch/v1` | agent.launch | **stable** | SE Code, CLI |
+| `se.stop/v1` (`receipt: "seat-stop/v1"`, `resume.command`) | agent.stop | **stable** | CLI, J3 |
 | `se.wake/v1` | agent.wake | stable | |
-| `se.resume/v1` | continuity.resume | **stable** | agents, factory |
+| `se.resume/v1` | continuity.resume | **stable** | agents, CLI |
 | `se.working-state/v1`, `se.working-state-receipt/v1` | working_state.* | stable | |
 | `se.search-page/v1`, `se.history-page/v1`, `se.event/v1` | history.* | **stable** (`se.event`) | J3/J4 runner |
-| `se.message-receipt/v1`, `se.message-page/v1`, `se.message-read/v1`, `se.disposition-receipt/v1` | message.* | **stable** | SE Code, factory |
-| `se.decision-receipt/v1`, `se.decision-page/v1`, `se.decision/v1` | decision.* | **stable** | factory |
-| `se.process-receipt/v1`, `se.process-observation/v1`, `se.process-stop/v1`, `se.process-page/v1` | process.* | stable | |
+| `se.message-receipt/v1`, `se.message-page/v1`, `se.message-read/v1`, `se.disposition-receipt/v1` | message.* | **stable** | SE Code, CLI |
+| `se.decision-receipt/v1`, `se.decision-page/v1`, `se.decision/v1` | decision.* | **stable** | CLI |
 | `se.session-begin/v1`, `se.turn-receipt/v1`, `se.session-end/v1`, input `se.turn/v1` | session.* | **stable** | SE Code, hooks |
 | `secode.session-context-v1` (`contract` key, `schema_version: 1`; fields per contracts.md O8) | session.context | **frozen** | SE Code |
-| `se.backup/v1`, `se.import/v1`, `se.erasure/v1` | store.* | stable | |
+| `se.restore/v1`, `se.import/v1`, `se.erasure/v1` | store.* | stable | |
+| `se.credential-rotation/v1`, `se.uninstall/v1` | credential.rotate, installation.uninstall | stable | J5 |
 | `se.code-hits/v1`, `se.code-refs/v1`, `se.impact/v1`, `se.code-changes/v1`, `se.outline/v1` | atlas.* | evolving until Atlas leaves alpha | agents |
 | `se.error/v1` | every error | **stable** | everyone |
 | protocols: Claude hook stdout, `headersHelper` header map, MCP JSON-RPC, `sec1`/`selp-`/`sels-` tokens | hook, mcp token, mcp | **stable** | Claude, Codex |
 
-"Stable" = covered by the freeze check and N/N-1. "Evolving" = freeze-checked, but a major bump needs no N-1 window during alpha.
+"Stable" identifies an actually consumed wire contract; consumers ignore unknown optional fields. A meaning/type/removal change requires a family major. Atlas families may evolve before release, with explicit majors rather than silent semantic changes.
 
-### 4.3 N/N-1 policy
+### 4.3 Exact library API; current JSON families
 
-A breaking change bumps the family major. For one minor release after a bump the producer keeps the N-1 encoder: CLI `--json=vN-1`, library `Host::open` negotiated API range (SE Code pins its range, the host serves the DTO version it negotiated), MCP always serves N (agents read descriptions, not pinned decoders). `--json=v` older than N-1 refuses `json-version-unsupported` naming the served majors. `secode.session-context-v1` never changes in place; a v2 must be requested by the caller. Stored handles (old `seat-stop/v1` resume commands, imported ids) remain migration inputs: `se launch` accepts an imported conversation reference; it never executes an old command name.
+The statically linked SE Code API requires exact version identity as declared in section 10, independently of JSON family versions. There is no range/minor negotiation or N-1 encoder. CLI `--json` and MCP serve the current family. `secode.session-context-v1` keeps its existing `contract`/`schema_version` framing and frozen fields; the versioned adapter adds `schema` around product JSON without replacing its consumed fields. A new context version is opt-in by its actual consumer. Native hook/header/MCP frames retain their provider-defined framing. Stored `seat-stop/v1` resume references and imported IDs remain readable migration inputs; they never execute retired command names.
 
 ---
 
@@ -401,18 +407,7 @@ Rules: `ExitStatus::exit(&self)` on each output computes the code from payload f
 
 ### 6.1 Shape
 
-```rust
-pub struct SeError { pub code: Code, pub retry: Retry, pub cause: Option<Box<dyn Error + Send + Sync>> }
-#[non_exhaustive] pub enum Code { /* generated by codes! */ }
-pub enum Class { Usage, Refused, Unauthorized, Unknown, Unreadable, Conflict, Incomplete, Unavailable, Internal, Cancelled }
-pub enum Retry { Never, AfterReread, After(Duration), WhenRuntimeReady }
-pub struct Remedy { pub text: String, pub command: Option<Cmd> }
-pub enum Cmd { Se(Argv), Tool { name: &'static str, args: Value }, Manual }
-impl Code { pub fn as_str(&self) -> &'static str; pub fn class(&self) -> Class;
-            pub fn message(&self) -> String; pub fn remedy(&self, cx: &RenderCx) -> Remedy; }
-```
-
-One `codes!` table generates the enum, `as_str`, `class`, `message` and `remedy`; a row without class, template and remedy does not compile. `Cmd::Se` is built from a typed op input (`Argv::from_op(&AgentLaunch { agent, new: true, .. })`), so a remedy cannot name a command that is not in the registry. `Cmd::Manual` (only where the fix is outside the product, e.g. installing Claude Code) still has text. `se.error/v1` = `{schema, code, class, exit, message, detail, remedy{text, command[]|null, tool|null}, retry}`. Human form:
+The exact declarations are [error.rs](../../crates/se-types/src/error.rs) and its [catalogue](../../crates/se-types/src/error/catalog.rs). `SeError` wraps a validated `ErrorBody`/typed `Detail`, retry policy and optional source cause; code/class/exit derive from that detail. `codes!` generates closed code/detail pairs, messages and remedy text. `CommandResolver` maps a failure to a typed registered operation or a manual action; arbitrary diagnostic text is never executed. Wire output is `se.error/v1` with code, class, exit, message, typed detail, remedy and retry. Every ordinary refusal stays on the error channel and creates no refusal-history row. Human form:
 
 ```
 error[agent-unknown]: no agent named "revewr" in project app (did you mean "reviewer"?)
@@ -421,236 +416,161 @@ error[agent-unknown]: no agent named "revewr" in project app (did you mean "revi
 
 In the tables below, `{x}` interpolates a detail field; `→` gives the remedy command; class abbreviations: U Usage, R Refused, A Unauthorized, K Unknown, X Unreadable, C Conflict, I Incomplete, V Unavailable, N Internal, Z Cancelled.
 
-### 6.2 Surface and input (18)
+### 6.2 Canonical catalogue
 
-| Code | Cl | Detail | Message | Remedy |
+The table below mirrors `crates/se-types/src/error/catalog.rs`; typed detail fields are required. Like-class failures share codes; `reason` retains the exact cause and `next_step` retains the legal remedy. Neither is inferred from an empty read. Typed remedy resolution selects an admitted command; it never executes detail text. Merged names are not aliases or extra codes.
+
+#### Usage (14)
+
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| usage-unknown-command | U | got, suggestion? | unknown command `{got}` | → `se help` |
-| usage-unknown-flag | U | flag, command, suggestion? | `{command}` has no flag `{flag}` | → `se help {command}` |
-| usage-missing-argument | U | command, argument | `{command}` needs {argument} | → `se help {command}` |
-| usage-invalid-value | U | argument, got, expected | {argument}: `{got}` is not {expected} | correct the value |
-| usage-conflicting-flags | U | flags[] | {flags} cannot be used together | pick one |
-| flag-not-applicable | U | flag, command | `{flag}` has no meaning for `{command}` | drop the flag |
-| input-unknown-field | U | op, field | `{field}` is not an input of {op} | → `se schema {op}` / tools/list |
-| input-too-large | U | field, limit_bytes, got_bytes | {field} is {got_bytes} bytes; limit {limit_bytes} | shorten or split it |
-| renamed | U | old, replacement | `{old}` was renamed | → `{replacement}` (template; fill placeholders) |
-| command-retired | U | old, reason, workflow | `{old}` was retired: {reason} | {workflow} |
-| legacy-root-flag | U | flag | `{flag}` was removed; projects come from the registry | → `se init --repo DIR` or `-p P` |
-| feature-disabled | R | feature | {feature} is turned off | → `se config set {feature}.enabled true` |
-| feature-not-built | R | feature | this build of se does not include {feature} | install the standard build from stateengine.ai |
-| json-version-unsupported | U | family, requested, served[] | {family} v{requested} is not served (have {served}) | → `--json` |
-| tool-unknown | U | name | no tool `{name}` | use tools/list |
-| tool-not-available | A | name, reason | `{name}` is not available to this session ({reason}) | ask the owner, or use tools/list |
-| secret-to-terminal-refused | R | what | refusing to print {what} to a terminal | run it through a pipe (integrations only) |
-| stdin-required | U | what | {what} is read from stdin, which is a terminal | pipe the input |
+| atlas-symbol-ambiguous | U | symbol: String, candidates: Vec<String> | `{symbol}` names {candidates.len} symbols | add `--path` |
+| command-retired | U | old: String, reason: String, workflow: String | `{old}` was retired: {reason} | {workflow} |
+| cursor-invalid | U | reason: String | this cursor isn't valid here ({reason}) | rerun without `--since` |
+| input-too-large | U | field: String, limit_bytes: u64, got_bytes: u64 | {field} is {got_bytes} bytes; limit {limit_bytes} | shorten or split it |
+| input-unknown-field | U | op: String, field: String, next_step: String | `{field}` is not accepted by {op} | {next_step} |
+| project-conflicts-session | U | flag_project: String, session_project: String | `-p {flag_project}` conflicts with this session's project {session_project} | drop `-p` |
+| project-required | U | choices: Vec<ProjectChoice> | which project? none registered here | Use `se init` (none) or `se … -p NAME` |
+| renamed | U | old: String, replacement: String | `{old}` was renamed | Use `{replacement}` (template; fill placeholders) |
+| selector-ambiguous | U | kind: String, selector: String, matches: Vec<String> | {selector} matches {matches.len} {kind} entries: {matches} | Select an exact ID from {matches} |
+| usage-conflicting-flags | U | flags: Vec<String> | {flags} cannot be used together | pick one |
+| usage-invalid-value | U | argument: String, got: String, expected: String | {argument}: `{got}` is not {expected} | correct the value |
+| usage-missing-argument | U | command: String, argument: String | `{command}` needs {argument} | Use `se help {command}` |
+| usage-unknown-command | U | got: String, suggestion: Option<String> | unknown command `{got}` | Use `se help` |
+| usage-unknown-flag | U | flag: String, command: String, reason: String | `{command}` does not accept {flag}: {reason} | Use `se help {command}` |
 
-### 6.3 Authority (14)
+#### Unauthorized (9)
 
-| Code | Cl | Detail | Message | Remedy |
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| owner-required | A | op | `{op}` is an owner command; agent sessions can't run it | run it in your own terminal (unset `SE_SESSION`) |
-| human-terminal-required | A | op, reason (no-tty \| agent-process-tree) | `{op}` needs you at an interactive terminal not started by an agent | run `se {op}` in a terminal you opened |
-| session-required | A | op | `{op}` acts as an agent and needs a launched session | → `se launch AGENT` |
-| machine-credential-missing | R | path | no machine credential at {path} | → `se init` |
-| machine-credential-unreadable | X | path, reason | can't read the machine credential: {reason} | → `se doctor` |
-| os-user-mismatch | A | expected, actual | this StateEngine home belongs to {expected}, you are {actual} | use your own `SE_HOME` |
-| capability-invalid | A | reason (malformed \| unknown \| bad-secret) | the session credential is not valid ({reason}) | relaunch: → `se launch AGENT` |
-| capability-revoked | A | session, at, reason | session {session} was ended at {at} ({reason}) | → `se launch AGENT` |
-| capability-expired | A | session, at | the session token expired at {at} | the helper renews it; if not → `se launch AGENT` |
-| project-conflicts-session | U | flag_project, session_project | `-p {flag_project}` conflicts with this session's project {session_project} | drop `-p` |
-| grant-required | A | grant | this session lacks permission `{grant}` | owner: → `se config set agent.{agent}.can-create true -p P` |
-| not-recipient | A | message, recipient | only {recipient} can mark {message} read or dismissed | read it with `se msg read` as that agent, or leave it |
-| self-approval-refused | A | decision | agents can propose decisions but not approve them | owner: → `se decision ratify {decision}` |
-| listener-admission-refused | A | reason (host \| origin \| bearer-missing \| bearer-invalid \| second-principal) | local server refused the request: {reason} | reconnect through `se mcp token`; non-loopback access is not supported |
+| capability-invalid | A | subject: String, reason: String, next_step: String | Session credential {subject}: {reason} | {next_step} |
+| grant-required | A | grant: String, agent: AgentId | Session for {agent} lacks permission {grant} | Owner: `se config set agent.{agent}.can-create true` |
+| human-terminal-required | A | op: String, reason: String | `{op}` needs you at an interactive terminal not started by an agent | Open your own terminal outside an agent tree; this mistake/drift guard is not proof against a determined agent using your account |
+| listener-admission-refused | A | reason: String | local server refused the request: {reason} | reconnect through `se mcp token`; non-loopback access is not supported |
+| message-scope-denied | A | filter: String, agent: AgentId | as an agent, {agent} can list only messages it sent or received; `{filter}` names others' mail | Drop the filter, or the owner runs `se msg list` from their own terminal. |
+| not-recipient | A | message: MessageId, recipient: String | only {recipient} can mark {message} read or dismissed | read it with `se msg read` as that agent, or leave it |
+| os-user-mismatch | A | expected: String, actual: String | this StateEngine home belongs to {expected}, you are {actual} | use your own `SE_HOME` |
+| owner-required | A | op: String | `{op}` is an owner command; agent sessions can't run it | Use an owner terminal; unsetting SE_SESSION alone does not establish authority |
+| session-required | A | op: String | `{op}` acts as an agent and needs a launched session | Use `se launch AGENT` |
 
-### 6.4 Project, home and configuration (16)
+#### Refused (36)
 
-| Code | Cl | Detail | Message | Remedy |
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| project-required | U | choices[] {name,id,root} | which project? none registered here | → `se init` (none) or `se … -p NAME` |
-| project-unknown | K | selector | no project `{selector}` | → `se status --all` |
-| project-ambiguous | U | selector, matches[] | `{selector}` names {n} projects | use the id: `-p prj_…` |
-| project-removed | R | project, at | project {project} was removed at {at} | re-adopt: → `se init --repo {root}` |
-| registration-unreadable | X | path, reason | can't read project registrations: {reason} | → `se doctor` |
-| cwd-registration-ambiguous | U | cwd, candidates[] | {cwd} is registered twice | → `-p P`, then `se doctor --fix` |
-| home-unreadable | X | home, reason | can't read StateEngine home {home}: {reason} | → `se doctor` |
-| home-unsupported-location | R | home, kind (network \| synced \| read-only) | {home} is on a {kind} location; the store needs a local disk | set `SE_HOME` to a local folder |
-| config-unreadable | X | path, reason | can't read {path}: {reason} | fix permissions or → `se doctor` |
-| config-invalid | R | path, line, column, problem | {path}:{line}:{column}: {problem} | edit the file |
-| config-key-unknown | U | key, suggestion? | no setting `{key}` | → `se config list` |
-| config-value-invalid | U | key, got, expected | {key}: `{got}` is not {expected} | → `se config get {key} --origin` |
-| config-scope-invalid | U | key, scope | `{key}` is a {scope} setting | drop or add `-p` |
-| config-version-unsupported | R | path, version, supported | {path} is format v{version}; this se reads v{supported} | upgrade se |
-| profile-unknown | R | profile | no permission profile `{profile}` | → `se config list`; define `[profiles.{profile}]` |
-| bypass-not-opted-in | R | profile | full bypass is only allowed through a saved, named profile | add `bypass = true` under `[profiles.NAME]`, then → `se config set agent.A.profile NAME` |
+| api-version-unsupported | R | client: String, host: String | client API {client} vs runtime {host} | upgrade the older side |
+| atlas-file-over-budget | R | path: String, size: u64, budget: u64 | {path} ({size}) exceeds the per-file parse budget | none; the file stays text-searchable |
+| atlas-index-absent | R | project: ProjectId | no code index for {project} yet | Use `se config set atlas.enabled true`; indexing runs after readiness in a transient capped child; `se status` reports progress |
+| atlas-language-unsupported | R | path: String, language: Option<String> | {language} files aren't parsed | text search: `--kind text` |
+| atlas-path-outside-root | R | path: String, root: String | {path} is outside {root} | use a project-relative path |
+| backup-failed | R | path: String, step: String, reason: String | Backup {path} failed at {step}: {reason} | Run `se doctor`; automatic backup or restore must verify before proceeding |
+| bypass-not-opted-in | R | profile: String | full bypass is only allowed through a saved, named profile | add `bypass = true` under `[profiles.NAME]`, then → `se config set agent.A.profile NAME` |
+| capture-consent-missing | R | session: SessionId | capture is off for this session | relaunch without `--incognito` |
+| configuration-invalid | R | subject: String, reason: String, next_step: String | Configuration {subject}: {reason} | {next_step} |
+| decision-state-invalid | R | subject: String, reason: String, next_step: String | Decision transition {subject}: {reason} | {next_step} |
+| feature-unavailable | R | subject: String, reason: String, next_step: String | Feature {subject}: {reason} | {next_step} |
+| forget-not-captured-record | R | event: EventId, kind: String | only captured turns and messages can be erased; {event} is a {kind} | pick a captured record |
+| home-unsupported-location | R | home: String, kind: String | {home} is on a {kind} location; the store needs a local disk | set `SE_HOME` to a local folder |
+| import-format-unsupported | R | path: String, found: String, supported: Vec<String> | {path} is format {found}; supported: {supported} | upgrade Node StateEngine first, then import |
+| import-source-active | R | path: String, pid: Option<u32> | the old StateEngine is still running on {path} | stop it with the old `se down`, then retry |
+| integration-failed | R | subject: String, reason: String, next_step: String | Integration {subject}: {reason} | {next_step} |
+| job-breakaway-refused | R | parent: String | Windows won't let the agent outlive {parent} | Use `se up` first, then launch |
+| launch-failed | R | subject: String, reason: String, next_step: String | Launch {subject}: {reason} | {next_step} |
+| listener-unavailable | R | subject: String, reason: String, next_step: String | Listener {subject}: {reason} | {next_step} |
+| project-removed | R | project: ProjectId, at: UnixMicros | project {project} was removed at {at} | re-adopt: → `se init --repo {root}` |
+| provider-change-breaks-resume | R | agent: AgentId, saved: String, requested: String | {agent}'s conversation is a {saved} conversation | Use `se launch {agent} --new --provider {requested}` |
+| provider-cli-not-found | R | provider: String, searched: Vec<String> | can't find the {provider} CLI | install it (`Cmd::Manual`), or → `se config set providers.{provider}.command PATH` |
+| provider-incompatible | R | subject: String, reason: String, next_step: String | Provider {subject}: {reason} | {next_step} |
+| recipient-other-project | R | to: String, project: ProjectId | {to} is in project {project} | send from that project |
+| repair-refused | R | subject: String, reason: String, next_step: String | Repair {subject}: {reason} | {next_step} |
+| repo-invalid | R | subject: String, reason: String, next_step: String | Repository {subject}: {reason} | {next_step} |
+| resume-reference-missing | R | agent: AgentId | {agent} has no saved conversation to resume | Use `se launch {agent} --new` |
+| runtime-incompatible | R | subject: String, reason: String, next_step: String | Runtime {subject}: {reason} | {next_step} |
+| secret-to-terminal-refused | R | what: String | refusing to print {what} to a terminal | run it through a pipe (integrations only) |
+| session-already-ended | R | session: SessionId, at: UnixMicros | session {session} ended at {at} | Use `se launch AGENT` |
+| setup-required | R | subject: String, reason: String, next_step: String | Setup {subject}: {reason} | {next_step} |
+| store-migration-failed | R | from: u64, to: u64, step: String, rollback_copy: String | upgrade {from}→{to} failed at {step}; old copy kept at {rollback_copy} | Use `se doctor` |
+| store-read-only | R | path: String | {path} is read-only | fix permissions or `SE_HOME` |
+| store-too-new | R | store_version: u64, supported: u64 | the store was written by a newer se (schema {store_version}) | Upgrade se; unsupported migration paths refuse without modifying the source store |
+| wake-not-running | R | agent: AgentId | {agent} isn't running, so there is nothing to wake | Use `se launch {agent}` |
+| window-unavailable | R | tried: Vec<String> | no terminal window could be opened ({tried}) | Use `se launch AGENT --detach`, or set `launch.terminal` |
 
-### 6.5 Init and remove (9)
+#### Unknown (4)
 
-| Code | Cl | Detail | Message | Remedy |
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| repo-not-found | R | path | {path} does not exist | → `se init --repo DIR` with an existing folder |
-| repo-not-directory | R | path | {path} is not a folder | pick the repository folder |
-| repo-inside-project | C | path, project, root | {path} is inside project {project} ({root}) | use it: → `se status -p {project}` |
-| repo-name-mismatch | C | root, project, requested | {root} is already project {project} | rerun without `--name` |
-| integration-conflict | C | path, entry | you changed {entry} in {path}; StateEngine won't overwrite it | keep it, or delete the entry and → `se doctor --fix` |
-| integration-write-failed | R | path, reason | couldn't write {path}: {reason} | → `se doctor` |
-| integration-readback-mismatch | R | path, entry | wrote {entry} in {path} but read back something else | → `se doctor --fix` |
-| remove-target-required | U | choices[] | name the project to remove | → `se remove -p P` or `se remove --all` |
-| remove-incomplete | I | stopped[], unwitnessed[], remaining[] | removal partly done: {remaining} | → `se remove -p P` (idempotent) |
+| agent-unknown | K | selector: String, suggestion: Option<String> | no agent `{selector}` in {project} | Use `se agent list` |
+| atlas-path-unknown | K | path: String | {path} isn't indexed | Use `se atlas find PATH --kind path` |
+| atlas-symbol-unknown | K | symbol: String | no symbol `{symbol}` | Use `se atlas find {symbol}` |
+| target-unknown | K | subject: String, reason: String, next_step: String | Unknown target {subject}: {reason} | {next_step} |
 
-### 6.6 Store (25)
+#### Unreadable (6)
 
-| Code | Cl | Detail | Message | Remedy |
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| store-absent | R | home | no StateEngine data in {home} | → `se init` |
-| store-unreadable | X | path, reason (permission \| io \| not-sqlite \| foreign-application-id) | can't read the store: {reason} | → `se doctor` |
-| store-corrupt | X | path, check | the store failed its integrity check ({check}) | → `se doctor --fix` (restores from the newest good backup + salvage) |
-| store-too-new | R | store_version, supported | the store was written by a newer se (schema {store_version}) | upgrade se |
-| store-migration-required | V | from, to | the store needs a schema upgrade; ordinary start, status and auto-start never migrate | → `se down`, then `se doctor --fix` (explicit owner migration under the exclusive lease, verified backup first) |
-| store-migration-failed | R | from, to, step, rollback_copy | upgrade {from}→{to} failed at {step}; old copy kept at {rollback_copy} | → `se doctor` |
-| store-busy | V | waited_ms | the store stayed locked for {waited_ms} ms | retry (`Retry::After`) |
-| store-disk-full | V | path, free_bytes | not enough disk space at {path} | free space and retry |
-| store-read-only | R | path | {path} is read-only | fix permissions or `SE_HOME` |
-| revision-conflict | C | entity, expected, current | {entity} changed (you had revision {expected}, now {current}) | reread: → `se working-state` / `se decision show ID` |
-| idempotency-key-reused | C | key, original_event | key `{key}` was used for a different request | use a new key |
-| event-unknown | K | event | no event {event} in this project | → `se search QUERY` |
-| event-unreadable | X | event, reason | event {event} exists but can't be decoded: {reason} | → `se doctor` |
-| cursor-invalid | U | reason (malformed \| other-project \| other-principal) | this cursor isn't valid here ({reason}) | rerun without `--since` |
-| cursor-expired | I | oldest_available | the cursor is older than retained history | rerun without `--since` |
-| backup-destination-exists | R | path | {path} already exists | choose another path |
-| backup-failed | R | path, step, reason | backup failed at {step}: {reason} | → `se doctor` |
-| backup-readback-mismatch | R | path | the backup at {path} didn't verify | → `se backup` to a new path |
-| import-source-unreadable | X | path, reason | can't read Node state at {path}: {reason} | check the path |
-| import-format-unsupported | R | path, found, supported[] | {path} is format {found}; supported: {supported} | upgrade Node StateEngine first, then import |
-| import-source-active | R | path, pid? | the old StateEngine is still running on {path} | stop it with the old `se down`, then retry |
-| import-incomplete | I | families[] {name, rejected, unreadable} | import finished with rejected rows | rerun (idempotent); see the receipt |
-| forget-confirmation-required | R | events[] | erasure needs typed confirmation | rerun in a terminal and type the first id |
-| forget-not-captured-record | R | event, kind | only captured turns and messages can be erased; {event} is a {kind} | pick a captured record |
-| forget-incomplete | I | erased[], residual[] | erased in the store; copies remain in {residual} | delete or let backups expire; provider transcripts belong to Claude/Codex |
+| atlas-source-unreadable | X | path: String, reason: String | Atlas can't read {path}: {reason} | restore read access to the file |
+| atlas-unreadable | X | path: String, reason: String | can't read the index database atlas.db: {reason} | Run `se doctor`; only a diagnosed atlas.index repair may rebuild atlas.db; source-file unreadability is separate |
+| resume-reference-unverifiable | X | agent: AgentId, conversation: String, reason: String | can't verify conversation {conversation}: {reason} | Use `se launch {agent} --new` (starts fresh, explicitly) |
+| source-unreadable | X | subject: String, reason: String, next_step: String | Cannot read {subject}: {reason} | {next_step} |
+| store-corrupt | X | path: String, check: String | the store failed its integrity check ({check}) | Run `se restore` in your own terminal; it prints loss/stop consequences, restores newest valid automatic backup and preserves the corrupt source; no salvage |
+| store-unreadable | X | path: String, reason: String | can't read the store: {reason} | Use `se doctor` |
 
-### 6.7 Runtime and listener (14)
+#### Conflict (6)
 
-| Code | Cl | Detail | Message | Remedy |
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| runtime-not-running | V | op | `{op}` needs the StateEngine runtime | → `se up` |
-| runtime-start-failed | V | reason, log | the runtime didn't start: {reason} | see {log}; → `se doctor` |
-| runtime-start-pending | I | waited_ms | the runtime is still starting after {waited_ms} ms | → `se status` |
-| runtime-owned-elsewhere | R | host (secode \| daemon), pid, version | the runtime is hosted by {host} | quit SE Code to stop it |
-| runtime-version-mismatch | R | running, this | runtime {running} is running; this se is {this} | → `se down`, then retry |
-| legacy-runtime-running | R | pid? | the old Node StateEngine is running on this home | stop it with the old `se down` |
-| runtime-handover-in-progress | V | generation | the runtime is changing hosts | retry (`WhenRuntimeReady`) |
-| runtime-drain-timeout | I | deadline_ms, pending[] | shutdown didn't finish in time: {pending} | → `se down` |
-| runtime-stop-unwitnessed | I | pid, reason | stop requested but exit not confirmed: {reason} | → `se status` |
-| listener-port-in-use | R | port, holder? | port {port} is in use | → `se config set runtime.listen_port N` |
-| listener-non-loopback | R | address | `{address}` is not loopback; only 127.0.0.1 is allowed | fix `runtime.listen_address` |
-| ipc-unavailable | V | endpoint, reason | can't reach the runtime: {reason} | → `se status` |
-| api-version-unsupported | R | client, host | client API {client} vs runtime {host} | upgrade the older side |
-| custody-unavailable-hostless | V | op | this stdio server has no runtime; `{op}` can't act | → `se up` |
+| agent-already-running | C | agent: AgentId, pid: u32, since: String | {agent} is already running (since {since}) | message it, or → `se stop {agent}` |
+| idempotency-key-reused | C | key: String, original_event: EventId | key `{key}` was used for a different request | use a new key |
+| integration-conflict | C | path: String, entry: String | you changed {entry} in {path}; StateEngine won't overwrite it | keep it, or delete the entry and → `se doctor --fix CHECK-ID` |
+| launch-in-flight | C | agent: AgentId, launch_id: LaunchId | {agent} is already being launched | retry |
+| revision-conflict | C | entity: String, expected: String, current: String | {entity} changed (you had revision {expected}, now {current}) | reread: → `se working-state` / `se decision show ID` |
+| state-conflict | C | subject: String, reason: String, next_step: String | State conflict {subject}: {reason} | {next_step} |
 
-### 6.8 Agents, launch and providers (22)
+#### Incomplete (10)
 
-Containment is never a refusal. On Linux a launch with no delegated cgroup succeeds uncontained and says so in `containment`/`containment_cause` (A.2); the former `cgroup-delegation-missing` refusal is removed and its facts live in the `custody.linux-cgroup` doctor check (A.10).
-
-| Code | Cl | Detail | Message | Remedy |
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| agent-unknown | K | selector, suggestion? | no agent `{selector}` in {project} | → `se agent list` |
-| agent-ambiguous | U | selector, matches[] | `{selector}` matches {n} agents | use the id |
-| agent-name-taken | C | name, agent | `{name}` is already agent {agent} | → `se launch {name}` or pick another name |
-| agent-name-invalid | U | name, rule | `{name}`: {rule} | choose another name |
-| provider-unsupported | U | got | `{got}` isn't a provider (claude, codex) | |
-| provider-cli-not-found | R | provider, searched[] | can't find the {provider} CLI | install it (`Cmd::Manual`), or → `se config set providers.{provider}.command PATH` |
-| provider-cli-too-old | R | provider, found, minimum | {provider} {found} is older than {minimum} | upgrade {provider} |
-| provider-cli-unrecognized | R | provider, output | couldn't read the {provider} version | → `se doctor` |
-| provider-protocol-unsupported | R | provider, version, needed | {provider} {version} lacks {needed} | upgrade {provider} |
-| provider-change-breaks-resume | R | agent, saved, requested | {agent}'s conversation is a {saved} conversation | → `se launch {agent} --new --provider {requested}` |
-| resume-reference-missing | R | agent | {agent} has no saved conversation to resume | → `se launch {agent} --new` |
-| resume-reference-unverifiable | X | agent, conversation, reason | can't verify conversation {conversation}: {reason} | → `se launch {agent} --new` (starts fresh, explicitly) |
-| agent-already-running | C | agent, pid, since | {agent} is already running (since {since}) | message it, or → `se stop {agent}` |
-| launch-in-flight | C | agent, launch_id | {agent} is already being launched | retry |
-| launch-readiness-timeout | I | agent, waited_ms, last_observed | {agent} started but wasn't ready after {waited_ms} ms | → `se agent show {agent}` |
-| launch-failed | R | agent, provider, exit_code?, stderr_tail | {provider} exited during launch: {stderr_tail} | fix the provider error, then → `se launch {agent}` |
-| window-unavailable | R | tried[] | no terminal window could be opened ({tried}) | → `se launch AGENT --detach`, or set `launch.terminal` |
-| job-breakaway-refused | R | parent | Windows won't let the agent outlive {parent}: its job forbids breakaway | launch from a terminal outside {parent}'s job, or have that job permit breakaway (`JOB_OBJECT_LIMIT_BREAKAWAY_OK`). Running `se up` from inside the same job does not help: the host it starts is in that job too |
-| codex-app-server-failed | R | phase, reason | Codex app-server failed at {phase}: {reason} | → `se doctor` |
-| wake-not-running | R | agent | {agent} isn't running, so there is nothing to wake | → `se launch {agent}` |
-| stop-unwitnessed | I | agent, pid, reason, population, remaining[], enumeration | stop sent but {agent}'s exit isn't confirmed: `enumeration = complete` → "{n} processes still running"; otherwise, when `population = populated` → "processes still running in the agent's group; count unavailable" | → `se agent show {agent}`, then `se stop {agent}` |
-| stop-partial | I | stopped[], failed[] | stopped {n}; not confirmed: {failed} | → `se stop AGENT` for each |
+| atlas-indexing | I | indexed: u64, total: u64 | index is {indexed}/{total} files; results may be partial | retry later |
+| atlas-parse-failed | I | path: String, language: String, reason: String | Atlas couldn't parse {path} ({language}): {reason} | results for this file use bounded text search; → `se doctor --bundle` to report the diagnostic |
+| cursor-expired | I | oldest_available: u64 | the cursor is older than retained history | rerun without `--since` |
+| forget-incomplete | I | erased: Vec<String>, residual: Vec<String> | erased in the store; copies remain in {residual} | delete or let backups expire; provider transcripts belong to Claude/Codex |
+| import-incomplete | I | families: Vec<ImportFamilyIssue> | import finished with rejected rows | rerun (idempotent); see the receipt |
+| launch-readiness-timeout | I | agent: AgentId, waited_ms: u64, last_observed: String | {agent} started but wasn't ready after {waited_ms} ms | Use `se agent show {agent}` |
+| remove-incomplete | I | stopped: Vec<String>, unwitnessed: Vec<String>, remaining: Vec<String> | removal partly done: {remaining} | Use `se remove -p P` (idempotent) |
+| runtime-start-pending | I | waited_ms: u64 | the runtime is still starting after {waited_ms} ms | Use `se status` |
+| stop-unwitnessed | I | scope: String, reason: String, remaining: Vec<String> | Stop of {scope} is unconfirmed: {reason}; named remaining {remaining} | Read `se status` and retry the same keyed stop; unnamed members never count as zero |
+| transcript-truncated | I | path: String, offset: u64, size: u64 | {path} shrank below the read offset | captured turns stay; → `se status` |
 
-### 6.9 Sessions, capture and hooks (9)
+#### Unavailable (9)
 
-| Code | Cl | Detail | Message | Remedy |
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| session-unknown | K | session | no session {session} | → `se agent show AGENT` |
-| session-binding-unproven | A | reason | a session id alone can't bind ({reason}) | launch through se, or → `se doctor --fix` for your integration |
-| session-generation-mismatch | C | expected, current | session generation is {current}, not {expected} | reread and retry |
-| session-already-ended | R | session, at | session {session} ended at {at} | → `se launch AGENT` |
-| capture-consent-missing | R | session | capture is off for this session | relaunch without `--incognito` |
-| turn-invalid | U | field, problem | turn {field}: {problem} | fix the integration (→ `se doctor`) |
-| transcript-unreadable | X | path, reason | can't read the transcript {path}: {reason} | → `se doctor` |
-| transcript-truncated | I | path, offset, size | {path} shrank below the read offset | captured turns stay; → `se status` |
-| hook-payload-invalid | U | event, problem | Claude `{event}` payload: {problem} | → `se doctor` (hook exits 0 anyway) |
+| atlas-resource-budget | V | resource: String, requested: u64, available: u64 | Atlas can't index right now: {resource} needs {requested}, {available} available | wait for memory pressure to ease, or use bounded text search → `se atlas find QUERY --kind text` |
+| deadline-exceeded | V | op: String, deadline_ms: u64 | `{op}` didn't finish in {deadline_ms} ms | retry |
+| ipc-unavailable | V | endpoint: String, reason: String | can't reach the runtime: {reason} | Use `se status` |
+| runtime-handover-in-progress | V | generation: String | the runtime is changing hosts | retry (`WhenRuntimeReady`) |
+| runtime-not-running | V | op: String | `{op}` needs the StateEngine runtime | Use `se up` |
+| runtime-start-failed | V | reason: String, log: String | the runtime didn't start: {reason} | see {log}; → `se doctor` |
+| store-busy | V | waited_ms: u64 | the store stayed locked for {waited_ms} ms | retry (`Retry::After`) |
+| store-disk-full | V | path: String, free_bytes: u64 | not enough disk space at {path} | free space and retry |
+| store-migration-required | V | from: u64, to: u64 | Store {from} needs supported additive migration to {to} | Start `se up`: the sole owning host verifies a pre-migration backup and migrates automatically; an old running host requires `se down` first |
 
-### 6.10 Messages and decisions (9)
+#### Internal (1)
 
-| Code | Cl | Detail | Message | Remedy |
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| recipient-unknown | K | to, suggestion? | no agent `{to}` to send to | → `se agent list` |
-| recipient-other-project | R | to, project | {to} is in project {project} | send from that project |
-| message-unknown | K | id | no message {id} | → `se msg list --all` |
-| reply-target-unknown | K | id | can't reply to {id}: not found | drop `--reply-to` |
-| message-scope-denied | A | filter, agent | as an agent, {agent} can list only messages it sent or received; `{filter}` names others' mail | drop the filter, or the owner runs `se msg list` from their own terminal |
-| decision-unknown | K | id | no decision {id} | → `se decision list` |
-| decision-key-invalid | U | key | `{key}` isn't a valid decision key | use lowercase letters, digits, `.`, `_`, `-` |
-| decision-state-invalid | R | id, state, action | can't {action} {id}: it is {state} | → `se decision show {id}` |
-| supersede-invalid | R | prior, replacement, reason (same \| cycle \| prior-not-governing \| replacement-not-pending) | can't supersede: {reason} | → `se decision list --history` |
+| internal | N | report_id: String, location: String | StateEngine hit a bug ({report_id}) | Use `se doctor --bundle` and send it |
 
-### 6.11 Process custody (10)
+#### Cancelled (1)
 
-| Code | Cl | Detail | Message | Remedy |
+| Code | Cl | Typed detail | Message | Remedy |
 | --- | --- | --- | --- | --- |
-| observation-unknown | K | observation | no observation {observation} | → `se process list` |
-| observation-not-yours | A | observation | {observation} belongs to another caller | use your own handle |
-| bare-pid-refused | U | got | processes are selected by observation, not pid | → `se process list` |
-| process-identity-changed | R | pid, expected_start, found_start | pid {pid} now belongs to a different process | nothing to stop; → `se process inspect --observation O` |
-| process-identity-unreadable | X | pid, reason | can't read pid {pid}'s identity: {reason} | retry; → `se doctor` |
-| command-not-found | R | program | `{program}` not found on PATH | give a full path |
-| spawn-failed | R | program, reason | couldn't start {program}: {reason} | |
-| cwd-outside-workspace | R | cwd, workspace | {cwd} is outside the project folder {workspace} | use a path inside the project |
-| env-key-not-allowed | U | key | `{key}` can't be set for a managed process | drop it |
-| stop-deadline-exceeded | I | observation, deadline_ms, population, remaining[], enumeration | after {deadline_ms} ms: `enumeration = complete` → "{n} processes still running"; otherwise, when `population = populated` → "processes still running in the observation's group; count unavailable" | retry with a longer `--deadline` |
+| cancelled | Z | op: String | `{op}` was interrupted | rerun; writes are all-or-nothing |
 
-`population` is `populated` \| `empty`, the kernel's own answer for the whole scope (Linux cgroup `populated`, Windows job active-process count, macOS tracked group, and for a Linux `uncontained` agent its process group, which does not cover descendants that left it). `remaining[]` lists `{pid, exe, started_at}` for each member StateEngine could name; `enumeration` (`complete` \| `best-effort` \| `unavailable`) says whether that list is the whole population. `{n}` is printed only when `enumeration = complete`; a populated scope with a shorter or empty list is never rendered as a count.
+Total: **96 codes**. Warnings remain stderr-only: `w-legacy-env-present`, `w-provider-near-minimum`, `w-store-near-full`, `w-notify-degraded`.
 
-### 6.12 Atlas (12)
+`stop-unwitnessed.detail.reason` includes the observed population, enumeration completeness and scope/escape bound; structured partial-stop results retain the separate A.6 fields. Named `remaining` is not a complete census unless that observation says so.
 
-| Code | Cl | Detail | Message | Remedy |
-| --- | --- | --- | --- | --- |
-| atlas-index-absent | R | project | no code index for {project} yet | → `se config set atlas.enabled true -p P` (indexes in the background; `se status` shows progress) |
-| atlas-indexing | I | indexed, total | index is {indexed}/{total} files; results may be partial | retry later |
-| atlas-unreadable | X | path, reason | can't read the index database atlas.db: {reason} | → `se doctor --fix` (rebuilds the index). Only for atlas.db itself; an unreadable source file is `atlas-source-unreadable`. |
-| atlas-path-outside-root | R | path, root | {path} is outside {root} | use a project-relative path |
-| atlas-path-unknown | K | path | {path} isn't indexed | → `se atlas find PATH --kind path` |
-| atlas-symbol-unknown | K | symbol | no symbol `{symbol}` | → `se atlas find {symbol}` |
-| atlas-symbol-ambiguous | U | symbol, candidates[] | `{symbol}` names {n} symbols | add `--path` |
-| atlas-language-unsupported | R | path, language? | {language} files aren't parsed | text search: `--kind text` |
-| atlas-file-over-budget | R | path, size, budget | {path} ({size}) exceeds the per-file parse budget | none; the file stays text-searchable. Only for one oversized file; lack of memory or other machine resources is `atlas-resource-budget`. |
-| atlas-resource-budget | V | resource, requested, available | Atlas can't index right now: {resource} needs {requested}, {available} available | wait for memory pressure to ease, or use bounded text search → `se atlas find QUERY --kind text` |
-| atlas-parse-failed | I | path (root-relative), language, reason | Atlas couldn't parse {path} ({language}): {reason} | results for this file use bounded text search; → `se doctor --bundle` to report the diagnostic |
-| atlas-source-unreadable | X | path (root-relative), reason | Atlas can't read {path}: {reason} | restore read access to the file |
-
-### 6.13 Doctor and internal (7)
-
-| Code | Cl | Detail | Message | Remedy |
-| --- | --- | --- | --- | --- |
-| repair-not-supported | R | check | `doctor --fix` can't repair {check} | follow the check's own fix line |
-| repair-would-weaken-defaults | R | change | refusing to {change}: it weakens safety defaults | change it yourself by named profile |
-| bundle-destination-invalid | U | path, reason | can't write the bundle to {path}: {reason} | → `se doctor --bundle PATH` |
-| deadline-exceeded | V | op, deadline_ms | `{op}` didn't finish in {deadline_ms} ms | retry |
-| cancelled | Z | op | `{op}` was interrupted | rerun; writes are all-or-nothing |
-| task-failed | N | task, report_id | internal task {task} failed ({report_id}) | → `se doctor --bundle` and send it |
-| internal | N | report_id, location | StateEngine hit a bug ({report_id}) | → `se doctor --bundle` and send it |
-
-Total: 165 codes. Warnings (stderr only, not errors, codes `w-…`): `w-legacy-env-present` (a `STATEENGINE_*`/`SECODE_STATEENGINE_*` variable is set and ignored), `w-provider-near-minimum`, `w-store-near-full`, `w-notify-degraded`.
+Containment is never a refusal. Launch succeeds uncontained when Linux delegation is unavailable, with the exact cause. Stop reports its actual cgroup/job/process-group bound and enumeration; setsid/double-fork escapes outside an uncontained group are named. A short or empty named list never proves an empty scope.
 
 ---
 
@@ -672,7 +592,7 @@ Total: 165 codes. Warnings (stderr only, not errors, codes `w-…`): `w-legacy-e
 ### 7.2 `config.toml` (user scope)
 
 ```toml
-version = 1                       # required; other values refuse config-version-unsupported
+version = 1                       # required; other values refuse configuration-invalid
 default_project = ""              # name or id; "" = none
 
 [runtime]
@@ -712,7 +632,7 @@ inbox_limit = 20                  # 1–200
 preview_chars = 200               # 0–4000
 
 [store]
-backups_kept = 2                  # automatic start/shutdown backups, 1–10
+backups_kept = 2                  # start-of-day and clean-shutdown automatic backups, 1–10
 
 [log]
 level = "info"                    # SE_LOG wins
@@ -723,32 +643,21 @@ files_kept = 3
 color = "auto"                    # auto | always | never
 
 [atlas]
-enabled = false                   # default for projects without their own setting
+enabled = false                   # opt-in in this file; no project settings layer
 max_file_kb = 512                 # per-file parse budget
 ```
 
-Unknown keys refuse (`config-key-unknown`) on load, naming the line. Dotted names (`launch.provider`) are the `KEY` used by `se config`.
+Unknown keys refuse (`input-unknown-field`) on load, naming the line. Dotted names (`launch.provider`) are the `KEY` used by `se config`.
 
-### 7.3 Project settings (stored in the store, `se config set KEY VALUE -p P`)
+### 7.3 One configuration file and durable agent metadata
 
-| Key | Type / default | Meaning |
-| --- | --- | --- |
-| `launch.provider`, `launch.window` | as user | per-project override |
-| `profile` | profile name / `default` | default permission profile for new agents |
-| `agent.<AGENT>.profile` | profile name | one agent's profile; a bypass profile must exist by name |
-| `agent.<AGENT>.model` | string | saved model |
-| `agent.<AGENT>.can-create` | bool / false | grants `agent.create` to that agent's sessions |
-| `capture.enabled` | bool / true | turn capture; off makes sessions incognito |
-| `resume.byte_budget`, `messages.inbox_limit` | as user | per-project override |
-| `atlas.enabled` | bool / user value | enables indexing for this project |
-| `atlas.exclude` | list of globs / `[]` | extra excludes beyond `.gitignore` |
+General settings live only in the selected `config.toml`; no project settings layer or repository config participates. This includes `capture.enabled` (bool, default true), `atlas.exclude` (glob list, default empty), and the settings above. `se config get/list --origin` names the selected file, environment/flag override or built-in default. `config set` validates a closed key/value, atomically writes that file, rereads it and returns its keyed receipt. It never writes a project override. General settings reject `-p` as inapplicable.
 
-User-only keys (`runtime.*`, `log.*`, `output.*`, `store.*`, `providers.*.command`, `profiles.*`) refuse `config-scope-invalid` with `-p`. `config set` validates, writes atomically, rereads and returns the readback in `se.config-receipt/v1`. `config get/list --origin` shows the winning source.
+`agent.<AGENT>.profile`, `.model` and `.can-create` are explicit durable **agent record** updates exposed through `config get/set`, not another configuration source. Only these selectors accept owner project resolution (`-p` when needed); they update/read the canonical agent row with its revision and commit receipt. `.can-create` defaults false, profile/model are the saved identity's values. Flag choices for an invocation do not silently change those saved values. Grants are checked against the current record, not a stale config snapshot. `config list` lists file settings; `agent show` reports saved agent fields.
 
-### 7.4 Precedence
+### 7.4 Precedence and application
 
-CLI flag > `SE_*` env > project setting > user `config.toml` > built-in default. Configuration is never read from cwd, the repository or the binary's folder. Profiles resolve by name at launch; a profile with `bypass = true` is honoured only when selected by name for that agent (`agent.<A>.profile`), never as a default and never through `doctor --fix`.
-
+For general settings: CLI flag > documented environment variable > selected `config.toml` > built-in default. Configuration is never read from cwd, the repository or the binary folder. A saved named profile is the only bypass opt-in, explicitly selected for that agent; neither default configuration nor doctor repair selects bypass. Atlas stays disabled by default in both compositions. A successful `config set atlas.enabled true` notifies an active host after readiness; restart recovers from the file. Its cold index is a transient child capped below the section 80 budget, never work that blocks host readiness.
 ### 7.5 Renamed-command refusal table
 
 Static data in `se/src/renamed.rs`, matched on the first one or two argv tokens before clap. Output: `renamed` (exit 64), the literal template, no handler, no data access, no argument forwarding.
@@ -770,7 +679,7 @@ Static data in `se/src/renamed.rs`, matched on the first one or two argv tokens 
 | `capture-status`, `context`, `init --status` | `se status` |
 | `working-state-show` | `se working-state` |
 | `working-state-set`, `seat-continuity-write` | `se working-state set TEXT --expect REV` |
-| `process-start` / `process-stop` | `se process start -- COMMAND ARGS...` / `se process inspect\|stop --observation O` |
+
 | `packet` | `se resume --preview AGENT` |
 | `decommission`, `init --remove` | `se remove --project P` |
 | `plugin`, `hook-install`, `hook-uninstall` | `se doctor --fix` (repair setup), `se status` (inspect), `se remove` (remove with the project) |
@@ -779,38 +688,52 @@ Static data in `se/src/renamed.rs`, matched on the first one or two argv tokens 
 | MCP `stateengine_identity_whoami`, `_project_status`, `_context_packet`, `_working_state_get`, `_rawlog_search`, `_memory_recall`, `_floor_event`, `_seat_launch`, `_seat_stop`, `_seat_launch_status`, `_atlas_query` | `stateengine_whoami`, `_status`, `_resume`, `_resume`, `_search`, `_search`, `_event_read`, `_agent_launch`, `_agent_stop`, `_agent_status`, `_atlas_find` (MCP error `renamed`, arguments must be corrected) |
 | MCP `stateengine_agent_rename`, `stateengine_tools` | owner CLI `se agent rename AGENT NAME`; native tools/list and direct calls |
 
-`command-retired` (exit 64) with reason and current workflow: `agent-alias`/`agent alias`/`stateengine_agent_alias` (use stable ids or rename), `floor`, `floor-serve`, `projection-drain`, `drain-outbox`, `capture-receipts`, `file-write`, `project-owner-assign`, `human-bootstrap`, `state`, `run`, `serve`, `server`, `start`, `refresh`, `substrate-*`, `brick*`, `memory-*`/`memories`/`stateengine_memory_suggest` (memories import as decisions), `mail-tunnel`/`stateengine_mail_tunnel`, `deps`, `msg complete|reconcile|treat`, `seat cut|move|prompt`, `doctor contradictions`, and every factory command (campaigns, reviews, gates, landings, census, remote compute, routing). Any other unknown token is `usage-unknown-command` with a spelling suggestion from the live registry only.
+`command-retired` (exit 64) with reason and current workflow: `process start|inspect|stop|list`, `process-start`, `process-stop`, `stateengine_process_start`, `stateengine_process_stop` (use managed `launch`/`stop` for agents; arbitrary process service removed), `backup` (automatic backups remain; use `restore` for recovery), `agent-alias`/`agent alias`/`stateengine_agent_alias` (use stable ids or rename), `floor`, `floor-serve`, `projection-drain`, `drain-outbox`, `capture-receipts`, `file-write`, `project-owner-assign`, `human-bootstrap`, `state`, `run`, `serve`, `server`, `start`, `refresh`, `substrate-*`, `brick*`, `memory-*`/`memories`/`stateengine_memory_suggest` (memories import as decisions), `mail-tunnel`/`stateengine_mail_tunnel`, `deps`, `msg complete|reconcile|treat`, `seat cut|move|prompt`, `doctor contradictions`, and every factory command (campaigns, reviews, gates, landings, census, remote compute, routing). Any other unknown token is `usage-unknown-command` with a spelling suggestion from the live registry only.
 
 ---
 
-## 8. Choices made here that review should check
+## 8. Hazard plans, recovery and supported outcomes
 
-1. Message kinds closed at eight, with `owner` as a reserved recipient so agents can report to the human (J4 observability). OPS.md names a "kind" input but not its values.
-2. `--json=vN` carries N-1 pinning instead of a new global flag.
-3. Exit 2 for `msg inbox` is defined by unread coverage, not by body previews.
-4. `se hook claude` always exits 0 because Claude treats exit 2 as blocking.
-5. `agent.<A>.can-create` is the grant mechanism for `stateengine_agent_create`.
-6. Session `agent_launch`/`agent_stop` are self-only per OPS.md; delegated launch needs an allowlist amendment.
-7. Error-code total is 165, above the 80–120 target: splitting codes that need different remedies was preferred to merging codes whose fix lines would then be vague.
+Every hazardous action prints a concrete plan **before effects**: affected IDs/paths, agents ended, credentials revoked/rotated, events lost (zero when measured zero), retained copies and the legal recovery command. Unknown/unreadable consequences refuse rather than print zero. Replaying a keyed action does not apply it twice. Human presence means a verified owner at a TTY outside an agent process tree, as specified in 70; it is a mistake/drift guard, **not proof against a determined agent using that OS account**. Help, refusals and human decision receipts state that bound. No typed-ID confirmation is used.
+
+| Action | Human check / plan | Consequences and boundary |
+| --- | --- | --- |
+| `se remove` | owner + human-presence; exact projects, integrations, agent instances, credentials | stop/revoke only the owned scope; preserve repository files, Git and history; partial witness remains incomplete |
+| `se forget --event ID` | owner + human-presence; exact captured-record revisions and copies | erase store/projections plus WAL/cache readback and no-resurrection checks; name backups/provider transcripts that cannot be erased; never implicit in remove/import |
+| `se import --from-node PATH` | owner; print supported user families, source quiescence, conflicts and counts | original read-only; import identities, agents/profiles, messages/marks, decisions, working state, turns/conversation refs only; no fleet, credentials or live process ownership |
+| supported startup migration | sole owning host; print from/to, verified pre-migration backup, affected runtime and zero planned loss | automatic additive migration; if an old host runs, refuse with `run se down first`; too-new/unsupported paths refuse; no approval token/manual migration command |
+| `se restore` | owner + human-presence; newest independently verified valid automatic backup, exact stop/revocation and loss range | preserve corrupt source unchanged; restore history only by this named operation; no salvage or implicit doctor restore; unresolved loss counts are labelled unknown and require diagnosis |
+| `se credential rotate` | owner + human-presence; exact credentials and agent sessions invalidated | replace/read back machine credential and durable revocations; end/revoke named affected sessions; never a configuration repair |
+| `se doctor --fix CHECK-ID` | owner + human-presence; one currently diagnosed supported check, old/new owned config, side effects | no broad repair sweep, history restore, credential rotation or weakening permissions; changed user edits refuse; reread after the single repair |
+| `se uninstall` | owner + human-presence; owned install/integrations, agents/credentials, exact managed PATH entries | stop/revoke/read back, remove only owned installed files/integrations, restore prior managed PATH; preserve user repositories/history/backups/provider transcripts; J5 verifies fresh-shell PATH restoration |
+
+Automatic backups run at start-of-day and clean shutdown, plus the verified backup before migration. A backup failure is surfaced; it cannot silently license migration/restore. Restoration selects the newest **valid**, re-opened backup, preserves the corrupt source and reports the actual lost interval. There is no public manual-backup operation or event-log salvage in this build.
+
+History search is a bounded streamed scan with a byte/time window and continuation, not FTS. Forget matches those actual stores and caches rather than promising removal of a nonexistent FTS index. NORMAL durability may lose several recent ordinary commits on power loss or OS crash, not an application crash; decision ratify/reject/retract/supersede are all FULL. Section 20 defines the complete FULL set and 80 measures its real mixed workload.
+
+`se down` stops all owned agents and runtime on each OS and renders achieved stop witnesses plus original-conversation resume argv. It cannot report success then say agents remain running. Failed/unknown stop witnesses report incomplete facts. Default SE Code exit with live agents instead transfers to detached `se up`; that daemon exits ten minutes after its last live agent. Embedded idle process measurements apply when no agent is live. Embedded session binding uses an in-process handle, adds no credential-issued/activated commits, and still includes runtime.owner/session activation/new-schema FULL cost in E2.
+
+The product is complete only after real Claude and Codex pass all five journeys on clean Windows, Linux and macOS in standalone and embedded compositions. Windows/Linux is intermediate; the borrowed-Mac qualification runs before alpha release, without delaying the build. Atlas is optional, default disabled, built after journeys/handover and never blocks a milestone; forget and live handover remain before alpha. Numerical budgets live only in section 80, size/build order in 95.
 
 ---
 
 ## Appendix A — Output schemas (judged families)
 
-Exact field paths for the families the journey runner judges. `$` is the payload root and `[]` means "every element". "Always: yes" means the key is in every payload of that family (its value can still be `null` where the type allows). Any other value in that column names the case in which the key appears. Families may gain optional fields under the §1.8 freeze rules, and a judge must ignore keys it does not know. Key order does not matter, except that `schema` is serialized first.
+Exact field paths for the families the journey runner judges. `$` is the payload root and `[]` means "every element". "Always: yes" means the key is in every payload of that family (its value can still be `null` where the type allows). Any other value in that column names the case in which the key appears. Families may gain optional fields under the §1.8 version rules, and a judge must ignore keys it does not know. Key order does not matter, except that `schema` is serialized first.
 
 ### A.0 Shared shapes (section 00 vocabulary)
 
 | Shape | JSON | Notes |
 | --- | --- | --- |
-| Id | string | Section 10 owns the text form: kind prefix + UUIDv7, e.g. `ag_0192f3a1-7c2e-7b4d-9a10-3e5f6a7b8c9d`. Prefixes: `prj_` project, `hu_` human, `ag_` agent, `ses_` session, `lch_` launch, `msg_` message, `dec_` decision, `ev_` event, `obs_` observation, `cred_` credential. Imported legacy ids keep their text. |
+| Id | string | Section 10 owns the text form: kind prefix + UUIDv7, e.g. `ag_0192f3a1-7c2e-7b4d-9a10-3e5f6a7b8c9d`. Prefixes: `prj_` project, `hu_` human, `ag_` agent, `ses_` session, `lch_` launch, `msg_` message, `dec_` decision, `ev_` event, `cred_` credential. Imported legacy ids keep their text. |
 | Time | string | RFC 3339 UTC with microseconds, e.g. `2026-10-30T12:01:07.123456Z`. Used for display only; the store orders events. |
 | Cursor | string | Opaque. Bound to its project and principal. |
 | Ref | object | `{id: Id, name: string}`. A message party also carries `kind: "agent" \| "owner"`. |
 | Cmd | two sibling keys | `command`: string, the full line quoted for the current platform's shell. `argv`: string[], the exact tokens, starting with `"se"`. A judge runs `argv` verbatim. Wherever a row below says "+ Cmd", both keys sit in that object. When there is no command, both are null. |
 | `Read<T>` | `{"state":"present","value":T}` \| `{"state":"absent","checked":string}` \| `{"state":"unreadable","source":string,"reason":string}` \| `{"state":"unknown","what":string}` | `checked` names what was consulted to establish the absence. |
 | `Window` | `{"from":Cursor\|null,"to":Cursor\|null,"limit":int,"complete":bool,"omitted":{"count":int\|null,"reason":string\|null}}` | `complete: true` implies `omitted.count == 0` and `omitted.reason == null`. `count: null` means the number left out is unknown. `reason` is one of `limit`, `budget`, `unreadable`, `source-incomplete`. |
-| `Page<T>` | `{"items":[T],"window":Window,"next":Cursor\|null}` | `next` is non-null exactly when following it can return more. Pages concatenate to the full read (00 G5). |
+| List consistency | family metadata | Every non-mail list result includes `consistency: "live-keyset"` alongside its canonical Page/Window; mail uses its unchanged stable-window contract. This is an operation-family label, not another completeness type. |
+| `Page<T>` | `{"items":[T],"window":Window,"next":Cursor\|null}` | `next` is non-null exactly when following it can return more. Mail retains stable windows. Non-mail pages are labelled `consistency: "live-keyset"`; continuation advances a stable key without snapshot membership. Complete means complete for the measured range, not an immutable historical list. |
 | Receipt state | string | `committed`: a new event was appended. `replayed`: section 00's "already done" (same idempotency key and same body, so no new event). `pending`: committed, but the follow-up is not confirmed yet. `refused`: appears only inside bulk results; when a whole call is refused, the output is an `se.error/v1` payload instead. |
 | Writer | object | `{"mode":"host","host_generation":string}` \| `{"mode":"direct"}`. Records who committed the event the receipt refers to. `host`: the running host's writer committed it, and `host_generation` is the decimal text of that host's generation (the same number as `se.status/v1` `$.runtime.generation`, e.g. `"7"`). `direct`: the CLI committed it with no host running, and the key `host_generation` is absent. The value is stored on the event row at commit, so a `replayed` receipt reports the original commit's writer. Families that carry `$.writer` (always present): `se.message-receipt/v1`, `se.message-read/v1`, `se.disposition-receipt/v1`, `se.decision-receipt/v1`, `se.working-state-receipt/v1`, `se.turn-receipt/v1`, `se.agent-receipt/v1`. See §1.1, "Writer stamp". |
 | Witness | object | `{"state":"witnessed"\|"unwitnessed"\|"not-applicable","method":string\|null,"observed_at":Time\|null,"detail":string\|null}`. A result is `witnessed` only after a re-read from outside the writer (00 G8). `method` is one of `job-empty` (Windows), `pidfd-exit+cgroup-empty` (Linux), `pidfd-exit+pgid-empty` (Linux, `uncontained`), `start-identity-exit+pgid-empty` (Linux without pidfd support: exit confirmed by re-reading the recorded start identity as gone or changed, at the bound section 30 states), `kqueue-exit+pgid-empty` (macOS), `readback` (files and config), `registry-reread`. |
@@ -862,7 +785,7 @@ Exact field paths for the families the journey runner judges. `$` is the payload
 | `$.launch` | object \| null | yes | with `--launch`, the full `se.launch/v1` payload (carrying its own `schema`); otherwise null |
 
 ```json
-{"schema":"se.init/v1","outcome":"adopted",
+{"schema":"se.init/v1","idempotency_key":"request-init-v1-example","outcome":"adopted",
  "project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app","root":"C:\\Users\\ana\\src\\app","registered_at":"2026-10-30T12:00:01.000001Z"},
  "repo":{"root":"C:\\Users\\ana\\src\\app","git":{"head":"4f1c2e9a0b7d","branch":"main"},"files_touched":0},
  "owner":{"human_id":"hu_0192f3a0-1111-7aaa-8bbb-000000000002","os_user":"DESKTOP-1\\ana"},
@@ -918,7 +841,7 @@ Exact field paths for the families the journey runner judges. `$` is the payload
    "conversation":{"id":"7f3a9c1e-55b0-4d0a-9e61-2c1d0b9a8f77","state":"saved"},
    "resume":{"ready":true,"mode":"resume","reason":null,"command":"se launch main","argv":["se","launch","main"]},
    "unread":0,"last_activity_at":"2026-10-30T12:19:41.000000Z"}],
- "window":{"from":null,"to":"c1.Zm9v","limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null}
+ "consistency":"live-keyset","window":{"from":null,"to":"c1.Zm9v","limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null}
 ```
 
 `se.launch/v1` carries the same pair for the agent it launched, at `$.containment` and `$.containment_cause`, with the same values and the same rule: launch never refuses for containment, and an `uncontained` launch always names its cause. On Linux the host decides on the first launch it serves: it asks the systemd user manager for one delegated transient scope for agents (`systemd-run --user`, the pattern SE Code already uses) and places every later agent in it; when there is no user manager or no delegation it records the probe cause and every agent it launches is `uncontained` until the host restarts.
@@ -982,7 +905,7 @@ These counters cover the host process. When `$.runtime.host` is `daemon`, that p
               "containment":"uncontained","containment_cause":"no-user-manager"},
    "conversation":{"id":"7f3a9c1e-55b0-4d0a-9e61-2c1d0b9a8f77","state":"saved"},
    "resume":{"ready":true,"mode":"running","reason":null,"command":null,"argv":null},"unread":0,"last_activity_at":"2026-10-30T12:04:51.000000Z"}],
-   "window":{"from":null,"to":"c1.YQ","limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null},
+   "consistency":"live-keyset","window":{"from":null,"to":"c1.YQ","limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null},
  "inbox":{"owner_unread":1,"self_unread":null},"decisions":{"pending":0},
  "capture":{"state":"on","last_turn_at":"2026-10-30T12:04:51.000000Z"},"atlas":{"state":"disabled"},
  "pending":[],"projects":null,
@@ -1004,7 +927,7 @@ These counters cover the host process. When `$.runtime.host` is `daemon`, that p
 | `$.kind` | message kind | yes | |
 | `$.reply_to` | Id \| null | yes | |
 | `$.refs` | Id[] | yes | |
-| `$.idempotency_key` | string \| null | yes | as supplied |
+| `$.idempotency_key` | string | yes | created before first send; replay retains the same key |
 | `$.body.bytes` | int | yes | body size; the receipt does not echo the body |
 | `$.body.sha256` | string | yes | hex digest of the stored body |
 | `$.delivery.state` | `"pending"` \| `"offered"` \| `"not-running"` \| `"not-applicable"` | yes | notification status when the call returned; `not-applicable` for messages to `owner`. Never a claim that the message was read. |
@@ -1018,7 +941,7 @@ These counters cover the host process. When `$.runtime.host` is `daemon`, that p
  "project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app"},
  "from":{"kind":"agent","id":"ag_0192f3a0-1111-7aaa-8bbb-000000000003","name":"main"},
  "to":{"kind":"agent","id":"ag_0192f3a0-1111-7aaa-8bbb-000000000004","name":"rev"},
- "kind":"handoff","reply_to":null,"refs":[],"idempotency_key":null,
+ "kind":"handoff","reply_to":null,"refs":[],"idempotency_key":"request-0192f3a8-0000-7000-8000-000000000049",
  "body":{"bytes":212,"sha256":"9b1e5a0c…"},"delivery":{"state":"pending","at":null},
  "writer":{"mode":"host","host_generation":"7"}}
 ```
@@ -1078,7 +1001,7 @@ This example exits 2: 3 messages are unread and 1 is shown.
 
 ### A.6 `se.stop/v1` — `se stop`, `stateengine_agent_stop`
 
-For a single target, the per-target fields sit at the root, with `$.scope = "agent"` and `$.stops = null`. With `--all`, `$.scope = "all"`, the root-level per-target fields are null, and each element of `$.stops[]` carries the same per-target fields. `$.complete` is false if any entry lacks a witness. `se.process-stop/v1` (`se process stop`, `stateengine_process_stop`) carries the same `population`, `remaining[]` and `enumeration` fields for its observation.
+For a single target, the per-target fields sit at the root, with `$.scope = "agent"` and `$.stops = null`. With `--all`, `$.scope = "all"`, the root-level per-target fields are null, and each element of `$.stops[]` carries the same per-target fields. `$.complete` is false if any entry lacks a witness. There is no arbitrary-process stop family; these facts describe the managed agent scope only.
 
 Human text follows `enumeration`: `complete` prints the count ("2 processes still running"); `best-effort` or `unavailable` with `population = populated` prints "processes still running in the agent's group; count unavailable" and lists whatever `remaining[]` names, labelled as partial.
 
@@ -1097,7 +1020,7 @@ Human text follows `enumeration`: `complete` prints the count ("2 processes stil
 | `$.target.provider` | provider | single target | |
 | `$.target.process` | ProcessId \| null | single target | the exact instance stopped, re-checked before acting |
 | `$.method` | `"graceful"` \| `"forced"` \| null | single target | null for `already-stopped` |
-| `$.witness` | Witness | single target | outside confirmation that the process and its descendants are gone |
+| `$.witness` | Witness | single target | outside confirmation that the recorded instance and owned job/cgroup/group are gone; uncontained process-group checks exclude setsid/double-fork escapes and name that bound |
 | `$.population` | `"populated"` \| `"empty"` | single target | the kernel's answer for the agent's whole scope (Linux cgroup `populated`, Windows job, macOS tracked group, Linux `uncontained` process group); `empty` when witnessed |
 | `$.remaining[]` | `{pid, exe, started_at}` | single target | members still running that StateEngine could name; empty when `population = empty` |
 | `$.enumeration` | `"complete"` \| `"best-effort"` \| `"unavailable"` | single target | whether `remaining[]` is the whole population. `best-effort`/`unavailable` with `populated` means "still running; count unavailable", never a count |
@@ -1111,7 +1034,7 @@ Human text follows `enumeration`: `complete` prints the count ("2 processes stil
 | `$.stops[]` | array \| null | yes | entries for the `all` scope: `{target, result, method, witness, population, remaining, enumeration, capture, resume}` |
 
 ```json
-{"schema":"se.stop/v1","receipt":"seat-stop/v1","scope":"agent","result":"stopped","complete":true,
+{"schema":"se.stop/v1","idempotency_key":"request-stop-v1-example","receipt":"seat-stop/v1","scope":"agent","result":"stopped","complete":true,
  "event_id":"ev_0192f3c0-0000-7000-8000-000000000201",
  "target":{"project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app"},"agent":{"id":"ag_0192f3a0-1111-7aaa-8bbb-000000000003","name":"main"},
            "session_id":"ses_0192f3a2-0000-7000-8000-00000000000a","launch_id":"lch_0192f3a2-0000-7000-8000-00000000000b","provider":"claude",
@@ -1156,7 +1079,7 @@ Human text follows `enumeration`: `complete` prints the count ("2 processes stil
               "session_id":"ses_0192f3c8-0000-7000-8000-00000000000e","preview":false},
  "generated_at":"2026-10-30T12:41:00.000000Z","since":null,"complete":false,"budget":{"limit_bytes":32768,"used_bytes":30114},
  "working_state":{"state":"present","value":{"text":"Reviewing tx.rs for main; next: reply with findings","revision":4,"updated_at":"2026-10-30T12:20:11.000000Z"}},
- "unread":{"items":[],"window":{"from":null,"to":null,"limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null},
+ "unread":{"items":[],"consistency":"live-keyset","window":{"from":null,"to":null,"limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null},
  "required_reads":[{"kind":"message","id":"msg_0192f3b0-0000-7000-8000-000000000101","why":"handoff addressed to you, not yet acknowledged"}],
  "decisions":{"governing":[{"id":"dec_0192f3a9-0000-7000-8000-000000000050","key":"api.versioning","statement":"Breaking JSON changes bump the family major.","ratified_at":"2026-10-30T12:10:00.000000Z"}],"pending":0},
  "recent_turns":[{"event_id":"ev_0192f3bf-0000-7000-8000-0000000001ff","at":"2026-10-30T12:19:41.000000Z","role":"assistant","preview":"Found two issues in commit()…"}],
@@ -1179,7 +1102,7 @@ Human text follows `enumeration`: `complete` prints the count ("2 processes stil
 | `$.projects[].removed_at` | Time \| null | yes | |
 | `$.projects[].event_id` | Id \| null | yes | the removal event; history is kept |
 | `$.projects[].agents_stopped[]` | `{agent: Ref, prior_state, witness: Witness, process: ProcessId\|null}` | yes | agents that were running; `prior_state` uses the AgentRow session states |
-| `$.projects[].processes_stopped[]` | `{observation_id, process: ProcessId, witness: Witness}` | yes | other processes StateEngine owned |
+| `$.projects[].processes_stopped[]` | `{lifecycle_id, process: ProcessId, witness: Witness}` | yes | owned provider/terminal helpers within the removed agent lifecycles |
 | `$.projects[].credentials_revoked[]` | `{credential_id, kind: "session"\|"launch"\|"bearer", session_id\|null, state: "revoked"\|"already-revoked", at}` | yes | ids only, never secrets |
 | `$.projects[].integrations[]` | `{path, entry, action: "reversed"\|"kept-by-flag"\|"conflict-kept"\|"absent", witness: Witness}` | yes | edits StateEngine owned outside the store. `conflict-kept`: you changed the entry, so remove left it and listed it in `remaining`. |
 | `$.projects[].removed[]` | `{what, path\|null}` | yes | `what` is one of `registration`, `launch-files`, `session-pins`, `atlas-index`, `runtime-endpoint` |
@@ -1193,7 +1116,7 @@ Human text follows `enumeration`: `complete` prints the count ("2 processes stil
 | `$.next` | `{text}` + Cmd | yes | e.g. the uninstall step, or `se init` to come back |
 
 ```json
-{"schema":"se.remove/v1","scope":"project","outcome":"removed",
+{"schema":"se.remove/v1","idempotency_key":"request-remove-v1-example","scope":"project","outcome":"removed",
  "projects":[{"project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app","root":"/home/ana/src/app"},
    "outcome":"removed","removed_at":"2026-10-30T12:59:10.000000Z","event_id":"ev_0192f3d0-0000-7000-8000-000000000301",
    "agents_stopped":[{"agent":{"id":"ag_0192f3a0-1111-7aaa-8bbb-000000000004","name":"rev"},"prior_state":"running",
@@ -1254,7 +1177,7 @@ After `se remove --all`, `se status --all` gives `$.scope = "all"` and an empty 
 Stable check ids:
 - `binary.version`, `home.location`, `home.permissions`, `credential.machine`
 - `store.open`, `store.schema`, `store.integrity`, `store.backups`, `disk.space`
-- `config.user`, `config.project`, `env.legacy`
+- `config.user`, `env.legacy`
 - `runtime.lock`, `runtime.endpoint`, `runtime.version`, `listener.loopback`
 - `provider.claude`, `provider.codex`
 - `custody.windows-job`, `custody.linux-cgroup`, `custody.macos-kqueue`: only the current OS's check is measured; the others report `not-applicable`. `custody.linux-cgroup` is `ok` when agents get a delegated cgroup v2 scope and `warning` (never `failed`) when they run `uncontained`; its `observed` names the containment and the full probe text, `code` is null (nothing refuses), and its manual fix enables a systemd user manager with delegation. It replaces the removed `cgroup-delegation-missing` refusal.
@@ -1262,7 +1185,7 @@ Stable check ids:
 - `capture:<agent-name>`: one per agent.
 - `atlas.index`
 
-New ids may be added. Existing ids keep their meaning.
+New ids may be added. Existing ids keep their meaning. Provider checks use `se_host::MIN_CODEX_VERSION` (the sole minimum constant); the value below is an illustrative rendered observation, not a second configuration source.
 
 ```json
 {"schema":"se.diagnosis/v1","generated_at":"2026-10-30T12:30:00.000000Z",
@@ -1270,8 +1193,8 @@ New ids may be added. Existing ids keep their meaning.
  "outcome":"problems","summary":{"ok":14,"failed":1,"warning":1,"unmeasured":0,"skipped":0},
  "checks":[
   {"id":"store.integrity","title":"Store integrity","state":"ok","measured_at":"2026-10-30T12:30:00.010000Z","observed":"ok","expected":"ok","reason":null,"code":null,"fix":null,"repairable":false},
-  {"id":"provider.codex","title":"Codex CLI","state":"failed","measured_at":"2026-10-30T12:30:00.050000Z","observed":"codex 0.120.0","expected":">= 0.166.0",
-   "reason":"too old","code":"provider-cli-too-old","fix":{"text":"Upgrade Codex","command":null,"argv":null},"repairable":false},
+  {"id":"provider.codex","title":"Codex CLI","state":"failed","measured_at":"2026-10-30T12:30:00.050000Z","observed":"codex 0.120.0","expected":">= 0.152.0",
+   "reason":"too old","code":"provider-incompatible","fix":{"text":"Upgrade Codex","command":null,"argv":null},"repairable":false},
   {"id":"custody.linux-cgroup","title":"Agent process custody","state":"warning","measured_at":"2026-10-30T12:30:00.060000Z",
    "observed":"uncontained (no-user-manager: $XDG_RUNTIME_DIR/systemd/private absent); agents run in their own process group","expected":"a delegated cgroup v2 scope from the systemd user manager",
    "reason":"no systemd user manager for this user, so stop reaches only each agent's process group","code":null,"fix":{"text":"Run a systemd user manager with cgroup delegation (exact steps printed here); agents launch either way","command":null,"argv":null},"repairable":false}]}
@@ -1314,16 +1237,18 @@ This example exits 1. One check failed, and a failure outranks a warning.
 | `$.event_id` | Id | yes | the transition event |
 | `$.recorded_at` | Time | yes | commit time |
 | `$.project` | Ref | yes | |
-| `$.idempotency_key` | string \| null | yes | as supplied (propose); null for owner transitions |
+| `$.idempotency_key` | string | yes | required for propose and every owner transition; generated/printed by CLI before first send |
+| `$.authority.guard` | string \| null | yes | human transitions: `"owner-terminal-outside-agent-tree"`; proposal: null |
+| `$.authority.limit` | string | yes | `"mistake/drift guard; not proof against a determined agent using the same OS account"` |
 | `$.decision` | DecisionRow | yes | the decision read back after the commit. For `supersede`, this is the replacement, now governing. |
 | `$.replaced` | DecisionRow \| null | yes | `supersede` only: the prior decision, now `superseded`; null otherwise |
 | `$.writer.mode` | `"host"` \| `"direct"` | yes | A.0 Writer |
 | `$.writer.host_generation` | string | when mode is `host` | |
 
 ```json
-{"schema":"se.decision-receipt/v1","action":"propose","state":"committed",
+{"schema":"se.decision-receipt/v1","authority":{"guard":null,"limit":"mistake/drift guard; not proof against a determined agent using the same OS account"},"action":"propose","state":"committed",
  "event_id":"ev_0192f3a8-0000-7000-8000-000000000049","recorded_at":"2026-10-30T12:08:00.000000Z",
- "project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app"},"idempotency_key":null,
+ "project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app"},"idempotency_key":"request-0192f3a8-0000-7000-8000-000000000049",
  "decision":{"id":"dec_0192f3a9-0000-7000-8000-000000000050","key":"api.versioning","state":"pending","governing":false,"revision":1,
    "statement":{"text":"Breaking JSON changes bump the family major.","complete":true,"bytes":44,"command":null,"argv":null},
    "rationale":"Consumers pin majors.","proposed_by":{"kind":"agent","id":"ag_0192f3a0-1111-7aaa-8bbb-000000000003","name":"main"},
@@ -1333,12 +1258,12 @@ This example exits 1. One check failed, and a failure outranks a warning.
  "writer":{"mode":"host","host_generation":"7"}}
 ```
 
-The same decision after `se decision ratify dec_…` run in the owner's terminal with no host running:
+The same decision after `se decision ratify dec_…` run in the owner's terminal with no host running (the request uses a fresh key):
 
 ```json
-{"schema":"se.decision-receipt/v1","action":"ratify","state":"committed",
+{"schema":"se.decision-receipt/v1","authority":{"guard":"owner-terminal-outside-agent-tree","limit":"mistake/drift guard; not proof against a determined agent using the same OS account"},"action":"ratify","state":"committed",
  "event_id":"ev_0192f3aa-0000-7000-8000-000000000051","recorded_at":"2026-10-30T12:10:00.000000Z",
- "project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app"},"idempotency_key":null,
+ "project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app"},"idempotency_key":"request-0192f3aa-0000-7000-8000-000000000051",
  "decision":{"id":"dec_0192f3a9-0000-7000-8000-000000000050","key":"api.versioning","state":"ratified","governing":true,"revision":2,
    "statement":{"text":"Breaking JSON changes bump the family major.","complete":true,"bytes":44,"command":null,"argv":null},
    "rationale":"Consumers pin majors.","proposed_by":{"kind":"agent","id":"ag_0192f3a0-1111-7aaa-8bbb-000000000003","name":"main"},
@@ -1351,7 +1276,7 @@ The same decision after `se decision ratify dec_…` run in the owner's terminal
 
 ### A.12 `se.decision-page/v1` — `se decision list`, `stateengine_decision_list`; `se.decision/v1` — `se decision show`
 
-`se.decision-page/v1` is `{schema, project, filter}` plus the `Page<DecisionRow>` keys. List ordering is by store order of the latest transition, oldest first.
+`se.decision-page/v1` is `{schema, project, filter, consistency: "live-keyset"}` plus the `Page<DecisionRow>` keys. List ordering is by store order of the latest transition, oldest first.
 
 | Path | Type | Always | Meaning |
 | --- | --- | --- | --- |
@@ -1375,23 +1300,79 @@ The same decision after `se decision ratify dec_…` run in the owner's terminal
    "proposed_at":"2026-10-30T12:08:00.000000Z","decided_by":{"kind":"owner","id":"hu_0192f3a0-1111-7aaa-8bbb-000000000002","name":"ana"},
    "decided_at":"2026-10-30T12:10:00.000000Z","reason":null,"supersedes":null,"superseded_by":null,
    "event_id":"ev_0192f3aa-0000-7000-8000-000000000051","unreadable":null}],
- "window":{"from":null,"to":"c1.ZDE","limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null}
+ "consistency":"live-keyset","window":{"from":null,"to":"c1.ZDE","limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null}
 ```
 
 ### A.13 Other write receipts carrying `writer`
 
-Each family below always carries `$.schema`, `$.state` (`committed` \| `replayed`, plus `conflict` for working state), `$.event_id` (Id \| null; null only for a working-state `conflict`), `$.recorded_at` and `$.writer` (A.0), together with the fields listed.
+Every keyed write result also carries its original `$.idempotency_key`; natural capture/marker results carry `$.request_identity` with `kind: "natural"` and its source session/turn or recipient/message/marker fields. Each committed/replayed family below carries `$.schema`, `$.state` (`committed` \| `replayed`), `$.event_id` (Id), `$.recorded_at` and `$.writer` (A.0), together with the fields listed.
 
 | Family | Additional fields (all always present) |
 | --- | --- |
-| `se.working-state-receipt/v1` (`se working-state set`, `stateengine_working_state_set`) | `$.agent` Ref; `$.revision` int \| null (the new revision; null on `conflict`); `$.current_revision` int \| null (the stored revision on `conflict`, otherwise equal to `revision`); `$.bytes` int. A `conflict` is returned with exit 1 and `se.error/v1` code `revision-conflict` on the CLI. MCP returns the receipt so the model can reread. |
+| `se.working-state-receipt/v1` (`se working-state set`, `stateengine_working_state_set`) | `$.agent` Ref; `$.revision` int (the new revision); `$.current_revision` int (equal to `revision`); `$.bytes` int. A conflict returns `se.error/v1` code `revision-conflict` with expected/current revisions on CLI, MCP and linked calls; it creates no event or writer stamp. |
 | `se.turn-receipt/v1` (`se session turn`, `stateengine_session_turn`, hooks) | `$.result` `"captured"` \| `"duplicate"` \| `"suppressed"`; `$.session_id` Id; `$.turn_id` string \| null; `$.role`; `$.bytes` int. A `suppressed` turn appends no body, and its `event_id` is the suppression-count event. |
 | `se.agent-receipt/v1` (`se agent add`, `se agent rename`, `stateengine_agent_create`) | `$.action` `"create"` \| `"rename"`; `$.outcome` `"created"` \| `"existing"` \| `"renamed"` \| `"unchanged"`; `$.agent` `{id, name, provider, model, profile}`; `$.previous_name` string \| null (rename only); `$.process_started` false (creating an agent never starts a process). |
 | `se.disposition-receipt/v1` (`msg ack`, `msg dismiss`) | `$.message_id`; `$.disposition` `"read"` \| `"dismissed"`; `$.marker` `"new"` \| `"already"`; `$.by` Ref (the recipient). |
 | `se.message-read/v1` (`msg read`) | `$.message` MessageRow (A.5, with `body.complete` true unless the body exceeds the hard cap); `$.marker` `"new"` \| `"already"`. `event_id` and `writer` refer to the read-marker event; on `already`, they refer to the original marker. |
 
 ```json
-{"schema":"se.working-state-receipt/v1","state":"committed","event_id":"ev_0192f3b5-0000-7000-8000-000000000110",
+{"schema":"se.working-state-receipt/v1","idempotency_key":"working-state-0192f3b5-0000-7000-8000-000000000110","state":"committed","event_id":"ev_0192f3b5-0000-7000-8000-000000000110",
  "recorded_at":"2026-10-30T12:20:11.000000Z","agent":{"id":"ag_0192f3a0-1111-7aaa-8bbb-000000000004","name":"rev"},
  "revision":4,"current_revision":4,"bytes":52,"writer":{"mode":"host","host_generation":"7"}}
 ```
+
+### A.14 `se.event/v1` and `se.history-page/v1` — `se history`, `stateengine_event_read`
+
+The judged readback for anything a hook, integration or command recorded. Capture-only hook stdout stays empty; session-start retains its provider context framing (section 40); an outside judge reads the captured turn back through this family instead.
+
+`se.event/v1` always carries:
+
+| Path | Type | Meaning |
+| --- | --- | --- |
+| `$.schema` | `"se.event/v1"` | |
+| `$.event_id` | Id | |
+| `$.seq` | int | Store order; strictly increasing within the store. |
+| `$.kind` | string | Event kind, e.g. `session.turn`, `message.sent`, `decision.ratified`. |
+| `$.recorded_at` | Time | |
+| `$.project` | Ref | |
+| `$.actor` | Ref | Who caused it (agent, owner or integration principal). |
+| `$.writer` | Writer (A.0) | Who committed it. |
+| `$.read_at_seq` | int | The store position this read was taken at. |
+| `$.payload` | object | Kind-specific, below. |
+
+For `kind: "session.turn"`, `$.payload` always carries `session_id` Id; `turn_id` string \| null (the provider's id when it has one); `provider` `"claude"` \| `"codex"` \| `"secode"`; `provider_session` string \| null; `role` `"user"` \| `"assistant"`; `source` `"hook"` \| `"transcript"` \| `"app-server"` \| `"integration"`; `occurred_at` Time \| null; and `body` `{"text": string, "bytes": int, "sha256": string, "complete": bool}`. `complete: false` only when the stored body hit the 1 MiB cap. A suppressed turn has no `session.turn` event; its suppression-count event has `kind: "session.turn_suppressed"` and `payload.count`.
+
+`se.history-page/v1` is a labelled live-keyset `Page<se.event/v1 without $.schema>` (A.0) plus `$.schema` and `$.read_at_seq`. Filters: `--session ID`, `--kind KIND` (repeatable), `--agent A`, `--since-seq N`. Order is ascending `seq`.
+
+**How an outside judge checks a captured turn (B9 and J3):** drive the real integration exactly as its provider does (Claude hooks/transcript, Codex app-server or SE Code direct capture; section 40), then run `se history --session SESSION_ID --kind session.turn --json` from outside the writer. The turn must appear once with the expected `role`, `body.sha256` and `writer`. Running the same hook again must not add a second row (the turn receipt says `duplicate`).
+
+```json
+{"schema":"se.event/v1","event_id":"ev_0192f3b5-0000-7000-8000-000000000120","seq":4182,"kind":"session.turn",
+ "recorded_at":"2026-10-30T12:21:03.000000Z","project":{"id":"prj_0192f3a0-0000-7aaa-8bbb-000000000001","name":"demo"},
+ "actor":{"id":"ag_0192f3a0-1111-7aaa-8bbb-000000000004","name":"rev","kind":"agent"},"writer":{"mode":"host","host_generation":"7"},
+ "read_at_seq":4190,"payload":{"session_id":"ses_0192f3b4-0000-7000-8000-000000000031","turn_id":"t-17","provider":"claude",
+ "provider_session":"9f1c…","role":"assistant","source":"hook","occurred_at":"2026-10-30T12:21:02.881000Z",
+ "body":{"text":"Done: built.txt written.","bytes":24,"sha256":"…","complete":true}}}
+```
+
+### A.15 Owner hazard results — repair, restore, rotate and uninstall
+
+Each family has `schema`, `idempotency_key` (the original request key), `state`
+(`committed` | `replayed` | `pending`), `complete` and the exact printed `plan`.
+A normal refusal is `se.error/v1`, not a successful hazard result. `plan` contains
+`targets[]` (typed IDs/owned paths), `agents_ended[]`, `credentials_rotated[]`,
+`events_lost: Read<{from_seq, to_seq, count}>`, `retained_copies[]`, and
+`authority_limit` stating the same-user mistake/drift boundary. Measured zero is
+Present with count zero; unknown/unreadable is never zero. Printing the plan is
+not a new durable phase or typed-ID confirmation.
+
+| Family | Additional required fields | Witness and completion rule |
+| --- | --- | --- |
+| `se.repair/v1` | `check_id`, `applied[]`, `skipped[]`, `readbacks[]`, `remaining_checks[]` | exactly the one diagnosed CHECK-ID; no restore/rotation; complete only after owned config readback; user-edited conflicts remain visible |
+| `se.restore/v1` | `backup {path, schema, head_seq, verified_at}`, `preserved_source {path, witness}`, `lost {from_seq, to_seq, count: Read<int>}`, `stops[]`, `revocations[]`, `restored_store {schema, head_seq, witness}` | newest valid automatic backup independently reopened; corrupt source preserved; the plan names stop/revocation and actual loss before replacement; no event salvage |
+| `se.credential-rotation/v1` | `revoked[] {credential_id, session_id, witness}`, `new_credential {credential_id, witness}`, `stops[]` | no credential bytes; verify new protected credential and every named revocation/stop; partial effects remain pending/incomplete |
+| `se.uninstall/v1` | `install_files[] {path, outcome, witness}`, `integrations[] {path, entry, outcome, witness}`, `stops[]`, `revocations[]`, `path {scope, before_entries, after_entries, witness}`, `preserved[]` | only owned install/integration/PATH entries removed/restored; fresh-shell PATH readback required; preserved repositories, Git, history, backups and provider transcripts named; any unresolved obligation makes complete false |
+
+Store-committing subresults carry their event/writer stamps from A.0. A file-only
+readback has a Witness, never a manufactured event or writer. Secret header-helper
+framing remains its native map; its private keyed result is not a new public tool.

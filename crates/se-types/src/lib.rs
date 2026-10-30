@@ -23,3 +23,7 @@ pub struct ApiVersion {
 }
 /// Internal CLI/IPC version, distinct from Alpha's linked API version ownership.
 pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 0 };
+
+/// UTF-8 byte limits shared by operation DTOs and every ingress/store validator.
+pub const MESSAGE_BODY_MAX_BYTES: usize = 32 * 1024;
+pub const WORKING_STATE_MAX_BYTES: usize = 16 * 1024;
