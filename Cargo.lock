@@ -150,6 +150,9 @@ version = "0.0.1"
 [[package]]
 name = "se-atlas"
 version = "0.0.1"
+dependencies = [
+ "se-types",
+]
 
 [[package]]
 name = "se-core"
