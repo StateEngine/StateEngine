@@ -3,11 +3,11 @@ use se_types::{
     AgentId, DecisionId, EventId, IdempotencyKey, LifecycleId, MessageId, Page, ProjectId, Read,
     SessionId,
 };
-use std::{io::Read as ByteReader, time::Duration};
+use std::{future::Future, io::Read as ByteReader, sync::Arc, time::Duration};
 
 /// Host filesystem custody supplies the held per-user runtime lease. An in-process
 /// caller is trusted; IPC callers cannot construct this object from request JSON.
-pub trait RuntimeLease {
+pub trait RuntimeLease: Send + Sync {
     fn identity(&self) -> StoreResult<LeaseIdentity>;
 }
 /// Constructors are declarations, not executable fallback/default implementations.
@@ -15,6 +15,18 @@ pub trait StoreFactory {
     type Reader: ReadStore;
     type Direct: DirectStore;
     type Host: HostStore;
+    /// Background online snapshot; requires host lease, independent read connection.
+    fn backup(
+        options: &StoreOptions,
+        lease: Arc<dyn RuntimeLease>,
+        deadline: Duration,
+    ) -> StoreResult<BackupReport>;
+    /// Read-only inventory before owner approval or writer drain; recheck on erase.
+    fn erasure_plan(
+        options: &StoreOptions,
+        targets: Vec<EraseTarget>,
+        lease: &dyn RuntimeLease,
+    ) -> StoreResult<ErasurePlan>;
     fn recovery_plan(
         options: &StoreOptions,
         lease: &dyn RuntimeLease,
@@ -42,6 +54,12 @@ pub trait StoreFactory {
     ) -> StoreResult<Read<Self::Direct>>;
     fn open_host(options: &StoreOptions, lease: &dyn RuntimeLease)
     -> StoreResult<Read<Self::Host>>;
+    /// Owner bootstrap with shared runtime lease; publish a new schema no-replace.
+    fn create_direct(
+        options: &StoreOptions,
+        lease: &dyn RuntimeLease,
+        store_id: StoreId,
+    ) -> StoreResult<Self::Direct>;
     fn create(
         options: &StoreOptions,
         lease: &dyn RuntimeLease,
@@ -75,31 +93,25 @@ pub trait DirectStore: ReadStore + TextStaging {
     where
         Self: Sized;
 }
-pub trait HostStore: ReadStore + TextStaging {
-    type Writer: WriterOwner;
+pub trait HostStore: ReadStore + TextStaging + Sized {
+    type Writer: WriterOwner<Host = Self>;
     fn start_writer(
-        &mut self,
+        self,
         options: WriterOptions,
-        lease: &dyn RuntimeLease,
+        lease: Arc<dyn RuntimeLease>,
     ) -> StoreResult<Self::Writer>;
     fn migration_plan(&self, target_version: u32) -> StoreResult<MigrationPlan>;
     fn migrate(
         &mut self,
         plan: MigrationPlan,
+        approval: MigrationApproval,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<MigrationReport>;
-    fn backup(&mut self, lease: &dyn RuntimeLease, deadline: Duration)
-    -> StoreResult<BackupReport>;
     fn checkpoint(
         &mut self,
         mode: CheckpointMode,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CheckpointReport>;
-    fn erasure_plan(
-        &self,
-        targets: Vec<EraseTarget>,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<ErasurePlan>;
     fn erase(
         &mut self,
         plan: ErasurePlan,
@@ -116,19 +128,27 @@ pub enum CheckpointMode {
     Truncate,
 }
 pub trait WriterOwner {
+    type Host: HostStore;
     type Client: WriterClient;
     fn client(&self) -> Self::Client;
-    fn flush(&mut self, deadline: Duration) -> StoreResult<FlushReport>;
-    fn drain(self, deadline: Duration) -> StoreResult<FlushReport>
+    type Flush: Future<Output = StoreResult<FlushReport>> + Send;
+    type Drain: Future<Output = StoreResult<DrainedHost<Self::Host>>> + Send;
+    fn flush(&mut self, deadline: Duration) -> StoreResult<Self::Flush>;
+    fn drain(self, deadline: Duration) -> Self::Drain
     where
         Self: Sized;
+}
+pub struct DrainedHost<H: HostStore> {
+    pub host: H,
+    pub report: FlushReport,
 }
 pub trait WriterClient: Clone + Send + Sync {
     type Completion: CommitWait;
     fn submit(&self, batch: AtomicBatch) -> StoreResult<Self::Completion>;
 }
-pub trait CommitWait: Send {
-    fn wait(self, deadline: Duration) -> StoreResult<CommitReceipt>
+pub trait CommitWait: Future<Output = StoreResult<CommitReceipt>> + Send {
+    /// CLI/direct synchronous consumers only; async host awaits this Future.
+    fn wait_blocking(self, deadline: Duration) -> StoreResult<CommitReceipt>
     where
         Self: Sized;
 }
@@ -216,8 +236,15 @@ pub struct CredentialRecord {
     pub session: SessionId,
     pub purpose: String,
     pub expires_at_us: i64,
-    pub revoked: bool,
+    pub activation_deadline_us: i64,
+    pub state: CredentialState,
     pub revision: Revision,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialState {
+    Prepared,
+    Active,
+    Revoked,
 }
 #[derive(Clone)]
 pub struct SearchHit {

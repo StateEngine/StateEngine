@@ -65,8 +65,11 @@ pub enum DecisionKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProcessState {
     Reserved,
+    Starting,
     Running,
+    LeaderExited,
     StopRequested,
+    StopUnproved,
     Exited,
     Lost,
     Historical,
@@ -132,8 +135,56 @@ pub struct ProcessIdentityRecord {
     pub record: LifecycleId,
     pub principal: Actor,
     pub session: Option<SessionId>,
-    pub instance: ProcessInstance,
-    pub custody: Vec<u8>,
+    pub instance: RecordedIdentity,
+    pub custody: NativeCustody,
+    pub containment: ContainmentFact,
+}
+#[derive(Clone, Debug)]
+pub enum RecordedIdentity {
+    Present(ProcessInstance),
+    Absent { reason: String },
+    Unreadable { cause: String },
+}
+/// Versioned se-proc ProcessRecord/LaunchReservation codec; never an OS handle.
+#[derive(Clone, Debug)]
+pub struct NativeCustody {
+    pub format_version: u16,
+    pub record: Vec<u8>,
+}
+#[derive(Clone, Debug)]
+pub enum ContainmentFact {
+    NotLaunched,
+    Unknown {
+        reason: String,
+    },
+    Contained {
+        kind: ContainmentKind,
+        observed_at_us: i64,
+    },
+    Uncontained {
+        cause: ContainmentCause,
+        observed_at_us: i64,
+        probe: Option<EventId>,
+    },
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContainmentKind {
+    Cgroup,
+    Job,
+    ProcessGroup,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContainmentCause {
+    NoUserManager,
+    NoDelegation,
+    CgroupV2Absent,
+    CgroupUnreadable,
+    ScopeCreateFailed,
+}
+/// Metadata from the same owned staging pass; never caller-path metadata.
+pub trait StagedTextValue {
+    fn byte_length(&self) -> u64;
+    fn sha256(&self) -> [u8; 32];
 }
 /// Created only by the future staging implementation from a bounded owned stream.
 /// No public arbitrary-path constructor; not a credential or an event payload by itself.
@@ -177,6 +228,8 @@ pub struct StoredEvent {
     pub revision: Revision,
     pub recorded_at_us: i64,
     pub recorded_incarnation: u64,
+    pub writer: crate::WriterMode,
+    pub durability: crate::CommitDurability,
     pub body: EventBody<StoredText>,
     pub erased_fields: Vec<(crate::EraseField, RecordId)>,
 }
@@ -251,6 +304,8 @@ pub enum EventBody<T> {
         session: SessionId,
         expected: Expected,
         incumbent: Option<(SessionId, Revision)>,
+        process: Option<LifecycleId>,
+        containment: ContainmentFact,
         witnesses: Vec<EventId>,
     },
     SessionEnded {
@@ -271,7 +326,14 @@ pub enum EventBody<T> {
         purpose: String,
         secret_sha256: [u8; 32],
         expires_at_us: i64,
+        activation_deadline_us: i64,
         expected: Expected,
+    },
+    CredentialActivated {
+        credential: RecordId,
+        session: SessionId,
+        expected: Expected,
+        first_request: RecordId,
     },
     CredentialRevoked {
         credential: RecordId,
@@ -359,6 +421,15 @@ pub enum EventBody<T> {
         new_offset: u64,
         last_turn: RecordId,
     },
+    CaptureFailed {
+        source: RecordId,
+        session: SessionId,
+        from_offset: u64,
+        to_offset: u64,
+        code: se_types::Code,
+        cause: String,
+        retry: se_types::Retry,
+    },
     CaptureSuppressed {
         source: RecordId,
         session: SessionId,
@@ -369,16 +440,18 @@ pub enum EventBody<T> {
         count: u64,
     },
     ProcessRegistered {
-        identity: ProcessIdentityRecord,
+        identity: Box<ProcessIdentityRecord>,
         initial: ProcessState,
     },
     ProcessTransition {
         process: LifecycleId,
+        identity: Box<ProcessIdentityRecord>,
         expected: Expected,
         from: ProcessState,
         to: ProcessState,
         observation: EventId,
         outcome: String,
+        containment: ContainmentFact,
     },
     WorkingStateSet {
         agent: AgentId,
@@ -394,11 +467,18 @@ pub enum EventBody<T> {
         evidence: EventId,
     },
     EffectRequested {
+        principal: Option<Actor>,
         effect: RecordId,
         kind: EffectKind,
         intent: EffectIntent,
         cause: EventId,
         request_key: IdempotencyKey,
+    },
+    EffectOffered {
+        effect: RecordId,
+        principal: Actor,
+        attempt: RecordId,
+        evidence: EventId,
     },
     EffectSettled {
         effect: RecordId,
@@ -460,6 +540,18 @@ pub enum EventBody<T> {
         source: SourceEvidence,
         bytes: Option<LegacyBytes>,
     },
+    TurnErased {
+        target: EventId,
+        erasure: RecordId,
+        original_bytes: u64,
+        by: HumanId,
+    },
+    MessageErased {
+        target: EventId,
+        erasure: RecordId,
+        original_bytes: u64,
+        by: HumanId,
+    },
     ErasureRequested {
         erasure: RecordId,
         targets: Vec<crate::EraseTarget>,
@@ -473,7 +565,9 @@ pub enum EventBody<T> {
     },
     RecoveryRecorded {
         recovery: RecordId,
-        source: StoreId,
+        source: Option<StoreId>,
+        source_artifact: SourceEvidence,
+        target: StoreId,
         backup: Option<RecordId>,
         recovered: u64,
         gaps: Vec<crate::RecoveryGap>,
@@ -506,7 +600,7 @@ pub enum EffectIntent {
 }
 pub struct AtomicBatch {
     pub admission: crate::Admission,
-    pub request_key: IdempotencyKey,
+    pub request: Option<crate::RequestIdentity>,
     pub events: Vec<NewEvent>,
     pub import_checkpoint: Option<ImportCheckpoint>,
 }

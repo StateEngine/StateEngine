@@ -6,15 +6,15 @@ Status: design for review, not permission to implement. This replaces the storag
 
 `se-store` owns the one per-user SQLite authority, event representation, transactional projections, idempotency, bounded snapshot reads, schema negotiation/migrations, backups, recovery and storage erasure. No SQL, SQLite handles, database paths derived from project labels, or backend-specific sequence arithmetic escape this crate. `se-core` owns authorization, operation policy and legal domain transitions; the store checks the same transition preconditions atomically against committed revisions. The host owns the runtime lease, process/OS witnesses, notifications and scheduling; a process row is never proof a process exists. Harnesses own transcript access and account stores. Atlas owns a separate rebuildable code index and cannot lock this database for indexing.
 
-The store reads no environment and selects no repository. The caller supplies the resolved per-user state directory and typed scope. Its production layout is `STATE/state.db`, `STATE/backups/`, `STATE/recovery/`, with explicitly owned bounded staging files in `STATE/staging/`; platform defaults belong to configuration, not this crate. Every project uses this file. Registry-scoped events use a distinguished typed registry scope, not a magic user-controlled project name. New kernel IDs use the shared kind-prefixed UUIDv7 wire spelling. Imported IDs retain their exact accepted legacy spelling. All domain-ID BLOB columns below hold private 16-byte storage keys resolved through `identities`, not the public ID bytes; the public spelling is never regenerated from a storage key. SQLite row numbers are internal commit positions, never public IDs or authorization.
+The store reads no environment and selects no repository. The caller supplies the resolved per-user state directory and typed scope. Its production layout is `STATE/state.db`, `STATE/backups/`, `STATE/recovery/`, with explicitly owned bounded staging files in `STATE/staging/`; platform defaults belong to configuration, not this crate. Every project uses this file. Registry-scoped events use a distinguished typed registry scope, not a magic user-controlled project name. New kernel IDs use the shared kind-prefixed UUIDv7 wire spelling. Imported IDs retain their exact accepted legacy spelling. Domain-ID BLOB columns use the canonical UUIDv7 bytes directly for new IDs; the expected field kind supplies the canonical wire prefix. Only imported spellings need a scoped `identities` row and a disjoint private UUIDv8 storage key. Imported public spelling is read from that dictionary, never regenerated from its private key. SQLite row numbers are internal commit positions, never public IDs or authorization.
 
 ### Fixed decisions
 
-* WAL with `synchronous=NORMAL`, the measured decision in Prime's build assignment. An acknowledgment survives a writer-process crash; it does not promise persistence across OS failure or power loss. No code may report FULL durability for this mode. There is no ambient durability knob.
-* One host-owned batched writer when the runtime lease is held; a direct no-host writer calls the identical transaction function after obtaining the same exclusive runtime lease in client mode. There is no host/direct split in apply or authorization semantics.
-* The only authority is the immutable operation envelope, event envelopes and their immutable typed data/body/member rows. Projections update before the same COMMIT. The privacy operation is an explicitly audited exception for erasing content, specified below; an ordinary correction never rewrites history.
+* WAL with `synchronous=NORMAL` for ordinary writes; the closed security-event set below commits under `FULL`, as Prime required in the review return. NORMAL acknowledgments survive writer-process crash but may lose recent ordinary writes on OS failure/power loss. FULL security acknowledgments require the successful sync. No caller/environment durability knob exists.
+* One host-owned batched writer when the runtime lease is held; a direct no-host writer calls the identical transaction function while holding a shared runtime lease in client mode; the host alone holds it exclusively. There is no host/direct split in apply or authorization semantics.
+* The only authority is the immutable operation envelope, event envelopes and their typed data/body/member rows, with only the narrow sanctioned body-erasure transition below. Projections update before the same COMMIT. The privacy operation is an explicitly audited exception for erasing content, specified below; an ordinary correction never rewrites history.
 * No all-event hash chain, PostgreSQL implementation, file watcher, polling loop, dual-written JSONL or repair command. A decision-only chain and imported provenance remain supported. PostgreSQL preparation is typed IDs, opaque cursors and confined SQL.
-* No store background startup scan. Opening validates the header and version, opens prepared access paths and returns; migration, recovery and index replay are explicit host startup phases with visible state.
+* No store background startup scan. Opening validates the header and version, opens prepared access paths and returns; migration/recovery are explicit approved maintenance phases, never automatic startup work; an inconsistent projection is a named refusal rather than an unbounded startup rebuild.
 
 ## Public API and dependency direction
 
@@ -22,10 +22,12 @@ The compile-only declarations in `crates/se-store/src/` are the normative Rust s
 
 There are four access objects:
 
-1. A factory opens/creates under an explicit role. Only a host holding the runtime lease can create/migrate/recover or run startup/shutdown backup. Opening a missing store for a reader/direct client returns measured absence; it never creates an empty database.
+1. A factory opens/creates under an explicit role. A host holding the exclusive runtime lease can create/recover or run startup/shutdown backup; an owner CLI can bootstrap an absent store through create_direct under its shared runtime lease; migration additionally requires explicit owner/upgrade approval. Opening a missing store for a reader/direct client returns measured absence; it never creates an empty database.
 2. A read snapshot owns one SQLite read transaction and a captured high-water position. It cannot be held across an async suspension or an external call. Typed methods return fully materialized bounded results, then release it.
-3. A direct writer performs the same atomic write batch as the host worker, while the caller holds the exclusive runtime lease. It cannot coexist with a host that acquires that lease later: the host waits, then opens after the client releases it.
+3. A direct writer performs the same atomic write batch as the host worker, while the caller holds a shared runtime lease. It cannot coexist with a host that acquires that lease later: the host waits, then opens after the client releases it.
 4. A bounded host submission handle and its owner control. Cloned submission handles cannot close/migrate the store. A dropped reply receiver does not cancel a committed operation. The unique owner drains and joins the worker on shutdown.
+
+Writer ownership is structural: `start_writer(self, ...)` consumes the maintenance-capable HostStore, and only the awaited drain/join yields a `DrainedHost<HostStore>`. Migrate/erase/close cannot run on an object still held by a live writer. The worker owns `Arc<dyn RuntimeLease>` and revalidates its store/generation/mode before each group; external handle drop cannot release a live worker's lease. Online backup is the separate factory service over a read connection, not a mutable writer/maintenance call.
 
 A revision identifies a last committed event, scoped to the same store incarnation. Each event/operation also retains its recorded incarnation; historical expected positions are replayed against their original logical predecessors, not re-authorized against a new live incarnation. Recovery/erasure may invalidate runtime cursors without rewriting the fact that an older event committed in an earlier incarnation. `Expected::Absent` and `Expected::Revision` are distinct from unchecked writes. Unconditional internal appends exist only for genuinely append-only facts; mutable projections require a revision precondition. The caller's verified scope is not an event field and is never recovered from a display name. The store checks project/actor consistency with the admitted batch; credential proof and OS-user admission remain core/host responsibilities inside the same process trust boundary.
 
@@ -35,7 +37,7 @@ Each event has a version-1 envelope (the closed Rust variant determines kind and
 
 The database stores the small envelope and typed per-kind rows, **not a second serialized JSON envelope**. Long bodies have one `payloads` row referenced by their event. Recipient/disposition/decision/session/turn/process/working-state/cursor projections contain indexes and event references, never copied body text. Refs and configuration objects are bounded typed encodings; their only JSON is a versioned non-text field, not an arbitrary duplicate of the event. Readers reconstruct a typed event from its one owning representation.
 
-Strings are UTF-8 with no normalization of user text. Times are signed 64-bit Unix microseconds, with a checked supported range; sequence/revision values are positive signed 64-bit integers. Body byte counts count UTF-8 bytes, not characters. All enum tags are the stable strings below; integer discriminants in Rust are not persisted. SHA-256 fields are 32-byte blobs. Private storage keys are exactly 16 bytes, never SQLite row IDs or public wire IDs. Canonical public IDs include the shared kind prefix; legacy public IDs retain their exact validated spelling through the identity dictionary. File paths are lossless platform path encodings tagged `unix-bytes` or `windows-utf16`; display strings never become an ownership proof. Native non-UTF-8 path bytes are not silently replaced.
+Strings are UTF-8 with no normalization of user text. Times are signed 64-bit Unix microseconds, with a checked supported range; sequence/revision values are positive signed 64-bit integers. Body byte counts count UTF-8 bytes, not characters. All enum tags are the stable strings below; integer discriminants in Rust are not persisted. SHA-256 fields are 32-byte blobs. Stored UUID keys are exactly 16 bytes, never SQLite row IDs. Canonical-v7 keys reconstruct their wire spelling from the typed column; legacy-v8 keys require the scoped identity dictionary. Canonical public IDs include the shared kind prefix; legacy public IDs retain their exact validated spelling through the identity dictionary. File paths are lossless platform path encodings tagged `unix-bytes` or `windows-utf16`; display strings never become an ownership proof. Native non-UTF-8 path bytes are not silently replaced.
 
 Bounded initial limits: 32 KiB per message/working-state body, 1 MiB per captured turn, 64 refs, 8 KiB per single ref or native identity, 64 events/2 MiB per atomic operation batch. Large turns are streamed from the trusted harness into a bounded staging record before submission; the worker never queues 1 MiB copies for every session. Rejection preserves the source transcript cursor and names the oversized record; it never advances capture past uncaptured text. Header/ID/enum decoding is strict and unknown versions refuse, not skip.
 
@@ -55,10 +57,11 @@ All following kinds have `schema_version = 1`; changing required fields or meani
 | `grant.recorded` | principal ID, typed agent-create grant/scope, active/revoked, expected | owner init/config policy; historical import | update effective explicit grant; no bootstrap from old capability |
 | `config.set` | user/project scope, typed key/value, expected | `config.set`, initial setup | update effective persisted setting; secrets disallowed |
 | `session.prepared` | session ID, agent ID, provider/native conversation ref, capture consent, generation, expected absent | `session.begin`, `agent.launch` preparation | insert prepared session; incumbent remains active |
-| `session.activated` | session ID, expected, incumbent ID/revision if replacing, binding/witness refs | witnessed launch/bind | activate atomically with incumbent terminal transition; one active per agent |
+| `session.activated` | session ID, expected, incumbent ID/revision if replacing, process ref, recorded containment fact and binding/witness refs | witnessed launch/bind | activate atomically with incumbent terminal transition; one active per agent |
 | `session.ended` | session ID, expected, end reason, final captured-turn/cursor refs | `session.end`; observed provider termination | terminal ended state; revoke active capability projections |
 | `session.revoked` | session ID, expected, reason | owner revocation/remove; governed takeover | terminal revoked state; cannot be reactivated |
-| `credential.issued` | credential ID, session ID, purpose, secret hash, expiry, expected absent | trusted bind/token helper | retain hash only; plaintext returned once outside event |
+| `credential.issued` | credential ID, session ID, purpose, secret hash, expiry, ≤10-minute activation deadline, expected absent | trusted bind/token helper | retain hash only; plaintext returned once outside event |
+| `credential.activated` | credential, session, exact prepared revision, first admitted request | host capability verifier | prepared → active in the first-use transaction, activate binding/revoke incumbent atomically |
 | `credential.revoked` | credential ID, expected, reason | session end/revoke/remove | irreversible revoked state |
 | `message.sent` | message ID, recipient ID, kind, body payload, refs, reply-to ID | `message.send`; supported F9 import | create message/inbox row; delivery pending |
 | `message.delivered` | message ID, recipient ID, actual consumer/offer evidence ref | internal witnessed mail settlement | first delivered marker; no read claim |
@@ -73,13 +76,15 @@ All following kinds have `schema_version = 1`; changing required fields or meani
 | `turn.captured` | turn ID, agent/session ID, provider, native turn ref, role, text payload, lossless source path/offset/length/hash | `session.turn`, Claude hooks, Codex app-server capture; F14/F15 import | insert turn, advance captured source cursor only with complete bytes |
 | `capture.source` | source ID, session, consent, native ref, expected | bind/adopt/import | establish source without reading an account credential |
 | `capture.progress` | source ID, expected, source incarnation/digest, old/new byte offsets, last turn ID | completed capture transaction | advance monotonically only for verified same source incarnation |
+| `capture.failed` | source/session, unchanged start offset, attempted end offset, typed code/cause/retry | authenticated harness capture | durable named failure without advancing past uncaptured bytes |
 | `capture.suppressed` | source/session ID, expected, suppression reason, offset window, count | explicitly incognito/disabled capture; F16 import | record suppression as suppression, not success/absence |
-| `process.registered` | process ID, project/agent/session, machine/boot IDs, native birth identity, executable and argv fingerprint, custody group, initial state | `process.start`, witnessed agent/runtime launch; F17 historical import | recorded custody claim; no live witness implied |
-| `process.transition` | process ID, expected, from/to state, observation ref, outcome | inspect/stop and actual OS exit/re-adoption observation | CAS state; reused/unreadable process never becomes owned |
+| `process.registered` | process ID, project/agent/session, machine/boot IDs, native birth identity, executable and argv fingerprint, custody group, initial state | `process.start`, witnessed agent/runtime launch; F17 historical import | all nine section-30 states, explicit absent/unreadable root at scope preparation/import, recorded containment/cause; no live witness implied |
+| `process.transition` | process ID, complete current identity/custody checkpoint, expected, from/to state, observation ref, outcome, recorded containment fact | inspect/stop and actual OS exit/re-adoption observation | CAS state; reused/unreadable process never becomes owned |
 | `working_state.set` | agent ID, text payload, expected | `working_state.set`; F19 import | update head; absent and stale expected differ |
 | `cursor.recorded` | agent/session, cursor purpose, opaque value, snapshot window, expected | explicit context presentation/settlement/capture progress | update cursor without hiding unread work |
 | `cursor.acknowledged` | cursor ID/revision, authenticated consumer evidence | actual packet/context/mail acknowledgment; F19 historical import | mark that exact cursor presented/read; issuance alone is not ack |
-| `effect.requested` | effect ID, kind, target, safe immutable intent data, cause event, idempotency ref | init/launch/stop/send/remove's transaction | durable pending work, no OS/network call inside transaction |
+| `effect.requested` | effect ID, kind, optional affected principal, target, safe immutable intent data, cause event, idempotency ref | init/launch/stop/send/remove's transaction | durable pending work, no OS/network call inside transaction |
+| `effect.offered` | effect, principal, unique attempt, offer evidence | host delivery executor | pending → offered; offer is not recipient read or settlement |
 | `effect.settled` | effect ID, expected, witnessed/failed/abandoned state, outside evidence or failure, attempt summary | host/harness actual effect readback | terminal effect state; only evidence can select witnessed |
 | `integration.recorded` | integration ID, path/key/marker, prior/written digest, scope, readback ref, expected | init/doctor owned edits; successful removal update | retain exact ownership for reversal, never agent credential content |
 | `backup.recorded` | generation, checkpoint/snapshot position, file identity/hash, schema version, readback ref | completed backup | record completed snapshot manifest, not a backup attempt |
@@ -88,9 +93,11 @@ All following kinds have `schema_version = 1`; changing required fields or meani
 | `import.finished` | import ID, expected, totals/omissions, artifact refs | completed bounded source walk | terminal complete/partial report; unreadable never becomes zero |
 | `import.unreadable` | import ID, source path/offset/length/digest, typed failure, retained source ref | strict import decoder failure | preserve bounded failure provenance, not copied secret source text |
 | `legacy.retained` | source family/version, source identity/hash/offset, imported object mapping, immutable legacy bytes payload where needed | F7 user-law provenance import | retain historical provenance with no live grants/process custody |
+| `turn.erased` | target event, erasure ID, original byte length, owner | owner forget | sanctioned captured-body erasure marker; vendor ref remains deduplicated |
+| `message.erased` | target event, erasure ID, original byte length, owner | owner forget | sanctioned message-body erasure marker; recipient/marks remain |
 | `erasure.requested` | erasure ID, explicit target event/field IDs, approved scope/revision, external residual-copy inventory | `store.forget` after owner confirmation | maintenance pending; freeze ordinary writers |
-| `erasure.completed` | erasure ID, removed-field manifest, replacement DB/backup generation witnesses, residual limits | completed erasure swap/readback | erasure completion, stale cursor epoch bump |
-| `recovery.recorded` | recovery ID, original store/backup identity, recovered ranges, unreadable gaps, schema policy, outside validation | successful explicit salvage/adoption | record degraded origin; never claim a complete history across gaps |
+| `erasure.completed` | erasure ID, erasure manifest, current DB/WAL readback witnesses, residual limits | completed in-place cleanup/readback | erasure completion, stale cursor epoch bump |
+| `recovery.recorded` | recovery ID, optional source StoreId, exact source artifact, target StoreId, selected backup, recovered ranges/gaps, schema policy and outside validation | successful explicit salvage/adoption | record degraded origin; never claim a complete history across gaps |
 
 Internal event kinds do not add CLI/MCP operations. Read-only `status`, `history`, `resume`, `search`, `decision.list`, `doctor.inspect` and all Atlas queries emit no events. `runtime.up/down` do not append periodic liveness; they record only actual custody/effect boundaries. Failed unauthenticated calls and normal refusals are not events (the synthesized plan drops refusal history). Cursor persistence is a separate explicit capture/settlement action, not a hidden write by every reader.
 
@@ -114,7 +121,7 @@ CREATE TABLE identities(
   kind TEXT NOT NULL CHECK(kind IN ('project','agent','human','session','message','decision','event','launch','observation','store','lifecycle')),
   wire_id TEXT NOT NULL,
   scope_key BLOB NOT NULL,
-  encoding TEXT NOT NULL CHECK(encoding IN ('canonical-v7','legacy-shape','registered-exception')),
+  encoding TEXT NOT NULL CHECK(encoding IN ('legacy-shape','registered-exception')),
   registration_source BLOB,
   CHECK(length(wire_id)>0 AND length(CAST(wire_id AS BLOB))<=512),
   CHECK(encoding!='registered-exception' OR registration_source IS NOT NULL),
@@ -131,25 +138,35 @@ CREATE TABLE events(
   kind TEXT NOT NULL,
   schema_version INTEGER NOT NULL CHECK(schema_version>0),
   recorded_incarnation INTEGER NOT NULL CHECK(recorded_incarnation>0),
+  writer_mode TEXT NOT NULL CHECK(writer_mode IN ('host','direct')),
+  host_generation INTEGER CHECK(host_generation>0),
+  durability TEXT NOT NULL CHECK(durability IN ('normal','full')),
   operation_id BLOB NOT NULL REFERENCES operations(operation_id),
   occurred_at_us INTEGER NOT NULL,
   recorded_at_us INTEGER NOT NULL,
   cause_event_id BLOB CHECK(cause_event_id IS NULL OR length(cause_event_id)=16),
-  supersedes_event_id BLOB CHECK(supersedes_event_id IS NULL OR length(supersedes_event_id)=16)
+  supersedes_event_id BLOB CHECK(supersedes_event_id IS NULL OR length(supersedes_event_id)=16),
+  CHECK((writer_mode='host' AND host_generation IS NOT NULL) OR (writer_mode='direct' AND host_generation IS NULL))
 ) STRICT;
 CREATE INDEX events_scope_seq ON events(project_id,seq);
 CREATE INDEX events_actor_seq ON events(project_id,actor_id,seq);
+CREATE INDEX events_session_seq ON events(project_id,session_id,seq);
 CREATE TABLE operations(
   operation_id BLOB PRIMARY KEY CHECK(length(operation_id)=16),
   scope_key BLOB NOT NULL,
   actor_id BLOB NOT NULL CHECK(length(actor_id)=16),
-  request_key TEXT NOT NULL,
+  request_key TEXT CHECK(request_key IS NULL OR length(CAST(request_key AS BLOB)) BETWEEN 1 AND 512),
+  fingerprint_codec INTEGER NOT NULL DEFAULT 1 CHECK(fingerprint_codec>0),
   fingerprint BLOB CHECK(fingerprint IS NULL OR length(fingerprint)=32),
   recorded_incarnation INTEGER NOT NULL CHECK(recorded_incarnation>0),
+  writer_mode TEXT NOT NULL CHECK(writer_mode IN ('host','direct')),
+  host_generation INTEGER CHECK(host_generation>0),
+  durability TEXT NOT NULL CHECK(durability IN ('normal','full')),
   erased INTEGER NOT NULL DEFAULT 0 CHECK(erased IN (0,1)),
-  CHECK((erased=0 AND fingerprint IS NOT NULL) OR (erased=1 AND fingerprint IS NULL)),
-  UNIQUE(scope_key,actor_id,request_key)
+  CHECK((erased=0 AND request_key IS NOT NULL AND fingerprint IS NOT NULL) OR (erased=0 AND request_key IS NULL AND fingerprint IS NULL) OR (erased=1 AND fingerprint IS NULL)),
+  CHECK((writer_mode='host' AND host_generation IS NOT NULL) OR (writer_mode='direct' AND host_generation IS NULL))
 ) STRICT, WITHOUT ROWID;
+CREATE UNIQUE INDEX operations_caller_key ON operations(scope_key,actor_id,request_key) WHERE request_key IS NOT NULL;
 CREATE TABLE operation_events(
   operation_id BLOB NOT NULL REFERENCES operations(operation_id),
   ordinal INTEGER NOT NULL CHECK(ordinal>=0),
@@ -157,6 +174,7 @@ CREATE TABLE operation_events(
   newly_appended INTEGER NOT NULL CHECK(newly_appended IN (0,1)),
   PRIMARY KEY(operation_id,ordinal)
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX operation_events_event ON operation_events(event_seq,operation_id);
 CREATE TABLE payloads(
   payload_id INTEGER PRIMARY KEY,
   event_seq INTEGER NOT NULL REFERENCES events(seq),
@@ -189,6 +207,7 @@ CREATE TABLE mark_data(
 CREATE TABLE decision_data(
   event_seq INTEGER PRIMARY KEY REFERENCES events(seq),
   decision_id BLOB NOT NULL CHECK(length(decision_id)=16),
+  project_id BLOB NOT NULL CHECK(length(project_id)=16),
   decision_key TEXT,
   state TEXT NOT NULL CHECK(state IN ('proposed','ratified','rejected','retracted','superseded')),
   statement_payload INTEGER REFERENCES payloads(payload_id),
@@ -199,6 +218,7 @@ CREATE TABLE decision_data(
   replacement_id BLOB CHECK(replacement_id IS NULL OR length(replacement_id)=16),
   replacement_expected_seq INTEGER
 ) STRICT;
+CREATE INDEX decision_data_key ON decision_data(project_id,decision_key,event_seq DESC) WHERE decision_key IS NOT NULL;
 CREATE TABLE session_data(
   event_seq INTEGER PRIMARY KEY REFERENCES events(seq),
   session_id BLOB NOT NULL CHECK(length(session_id)=16),
@@ -211,12 +231,17 @@ CREATE TABLE session_data(
   expected_seq INTEGER,
   incumbent_id BLOB CHECK(incumbent_id IS NULL OR length(incumbent_id)=16),
   incumbent_expected_seq INTEGER,
+  process_id BLOB CHECK(process_id IS NULL OR length(process_id)=16),
+  containment_fact TEXT CHECK(containment_fact IS NULL OR json_valid(containment_fact)),
   reason_payload INTEGER REFERENCES payloads(payload_id),
   witness_refs TEXT NOT NULL CHECK(json_valid(witness_refs))
 ) STRICT;
 CREATE TABLE turn_data(
   event_seq INTEGER PRIMARY KEY REFERENCES events(seq),
   turn_id BLOB NOT NULL CHECK(length(turn_id)=16),
+  project_id BLOB NOT NULL CHECK(length(project_id)=16),
+  agent_id BLOB NOT NULL CHECK(length(agent_id)=16),
+  session_id BLOB NOT NULL CHECK(length(session_id)=16),
   provider TEXT NOT NULL CHECK(provider IN ('claude','codex','secode')),
   vendor_ref TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('system','user','assistant','tool')),
@@ -224,23 +249,41 @@ CREATE TABLE turn_data(
   source_path INTEGER REFERENCES symbols(id),
   source_offset INTEGER CHECK(source_offset>=0),
   source_length INTEGER CHECK(source_length>=0),
-  source_sha256 BLOB CHECK(source_sha256 IS NULL OR length(source_sha256)=32)
+  source_sha256 BLOB CHECK(source_sha256 IS NULL OR length(source_sha256)=32),
+  UNIQUE(project_id,session_id,provider,vendor_ref),
+  FOREIGN KEY(project_id,session_id) REFERENCES sessions(project_id,session_id)
 ) STRICT;
+CREATE INDEX turn_data_agent_seq ON turn_data(project_id,agent_id,event_seq);
 CREATE TABLE process_data(
   event_seq INTEGER PRIMARY KEY REFERENCES events(seq),
   process_id BLOB NOT NULL CHECK(length(process_id)=16),
   principal_id BLOB NOT NULL CHECK(length(principal_id)=16),
   target_session_id BLOB CHECK(target_session_id IS NULL OR length(target_session_id)=16),
-  machine_id INTEGER NOT NULL REFERENCES symbols(id),
-  boot_identity INTEGER NOT NULL REFERENCES symbols(id),
-  pid INTEGER NOT NULL CHECK(pid>0),
-  birth_identity BLOB NOT NULL,
-  executable INTEGER NOT NULL REFERENCES symbols(id),
-  argv_sha256 BLOB NOT NULL CHECK(length(argv_sha256)=32),
+  identity_state TEXT NOT NULL CHECK(identity_state IN ('present','absent','unreadable')),
+  identity_cause TEXT,
+  machine_id INTEGER REFERENCES symbols(id),
+  boot_identity INTEGER REFERENCES symbols(id),
+  pid INTEGER CHECK(pid>0),
+  birth_identity BLOB,
+  executable INTEGER REFERENCES symbols(id),
+  argv_sha256 BLOB CHECK(length(argv_sha256)=32),
+  custody_version INTEGER NOT NULL CHECK(custody_version=1),
   custody BLOB NOT NULL,
-  state TEXT NOT NULL CHECK(state IN ('reserved','running','stop-requested','exited','lost','historical')),
+  containment TEXT NOT NULL CHECK(containment IN ('cgroup','job','process-group','uncontained','unknown','not-launched')),
+  containment_cause TEXT,
+  containment_unknown_reason TEXT,
+  containment_observed_at_us INTEGER,
+  containment_probe BLOB CHECK(containment_probe IS NULL OR length(containment_probe)=16),
+  state TEXT NOT NULL CHECK(state IN ('reserved','starting','running','leader-exited','stop-requested','stop-unproved','exited','lost','historical')),
   expected_seq INTEGER,
-  observation_event BLOB CHECK(observation_event IS NULL OR length(observation_event)=16)
+  observation_event BLOB CHECK(observation_event IS NULL OR length(observation_event)=16),
+  CHECK((identity_state='present' AND machine_id IS NOT NULL AND boot_identity IS NOT NULL AND pid IS NOT NULL AND birth_identity IS NOT NULL AND executable IS NOT NULL AND argv_sha256 IS NOT NULL AND identity_cause IS NULL)
+     OR (identity_state IN ('absent','unreadable') AND machine_id IS NULL AND boot_identity IS NULL AND pid IS NULL AND birth_identity IS NULL AND executable IS NULL AND argv_sha256 IS NULL AND identity_cause IS NOT NULL)),
+  CHECK(state IN ('reserved','starting','historical','lost') OR identity_state='present'),
+  CHECK((containment='uncontained' AND containment_cause IN ('no-user-manager','no-delegation','cgroup-v2-absent','cgroup-unreadable','scope-create-failed') AND containment_cause IS NOT NULL AND containment_observed_at_us IS NOT NULL AND containment_unknown_reason IS NULL)
+     OR (containment IN ('cgroup','job','process-group') AND containment_cause IS NULL AND containment_observed_at_us IS NOT NULL AND containment_unknown_reason IS NULL)
+     OR (containment='unknown' AND containment_cause IS NULL AND containment_unknown_reason IS NOT NULL)
+     OR (containment='not-launched' AND containment_cause IS NULL AND containment_unknown_reason IS NULL))
 ) STRICT;
 CREATE TABLE working_state_data(
   event_seq INTEGER PRIMARY KEY REFERENCES events(seq),
@@ -343,7 +386,10 @@ CREATE TABLE credentials(
   secret_sha256 BLOB NOT NULL UNIQUE CHECK(length(secret_sha256)=32),
   expires_at_us INTEGER NOT NULL,
   last_seq INTEGER NOT NULL REFERENCES events(seq),
-  state TEXT NOT NULL CHECK(state IN ('active','revoked')),
+  activation_deadline_us INTEGER NOT NULL,
+  activated_seq INTEGER REFERENCES events(seq),
+  state TEXT NOT NULL CHECK(state IN ('prepared','active','revoked')),
+  CHECK((state='prepared' AND activated_seq IS NULL) OR state='revoked' OR (state='active' AND activated_seq IS NOT NULL)),
   FOREIGN KEY(project_id,session_id) REFERENCES sessions(project_id,session_id)
 ) STRICT, WITHOUT ROWID;
 CREATE TABLE messages(
@@ -352,9 +398,14 @@ CREATE TABLE messages(
   sent_seq INTEGER NOT NULL UNIQUE REFERENCES message_data(event_seq),
   sender_id BLOB NOT NULL CHECK(length(sender_id)=16),
   recipient_id BLOB NOT NULL CHECK(length(recipient_id)=16),
+  message_kind TEXT NOT NULL,
   superseded_by BLOB CHECK(superseded_by IS NULL OR length(superseded_by)=16),
   PRIMARY KEY(project_id,message_id)
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX messages_project_seq ON messages(project_id,sent_seq DESC);
+CREATE INDEX messages_sender_seq ON messages(project_id,sender_id,sent_seq DESC);
+CREATE INDEX messages_recipient_seq ON messages(project_id,recipient_id,sent_seq DESC);
+CREATE INDEX messages_kind_seq ON messages(project_id,message_kind,sent_seq DESC);
 CREATE TABLE marks(
   message_seq INTEGER PRIMARY KEY REFERENCES message_data(event_seq),
   project_id BLOB NOT NULL REFERENCES projects(project_id),
@@ -384,19 +435,6 @@ CREATE TABLE decision_chain(
      OR (erasure_id IS NOT NULL AND previous_hash IS NULL AND entry_hash IS NULL))
 ) STRICT;
 CREATE INDEX decision_chain_project ON decision_chain(project_id,event_seq);
-CREATE TABLE turns(
-  project_id BLOB NOT NULL REFERENCES projects(project_id),
-  turn_id BLOB NOT NULL CHECK(length(turn_id)=16),
-  event_seq INTEGER NOT NULL UNIQUE REFERENCES turn_data(event_seq),
-  agent_id BLOB NOT NULL CHECK(length(agent_id)=16),
-  session_id BLOB NOT NULL CHECK(length(session_id)=16),
-  provider TEXT NOT NULL,
-  vendor_ref TEXT NOT NULL,
-  PRIMARY KEY(project_id,turn_id),
-  UNIQUE(project_id,session_id,provider,vendor_ref),
-  FOREIGN KEY(project_id,session_id) REFERENCES sessions(project_id,session_id)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX turns_agent_seq ON turns(project_id,agent_id,event_seq);
 CREATE TABLE capture_sources(
   project_id BLOB NOT NULL,
   source_id BLOB NOT NULL CHECK(length(source_id)=16),
@@ -414,9 +452,10 @@ CREATE TABLE processes(
   process_id BLOB NOT NULL CHECK(length(process_id)=16),
   first_seq INTEGER NOT NULL REFERENCES process_data(event_seq),
   last_seq INTEGER NOT NULL REFERENCES process_data(event_seq),
-  state TEXT NOT NULL CHECK(state IN ('reserved','running','stop-requested','exited','lost','historical')),
+  state TEXT NOT NULL CHECK(state IN ('reserved','starting','running','leader-exited','stop-requested','stop-unproved','exited','lost','historical')),
   PRIMARY KEY(project_id,process_id)
 ) STRICT, WITHOUT ROWID;
+CREATE INDEX processes_live ON processes(project_id,state,last_seq) WHERE state NOT IN ('exited','historical');
 CREATE TABLE working_state(
   project_id BLOB NOT NULL,
   agent_id BLOB NOT NULL,
@@ -438,12 +477,14 @@ CREATE TABLE effects(
   effect_id BLOB PRIMARY KEY CHECK(length(effect_id)=16),
   project_id BLOB,
   kind TEXT NOT NULL,
+  principal_id BLOB CHECK(principal_id IS NULL OR length(principal_id)=16),
   requested_seq INTEGER NOT NULL REFERENCES events(seq),
   last_seq INTEGER NOT NULL REFERENCES events(seq),
-  state TEXT NOT NULL CHECK(state IN ('pending','witnessed','failed','abandoned')),
+  state TEXT NOT NULL CHECK(state IN ('pending','offered','witnessed','failed','abandoned')),
   FOREIGN KEY(project_id) REFERENCES projects(project_id)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX effects_pending ON effects(project_id,requested_seq) WHERE state='pending';
+CREATE INDEX effects_pending ON effects(project_id,requested_seq) WHERE state IN ('pending','offered');
+CREATE INDEX effects_principal_pending ON effects(project_id,principal_id,requested_seq) WHERE state IN ('pending','offered');
 CREATE TABLE integrations(
   project_id BLOB NOT NULL REFERENCES projects(project_id),
   integration_id BLOB NOT NULL CHECK(length(integration_id)=16),
@@ -475,6 +516,31 @@ CREATE TABLE legacy_ids(
   imported_seq INTEGER NOT NULL REFERENCES events(seq),
   PRIMARY KEY(import_id,family,legacy_id)
 ) STRICT, WITHOUT ROWID;
+CREATE TABLE list_versions(
+  scope_key BLOB NOT NULL,
+  family TEXT NOT NULL CHECK(family IN ('project','principal','configuration','session','message','decision','process','effect','integration','import-progress')),
+  entity_key BLOB NOT NULL,
+  valid_from INTEGER NOT NULL REFERENCES events(seq),
+  valid_to INTEGER REFERENCES events(seq),
+  sort_seq INTEGER NOT NULL REFERENCES events(seq),
+  first_seq INTEGER NOT NULL REFERENCES events(seq),
+  last_seq INTEGER NOT NULL REFERENCES events(seq),
+  state TEXT NOT NULL,
+  sender_id BLOB,
+  recipient_id BLOB,
+  message_kind TEXT,
+  delivered_seq INTEGER REFERENCES events(seq),
+  read_seq INTEGER REFERENCES events(seq),
+  dismissed_seq INTEGER REFERENCES events(seq),
+  CHECK(valid_to IS NULL OR valid_to>valid_from),
+  PRIMARY KEY(scope_key,family,entity_key,valid_from)
+) STRICT, WITHOUT ROWID;
+CREATE UNIQUE INDEX list_versions_open ON list_versions(scope_key,family,entity_key) WHERE valid_to IS NULL;
+CREATE INDEX list_versions_order ON list_versions(scope_key,family,sort_seq DESC,entity_key,valid_from DESC,valid_to);
+CREATE INDEX list_versions_state ON list_versions(scope_key,family,state,sort_seq DESC,entity_key,valid_from DESC,valid_to);
+CREATE INDEX list_versions_sender ON list_versions(scope_key,family,sender_id,sort_seq DESC,entity_key,valid_from DESC,valid_to);
+CREATE INDEX list_versions_recipient ON list_versions(scope_key,family,recipient_id,sort_seq DESC,entity_key,valid_from DESC,valid_to);
+CREATE INDEX list_versions_recipient_state ON list_versions(scope_key,family,recipient_id,state,sort_seq DESC,entity_key,valid_from DESC,valid_to);
 CREATE TABLE erasures(
   erasure_id BLOB PRIMARY KEY CHECK(length(erasure_id)=16),
   requested_seq INTEGER NOT NULL REFERENCES events(seq),
@@ -484,6 +550,7 @@ CREATE TABLE erasures(
 CREATE TABLE erased_fields(
   event_seq INTEGER NOT NULL REFERENCES events(seq),
   field TEXT NOT NULL,
+  original_bytes INTEGER NOT NULL CHECK(original_bytes>=0),
   erasure_id BLOB NOT NULL REFERENCES erasures(erasure_id),
   PRIMARY KEY(event_seq,field)
 ) STRICT, WITHOUT ROWID;
@@ -495,6 +562,11 @@ Every immutable table has both fixed triggers below. Projections and decision-ch
 
 ```sql
 CREATE TRIGGER operations_no_update BEFORE UPDATE ON operations
+WHEN NOT (NEW.operation_id=OLD.operation_id AND NEW.scope_key=OLD.scope_key AND NEW.actor_id=OLD.actor_id
+  AND NEW.request_key IS OLD.request_key AND NEW.fingerprint_codec=OLD.fingerprint_codec AND NEW.recorded_incarnation=OLD.recorded_incarnation
+  AND NEW.writer_mode=OLD.writer_mode AND NEW.host_generation IS OLD.host_generation AND NEW.durability=OLD.durability
+  AND OLD.erased=0 AND NEW.erased=1 AND NEW.fingerprint IS NULL
+  AND se_erase_operation_allowed(OLD.operation_id)=1)
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER operations_no_delete BEFORE DELETE ON operations
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
@@ -509,12 +581,16 @@ BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER payloads_no_update BEFORE UPDATE ON payloads
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER payloads_no_delete BEFORE DELETE ON payloads
+WHEN se_erase_body_allowed(OLD.event_seq,OLD.field)!=1
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER aux_data_no_update BEFORE UPDATE ON aux_data
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER aux_data_no_delete BEFORE DELETE ON aux_data
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER message_data_no_update BEFORE UPDATE ON message_data
+WHEN NOT (NEW.event_seq=OLD.event_seq AND NEW.message_id=OLD.message_id AND NEW.recipient_id=OLD.recipient_id
+  AND NEW.message_kind=OLD.message_kind AND NEW.refs=OLD.refs AND NEW.reply_to IS OLD.reply_to
+  AND OLD.body_payload IS NOT NULL AND NEW.body_payload IS NULL AND se_erase_body_allowed(OLD.event_seq,'body')=1)
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER message_data_no_delete BEFORE DELETE ON message_data
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
@@ -531,6 +607,12 @@ BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER session_data_no_delete BEFORE DELETE ON session_data
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER turn_data_no_update BEFORE UPDATE ON turn_data
+WHEN NOT (NEW.event_seq=OLD.event_seq AND NEW.turn_id=OLD.turn_id AND NEW.project_id=OLD.project_id
+  AND NEW.agent_id=OLD.agent_id AND NEW.session_id=OLD.session_id AND NEW.provider=OLD.provider
+  AND NEW.vendor_ref=OLD.vendor_ref AND NEW.role=OLD.role AND NEW.source_path IS OLD.source_path
+  AND NEW.source_offset IS OLD.source_offset AND NEW.source_length IS OLD.source_length
+  AND OLD.text_payload IS NOT NULL AND NEW.text_payload IS NULL AND NEW.source_sha256 IS NULL
+  AND se_erase_body_allowed(OLD.event_seq,'body')=1)
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
 CREATE TRIGGER turn_data_no_delete BEFORE DELETE ON turn_data
 BEGIN SELECT RAISE(ABORT,'history-immutable'); END;
@@ -562,27 +644,47 @@ The implementation embeds these complete fixed trigger statements in version-1 D
 
 The sole write algorithm is `commit_group(connection, admitted_batches)`, using `append_atomic` for one savepoint-isolated operation and `apply` for each event. Direct writes pass a one-element group; the host passes its bounded group. Both invoke the same `TransactionEngine` interface; neither reimplements a projection. Pseudocode here specifies ordering, not permission to implement before approval:
 
-1. Bound input validation outside the write lock: closed kind/version, sizes, ID/encoding shape, scope, no plaintext credentials. Core has already resolved labels and supplied verified authority. Compute the operation fingerprint over the deterministic encoding specified below of semantic inputs, expected revisions and scope/actor; exclude generated event IDs/recorded time/transport retries. Payload bytes are included once in this digest. The codec fixes field ordering and enum strings; ordinary JSON map iteration is not its canonicalization rule.
-2. `commit_group` issues one `BEGIN IMMEDIATE`, then `append_atomic` creates a savepoint per operation and rechecks schema/incarnation and transaction preconditions. It never starts a nested BEGIN inside that group. Consult `(scope_key, actor_id, request_key)`. Same fingerprint returns the original committed first/last event and typed receipt without adding events. Different fingerprint refuses `idempotency-key-reused`. An erased fingerprint refuses `content-erased`; it cannot accept/recreate the original body or silently replay an uncheckable request. A failed uncommitted batch consumes no key.
-3. Insert one immutable operation envelope for an accepted new request, then check each event ID for collision before insertion. A different operation cannot reuse it even with identical text. Resolve natural-key no-ops: a second delivered/read/dismissed mark returns the original marker; a duplicate vendor turn returns the original turn only after verifying equal body/source identity. Different bytes at a natural key refuse `natural-key-conflict`. No new domain event/marker is generated just to make an idempotency receipt. The immutable operation envelope/member map records a new request key even when all members refer to prior natural-key results, preserving conflicting-key detection without duplicating read markers.
-4. Insert the envelope, typed data and body exactly once. `apply(event)` checks the current projection revision/state and changes all affected projections, resume heads and pending effect debt. An operation with multiple events is all-or-nothing. Unknown kinds/versions, missing referenced rows, stale CAS, wrong recipient or invalid transition abort the **whole operation**, not just the final event.
-5. Insert the ordered operation-member map (including reused natural-key events) and return an internal `PreparedReceipt`; this is not yet a committed reply. `commit_group` alone issues outer COMMIT under NORMAL, then materializes public `CommitReceipt` values. A receipt reconstructs its exact event-ID list from that map; its first/last positions are descriptive bounds, never permission to treat every intervening event as a member. Only then release successful replies and the committed high-water notification. A reply/notification failure does not undo COMMIT; retry with the same key resolves it. No OS call, filesystem edit, network request, await or expensive transcript scan occurs while holding the transaction.
+1. Bound input validation outside the write lock: closed kind/version, sizes, ID/encoding shape, scope, no plaintext credentials. Core has already resolved labels and supplied verified authority. For RequestIdentity compute the store fingerprint from the core-produced canonical IntentDigest plus admitted scope/actor, as below; do not hash newly allocated event/body IDs as though they were caller input. Verify inline/staged payload integrity independently.
+2. The store derives the writer stamp from its owned runtime lease (host generation or direct), never Admission.generation or Door. It selects FULL if any group member is a security event, reads the pragma back before BEGIN, then `commit_group` issues one `BEGIN IMMEDIATE`, then `append_atomic` creates a savepoint per operation and rechecks schema/incarnation and transaction preconditions. It never starts a nested BEGIN inside that group. Consult `(scope_key, actor_id, request_key)` only when the caller supplied an explicit key; public mutation requests always supply one. Trusted capture/marker catch-up may use request=None and deduplicate solely by its mandatory natural key. Same fingerprint returns the original committed first/last event and typed receipt without adding events. Different fingerprint refuses `idempotency-key-reused`. An erased fingerprint refuses `content-erased`; it cannot accept/recreate the original body or silently replay an uncheckable request. A failed uncommitted batch consumes no key.
+3. Validate natural keys and resolve no-ops before allocating operation/envelope rows; check each genuinely new event ID for collision before insertion. Insert one operation envelope only if there is a new event or an explicit caller-supplied request key. A different operation cannot reuse it even with identical text. Resolve natural-key no-ops: a second delivered/read/dismissed mark returns the original marker; a duplicate vendor turn returns the original turn only after verifying equal body/source identity. Different bytes at a natural key refuse `natural-key-conflict`. No new domain event/marker is generated just to make an idempotency receipt. A caller-supplied new request key still receives a durable operation/member correspondence even for a no-op, preserving conflict detection. A newly captured keyless operation stores no retry key/fingerprint and has no operations_caller_key index entry; its atomic member map still exists. A derived/keyless all-no-op capture sweep returns a transient NaturalKeyReplay receipt without any INSERT: members retain input natural-key order, primary is the first original event and supplies its retained writer, first/last bound those original revisions and request_key remains None. They need not have belonged to one prior operation; this aggregate does not invent a durable operation ID or claim all members had one writer. Repeating Stop hooks cannot grow history indefinitely. Keyless writes are restricted to natural-keyed capture/marks, never unchecked configuration or arbitrary events.
+4. Insert the envelope, store-owned writer/durability stamp, typed data and body exactly once. `apply(event)` checks the current projection revision/state and changes all affected projections, resume heads and pending effect debt. An operation with multiple events is all-or-nothing. Unknown kinds/versions, missing referenced rows, stale CAS, wrong recipient or invalid transition abort the **whole operation**, not just the final event.
+5. Insert the ordered operation-member map (including reused natural-key events) and return an internal `PreparedReceipt`; this is not yet a committed reply. `commit_group` alone issues outer COMMIT under the selected NORMAL/FULL policy, then materializes public `CommitReceipt` values. A receipt reconstructs its exact event-ID list from that map; ordinal zero is the fixed primary event and supplies `primary_event`, `writer` and `durability`, while the operation row separately preserves the actual committer of a newly recorded caller-key alias. This preserves the original event writer even when a new host/direct route encounters a natural-key no-op. Wakes are deterministically reconstructed from original member events (affected project/principal/position), never the current dispatcher; replay may repeat advisory watch bumps but cannot repeat a delivery effect. Exact-key replay returns the original stamps/wake targets. Each member event retains its own stamp if a compound receipt contains pre-existing natural-key facts alongside new events; its first/last positions are descriptive bounds, never permission to treat every intervening event as a member. Only then release successful replies and the committed high-water notification. A reply/notification failure does not undo COMMIT; retry with the same key resolves it. No OS call, filesystem edit, network request, await or expensive transcript scan occurs while holding the transaction.
 
-SQL statement failure and COMMIT failure are not interchangeable. Before COMMIT, rollback is definite. A lost connection/IO error while committing is reported as `commit-outcome-unknown` with the original request key; the caller queries/retries that key rather than inventing another. Shutdown/drain does not report success until accepted work has a definite result or an explicit indeterminate receipt. The store never stamps a projection/bell as witnessed just because append succeeded.
+SQL statement failure and COMMIT failure are not interchangeable. Before COMMIT, rollback is definite. A lost connection/IO error while committing is reported as `commit-outcome-unknown` with the original request key, or the bounded natural event IDs/source checkpoint when keyless; the caller queries/retries those same identities rather than inventing another. Flush/drain preserves the distinction as PendingOperation::CallerKey or NaturalEvents, never an invented empty key. Shutdown/drain does not report success until accepted work has a definite result or an explicit indeterminate receipt. The store never stamps a projection/bell as witnessed just because append succeeded.
 
 ### Semantic fingerprint encoding
 
-Fingerprint bytes are `SEOP\0v1\0` followed by canonical UTF-8 JSON of the semantic input. Object field names are the closed ASCII schema names sorted by UTF-8 byte order; arrays retain semantic order; integers are checked decimal i64/u64 with no floats; strings use JSON UTF-8/control-character escapes without Unicode normalization. IDs use their exact shared typed wire spelling (canonical kind-prefixed lower-case UUIDv7 or accepted legacy spelling), never the private storage key; native paths use their explicit encoding tag and base64url raw encoding; payloads are streamed into `{bytes,sha256}` descriptors, never buffered into a second full JSON text copy. Include kind/version, source/native natural keys, expected revisions and scope/actor. Exclude generated envelope IDs, origin transport metadata, recorded clock time and retry key. Caller-created domain IDs (message/decision/session IDs) remain semantic inputs. This specification fixes the representation independently of a serde map's incidental iteration order. Erasure invalidates every operation fingerprint whose member/data dependencies included the erased field; no old composite digest is retained as a loophole.
+Core computes IntentDigest from the **closed admitted operation input before allocating IDs or planning events**. It is an internal value, never a wire/MCP field; the store/core share the in-process trust boundary, so store does not depend on higher-layer Op types or accept an untrusted client hash. AtomicBatch.request is either None for the restricted natural-key path or RequestIdentity { key, intent }. Core obtains the static operation name from its closed generated registry, never user text; store validates the supported intent codec version and bounded domain-label shape and never dispatches an operation by that label. The store does not duplicate the 59-operation registry.
 
-### Group commit
+For codec 1, core streams `SEINTENT\0v1\0` plus the stable operation name and canonical typed semantic input into SHA256. Object field names are closed ASCII sorted by UTF-8 byte order, arrays retain semantic order, integers use checked decimal encoding without floats, and strings use JSON control escaping without Unicode normalization. Public IDs supplied by the operation's caller retain exact typed wire spelling; native paths have tagged raw bytes; text becomes a streamed {bytes,sha256} descriptor. The trusted staging pass exposes byte_length/sha256 through StagedTextValue, so core need not reread/duplicate a 1 MiB turn. Input admission happens before hashing; aliases resolve consistently to IDs. Exclude request key, transport retries, sampled times and **all operation-allocated output IDs**, including new message/decision/session/effect IDs. Caller-supplied entity IDs, expected revisions, target/body/config values remain included. The same request can therefore retry after core allocates different candidate event/effect IDs without a false key conflict.
 
-The host owns one write connection on one blocking worker. Default coalescing is 250 µs, maximum 16 operation requests, bounded additionally by encoded bytes and operation size. The S1 measurements show this is a starting setting, not proof of a 20 ms hard bound. A failing outer `commit_group` result applies to every accepted member; its successful vector preserves request order and each member's savepoint result. The worker blocks indefinitely when idle; a deadline is armed only after the first queued write. A zero-window setting drains only already queued work and is an explicit build-time tuning alternative, not an environment override.
+Store computes fingerprint = SHA256(`SEOP\0v1\0` + unambiguous admitted scope/actor encoding + static operation name + intent codec version + intent SHA256). This binds scope/actor independently of the trusted core input digest. Store still validates the entire resulting closed event batch, payload digests, references and preconditions; it does not reconstruct operation intent by hashing generated event bodies. operations.fingerprint_codec retains the supported codec identity. Same caller key/fingerprint returns original membership/stamps; different intent refuses before any planned side effects. The existing operation's codec must remain supported or return a named version refusal, never reinterpret its bytes. Erasure invalidates affected composite fingerprints so no body-derived digest remains. Keyless natural operations retain neither an intent digest nor a retry index entry; their collision/body rules are separate.
 
-Each operation has a savepoint inside the group transaction. Its own failing validation/apply rolls back that savepoint and records that request's error; other valid operations may proceed. SQL/IO errors that poison the connection, failed savepoint rollback or failed outer COMMIT fail/indeterminate **all** affected requests. Replies are withheld until outer COMMIT; a rolled-back member's error also arrives after its group is resolved. Replayed/no-op members return their existing receipt and create no duplicate events. Decision-chain heads are read/updated transactionally, so savepoint rollback cannot leave an in-memory speculative head.
+### Writer ownership, batching and durability
 
-Admission has both a request cap (64 queued operations) and a 1 MiB resident queue-body budget; large staged captures use bounded owned staging references, not arbitrary paths or buffers copied into every queue item. The worker validates the staging digest/ownership before beginning SQL. A group whose materialized bytes would exceed its 2 MiB work cap commits earlier. Queue full returns `store-backpressure` immediately with retry guidance, not a blocking send on the host runtime. Accepted requests are FIFO except adjacent grouping; there is no per-agent permanent writer/process. Replies use a one-shot completion object; host async integration waits without spawning a process per request. A timeout means unknown acceptance/commit status unless the ticket says rejected; dropping the waiter is never cancellation after admission.
+The host owns one write connection on one named blocking worker. It blocks on receive, then drains only already queued work up to 256 operations and the 2 MiB materialized group-byte cap. There is no gather window, gather timer or post-first-message sleep. Queue admission is capped at 256 requests and 1 MiB resident body bytes; large staged captures carry owned bounded references. A full queue immediately returns backpressure. Outer BEGIN/COMMIT is shared, each operation has a savepoint, and replies wait for outer COMMIT. Invalid members roll back independently; a poisoned connection, failed rollback or indeterminate COMMIT affects every unresolved member. This is section 80's protocol; S1's 250 µs/16 tuning is historical measurement only.
 
-A direct no-host operation acquires the same runtime lock exclusively in client mode, checks again that no host endpoint/generation became current, opens the existing store without migrations, and executes `commit_group` with a single operation on its own connection. It holds the lease until COMMIT/rollback and connection close. A host starting concurrently waits for this finite operation; a stale endpoint never authorizes a second writer owner. Direct append uses the same limits/idempotency/preconditions/NORMAL pragmas. It does not make startup/shutdown backups per CLI invocation. The next host catches up from committed event positions; post-commit notification is advisory, never authority.
+`CommitWait` is a Future that registers a waker without blocking; the async host awaits it or applies its own timeout. `wait_blocking` exists only for synchronous CLI consumers. Flush/drain return futures too; joining the worker happens on the host's blocking pool, never the current-thread runtime. A timed-out/dropped future does not cancel accepted work. Successful drain/join returns the unique maintenance HostStore retaining the Arc lease and its report; failure keeps admission closed and names any indeterminate keys. The worker retains the Arc lease until its SQL handle closes and thread exits.
+
+A direct client holds a **shared** OS runtime.lock for its complete transaction/connection lifetime; multiple direct clients may coexist and SQLite BEGIN IMMEDIATE + finite busy_timeout serializes their writes. The host needs the **exclusive** lock and cannot start until all direct clients finish. A direct client does not mistake another direct client for a host or forward to a nonexistent endpoint. After shared-lock acquisition it validates store/version; an endpoint without a live exclusive owner cannot grant host authority. Direct invokes the identical commit_group with one operation, creates no persistent worker, does no per-command startup/shutdown backup, and leaves durable effects for the next host. OS custody always auto-starts/uses the host.
+
+WriterMode is an opaque store-owned value with a read-only WriterKind view (`Host { generation }` / `Direct`), with no public constructor, Deserialize or input field. Event and operation rows persist writer_mode, nullable host_generation and durability with CHECKs. The commit engine alone constructs new stamps from its owned lease; CLI-through-host remains Host, and request Door remains independent. History reads the persisted event stamp. Import commits new Rust envelopes with the importer's actual writer and retains Node provenance separately. Salvage/rebuild copies valid historical stamps exactly; a missing/invalid Rust stamp is an explicit recovery gap, never inferred from the recovering host. The final new recovery event gets the recovering committer's stamp.
+
+The fixed FULL set is: credential.issued, credential.activated, credential.revoked, session.activated, session.ended, session.revoked, project.registered, project.removed, principal.registered, grant.recorded, profile.saved, config.set, erasure.requested, turn.erased, message.erased, erasure.completed, recovery.recorded; and fresh store/header creation, recovery adoption and the migration user_version publication. Conservatively treating every profile/config event as security-sensitive avoids a caller-controlled field classifier. No untrusted durability flag exists. A mixed group takes FULL. Select/read back synchronous=FULL before BEGIN; only a successful FULL COMMIT may acknowledge those changes. Restore/read back NORMAL before the next ordinary group; failure to restore closes admission rather than silently changing the contract. NORMAL ordinary writes may be lost after OS/power loss; FULL security revocation cannot be acknowledged before its WAL sync. Replay reports retained durability, not the current policy. This boundary must be measured against B2/write budgets rather than waived by median S1 numbers.
+
+## Recorded process, session and delivery facts
+
+The store persists the same nine lifecycle states as accepted section 30: reserved, starting, running, leader-exited, stop-requested, stop-unproved, exited, lost, historical. A scope-prepared reservation can lack a root PID/executable/birth identity. RecordedIdentity distinguishes Present(native ProcessInstance), Absent(reason) and Unreadable(cause); process_data stores all native identity columns together or all NULL plus the explicit reason. Each ProcessTransition carries the complete new ProcessIdentityRecord checkpoint, so reserved→starting/root-known does not fabricate fields or require rewriting registration. Its lifecycle/principal/session must match the existing immutable record; native root may change only absent→present at the witnessed section-30 checkpoint, never PID substitution. Running/leader-exited/stopping/exited Rust records require a known recorded identity; reserved/starting/historical/lost may have explicit absent/unreadable identity. PID zero, fabricated birth times and replacement characters are never substitutes. Lost may recover to running only with section-30 exact re-adoption proof against the saved identity/scope; leader exit alone does not prove an empty scope.
+
+NativeCustody format_version=1 is the closed se-proc LaunchReservation or ProcessRecord checkpoint codec: a tagged UTF-8 JSON object with exactly the accepted section-30 record's fields, tagged native path bytes/UTF16, explicit optional root, host/generation/nonce/scope identity/guarantee/entry/state/exit/observation fields. Its variant tag is reservation or process for native checkpoints, or historical for an imported non-authoritative record with explicit absent/unreadable fields, its record schema version is mandatory, unknown fields/versions refuse, integers use checked decimal fields and no OS handle/address is serialized. The host adapter converts the accepted se-proc record at this boundary; se-store validates the versioned shape before insertion and never interprets it as permission to signal. The separate indexed/native columns are the authoritative query keys checked equal to this checkpoint, not guesses derived from opaque bytes. Replay retains original checkpoint bytes; import may supply a historical checkpoint with explicit unknown/absent fields, never synthesize a live se-proc handle.
+
+ContainmentFact is persisted on process registration/transitions and session activation, with the session pointing to the exact lifecycle/fact that launched it. Known contained kind is cgroup (Linux), job (Windows), or process-group (macOS), observed time present, cause NULL. Linux uncontained requires observed time and exactly one cause: no-user-manager, no-delegation, cgroup-v2-absent, cgroup-unreadable, scope-create-failed; cause is never NULL. Unknown historical facts retain a reason and produce unknown/null with an explicit incomplete status, never inferred containment from the OS or today's probe. NotLaunched is distinct and renders the section-50 null pair for a never-launched session. Persist only the compact cause and optional probe observation reference here; full OS probe text is separate doctor evidence, not the user-facing cause code. The CHECKs enforce all combinations; the closed session JSON uses the same tagged union. A fresh read after restart renders these saved facts, with current OS observations reported separately.
+
+The adapter maps accepted se-proc fallback reasons into the section-50 vocabulary: NoUserManager→no-user-manager; NoUnifiedHierarchy→cgroup-v2-absent; DelegationDenied→no-delegation; helper/kernel failures before scope creation→scope-create-failed; unreadable hierarchy/probe→cgroup-unreadable. Detailed native reason stays in doctor/checkpoint evidence, so this compact mapping does not discard the actual cause. Linux fallback still tracks only its process group and cannot claim escaped descendants are contained. A later observation may correct a fact only by a new transition, never by rewriting the launch history.
+
+Credential issuance stores prepared, not active, with activation_deadline no later than issued_at+600 seconds. The trusted first-use verifier checks hash, session/process binding and deadline, then commits credential.activated and the required session activation/incumbent revocation atomically under FULL before admitting that first operation. Prepared never authenticates an ordinary call by itself; expired preparation fails without a timer, no owner fallback and no incumbent displacement. Revocation/expiry cannot reactivate. Historical imported credentials never become active.
+
+CaptureFailed records the actual failed source window/code/cause, leaves the durable source cursor at the last fully captured bytes and can be followed by a successful retry; a hook's required exit 0 is not a capture-success claim. EffectOffered records a unique actual offer attempt/evidence, moves pending to offered and leaves recipient-read debt outstanding. Only recipient marking or independently witnessed settlement changes that fact. Host-only offers require the deterministic explicit request key derived from effect+attempt and check that key/body correspondence; retrying that same attempt cannot create a new offer under a fresh random key. effects.principal_id is checked against the typed intent/target and updates that principal's pending/offer debt without a global scan.
 
 ## Projection rules
 
@@ -597,13 +699,13 @@ Apply is exhaustive over the catalogue and runs only inside the canonical transa
 | sessions / credentials | prepared session does not displace incumbent; activation checks prepared revision and incumbent revision/terminal events in one batch; end/revoke invalidates active credential projection | one active session per agent enforced by partial index; terminal session cannot reactivate; imported bindings are ended and have no live credentials |
 | messages / marks | sender comes from admitted actor; recipient registered and authorized; sent row points to one body; delivered/read/dismissed each sets only its first marker | read/dismiss requires authenticated recipient; delivered requires outside consumer evidence; repeated same mark returns original sequence; read and dismissal may coexist as separate facts |
 | decisions / decision chain | proposed absent; transitions enforce table below and expected revision; replacement proposal/ratification must exist; append chain over canonical decision events only | compare both heads for supersession; import retains old byte provenance; no all-event chain or synthetic ratification |
-| turns / capture_sources | capture consent and session/source binding must be valid; native turn natural key/body/source digest match; insert turn and progress together | same native key + bytes replays; source rotation/truncation refuses offset reuse until new source incarnation is explicitly recorded; failed capture leaves offset unchanged |
+| turn_data / capture_sources | capture consent and session/source binding must be valid; native turn natural key/body/source digest match; insert turn and progress together | same native key + bytes replays; source rotation/truncation refuses offset reuse until new source incarnation is explicitly recorded; failed capture leaves offset unchanged |
 | processes | initial recorded identity is complete, including machine/boot/native birth/executable/argv/custody; transition checks expected head and full observation reference | store does not call OS; reused/unknown evidence cannot produce running/owned; imported processes are historical only |
 | working_state | absent or exact revision precondition; new head references one immutable text payload | stale revision conflicts; empty string is present text, not absent |
 | cursors | typed purpose/scope/session and valid snapshot bounds; issuance distinct from acknowledgment | exact prior cursor revision needed for ack; cannot ack a foreign/newer cursor or turn incomplete context into complete |
 | effects / integrations | requested effect has stable cause/idempotency; settle requires expected pending revision and evidence for witnessed; integration records exact owned prior/written digest | failed/abandoned retain reason; unrelated file edits are conflict; replay never executes the intended effect |
 | import runs / progress / legacy_ids | source incarnation/prefix unchanged, monotonic row/byte cursor; imported events and progress commit together | ID map fixed per source identity; changed source prefix refuses; unreadable counter/record retained; no cursor beyond failed unaccounted bytes |
-| erasures | explicit owner-approved target IDs/revisions, complete copy inventory, exclusive maintenance state | retry resumes the same manifest; no completed receipt until replacement live store/backups read back; erased-key replay cannot recreate text |
+| erasures | explicit owner-approved target IDs/revisions, complete copy inventory, exclusive maintenance state | retry resumes the same manifest; no completed receipt until live DB/WAL readback; retained backups are named residuals; erased-key replay cannot recreate text |
 
 Current-head readers return a `ProjectionRecord` containing the current event and, when needed, the original immutable creation/proposal/binding event. For a rename, terminal session, decision transition or process transition this is a fixed two-event join, not an unbounded walk through expected revisions; a complete current snapshot (profile/config/working state) needs no original object. Project updates carry a complete name/root snapshot. Core composes public wire DTOs from these records; these internal Rust field names are not CLI JSON field-path promises. The original event preserves an agent's immutable creator, while the current principal projection supplies the atomic creator check.
 
@@ -634,14 +736,14 @@ CREATE TABLE resume_heads(
 | Store admission | absent → creating → ready; ready → draining → closed; ready → migrating/recovering/erasing → ready or maintenance-failed | readers/ordinary writers refuse non-ready state; failed maintenance never opens as an empty fresh store; process-crash recovery uses the durable phase manifest |
 | Project | absent → active; active → active revision; active → removed | removed ID cannot be silently reused; a new adoption creates a new ID with explicit retained history linkage |
 | Session | absent → prepared; prepared → active/ended/revoked; active → ended/revoked | ended/revoked terminal; active → prepared forbidden; takeover is predecessor terminal + prepared successor active in one CAS batch after outside witness |
-| Credential | absent → active → revoked; active → expired by timestamp predicate | no resurrection, no plaintext event; expired/revoked token never falls back to owner |
-| Message | absent → sent; sent → sent+delivered/read/dismissed; sent → superseded relation | markers are independent monotonic facts; dismiss does not imply read; no body rewrite/delete or recipient change |
+| Credential | absent → prepared → active → revoked; active → expired by timestamp predicate | no resurrection, no plaintext event; expired/revoked token never falls back to owner |
+| Message | absent → sent; sent → sent+delivered/read/dismissed; sent → superseded relation | markers are independent monotonic facts; dismiss does not imply read; no ordinary body rewrite/delete or recipient change; approved forget alone erases content |
 | Decision | absent → proposed; proposed → ratified/rejected/retracted; ratified → retracted/superseded | rejected/retracted/superseded terminal; superseding requires ratified replacement and both expected heads; proposed supersedes hint has no activation effect |
-| Process | absent → reserved/running/historical; reserved → running/lost/exited; running → stop-requested/exited/lost; stop-requested → exited/lost | historical/exited/lost terminal for that exact instance; re-adoption is a witness on a still-valid recorded instance, not a new PID claim; no stop-requested → running reset |
-| Effect | absent → pending; pending → witnessed/failed/abandoned | terminal result immutable; retry after failed uses a new attempt/request linked to the same cause, never changes failed into witnessed invisibly |
+| Process | absent → reserved/historical; reserved → starting/lost/exited; starting → running/lost/exited; running → leader-exited/stop-requested/lost; leader-exited → stop-requested/exited/lost; stop-requested → stop-unproved/exited/lost; stop-unproved → stop-requested/exited/lost; lost → running only on exact re-adoption proof | exited/historical terminal; no PID-only revival, no cancellation of a stop request by relabeling it running; section-30 leader/scope witnesses decide terminal state |
+| Effect | absent → pending; pending → offered → witnessed/failed/abandoned (or pending → terminal on failed offer) | terminal result immutable; retry after failed uses a new attempt/request linked to the same cause, never changes failed into witnessed invisibly |
 | Import | absent → running; running → running checkpoint/complete/partial | source mismatch pauses/refuses without advancing; resume of partial requires same policy/source identity and explicit remaining window |
 | Backup | absent → writing → verified → published; writing/verified → failed | published generation immutable until owned rotation; partial file never counts as a backup |
-| Erasure | absent → inventoried → approved → draining → rewriting → backups-rewritten → swapping → verified → complete | failure freezes ordinary writers and preserves phase evidence; no successful tombstone-only shortcut; restart resumes exactly this erasure ID |
+| Erasure | absent → inventoried → approved → draining → content-erased/pending-cleanup → WAL/FTS-cleaned → verified → complete | failure freezes ordinary writers and preserves phase evidence; no successful tombstone-only shortcut; restart resumes exactly this erasure ID |
 | Salvage | diagnosed → source-frozen → scanning → candidate-built → validated → owner-adopted | gaps remain explicit; invalid candidate never replaces source; ordinary open does not auto-adopt salvage |
 
 Stored read/disposition facts can be imported as historical states only when the Node row actually supports them. A bell offer, stdout flush, packet creation, launch readiness and task completion never substitute for one another.
@@ -658,11 +760,33 @@ An opaque page cursor encodes version, store ID/incarnation, fixed snapshot high
 
 `Snapshot` exposes typed queries for projects/principals/profiles/config, sessions and credential hashes, messages/inbox/marks, decisions (including typed exact ID), turns/sources, processes, working state, cursors/resume heads, effects/integrations, history/events, import progress and operation receipts. Shared text search is bounded over an explicitly scoped candidate stream; it reports incomplete when its scan budget ends. There is no arbitrary SQL/predicate callback API for kernel callers.
 
+### Mutable lists at a cursor high-water
+
+Current projections and their partial indexes serve fresh status/exact lookups. A first page may use that fast path only when its SQL snapshot high-water equals the chosen H; after later commits a cursor must use the temporal path, not current state for its historical filter. `list_versions` is a rebuildable, text-free temporal list index. Apply closes an entity's open interval with valid_to=S and inserts its new summary at valid_from=S in the same transaction as event S. Intervals are [from,to); exactly one is eligible when from≤H and (to IS NULL or H<to). Creation's sort_seq never changes. An update changes last_seq/state/filter keys but cannot move an existing item across the page's immutable creation-order cursor. One event changing several entities creates one version per affected entity; source history can rebuild all summaries. Body text is joined through first_seq/last_seq, never copied into this index.
+
+| Snapshot list | Historical candidate/filter index; materialization |
+| --- | --- |
+| projects / principals / configuration / sessions / processes / integrations / import_progress | list_versions_order on exact scope_key/family, descending (sort_seq,entity_key), validity predicate at H; first_seq + last_seq reconstruct the state at H |
+| messages owner list | family=message, scope + order index; immutable sender/recipient/kind and historical mark sequences in that version |
+| messages sender or recipient | list_versions_sender / list_versions_recipient; sent-or-received is two indexed streams merged/deduplicated by entity key, never OR over the whole project |
+| unread inbox | list_versions_recipient_state on exact scope/recipient/state='unread'; validity at H, independent of today's marks_unread partial index |
+| pending decisions | list_versions_state on exact scope/family=decision/state='proposed', validity at H; original proposed_seq is sort_seq |
+| pending effects | list_versions_state, merge pending and offered streams at H; principal-debt exact lookup uses effects_principal_pending |
+| immutable turns / event or decision history | turn_data_agent_seq / events_scope_seq / events_session_seq and sequence≤H; no temporal index row per captured turn |
+
+Temporal summaries exist only for listed mutable families, not every turn/event. MessageSent creates unread; delivered/read/dismiss/supersession close/append a summary preserving every marker visible at that time. Owner/sender/full-body message lists use the same as-of summary to populate marks. Decision transitions, project removal, agent rename, session/process/effect state, configuration/integration/import-progress changes all append corresponding versions. Exact non-paged reads use the new snapshot's actual H; caller membership/current authorization is revalidated on every page, so revocation overrides a historical window.
+
+Canonical unread SQL uses `list_versions AS v INDEXED BY list_versions_recipient_state WHERE v.scope_key=? AND v.family='message' AND v.recipient_id=? AND v.state='unread' AND v.sort_seq<=? AND (v.sort_seq<? OR (v.sort_seq=? AND v.entity_key>?)) AND v.valid_from<=? AND (v.valid_to IS NULL OR ?<v.valid_to) ORDER BY v.sort_seq DESC,v.entity_key ASC LIMIT ?`. Bind H to both validity comparisons and creation ceiling; the mixed DESC/ASC keyset predicate is expanded explicitly, including a deterministic entity-key tie-break. The query retrieves limit+1 eligible rows, then fixed-PK joins materialize their immutable owning events/payloads. No SQLite transaction is retained across CLI requests. The point-reconstruction PK is (scope,family,entity_key,valid_from DESC) and returns the latest version≤H; direct ID reads never walk full entity history.
+
+The matching indexes lead with scope/family/filter then creation order, so EXPLAIN must show a SEARCH of that scoped index and no global event/mark scan or project-wide temp sort. Validity may reject historical versions; SQL's progress callback enforces the request's finite step/time budget. If this old window cannot produce limit+1 or prove exhaustion within budget, return read-incomplete with H/cause/remedy, not a successful empty/complete Page or a guessed next pointer. Only a known additional eligible row yields next. This does not pretend B7 is qualified for pathological old windows; measure latest 1M unread, state changes between pages and old-window amplification independently. An index mismatch is an implementation defect, not permission to ignore H.
+
 ## Migrations and version skew
 
-Connection setup: confirm a regular owned state file in an owner-only directory through the host's filesystem custody service; open without following a final symlink, no URI paths from a remote input; validate `application_id`, `user_version`, store ID/incarnation and ready/maintenance state before queries. Wrong application ID, unreadable header, newer schema or configured synced/network storage returns a distinct error/remedy. A missing file is absent. An empty/truncated existing file is unreadable, not permission to initialize over it. Create uses a new exclusively reserved pathname and refuses collision; 16 KiB pages are set before first WAL activation.
+Connection setup: confirm a regular owned state file in an owner-only directory through the host's filesystem custody service; open without following a final symlink, no URI paths from a remote input; validate `application_id`, `user_version`, store ID/incarnation and ready/maintenance state before queries. Wrong application ID, unreadable header, newer schema or configured synced/network storage returns a distinct error/remedy. A missing file is absent. An empty/truncated existing file is unreadable, not permission to initialize over it. Create uses a new exclusively reserved pathname and refuses collision; 16 KiB pages are set before first WAL activation. Hostless init uses create_direct under a shared runtime lock: construct a protected same-volume uniquely reserved staging DB, commit the complete schema/header under FULL, close/read back it, then publish with no-replace. Another direct initializer may race but cannot see partial schema or overwrite the winner; the loser receives store-already-exists and core reopens/re-resolves the winner's identities. Both staged data and destination parent are under the host filesystem-custody adapter. No host generation is fabricated and no daemon is required just to init. A lease with unknown StoreId is admitted only after measured absence for this bootstrap or for explicit unreadable-source recovery, never for ordinary writes; existing-store open must bind the actual StoreId.
 
-Pragmas: WAL, NORMAL, `foreign_keys=ON`, `trusted_schema=OFF`, `mmap_size=0`, `temp_store=MEMORY`, bounded cache, `busy_timeout=5000`, 64 MiB journal-size target. Read back journal/synchronous/foreign-key settings; refusal to apply is fatal to write admission. Only the host under the exclusive runtime lease performs forward migrations under `BEGIN EXCLUSIVE`. Version 0 is fresh creation, not an arbitrary SQLite importer. Before each migration take/verify a backup; apply additive DDL/backfill in explicit bounded phases, update `user_version` in the same final transaction, then check integrity/foreign keys/version before ready. Version metadata outside SQLite is only a recovery hint, never authority over a contradictory database header.
+Pragmas: WAL, NORMAL, `foreign_keys=ON`, `trusted_schema=OFF`, `mmap_size=0`, `temp_store=FILE`, bounded cache, `busy_timeout=5000`, 4 MiB journal-size target. Read back journal/synchronous/foreign-key settings; refusal to apply is fatal to write admission. Only an explicitly owner-approved migration/upgrade under the exclusive runtime lease performs forward migrations under `BEGIN EXCLUSIVE`. Version 0 is fresh creation, not an arbitrary SQLite importer. The explicit owner path is a diagnosed supported migration through existing doctor.repair (`se doctor --fix`), or an explicit application upgrade action; this adds no public operation/command. An ordinary host/auto-start/status never migrates: a supported older schema returns store-migration-required with the explicit owner upgrade remedy, distinct from too-new and unsupported-old. A maintenance-only HostStore may inspect/plan an older schema but cannot start a writer; migrate requires MigrationApproval binding the plan fingerprint, owner and ExplicitOwnerCommand/ExplicitUpgrade trigger. Before each migration take/verify a backup; apply additive DDL/backfill in explicit bounded phases, update `user_version` in the same final FULL transaction, then check integrity/foreign keys/version before ready. Version metadata outside SQLite is only a recovery hint, never authority over a contradictory database header.
+
+A migration changing immutable rows drops only the named fixed immutability triggers inside its exclusive migration transaction, performs the versioned backfill, recreates the complete approved trigger set, validates it, then publishes user_version with FULL COMMIT. SQL rollback restores both rows and triggers; a crash before COMMIT leaves the old complete schema. No disable flag or permanent exemption leaks into a normal connection. Long staged migration phases modify only new/unpublished tables until the final exclusive transaction, never unguarded old authority.
 
 Alpha migrations add tables/indexes/nullable columns or supported event readers; they do not reinterpret old tags or drop history. A migration needing a long replay opens a visible maintenance generation, writes to a new projection generation, validates it and atomically publishes; readers do not guess which half is current. A host can open a supported older header as a maintenance-only object to plan/migrate; it cannot construct a working writer or query missing projections until migration completes. Corrupt/newer/foreign headers return refusal without a HostStore. The exact old version range accepted by a binary is compiled metadata. Older binaries refuse write admission to a newer version and cannot “repair” it. Reader compatibility is also explicit, not assumed because SELECT happens to work. Unknown event body versions block a complete replay/read rather than being ignored. Only a negotiated rollback to a compatible Rust binary exists; no Node-format rollback writer is planned.
 
@@ -670,34 +794,27 @@ The runtime lease serializes old/new hosts and direct clients before migration. 
 
 ## Backups, restart and salvage
 
-Backups are SQLite online-backup snapshots, not filesystem copies of a live main file without its WAL. The runtime owner takes one verified snapshot at startup before admitting writes and one after clean drain/flush at shutdown. It retains two published generations plus at most one owned staging generation. Each has a manifest containing store ID/incarnation, schema/application IDs, captured position, byte count, file hash and validation result. No machine credential, launch secret or active runtime endpoint is included. Credential hashes in a copied database do not make copied capabilities live.
+Backups are SQLite online-backup snapshots, not copies of a live main file without its WAL. The host admits the first session and normal writes/custody as soon as the supported store is ready; startup backup is **after ready**, off the critical path. StoreFactory.backup owns an independent bounded read connection (borrowed from the fixed reader allocation), runs at most 64 pages per step at background priority and yields for foreground reads. It never holds the writer connection, drains the writer, or gates first-session/re-adoption admission. A slow/failed backup reports pending/failed through host diagnosis with source/cause and retained generation; it cannot turn ready into a false success for backup. Migration/recovery/erasure are separate explicit maintenance barriers. Shutdown drains/flushes, then attempts the requested clean backup within its explicit deadline; failure is named, not called clean.
 
-A normal host/direct lease must carry the validated StoreId; an unknown StoreId is permitted only for owner-approved recovery planning that creates a fresh target identity. The persistent store_info state describes SQL maintenance; creating/draining/closed and backup-pending are resource/host admission phases, not misleading extra SQL-ready states. No writer handle is published before the host's startup backup barrier. Startup backup is an asynchronous **admission phase after lightweight readiness**, visible as `starting/backup-pending`; private reads can remain available from a validated store, but mutation/custody admission waits for the backup or a named failure. This preserves the <=100 ms open/readiness target without claiming the full startup phase already completed. A full 1 GiB copy cannot fit 100 ms; it must not secretly become startup work on the critical path. Shutdown success requires the requested clean backup to finish, otherwise the result says backup failed and names its staging/prior generations. The host selects a finite user-visible shutdown deadline; expiration does not turn the prior backup into a fresh one.
+Keep two published generations and at most one owned pending generation. Each manifest carries store/incarnation, schema/application ID, captured position, byte count, digest and validation result. No machine credential, launch secret or active endpoint is in a manifest; copied credential hashes are not live authority. Allocate the pending pathname exclusively; online-copy in finite steps; close and independently reopen read-only; validate integrity/FKs/version/captured H; sync owned files/directories where supported; no-replace publish and atomically update the manifest pointer; remove the oldest owned generation only after publication. Failure retains the two prior valid generations. A pending filename alone never proves a valid backup. Changes during backup may restart SQLite's copy internally; report that retry/deadline cost and keep yielding rather than pausing the writer to meet a snapshot goal.
 
-Rotation sequence: create an exclusive `.pending-<generation>` file; run online backup with bounded page steps and busy deadline, yielding between steps; close and independently reopen read-only; run integrity/foreign-key/version checks; record captured position and digest; fsync file and containing directory where supported; publish a new immutable generation by no-replace rename; update a small atomic manifest pointer; only then remove the oldest previously owned generation. A failure retains the last two published valid generations. There is no in-place overwrite of a good backup. Startup reconciles an orphaned pending file by identity/manifest, never promotes it because its filename looks complete. Incremental backup scheduling runs only while work exists, without an idle timer.
+Normal open reads only header/version and indexed readiness metadata, not whole-history validation. SQLite WAL recovery preserves acknowledged process-crash commits under NORMAL; it is not a promise against OS/power loss. Security events use FULL as specified above. Recovery restores at an explicit owner action; backup credentials are revoked/inactivated on adoption and process rows cannot become live custody just because they were copied. New incarnation invalidates old cursors/leases before admission.
 
-Normal process death uses SQLite WAL recovery, then validates the header and the last committed schema; no projection replay is needed because log and projections shared COMMIT. A corrupt store is not automatically replaced with a backup or scanned into an empty database. Recovery planning/build/adoption and backup restoration are factory methods over explicit owned paths and a maintenance lease; they do not require first constructing a healthy HostStore. If the source store ID cannot be established, the report says unknown and the approved recovered target gets a fresh explicit StoreId rather than guessing one from a surviving row. `doctor.inspect` reports the actual read failure and available verified generations. `doctor.repair` requests an owner-approved recovery plan under the exclusive runtime lease, with old binaries and readers drained.
-
-Salvage builds a **different candidate file** from independently decodable authoritative envelopes/data/payloads. It never repairs the source in place. Source bytes and any WAL are first retained as a protected read-only recovery artifact with identities/digests; database locks/OS handles must establish a coherent frozen source, not a main-file-only copy. Scan by event position with bounded IO; validate kind/version/IDs/body ownership/digests and reference preconditions. Replay complete operation ranges using the same apply rules. If any member of an atomic operation is missing/corrupt, exclude the entire operation and record the exact gap/range. Dependent later events are excluded with dependency-gap reasons rather than supplied invented prerequisites. Unknown versions and unreadable ranges are counted separately from absent rows.
-
-A candidate passes structural integrity, foreign keys, full authoritative replay/projection comparison, decision-chain verification for available material, idempotency range consistency and an explicit gap manifest. A candidate with gaps may be useful, but `RecoveryReport.complete` is false and the user must explicitly choose it; no script can label it complete by counting only recovered rows. Adoption closes all readers, atomically swaps the protected file set, increments incarnation, revokes active credentials, treats imported/recovered process claims as requiring fresh OS witness, and appends `recovery.recorded` describing every omission. The original store/WAL and validated backup generations remain recoverable until a separate owner retention decision. Nothing launches or rings historical effects during salvage.
+Salvage remains factory maintenance so an unreadable store need not first construct a normal HostStore. Freeze/preserve the source and its WAL, inventory readable operation/envelope/data boundaries, build a separate candidate through the same approved codec/apply, retain complete operation groups and original writer stamps, and report corrupt/unknown/dependency gaps. Never advance a claimed complete cursor across an unaccounted gap. Independently reopen/validate the candidate before explicit owner adoption; preserve original bytes and require sufficient additional space. If source StoreId cannot be read, source is None/unknown, target is a fresh canonical StoreId, and RecoveryRecorded retains exact source-artifact path/incarnation/offset/length/available digest plus target identity; it never invents a source ID. If a readable source ID exists, retain it and increment incarnation. Adoption is a guarded host-owned swap with handles closed, rollback copy retained until independent readback, and no automatic adoption on corruption. Unknown writer stamps in purported Rust events are gaps; Node historical facts enter through the separate importer with a newly stamped Rust envelope.
 
 ## Forget and content erasure
 
-The owner-only `store.forget` targets body/statement/reason/legacy-byte fields and derived source digests on explicit captured event IDs/revisions, never an unbounded search-and-delete. Unsupported identity/config/native-reference fields refuse during inventory rather than substituting empty values. Core establishes interactive owner approval outside an agent process tree. Before mutation the store produces an erasure inventory: live payload/data fields, indexes, idempotency digests, derived caches, its two backups, pending backup/recovery/import artifacts and referenced vendor/source copies. The request and completion manifests contain field identifiers and copy identities, not the erased text or its plaintext hash. Aliased/shared payload ownership is prohibited, so a body is not secretly shared by an unrelated event.
+Prime's review decision adopts section 70 §6: owner-only, explicit captured-turn or message body event IDs with expected revisions; **in-place**, one content-erasure transaction, no whole-store rebuild. Decisions, reasons, configuration, identity and arbitrary legacy blobs are not public erase targets. EraseTarget contains only event/expected revision and implicitly selects Body; SourceDigest is internal dependent metadata, never a separate user-selectable arbitrary field. Keep event identity/actor/time/vendor ref and original byte length, remove plaintext and body-derived hashes. Source artifacts, automatic backups and raw-media remnants are named residuals rather than silently deleted. FTS is absent in v1; if later added, the same operation must remove/optimize its postings before completion.
 
-A read-only dry plan is not successful erasure. A tombstone alone is insufficient. After approval:
+Limit one request to 60 explicit targets so its audit batch stays within the 64-event bound; larger selections use separate explicit operations. Estimate extra WAL/dirty-page space from those targets, with bounded streaming buffers rather than whole-store replacement space. The factory erasure_plan uses an independent scoped reader while the writer is live, so inventory/owner confirmation does not freeze ordinary work; erase rechecks every target/revision after drain. Before mutation inventory the target owning payloads/source digests, affected operation fingerprints, host render/search buffers and owned staging, WAL and known backups/provider/import originals. Drain consumes/deletes accepted staging by exact custody identity; any remaining owned orphan that cannot be safely removed is explicitly named as a residual, never ignored. Approval binds owner, expected incarnation, exact target revisions and acceptance of named residuals; only an owner outside agent process trees can supply it through core. Drain/join the writer to obtain the maintenance HostStore. Block new writes through this maintenance phase; close owned readers and require bounded checkpoint access, while a foreign owner's direct SQLite reader can still make the checkpoint busy. That is an explicit erasure-incomplete outcome, never proof old pages disappeared.
 
-1. Drain the writer, refuse new mutations/backup/import, close snapshots and revoke streaming reads that could retain the body. Host/harness/SE Code clear their owned resident context/search buffers by explicit acknowledgment; a lost/unacknowledged holder is a named incomplete erasure. Kernel callbacks cannot pretend a foreign provider forgot its conversation.
-2. Persist an owner-only phase manifest with target IDs/revisions, owned file identities and generation, never body bytes. Enter erasing maintenance. Build a replacement SQLite database through the current schema/codec, preserving envelope IDs/order and retained fields, omitting the selected body/derived plaintext hashes and recording `erased_fields`. Required body references become an explicit erased-value representation, not an empty string that looks like original content. The builder first copies authoritative operation/envelope/data components and validates the approved erasure manifest; it then replays projections with those explicit erased values. Redaction metadata/erasure references are installed before final foreign-key validation and publication, so a temporarily missing body is never accepted by an ordinary reader as an authorized erasure. Event envelopes themselves remain immutable; erasure is an explicit content exception, with later reads returning `Erased`, not falsely unchanged text.
-3. Remove every selected field from typed auxiliary facts, working-state/context copies, search postings and owned indexes. Null the affected idempotency fingerprints and mark those keys erased: they cannot reinsert the secret. For erased decision material, retain the event/state history and an explicit chain discontinuity tied to the erasure event; null the erased row's old chain hashes and recompute all subsequent derived links in that project from a public erasure-ID/event-ID sentinel, so no later link retains the old content digest. Never claim that the original content chain still verifies across that discontinuity. Imported legacy-byte payloads containing the target must also be removed or erasure remains incomplete.
-4. Rebuild both owned backup generations from redacted material and independently validate them. Destroy owned pending backups/recovery copies that still contain the target, or refuse completion and name why the copy cannot be removed. Original Node source files, provider transcripts, external backups, filesystem snapshots, support bundles already copied elsewhere and a user's editor/terminal are outside the store's custody; report each known residual copy and never delete another owner's data automatically.
-5. Validate the new database/projections, checkpoint it, close all handles and atomically replace the owned file set under the lease. Retire the old main/WAL/SHM files, increment incarnation and independently reopen the new store and its backup generations; queries for each target must return erased metadata with no original body/digest. Append `erasure.completed` only after these effects and buffer acknowledgments are witnessed. Failure at any phase keeps maintenance visible and resumes from the same manifest on restart; it does not admit ordinary writers to the unredacted old store.
+Register private read-only, innocuous SQLite connection functions (so trusted_schema=OFF remains enabled) se_erase_body_allowed(event_seq,field) and se_erase_operation_allowed(operation_id), returning zero on every ordinary connection. Only the exclusive, owner-approved erase connection enables a finite in-memory exact target/operation set for its transaction; there is no SQL table, environment flag or remote input that enables it. The callbacks expose only membership in nonsecret ID sets, perform no SQL/IO or state mutation, are audited for information leaks before INNOCUOUS registration, and are not marked deterministic because the connection guard changes between transactions. [SQLite function flags](https://www.sqlite.org/c3ref/c_deterministic.html). The DDL's payload/message/turn/operation trigger predicates allow only: detach the approved body ref; null that turn's derived source hash; delete its owning payload; invalidate fingerprints of operations whose members depend on that erased field. Every other column must compare unchanged. Event/envelope/member/history deletion stays prohibited. The connection-local set is cleared on success, error or rollback; normal statements never disable triggers.
 
-This is logical erasure from all **owned, enumerated product copies**, including WAL/free-page copies eliminated by constructing a new file. Unlinking an SSD block cannot promise physical media sanitization or erase copies in an OS snapshot/vendor account. If the user's requirement includes those copies, return `erasure-external-copies`/`erasure-physical-guarantee-unavailable` with the exact outstanding custodians; do not claim a completed universal erasure. Cryptographic media erasure would require a separately approved encrypted-storage/key-lifecycle design and is not invented by this crate. No automatic backup after a failed erasure may reintroduce old plaintext. All supported restoration/import paths consult the retained erasure manifest so an owned old generation cannot silently resurrect the target; untracked external sources require explicit conflict reporting on matching known source identities.
+With secure_delete=ON read back, begin a FULL transaction. Recheck target revisions/type and identity of the sole owning payload; append erasure.requested, detach body refs/delete payload rows and hashes, record erased_fields with original byte length, append turn.erased/message.erased for each target, null/mark every dependent operation fingerprint, and bump incarnation. Update/rebuild affected bounded search/summary caches and mark store erasing. COMMIT atomically; a rollback retains the original complete bodies and audit state. No original text/hash is put into the audit event/manifest. Re-capture hits the preserved provider/vendor natural key and returns Erased, never re-inserts the body; a retry key with an erased fingerprint returns content-erased. An erased natural key never accepts replacement text or claims byte equality after its digest was removed: it reports that existing record as erased and suppresses re-ingestion regardless of incoming text.
 
-The schema's ordinary immutable triggers remain in every published database. The replacement builder inserts the approved redacted representation in a new file; it never disables triggers on the live authority. A redacted body is represented by `erased_fields` plus a nullable payload reference only for that exact recorded field. Codecs enforce the exclusive states `Present(payload)` or `Erased(erasure_id)`, never missing-without-erasure. Pre-erasure records that fail this invariant are unreadable, not presumed forgotten. The DDL therefore has nullable payload references for erasure-capable message/turn/working-state rows; ordinary append still requires a present body.
+After COMMIT, remove/optimize any future FTS segments, checkpoint(TRUNCATE), and independently verify the exact erased bodies are absent from database/WAL bytes and queries, using streaming bounded-memory reads, with user-visible scan cost. Secure deletion is not physical SSD or filesystem-snapshot sanitization. A pinned reader/busy checkpoint or failed readback leaves erasing/pending, returns cleanup_complete=false plus the committed target facts/residuals, and names the owner remedy; it cannot claim full completion. A subsequent explicit owner resume finishes this finite cleanup without re-erasing or resurrecting content. Only after readback append erasure.completed under FULL and return completed_event/cleanup_complete=true. The small completion transaction contains no old body pages. Reader generation checks refuse old cursors rather than pretending their prior content still exists.
 
+The receipt lists every retained automatic backup generation containing the target and its rotation condition, provider transcripts and imported Node originals with custody/location/reason, plus filesystem/SSD remnants. No backup rotation or foreign file deletion is silently accelerated by forget. The logical guarantee is exactly absence from the live StateEngine DB/WAL and query surface after witnessed cleanup; surviving named copies remain residuals. Wider historical/third-party/cryptographic erasure needs a separate product decision, not an extra supported target in this crate.
 
 ## Public ID decoding and exact legacy preservation
 
@@ -723,7 +840,7 @@ Bare UUIDv4 is deliberately a representation shared by the four documented produ
 
 Exception registration is a typed source correspondence, not a public constructor granting arbitrary identity: expected kind + project scope + exact source identity/incarnation + source offset/hash + public spelling + private storage key. Conflicting registrations refuse. After authenticated lookup/import resolution, serializers emit the exact stored public spelling. To decode a later registered exception, the operation's contextual resolver must resolve it under the declared expected type before constructing the ID; state-free `Deserialize` returns a typed invalid-ID error with the explicit lookup route. Unknown legacy shapes remain unreadable provenance, not invented valid IDs. This boundary is required even if a convenience `from_legacy` currently exists in the unmerged shared foundation.
 
-Every domain ID BLOB in the DDL is an identity dictionary storage key; every internal RecordId is directly 16 UUIDv7 bytes. The dictionary is immutable under normal writes, populated atomically with the first event, exact `(kind,scope_key,wire_id)` unique across this store. Project/human/store dictionaries use registry scope; agent/session/message/decision/event/launch/observation/lifecycle dictionaries use the source project scope. Equal legacy spellings in different projects may therefore have different storage keys without changing their public spelling. Project scope is resolved before any principal/object lookup; a global string lookup must never borrow another tenant's registration. Registry scope is the single byte `00`; project scope is `01` followed by the 16-byte project dictionary key, making the scope encoding unambiguous. Resolve actor kind from the authenticated Actor tag or the recorded principal kind; never compare only a string or permit project names to impersonate principals. Projection IDs, foreign references and fingerprints resolve through the same dictionary. Internal keys can change during an explicit rebuild only if every reference is rewritten together; public ID spelling remains stable. No extra per-read filesystem lookup is needed: dictionary keys join in the same snapshot, with bounded cached hot identities. Dictionary bytes count against the measured storage budget; the earlier prototype's bytes/event estimate must be remeasured with mixed legacy IDs before accepting it.
+Canonical domain IDs store their UUIDv7 bytes directly with no dictionary row; the typed column supplies the shared prefix on read. Imported domain IDs alone use private RFC-variant UUIDv8 keys and a legacy dictionary row, atomically allocated on first use with collision checking. The disjoint UUID version prevents a later canonical-v7 ID from colliding with a private legacy key. Internal RecordIds remain direct UUIDv7 bytes. The legacy dictionary is immutable under normal writes, exact `(kind,scope_key,wire_id)` unique across this store. Project/human/store dictionaries use registry scope; agent/session/message/decision/event/launch/observation/lifecycle dictionaries use the source project scope. Equal legacy spellings in different projects may therefore have different storage keys without changing their public spelling. Project scope is resolved before any principal/object lookup; a global string lookup must never borrow another tenant's registration. Registry scope is the single byte `00`; project scope is `01` followed by the 16-byte project dictionary key, making the scope encoding unambiguous. Resolve actor kind from the authenticated Actor tag or the recorded principal kind; never compare only a string or permit project names to impersonate principals. Projection IDs, foreign references and fingerprints resolve through the same dictionary. Internal keys can change during an explicit rebuild only if every reference is rewritten together; public ID spelling remains stable. No extra per-read filesystem lookup is needed: dictionary keys join in the same snapshot, with bounded cached hot identities. Only legacy dictionaries count as exceptional identity-row overhead; the earlier prototype's bytes/event estimate must be remeasured with mixed legacy IDs before accepting it.
 
 
 ## Node import mapping (all contract families)
@@ -781,9 +898,11 @@ The error type carries the stable code, typed offending entity/range/revision, c
 | Code | Cause / typed detail | Remedy |
 | --- | --- | --- |
 | `store-absent` | read/direct open found no state file | run owner `se init` for the selected state home |
+| `store-already-exists` | exclusive create/no-replace publication found existing state | reopen the validated existing store and reuse its identities; never overwrite |
 | `store-unreadable` | permission, malformed/truncated header, undecodable row or IO error; source/range preserved | restore access or inspect with doctor; do not initialize over it |
 | `store-application-mismatch` | application_id belongs to another database | select the correct home; never migrate the foreign file |
 | `store-too-new` | user_version above binary's supported range | install a compatible newer binary; old binary stays read/write refused |
+| `store-migration-required` | supported older schema; ordinary host/status/auto-start cannot upgrade | explicit owner migration/upgrade with the reviewed plan; no implicit daemon migration |
 | `store-version-unsupported` | older version/event/cursor codec outside supported range | use the named supported migration/import version |
 | `store-not-ready` | creating/migrating/recovering/erasing or failed maintenance phase | finish/resume the named owner maintenance operation |
 | `store-generation-changed` | incarnation/schema/generation changed after admission | reopen and re-admit using a fresh scope/cursor |
@@ -827,11 +946,11 @@ The storage algorithm and schema are identical on Windows, macOS and Linux. Only
 
 A configured network/synced location refuses by explicit configuration/path classification supplied by the host; path heuristics cannot prove that an arbitrary mount is safe. Unsupported/unknown storage semantics are a named limitation, not a claimed successful qualification. All temporary/backup/recovery files are in the same owned state volume for atomic publication. Free-space checks estimate the **additional** live replacement + two backup generations + retained source/WAL needed for recovery/erasure; insufficient space refuses before copying, with checked required/available bytes (unknown space is not zero).
 
-Budget allocation within the 30 MB embedded envelope: target <=6 MiB store steady RSS and <=10 MiB peak for normal message/turn operations, including one 2 MiB write cache, two lazy 1 MiB reader caches, bounded queue/staging buffers and decoded page material. No connection per session. Reader pool limit is two, with one materialized result budget per borrower; oversized capture text is staged/streamed rather than multiplied through queue copies. Backup/recovery/erasure are explicit maintenance with bounded buffers and visible resource costs; they must not starve the host's runtime or run idle workers. Startup open/header/version check target <=10 ms of the <=100 ms embedding budget; backup/adoption are visible admission phases after readiness. Idle store worker blocks without timers; no polling or WAL watcher is necessary for in-host commits.
+Budget allocation within the 30 MB embedded envelope: target <=8 MiB store steady RSS and <=10 MiB normal peak for normal message/turn operations, including one 2 MB write cache and two lazy 2 MB reader caches (section 80 cache_size=-2000 each), bounded queue/staging buffers and decoded page material. No connection per session. Reader pool limit is two, with one materialized result budget per borrower; oversized capture text is staged/streamed rather than multiplied through queue copies. Backup/recovery/erasure are explicit maintenance with bounded buffers and visible resource costs; they must not starve the host's runtime or run idle workers. Startup open/header/version check targets section 80's 4 ms allocation within the <=100 ms budget including the first bound session; backup/re-adoption run after ready and never block the binding transaction. Idle store worker blocks without timers; no polling or WAL watcher is necessary for in-host commits.
 
-Storage target is <=1.4 KiB/event on the unchanged S1 825k-turn/100k-message/75k-marker fixture at 1M, with source/body equality verified by the reviewer. The prototype achieved 1,218.9 bytes/event by removing duplicate JSON/text/index fields; this new schema has additional product metadata, so that number is evidence for the representation choice, not a claim already met by these declarations. No omission/compression of user bodies may be used to pass the comparison. Size is reported after a checked checkpoint, with WAL and backups reported separately rather than hidden.
+Storage target is <=1.4 KiB/event on the unchanged S1 825k-turn/100k-message/75k-marker composition at 1M, with complete source/body equality independently verified. A schema-only remeasurement addressing the review's 1,527 B/event result uses its 100k turns/200-byte bodies, 16 KiB pages and time-ordered keys: the corrected canonical/caller-key schema is **1,266.16 B/event**. Remove canonical identity dictionary rows (derive kind prefix from UUIDv7 bytes), eliminate the redundant turns projection (indexed owning turn_data suffices), and make the retry-key index partial. No body is omitted or compressed. A separate all-legacy EventId fixture with the actual keyless natural-capture policy is **1,390.84 B/event**; that is a different retry-key policy, not an apples-to-apples legacy overhead comparison. A scaled unchanged mix (82,500 turns +10,000 messages +7,500 read marks, 200-byte turn/message bodies, caller keys on every operation and all temporal indexes) is **1,375.76 B/event**. These are raw SQLite 3.46.1 schema fixtures adapted from Opus's sizing script with foreign_keys disabled, not a production writer/import/recovery implementation or full 1M/native qualification. They include commit stamps, reverse lookup and temporal indexes; WAL was checkpointed and backups are separate. Full product acceptance still measures its actual bodies, metadata, imported IDs and backup/WAL costs without hiding them. The sizing scripts/databases are external throwaway measurements, not product source or an author test suite.
 
-Warm 1M inbox target <=6 ms in-host/<=20 ms whole CLI, with an indexed 50-message page; no full history scan. Append and whole CLI <20 ms remain hard product targets, **unproven by the prototype**: NORMAL measured 3.14/72.15 and 3.42/19.21 ms p50/p99 at 20-agent bursts, with worse later tails. Queue/window tuning alone did not establish the tail. Build acceptance must measure signed native Windows with Defender, macOS and Linux; a median win does not waive a hard per-call budget. Checkpoint work is event-driven: auto-checkpoint is enabled for no-host direct writes; host schedules bounded PASSIVE checkpoint after an actual write burst and explicit TRUNCATE on clean drain, with no perpetual idle timer or concurrent second checkpoint writer. A busy checkpoint reports backlog and yields; it never blocks a query indefinitely or reports a fully flushed WAL when frames remain.
+Warm 1M inbox target <=6 ms in-host/<=20 ms whole CLI, with an indexed 50-message page; no full history scan. Section 80's CLI-read p95 <20 ms and measured hook/write burst targets remain **unproven by this design**: NORMAL measured 3.14/72.15 and 3.42/19.21 ms p50/p99 at 20-agent bursts, with worse later tails. Queue/window tuning alone did not establish the tail. Build acceptance must measure signed native Windows with Defender, macOS and Linux; a median win does not establish the required p95/burst budgets. Checkpoint work is commit-driven on both host and direct connections via SQLite auto-checkpoint at 256 16-KiB pages (4 MiB), with TRUNCATE on clean shutdown. There is no scheduled PASSIVE worker or checkpoint timer. journal_size_limit is a reuse target, not a hard WAL cap: if pinned readers prevent checkpoint and WAL exceeds the 16 MiB high-water, reject new ordinary writes with store-backpressure, identify the pinned-reader condition, and retry only after reader release/checkpoint; never delete a live WAL. A security revocation must not be silently dropped for this pressure: close agent admission and report a FULL commit failure if it cannot be persisted. A busy checkpoint reports backlog and yields; it never blocks a query indefinitely or reports a fully flushed WAL when frames remain.
 
 A patched bundled SQLite must be shared with SE Code and avoid the documented WAL-reset defect (fixed in 3.51.3, with 3.50.7 backport); dependency/link versions are workspace coordination, not a private second SQLite build. The implementation must validate `cargo tree -d`/links compatibility at integration. [SQLite synchronous semantics](https://www.sqlite.org/pragma.html#pragma_synchronous), [WAL-reset advisory](https://www.sqlite.org/wal.html#walreset).
 
@@ -851,17 +970,15 @@ Reviewers additionally exercise crash boundaries unreachable from a happy journe
 
 ## Open questions and implementation admission
 
-1. Shared `se-types` declarations are consumed from Iris's `seat-agt-8wmm-rjcy-2r83/se-types-foundation` branch for signature verification; integration must use its reviewed/landed revision. StoreId, all kernel IDs, Page/Window/PageRequest and native process/path types are reused, not recreated. Store-specific records/traits live here; wire DTO/auth ownership remains with their assigned crates.
-2. Universal physical/third-party erasure is not achievable by deleting SQLite rows or unlinking owned files. This design promises fully enumerated logical owned-copy erasure and honest residual reporting; if Jimmy requires cryptographic raw-media erasure, that key-lifecycle decision precedes implementation of forget, without blocking ordinary append/read design review.
-3. The hard 20 ms write tail remains an implementation acceptance problem. NORMAL is ratified here; neither disabling durability entirely nor early acknowledgment is authorized. Native measurements may require scheduling/checkpoint changes, reviewed against this same commit/receipt contract.
-
-Store records with user payloads intentionally have no Debug derivation that could log their text; diagnostic code handles only redacted IDs/ranges.
+1. Shared `se-types` and process declarations are consumed directly from the accepted rust-se main base, not copied into this crate. StoreId, all kernel IDs, Page/Window/PageRequest and native process/path types are reused, not recreated. Store-specific records/traits live here; wire DTO/auth ownership remains with their assigned crates.
+2. Prime resolved forget scope to section 70: live captured-turn/message bodies, in-place secure deletion and honest residual copies. Physical/third-party erasure is outside the supported claim; it does not block the approved narrow operation.
+3. Section 80's p95 read/startup/burst budgets govern; the write tail remains measured and must be set by Jimmy rather than invented as an already passed hard per-write 20 ms guarantee. NORMAL is ratified here; neither disabling durability entirely nor early acknowledgment is authorized. Native measurements may require scheduling/checkpoint changes, reviewed against this same commit/receipt contract.
 
 4. The section-50 global code catalogue must integrate the distinct store causes listed above and its exhaustive typed mapping; do not implement a catch-all Internal conversion while that integration is pending.
 
-No other row is permission for a discretionary factory feature or backend. The critic, 5c, Otto and Alpha's Rust reviewer assess the complete data design and compile-only declarations; Prime integrates it. Only a later explicit implementation admission activates these signatures and DDL as product code.
-
 5. The strict shared ID namespaces reserve some names that Node accepted as projects or custom identifiers. Those collisions must remain visible import refusals with original provenance until an explicit identity-correspondence policy is approved; neither a broad arbitrary-string decoder nor a silent public-ID rename resolves the conflict.
+
+Store payload records have no Debug derivation; diagnostic code handles only redacted IDs/ranges. The critic, 5c, Otto and Alpha's Rust reviewer assess this complete design/craft candidate; Prime integrates it. Only a later explicit implementation admission activates the signatures and DDL as product code.
 
 ## Method contract index
 
@@ -869,21 +986,23 @@ This index binds the following declarations to the algorithms above. All methods
 
 | Trait / functions | Preconditions, effect and completion |
 | --- | --- |
+| StagedTextValue.byte_length / sha256 | metadata from the same protected staging pass, available before canonical input hashing without duplicating body bytes |
 | RecordIdentity.from_parts / from_bytes / as_bytes | explicit caller time/entropy or checked UUIDv7 bytes for internal RecordId; reject wrong UUID version/variant and timestamp overflow; no clock, RNG or authority lookup |
-| RuntimeLease.identity | host's held filesystem-custody lease identity; unknown store only for owner maintenance of an unreadable source; no lock acquisition by reading an endpoint |
-| StoreFactory.open_reader / open_direct / open_host | validate existing header/version/path/role; missing → Read::Absent, foreign/newer/corrupt → typed unreadable/refusal; direct/host require held matching lease; only supported-old host opens maintenance-only |
-| StoreFactory.create | exclusively reserve a new path under host lease; caller-supplied StoreId; full DDL/header validation; never overwrite existing bytes |
+| WriterModeValue.kind | read-only view of the opaque retained stamp; no public construction or input deserialization |
+| RuntimeLease.identity | host's held filesystem-custody lease identity; unknown store only for witnessed-absent owner bootstrap or owner maintenance of an unreadable source; no lock acquisition by reading an endpoint |
+| StoreFactory.open_reader / open_direct / open_host | validate existing header/version/path/role; missing → Read::Absent, foreign/newer/corrupt → typed unreadable/refusal; direct requires shared lease, host exclusive; supported old host is maintenance-only and ordinary caller receives store-migration-required |
+| StoreFactory.create / create_direct | exclusively reserve/publish a new path under host-exclusive or owner-bootstrap shared lease; caller-supplied StoreId; full DDL/header validation; never overwrite existing bytes |
 | StoreFactory.recovery_plan / build_salvage / adopt_salvage / restore_backup | owner maintenance over explicit owned paths even if no readable store exists; preserve source, validate candidate, swap only after approved gaps; fresh incarnation/identity rules apply |
 | ReadStore.info / snapshot / credential | header metadata; finite scope-bound snapshot; trusted pre-auth hash lookup returns only credential/session metadata and cannot obtain history or manufacture an authority |
 | ReadStore.inspect_backups | snapshot manifest metadata, then separately inspect bounded published files; each item's absent/unreadable/current observation is explicit; never a live-DB filesystem copy |
 | TextStaging.stage_text | bounded owned stream to protected staging under held lease; UTF-8/length/digest checked; opaque handle has no caller-path constructor; used/failed staging is reclaimed by exact identity |
 | DirectStore.append / close | one-element canonical commit_group under direct-client lease; success only after COMMIT; close releases handles before lease release |
-| HostStore.start_writer | once per host object, only after schema/startup-backup readiness; yields unique control owner and cloneable bounded submission handle |
-| HostStore.migration_plan / migrate | calculate supported forward plan/free space; drain writer/snapshots; backup, migrate/validate, publish before writer re-admission |
-| HostStore.backup / checkpoint / close_clean | owned snapshot/rotation and finite checkpoint; maintenance only with writer drained or the scheduled single worker; close_clean drains and reports backup failure truthfully |
-| HostStore.erasure_plan / erase | complete copy/revision inventory then approved, witnessed maintenance swap; never ordinary UPDATE/DELETE, never automatic foreign deletion |
-| WriterOwner.client / flush / drain | clone handle, barrier through accepted work, then stop/join; flush is not a new backup or a claim of power-loss durability |
-| WriterClient.submit / CommitWait.wait | immediate bounded admission/rejection and one-shot result; timeout/drop cannot cancel a possibly committed write; retry same key resolves outcome |
+| HostStore.start_writer | consumes the ready HostStore, retains Arc lease, independent of background startup backup; yields unique control owner and cloneable bounded submission handle |
+| HostStore.migration_plan / migrate | explicit owner/upgrade approval bound to plan fingerprint, maintenance-only supported old store; drain/join and close snapshots; verified backup, temporary transactional trigger recreation, FULL version publication |
+| StoreFactory.backup / HostStore.checkpoint / close_clean | background snapshot/rotation on a separate read connection without writer drain; checkpoint/close require the drained maintenance object; close_clean drains and reports backup failure truthfully |
+| StoreFactory.erasure_plan / HostStore.erase | exact target/revision inventory then approved in-place transaction and witnessed live DB/WAL cleanup; narrow approved body UPDATE/DELETE trigger exception with secure_delete and witnessed WAL cleanup; named backup/provider residuals |
+| WriterOwner.client / flush / drain | clone handle, async barrier through accepted work, then awaited stop/join yields unique HostStore; flush is not a new backup or a claim of power-loss durability |
+| WriterClient.submit / CommitWait Future / wait_blocking | immediate bounded admission/rejection and awaitable one-shot result; blocking wait is CLI-only; timeout/drop cannot cancel a possibly committed write; retry same key resolves outcome |
 | TransactionEngine.commit_group / append_atomic / apply | private common implementation seam: one outer transaction, isolated operation savepoints, exhaustive per-event apply; PreparedReceipt cannot escape as durable success before COMMIT |
 | Snapshot.legacy_registry | scoped source-evidence resolver borrowing this admitted snapshot; exact kind/text membership only, absent false and unreadable error; no global string registry or grants |
 | Snapshot.info / event / history / search | snapshot metadata; exact typed event; indexed/bounded history and budgeted search with honest omissions |
@@ -897,7 +1016,7 @@ This index binds the following declarations to the algorithms above. All methods
 
 ## Complete Rust declarations
 
-The following files are reproduced exactly from this candidate's compile-only crate. Rustfmt and Clippy with warnings denied used Rust 1.97.1 against Iris's published **foundation revision `e4106bf6c3d8f2c0713b39af0b5456952e6fecb6`** in a separately owned verification worktree; those checks establish compilation of this contract, not a concrete SQLite backend or clean-platform journeys. The foundation supplies strict new-ID parsing, own-kind legacy wire decoding and an explicit scoped LegacyIdRegistry seam; contextual custom-spelling reconstruction is separate from state-free serde. A later shared-types revision must be integrated/rechecked before implementation. The candidate has no implementation blocks, executable defaults, placeholder macros or author tests. The DDL was parsed as an empty schema using SQLite 3.46.1 (43 tables, 30 immutable-table triggers); that syntax check is not product/recovery testing or the required patched production SQLite selection.
+The four source files below are the normative compile-only contract and are reproduced exactly. Rust 1.97.1 checks use the accepted main foundation directly: workspace check, Rustfmt and store Clippy with warnings denied for Linux x86_64, Windows MSVC x86_64 and macOS AArch64. Schema parsing creates 43 tables/30 triggers, foreign-key metadata is clean, and EXPLAIN shows scoped SEARCH plans for owner/sender/recipient messages, live processes, session history, event-to-operation lookup, decision key and both historical unread/pending-decision paths. These are declaration/DDL/plan checks, not an implemented SQLite store or native runtime qualification. No author tests, implementation blocks, executable defaults or placeholder macros are included. Exact sizing fixture limits are stated in the resource contract above.
 
 ### crates/se-store/src/lib.rs
 
@@ -1013,7 +1132,6 @@ pub enum LeaseMode {
 }
 #[derive(Clone, Debug)]
 pub struct WriterOptions {
-    pub coalesce: Duration,
     pub maximum_requests: NonZeroU16,
     pub queue_requests: NonZeroU16,
     pub resident_bytes: NonZeroU32,
@@ -1025,13 +1143,54 @@ pub struct ReadBudget {
     pub deadline: Duration,
 }
 
+/// Core computes this from the closed admitted operation input, before allocating IDs.
+/// It is never accepted from JSON/MCP or a caller-selected environment value.
+#[derive(Clone, Debug)]
+pub struct IntentDigest {
+    pub operation: &'static str,
+    pub codec_version: u16,
+    pub sha256: [u8; 32],
+}
+#[derive(Clone, Debug)]
+pub struct RequestIdentity {
+    pub key: IdempotencyKey,
+    pub intent: IntentDigest,
+}
 #[derive(Clone, Debug)]
 pub struct CommitReceipt {
-    pub request_key: IdempotencyKey,
+    pub request_key: Option<IdempotencyKey>,
     pub state: CommitState,
+    pub primary_event: EventId,
+    pub writer: WriterMode,
+    pub durability: CommitDurability,
+    pub wakes: Vec<Wake>,
     pub first: Revision,
     pub last: Revision,
     pub events: Vec<EventId>,
+}
+/// Constructed only by the canonical store committer or retained-event decoder.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WriterMode {
+    _kind: WriterKind,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriterKind {
+    Host { generation: u64 },
+    Direct,
+}
+pub trait WriterModeValue {
+    fn kind(&self) -> WriterKind;
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitDurability {
+    Normal,
+    Full,
+}
+#[derive(Clone, Debug)]
+pub struct Wake {
+    pub project: ProjectId,
+    pub principal: Actor,
+    pub through: Revision,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitState {
@@ -1043,7 +1202,12 @@ pub enum CommitState {
 pub struct FlushReport {
     pub through: Option<Revision>,
     pub pending_requests: u32,
-    pub indeterminate_keys: Vec<String>,
+    pub indeterminate: Vec<PendingOperation>,
+}
+#[derive(Clone, Debug)]
+pub enum PendingOperation {
+    CallerKey(IdempotencyKey),
+    NaturalEvents(Vec<EventId>),
 }
 #[derive(Clone, Debug)]
 pub struct CheckpointReport {
@@ -1068,10 +1232,22 @@ pub struct BackupReport {
 }
 #[derive(Clone, Debug)]
 pub struct MigrationPlan {
+    pub fingerprint: [u8; 32],
     pub from: u32,
     pub to: u32,
     pub source: StoreId,
     pub required_bytes: u64,
+}
+#[derive(Clone, Debug)]
+pub struct MigrationApproval {
+    pub owner: HumanId,
+    pub plan_fingerprint: [u8; 32],
+    pub trigger: MigrationTrigger,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MigrationTrigger {
+    ExplicitOwnerCommand,
+    ExplicitUpgrade,
 }
 #[derive(Clone, Debug)]
 pub struct MigrationReport {
@@ -1107,16 +1283,12 @@ pub struct SalvageReport {
 #[derive(Clone, Debug)]
 pub enum EraseField {
     Body,
-    Statement,
-    Reason,
-    LegacyBytes,
     SourceDigest,
 }
 #[derive(Clone, Debug)]
 pub struct EraseTarget {
     pub event: EventId,
     pub expected: Revision,
-    pub fields: Vec<EraseField>,
 }
 #[derive(Clone, Debug)]
 pub struct ResidualCopy {
@@ -1144,7 +1316,8 @@ pub struct ErasureApproval {
 #[derive(Clone, Debug)]
 pub struct ErasureReport {
     pub erasure: RecordId,
-    pub completed_event: EventId,
+    pub completed_event: Option<EventId>,
+    pub cleanup_complete: bool,
     pub incarnation: u64,
     pub erased_fields: Vec<EraseTarget>,
     pub residuals: Vec<ResidualCopy>,
@@ -1236,10 +1409,12 @@ pub enum StoreDetail {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreErrorCode {
     Absent,
+    AlreadyExists,
     Unreadable,
     ApplicationMismatch,
     TooNew,
     VersionUnsupported,
+    MigrationRequired,
     NotReady,
     GenerationChanged,
     LocationUnsafe,
@@ -1345,8 +1520,11 @@ pub enum DecisionKind {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProcessState {
     Reserved,
+    Starting,
     Running,
+    LeaderExited,
     StopRequested,
+    StopUnproved,
     Exited,
     Lost,
     Historical,
@@ -1412,8 +1590,56 @@ pub struct ProcessIdentityRecord {
     pub record: LifecycleId,
     pub principal: Actor,
     pub session: Option<SessionId>,
-    pub instance: ProcessInstance,
-    pub custody: Vec<u8>,
+    pub instance: RecordedIdentity,
+    pub custody: NativeCustody,
+    pub containment: ContainmentFact,
+}
+#[derive(Clone, Debug)]
+pub enum RecordedIdentity {
+    Present(ProcessInstance),
+    Absent { reason: String },
+    Unreadable { cause: String },
+}
+/// Versioned se-proc ProcessRecord/LaunchReservation codec; never an OS handle.
+#[derive(Clone, Debug)]
+pub struct NativeCustody {
+    pub format_version: u16,
+    pub record: Vec<u8>,
+}
+#[derive(Clone, Debug)]
+pub enum ContainmentFact {
+    NotLaunched,
+    Unknown {
+        reason: String,
+    },
+    Contained {
+        kind: ContainmentKind,
+        observed_at_us: i64,
+    },
+    Uncontained {
+        cause: ContainmentCause,
+        observed_at_us: i64,
+        probe: Option<EventId>,
+    },
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContainmentKind {
+    Cgroup,
+    Job,
+    ProcessGroup,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContainmentCause {
+    NoUserManager,
+    NoDelegation,
+    CgroupV2Absent,
+    CgroupUnreadable,
+    ScopeCreateFailed,
+}
+/// Metadata from the same owned staging pass; never caller-path metadata.
+pub trait StagedTextValue {
+    fn byte_length(&self) -> u64;
+    fn sha256(&self) -> [u8; 32];
 }
 /// Created only by the future staging implementation from a bounded owned stream.
 /// No public arbitrary-path constructor; not a credential or an event payload by itself.
@@ -1457,6 +1683,8 @@ pub struct StoredEvent {
     pub revision: Revision,
     pub recorded_at_us: i64,
     pub recorded_incarnation: u64,
+    pub writer: crate::WriterMode,
+    pub durability: crate::CommitDurability,
     pub body: EventBody<StoredText>,
     pub erased_fields: Vec<(crate::EraseField, RecordId)>,
 }
@@ -1531,6 +1759,8 @@ pub enum EventBody<T> {
         session: SessionId,
         expected: Expected,
         incumbent: Option<(SessionId, Revision)>,
+        process: Option<LifecycleId>,
+        containment: ContainmentFact,
         witnesses: Vec<EventId>,
     },
     SessionEnded {
@@ -1551,7 +1781,14 @@ pub enum EventBody<T> {
         purpose: String,
         secret_sha256: [u8; 32],
         expires_at_us: i64,
+        activation_deadline_us: i64,
         expected: Expected,
+    },
+    CredentialActivated {
+        credential: RecordId,
+        session: SessionId,
+        expected: Expected,
+        first_request: RecordId,
     },
     CredentialRevoked {
         credential: RecordId,
@@ -1639,6 +1876,15 @@ pub enum EventBody<T> {
         new_offset: u64,
         last_turn: RecordId,
     },
+    CaptureFailed {
+        source: RecordId,
+        session: SessionId,
+        from_offset: u64,
+        to_offset: u64,
+        code: se_types::Code,
+        cause: String,
+        retry: se_types::Retry,
+    },
     CaptureSuppressed {
         source: RecordId,
         session: SessionId,
@@ -1649,16 +1895,18 @@ pub enum EventBody<T> {
         count: u64,
     },
     ProcessRegistered {
-        identity: ProcessIdentityRecord,
+        identity: Box<ProcessIdentityRecord>,
         initial: ProcessState,
     },
     ProcessTransition {
         process: LifecycleId,
+        identity: Box<ProcessIdentityRecord>,
         expected: Expected,
         from: ProcessState,
         to: ProcessState,
         observation: EventId,
         outcome: String,
+        containment: ContainmentFact,
     },
     WorkingStateSet {
         agent: AgentId,
@@ -1674,11 +1922,18 @@ pub enum EventBody<T> {
         evidence: EventId,
     },
     EffectRequested {
+        principal: Option<Actor>,
         effect: RecordId,
         kind: EffectKind,
         intent: EffectIntent,
         cause: EventId,
         request_key: IdempotencyKey,
+    },
+    EffectOffered {
+        effect: RecordId,
+        principal: Actor,
+        attempt: RecordId,
+        evidence: EventId,
     },
     EffectSettled {
         effect: RecordId,
@@ -1740,6 +1995,18 @@ pub enum EventBody<T> {
         source: SourceEvidence,
         bytes: Option<LegacyBytes>,
     },
+    TurnErased {
+        target: EventId,
+        erasure: RecordId,
+        original_bytes: u64,
+        by: HumanId,
+    },
+    MessageErased {
+        target: EventId,
+        erasure: RecordId,
+        original_bytes: u64,
+        by: HumanId,
+    },
     ErasureRequested {
         erasure: RecordId,
         targets: Vec<crate::EraseTarget>,
@@ -1753,7 +2020,9 @@ pub enum EventBody<T> {
     },
     RecoveryRecorded {
         recovery: RecordId,
-        source: StoreId,
+        source: Option<StoreId>,
+        source_artifact: SourceEvidence,
+        target: StoreId,
         backup: Option<RecordId>,
         recovered: u64,
         gaps: Vec<crate::RecoveryGap>,
@@ -1786,7 +2055,7 @@ pub enum EffectIntent {
 }
 pub struct AtomicBatch {
     pub admission: crate::Admission,
-    pub request_key: IdempotencyKey,
+    pub request: Option<crate::RequestIdentity>,
     pub events: Vec<NewEvent>,
     pub import_checkpoint: Option<ImportCheckpoint>,
 }
@@ -1800,11 +2069,11 @@ use se_types::{
     AgentId, DecisionId, EventId, IdempotencyKey, LifecycleId, MessageId, Page, ProjectId, Read,
     SessionId,
 };
-use std::{io::Read as ByteReader, time::Duration};
+use std::{future::Future, io::Read as ByteReader, sync::Arc, time::Duration};
 
 /// Host filesystem custody supplies the held per-user runtime lease. An in-process
 /// caller is trusted; IPC callers cannot construct this object from request JSON.
-pub trait RuntimeLease {
+pub trait RuntimeLease: Send + Sync {
     fn identity(&self) -> StoreResult<LeaseIdentity>;
 }
 /// Constructors are declarations, not executable fallback/default implementations.
@@ -1812,6 +2081,18 @@ pub trait StoreFactory {
     type Reader: ReadStore;
     type Direct: DirectStore;
     type Host: HostStore;
+    /// Background online snapshot; requires host lease, independent read connection.
+    fn backup(
+        options: &StoreOptions,
+        lease: Arc<dyn RuntimeLease>,
+        deadline: Duration,
+    ) -> StoreResult<BackupReport>;
+    /// Read-only inventory before owner approval or writer drain; recheck on erase.
+    fn erasure_plan(
+        options: &StoreOptions,
+        targets: Vec<EraseTarget>,
+        lease: &dyn RuntimeLease,
+    ) -> StoreResult<ErasurePlan>;
     fn recovery_plan(
         options: &StoreOptions,
         lease: &dyn RuntimeLease,
@@ -1839,6 +2120,12 @@ pub trait StoreFactory {
     ) -> StoreResult<Read<Self::Direct>>;
     fn open_host(options: &StoreOptions, lease: &dyn RuntimeLease)
     -> StoreResult<Read<Self::Host>>;
+    /// Owner bootstrap with shared runtime lease; publish a new schema no-replace.
+    fn create_direct(
+        options: &StoreOptions,
+        lease: &dyn RuntimeLease,
+        store_id: StoreId,
+    ) -> StoreResult<Self::Direct>;
     fn create(
         options: &StoreOptions,
         lease: &dyn RuntimeLease,
@@ -1872,31 +2159,25 @@ pub trait DirectStore: ReadStore + TextStaging {
     where
         Self: Sized;
 }
-pub trait HostStore: ReadStore + TextStaging {
-    type Writer: WriterOwner;
+pub trait HostStore: ReadStore + TextStaging + Sized {
+    type Writer: WriterOwner<Host = Self>;
     fn start_writer(
-        &mut self,
+        self,
         options: WriterOptions,
-        lease: &dyn RuntimeLease,
+        lease: Arc<dyn RuntimeLease>,
     ) -> StoreResult<Self::Writer>;
     fn migration_plan(&self, target_version: u32) -> StoreResult<MigrationPlan>;
     fn migrate(
         &mut self,
         plan: MigrationPlan,
+        approval: MigrationApproval,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<MigrationReport>;
-    fn backup(&mut self, lease: &dyn RuntimeLease, deadline: Duration)
-    -> StoreResult<BackupReport>;
     fn checkpoint(
         &mut self,
         mode: CheckpointMode,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CheckpointReport>;
-    fn erasure_plan(
-        &self,
-        targets: Vec<EraseTarget>,
-        lease: &dyn RuntimeLease,
-    ) -> StoreResult<ErasurePlan>;
     fn erase(
         &mut self,
         plan: ErasurePlan,
@@ -1913,19 +2194,27 @@ pub enum CheckpointMode {
     Truncate,
 }
 pub trait WriterOwner {
+    type Host: HostStore;
     type Client: WriterClient;
     fn client(&self) -> Self::Client;
-    fn flush(&mut self, deadline: Duration) -> StoreResult<FlushReport>;
-    fn drain(self, deadline: Duration) -> StoreResult<FlushReport>
+    type Flush: Future<Output = StoreResult<FlushReport>> + Send;
+    type Drain: Future<Output = StoreResult<DrainedHost<Self::Host>>> + Send;
+    fn flush(&mut self, deadline: Duration) -> StoreResult<Self::Flush>;
+    fn drain(self, deadline: Duration) -> Self::Drain
     where
         Self: Sized;
+}
+pub struct DrainedHost<H: HostStore> {
+    pub host: H,
+    pub report: FlushReport,
 }
 pub trait WriterClient: Clone + Send + Sync {
     type Completion: CommitWait;
     fn submit(&self, batch: AtomicBatch) -> StoreResult<Self::Completion>;
 }
-pub trait CommitWait: Send {
-    fn wait(self, deadline: Duration) -> StoreResult<CommitReceipt>
+pub trait CommitWait: Future<Output = StoreResult<CommitReceipt>> + Send {
+    /// CLI/direct synchronous consumers only; async host awaits this Future.
+    fn wait_blocking(self, deadline: Duration) -> StoreResult<CommitReceipt>
     where
         Self: Sized;
 }
@@ -2013,8 +2302,15 @@ pub struct CredentialRecord {
     pub session: SessionId,
     pub purpose: String,
     pub expires_at_us: i64,
-    pub revoked: bool,
+    pub activation_deadline_us: i64,
+    pub state: CredentialState,
     pub revision: Revision,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CredentialState {
+    Prepared,
+    Active,
+    Revoked,
 }
 #[derive(Clone)]
 pub struct SearchHit {

@@ -93,7 +93,6 @@ pub enum LeaseMode {
 }
 #[derive(Clone, Debug)]
 pub struct WriterOptions {
-    pub coalesce: Duration,
     pub maximum_requests: NonZeroU16,
     pub queue_requests: NonZeroU16,
     pub resident_bytes: NonZeroU32,
@@ -105,13 +104,54 @@ pub struct ReadBudget {
     pub deadline: Duration,
 }
 
+/// Core computes this from the closed admitted operation input, before allocating IDs.
+/// It is never accepted from JSON/MCP or a caller-selected environment value.
+#[derive(Clone, Debug)]
+pub struct IntentDigest {
+    pub operation: &'static str,
+    pub codec_version: u16,
+    pub sha256: [u8; 32],
+}
+#[derive(Clone, Debug)]
+pub struct RequestIdentity {
+    pub key: IdempotencyKey,
+    pub intent: IntentDigest,
+}
 #[derive(Clone, Debug)]
 pub struct CommitReceipt {
-    pub request_key: IdempotencyKey,
+    pub request_key: Option<IdempotencyKey>,
     pub state: CommitState,
+    pub primary_event: EventId,
+    pub writer: WriterMode,
+    pub durability: CommitDurability,
+    pub wakes: Vec<Wake>,
     pub first: Revision,
     pub last: Revision,
     pub events: Vec<EventId>,
+}
+/// Constructed only by the canonical store committer or retained-event decoder.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WriterMode {
+    _kind: WriterKind,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WriterKind {
+    Host { generation: u64 },
+    Direct,
+}
+pub trait WriterModeValue {
+    fn kind(&self) -> WriterKind;
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CommitDurability {
+    Normal,
+    Full,
+}
+#[derive(Clone, Debug)]
+pub struct Wake {
+    pub project: ProjectId,
+    pub principal: Actor,
+    pub through: Revision,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitState {
@@ -123,7 +163,12 @@ pub enum CommitState {
 pub struct FlushReport {
     pub through: Option<Revision>,
     pub pending_requests: u32,
-    pub indeterminate_keys: Vec<String>,
+    pub indeterminate: Vec<PendingOperation>,
+}
+#[derive(Clone, Debug)]
+pub enum PendingOperation {
+    CallerKey(IdempotencyKey),
+    NaturalEvents(Vec<EventId>),
 }
 #[derive(Clone, Debug)]
 pub struct CheckpointReport {
@@ -148,10 +193,22 @@ pub struct BackupReport {
 }
 #[derive(Clone, Debug)]
 pub struct MigrationPlan {
+    pub fingerprint: [u8; 32],
     pub from: u32,
     pub to: u32,
     pub source: StoreId,
     pub required_bytes: u64,
+}
+#[derive(Clone, Debug)]
+pub struct MigrationApproval {
+    pub owner: HumanId,
+    pub plan_fingerprint: [u8; 32],
+    pub trigger: MigrationTrigger,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MigrationTrigger {
+    ExplicitOwnerCommand,
+    ExplicitUpgrade,
 }
 #[derive(Clone, Debug)]
 pub struct MigrationReport {
@@ -187,16 +244,12 @@ pub struct SalvageReport {
 #[derive(Clone, Debug)]
 pub enum EraseField {
     Body,
-    Statement,
-    Reason,
-    LegacyBytes,
     SourceDigest,
 }
 #[derive(Clone, Debug)]
 pub struct EraseTarget {
     pub event: EventId,
     pub expected: Revision,
-    pub fields: Vec<EraseField>,
 }
 #[derive(Clone, Debug)]
 pub struct ResidualCopy {
@@ -224,7 +277,8 @@ pub struct ErasureApproval {
 #[derive(Clone, Debug)]
 pub struct ErasureReport {
     pub erasure: RecordId,
-    pub completed_event: EventId,
+    pub completed_event: Option<EventId>,
+    pub cleanup_complete: bool,
     pub incarnation: u64,
     pub erased_fields: Vec<EraseTarget>,
     pub residuals: Vec<ResidualCopy>,
@@ -316,10 +370,12 @@ pub enum StoreDetail {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreErrorCode {
     Absent,
+    AlreadyExists,
     Unreadable,
     ApplicationMismatch,
     TooNew,
     VersionUnsupported,
+    MigrationRequired,
     NotReady,
     GenerationChanged,
     LocationUnsafe,
