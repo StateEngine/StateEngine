@@ -196,7 +196,7 @@ sequenceDiagram
   participant W as se-writer
   CL->>K: spawn, stdin = {session_id, transcript_path, ...}
   K->>K: SE_SESSION handle -> read owner-only pin file
-  K->>H: IPC connect (if absent: start se up, wait for endpoint, then connect; host-start vs direct write pending E8)
+  K->>H: IPC connect (if absent: private host bootstrap, wait for endpoint, then connect)
   K->>H: HookEvent{stop, payload, capability}
   H->>H: verify capability; transcript_path must match the session's capture source
   H->>T: read from stored byte offset, bounded
@@ -495,7 +495,10 @@ Each open item is settled by an early proof in section 95, not by argument.
    E2 measures it on Windows with Defender on a new and an existing store.
 3. **Re-adoption ≤ 500 ms (B8)** — native pipe transfer and real-provider handover pass on Windows and
    Linux (spikes, 2026-10-30); store lease, capture, queue and timing are measured in the build.
-4. **Hook with no host** — cold start from a hook on Windows with Defender (E8) decides host-start
-   versus a direct write under the shared lock (40).
+4. **Hook with no host — settled by E8 (2026-10-30).** Start the host through private bootstrap,
+   then submit through its writer; hooks have no direct-write fallback (40 §9.3). Windows with
+   Defender, 100 pairs: host-start p95 82.5 ms, direct p95 88.1 ms. The host-start max of 297.6 ms
+   included 268.1 ms in FULL owner publication. This warm-cache native fixture settles routing,
+   not a production cold-hook latency guarantee.
 5. **Signing** — Trusted Signing (suggested) or a certificate; Apple Developer ID enrollment (Jimmy).
 6. **Mac hardware** for the compatibility campaign (Jimmy's borrowed Mac).

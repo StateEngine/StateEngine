@@ -1182,12 +1182,14 @@ field semantics; implementation checks the installed supported version.
 Hook failure exits zero for provider availability with bounded nonsecret stderr,
 but HookOutput carries actual captured Read/failure and status exposes failed/
 suppressed capture. Zero exit is never capture evidence. If persistence itself
-fails, do not claim a durable diagnostic exists. Hosted hook writes go through
-the existing writer. E8 must measure cold no-host hooks on Windows with Defender
-before choosing private host bootstrap versus direct shared-lease fallback;
-no cold-start promise is established here. Either selected route uses the same
-transaction path and original natural key, and never writes directly while an
-exclusive owner exists.
+fails, do not claim a durable diagnostic exists. Hook writes go through the
+host's existing writer. If no host runs, the hook starts one through private
+runtime bootstrap, waits for its authenticated endpoint within the request
+deadline, then submits with the original natural key. Hooks have no direct-write
+fallback; bootstrap, connection or persistence failure follows the hook failure
+contract above. E8's Windows-with-Defender comparison settled this routing choice
+(00 §7.2 item 4); its warm-cache fixture establishes no production cold-hook
+latency guarantee.
 
 Attended plugin is ~200–350 lines of provider-native JS, no Node process/executor.
 Manifest plus hooks module registration uses the installed API types. One
