@@ -1258,6 +1258,20 @@ uninstall and diagnosed doctor repair, the host executes the exact typed plan
 and printed consequences in section 70; a configuration repair cannot silently
 rotate secrets, restore history or migrate.
 
+For file-only effects, the host filesystem adapter owns section 20's protected
+`STATE/receipts/` journal outside SQLite and the removed installation. Reserve
+a finite versioned record no-replace under exclusive file-effect custody, keyed
+by store/home identity, authenticated owner and original request key; retain the
+operation, semantic fingerprint and exact plan without secrets or turn bodies.
+Sync intent before the effect, then atomically publish/sync achieved outside
+readbacks and the final result. Same key/intent resumes or replays; changed intent
+conflicts. After a crash, reobserve the original targets before another effect;
+unknown/unreadable journal state refuses or reports outcome unknown. Uninstall
+preserves the journal with history/backups and prints its location; restore's
+journal survives DB replacement. It creates no event, writer stamp, new public
+operation, server or timer. Host/se-proc owns no-follow permissions, publication
+and agent-path exclusion; a journal entry is never authority or an OS witness.
+
 ## 10. Performance and size allocation
 
 Section 80 contains the single budget table and outside observer definitions;

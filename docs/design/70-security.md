@@ -252,6 +252,7 @@ claim that an original URL proves the final origin.
 | --- | --- | --- |
 | State, run and log directories | 0700, owner = euid, checked on every open | Explicit protected DACL: user SID full control + SYSTEM; inheritance from parent disabled |
 | `state.db`, `-wal`, `-shm`, automatic backups, `atlas.db` | 0600 through owner-only per-file creation and verified SQLite side-file modes; no embedded process umask change | Inherit the directory's protected DACL; read it back |
+| File-only `STATE/receipts/` intent/readback journal | 0700 directory, 0600 records, no-follow owner checks; no secret/body payload | Protected user-only directory/file DACL read back |
 | `credential`, pins, `launch/<id>/*`, `endpoint.json` | 0600, created `O_EXCL` | Created with explicit security attributes; DACL read back |
 | Socket / pipe | Socket inside the 0700 directory | Pipe DACL as §4.4 |
 | Support bundle | 0600 at the user's chosen path | Created with the user-only DACL |
@@ -315,6 +316,9 @@ Human-only actions retain §2.3's existing presence checks and same-user limit.
 Install/uninstall scripts and SE Code's installer call this same `se uninstall`
 path; they do not reimplement shutdown or kill agents without the stop witness.
 Incomplete stop remains incomplete and blocks removal of required custody resources.
+The protected file-only retry journal (§20) survives uninstall and DB restore,
+with its location printed; it records original plans and achieved readbacks,
+never a secret, credential, actor grant or substitute native witness.
 
 Automatic backups run at start-of-day and clean shutdown under section 20's single rule.
 No public manual backup or partial event-log salvage engine is advertised for alpha.
