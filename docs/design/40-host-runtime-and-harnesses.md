@@ -1,9 +1,7 @@
 # 40 — Host runtime and harnesses
 
 Design candidate, not runtime implementation or qualification. Owner: Vera.
-Base: accepted main `b6977690a24e2d8e9d52ec7956392ac7f64feb5f`.
-This revision folds Prime's Opus return `msg-1f35564dbeb211d846bf5f9c` and Sol's
-`msg-8e0ac6e98350f404c9abe25f`. Verification tier: kernel boundary design;
+Reconciliation base: rust-se main `3536238`. Verification tier: kernel boundary design;
 compiling declarations here, journey/black-box checks owned by reviewers.
 
 ## 1. Outcome, boundaries and source of truth
@@ -13,9 +11,10 @@ real Claude/Codex agents, captures their work, resumes their original conversati
 and delivers mail without confusing an offer with a read or a PID with custody.
 The host implements the accepted [operation inventory](../OPS.md),
 [types/linked API](10-types-and-host-api.md), [store](20-data-model.md) and
-[process ownership](30-process-ownership.md). Shared sections 00, 70 and 80 in
-Prime's design bundle govern architecture, security and budgets; Prime's review
-decisions settle the conflicts called out below. Drafts 01–05 are background.
+[process ownership](30-process-ownership.md), [security](70-security.md) and
+[performance budgets](80-performance-budgets.md). The Node repository remains
+the private factory with its existing engine; no fleet cutover, factory-history
+import or factory CLI adaptation is part of this product.
 
 * se-core owns identity, permissions and the single closed operation executor;
   se-store owns events, snapshots, the writer, migration and backup; se-proc owns
@@ -23,16 +22,19 @@ decisions settle the conflicts called out below. Drafts 01–05 are background.
 * se-host owns supervision, process coordination, provider adapters, capture,
   IPC/HTTP and the proprietary implementation of SE Code's linked API. The binary
   owns argv/environment, human rendering and transient entry points.
-* The registry has 59 operations and 26 MCP tools. Private handover, hook and
+* Operation and MCP-tool counts are generated from the registry. Private
+  handover, hook and
   lifecycle protocols add no user command, tool, generic dispatcher or actor flag.
 * Hosted writes use the exclusive runtime lease and one store writer. Direct
   writes use the same transaction path under a shared lease only with no host.
-  The accepted fixed security-event set commits FULL; ordinary writes use NORMAL.
-  Ordinary startup never migrates: supported older schema requires the explicit
-  owner-approved section-20 upgrade/maintenance path with the old host down.
+  The fixed security/decision transition set commits FULL; ordinary writes use
+  NORMAL, which can lose several recent ordinary commits on power loss or OS
+  crash, while preserving acknowledged application-crash commits. The sole owning
+  host automatically applies supported additive migrations after a verified
+  pre-migration backup; a live older host refuses with “run se down first”.
+  Unsupported or too-new schema refuses with the specific upgrade/restore remedy.
 * **Live standalone↔SE Code handover is in alpha.** Its retained coordinator uses
-  section 30 and section 10's factory/native transfer seam. Iris owns the small
-  linked-API amendment; the earlier API exclusion does not defer this requirement.
+  section 30 and section 10's linked factory/native transfer seam.
 * SE Code has one native input queue. The concrete adapter uses HostServices;
   no parallel NativeQueue trait or translated native DTO family. A transfer fence
   is distinct from a human/takeover hold and cannot clear either.
@@ -42,7 +44,10 @@ decisions settle the conflicts called out below. Drafts 01–05 are background.
 
 No factory tooling, PostgreSQL multiplayer, remote HTTP, provider login manager,
 telemetry, Node runtime, dynamic plugins or new permission bypass is introduced.
-Atlas is absent embedded; standalone reserves its section-80 share. Agent CLIs
+Atlas is feature-absent in the default embedded build and disabled by default
+in both compositions. A feature-enabled build still requires config opt-in. Its build
+follows all five journeys and live handover; it never holds a milestone. Its
+cold-index child has the section-80 transient bound. Agent CLIs
 and their tools are separate provider processes, not extra StateEngine processes.
 
 ### 1.1 Evidence and limits
@@ -55,8 +60,19 @@ hosted p95 47.9–56.9 ms. Zero acknowledged ordinary writes were lost in 100 ex
 writer-process kills: process-crash evidence, never power-loss durability.
 Project-local records `vera-s4-socket-20261030/REPORT.txt` and
 `vera-s4-normal-20261030/REPORT.txt` are prototypes, not shipped dependencies.
-Attended Claude mod push, Windows/macOS transports, native custody and embedded
-RSS are **not** established by those results or this declaration candidate.
+The later Linux attended spike (`vera-attended-proofs-20261030/REPORT.txt`)
+used real Claude 2.1.312: a 30,008 ms fetch timeout, three 25-second renewals with
+one parked wait, and attributed mail queued during a busy human turn until idle.
+Stock Codex 0.163 used a private-socket app-server plus a viewable xterm TUI;
+three turns and six distinct message IDs were independently read back from the
+same saved thread. Stop/revocation and final-origin checks remain unqualified:
+Claude's installed fetch API exposes neither caller abort nor a final URL.
+The native pipe-transfer spike passed three cases each on Linux and Windows;
+real headless Claude 2.1.314/Codex 0.166 two-way transfer passed on Linux and
+Windows (two providers each), keeping process and conversation identity. These
+are bounded prototype facts, not product store/lease/queue integration, Windows
+job re-association under the required loop/failure campaign, all crash phases,
+timing, macOS or embedded-memory proof.
 
 ## 2. Compile-only surface and implementation shape
 
@@ -75,7 +91,7 @@ integration. No proprietary copy is promoted to a second public API.
 | [client.rs](../../crates/se-host/src/client.rs) | Tokio-free ClientOptions, BlockingIpcClient, BlockingConnection; BlockingTransport (Unix/Windows implementations); synchronous RuntimeFilesystem (three OS implementations) |
 | [ipc.rs](../../crates/se-host/src/ipc.rs) | IpcEndpoint/EndpointRecord; BorrowedChannel; PeerProof, ServerChallenge; IpcPlatform (three OS implementations); ClientHello, ServerHello, AuthorizedConnection, RawOperation, AdmittedOperation, OperationOutput, IpcRequest, IpcEnvelope; PresentedAuthority; concrete AdmissionAdapter, Dispatcher, HttpListener; HttpRequestHead, HttpChannel |
 | [session.rs](../../crates/se-host/src/session.rs) | HarnessKind; SessionPhase/Activity/HoldReason; provider-only ProviderNotice; SessionLease/Coordinator; TakeoverRequest, TakeoverTicket, TakeoverReport; trusted TranscriptPin; CaptureRole/Input |
-| [harness.rs](../../crates/se-host/src/harness.rs) | Harness (Claude/Codex implementations); ProviderVersion/ProbeRequest; ConfigPlan/IntegrationEdit/OwnedLaunchFile; HarnessRequest, HarnessAttach, HarnessBinding; ProviderIo/Transport/Invocation/Interrupt; BindingWitness/LaunchOutcome; OfferStage, OfferWitness, BellOutcome; TranscriptSource; ClaudeHookKind/Input/Output/Adapter; CodexTransport, CodexInvocation |
+| [harness.rs](../../crates/se-host/src/harness.rs) | CODEX_MINIMUM_VERSION; Harness (Claude/Codex implementations); ProviderVersion/ProbeRequest; ConfigPlan/IntegrationEdit/OwnedLaunchFile; HarnessRequest, HarnessAttach, HarnessBinding; ProviderIo/Transport/Invocation/Interrupt; BindingWitness/LaunchOutcome; OfferStage, OfferWitness, BellOutcome; TranscriptSource; ClaudeHookKind/Input/Output/Adapter; CodexTransport, CodexInvocation |
 
 Concrete adapters have opaque layout declarations. They implement the existing
 linked/core contracts at implementation time; they do not expose a second set
@@ -97,36 +113,17 @@ public serde/Debug path; typed DTO validation bounds every vector/string.
 ProviderIoPlatform, ProviderStream, StreamRead and StreamWrite in harness.rs are the genuine
 Unix/Windows evented-stream port and its bounded data shapes, not a native queue.
 
-### 2.1 Module tree and line allocation
+### 2.1 Implementation responsibilities
 
-Future implementation layout, estimates not correctness caps; totals count host
-work only, excluding se-core/store/proc and the permissive API. No file is planned
-above 500 lines. A directory total below is spread over the listed responsibilities.
-
-```text
-se-host/src/
-  lib.rs + model.rs                         250  composition/data only
-  client/{endpoint,lease,wire,auth,mod}.rs   750  blocking common client, native ports
-  runtime/{factory,generation,tasks,
-           shutdown,handover,mod}.rs       1550  retained ownership and recovery
-  process/{launch,stop,recovery,events,
-           reactor,io,mod}.rs              1350  ProcessRuntime consumer
-  session/{state,takeover,mail,mod}.rs      1050  binding and indexed notice debt
-  capture/{pins,reader,watch,mod}.rs         650  incremental trusted sources
-  harness/{mod,config,claude_launch,
-           claude_hook,claude_mail,
-           codex_rpc,codex_input,
-           codex_capture,secode}.rs        1900  provider-specific translation
-  http/{server,admission,mcp,mail,mod}.rs    1000  one bounded HTTP server
-  integration/{install,remove,mod}.rs        400  owned edit/readback
-                                           ----
-                                           8900 Rust lines
-provider-native Claude mod JS               200–350 lines, no Node process
-```
-
-The six current declaration modules are not a mandate to put all eventual
-runtime code in six files. Public API changes follow section 10's exact-version
-and major-version rule, not an independent adapter-version policy.
+The detailed file/task estimates and total are generated from section 95; this
+chapter keeps no second size table. Composition/model, blocking client,
+runtime lifecycle/handover, native-process coordination, session/mail, trusted
+capture, provider harnesses, HTTP admission and owned integrations are separate
+cohesive modules. The current declaration files are not a mandate to grow six
+runtime god files. Linked API changes use the exact statically linked contract;
+JSON families carry their own schema versions. No N-1 encoder or schema-freeze
+tooling is built before a consumed older family exists; the frozen SE Code
+context adapter remains required.
 
 ## 3. Process coordinator and store ordering
 
@@ -141,18 +138,28 @@ ownership remains with se-proc; the reference is not a second native owner.
 
 ### 3.1 Launch order (no transaction spans native work)
 
-| Step / owner | Store boundary | Native/provider call and retained result |
+The common launch path has **three commits**; events sharing a row are one
+transaction with one request identity, not separate serial acknowledgments.
+
+| Boundary / owner | Store boundary | Native/provider call and retained result |
 | --- | --- | --- |
-| Core/coordinator admission | Verify caller/creator grant/profile/resume, expected revision; reserve session/launch | Probe provider before changing incumbent; bypass only saved named opt-in |
-| Coordinator reserve | Commit Reserved LaunchReservation, exact nonce/parent/host/G, before any native effect | ProcessRuntime::prepare_launch inserts arena Starting slot then creates scope, no vendor child |
-| Coordinator checkpoint | Commit returned ScopeCheckpoint (`scope-prepared`) and revision | Retain PreparedScope.process and PreparedLaunch; no begin before successful commit |
-| Coordinator native start | Recheck reservation/G and exact prepared checkpoint | begin_launch consumes prepared + LaunchSpec, including ExitBridge; Pending retains ticket/process; failures retain remaining custody |
-| Coordinator event wait | No held store/native lock | Arm native watch/readiness, immediately poll_launch; await coalesced notice or original deadline, then poll again; no sleep loop |
-| Coordinator pre-exec barrier | On AwaitingExecCommit, commit RootCheckpoint: real pre-exec identity/group/intended image | Only then authorize_exec; applies to macOS/terminal attach and any required native barrier |
-| Coordinator root publication | Commit actual returned ProcessRecord/root image/state using CAS, never intended executable as observed image | Started includes actual exec observation; keep arena/process/streams even if commit fails |
-| Harness attach | Credential/binding uses verified selected conversation and current reserved lifecycle, FULL security commit | attach receives HarnessAttach; validates native conversation and accepts work; actual echo/readiness required for LaunchOutcome |
-| Coordinator publish readiness | Commit actual session/binding/readiness facts and cursor as applicable | Return real conversation/lifecycle and complete resume instruction, not PID-only success |
-| Coordinator natural/failed exit | Read outside witness, commit Exited plus original exit/scope evidence | Only after commit call release; failed release stays indexed cleanup debt |
+| Admission + C1 / core and coordinator | Validate caller/direct creator grant/profile/resume and expected revision; FULL reservation + prepared session + process-bound credential issuance, before any native effect | Probe required provider features before disturbing incumbent; only a named saved profile may opt into bypass |
+| Prepare + C2 / coordinator | Commit actual ScopeCheckpoint (`scope-prepared`) under the reservation/G CAS | prepare_launch first retains its Starting arena slot and creates the exact scope, no vendor child; begin_launch only after C2 |
+| Native start / coordinator | No transaction spans native work | Retain ticket/process/streams, arm watch and immediately poll; Pending waits for event/original deadline, no sleep loop |
+| Helper exception / coordinator | One additional durable RootCheckpoint **between C2 and C3** for Unix terminal, macOS and uncontained helper paths | Commit real pre-exec start/group/intended image before authorize_exec; no fabricated Running/root image |
+| Attach + C3 / coordinator and harness | One FULL actual process/root publication + trusted credential activation + session activation/readiness, consent/cursor where applicable, at expected revisions | Validate actual native identity and selected conversation, not intended image or argv; complete provider echo/readiness is required before success |
+| Natural/failed exit / coordinator | Commit outside-witnessed Exited plus original exit/scope evidence | Release only after that commit; failure remains indexed cleanup debt |
+
+The helper path therefore has **four commits**. Removing its separate root
+checkpoint would allow vendor execution without recoverable group/start identity,
+or falsely publish Running before actual exec. Retain this crash-rule exception
+and include its cost in E3. C1/C3 group all compatible session/credential events;
+prepared authority cannot admit an ordinary operation before verified first use.
+An early trusted session-start handshake can supply the final root/conversation
+witness and trigger C3; it exposes no private context or ordinary mutation until
+that FULL commit. If readiness cannot be proved, return pending/failure while
+retaining native custody, not a partial successful launch. Embedded SE Code has
+no process-bound credential events and uses its distinct in-process bind path.
 
 Windows begin_launch associates the job **at creation** using
 PROC_THREAD_ATTRIBUTE_JOB_LIST and explicit CREATE_BREAKAWAY_FROM_JOB, not a
@@ -214,20 +221,25 @@ All async work uses the supplied Tokio Handle. No ambient spawn/current handle,
 nested runtime or block_on. Embedded creates no runtime; standalone has one
 current-thread executor. Constructor stores Handle without I/O/spawn. Tokio is
 optional behind `runtime`; client-only builds have no Tokio dependency. The
-current declaration pin compiles Handle; actual composition must match SE Code's
-exact Tokio/SQLite versions. No library installs a global tracing subscriber.
+library dependency uses a caret range, not an exact Tokio pin. SE Code's
+shipping Rust server is `secode-server` in `crates/secode-product` at dev
+`58e8a145f` (`E:\rust-secode`); its lock resolves Tokio 1.53.3 and bundled
+rusqlite 0.40.1 / libsqlite3-sys 0.38.1. Composition must resolve one compatible
+Tokio and one SQLite links=sqlite3 dependency. No library changes process umask
+or installs a global tracing subscriber; owner-only file creation/readback is
+per file, including SQLite WAL/SHM, under section 70.
 
 | Work | Execution and owner | Bound / section-80 accounting |
 | --- | --- | --- |
-| Session state/mail/control, IPC/HTTP, vendor JSON framing | Supplied executor tasks, one coordinator/session | ~50 KB/session, no thread/session; session/mail/listener lines §3.1 |
+| Session state/mail/control, IPC/HTTP, vendor JSON framing | Supplied executor tasks, one coordinator/session | Section-80 session/mail rows, no thread/session |
 | SQLite writes | One named se-writer OS thread, se-store owns it | Blocks on bounded receive; store lines, no shared-pool occupation |
 | Foreground DB reads, transcript chunks, config filesystem, CreateProcess/native finite steps | Shared blocking pool, at most two admitted jobs | Never run sync file reads/CreateProcess on standalone executor; finite work only |
 | Whole-copy backup / close_clean | One background/maintenance blocking slot for its entire synchronous call | At most one; reserve the other slot for foreground work; not a per-step fake async call |
 | Unix process and watch events | Existing Tokio AsyncFd/kqueue reactor via ReactorAdapter implementing NativeReactor | se-proc HostConfig.reactor supplied; no Unix collector thread |
-| Windows native job/process completion | One existing se-proc IOCP collector thread per host | §80 custody 0.2 MB includes collector; no RegisterWait pool or second collector |
+| Windows native job/process completion | One existing se-proc IOCP collector thread per host | Section-80 custody row includes collector; no RegisterWait pool or second collector |
 | Windows provider stdin/out/err | Overlapped named-pipe host ends and IOCP readiness, bounded buffers | No tokio::fs::File/blocking read wrapper or thread per pipe; detailed below |
-| Transcript watch | Unix native events; Windows uses section 60's shared safe se-proc file-watch service (ReadDirectoryChangesW on the same per-host IOCP) | One shared service for capture/Atlas, no notify-owned helper thread; §80 watcher 0.5 MB includes state, not an omitted stack |
-| Optional Atlas | Accepted standalone Atlas worker only after use | §80 standalone 2 MB in-host share; cold-index child has separate approved 64 MB window |
+| Transcript watch | Unix native events; Windows uses section 60's shared safe se-proc file-watch service (ReadDirectoryChangesW on the same per-host IOCP) | One shared service for capture/Atlas, no notify-owned helper thread; Section-80 watcher row includes state and any resident stack |
+| Optional Atlas | Config opt-in after journeys and handover, disabled by default | Section-80 standalone Atlas share and separately bounded transient cold child |
 
 On Unix ReactorAdapter takes the owned File from NativeReactor::register, installs
 AsyncFd with requested read/priority interest on the supplied Handle, calls the
@@ -341,18 +353,24 @@ the writer thread retains an Arc of the exclusive lease until actual join. A
 stale endpoint/PID, missing pathname, timeout or caller-supplied report cannot
 steal a lock. IPC failure under a live exclusive lease cannot fall through to a
 direct write. Read-only snapshots remain available without the host. Hostless
-stdio custody requests refuse CustodyUnavailableHostless; legal launch can
+stdio custody requests refuse CustodyUnavailableHostless; legal CLI custody can
 bootstrap the standalone host through section-30 NativeProcessApi spawn_runtime,
 commit_runtime with authenticated readiness, or abort/witness/release_runtime.
-The exact RuntimeChild stays pinned through that outcome.
+The exact RuntimeChild stays pinned through that outcome. This is private
+runtime bootstrap, not a public `se daemon` command. Ordinary refusals return on
+the error channel without appending a history event.
 
 Factory preparation is read-only, returns absent/unreadable/version error
 truthfully, and starts no writer/callback/native effect. SE Code registers the
 Prepared Host/G and fresh immutable generation-fenced services before activate.
-Missing store does not implicitly init. Ordinary incompatible/older schema
-refuses; explicit owner-approved migration is a distinct offline maintenance
-path with its accepted approval/backup contract. Same-factory duplicate healthy
-open shares the registered owner; an independent live owner refuses.
+Missing store does not implicitly init. Preparation reads the version and plans
+any supported additive migration; activation, under the exclusive runtime lease,
+first verifies a pre-migration backup, applies it and FULL-publishes the version
+before starting ordinary resources. There is no MigrationApproval, plan
+fingerprint or maintenance-only open mode. A live older owner refuses with
+“run se down first”; unsupported/too-new schema refuses with a remedy. A failed
+backup never authorizes migration. Same-factory duplicate healthy open shares
+the registered owner; an independent live owner refuses.
 
 | From | Trigger | Next / actual effect |
 | --- | --- | --- |
@@ -392,9 +410,10 @@ and cannot emit a successful drained/closed report. Backup errors remain explici
 Drop does not join, flush, wait, block_on or supply a closure witness.
 
 The standalone **auto-start** supervisor owns one ten-minute exit timer, armed
-only after the last live session and client end. Any new session/client cancels
-it. On expiry recheck emptiness then use the same shutdown path; explicit se up
-never auto-exits. Do not combine this timer with the 15-minute live catch-up:
+after the last live agent ends; a new live agent cancels it. A detached
+`se up` started by default SE Code handback follows the same ten-minute empty
+policy even though an ordinary explicit `se up` remains resident. On expiry
+recheck emptiness and use the same shutdown path. Do not combine this timer with the 15-minute live catch-up:
 catch-up exists with live sessions, exit timer only with none. No timer/session.
 Deadlines use Instant plus a suspend/resume boundary check: on OS resume recheck
 actual identity and the original requested wall/awake bounds; Instant can exclude
@@ -416,7 +435,11 @@ hand them back to a detached se up through the same checked protocol, per sectio
 00. The ordinary-exit row applies to daemon shutdown or a deliberately selected
 no-handover/stop route after handover is unavailable/refused; a failed transfer
 must stay visible rather than silently abandoning ownership. No extra setup is
-required to enable the default SE Code handback.
+required to enable the default SE Code handback. The detached successor is one
+persistent StateEngine process while agents remain live; B3's embedded zero
+process observation applies only when no agent is live. Ordinary `se down`
+stops owned agents on every OS and prints achieved stop facts and resume argv,
+never “agents still running”.
 
 Explicit Windows breakaway descendants are outside the stated ordinary-job bound;
 the receipt retains that limitation. Successful staged handover is the narrowly
@@ -545,13 +568,13 @@ one; timeout, an empty active map or a new epoch cannot replace that resolution.
 | SourceGated | Validate/retain keyed request and owner; gate new custody/delivery, immediately fence native admission/promotion and interrupt participating agents, then finish accepted finite launch/capture/debt operations and prove exact idle; do not await a running turn's natural completion; source still owns lease/resources |
 | Standby | Verify exact successor peer/PID/birth/API/home and native ready channel; receiver is read-only, no ordinary HostServices callbacks or queue promotion |
 | Staged | After source capture/debt heads and full-frame input/output boundaries freeze, duplicate host-owned/Unix stream/PTY descriptors and call begin_transfer; native arena includes Windows provider ports automatically; transfer_manifest reads actual nonce/digest, receiver accept_transfer stages inactive copies and attaches ready local stdio sinks |
-| BarrierCommitted | Seal FULL Prepared with final immutable manifest/nonce/frozen_at after all accepted work is finished; drain/join writer, then record FULL ReadyToClaim on drained maintenance; frozen data cannot change afterward |
-| LeaseTransferred | Source closes readers/backup/context and releases exclusive runtime.lock after ReadyToClaim; successor acquires lease and records FULL Claimed on maintenance with exact owner-generation/head CAS before any destination writer/native consumer |
-| Activated | Receiver verifies lease/CAS/native manifest, calls activate_transfer once and obtains streams/receipt; record FULL Activated on maintenance before starting writer or input/capture consumers; register/read around event reassociation, fresh G services and original-notice recovery precede new offers |
-| Acknowledged | Persist/read back keyed destination activation receipt and original admission/capture heads; source verifies exact receipt plus current ownership barrier, calls commit_transfer and closes its now-gated originals |
-| Finished | After source resource closure is verified, destination commits FULL Finished; factory then settles that transfer's native fence, with old-G routing still fenced. Destination remains unique owner; native routes stay dormant while SE Code is absent |
+| BarrierCommitted | Finish accepted work and final capture/queue cut, drain/join writer and release source read/backup pins, then FULL Prepared on the exclusively owned HostStore with immutable manifest/nonce/frozen_at; no ordinary source writer or consumer resumes afterward |
+| LeaseTransferred | Source releases exclusive runtime.lock after FULL Prepared; successor acquires lease and records FULL Claimed against that exact Prepared/current owner head before native activation or any destination writer/consumer |
+| Activated (transient) | Receiver verifies lease/CAS/native manifest and calls activate_transfer once; retain/read back the actual native receipt, attach generation-fenced bindings and register/read around event reassociation, with **all destination writer/input/capture consumers still disabled** |
+| Acknowledged (transient) | Source verifies the exact keyed native activation receipt, FULL Claimed/current owner and frozen admission/capture heads, then commit_transfer and close its gated originals; lost replies use native receipt/readback, not a second activation |
+| Finished | After independent source-resource closure proof, destination FULL Finished binds actual native activation plus exact final capture/queue cut and closure; only then start the destination writer/capture and settle the native fence before enabling eligible input/mail. Native routes remain dormant while SE Code is absent |
 | Aborted | Before Claimed and before native activation: source abort_transfer and receiver discard_transfer staged copies; restore source only after actual lease/owner/G validation; settle only this transfer fence and preserve all human/takeover/revocation holds |
-| Recovered | A checked cold owner supersedes Claimed/Activated; one FULL transaction records the new runtime.owner and original transfer's Recovered outcome with fresh activated custody/capture and retained queue-cut proof; only then may the factory settle that original fence |
+| Recovered | A checked cold owner supersedes Claimed; one FULL transaction records the new runtime.owner and original transfer's Recovered outcome with fresh activated custody/capture and retained queue-cut proof; only then may the factory settle that original fence |
 | RecoveryPending | Lost ACK, peer death, ambiguous CAS/lease/stream state; no guessed rollback or second consumer; reconcile exact transfer/receipt/native state |
 
 Finished verifies closure of the source's transferred native resources, not that
@@ -576,7 +599,8 @@ Before sealing a native route, the transfer-scoped fence -> interrupt -> exact
 Present(None) precedes final target selection; target/G/fence/no-execution are
 rechecked inside the native atomic transition. Never reuse Takeover/HumanStop
 then automatically unhold it. Settle only the matching transfer fence after
-verified Finished, pre-claim Aborted or checked-cold Recovered. FULL Activated alone cannot clear it.
+verified FULL Finished, pre-claim Aborted or checked-cold Recovered. A native
+activation receipt or FULL Claimed alone cannot clear it.
 Do not clear a human hold to make handover appear live.
 A resumed human invalidates the stale absence barrier; re-read/retry legally.
 Host-only delivery is frozen before native transfer. SE Code freezes its sole
@@ -586,12 +610,14 @@ not a substitute for lost native pending input. Original queue admissions, targe
 NoticeId/digest and capture cursor are carried; receiving callbacks use a fresh
 G wrapper after its registration/activation, not an old Arc silently rebound.
 
-Only source consumes provider stdout/capture until the freeze head commits. Its
-read task then parks at that exact offset/frame boundary before descriptor
-transfer. Receiver stages files without reading; activate_transfer returns them
-exactly once after the lease/ownership barrier. Receiver resumes from the frozen
-cursor and dedupe keys. On Windows, provider endpoints remain in the native
-arena: ReceivedTransfer.processes supply the owners for attach_stdio, every port
+Only source consumes provider stdout/capture before freeze. Its read task parks
+at the proved exact offset/frame boundary before native staging and FULL Prepared.
+Receiver stages files without reading; activate_transfer returns them exactly once
+after FULL Claimed under exclusive lease. Its native receipt is retained, but
+receiver consumers remain disabled until FULL Finished proves activation plus
+source-resource closure. Then resume from the frozen cursor and original dedupe
+keys; no uncommitted capture/input interval is hidden between activation and
+finish. On Windows, provider endpoints remain in the native arena: ReceivedTransfer.processes supply the owners for attach_stdio, every port
 must have a Ready successor binding before activation, then stdio_state returns
 safe activated ports. ActivatedTransfer.streams contains only host-owned/Unix
 Files; the host never extracts Windows raw handles or wraps them in AsyncFd.
@@ -604,19 +630,22 @@ Failure recovery:
 
 * Before accept/staging: original source retains custody and may abort the intent;
   receiver closes its own standby resources, no input was accepted there.
-* Staged receiver crash before activation: verify exact peer exit, discard/revoke
-  that staged attempt and restore source native association/lease only through
-  checked abort. Do not leak a staged Windows handle that keeps jobs alive forever.
-* Source crash before committed ownership barrier: receiver may not activate on
-  channel EOF alone. Verify durable transfer plus source exit/lease availability;
-  otherwise discard staged resources and apply ordinary crash policy.
-* Source crash after barrier: receiver uses exact intent/CAS/lease/native manifest
-  to complete the same activation. If proof fails, RecoveryPending; no invented
+* Staged receiver crash **before Claimed and native activation**: verify exact
+  peer exit, discard/revoke that staged attempt and restore source native
+  association/lease only through checked abort. Do not leak a staged Windows handle that keeps jobs alive forever.
+* Source crash before Prepared: no durable transfer authority exists; receiver
+  closes its inactive copies and uses ordinary crash policy, never channel EOF
+  as activation authority.
+* Source crash after Prepared: receiver verifies that immutable intent, source
+  exit and exclusive lease, then commits exact Claimed if not already claimed.
+  Only that owner may activate; missing proof leaves RecoveryPending.
+* Source crash after Claimed: receiver uses exact intent/CAS/lease/native manifest
+  to complete the same activation and source-closure proof for FULL Finished. If proof fails, RecoveryPending; no invented
   successor or arbitrary descriptor adoption.
 * Activation reply lost: query durable transfer/receipt/current owner and native
   staged state with original key. Successful activation is never repeated to get
   a second stream set. Source never aborts an already activated receiver.
-* Receiver crash after activation before ACK: source originals stay gated; prove
+* Receiver crash after Claimed, including after native activation before ACK: source originals stay gated; prove
   receiver state/exit and recover through cold/reverse ownership protocol, never
   ungate source on elapsed timeout. Windows may retain jobs via source handles
   only while this bounded recovery is owned; unresolved staged copies are closed
@@ -638,8 +667,9 @@ Before Prepared, staging has no committed transfer authority. If source dies or
 staging times out before that first FULL seal, receiver closes the uncommitted
 inactive copies and ordinary OS crash policy applies; actual native holds/debt
 remain. No receiver may activate from an uncommitted request or channel EOF.
-This is Prime's reconciled drain/freeze-before-Prepared order
-(msg-cf8e46cdeebb8fd10816bdc7), not a final-manifest mutation at ReadyToClaim.
+All accepted work, writer join and source snapshot/backup-pin release precede
+FULL Prepared. Its immutable cut is therefore already ready for lease release
+and claim; there is no ReadyToClaim append or post-Prepared cut mutation.
 If native queue freeze committed but no Prepared fact exists, the factory proves
 that absence under the actual source/recovered-source ownership and lease,
 verifies staged-copy closure, then settles the original fence as **Aborted**
@@ -660,7 +690,7 @@ retains the borrowed offer/import for keyed reconciliation and retry.
 
 The accepted native Windows IOCP reassociation/readbacks and Unix SCM_RIGHTS/
 kqueue steps are section 30's contract. Handover state never substitutes a
-manifest hash for outside process/resource proof. B8 ≤500 ms is a target, still
+manifest hash for outside process/resource proof. B8 is the section-80 cutover target, still
 unmeasured; bounded slow failure reports pending/refusal rather than overlapping
 owners to meet the clock.
 
@@ -693,32 +723,41 @@ No raw handle, body or credential is in that record.
 
 | Durable phase (all FULL + current-owner-G/record CAS) | Host observations / crash rule |
 | --- | --- |
-| Prepared | New admission frozen; accepted launches/capture/debt finished, transfer fence/idle proved and inactive copies staged before sealing immutable fields; source still owns G; only proved pre-claim abort restores it |
-| ReadyToClaim | Only writer/reader/backup drain and lease release remain after Prepared; record on drained HostStore; destination may acquire released exclusive lease and claim the exact transfer, no third owner |
-| Claimed | Destination owns target G under exclusive lease before native activation; recover same transfer after peer/lease/manifest proof, never source timeout rollback |
-| Activated | Actual native activation receipt persisted FULL **before destination input/capture consumers run**; lost ACK is keyed readback; a crash cannot justify fresh stream activation/input |
-| Finished | Source verified destination receipt/owner and committed native transfer, then closed originals; destination records terminal FULL outcome before native transfer-fence settlement |
-| Aborted | Only before Claimed and native activation, after checked source/lease recovery or while source retained it; retain real human holds/debt |
-| Recovered | Exceptional checked-cold completion from Claimed/Activated, atomically with the new FULL runtime.owner; cite its event, fresh activated custody/capture and retained queue-cut proof while keeping original peer/generation fields immutable |
+| Prepared | Admission/input frozen; accepted operations, exact idle, stream framing, final capture/debt/queue cut and source writer/reader/backup drain complete; inactive native copies staged. Seal immutable fields under the retained source lease, then release it; Prepared itself authorizes only exact destination claim |
+| Claimed | Destination holds exclusive lease and target G under exact Prepared/head CAS; native activation may occur, but no ordinary writer/input/capture consumer starts. Resolve same native receipt on lost ACK, never source timeout rollback |
+| Finished | Actual native activation, exact final capture/queue cut and independently verified source-resource closure are bound in this one FULL completion. Only afterward enable destination capture/ordinary writer, settle the transfer fence and enable eligible input/mail |
+| Aborted | Source custody restored only before Claimed/native activation, under actual source/recovered-source lease/owner proof with inactive copies closed; preserve human holds/debt |
+| Recovered | Exceptional checked-cold completion of Claimed, atomically in the fresh FULL runtime.owner; cite its event plus actual activated custody/capture and retained queue-cut proof, preserving original peers/generations |
+
+The owner decision retains **five durable values rather than four**. Prepared
+already follows writer drain, eliminating ReadyToClaim. Actual native activation
+is transient until the combined Finished proof; withholding consumers until that
+FULL commit eliminates the separate Activated append without allowing unrecorded
+input/capture. Aborted and Recovered remain distinct: the former restores verified
+pre-claim source authority, while the latter establishes fresh post-claim owner
+custody. Conflating them would either authorize rollback after claim or fabricate
+old-generation completion. Normal handover now has three FULL appends
+Prepared → Claimed → Finished; failure uses the applicable distinct terminal fact.
 
 The Recovered row consumes section 20's admitted recovery amendment, not a local
 side-file, invented Finished or phase-only write under a stale generation.
-Acknowledged/LeaseTransferred/RecoveryPending are bounded host observations, not
-extra durable owner phases. Exact phase retries use stable per-transition keys
+Activated/Acknowledged/LeaseTransferred/RecoveryPending are bounded host
+observations, not extra durable owner phases. Exact phase retries use stable per-transition keys
 derived from the original request, transfer and phase; changed fingerprints
 refuse. Elapsed deadline permits failure reporting, never lease/owner theft.
-On native activation success but lost durable Activated reply, resolve the exact
-phase/request and native receipt before any consumer starts. If actual native
-activation cannot be proved after peer loss, cold recovery remains explicit
-rather than inventing an abort or a second set of streams. The record's immutable
-peer/generation/nonce/digest binding and legal transition checks belong to Nell's
+A lost native activation reply is resolved from the original native receipt
+while the durable head remains Claimed. A lost Finished reply is resolved from
+that same transition key and stored completion proof before any consumer starts.
+If native activation/source closure cannot be proved after peer loss, use checked
+cold recovery; never invent an abort or activate a second set of streams.
+The record's immutable peer/generation/nonce/digest binding and legal transition checks belong to Nell's
 store amendment; the host supplies real outside facts and holds the OS lease.
 
 ### 6.2 Closed recovery attestations
 
 RuntimeOwnerEstablished.recovered uses section 20's RuntimeRecoveredTransfer,
 not another recovery event. transfer and handover_event identify the exact current
-Claimed/Activated head; capture_at is a real committed revision in the same store,
+Claimed head; capture_at is a real committed revision in the same store,
 at least frozen_at and no later than the observed head. The enclosing FULL owner
 event is both new-owner and Recovered completion reference. Its projection keeps
 the original transfer plus Recovered under the fresh epoch/G. A standalone
@@ -792,7 +831,14 @@ never in logs. Exact API equality, not minor-range negotiation.
 
 Call envelope contains API, positive request_id, discovered G, optional per-call
 authority and Operation or Hook. Operation has registry name, closed arguments,
-optional stable key; decode once to AdmittedOperation then invoke core. Hook is
+a stable request key required for every public mutation; decode once to
+AdmittedOperation then invoke synchronous core validation/planning/store logic.
+The host async custody executor alone performs native/provider effects. Reads
+need no mutation key; capture/read/ack/dismiss retain only their explicitly
+restricted natural-key path. CLI creates/prints its key before the first send
+and accepts --key for a later invocation; MCP mutation schemas require
+idempotency_key, and linked/IPC mutations carry that same identity. A lost reply
+reuses it; same key with a changed admitted body conflicts before any effect. Hook is
 the fixed Claude operation mapping. **No Nudge request remains**: in-host commits
 already wake debt, while direct writes are recovered at activation. Reply echoes
 id/API/G and either typed result or ErrorEnvelope. Transport IDs are not durable
@@ -816,7 +862,9 @@ Absent markers prove nothing. Invalid/expired/revoked **present** session author
 refuses; no owner/cwd/default fallback. Unreadable ancestry refuses owner for
 ordinary owner-only operations too, not only destructive/human-only verbs.
 Human-only CLI actions additionally require console/TTY stdin and stdout outside
-agent trees and no SE_SESSION. Native UI HumanPresence is separate from CLI TTY;
+agent trees and no SE_SESSION. Docs, help, refusals and decision receipts say
+these are mistake/drift guards, not proof against a determined agent on the
+user's own account; the existing ratify checks do not change. Native UI HumanPresence is separate from CLI TTY;
 model tools cannot construct either. This is the accepted mistake/drift boundary,
 not an attempt to sandbox a hostile same-UID program.
 
@@ -829,17 +877,14 @@ no grandchildren/all-agent privilege or private mailbox read follows from it.
 
 ### 7.3 HTTP inventory and concrete parser
 
-Reuse **the HTTP crate SE Code's server already links**, verified against that
-server's Cargo.lock at build start, with its existing runtime integration.
-The desktop lockfile alone does not establish a shared server dependency; do not
-assume hyper is present or add a second stack. If the server links no HTTP crate,
-use a minimal **fixed-route HTTP/1.1 parser** with bounded headers: the MCP
-endpoint is POST-only with a Content-Length body; mail long-poll and livez are
-separate GET routes with no request body. No chunked/ambiguous framing,
-pipelining, upgrades, SSE or generic HTTP proxy surface is supported.
-Standalone uses the selected common stack/parser. No TLS/client stack or hidden
-process/server per agent is introduced. Both parser choices enforce the same
-Host/Origin/Sec-Fetch-Site, credential and final-envelope budgets below.
+The shipping Rust SE Code server uses axum/Tokio, with axum 0.8.9, hyper 1
+(http1, server) and hyper-util 0.1 in its lockfile. se-host uses hyper directly
+with those server-only features, or an axum caret range admitting 0.8.9; verify
+one compatible resolved stack in the linked server build. No speculative second
+fixed-route parser or second HTTP stack is planned. Standalone uses that same
+stack. No TLS/client stack, SSE, proxy or process/server per agent is introduced;
+MCP is POST JSON, mail/livez are bounded GETs, with no request bodies there.
+Reject ambiguous/chunked framing, pipelining and upgrades at this local surface.
 
 Admission order: bounded parse -> origin-form target -> exact Host/port ->
 Origin/Sec-Fetch-Site -> method/media -> credential -> core scope. Host is exactly
@@ -913,7 +958,10 @@ Unlisted transitions refuse. Activity is orthogonal: Idle -> Executing on real
 turn start, Executing -> Interrupting on request, -> Idle only on actual completion.
 Unknown/unreadable is not idle. Native Eligible/Held/Revoked is section 10's state;
 revocation cannot be cleared by a human resume/reconnect. A new legitimate binding
-gets fresh revision/capability and preserves applicable human holds.
+gets a fresh revision and, only for process-bound clients, a capability; it
+preserves applicable human holds. Embedded SE Code uses a generation-fenced
+in-process BoundSession, with no credential issuance/activation/hash/pin/bearer
+events. Its durable session activation and normal authorization checks remain.
 
 Takeover: commit replacement reservation; durably hold predecessor even with no
 pending mail; interrupt only against that HoldReceipt; require exact
@@ -1083,20 +1131,31 @@ Hook failure exits zero for provider availability with bounded nonsecret stderr,
 but HookOutput carries actual captured Read/failure and status exposes failed/
 suppressed capture. Zero exit is never capture evidence. If persistence itself
 fails, do not claim a durable diagnostic exists. Hosted hook writes go through
-existing writer. With no owner, bounded auto-start may be attempted; if unavailable
-within hook deadline, same transaction code under shared direct lease is the
-legal fallback. No direct write while an exclusive host still exists.
+the existing writer. E8 must measure cold no-host hooks on Windows with Defender
+before choosing private host bootstrap versus direct shared-lease fallback;
+no cold-start promise is established here. Either selected route uses the same
+transaction path and original natural key, and never writes directly while an
+exclusive owner exists.
 
 Attended plugin is ~200–350 lines of provider-native JS, no Node process/executor.
 Manifest plus hooks module registration uses the installed API types. One
 credential-scoped wait returns IDs/cursor only. Submit attributed mod text after
 blocking hook returns; never `asUser:true`, body/secret prompt injection or
-concurrent ordinary turn. Human stop/session end/revocation cancels its wait;
-new mail/reconnect/restart cannot clear hold. The [mods API](https://code.claude.com/docs/en/plugins/mods/reference)
+concurrent ordinary turn. Human stop/session end/revocation must prevent new
+offers and preserve hold; the host invalidates and closes its parked wait on
+that observed state. Claude's current fetch API has no caller AbortSignal, so
+immediate mod-side cancellation is unqualified; do not describe it as a passed
+capability. No new mail/reconnect/restart clears hold. The [mods API](https://code.claude.com/docs/en/plugins/mods/reference)
 limits an entire HTTP fetch to 30 seconds: use ≤25 s waits, **0.04/s renewal per
 attended session**, as updated in 70/80. One wait per session, own cap outside 64.
-No 25-minute promise or unproven attended-push/idle measurement. Server never
-redirects; plugin verifies private final origin and never sends bearer in URL.
+The Linux spike proves this renewal and idle/busy delivery only, not stop or
+revocation. E4 requires 100 real sends with zero missed wakes and the named
+fallback if the required hold/security path cannot qualify. The server emits
+no redirects, the mod validates the configured private origin before sending,
+and no bearer goes in a URL. The installed HttpResponse exposes no final URL;
+post-redirect origin verification is therefore unqualified and cannot be
+claimed implemented by this API. Retain authenticated local-host proof and
+qualify that gap before accepting the attended product path.
 
 ### 9.4 Stock Codex RPC and direct SE Code
 
@@ -1113,13 +1172,21 @@ thread/turn then await actual completion, not just request ACK. Reconnect repeat
 handshake and exact saved-thread verification, resolving original notice status
 before retry. Vendor frames omit JSON-RPC version header; response IDs correlate,
 notifications omit id. Bound framing, stderr and item content. Older than the
-established 0.163 HTTP-tools floor or lacking required feature refuses before
-launch, never runs silently without coordination tools.
+single se-host CODEX_MINIMUM_VERSION constant, 0.152, or lacking a required
+feature refuses before launch. Measurements found helper auth fails at 0.151
+and passes at 0.152, the 0.159 fork and stock 0.166; a fork result does not
+qualify stock transport behavior. Never launch silently without working tools.
 
 Use per-launch MCP/helper configuration and user's existing CODEX_HOME/login;
 no managed replacement home, hooks.json injection, fork or automatic approval.
-Headless unsupported approval reports pending/refusal rather than inventing a
-human decision. Turn completion is separate from process exit/task effect.
+The Linux stock 0.163 attended spike uses a private unix:// app-server and
+`codex resume THREAD --remote unix://PATH`; its real window and socket client
+share one saved thread and canonical item/turn capture. Configure safe sandbox
+and approval policy on thread/start or thread/resume RPC: remote TUI resume
+refuses -s/-a permission overrides. E5 still qualifies headless/windowed auth,
+reconnect and every OS, and evaluates --listen as a simplification only if it
+removes a whole mechanism; retain the Windows stdio arena. Headless unsupported
+approval reports pending/refusal rather than inventing a human decision. Turn completion is separate from process exit/task effect.
 
 Embedded SE Code registers the Prepared Host/G before activate, supplies exact
 native epoch/fresh fenced services and calls canonical linked methods directly.
@@ -1140,115 +1207,68 @@ absent. Modified owned entries refuse IntegrationConflict rather than overwrite
 from an old full-file backup. Remove holds/revokes/stops exact owned instances,
 then removes only matching owned entries/secret exposure with readback; preserve
 foreign additions and history. Credential revoke precedes unlink; cleanup failure
-is RemoveIncomplete, not a claim every process/file vanished. Erasure is separate.
+is RemoveIncomplete, not a claim every process/file vanished. Erasure is separate. Settings resolve flag > environment > user config.toml >
+default, with no project-scope configuration layer. Message/working-state
+admission uses the shared per-kind DTO byte limits (32 KiB/16 KiB), generated
+into every surface/store path; oversized UTF-8 refuses before any effect, never
+truncates. For remove, forget, import, migration, restore, credential rotation,
+uninstall and diagnosed doctor repair, the host executes the exact typed plan
+and printed consequences in section 70; a configuration repair cannot silently
+rotate secrets, restore history or migrate.
 
-## 10. Performance allocation: section 80 is authoritative
+## 10. Performance and size allocation
 
-Numbers are decimal MB and targets, not cargo-check results. All attributed
-helpers count; provider/model processes are reported separately. B1 embedded
-≤30 MB; B2 ≤100 ms includes the **first complete authenticated session response**;
-B3 zero persistent StateEngine processes embedded/one standalone/none per agent;
-B4 ≤25 MB standalone **with one live session after real work**; B5 <0.1% of one
-core; B6 ≤1 wake/s with none, ≤2/s with one. B7 CLI reads p95 <20 ms across all
-30 samples; B9 writes through a running host p95 ≤20 ms; do not falsely extend
-that to already-slow cold direct/FULL security writes. Native custody/readiness
-and model latency are measured separately with section 80's launch/stop targets.
+Section 80 contains the single budget table and outside observer definitions;
+section 95 generates the single size table. This chapter keeps no competing
+startup, memory or LOC ledger. All helpers and native/worker resident stacks
+count; provider/model processes are reported separately. The first complete
+linked session/continuity response is inside B2, actual task memory is inside
+B1/B4, and B8 begins after independently reported quiescence. A declaration
+compile or arithmetic allocation establishes none of those measurements.
 
-### 10.1 Memory rows, mapped without a second budget
+Embedded binds use in-process handles and mint no credentials, removing the two
+credential FULL commits; runtime.owner and any required FULL session activation
+remain inside the first-bind measurement. E2 re-spends the unchanged B2 ceiling
+using the real FULL set on Windows with Defender, both new and existing store,
+and memory after a real task. Historical FULL commit tails require actual first-bind measurement, not an
+optimistic allocation. Re-adoption, Codex reconnect, backup and optional Atlas run
+after the initial real response, with per-route Recovering status; this does not
+call every prior agent ready. One SQLite writer and at most two bounded blocking
+jobs remain, with one foreground slot available during background work.
 
-| Section-80 §3.1 embedded row | MB | Host responsibility |
-| --- | ---: | --- |
-| Code pages | 4.0 | Host/core/store/proc touched code, shared once |
-| SQLite page caches | 6.0 | Writer + two lazy readers ×2; store owns cap |
-| SQLite connection/schema/statements | 1.5 | Exactly the accepted allocation; no connection/session |
-| Sessions, 16 ×~50 KB | 0.8 | One async coordinator/session including task overhead, not the previous 8 KiB estimate |
-| Mail watches/subscriptions | 1.0 | IDs/coalesced watches, parked-wait metadata included |
-| Listener/MCP buffers | 2.5 | ≤2 large bodies at once, global byte permits |
-| Capture buffers/parsing | 1.0 | Two active 256 KiB chunks plus bounded parsing |
-| Transcript watcher | 0.5 | Reactor/native state, **no extra notify thread** |
-| Native custody including Windows collector | 0.2 | No invented 2 MiB reservation or second collector |
-| Resume assembly | 0.5 | Four bounded assemblies |
-| Allocator slack | 2.0 | Account actual allocation/stack RSS, not virtual reservation |
-| Spend / reserve / total | 20 / 10 / 30 | Atlas absent embedded |
+B3's embedded zero persistent-process observation applies when no agent is live.
+Default SE Code exit with live agents instead creates one detached successor;
+that daemon exits ten minutes after its last live agent. Standalone and embedded
+must be measured under those actual compositions. B9 uses section 80's single
+write target; cold direct/FULL tails remain contrary evidence requiring proof,
+not weaker authentication or durability. A failed budget blocks release.
 
-Standalone follows **§80 §3.2 exactly**: code/libraries 5 MB, current-thread Tokio
-and ≤2 blocking threads 1 MB, SQLite page caches 4 MB, connections/statements
-1 MB, sessions/mail/listener/capture/watch/custody/resume 6.5 MB, **optional
-in-host Atlas 2 MB**, allocator 1 MB: spend 20.5 MB, reserve 4.5 MB, total 25 MB.
-Atlas cold-index child has its separately approved 64 MB transient window; not a
-hidden persistent helper or a reason to erase its 2 MB steady-state reservation.
-Native/worker resident stacks are charged to these rows/reserve; virtual stack
-address space is not RSS, and no stack is omitted because it is a thread.
+Resource defaults in HostLimits are admission/backpressure, not preallocation:
+16 sessions, 64 active connections and one separately budgeted parked mail wait
+per session; bounded aggregate payload/frame/notice permits retain overflow as
+durable debt. Higher negotiated embedded caps must fit section 80's reserve and
+keep aggregate byte caps fixed. Release request parsing buffers before parking;
+never reserve a full header/body buffer per wait. Atlas is disabled by default,
+config opt-in only after the journeys and handover, with a bounded transient cold
+child; it never blocks a milestone. Its embedded absence cannot remove capture's
+shared native watch service.
 
-Defaults are **16 sessions**, 64 active connections, **16 separately parked mail
-waits**, 1 MiB aggregate resident queued payload, 32 notice IDs/session, 512 IDs
-aggregate, 262,144 local reply bytes and two admitted blocking jobs. This replaces
-the old unbudgeted 128-session default. Embedded may explicitly negotiate up to
-128 only against its reserve: 128×50 KB=6.4 MB, +5.6 MB over the 16-session row,
-20+5.6=25.6 MB before the remaining reserve; all other aggregate caps stay fixed.
-The separately parked-wait count scales to that negotiated session cap (one per
-session), while its aggregate byte allocation stays fixed in the mail/watch row.
-Release header/body parsing buffers before parking and retain only bounded
-IDs/cursor/auth metadata; no 16 KiB header or 1 MiB body reservation per wait.
-Standalone policy stays at 16 until an independently measured within-B4 allocation
-is approved. A cap is admission/backpressure, not preallocation; durable debt
-retains overflow and no oldest unread item is dropped. Parked connection buffers
-are small ID metadata, not 1 MiB per wait. Enforce global body/buffer permits.
-
-### 10.2 Startup rows and deferred adoption
-
-| Section-80 §3.3 step | ms | Host behavior |
-| --- | ---: | --- |
-| Compatible store open/header/WAL | 4 | No implicit migration |
-| Indexed bounded pending-effects discovery | 2 | Schedule, do not drain every route before response |
-| Projects/profiles | 2 | Bounded initial selection |
-| Runtime lease/endpoint/listener/IPC | 2 | Actual owner/security checks |
-| Static tool catalogue | 1 | Generated schemas, no runtime catalogue construction |
-| First session FULL binding/credential activation | 8 | Actual fsync, no early ACK |
-| First bounded continuity | 8 | Real authenticated response before B2 endpoint |
-| Spend / reserve / total | 27 / 73 / 100 | Reserve covers cold/Defender/new-store cost, not waived work |
-
-Nell's runtime.owner amendment adds an explicit FULL owner-publication commit
-before start_writer. Charge that real work to §80 §3.3's 73 ms reserve (the
-27 ms nominal table predates this amendment), not outside B2 or invisibly inside
-first-bind timing. The outside authenticated-response measurement includes both
-owner publication and first-session FULL activation; their combined cost remains
-unqualified and can fail the unchanged 100 ms ceiling.
-
-Re-adoption, Codex reconnect, backup and Atlas run **after that first ready
-response**, with explicit per-route Recovering/status; no 50-route native census
-on B2's critical path. Initial readiness is not a claim all old agents are ready.
-B8 re-adoption/handover remains ≤500 ms target (§80 §3.4: 165 ms planned spend,
-335 reserve), unmeasured. Per Prime's alpha scope, re-adoption means custody plus
-capture with no lost/doubled input; SE Code-native input/mail routes may remain
-explicitly NativeDormant until SE Code reopens. It does not claim fully active
-native routes or change daemon-launched agents. The 500 ms interval starts at
-cutover after the complete quiescence barrier and ends at actual custody/capture
-re-adoption; request-to-quiescence is measured and reported separately, including
-interrupt/idle delays. Do not defer the first FULL bind/continuity outside B2
-or fabricate missing adoption success to stop the clock.
-
-CLI read spend is section 80 §3.5 (Linux 7.5 ms, Windows 13 ms plus reserve);
-status uses synchronous protected endpoint + exact native identity, not a runtime
-or census. Ordinary write/command-hook, MCP and burst targets are §3.6; direct
-and FULL prototype tails remain contrary evidence requiring qualification, not
-weaker sync/auth. A missed budget blocks release rather than prompting a rerun
-until green. Observer definitions stay section 80's per-OS outside measurements.
-
-### 10.3 Idle and work-triggered maintenance
+### 10.1 Idle and work-triggered maintenance
 
 Use §80 §3.7: executor/writer/accept/collector blocked; native watch events only;
 **0.04/s per attended Claude wait renewal**; one live 15-minute catch-up about
 0.0011/s; one auto-start exit timer after ten empty minutes. Expected baseline
 ~0.002/s no session, ~0.003/s plus 0.04/s per attended session; >0.05/s plus the
 attended contribution is a defect even if under the hard ceiling. No claim of
-zero wakeups with the vendor's bounded request API. Shared 70/80 are already
-updated by Prime; section 40 supersedes any stale 25-minute text in the bundle.
+zero wakeups with the vendor's bounded request API. The Linux attended spike
+demonstrates renewal and delivery, not the B5 idle-CPU result.
 
-Backup starts after readiness; use the accepted shared BackupContext, one stable
+Automatic backup runs at start-of-day after readiness and at clean shutdown;
+use the shared BackupContext, one stable
 read transaction, 64-page steps, abort at 64 MiB WAL pressure instead of blocking
-writes, release pin and retry only next start-of-day. Its synchronous job keeps
-one background permit throughout; the other remains foreground. No per-command
+writes and release its pin; retry a failed scheduled copy only at the next
+start-of-day, with the required clean-shutdown copy still explicit. Its
+synchronous job keeps one background permit throughout; the other remains foreground. No per-command
 backup, minute retry, database watcher, 250 ms mail loop, 1.5 s process loop,
 15 s organ tick, projection timer or hourly canary. Explicit live catch-up and
 empty auto-exit are the only stated supervisor timers; active stop/debounce/retry
@@ -1282,13 +1302,17 @@ A bounded se-proc stop is incomplete at the requested guarantee even if root
 exited; Complete retains its actual supported OS bound. Windows explicit escape,
 Linux Uncontained and macOS tracked-group limitations stay in the receipt. No
 ownerless lock reclamation, empty-page absence proof, callback self-witness or
-read-after-truncation claim satisfies a required effect. FULL security failure
-closes admission with an error, never silently drops revocation.
+read-after-truncation claim satisfies a required effect. FULL security or decision-transition failure
+closes admission with an error, never silently acknowledges a lost revocation
+or ratify/reject/retract/supersede transition. Ordinary refusal itself is not a
+history write.
 
 ## 12. Five journeys, mirrors and remaining integration work
 
-Reviewers own the real clean-Windows/macOS/Linux scripts, Claude/Codex and actual
-embedded/standalone composition. This author writes no tests or runtime bodies.
+Done requires all five journeys on clean Windows, Linux and macOS with real
+Claude/Codex, standalone and embedded SE Code. Windows/Linux is an intermediate
+milestone; the borrowed-Mac campaign qualifies macOS before alpha ships without
+holding the broad build. Reviewers own the actual journey composition. This author writes no tests or runtime bodies.
 Compile checks establish declarations only, not native, provider, resource or
 journey qualification. No deployment/config/listener changes occur here.
 
@@ -1325,12 +1349,14 @@ Integration obligations still requiring owner review/measurement:
 2. **5p, section-30 process maintainer**, owns native peer/ACL and the safe overlapped
    IOCP stream bridge. ProviderIoPlatform consumes its create/attach/read/write,
    scoped close/completion and manifest-accessor declarations described above;
-   native qualification and single-collector integration remain unmeasured.
+   the pipe-transfer primitive has the bounded Linux/Windows spike evidence in
+   §1.1; job re-association and full store/provider integration still need proof.
    The same se-proc/section-60 owner supplies the shared file-watch service at
    implementation; capture does not add a separate native watch port.
    No host unsafe or second collector.
-3. **Alpha + host composition** publish the permissive linked API, unify actual
-   Tokio/selected-HTTP/SQLite packages, catch unwinds and apply the reconciled route-local
+3. **Alpha + host composition** publish the permissive linked API into the
+   confirmed Rust `secode-server`, unify the known caret-compatible
+   Tokio/hyper-or-axum/SQLite packages, catch unwinds and apply the reconciled route-local
    versus ownership/lifecycle poison policy at the existing boundary. Iris's
    major-2 handover entry and queue fence are required, with Prime's quiescence,
    cutover timing and explicit native-route dormancy policy. Section 40 adds no

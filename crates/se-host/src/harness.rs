@@ -5,6 +5,9 @@ use crate::{
 use se_types::{Body, IdempotencyKey, NativePath, ProviderSessionId, Read, Secret, Sha256};
 use std::{ffi::OsString, path::PathBuf};
 
+/// One stock Codex feature/version floor for every launch/probe mode.
+pub const CODEX_MINIMUM_VERSION: (u16, u16, u16) = (0, 152, 0);
+
 #[derive(Clone, Debug)]
 pub struct ProviderVersion {
     pub kind: HarnessKind,

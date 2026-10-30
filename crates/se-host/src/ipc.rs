@@ -67,6 +67,9 @@ pub struct AuthorizedConnection {
 pub struct RawOperation {
     pub name: String,
     pub arguments: serde_json::Value,
+    /// Raw ingress only: the registry decoder requires this for every public
+    /// mutation before admission; None is legal only for reads or the closed
+    /// natural-key capture/marker exception, never an admitted keyless write.
     pub key: Option<IdempotencyKey>,
 }
 /// Only the core registry decoder can construct this admitted operation.
