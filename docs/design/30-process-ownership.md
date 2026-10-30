@@ -1,793 +1,973 @@
-# 30. Process ownership (`se-proc`)
+# 30. Native process ownership (`se-proc`)
 
-Design proposal for the architecture review, 2026-10-30. This revision is
-**compile-only**, not an implemented backend or a claim that any journey passes.
-Prime's design-first assignment supersedes the earlier implementation assignment.
-The partial backend written before that instruction is preserved outside this
-repository as reference; it is not in this candidate.
+Architecture review revision, 2026-10-30. **Compile-only: no backend, runtime
+behavior, native performance qualification or author tests.** This supersedes
+the earlier section 30 where it differs. It incorporates the 22 Opus returns,
+Sol R1–R4 and Prime's explicit decisions: cgroup containment is the Linux alpha
+guarantee; optional Landlock/seccomp is section 70 hardening; `se up` obtains
+its own delegation; Unix windows and live host handover are in alpha; macOS
+uses process groups, native identity rechecks and tracked-member witnesses.
 
-## Purpose and boundaries
+## 1. Purpose, scope and ownership
 
-`se-proc` makes a host's authorized launch and stop affect the intended process
-instance and its owned containment scope. It distinguishes a recorded claim,
-a live native observation, a termination request and a witnessed exit. It never
-turns an unreadable OS query into absence or a successful signal into success.
+`se-proc` distinguishes a stored process claim, an exact OS instance, a native
+custody scope, a stop request and an outside exit witness. It serves the
+existing OPS process/agent/runtime custody operations. It adds no public
+command, tool, PID killer, process-per-agent owner, Node/PowerShell dependency,
+remote compute or generic process census. Observation never grants authority.
 
-The crate supplies the native part of OPS `process.start`, `process.control`
-(inspect/stop), `process.list`, managed `agent.launch`/`agent.stop`, and runtime
-shutdown/removal. Those operations remain in the one operation registry. The
-crate adds no command, MCP tool, arbitrary PID killer, remote compute, census,
-process supervisor daemon, shell wrapper, permissions bypass or background poll.
-`read_process(pid)` is a host-private diagnostic selector, not custody.
+The host authorizes, owns durable events/CAS, conversation state, provider
+readiness, graceful stop, pipe buffers and the runtime lease. This crate owns
+native pins, scope resources, native launch steps, exit-event sources and OS
+readbacks. No transaction spans an OS call. Arena resources live above service
+generations. `ProcessRecord.state` is the arena's last native phase, **not** a
+claim that a store transition committed. The store owns its durable state and
+revision; a receipt joins both explicitly.
 
-Dependency direction is `se-proc -> se-types`; it does not import store, core,
-host, harness, HTTP or tokio crates. During implementation, target-specific libc
-and windows-sys are native bindings, not other workspace-layer dependencies.
-This is the only crate permitted to contain unsafe Rust. Every unsafe block
-must state ownership, lifetime, alignment and thread/fork-safety requirements.
-The compile-only revision needs no OS bindings and contains no unsafe code.
+Dependency direction after shared contracts settle is `se-proc -> se-types`;
+libc/windows-sys are target-specific bindings, not workspace-layer dependencies.
+This compile-only crate has no dependency yet because supplied se-types has
+no definitions. Local ID declarations are proposed common IDs to replace with
+canonical re-exports before implementation, never a parallel ID system. Only
+se-proc may contain unsafe implementations; each eventual block must justify
+resource ownership, pointer lifetime/alignment and thread/fork safety.
 
-The host authorizes every operation, resolves project/session/lifecycle IDs,
-constructs the environment and safe profile, commits state transitions, and
-owns provider readiness and conversation resumption. `se-proc` owns native
-handles, literal native launch, containment, exit notification and outside
-observations. It never opens the store or holds a transaction. In-process
-callers are inside the project's trust boundary; private handles prevent
-accidental reconstruction, not hostile code already able to alter the host.
+Same-user guards defend mistakes, drift and misattribution, not hostile code
+already running as the OS user (section 70 / Jimmy's trust-boundary law).
+Neither cgroups nor Windows BREAKAWAY_OK are sold as an adversarial sandbox.
+Safe provider permissions remain the default; unrestricted permissions require
+a saved named opt-in. Cgroup containment does not disable that opt-in.
 
-## Precedence and measured input
+### 1.1 Achieved guarantee
 
-The direct assignment, `docs/OPS.md` and synthesized plan control where the old
-numbered drafts disagree. In particular, use a host-held Windows job with
-`KILL_ON_JOB_CLOSE`, job-list launch attributes and explicit caller breakaway;
-do not copy the runtime draft's suspended-create/assign/resume sequence or its
-claim that agents survive arbitrary full host-process loss. Window launch on
-Linux/macOS and live daemon/SE Code handover are after alpha in the synthesis.
-Their unsupported branches are explicit below, not silent headless fallbacks.
+| OS | Supported alpha scope | Explicit bound |
+| --- | --- | --- |
+| Windows | host-held job, ordinary descendants inherit, KILL_ON_JOB_CLOSE + BREAKAWAY_OK, never SILENT | an explicit breakaway can leave this scope; a separately owned detached runtime is another lifecycle/owner, not silently killed with the agent |
+| Linux | exact delegated cgroup v2 subtree, clone3 entry or before-exec fallback, cgroup.kill + populated readback | same-UID code can deliberately migrate or ask a user broker to migrate; label this residual, do not require experimental sandboxing for normal launch |
+| macOS | new process group, kqueue root/tracked-child events, exact start/image rechecks, group signals and outside tracked-member exit | deliberate group/session escape or unobserved reparenting is outside the stated bound; no claim of an unescapable kernel tree or atomic PID-check-and-signal |
 
-S2 measurements support design choices, not product qualification:
+`ContainmentGuarantee::KernelScope` describes Windows/Linux native membership;
+macOS reports `TrackedTree { atomic_signal: false, escape_prevented: false }`.
+The host selects that **supported macOS policy explicitly**, not by falling
+back after a failed Windows/Linux scope. Under Prime's ruling, an empty macOS
+group with all tracked instances exited is `Complete` **at this stated bound**.
+`Bounded` remains for a requested guarantee not met, incomplete tracking or a
+known escape. Neither means all descendants anywhere on the machine are gone.
 
-* A Windows native run disproved name-only job reopen after its owner released
-  the last handle. The precise destruction timing was not established. A
-  revised one-host/KILL_ON_CLOSE package was delivered; its native result was
-  not available to this author when writing this design.
-* Linux delegated-cgroup runs contained an ordinary tree, a reaped leader with
-  living descendants and a `setsid` escape: 28/28 outside stopped-scope witnesses.
-  The measured offline Landlock/seccomp guard denied migration and external
-  socket creation. It was not a real Claude/Codex compatibility measurement.
-* Linux clone3 birth into a cgroup removed a measured ~16 ms migration write;
-  final launch/CLI samples were 15.050–17.974 ms. The injected ENOSYS path used
-  pre-exec migration and retained containment, with a slower entry method.
-* Native macOS was not measured. PID+start rechecks alone do not make a later
-  signal atomic or establish an unescapable process tree.
+## 2. Compile-only public API
 
-Raw S2 measurements remain under
-`/mnt/nvme/stateengine/5p-rust-process-ownership-20261030/`; product code has no
-runtime dependency on that directory or the Node repository.
+All public Rust types/fields and signatures are the normative source appendix:
 
-## Public Rust contract
-
-The complete declarations are the crate's checked-in source, with no executable
-bodies, implementations, `todo!`, `unimplemented!`, backend stubs or author tests:
-
-| File | Public definitions |
+| Source | Contract |
 | --- | --- |
-| `identity.rs` | Process/machine/lifecycle/host/generation IDs, native boot/start identity, process observation/read/exit evidence |
-| `launch.rs` | Host/delegation/limit configuration, exact launch specification, stream ownership, policy, modes, capabilities and native entry method |
-| `ownership.rs` | Scope/record/state types, opaque owned resources, launch/recovery/stop outcomes, notifications and `ProcessRuntime` |
-| `error.rs` | Process-domain codes, cause/native-code envelope and result alias |
-| `lib.rs` | Public re-exports only |
+| `identity.rs` | IDs, boot/start/image identity, native process reads, observation, exit evidence and exit status |
+| `launch.rs` | explicit environment/streams/policy, headless/window + terminal adapter, capabilities including complete causes, detached runtime bootstrap, stateless native read |
+| `ownership.rs` | reservations/checkpoints, records, opaque handles, launch/stop/recovery/transfer outcomes, labelled population/enumeration, arena snapshots and native events |
+| `error.rs` | internal cause enum, typed detail, sanitized native cause and result alias |
+| `lib.rs` | re-exports only |
 
-All functions are declared as methods of the following real Rust trait. This is
-also the intended interface of `NativeProcessRuntime`; there is intentionally
-no `impl` until architecture approval. All named types and field layouts are
-in the source files above; no public item is hidden in an illustrative sketch.
+Opaque runtime/owned/prepared/stop/launch/transfer handles have no public
+constructor, Clone, Default or deserialization. `OwnedProcess` is a revocable
+**reference to one arena owner**; retrieving another same-generation reference
+is legal and does not create another native owner. Serialized records, IDs or
+transfer receipt data alone cannot instantiate custody. Private unit fields
+express opaque layout only, not resource stubs. Environment/stream/spec types
+have no Debug or Clone because their values may hold credentials/handles.
+
+The compile-only free-function signatures below deliberately use Rust-ABI
+extern declarations with `safe fn`: Rust has no ordinary free-function
+prototype syntax. They have no bodies or backing foreign implementation and
+are **not linkable product code**. After architecture approval they become
+ordinary Rust function definitions, not an FFI integration. They require no
+runtime, random HostInstanceId, thread, lease, arena, watcher or child keeper.
 
 ```rust
-pub trait ProcessRuntime: Send + Sync {
-    fn open(config: HostConfig) -> ProcResult<Self> where Self: Sized;
-    fn capabilities(&self) -> ProcResult<PlatformCapabilities>;
-    fn read_process(&self, pid: ProcessId) -> ProcResult<ProcessRead>;
-    fn launch(&self, spec: LaunchSpec) -> LaunchOutcome;
-    fn describe(&self, process: &OwnedProcess) -> ProcResult<ProcessRecord>;
-    fn observe(&self, process: &OwnedProcess) -> ProcResult<OwnedObservation>;
-    fn watch_exit(&self, process: &OwnedProcess,
-                  sink: Arc<dyn ExitSink>) -> ProcResult<ExitWatch>;
-    fn re_adopt(&self, record: &ProcessRecord, from: GenerationId,
-                to: GenerationId) -> ProcResult<OwnedProcess>;
-    fn prepare_stop(&self, process: &OwnedProcess,
-                    generation: GenerationId, deadline: Instant) -> ProcResult<PreparedStop>;
-    fn request_stop(&self, prepared: PreparedStop) -> ProcResult<StopAttempt>;
-    fn witness_stop(&self, ticket: &StopTicket) -> ProcResult<StopObservation>;
-    fn wait_stopped(&self, ticket: &StopTicket,
-                    deadline: Instant) -> ProcResult<StopObservation>;
-    fn release(&self, process: &OwnedProcess,
-               witness: &StopWitness) -> ProcResult<()>;
-    fn plan_recovery(&self, record: &ProcessRecord) -> ProcResult<RecoveryPlan>;
-    fn recover(&self, plan: RecoveryPlan,
-               generation: GenerationId) -> ProcResult<RecoveryOutcome>;
+unsafe extern "Rust" {
+    pub safe fn read_process(machine: MachineId, pid: ProcessId)
+        -> ProcResult<ProcessRead>;
+    pub safe fn spawn_runtime(spec: RuntimeLaunchSpec)
+        -> ProcResult<RuntimeLaunch>;
 }
 ```
 
-The quoted trait compiles in `ownership.rs` using its explicit imports; the
-crate is the canonical signature source. `OwnedProcess`, `PreparedStop`,
-`StopTicket`, `ExitWatch` and `NativeProcessRuntime` have private opaque layouts,
-no public constructor, no `Clone`, no `Default` and no deserialization. Their
-current private unit fields express opacity only, not a resource implementation.
-A process record is cloneable data; it does not contain a handle or authorize
-`stop`. Environment and stream specifications are neither `Clone` nor `Debug`.
-
-ID newtypes currently live in `se-proc` because the supplied `se-types` is empty.
-These are a design proposal for the common contract, not permission to create
-parallel ID systems: before implementation the foundation owner must nominate
-canonical IDs/shared errors and replace/re-export the overlapping declarations.
-`ProcErrorCode` remains the process-domain exhaustive enum; the common error
-renderer maps it exhaustively without parsing refusal strings. `ProcResult`
-keeps an unreadable read distinct from `ProcessRead::Absent`; shared `Read<T>`
-can wrap this result at the operation boundary without losing its native cause.
-
-### Contract semantics
-
-`open` validates current native host identity and reserves no child. It does
-not change process-global signal disposition, `SIGCHLD`, subreaper policy,
-`umask`, cwd, environment or privileges. The host configuration supplies a
-persisted machine ID and freshly random host-instance ID; neither comes from
-a process name or agent environment. Configured caps must be nonzero and fit
-platform integer limits. Default caps proposed: 256 active lifecycles, 4096
-members per scope, 1 MiB of native observation data; reaching one is an explicit
-`ResourceLimit`, never a complete truncated list. Idle capabilities can be
-probed lazily; no timers or child helpers are started at open.
-
-`launch` takes an absolute executable and cwd, literal arguments, an explicit
-closed environment, streams and profile. It never searches PATH, executes a
-shell, inherits unspecified descriptors or retries a refused policy with a
-weaker policy. The host may deliberately choose an absolute shell as the
-executable; the crate itself adds none. NUL, malformed environment keys,
-duplicate keys (Windows case-insensitive), empty executable, oversized command
-line/environment, relative paths and mismatched native identity variants
-refuse before process creation. Native mode/containment/profile checks happen
-before any externally executable agent. Provider secrets are not stored in
-argv, records or error text; native errors identify action/errno, not raw env.
-
-`Started` means native creation, setup/exec and custody were observed. It does
-not mean provider ready, authenticated, productive, captured or durable. A
-very short successful command can already be exited at the observation;
-`exec_observed` retains that fact. The host separately awaits provider handshake
-and records its readiness. A failure after creation returns `remaining` custody
-unless outside cleanup proved the scope empty, with its rollback observation.
-No post-create error can discard a live scope in an ordinary error return.
-
-`observe` checks host-instance identity, the arena slot, generation and native
-scope identity. It reads the root and scope freshly. A root PID naming a new
-birth is `IdentityChanged`, with no signal. A missing root can be a witnessed
-exit while descendants remain; it does not remove their scope. A failed image
-read for a live instance is `IdentityUnreadable`. A genuine exited procfs record
-without an image joins to the original image only using the held native pin
-and matching boot/start; the diagnostic cold-PID reader instead returns
-`ExitedRecord`. An executable change at the same PID/start invalidates the
-recorded image until an authorized host transition observes and records it;
-there is no automatic image-wildcard adoption.
-
-`watch_exit` installs native notifications and returns an RAII subscription.
-A callback is only a nudge to reread native state. It runs without arena locks,
-may neither reenter nor block, and receives only lifecycle/notice. The host
-queues it onto its existing runtime. Subscription Drop unregisters and waits
-for any in-flight callback before releasing its state; generation shutdown
-must not free callback data early. The monitor uses at most one blocked native
-collector thread per host if an existing host reactor cannot integrate it,
-never one thread/process per seat. Its event wait is indefinite when idle;
-registration/unregistration wake the collector with a native event. A failed
-monitor produces `MonitorFailed` and an explicit unavailable notification state,
-not synthetic exit. `wait_stopped` is an explicit deadline-bound caller wait,
-not a persistent polling service.
-
-## Data formats and resource custody
-
-Native handles stay solely in an in-memory arena owned by the host process,
-above replaceable service generations. Each slot is keyed by lifecycle and
-holds host instance, owning generation, native root pin, scope, exit-source
-registration, launch phase and stop nonce. Session tasks hold opaque references.
-Dropping one reference does not close the arena's job or delete a cgroup.
-There is exactly one authoritative native scope owner in the process.
-
-`ProcessRecord` is durable `se.process/v1` body data stored by the host/store,
-not a sidecar file. Its fields correspond exactly to the Rust declaration:
-format version 1, lifecycle, host, exact owner process identity, generation,
-root, scope, achieved guarantee,
-entry method, lifecycle state and SHA-256 of the canonical literal argv.
-Project/actor/session authority, event revision and commit timestamp are in the
-store envelope and are not duplicated as ambient inputs to the native backend.
-A command hash is descriptive, not a substitute for start/image custody.
-
-Wire rules for the host codec: IDs are lower-case 32-digit hex for the 16-byte
-IDs; generation/start ticks/FILETIME/u64 device/inode are decimal strings (no
-JavaScript 53-bit loss); timestamps are decimal nanoseconds since Unix epoch;
-enums have explicit lower-kebab-case tags and closed per-tag fields. Linux and
-macOS paths/arguments are lossless native bytes encoded as base64 with
-`encoding=unix-bytes`; Windows is lossless UTF-16LE bytes with
-`encoding=windows-utf16le`. Human display is separately escaped text; never
-round-trip a lossy display path into a native open. Public operation codecs
-reject unknown fields/versions and cap record sizes before allocation. Store
-imported process records are `Historical`, never passed to `recover` as live
-custody. Shared codec ownership belongs to the common type/store design; no
-serde implementation is introduced by this compile-only candidate.
-
-Scope tags:
-
-* Windows: `windows-job`, host instance and random job name. The name supports
-  diagnostics only. No request client, agent, exported record or callback owns
-  a job handle. Process query handles may be duplicated without defeating job
-  close semantics; job handles may not leave the arena.
-* Linux: `linux-cgroup`, lossless absolute path, fstat device/inode and boot UUID.
-  Open a physical directory with `O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC`, verify the
-  cgroup2 filesystem magic and fstat identity, then use `openat` with NOFOLLOW
-  for kernel control files. Path alone is never sufficient.
-* macOS: `mac-os-tracked`, process group plus complete root identity and explicit
-  weaker guarantee. No encoding calls it a kernel tree.
-
-No credentials, inherited host handles, task text, environment values or raw
-provider input are in these records. An outside witness is another native
-read performed by the host after the effect, never child-reported success.
-
-## State machines and store handshake
-
-The arena and durable record use the following lifecycle states. Every other
-transition is refused; duplicate retries reread the existing state and produce
-that result instead of creating a second scope.
-
-| From | Trigger / required evidence | To / action |
-| --- | --- | --- |
-| no row | host authorizes and commits unique lifecycle reservation | `Reserved`; no child exists |
-| `Reserved` | arena creates empty scope, validates policy | `Starting`; scope retained |
-| `Reserved` | validation/capability refusal | `Lost` with failure; no child exists |
-| `Starting` | native child setup/exec observed and host commits record | `Running` |
-| `Starting` | child created but publish/exec fails | `StopRequested`; rollback uses retained scope |
-| `Starting` | no child created and empty scope read back | `Exited` (failed launch, not completed task) |
-| `Running` | root exits but scope still populated | `LeaderExited`; descendants still owned |
-| `Running` / `LeaderExited` | authenticated stop CAS committed | `StopRequested` |
-| `Running` / `LeaderExited` | root exited and entire required scope empty by outside read | `Exited` |
-| `StopRequested` | native dispatch attempted, exit proof missing or failed | `StopUnproved`; custody retained |
-| `StopRequested` / `StopUnproved` | independently witnessed root exit and required scope empty | `Exited`; preserve any dispatch error |
-| `StopUnproved` | explicit retry with fresh generation/CAS/identity | `StopRequested` |
-| any nonterminal | identity/scope custody irrecoverable, boot changed or full host lost | `Lost`; never assert stopped |
-| `Lost` | explicit recovery verifies same scope and host/store CAS | `Running`, `LeaderExited` or `StopUnproved`, according to actual native state |
-| `Lost` | old instance and scope independently proved exited | `Exited` |
-| imported Node process | import | `Historical`; no control/adoption transition |
-| `Exited` / `Historical` | any retry | retained terminal fact; new launch needs a new lifecycle |
-
-A reused PID is a refusal on the original lifecycle, not evidence that the
-replacement was launched by us. The host records the refusal/lost fact according
-to its event policy; `se-proc` changes no durable row itself.
-
-Launch handshake: reserve lifecycle transaction; outside transaction validate
-and create scope/child; return custody; host commits `running` plus observed
-identity; only then advertise a successful process receipt. If commit fails,
-the host must call rollback stop and witness. If the host crashes between child
-creation and commit: Windows last-handle closure contains the loss; Linux uses
-a host-nonce/lifecycle-named cgroup beneath its delegated subtree, so startup
-can identify an incomplete reservation and inspect/stop it. No unknown path
-outside that owned subtree is swept. A cgroup without a committed child identity
-can be stopped only using its protected reservation plus exact cgroup custody;
-it is not promoted to a running agent. If either is missing, report an orphan
-obligation and block removal rather than deleting evidence.
-
-Stop handshake: first the harness may gracefully end a turn, send Codex RPC
-shutdown or close an owned stdin. That is host policy, not a native success
-claim. `prepare_stop` reads exact instance/scope and yields a one-use token;
-the host commits `stop_requested` with its store revision CAS outside the OS
-read; `request_stop` checks the token, arena generation, identity and scope
-again immediately before the native effect. It consumes the token even on
-failure. A failed CAS means discard the token without any signal. The native
-attempt returns a stop ticket **and** its dispatch error. Subsequent witness
-can establish exit even if the OS controller reported an error; the error is
-retained in the receipt. A timed-out/pending witness blocks Remove and leaves
-all credentials/state needed to retry. No success on a deadline.
-
-`witness_stop` never signals. Complete requires original root exit evidence
-and an empty scope satisfying the achieved guarantee. An empty cgroup/job is
-not enough while the original pinned root still executes elsewhere; that is
-`ContainmentEscape`. Root absence/replacement is valid outside evidence of
-that original root's exit during witness, but a reused root refuses a new stop
-request. `release` checks the supplied witness belongs to this host/lifecycle/
-scope and rereads emptiness; a forged/stale/foreign witness refuses. It deletes
-only the exact empty cgroup or closes the arena job. No recursive directory
-removal and no PID/name-pattern kill are legal cleanup paths.
-
-## Concurrency and cancellation
-
-The arena map lock protects slot allocation/removal only. Per-lifecycle locks
-serialize launch completion, generation transfer, stop dispatch and release;
-no store transaction, provider RPC, callback or blocking exit wait runs under
-the map lock. `prepare_stop` releases its lifecycle lock before returning; the
-host can perform its store CAS without holding native locks. `request_stop`
-reacquires it, validates the one-use nonce/generation/deadline and current
-identity/scope, and holds it through the single native dispatch. Re-adoption
-cannot race that effect. A subscriber can observe a nudge after a newer
-observation; nudges carry no authority and the subsequent read is canonical.
-
-The prepared token carries the absolute host stop deadline. Retries, EINTR and
-`wait_stopped` cannot extend it. Native syscalls already in the kernel cannot
-be safely cancelled by killing an unrelated host thread: if a blocking native
-call outlives the host's await deadline, the host reports Pending and retains
-the operation/arena resources until that call settles. It must not delete
-credentials/state or launch a replacement based on an abandoned future.
-Cancellation before process creation releases an empty reservation; after
-creation it requests retained rollback, never detaches by dropping a handle.
-Generation drain accounts for every in-flight launch/native operation before
-publishing the successor. A failed durable publication is still owned work.
-
-## Windows native design
-
-1. Query with `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION|SYNCHRONIZE)`,
-   `GetProcessTimes` creation FILETIME and `QueryFullProcessImageNameW`. A held
-   handle pins the kernel process object. Only `ERROR_INVALID_PARAMETER` from
-   a correctly issued PID query is absence; access denied, truncated image,
-   failed wait or other API failures stay unreadable. Returned FILETIME is
-   an exact u64, not milliseconds or a floating-point date. Query handles do
-   not carry termination rights unless needed for a validated owned effect.
-2. Create a random `Local\\SE-<host-nonce>-<lifecycle>` job. Reject name collision
-   (`ERROR_ALREADY_EXISTS`), never reuse it as custody. Set
-   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK`, with
-   **no SILENT_BREAKAWAY**. Read limits back before creation. This follows
-   Prime/Alpha's explicit-breakaway contract: ordinary children stay in the
-   attended job; an explicitly detached independently owned process can leave.
-3. Use `STARTUPINFOEXW` and `PROC_THREAD_ATTRIBUTE_JOB_LIST` to associate the new
-   process with its job as part of creation. Do not use suspended start,
-   AssignProcessToJobObject or ResumeThread. The job handle remains alive from
-   before creation through readback and the entire host lifetime. Allocate the
-   attribute-list storage with the documented alignment; every pointer and
-   backing handle array remains live through CreateProcess. Delete the list
-   on every return path. A job-list API failure creates no permitted fallback.
-4. Supply non-null absolute application name and a correctly Windows-quoted
-   mutable command line (argv0 plus literal args, including empty strings,
-   quotes and trailing backslashes). Supply an explicit double-NUL-terminated
-   UTF-16 environment sorted case-insensitively, cwd and
-   `CREATE_UNICODE_ENVIRONMENT|EXTENDED_STARTUPINFO_PRESENT`.
-5. Request `CREATE_BREAKAWAY_FROM_JOB` for the independently owned launch. A
-   caller job that forbids explicit breakaway yields `BreakawayDenied`, with
-   the native cause and alternative to start from a normal terminal or fix
-   the caller's explicit breakaway policy. No retry without the flag, no task
-   scheduler, elevated broker, hidden PowerShell or unknown nested-job retry.
-   SE Code's containing jobs must grant explicit BREAKAWAY_OK, never SILENT.
-   Recheck membership in our exact job before reporting launch success.
-6. Window mode uses `CREATE_NEW_CONSOLE`; headless uses `CREATE_NO_WINDOW`.
-   Console appearance or successful window creation is not provider readiness.
-   Explicit standard streams are duplicated into a restricted
-   `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, with appropriate STARTF_USESTDHANDLES
-   and bInheritHandles. Only those duplicated stream handles are inheritable;
-   the job, host listeners, credentials and other agents' handles are not.
-   Both attributes must coexist in one list. Windowed terminal handoff must
-   be witnessed against the actual vendor CLI on the supported Windows build.
-7. Retain the exact process handle and job in the arena; close the initial
-   thread handle after creation. If readback/publish fails, terminate this job,
-   then outside-wait on the process and job emptiness. Keep custody on timeout.
-8. Force stop uses `TerminateJobObject`, not PID pattern enumeration. Completion
-   requires pinned root signalled **and** fresh
-   `JobObjectBasicAccountingInformation.ActiveProcesses == 0`. Accounting is
-   authoritative for emptiness; PID-list enumeration is diagnostic and must
-   grow/retry on MORE_DATA/full buffers, bounded by configured limits. A member
-   disappearing during a list is not a proof that the entire job is empty.
-9. Native exit events use registered process waits and job completion-port
-   notifications; callbacks queue a nudge. Notifications can be coalesced/lost
-   without losing truth because each consumer reads accounting/state. Wait
-   registrations keep callback storage alive until unregistered/drained.
-
-**Scope of the guarantee:** `KernelScope { explicit_breakaway: true }` proves
-that the exact root and all remaining job members stopped. It deliberately
-does not claim an explicitly detached child outside the job stopped. Such a
-child has independent custody and must be handled as another registered
-lifecycle for project Remove. A deliberately detached third-party program is
-outside this managed scope; the renderer must never say "all descendants on
-the machine are gone". There is no implicit/silent detachment. Linux strict
-cgroups report `explicit_breakaway: false`. This distinction preserves the
-ratified ability to start a detached engine from an attended agent without
-mislabeling a job-membership witness as universal descendant containment.
-
-When the full host process exits, its last job handles close and the kernel
-terminates job members. Only the host owns those handles; request tasks never
-open a job by name, so a stale client cannot accidentally prolong it. A killed
-host may not have committed an exit event. Its successor first verifies the
-old instances exited from outside, reports pending/unreadable where necessary,
-then resumes the saved provider conversations in **new** lifecycles. Cold
-recovery verifies the recorded owner process exited (not merely a new service
-generation), the original root exited, and the old unpredictable job name is
-absent or its original proved scope is empty. Name absence alone while the
-owner lives is never a witness. This inference additionally relies on the
-protected original job policy/readback and exclusive host handle custody: the
-kernel KILL_ON_JOB_CLOSE contract supplies the descendant termination fact.
-If a job still exists, owner death is unproved, an exported handle is suspected,
-or the policy provenance cannot be established, recover returns Unproved and
-keeps the removal obligation. Architecture reviewers must validate this
-cross-host witness against native last-handle timing; it is not established by
-the original failed name-reopen spike. The successor does
-not claim same-process reattachment, or kill a replacement PID. An external
-administrator/debugger retaining a job handle is outside this ownership
-boundary; failed exit witness stays incomplete rather than assuming closure.
-
-Primary references: [job-list/handle-list attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute),
-[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw),
-[job objects and breakaway](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
-[nested jobs](https://learn.microsoft.com/en-us/windows/win32/procthread/nested-jobs).
-
-## Linux native design
-
-Identity uses the kernel boot UUID and `/proc/<pid>/stat` field 22, with the
-native executable symlink. Parse stat as bytes after its final `) ` delimiter;
-comm can contain spaces, parentheses and invalid UTF-8. Verify PID and required
-numeric fields, then re-read start/state after the optional image read. A
-changed generation during reading is an unreadable/changed observation, never
-a guessed row. Zombies are existing exited records. Only ENOENT/ESRCH for the
-specific target proc entry means absence; a missing helper/probe, invalid
-procfs mount or permission denial does not. Do not scan by executable name.
-
-`pidfd_open` brackets a repeat birth/image check when reopening an observation.
-It selects a kernel object, but it is not a substitute for checking that it
-selected the expected birth. Launch obtains an atomic pidfd using clone3.
-Held pidfds provide exit notification and exact-instance signals, never a
-later `kill(pid)` fallback. An older kernel without the required pidfd support
-refuses managed launch before it can run an unowned agent.
-
-### Scope creation and entry
-
-Choose the host's current unified cgroup from `/proc/self/cgroup`, or the
-explicit delegated root in HostConfig. Verify that root is a physical cgroup2
-directory; never walk up looking for a writable ancestor or move the fleet
-host. Create an exclusive child named by unpredictable host nonce/lifecycle,
-open and pin its device/inode/boot identity, and require writable `cgroup.procs`
-and `cgroup.kill`. Absence of delegation is `ContainmentUnavailable` with the
-exact missing capability and `systemd-run --user --scope -p Delegate=yes` or
-explicit delegated-root remedy. The crate never invokes systemd automatically.
-The host's containing cgroup remains unchanged.
-
-Preferred entry: raw `clone3(CLONE_INTO_CGROUP|CLONE_PIDFD, SIGCHLD)` without
-CLONE_VM/CLONE_THREAD. Prebuild argv, env, stdio, guard state and an exec-error
-pipe in the parent. The child runs only async-signal-safe syscall sequences:
-reset intended signal mask/dispositions, set session, configure standard
-streams, make all other descriptors close-on-exec, apply the prepared guard,
-chdir and execve. No allocator, logging formatter, lock, Rust unwinding or
-host callback is allowed in that child path. The CLOEXEC error pipe closes on
-successful exec; a fixed-size errno/phase message reports pre-exec failure.
-An EOF alone does not prove exec: a child killed before exec also closes the
-pipe. Success additionally requires an outside image observation, or a child
-completion status possible only after this fixed child path has execed. A
-signal/exit status ambiguous with pre-exec failure remains LaunchFailed with
-retained evidence; it is not advertised as a successfully started provider. Parent timeout
-kills the owned scope and returns retained cleanup if not yet empty.
-
-Fallback only for clone3 ENOSYS/EINVAL/EPERM indicating syscall/feature policy:
-a raw fork with the same error pipe and precomputed child path, writing `0`
-to the pinned scope's cgroup.procs **before any agent exec**. It then applies
-the identical guards and execs. Capture a pidfd while the child is still our
-unreaped child, bracket identity reads, and retain wait ownership. Do not use
-a generic Command::spawn whose fork policy/pre_exec socket protocol could
-silently change the ordering. Other clone3 errors retain their actual cause;
-no process-group fallback. Record fallback errno and `LinuxPreExecMigration`.
-The syscall and argument construction must be reviewed for both x86_64 and
-AArch64; this design does not infer a new architecture's clone3 ABI.
-
-All inherited host control descriptors are CLOEXEC and never part of stdio.
-Native child-reaping tracks **only the exact children the arena created**;
-no `waitpid(-1)`, global SIGCHLD takeover or process-wide subreaper opt-in in
-an embedded library. The host's other children belong to their own owners.
-After a direct child exits, `waitid` for that exact owned pidfd/child reaps it;
-a descendant reparented elsewhere can remain a nonexecuting zombie, which is
-not a live-scope stop failure. The outside record distinguishes those facts.
-
-### Migration guard and realistic profile boundary
-
-A writable same-UID delegated cgroup is not by itself an unescapable sandbox.
-`setsid` does not escape it, but writing another cgroup.procs or asking an
-external broker to move a process can. The S2 offline guard is not silently
-applied to networked Claude/Codex: its blanket socket restriction would break
-real consumers. `LaunchPolicy` therefore expresses both write/network policy
-and the required achieved scope guarantee.
-
-Proposed strict profile: Landlock ABI >=6 with scoped signals/abstract sockets,
-write access only to the explicit workspace/provider-cache/scratch roots and
-null device, no write rule covering `/sys`, `/proc`, the registry or an
-ancestor of them. A seccomp filter blocks external AF_UNIX socket creation,
-keeps private stream/seqpacket socketpairs, rejects cross-ABI/x32 bypass and
-io_uring socket bypass, and blocks operations that steal other processes'
-descriptors or attach to their execution. For Network Allow, IPv4/IPv6 socket
-creation remains permitted; this is not the offline S2 filter. Standard streams
-must not be supplied as arbitrary broker/control sockets. Existing inherited
-FDs are excluded by the strict stream/handle contract.
-
-Provider and host control must therefore use stdin/stdout or a preauthorized
-safe transport for that profile; Codex app-server over stdio is the proposed
-consumer path. The old runtime draft's arbitrary pathname Unix endpoint is
-not assumed compatible with this guard. This is a **design proposal needing
-review and real-provider qualification**, not a verified guard. If a required
-native guard or provider-compatible profile is unavailable, strict launch
-returns `SandboxUnavailable` before agent exec. It never claims KernelScope
-while merely hoping a same-UID broker cannot move the child.
-
-ReadOnly and Workspace policies are explicit; provider-account/cache write
-locations are narrowly supplied by the host, not a blanket writable HOME.
-`NamedUnrestricted` is a saved, named permission opt-in, not permission to
-silently abandon containment. It cannot satisfy this unprivileged strict
-cgroup guard; KernelScope plus that profile refuses pending an approved
-alternative isolation mechanism. An explicitly requested TrackedTree mode
-must advertise its lower guarantee. No alpha default chooses it for a failed
-strict launch. This Linux guard/real-provider compatibility is an architecture
-review question before implementation, listed below.
-
-### Observe, stop, notifications and recovery
-
-Read scope state via pinned cgroup.events; `populated=0` means this subtree
-contains no executing processes, including nested child cgroups. `populated=1`
-is a boolean, not a member count: `observed_members=None` unless a separate
-bounded complete enumeration supplied a count. Parse every required field;
-missing/malformed/unreadable control data is `ScopeUnreadable`, never zero.
-Force stop writes `1` to the pinned cgroup.kill, which handles fork/migration
-races within the scope. Then independently reread cgroup.events plus the root
-pidfd/record. Never infer tree exit from the leader's death, a process-group
-scan or a successful write. Keep the original cgroup fd until the witness and
-exact empty-directory release; do not recursively remove foreign directories.
-
-The native monitor integrates pidfd readiness and cgroup.events priority
-notifications into one epoll collector, with an eventfd for changes/shutdown.
-No per-session 1-second timer. A notification rechecks the reader; missed or
-coalesced events do not become missing work. Explicit waits use one monotonic
-deadline and retry EINTR without extending it.
-
-Service-generation re-adoption retains arena handles. After full host loss,
-Linux cgroups may still contain agents. Protected committed records can be
-recovered only with matching machine, boot, cgroup2 device/inode and fresh
-root start/image evidence (or proof the original root exited while the exact
-scope remains). New host/store CAS transfers this lifecycle to the new host
-and generation; mismatched root PID refuses before any signal. Missing or
-unreadable custody leaves an explicit `Unproved` obligation. Different boot
-means old records are lost/exited historically, never current kill authority.
-Provider pipe loss/reconnect or conversation relaunch is separately decided
-by its harness; recovering a cgroup does not manufacture a provider session.
-
-Primary references: [clone3 including CLONE_INTO_CGROUP](https://man7.org/linux/man-pages/man2/clone3.2.html),
-[pidfd_open](https://man7.org/linux/man-pages/man2/pidfd_open.2.html),
-[cgroup v2 delegation, events and kill](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html),
-[Landlock ABI and IPC scoping](https://www.kernel.org/doc/html/latest/userspace-api/landlock.html).
-
-## macOS design and explicit capability limits
-
-Read native identity using `proc_pidinfo(PROC_PIDTBSDINFO)` start seconds and
-microseconds, `proc_pidpath` image and `kern.boottime`. Validate exact return
-sizes and timeval ranges. A zero PID-info return is absence only for ESRCH;
-EPERM, partial data and an unreadable boot/image remain errors. A second
-PID-info read brackets the image query. kqueue EVFILT_PROC/NOTE_EXIT supplies
-notification for the observed root: register between two identity reads,
-inspect EV_ERROR, retain the registration, and recheck on every notification.
-A NOTE_EXIT registration is observation, **not** a stable termination handle.
-
-Proposed tracked launch uses posix_spawn with an absolute executable, explicit
-argv/env and file actions, a new process group/session as supported by the
-native spawn flags, and no extra persistent wrapper. Revalidate the created
-child's start/image and attach kqueue before publication. An exec-status/error
-channel or a native spawn failure must distinguish native startup from provider
-readiness. Window mode would require an owner-approved Terminal application
-handoff with authenticated one-use child registration; it is **after alpha**
-and returns UnsupportedPlatform without starting a terminal in this revision.
-No hidden AppleScript launching a detached, unregistered agent.
-
-A process group is not an unescapable tree: a child can setpgid/setsid or be
-reparented before a lineage snapshot. proc_listpids enumeration must grow/retry
-full buffers and reread native identity, but it cannot prove absence of an
-unobserved escaped descendant. NOTE_FORK can assist diagnostics; it does not
-turn a bounded snapshot into a kernel-enforced group. Therefore capabilities
-report `kernel_scope=Unavailable` for this design, while explicit TrackedTree
-can report `TrackedTree { atomic_signal, escape_prevented: false }`.
-
-Forced control must not use `kill(pid)` or `kill(-pgid)` after a userspace birth
-check and call that atomic. The proposed strong-instance option is an actual
-Mach task send right, acquired and birth-checked before and after acquisition,
-with task_terminate applied only to that right. Entitlement/hardened-runtime
-restrictions can deny obtaining the right even for a child; that is
-`safe_forced_stop=Unavailable`, never a PID fallback or elevated helper. Each
-tracked child needs its own rights/identity; no task right proves complete tree
-containment. The feasibility and required entitlements must be reviewed and
-measured against the shipped vendor binaries on real macOS before implementation.
-No type-check is a witness of Mach permissions or a working provider.
-
-Without strong rights, the host may request harness-graceful shutdown and
-observe root/known children exiting; a still-live instance remains pending and
-Remove refuses. Even with strong rights for the known set, `StopObservation::Bounded`
-labels the observed tracked set's exit. `Complete` is reserved for an empty
-kernel-owned scope satisfying the requested policy. The default strict alpha
-policy cannot be declared supported on macOS by the current group design.
-The architecture review must choose a supported stronger mechanism or an
-explicitly ratified weaker product guarantee; this candidate does not silently
-weaken G6 or call its macOS journey complete.
-
-Full host loss on macOS loses kqueue/task rights. A new host can inspect
-protected tracked records by boot/start/image and return a bounded recovery,
-but it cannot infer unseen descendants or regain denied Mach rights. Process
-and provider conversation recovery remain separate. Changed boot, reused PID,
-missing permissions or unknown membership produce `Unproved`, not adoption.
-
-Primary reference: [Apple kqueue/EVFILT_PROC/NOTE_EXIT](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html).
-Mach task-right availability for the real provider binaries remains an explicit
-unverified design question; no source is cited as proving that availability.
-
-## Re-adoption and full-host-loss states
-
-`HostInstanceId` names a **process lifetime**, and GenerationId names a
-replaceable service generation inside it. They are not interchangeable.
-
-| Event | Native resources | Required transition |
-| --- | --- | --- |
-| generation n drains | arena remains above generation, callback producers quiesced | gate admission; stop/transfer in-flight launches; flush durable state |
-| generation n+1 opens in same process | same process/job/pidfd/cgroup/kqueue objects | `re_adopt(record,n,n+1)` CASes the arena generation; old session references refuse |
-| stale n request arrives | slot now belongs to n+1 | GenerationChanged; no native action |
-| explicit stop racing generation swap | prepared token belongs to old generation | token invalidated, new generation must reobserve and prepare |
-| Windows host killed/crashes | last arena job handles close | members killed; successor verifies exit then resumes provider conversation in new lifecycle |
-| Linux host killed/crashes | cgroup can outlive host, direct child may exit on pipe loss | exact protected scope/root recovery and store CAS, or Unproved |
-| macOS host killed/crashes | task/kqueue rights lost, tracked processes may survive | reinspection only; bounded/unknown scope, never invented kernel custody |
-| OS reboot / machine changes | original native identities cannot be current | old record Lost/Historical; new lifecycle for resume |
-
-Same-host re-adoption uses the original arena entry, not a named-object reopen.
-The record must match machine/host/lifecycle/root/scope; a changed native
-identity refuses. `from == to` is an idempotent retrieval of the same slot;
-it cannot create another owner or alter its native resources. `from != to`
-requires the exact current arena generation and host admission gate. A failed
-provider reconnect does not roll back a valid native re-adoption to the old
-generation; it records provider failure and retains process custody.
-
-Full-loss recovery does not use a serializable token as proof by itself.
-`plan_recovery` selects a platform-specific plan from the protected record;
-`recover` verifies current native facts and only then lets the host commit the
-new host/generation CAS. A failed commit rolls back the attempted transfer and
-retains the scope obligation; it must not report an owned running session.
-No live SE Code↔daemon transfer is built for alpha. A later design would need
-explicit native handle transfer and ownership acknowledgment, not last-handle
-closure followed by optimistic name reopen.
-
-## Error catalogue (cause and legal remedy)
-
-These codes are exhaustive in `ProcErrorCode`. Native code is retained as a
-number; causes name the failed operation and target identity without printing
-secret env/arguments. The shared error mapper supplies class, stable wire code
-and remedy. A permission error is never a missing-process success.
-
-| Rust code / proposed wire code | Cause | Remedy / state consequence |
-| --- | --- | --- |
-| InvalidInput / `process-input-invalid` | invalid PID/path/env/variant, size or deadline | supply absolute literal launch input or reread the issued observation; no child created |
-| ProcessAbsent / `process-absent` | required live instance absent before pin/action | read lifecycle and resume as a new instance; no PID signal |
-| IdentityUnreadable / `process-identity-unreadable` | native query/boot/image inaccessible, malformed or partial | restore query permission/native support and reread; preserve unknown state |
-| IdentityChanged / `process-identity-changed` | boot, PID start or executable differs | reread lifecycle; never stop replacement; retain original scope obligation |
-| UnsupportedPlatform / `process-capability-unsupported` | unavailable native mode/guarantee, including Unix window mode | choose a supported explicit mode or supported platform; do not silently substitute |
-| ContainmentUnavailable / `process-containment-unavailable` | missing delegated cgroup/pidfd/job-list capability | provide delegated v2 root/user scope or supported Windows capability; refuse before agent exec |
-| ContainmentChanged / `process-containment-changed` | inode/device/boot/job/host membership or limits changed | inspect original scope; do not use a path/name as substitute custody |
-| ContainmentEscape / `process-containment-escape` | original pinned root still executes outside an allegedly empty required scope | retain custody/removal block; inspect the escaped exact instance with safe native rights |
-| SandboxUnavailable / `process-sandbox-unavailable` | strict migration guard/profile cannot be enforced or is incompatible | use a reviewed compatible safe profile/native support; never drop sandbox automatically |
-| BreakawayDenied / `process-breakaway-denied` | containing Windows job rejects explicit breakaway | fix caller BREAKAWAY_OK or start outside that job; no silent/elevated retry |
-| LaunchFailed / `process-launch-failed` | native create/setup/exec or publication rollback error | fix named native cause, retry with new lifecycle; remaining custody is returned |
-| LaunchTimedOut / `process-launch-timeout` | native setup/exec not proved by deadline | inspect retained scope, stop/witness rollback before retry; not provider timeout |
-| DuplicateLifecycle / `process-lifecycle-exists` | same lifecycle already reserved/owned | retrieve its prior result; use new lifecycle only for an intentional new instance |
-| HostChanged / `process-host-changed` | record/handle belongs to another full host lifetime | run platform recovery; on Windows verify exit then resume new lifecycle |
-| GenerationChanged / `process-generation-changed` | stale session/token after generation transfer | reread current service generation and reprepare, no signal |
-| ScopeUnreadable / `process-scope-unreadable` | incomplete accounting/member/control read | repair native access and reread; no empty-scope claim |
-| StopDispatchFailed / `process-stop-dispatch-failed` | native termination call failed | retain ticket/error, attempt independent witness, retry only with fresh preparation |
-| StopIncomplete / `process-stop-incomplete` | deadline, live scope/root, or insufficient guarantee | retain credentials/state/custody; inspect survivors; block Remove |
-| ResourceLimit / `process-resource-limit` | lifecycle/member/byte cap reached | release witnessed terminal scopes or choose reviewed larger cap; never truncate to complete |
-
-A read method returns ProcResult with unreadable failures; `ProcessRead` keeps
-absence and an existing exited record distinct. `StopObservation::Pending`
-is a measured state, not automatically a dispatch error. The public operation
-maps Pending/Bounded at its deadline to an incomplete refusal with remaining
-obligations. No negative acknowledgment is discarded because another part of
-the scope exited. An outside Complete can coexist with a preserved dispatch
-error; it does not retroactively make the dispatch successful.
-
-## Performance allocation and resource lifetime
-
-These are proposed **shares of** the global <=30 MB added RSS, <=100 ms startup,
-<0.1% idle CPU and <20 ms CLI budgets, not new product-wide thresholds or
-measured product facts. Kernel/process costs are reported separately from
-host RSS; retained records must not hide leaked native resources.
-
-| Resource/path | Proposed allocation / measurement |
+The owned backend's complete method declarations follow. No method has an
+executable body, placeholder macro or implementation in this revision.
+
+```rust
+pub trait ProcessRuntime: Send + Sync {
+    fn open(config: HostConfig) -> ProcResult<Self>
+    where
+        Self: Sized;
+    fn capabilities(&self) -> ProcResult<PlatformCapabilities>;
+    fn arena_snapshot(&self) -> ProcResult<ArenaSnapshot>;
+    fn prepare_launch(&self, reservation: LaunchReservation) -> ProcResult<PreparedScope>;
+    fn begin_launch(&self, prepared: PreparedLaunch, spec: LaunchSpec) -> LaunchStart;
+    fn poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress>;
+    fn authorize_exec(&self, ticket: &LaunchTicket) -> ProcResult<()>;
+    fn cancel_launch(&self, ticket: LaunchTicket) -> ProcResult<StopAttempt>;
+    fn describe(&self, process: &OwnedProcess) -> ProcResult<ProcessRecord>;
+    fn observe(&self, process: &OwnedProcess) -> ProcResult<OwnedObservation>;
+    fn watch_exit(&self, process: &OwnedProcess, sink: Arc<dyn ExitSink>) -> ProcResult<ExitWatch>;
+    fn re_adopt(
+        &self,
+        record: &ProcessRecord,
+        from: GenerationId,
+        to: GenerationId,
+    ) -> ProcResult<OwnedProcess>;
+    fn prepare_stop(
+        &self,
+        process: &OwnedProcess,
+        generation: GenerationId,
+        deadline: Instant,
+    ) -> ProcResult<PreparedStop>;
+    fn request_stop(&self, prepared: PreparedStop) -> ProcResult<StopAttempt>;
+    fn witness_stop(&self, ticket: &StopTicket) -> ProcResult<StopObservation>;
+    /// Natural exit, failed launch and graceful shutdown need no stop ticket.
+    fn witness_exit(&self, process: &OwnedProcess) -> ProcResult<StopObservation>;
+    fn release(&self, process: &OwnedProcess, witness: &StopWitness) -> ProcResult<()>;
+    fn plan_recovery(&self, source: RecoverySource) -> ProcResult<RecoveryPlan>;
+    fn recover(&self, plan: RecoveryPlan, generation: GenerationId) -> ProcResult<RecoveryOutcome>;
+    fn begin_transfer(&self, request: TransferRequest) -> ProcResult<TransferOffer>;
+    fn accept_transfer(
+        &self,
+        endpoint: TransferEndpoint,
+        manifest: TransferManifest,
+    ) -> ProcResult<ReceivedTransfer>;
+    fn activate_transfer(&self, imported: TransferImport) -> ProcResult<TransferReceipt>;
+    fn commit_transfer(&self, offer: TransferOffer, receipt: TransferReceipt) -> ProcResult<()>;
+    fn abort_transfer(&self, offer: TransferOffer) -> ProcResult<()>;
+}
+```
+
+### 2.1 Input/read semantics
+
+The host supplies persisted machine ID, fresh host-instance ID, expected
+service generation, absolute executable/cwd, literal argv and an explicitly
+constructed environment. `se-proc` never searches PATH, expands a shell or
+reads ambient configuration. A host resolver may deliberately resolve a
+provider command; missing program maps to `command-not-found` before launch.
+Reject NUL, duplicate env keys (case-insensitive on Windows), relative paths,
+invalid PID range/native identity variant and bounded input overflow. Secret
+values are never logged or put in error detail. Program/cwd and redacted field
+names can be shown. A deliberately chosen absolute shell is user input, not
+an extra wrapper inserted by this crate.
+
+A stateless `read_process` gives Present, Absent or an existing exited record;
+unreadable boot/stat/image/query is a typed error, never empty. Linux zombies
+without an executable yield ExitedRecord with boot/start, not an invented
+image. Owned readers join that start to their held original instance. Image
+changes on the same start require a new authorized observation; they are not
+silently ignored. Only a genuine target's native absence status means absent.
+
+`Capability::Unavailable` carries the entire boxed ProcError: internal cause,
+typed detail and native API/code/reason, so the host can render the exact
+missing capability and mapped remedy. No bare enum code loses the cause.
+
+### 2.2 Explicit stream ownership
+
+`Headless`: supplied standard-stream Files are duplicated into only those
+slots; None means the null device. Provider pipes are created/retained by the
+host harness and can be transferred without giving the agent a host control
+handle. No unspecified FD/handle inheritance.
+
+`Window`: `WindowSpec` is required. On Windows, allocate a new console and let
+its default keyboard/screen handles populate **unspecified** streams; do not
+set STARTF_USESTDHANDLES to three NUL handles. If any stream is redirected,
+construct all three intended console/file handles explicitly and pass only
+that closed handle list. On Unix the registered attach helper owns a fresh
+PTY slave as controlling terminal and duplicates it to 0/1/2; the terminal
+owns the master. Explicit redirects are intentional exceptions, not default
+NUL. Host-held PTY masters use the TerminalMaster transfer role. Terminal
+lifetime/readiness and provider readiness remain separate facts.
+
+## 3. Durable data and native resources
+
+`ProcessRecord` (format version 1, `se.process/v1`) contains lifecycle, host,
+exact owner process, generation, root instance, scope, achieved guarantee,
+entry method, native phase, optional exit status, native observation timestamp
+and argv SHA-256. Store envelope supplies
+project/session/actor, event revision and commit timestamp. No secrets,
+environment values, executable-name filter or live native handle is serialized.
+Store import makes process records Historical and grants no native authority.
+
+Wire encoding is shared with sections 10/20/50: fixed IDs use the canonical
+foundation encoder; u64 start ticks/FILETIME/inode/device and ns timestamps
+are lossless decimal strings; native Unix bytes and Windows UTF-16 use the
+shared lossless path codec, never lossy display round trips. Enums are closed
+tagged variants; unknown version/fields refuse before allocation. Section 30
+does not publish a second wire-ID/error scheme.
+
+`LaunchReservation` is committed **before creating even an empty scope**:
+format, lifecycle, original host/owner/generation, 128-bit random scope_nonce,
+created time and ReservationParent. Linux parent includes its exact pinned
+path/device/inode/boot; Windows/macOS have explicit tagged parent kinds.
+Native names are fixed and reconstructible from this durable reservation:
+
+* Linux directory: `se-<host-id-32hex>-<lifecycle-32hex>-<scope-nonce-32hex>`
+  directly below the recorded delegated parent, never a searched ancestor.
+* Windows job: `Local\\SE-<host-id-32hex>-<lifecycle-32hex>-<scope-nonce-32hex>`.
+  A name collision refuses; it never adopts an existing job by name.
+
+`prepare_launch` inserts its Starting arena slot **before** any native effect,
+creates an exclusive empty scope and returns PreparedScope with an opaque
+PreparedLaunch, OwnedProcess reference and ScopeCheckpoint. The checkpoint
+contains reservation plus exact ScopeIdentity and achieved guarantee. The host
+commits that checkpoint (`scope-prepared`) **before** consuming PreparedLaunch
+with `begin_launch`; no agent exec is legal before that commit succeeds.
+A failed checkpoint commit releases only an outside-witnessed empty scope.
+
+`begin_launch` performs only the native creation step and returns Pending
+with ticket/reference, or failure with retained custody. Linux exec-status
+pipes are nonblocking and event-driven; `poll_launch` reads progress without
+waiting. The host waits for a LaunchChanged nudge or its monotonic deadline,
+then calls poll_launch again. Successful native creation/exec is not provider
+readiness, provider login, durable publication, capture or task completion.
+Short commands can already be exited. Ambiguous pre-exec death is a failure,
+not a successfully started provider. On cancellation, cancel_launch yields a
+stop ticket; no post-creation error discards a live scope.
+
+Recovery input is a tagged `RecoverySource`: committed root Record, Reserved
+LaunchReservation, scope-prepared ScopeCheckpoint, or pre-exec RootCheckpoint. These are different
+facts, not a fake complete ProcessRecord with PID zero:
+
+| Last durable phase | Cold recovery / cleanup |
 | --- | --- |
-| empty process runtime | <=0.5 MB added resident memory, <=2 ms of synchronous open; no eager child census |
-| live arena entry | <=8 KiB userspace per lifecycle excluding host-owned provider stream buffers; 32 agents <=256 KiB |
-| native exit integration | <=1 MB resident total including the optional one shared native monitor stack; 0 timer wakeups when idle |
-| process observation | p95 <1 ms, no PowerShell, no helper process, no executable-name scan |
-| generation re-adoption | native exact checks only; <=1 ms/instance target, schedule bulk adoption after host-ready |
-| native launch plumbing | target p95 <5 ms excluding provider exec/ready and externally imposed fallback cgroup migration delay |
-| clone3 fallback | record slower method/errno; measure within end-to-end journey budget rather than conceal migration latency |
-| user-issued stop | single explicit monotonic deadline shared with harness drain/native effect/witness; no deadline extension on EINTR |
+| Reserved, no child exec permitted | verify protected parent/name; absent scope means no scope remains; existing exact-name empty scope may be reclaimed after outside emptiness; a populated/unreadable/replaced scope is Unproved, never guessed child identity |
+| scope-prepared, root not published | verify exact scope object; it may contain a child whose identity was not committed; retain it as PendingScope, stop that authorized scope if rolling back, witness its emptiness with RootWitness::UnpublishedScope |
+| root Record | validate instance + scope; recover same scope or report concrete Unproved cause |
+| Exited committed, release not acknowledged | ReleaseExitedScope: reread exact empty scope then release; missing scope plus prior committed exit witness acknowledges already released; changed object is preserved/refused |
+| Historical | no live adoption/control |
 
-The CLI has no process owner sidecar or OS monitor. It asks the existing host
-for custody operations; its reads use stored last-witnessed state or explicit
-native inspection as specified by the operation. "Recorded running" is never
-rendered as freshly observed running. The one monitor, if used, is part of the
-same host process; no seat creates its own keeper/door. Native wait callbacks
-and descriptors are unregistered/closed on release. Empty scopes do not remain
-forever merely to make re-adoption easy; only committed history persists.
+Windows's job-list launch associates the first child inside creation; a crash
+before root publication closes the host job and invokes KILL_ON_CLOSE. Linux's
+exact checkpoint permits scope-only cleanup without inventing root data.
+Mac prepare returns the explicit MacOsPrepared nonce variant: no group or
+PID is invented before spawn. Its short-lived native attach helper creates/validates the
+group, reports its exact pre-exec start/image, and blocks on a parent-owned
+exec-authorization channel. poll_launch returns AwaitingExecCommit with a
+RootCheckpoint; the host commits that start/group and the intended executable
+before authorize_exec releases the child. EOF/cancellation before authorization
+exits the helper without executing the vendor. RootPrepared recovery verifies matching
+boot/start/group and the committed exec intent, then independently observes
+the first post-exec image (scripts may use an interpreter); no final image is
+invented from the intended path. Once a ProcessRecord is published, another
+image requires a new authorized transition or is IdentityChanged. If the root checkpoint never
+committed, vendor exec was not permitted and the helper exits on parent loss.
+Linux/Windows kernel scopes do not need this extra child barrier for cleanup,
+but Unix terminal attach uses it so no unregistered vendor starts in a window.
 
-No periodic /proc scan or all-process Windows snapshot runs during idle.
-A stop or explicit list may enumerate its scope within limits. Cold recovery
-is bounded and reports pending/unknown entries while the host is already
-ready; it does not block startup on every possible orphan. Backpressure is
-explicit when the arena is full. Native guards never allocate in a forked
-child; all preparation cost is included in launch measurements.
+ArenaSnapshot exposes all slots/reservations/checkpoints/phases, including
+ones without any store root row or with a poisoned operation. Its optional
+root_checkpoint exposes a pending attach/start identity even before a complete
+record exists; a callback/operation panic cannot hide that child from cleanup. It is a bounded
+**complete arena** view with revision, not a machine census; at configured cap
+it refuses a new slot instead of hiding entries. The host merges this with
+store rows for process.list, pending effects, drain and crash cleanup. The
+public operation still supplies Page/Window if it paginates the merged result.
 
-## Five journeys and review-owned verification
+### 3.1 State transitions, including refusal and natural exit
 
-No author test code is in this candidate. The independent journey oracle and
-reviewers own executable assertions. This table binds their real consumers to
-the contract, rather than adding a new test/gate framework.
+| From | Trigger/evidence | To / retained obligation |
+| --- | --- | --- |
+| no row | authorized unique reservation committed | Reserved; no child |
+| Reserved | Starting arena inserted, empty scope prepared and checkpoint committed | Starting; exact scope known, root may be absent |
+| Reserved/Starting | validation or native failure with no live scope | Exited failed launch; no task-complete claim |
+| Starting | native exec observed + running record committed | Running |
+| Starting | cancellation, exec failure or failed root publication | StopRequested; retained scope/ticket/rollback |
+| Running | root exited, scope still populated | LeaderExited; children remain owned |
+| Running/LeaderExited | natural/graceful root and required scope exit | Exited via witness_exit, no signal/token required |
+| Running/LeaderExited/Starting | authenticated stop CAS | StopRequested |
+| StopRequested | token expired/consumed, generation/identity recheck refuses, native dispatch fails or proof pending | StopUnproved with typed cause; CAS is never erased or mislabelled "nothing happened" |
+| StopRequested/StopUnproved | outside required-scope exit witness | Exited; preserve dispatch errors/status |
+| StopUnproved | explicit retry, fresh observation/CAS/token | StopRequested |
+| nonterminal | irrecoverable native custody, actual host/boot loss | Lost, never assumed stopped |
+| Lost | authorized native recovery + store CAS succeeds | actual Running, LeaderExited or StopUnproved |
+| Lost | old required scope/instances exit proved | Exited |
+| Exited | durable witness committed, native release succeeds, release acknowledgment committed | terminal released; history retained |
+| imported | import | Historical; cannot become live custody |
 
-| Journey | Native behavior that the real provider exercises |
+Every other transition is IllegalTransition → shared `internal`, with report
+ID/location and retained slot. Repeating a completed action returns its prior
+fact; an intentional new instance needs a new lifecycle. Native phase changes
+precede store commits only as pending facts and remain inspectable if commit
+fails. A rejected stop after its CAS is a durable failed/pending outcome, not
+a missing row. Same-generation re_adopt retrieves another reference; a true
+generation transfer CASes the single arena owner and revokes older references.
+
+### 3.2 Natural release and empty-scope reaping
+
+`witness_exit(&OwnedProcess)` reads root/scope without sending a signal or
+requiring a stop ticket. It covers natural completion, provider-graceful exit,
+failed launch rollback and prepared-but-never-created scopes. RootWitness
+separates NoChildCreated, PinnedUnpublished, UnpublishedScope and Identified;
+only the last carries a complete expected root identity. It never fills one
+from guesses. Complete carries the achieved platform bound; Pending/Bounded
+never becomes a successful strict removal by formatting alone.
+
+Normal order is witness → commit Exited with evidence/status → release exact
+empty native scope → commit scope-released acknowledgment. Crash in either
+gap is handled by ReleaseExitedScope from the protected store record and
+arena snapshot. Startup, generation recovery and project Remove trigger this
+bounded reaper; no idle directory sweep/timer is added. Reaper checks original
+parent, boot, physical path and inode/device; never recursively deletes a
+foreign/replaced directory. Persisted released rows prevent endless retries.
+A native release failure is retained explicitly; natural agent exits cannot
+leak scopes merely because request_stop never ran.
+
+## 4. Stop, reused roots, notifications and concurrency
+
+Harness-graceful stop is host policy (default 5 s); native forced stop and
+outside confirmation get the remainder of the **same** deadline (target
+500 ms), never a fresh 30-second blocking wait. prepare_stop performs no signal.
+The host commits stop_requested with revision CAS, then request_stop rechecks
+token, generation, deadline and exact native custody before one native dispatch.
+A failed CAS drops the token without action. A post-CAS refusal records
+StopUnproved with its cause. Token consumption/expiry/illegal state is explicit.
+
+A process-instance mismatch and a scope stop are different operations:
+
+* If the caller's record/token does not match the arena's original lifecycle,
+  expected birth or scope, refuse IdentityChanged before any signal (T14).
+* If the **original tracked root has actually exited** and its PID was later
+  reused, record ExitEvidence::Replaced and stop **only the already-pinned
+  authorized scope**. Linux cgroup.kill cannot signal a replacement outside
+  that cgroup. Its exact scope identity, not the reused PID, supplies custody.
+  Whole-job Windows stop similarly targets its pinned job, not a PID lookup.
+* This LeaderExited scope-only path is legal after same-host or cold recovery
+  with matching protected scope custody; it never attaches the replacement as
+  our root. No global PID/name signal, no refusal that makes an old scope
+  permanently unstoppable. If replacement is itself a legitimate member of
+  that owned scope, its termination is by scope membership, never because it
+  reused the root's number.
+* macOS verifies the recorded group and tracked member starts immediately
+  before group signalling. Reused individual PIDs are excluded; if the group
+  cannot be tied to a live original tracked member, refuse rather than signal
+  a numerically reused group. The native check/signal interval is a stated
+  platform limit, not an atomic-handle claim.
+
+The native attempt returns StopTicket **plus** dispatch Result; a failed
+controller cannot suppress an independent complete witness. witness_stop and
+witness_exit never signal. Complete requires the appropriate scope emptiness
+and original tracked-root exit at the platform's stated bound. Preserve exit
+status and any dispatch error separately. Original root executing outside a
+required scope is ContainmentEscape / unproved, not an empty-scope success.
+Prepared scopes with no child or unpublished roots have their own RootWitness
+variants, not a fabricated absent PID.
+
+### 4.1 Notification-driven waits
+
+There is no wait_stopped method or deadline-long blocking launch. The host:
+registers watch_exit (or supplies the LaunchSpec sink), immediately rereads
+native progress, and awaits a nudge **or its existing tokio deadline**. It
+rereads on each event and once at deadline. Registration plus post-arm read
+closes the exit-before-subscribe race. No sleep loop, thread per stop, timeout
+renewal, or two occupied shared blocking-pool workers while children run.
+Native creation/query/dispatch steps use bounded host blocking work where
+necessary; unavoidable OS-call latency is reported, not disguised as an
+async wait. Long child setup/provider readiness never holds that worker.
+
+ExitNotice carries lifecycle, **generation**, per-slot monotone sequence and
+kind. It is a hint only. A late/duplicate notice cannot grant authority or
+complete a stop; the receiving session rereads and ignores stale generation.
+Coalescing uses the host's bounded/watch channel; errors and deadline reads
+prevent a lost nudge from becoming silent success. No timer when idle.
+
+Windows uses **one IOCP per host and the one existing native wait/collector
+thread from sections 00/80**, GetQueuedCompletionStatus(INFINITE), associated
+with every owned job. JOB_OBJECT_MSG_EXIT_PROCESS and ACTIVE_PROCESS_ZERO are
+nudges; fresh process-handle/accounting reads establish truth. All scopes,
+control wakes, cancellation and staged handover transport use that IOCP. No
+RegisterWaitForSingleObject, OS registered-wait pool, per-process waiter or
+second collector is added. Native creation registers job completion before
+any child can execute; the initial empty job is not a completed launch. Job
+messages are not guaranteed delivery, so provider EOF/terminal close, explicit
+queries and the existing host live-work catch-up also reread native state;
+that existing catch-up bounds retention after a missed natural-exit nudge.
+This is not an added process poller, and active stop deadlines always force a
+final read even with no notification.
+
+Linux pidfds, exec/error pipes and cgroup.events integrate with the **host's
+existing AsyncFd reactor** (read/priority readiness), retaining owned
+FD lifetimes through the safe NativeReactor registration port in HostConfig. macOS kqueue exit/group tracking likewise feeds
+that reactor. No Linux/macOS extra collector thread is reserved. Where a safe
+reactor adapter needs native registration, it is implemented inside se-proc;
+the public NativeReactor/NativeReadiness/NativeRegistration and ExitSink
+boundaries prevent unsafe code leaking into se-host. NativeReactor wraps the
+provided owned File in the existing host AsyncFd/kqueue driver with Readable
+or Priority interest; its task calls NativeReadiness::ready, and se-proc assigns
+the lifecycle/generation/sequence nudge. NativeRegistration cancellation
+disables callbacks without blocking an async thread; in-flight callbacks hold
+Arc state until drained. There is no hidden tokio runtime or collector inside
+the Unix backend.
+
+### 4.2 Locks, panic and cancellation
+
+The arena map lock covers allocation/removal/snapshot only. Per-slot locks
+serialize launch phase, re-adoption, native dispatch and release. No store
+transaction, provider call, callback, blocking read or deadline wait holds the
+map lock. A stop token releases its slot lock before the host's CAS, and
+request_stop reacquires/rechecks it through the native effect. Generation
+handover cannot race an already authorized effect.
+
+**panic=unwind is required**, matching Alpha's SE Code setting. Slots are
+inserted before any effect; fallible native resources are RAII-owned inside
+that slot immediately, never only in stack locals across publication. Wrap
+native operation boundaries and every ExitSink callback in catch_unwind.
+Windows extern "system" thunks catch every unwind before crossing the ABI;
+with IOCP the event dispatcher is Rust, but the same rule applies to any
+future OS callback. A sink panic marks MonitorFailed/CallbackPanicked and
+posts the shared internal report; it does not kill unrelated sessions.
+
+A poisoned lock is not silently cleared into Running. Recover its inner slot
+only to mark it quarantined, retain handles and expose it in arena_snapshot;
+return LockPoisoned/internal. A quarantined scope may be independently
+observed and stopped through its validated native scope; it cannot launch or
+transfer until reconciliation commits its actual phase. No poisoned slot is
+forgotten because its store row is missing. Panic outside an effect has a
+recorded task-failed/internal report; panic after creation preserves cleanup
+custody, including natural-exit release. No process-wide abort profile is
+introduced to make these paths disappear.
+
+An expired token cannot dispatch; wait deadlines are solely host-owned and
+cannot be extended by a callee parameter. Cancellation before child creation
+releases an empty prepared scope; after creation it cancels launch into a
+retained stop ticket. Dropping a Rust future does not detach the OS effect.
+A native call already in the kernel cannot safely be killed by terminating a
+host thread: the host retains the operation/slot and reports pending until it
+settles. Instant measures monotone awake time and may exclude suspend on some
+platforms; resume triggers a fresh host deadline/identity check and reports
+elapsed wall/awake distinction, never quietly extending a requested stop.
+
+## 5. Per-OS launch and stop
+
+### 5.1 Windows jobs, consoles and detached runtime
+
+Read exact identity through OpenProcess(QUERY_LIMITED_INFORMATION|SYNCHRONIZE),
+GetProcessTimes creation FILETIME and QueryFullProcessImageNameW. Hold the
+process handle; only a genuine ERROR_INVALID_PARAMETER absence counts as
+absent, not access denied/partial image/failed wait. Query handles are not job
+custody and need not carry terminate rights. Filetime remains a lossless u64.
+
+prepare_launch creates a unique job with KILL_ON_JOB_CLOSE | BREAKAWAY_OK,
+never SILENT, reads limits back, and checkpoints its original policy. At
+begin_launch use STARTUPINFOEXW + PROC_THREAD_ATTRIBUTE_JOB_LIST so association
+is part of creation, not suspended create/assign/resume. Always request
+CREATE_BREAKAWAY_FROM_JOB for an independently owned agent launched outside
+the caller job, **in addition to** JOB_LIST; these flags solve different
+problems. The caller (including SE Code) must allow explicit breakaway. A
+strict caller job produces BreakawayDenied/job-breakaway-refused; no retry
+without the flag, elevated scheduler, shell or weaker job. Ordinary descendants
+inherit our job; explicit independent detach is the ratified scope limit.
+
+Use an absolute non-null application name, correctly quoted mutable Windows
+command line (empty args/quotes/trailing backslashes included), explicit sorted
+double-NUL UTF-16 environment, cwd, UNICODE_ENVIRONMENT and
+EXTENDED_STARTUPINFO_PRESENT. Headless uses CREATE_NO_WINDOW; Window uses
+CREATE_NEW_CONSOLE and the console stream rules in §2.2. HANDLE_LIST and
+JOB_LIST share one aligned attribute list with backing storage alive through
+CreateProcess; delete it on every return path. Only designated stream copies
+are inherited; no job/host/credential/other-agent handles. Close the initial
+thread handle, retain exact root and job in arena. Failed readback/publish
+terminates only this job and returns retained cleanup until witnessed empty.
+
+Stop calls TerminateJobObject. Complete requires pinned original root exit
+(or unpublished-child scope proof), fresh ActiveProcesses == 0 and the exact
+scope identity. Query job PID lists only for labelled diagnostics, growing on
+MORE_DATA/full buffers within caps; they are not an emptiness oracle. Root
+status comes from GetExitCodeProcess after its handle is signalled; STILL_ACTIVE
+is not confused with an actual code 259 until signalled. No synthetic count.
+
+`spawn_runtime` is a **stateless host-private bootstrap**, not unowned
+process.start. Windows se up from SE Code uses CREATE_BREAKAWAY_FROM_JOB |
+DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_UNICODE_ENVIRONMENT,
+explicit null/ready streams and no agent job-list attribute. The new process
+becomes the one standalone runtime and acquires runtime.lock; the initiating
+CLI holds only an exact RuntimeChild pin until authenticated endpoint/readiness.
+No KILL_ON_CLOSE job owned by SE Code holds it. If its inherited job prohibits
+breakaway it refuses truthfully; do not fall back to a child that dies when
+SE Code closes. The runtime-up adapter owns its fixed arguments, credentials,
+10 s deadline and unique-owner race; this primitive is not a generic agent
+escape hatch. A Windows Terminal single-instance `wt` handoff must be tested
+as a brokered path: window appearance is not proof of child membership.
+
+### 5.2 Linux automatic delegation, native floor and entry
+
+Native floor: unified cgroup v2 with cgroup.kill (Linux >=5.14), pidfd_open /
+pidfd_send_signal, and close_range(CLOEXEC) support (>=5.11). clone3
+CLONE_INTO_CGROUP is preferred; runtime probes check actual capabilities,
+including seccomp restrictions/backports, rather than trusting version text.
+Only ENOENT/ESRCH of the target proc file is absence. Parse proc stat numeric
+suffix as bytes after the final `) `; comm may contain spaces/parentheses or
+invalid UTF-8. Bracket executable symlink read with start/state rereads and
+combine field 22 with boot UUID. A zombie is an exited record, not absence.
+
+**A stranger does not run systemd-run manually.** se up first inspects its
+current scope or supplied delegated root. If it can create an owned child
+scope and access cgroup.procs/kill, continue. Otherwise runtime bootstrap asks
+the existing systemd user manager for a delegated host scope. Preferred native
+user-manager path: create a transient Scope with Delegate=true and the exact
+bootstrap PID, then exec/restart the host with the same private startup nonce.
+The alternative is an absolute trusted systemd-run --user --scope --quiet
+--property=Delegate=yes --unit=se-host-<nonce> -- <absolute-se> up --foreground
+with an internal, protected bootstrap descriptor. The package resolves this
+helper, not an agent-supplied PATH. It execs in place for --foreground, preserving
+the foreground/supervisor tree; detached up performs its ordinary single-host
+bootstrap first. systemd-run is transient startup plumbing, not a keeper per
+seat. No shell interpolation, copied secret argv or recursive delegation loop.
+
+The receiving host rechecks nonce, current delegation and runtime.lock before
+publishing ready; a concurrent existing owner wins and the extra bootstrap
+exits. A supplied explicit root remains supported. Embedded SE Code's launcher
+must obtain the equivalent delegated host scope before entering its Rust host
+(or provide a delegated root through HostConfig); the library does not move an
+already live unrelated fleet process automatically. This is the embedding
+adapter's startup step, not a manual instruction to the stranger. If neither
+a usable delegated root nor user manager/bootstrap helper exists, return
+cgroup-delegation-missing with probe causes, path and doctor advice, explicitly
+an alpha limitation. Do not first fail every ordinary terminal launch with a
+manual prerequisite. No system-level/root escalation is attempted.
+
+Open physical cgroup directories with DIRECTORY|NOFOLLOW|CLOEXEC, verify
+cgroup2 magic and fstat device/inode/boot, use openat+NOFOLLOW on kernel files.
+Never search a writable ancestor, move the host as a side effect of launching
+an agent, or delete another delegated subtree. The prepared checkpoint pins
+the exact private child scope before child creation/exec.
+
+Preferred raw clone3 uses INTO_CGROUP|PIDFD and SIGCHLD (no shared VM). Prepare
+all argv/env/FDs/error-pipe state in parent. Child executes only async-signal-safe
+native calls: setsid, intended signal reset, streams, CLOEXEC on other FDs,
+chdir and execve; no allocation/locking/log formatting/unwind. Parent monitors
+the CLOEXEC exec-error pipe asynchronously. EOF alone is not proof of exec:
+combine fresh image/known child status; ambiguous pre-exec signal death fails.
+
+Fallback is **only ENOSYS** (syscall unavailable), with raw fork and writing
+0 to the pinned cgroup.procs before agent exec. EINVAL/EPERM retain the real
+configuration/security error; they are not silently reclassified as missing
+clone3. A host may add a reviewed explicit capability probe for a future
+feature-specific fallback, not guess from errno. Capture a pidfd while this
+is still our unreaped child and bracket its identity. Record entry method and
+errno. No process-group fallback for a failed cgroup launch. Reap only exact
+owned children (waitid for our pidfd/child), never waitpid(-1), a library-wide
+SIGCHLD takeover, or process-global subreaper setting inside SE Code.
+
+No mandatory Landlock/seccomp guard gates alpha launch. ReadOnly/Workspace/
+NamedUnrestricted profiles are passed with the provider's safe/default or
+saved named opt-in policy. OptionalHardening::Required is explicit: section 70
+owns its complete restrictions and compatibility; an unsupported requested
+hardening returns HardeningUnavailable with its cause. No implicit network
+or AF_UNIX denial breaks stock Claude/Codex or forces a new provider transport.
+The original S2 offline filter is reference only. Report same-UID cgroup
+migration as a stated residual; the genuine kernel scope still contains
+ordinary forks/double-forks/setsid until an explicit migration.
+
+cgroup.events populated is a boolean; populated does **not** imply an exact
+member count. Stop writes 1 to the exact cgroup.kill, then independently reads
+population and root evidence. No inference from successful write or leader
+exit. Diagnostic pre/post enumeration is best effort and labelled (§7).
+Same-host re-adoption retains pidfd/cgroup FDs; cold recovery validates protected
+checkpoint/record machine/boot/parent/device/inode. A reused root with proved
+original exit uses the authorized scope-only path, never signals its new PID.
+A malformed/unreadable control field is ScopeUnreadable, not population zero.
+
+### 5.3 macOS supported group/tracked-member policy
+
+Identity is proc_pidinfo(PROC_PIDTBSDINFO) start timeval + proc_pidpath image +
+kern.boottime, bracketed by a second start read. Validate exact sizes/timeval
+ranges. ESRCH alone is absence; EPERM/partial/boot/image failure is unreadable.
+Register kqueue EVFILT_PROC NOTE_EXIT for the root and each tracked member,
+with identity reads before/after registration; EV_ERROR remains an error.
+Use NOTE_FORK events where available plus explicit group enumeration when
+observing/stopping; grow/retry full native PID buffers without silently
+truncating. They support tracking, not an adversarial containment claim.
+
+Mac prepare records MacOsPrepared, then native posix_spawn launches the installed
+se attach image with POSIX_SPAWN_SETPGROUP (new group) and
+POSIX_SPAWN_CLOEXEC_DEFAULT plus an explicit file-action allowlist. This helper
+exec closes unrelated host descriptors before waiting, reports its pre-exec
+identity and waits on only its intended authorization channel. Host stores
+the RootCheckpoint before authorize_exec; the same PID then execs the vendor.
+EOF before authorization exits the child. This avoids a permanent wrapper and
+never manufactures a group ID before its PID exists. See §3 for recovery of
+this phase and the single allowed image transition. kqueue is armed before
+releasing exec so quick exit is not lost.
+
+Stop enumerates the group, reads each tracked member's boot/start/image, reads
+again immediately before group SIGTERM, and rechecks before SIGKILL escalation.
+The host first uses harness-graceful shutdown; escalation stays within the
+same deadline. Never use a PID/name-pattern kill. A reused member is not
+signalled individually; a reused group without any live original tracked
+member is refused. Root exit does not imply children exit. The outside reader
+requires the group empty and every tracked original instance exited/absent/
+replaced, preserving unknown status as unknown. A still-live tracked member
+outside the group is explicitly reported as an escaped remaining obligation;
+no false success and no unowned-PID rescue kill.
+
+This is Prime's supported alpha policy: deliberate setsid/setpgid escape or
+unobserved reparenting is a stated limit under the same-user boundary, not a
+reason to refuse default J2/J5. Native PID rechecks are not atomic signal
+handles; no Mach task entitlement or impossible task_for_pid guarantee is
+required. Full host loss reopens protected tracked records by boot/start/image,
+reestablishes kqueue/group tracking and commits re-adoption without changing
+agent PID/birth. Handover preserves the same instances and transfers/reopens
+tracking before old registrations close. G6 never permits stopping a known
+replacement just because its PID equals a saved number.
+
+Section 90's ordinary orphan/group-child checks apply; its deliberately
+setsid-escaped macOS case must report the ratified bound rather than require
+unescapable-tree behavior. This is a runner-contract reconciliation, not a
+claim that refusal satisfies the real normal-provider journey.
+
+### 5.4 Unix interactive windows (Linux and macOS, in alpha)
+
+WindowSpec selects a **closed terminal adapter**, not arbitrary shell text.
+Linux adapters cover xterm literal -e argv, konsole's separate-instance exec
+argv, and gnome-terminal's brokered exec. macOS Terminal uses native application
+launch/Apple Events with escaped arguments only at its documented boundary;
+no interpolation of task/environment/secrets. Adapter selection/availability
+belongs to host configuration; missing display/terminal is window-unavailable
+with attempted adapters and the explicit headless alternative.
+
+The terminal launches only the installed native se attach image entry with
+a protected, owner-only one-use bootstrap descriptor, not the vendor yet.
+This is runtime launch plumbing, not a new public OPS verb/MCP tool. Its
+control connection proves OS peer uid/PID/birth and matches the reserved
+lifecycle/nonce; no claimed agent ID in argv grants authority. The helper has
+an actual controlling PTY/slave (or establishes one), reports its native
+start/group and waits for the host's authorization. In Linux it enters the
+exact prepared cgroup **before vendor exec**, by self-writing 0 through the
+validated target or receiving its FD on the authenticated channel; on macOS
+it creates its group. The host commits RootCheckpoint, arms tracking, then
+authorize_exec releases execve into the literal vendor argv/env. The same PID
+becomes the agent, so the helper is transient, not a process per seat. The
+helper image comes from HostConfig.helper_executable, an installed path supplied
+by the package/host, never current_exe of an embedded SE Code server. It preserves
+a terminal-provided controlling PTY and creates a new process group; it does
+not blindly setsid a process already leading a terminal session. A host-supplied
+PTY slave is attached only when a new session actually needs one. All unrelated
+descriptors, especially authorization write ends, are closed before waiting;
+CLOEXEC alone on a pre-exec waiting helper is insufficient to ensure parent-loss
+EOF. The helper exits on closed authorization without starting the vendor.
+
+A terminal broker's root PID, window title or successful client exit is not
+agent identity. Only the attach peer/root handshake publishes the process.
+Timeout/cancellation revokes the nonce, closes exec authorization and rolls
+back the exact prepared scope. Close only an owned terminal client/frame or
+its native window handle; never kill the shared terminal server or another
+tab by process name. A registered helper that exits before exec produces a
+failed native launch, not provider success. Capture/vendor readiness are
+host-harness concerns after this native handshake. Test terminal broker
+handoff, quoting, actual keyboard/screen streams and window close on each OS.
+
+## 6. Service generations, live handover and actual host loss
+
+Same-process service reopen keeps the native arena above generations. Gate
+admissions, drain native work, flush writer, then re_adopt(record,from,to)
+CASes the arena generation. Old handles/tokens refuse GenerationChanged;
+from==to retrieves another reference to the same owner. Native callbacks carry
+generation and sequence; a failed provider reconnect retains native custody.
+
+**Live SE Code↔daemon handover is in alpha** (00/50/80), distinct from a crash.
+The new runtime starts detached through spawn_runtime, proves exact PID/start
+and same-user IPC, and remains standby while the old owner holds runtime.lock.
+Host section 40 controls hold/interrupt/active-map, store flush/CAS and one-time
+input/delivery settlement; native handle transfer does not replace that barrier.
+No input is offered by both generations during transfer. B8 is <=500 ms.
+
+The native two-phase protocol is:
+
+1. Source gates custody/admissions and creates an offer ID, target host/generation,
+   bounded manifest and deadline. Pin the exact peer process. begin_transfer
+   retains every original resource; no last handle is closed yet.
+2. TransferEndpoint is an authenticated same-user pipe/socket already bound to
+   that peer by native identity. TransferManifest lists exact records/resource
+   roles; it is data, not authority by itself. Windows uses DuplicateHandle
+   into the pinned target for jobs, root handles and harness-supplied stream
+   handles. Linux sends pidfd/cgroup/control/stream FDs by SCM_RIGHTS over the
+   verified socket. macOS passes streams/PTYs and protected records, and the
+   receiver reopens kqueue registrations with before/after native checks.
+3. accept_transfer verifies every expected resource/record/peer, installs it in
+   the successor's **inactive staged arena**, and returns ReceivedTransfer.
+   Windows jobs keep KILL_ON_CLOSE and explicit BREAKAWAY_OK. The native bundle
+   is indexed by TransferResource(slot,lifecycle,kind); raw remote handle values
+   or SCM_RIGHTS payloads stay in the authenticated native frame, never public
+   records/logs. Receiver verifies the complete manifest and descriptor types,
+   rejects extra/missing roles and closes an invalid received bundle.
+   No request client
+   or agent gets a job handle; the only allowed second copy is this authenticated
+   staged successor arena. Receiver observes the same live agent PIDs/births.
+4. Host section 40 performs its durable ownership/generation CAS and unique
+   runtime.lock transfer. It calls activate_transfer only after that barrier;
+   the receiver returns TransferReceipt identifying offer/source/target/generation,
+   peer identity and native resource-manifest digest over the authenticated
+   channel. Before activation, Windows removes each old job completion-port
+   association (supported since Windows 8), binds it to the successor's one IOCP
+   and rereads root/accounting before and after. The reads cover messages lost
+   during reassociation; queued keys are immutable slot IDs checked against
+   generation, never freed pointers. Abort restores the source association and
+   rereads. Source commit_transfer verifies the receipt and closes its copies
+   only after receiver ownership is established. Job handles **overlap**, so
+   KILL_ON_CLOSE never sees an unintended zero-handle interval.
+5. Before activation failure/timeout, abort_transfer retains the old owner;
+   receiver closes staged copies, source resumes its generation if still valid.
+   After activation, source never reclaims control on an ambiguous lost ACK:
+   it rereads the ownership barrier/receipt; successor keeps resources. Source
+   death/broken transfer channel wakes staged recovery; if the committed transfer
+   cannot be proved, staged handles close and the ordinary crash policy applies.
+   No leaked staged copy silently keeps Windows agents alive forever.
+
+Provider stdin/stdout/stderr and host-owned PTY masters transfer as labelled
+TransferStreams before the old harness drops its ends, preventing accidental
+stdin EOF and duplicate output reads. Capture offsets/delivery IDs are flushed
+and ownership acknowledged by section 40 before the successor resumes consumers.
+Untransferred provider streams mean handover failed, not same-conversation
+success. No polling/extra permanent helper carries these handles.
+
+Actual unplanned **Windows full host loss outside a staged handover** closes
+the last job handles and terminates ordinary members. A cold successor verifies
+the old exact owner/root exited, checks old scope disappearance/emptiness with
+protected policy provenance, then resumes the saved conversation in a new
+lifecycle. It does not reopen a job name as live authority. An unexpected live
+job/foreign retained handle/unknown original exit is RecoveryUnproved with
+remaining obligations, not automatic replacement signalling. Native tests must
+cover last-handle timing and staged-transfer crashes; the old failed S2 named
+job reopen did not qualify this new path.
+
+Linux cgroups and macOS groups may outlive an actual host crash. Recover from
+Record/Prepared/RootPrepared/Reservation phases, native checks and store CAS;
+keep original PIDs/births where supported, or report typed Unproved. Unknown
+provider pipe/conversation state is independent of native adoption. Different
+machine/boot never becomes current PID kill authority. Exited-but-unreleased
+rows use the bounded exact-scope reaper, not another running lifecycle.
+
+## 7. Structured internal causes and section 50 wire mapping
+
+ProcErrorCode contains **internal causes**, not new wire strings. ProcError
+carries boxed discriminated ProcErrorDetail and optional NativeFailure(api,
+code, sanitized reason). Identity detail has pid, expected_start/found_start
+and expected/found complete identity when available. Stop detail has lifecycle,
+deadline_ms and RemainingScope. State/token/generation/host/capacity/internal
+failures have explicit fields, never a parseable prose convention. A code/detail
+mismatch is shared internal with a report ID, not an unwrap or guessed map.
+
+The section 50 mapper is exhaustive over these internal causes. Existing
+section 50 wire code/class/remedy owns the output, including surrounding
+operation context (agent/observation IDs); se-proc does not invent those IDs.
+
+| Internal cause(s) | Section 50 wire code | Structured context / remedy |
+| --- | --- | --- |
+| InvalidInput | usage-invalid-value | field/value rule; supply valid literal input |
+| ExecutableMissing | command-not-found (or provider-cli-not-found in resolver) | program; correct executable path |
+| CwdOutsideWorkspace | cwd-outside-workspace | cwd/workspace; use allowed workspace |
+| EnvironmentDenied | env-key-not-allowed | key only; drop denied key |
+| ProcessAbsent | observation-unknown for unknown handle; otherwise successful measured absent/exited fact | do not manufacture a new process or arbitrary PID stop |
+| IdentityChanged | process-identity-changed | pid, expected_start, found_start; original instance mismatch refusal, not the old `pid-reused` spelling; scope-only exited-root cleanup is separate §4 |
+| IdentityUnreadable | process-identity-unreadable | pid + native reason; retry/doctor, never absent |
+| UnsupportedPlatform | window-unavailable for window; spawn-failed for unsupported native capability | tried adapters or program/native capability; choose supported mode/system |
+| ContainmentUnavailable | cgroup-delegation-missing **after auto-bootstrap fails**, otherwise spawn-failed | path/probes/native cause; doctor names missing user manager/kernel, no first-hour manual prerequisite |
+| ContainmentChanged, ContainmentEscape, ScopeUnreadable, RecoveryUnproved | stop-unwitnessed for agent; stop-deadline-exceeded for expired process stop; process-identity-unreadable for inspect | preserve scope/remaining/native cause; no empty claim |
+| HardeningUnavailable | spawn-failed with optional hardening cause | choose a supported requested hardening profile; default alpha launch does not require it |
+| BreakawayDenied | job-breakaway-refused | exact parent/caller job; start permitted standalone runtime or fix caller policy |
+| LaunchFailed | spawn-failed (or launch-failed after provider startup) | program/native cause or provider exit/status/stderr context; retain failed-launch cleanup |
+| LaunchTimedOut | deadline-exceeded for native launch; launch-readiness-timeout only when provider readiness timed out | phase/waited/last-observed; distinguish native setup from provider handshake |
+| DuplicateLifecycle | launch-in-flight / agent-already-running as observed | existing lifecycle/result; do not duplicate |
+| HostChanged | runtime-handover-in-progress during transfer; runtime-not-running after actual loss | current owner/plan; wait for ready or start runtime/recovery |
+| GenerationChanged | session-generation-mismatch | expected/current; reread and retry |
+| StopDispatchFailed | stop-unwitnessed or stop-deadline-exceeded if still unproved at deadline | retain native error even if independent witness completes later |
+| StopIncomplete | stop-deadline-exceeded for process, stop-unwitnessed/stop-partial for agents | observation/deadline_ms/labelled remaining; retain state/custody |
+| ResourceLimit | input-too-large for input bounds; spawn-failed for native admission/capacity | resource/limit; release witnessed terminal scopes or retry, never truncate |
+| IllegalTransition, StopTokenConsumed, LockPoisoned, OperationPanicked, CallbackPanicked | internal (task-failed when reported by host task) | state/action or report_id/location, retained quarantined slot; doctor bundle |
+| StopTokenExpired | session-generation-mismatch if stale generation, otherwise deadline-exceeded | token generation/deadline; prepare a fresh authorized request, no signal |
+
+`observation-not-yours`, `bare-pid-refused` and authority/validation errors from
+50 §6.11 remain host admission checks **before** this native API. They are not
+missing native error variants. No new wire-code addition is required here.
+T14's wire spelling is process-identity-changed; section 90 now uses it.
+
+### 7.1 Remaining counts and human output
+
+RemainingScope carries population Empty/Populated/Unknown, best-effort
+known_live identities, EnumerationExtent Complete/Partial(reason,omitted?) or
+NotRequested, and observation time. Enumerate immediately before stop and on
+explicit diagnostic reads up to the small bounded buffer, label races, and
+never use that list as native scope authority. A scope can become empty
+independently while diagnostic PID reads are partial; the fresh kernel empty
+state plus root witness decides Complete.
+
+Human defaults coordinated with section 50:
+
+* Complete: "Owned scope stopped; original agent exited (code 0)" or signal /
+  unknown-status wording. Do not say "3 processes gone" from a boolean.
+* Known complete list: "3 tracked processes still alive" is allowed only when
+  the fresh tracked enumeration is complete at the stated platform bound.
+* Populated partial list: "Owned scope still populated; 3 live processes
+  identified, enumeration incomplete". Empty known_live is not zero remaining.
+* Unknown scope: "Cannot confirm scope exit: <native cause>".
+
+`stop-deadline-exceeded` retains its existing wire code; section 50's detail
+schema must add population/enumeration metadata alongside remaining[], and
+its count renderer must use these rules. Its delegation remedy must describe
+failed automatic startup, not prescribe manual setup as the normal path.
+These are explicit sibling contract edits requested from Prime, not silently
+new wire codes. A later --deadline retry may choose a new deadline, but a
+single token/request cannot extend its deadline mid-flight.
+
+### 7.2 Exit status and crash wording
+
+ExitStatus separates native Code(u32), Signal(number,core_dumped), and
+Unavailable(NotOurChild/ReapedBeforeRecovery/NativeAccessDenied/NotRecorded).
+ProcessObservation::Exited, owned root witnesses and terminal ProcessRecord
+carry it. Linux/macOS retain owned child's waitid/waitpid status before reaping
+that exact child; Windows reads GetExitCodeProcess on a signalled held handle.
+No global child reaper consumes someone else's status. A non-child/post-crash
+identity may prove exit without recovering its status: say "exited, status
+unavailable", not "crashed" or exit zero. The host combines confirmed nonzero
+code/signal with whether it requested termination to distinguish an agent
+crash from an intentional stop. Negative statuses never become success.
+
+## 8. Budget share, bounds and resources
+
+Section 80 owns the totals. Process custody uses its **0.2 MB (200,000 bytes)
+allocation for the 16-live-session embedded profile**, not the previous extra
+0.5–1.5 MB proposal. Planned userspace spend: <=16 KiB base arena/index,
+<=6 KiB per live lifecycle (16 =96 KiB), <=8 KiB native notification keys and
+<=64 KiB one shared bounded diagnostic/transfer scratch: <=184 KiB. Do not
+retain argv/env or clone full membership lists in every slot. Kernel jobs,
+pidfds and cgroups are reported separately, not hidden as user RSS.
+
+Code pages use section 80's shared code allocation. Windows's one IOCP wait
+thread is the **existing fixed native wait thread**, its stack charged once
+to the section 00/80 thread allocation, not a second se-proc stack. Linux/macOS
+reuse AsyncFd/kqueue in the existing reactor, no extra wait threads. Callback
+queues are bounded nudges. The shared blocking pool remains capped at two;
+no child setup/readiness, graceful deadline or stop wait occupies it.
+
+Default active lifecycle cap is the embedded 16-session spend plan; an explicit
+larger deployment must negotiate/measure its extra per-slot memory within the
+global budget, rather than quietly allocating 256 entries eagerly. Terminal
+entries are released after committed witness/release acknowledgment. Arena
+snapshot and best-effort membership buffers are bounded; oversize input maps
+to input-too-large, native capacity pressure maps to spawn-failed with typed
+Capacity cause and a release/retry remedy. It never maps to a nonexistent
+wire `retry` code or a success with omitted custody.
+
+Targets remain section 80's: <=50 ms StateEngine launch work excluding provider
+startup, <=50 ms stop CPU/CLI work plus 5 s graceful and <=500 ms forced wait,
+<=500 ms handover without changed agent identity/input duplication, native
+identity p95 <1 ms, idle event waits with no polling. Runtime open contributes
+<=2 ms synchronous native setup; re-adoption after ready is bounded and
+reported. Instant deadline does not invent wall-clock guarantees across sleep.
+These are design allocations/targets, not measurements of these declarations.
+
+## 9. Journeys, mirror paths and reviewer-owned checks
+
+Authors add no test code. The pinned independent five-journey runner exercises
+real installed native paths and both Claude/Codex. Type-checking an empty
+backend is never native behavior or performance evidence.
+
+| Journey | Required native consumer |
 | --- | --- |
-| J1 Install | packaged architecture loads native bindings with no Node/PowerShell/runtime helper; capability errors name required OS support |
-| J2 Adopt | launch real Claude/Codex from existing repo with safe explicit profile/env; observe correct image/start and provider-ready separately; an argv containing spaces/quotes stays literal |
-| J3 Come back | same-host service restart re-adopts arena without killing agents; full Windows host close kills old members, outside witness precedes new lifecycle/conversation resume; Linux recovery proves exact scope or reports unknown |
-| J4 Two agents | independent lifecycles/jobs/cgroups; stopping/re-adopting one cannot affect the other; host notifications cause fresh reads without a mail/process sidecar |
-| J5 Remove | graceful provider stop, forced owned-scope termination if needed, outside root+scope exit; stop errors survive; pending/weak/unreadable scope blocks deleting state and credentials; user/Git/provider-account files survive |
+| J1 Install | packaged se version works with no Node/PowerShell; automatic delegated startup where supported; a genuinely unavailable system names the remaining alpha limitation |
+| J2 Adopt | safe literal provider launch in headless **and interactive window** modes on all three OSes; real PTY/console keyboard/screen; native creation and provider readiness distinct |
+| J3 Come back | natural exit releases its scope; service reopen retains native arena; live SE Code↔daemon handover preserves PID/birth/streams; actual Windows crash resumes conversation in a new lifecycle, Linux/macOS re-adopt at their declared bound |
+| J4 Two agents | independent scope/lease/native references; stop, callback panic, handover or read of one cannot consume another's children/input; no owner sidecar per agent |
+| J5 Remove | natural/graceful/forced and reused-root scope cleanup witnessed; unknown live scope blocks removal; terminal scope reaper closes crash gaps; state/credentials survive an unproved stop; user work/provider accounts stay untouched |
 
-Mirror paths share this backend: CLI/MCP call the same custody methods;
-Claude/Codex supply different literal launch/stream/readiness adapters but the
-same native ownership; Windows window/headless differ in console flags, not
-identity/job/witness; service-generation/cold-host recovery are distinct typed
-paths. Linux/macOS window mode is an explicit after-alpha capability, not a
-missing test silently treated as passing. Embedded/standalone share the arena
-contract; the library does not consume unrelated children/signals in SE Code.
+CLI/MCP custody uses the same host operation/backend; stateless CLI reads use
+the free native reader without starting an owner. Window/headless share
+scope/instance checking, with explicit stream differences. Claude/Codex supply
+harness argv/streams/readiness but identical native ownership. Embedded and
+standalone share transfer/arena contracts and do not reap unrelated SE Code
+children. Windows live transfer is not confused with its crash relaunch;
+Linux and macOS limits are reported separately, not smuggled in as no-op modes.
 
-Reviewers should exercise the hazards journeys do not naturally reach:
-replacement start identity refusal with no replacement signal; inaccessible
-identity versus absence; leader exits while child lives; Linux setsid and
-attempted migration; missing delegation before launch; clone3 fallback before
-exec; Windows strict caller job refusal, explicit breakaway, job-list native
-creation, last-owner death and no leaked job handle; generation/token races;
-post-create commit failure with retained rollback custody; false controller
-error with an independently complete witness; active scope at deadline;
-notification removal concurrent with callback; full/truncated native lists;
-and preserving another SE Code child when reaping ours. macOS strong-task-right
-and escaped-descendant feasibility requires a native machine. Type-checks alone
-cannot accept these behaviors, and no passing count is invented here.
+Reviewers own native checks for: (a) fake/reused-root instance refusal with
+replacement surviving (T14), **and separately** legitimate scope-only stop
+with original root exited/reused; (b) root exits but children remain; (c)
+Linux double-fork/setsid, clone3 ENOSYS fallback before exec, real provider
+launch without mandatory hardening, automatic delegation from a normal
+terminal/SSH scope; (d) macOS ordinary group/tracked-member stop, crash adoption
+and labelled deliberate escape (T15/T16 at Prime's stated bound); (e) Windows
+job-list atomic association, strict caller breakaway refusal, explicit detached
+se up, console streams and `wt` single-instance broker handoff; (f) natural
+exit/failed launch and crashes around each reservation/checkpoint/Exited/
+release boundary; (g) two concurrent long stops plus other store work without
+blocking-pool starvation; (h) sink panic/poison/quarantined-slot reconciliation;
+(i) exact exit-code/signal and unknown-status rendering; (j) live bidirectional
+handle/stream handover, receiver/source crashes and no zero-job-handle gap.
+All targets are native-qualified later; this candidate claims only compilation.
 
-## Decisions for the architecture review
+## 10. Cross-section contract changes and open integration work
 
-These are explicit freeze questions, not permissions requests to resume coding.
-Implementation stays stopped until the integrated architecture is approved.
+Prime has been asked to route these **concrete sibling-owner edits** while
+this section/API is corrected; no other crate or owner's doc is edited here:
 
-1. **Shared DTO ownership:** nominate canonical IDs, Read and shared error
-   signatures in se-types; migrate/re-export this design's overlapping ID
-   declarations without parallel formats. The compile-only crate therefore
-   has no dependency yet; implementation will depend on that canonical
-   foundation, not local copies.
-2. **Windows explicit detachment scope:** this proposal follows the ratified
-   BREAKAWAY_OK, never SILENT contract and labels the resulting kernel-scope
-   witness. Confirm the common Stop/Remove renderer and project registry account
-   for separately owned detached lifecycles; a universal-descendant claim is
-   incompatible with that permission and is not proposed.
-3. **Linux provider-compatible guard:** approve/adjust the Network Allow plus
-   blocked external Unix-broker guard and Codex stdio transport, then qualify
-   real Claude/Codex cache/account behavior. The measured offline S2 guard is
-   insufficient evidence; until resolved strict launch is unavailable rather
-   than unsafe. Confirm support for kernels without Landlock ABI 6: the
-   proposed answer is an actionable refusal, not weakened containment.
-4. **macOS kernel-scope gap:** process groups/kqueue are insufficient for the
-   strict scope and atomic signal promises. Decide a stronger supported native
-   mechanism/entitlement strategy or explicitly ratify a bounded guarantee.
-   This proposal refuses unsupported strict launch/forced stop, and does not
-   call the macOS alpha journey cured by that refusal.
-5. **Common cross-host recovery order:** host/store owners must align the
-   protected reservation/record CAS and failure rollback with this native
-   two-phase transfer. Live daemon↔SE Code ownership handover remains deferred.
+* Section 50: same wire catalogue, labelled population/enumeration metadata
+  alongside remaining[], count-safe human wording, automatic-delegation-failure
+  remedy, structured expected/found identity and recovery causes. No new code.
+* Section 70: optional Landlock/seccomp policy belongs there, not a mandatory
+  alpha launch guard. Same-user deliberate migration/escape is stated honestly.
+* Sections 00/40/80: one Windows IOCP collector replacing registered wait-pool
+  wording; Linux/macOS AsyncFd integration; 0.2 MB custody share; native
+  transfer plus provider-stream/hold/interrupt/active-map/lease barriers align.
+* Section 90: T14 now uses process-identity-changed; macOS's deliberate escape
+  test must reflect the ratified group/tracked bound, rather than assert an
+  unescapable-tree promise. Normal J2/J5 and ordinary descendant stop remain
+  supported outcomes, not successful refusals.
+* Section 10: canonical ID/error/path types replace this compile-only proposal's
+  local declarations before implementation. No serializable record becomes
+  a custody constructor. Native peer/ACL primitives from section 70 belong to
+  the integrated se-proc unsafe seam; they do not silently gain implementations
+  in this signature-only process revision.
 
-## Implementation sequence after approval
+No additional product decision is requested for Linux hardening/delegation,
+macOS scope, Unix windows or live handover: Prime has settled them. Native
+qualification and integrated shared type signatures remain review/implementation
+work. The design-first stop remains binding until architecture approval.
 
-1. Adopt the reviewed shared types; native read/pin and exact-instance events,
-   with reviewer-owned OS cases. No temporary implementation of a public verb.
-2. Windows host arena, job-list window/headless launch, breakaway/accounting,
-   same-host re-adoption and host-loss recovery, with Alpha's native review.
-3. Linux validated delegation, clone3/error channel/fallback, reviewed guard,
-   cgroup events/kill and cold recovery; real provider journeys, not fixture-only
-   containment.
-4. macOS native implementation according to the resolved guarantee, then native
-   journeys. Type-check all three targets throughout; never use cross-compile
-   success as platform behavior evidence.
+## 11. Return coverage
 
-Each increment is reviewable product code against this contract, touches only
-se-proc and required workspace dependency lines, and is landed only by Prime.
-This compile-only design revision contains no backend implementation or test.
+| Review item | Concrete correction |
+| --- | --- |
+| Opus 1 | §7 exhaustive internal-to-section-50 map; no invented wire codes, T14 spelling aligned |
+| 2 | ProcErrorDetail Identity/Stop/Scope/State/Token/Generation/Host/Capacity/Internal plus NativeFailure |
+| 3 | RemainingScope and labelled best-effort enumeration; §7.1 count-safe renderers and sibling schema request |
+| 4 | witness_exit plus release for natural, graceful, prepared and rollback paths |
+| 5 | commit Exited → release → acknowledgment; exact bounded ReleaseExitedScope reaper |
+| 6 / Sol R1 | durable LaunchReservation + ScopeCheckpoint + RootCheckpoint; no-root RecoverySource/RootWitness; before-exec durable barrier |
+| 7 | §4 scope-only stop after proved original-root exit/reuse; no signal to replacement by PID |
+| 8 | wait_stopped removed; one host-owned immutable request deadline |
+| 9 | begin_launch/poll_launch/authorize_exec and watch_exit+witness_stop, no deadline-long blocking waits |
+| 10 | one IOCP for all Windows job exit/active-zero/control events; no registered wait pool |
+| 11 | §8 200,000-byte custody share and existing fixed thread/reactor budget |
+| 12 | stateless safe free read_process declaration, no Runtime/HostInstance dependency |
+| 13 | complete bounded arena_snapshot includes Starting/quarantined/unpublished slots |
+| 14 | §4.2 panic=unwind, pre-effect arena insertion, catch_unwind and poisoned-slot quarantine |
+| 15 | cgroup alpha guarantee; named unrestricted opt-in remains launchable; hardening optional/section 70 |
+| 16 | spawn_runtime + Windows explicit detached flags, distinct from JOB_LIST agent launch |
+| 17 / Sol R2 | explicit console/PTY WindowSpec and mode-dependent standard streams, no NUL TUI |
+| 18 | internal IllegalTransition, StopTokenExpired/Consumed, LockPoisoned/OperationPanicked/CallbackPanicked, RecoveryUnproved |
+| 19 | arena vs durable state separated; StopUnproved after post-CAS refusal; repeated handle references are not duplicate native owners |
+| 20 | Capability unavailable retains complete ProcError/native cause |
+| 21 | native Linux floor and automatic user-manager/helper delegation bootstrap, refusal only after supported paths unavailable |
+| 22 | ExitStatus code/signal/unavailable carried to observations/terminal records; crash vs intentional stop is host-classified |
+| Sol R3 | Unix windows §5.4 and live bidirectional native/stream handover §6 are in alpha |
+| Sol R4 | supported macOS group/kqueue/recheck/tracked-witness design with deliberate-escape/native-race bound, no Mach entitlement requirement |
+| suggestions | callback generation/sequence; Instant suspend bound; ENOSYS-only clone3 fallback; explicit wt broker check; macOS types support the ratified path |
+
+## 12. Primary native references
+
+These sources support OS facts, not claims that the proposed backend or
+native journeys are implemented:
+
+* [Windows job-list and handle-list creation attributes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute),
+  [CreateProcessW flags and environment](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw),
+  [STARTUPINFOW console/standard handles](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfow),
+  [job limits and breakaway](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
+  [job completion ports](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_associate_completion_port).
+* [Linux clone3](https://man7.org/linux/man-pages/man2/clone3.2.html),
+  [pidfd_open](https://man7.org/linux/man-pages/man2/pidfd_open.2.html),
+  [cgroup v2 delegation/events/kill](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html),
+  [systemd transient scopes](https://www.freedesktop.org/software/systemd/man/latest/org.freedesktop.systemd1.html),
+  [systemd-run scope startup](https://www.freedesktop.org/software/systemd/man/latest/systemd-run.html).
+* [Apple kqueue process exit notifications](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/kqueue.2.html),
+  [Apple spawn implementation and descriptor inheritance](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/kern_exec.c).

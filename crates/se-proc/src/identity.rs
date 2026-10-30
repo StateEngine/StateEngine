@@ -70,6 +70,7 @@ pub enum ProcessObservation {
     Exited {
         expected: ProcessIdentity,
         evidence: ExitEvidence,
+        status: ExitStatus,
         observed_at_unix_ns: u128,
     },
 }
@@ -87,6 +88,22 @@ pub enum ProcessRead {
         boot: BootIdentity,
         start: StartIdentity,
         state: NativeState,
+        status: ExitStatus,
         observed_at_unix_ns: u128,
     },
+}
+
+/// Native status is independent of proof that an instance exited.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExitStatus {
+    Code(u32),
+    Signal { number: u32, core_dumped: bool },
+    Unavailable { reason: ExitStatusUnavailable },
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExitStatusUnavailable {
+    NotOurChild,
+    ReapedBeforeRecovery,
+    NativeAccessDenied,
+    NotRecorded,
 }
