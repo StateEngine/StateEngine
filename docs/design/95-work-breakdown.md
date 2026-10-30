@@ -1,62 +1,76 @@
 # 95. Work breakdown — assembled plan
 
-Status: design complete, all sections accepted by both Opus and Sol reviews on 2026-10-30.
-Build start waits for Jimmy's approval of the whole design. Estimates are review signals,
-not caps (Jimmy 2026-10-30): never weaken a contract to hit a number.
+Status: reconciled 2026-10-30 after Jimmy declined the first version and two whole-design reviews
+(Opus and Sol) plus two outside reviews found cross-section contradictions and scope no journey
+needed. Building starts only when Jimmy approves this revision. Estimates are review signals, not
+caps; no schedule is promised until the early proofs below settle.
 
-Per-crate plans, each with files, dependencies, clauses satisfied, outside witness and
-line estimate per task:
+Per-crate plans (files, dependencies, clauses, outside witness and estimate per task):
+`95-work-breakdown-store.md`, `-se-proc.md`, `-core-cli.md`, `-host.md`, `-atlas.md`, `-release.md`.
 
-| Part | Plan | Estimated production lines (alpha: Windows + Linux) |
-| --- | --- | ---: |
-| Shared types (se-types) | already declared on main | ~2,000 (1,867 exist) |
-| Store (se-store) | `95-work-breakdown-store.md` | ~9,250 |
-| Process ownership (se-proc) | `95-work-breakdown-se-proc.md` | ~10,950 (+~1,350 macOS, deferred) |
-| Core and CLI/MCP surface (se-core, se) | `95-work-breakdown-core-cli.md` | ~9,050 |
-| Host runtime and harnesses (se-host) | `95-work-breakdown-host.md` | ~8,900 Rust + 200–350 JS |
-| Atlas (se-atlas) | `95-work-breakdown-atlas.md` | 6,000–9,300 |
-| Release and packaging | `95-work-breakdown-release.md` | 920–1,540 |
-| **Total** | | **~47,000–51,000** |
+## Size (one table; owners' parts are the source)
 
-Two scope items are separable and carry their own cost:
-- **Live handover** (SE Code ↔ daemon without killing agents): ~2,550 lines (host H15/H16
-  ~700; se-proc P07-W/P07-L/P08 ~1,850), plus the SE Code side owned by Gamma. In alpha per
-  Jimmy's 10-30 plan. Without it, an SE Code restart stops its agents and the user resumes.
-- **Atlas** (code index): 6,000–9,300 lines, off by default in embedded SE Code.
-Excluding both gives ~38,000–42,000.
+| Part | Before reconciliation | Reconciled estimate | Main change |
+| --- | ---: | ---: | --- |
+| Shared types (se-types) | ~2,000 | ~2,000 | — |
+| Store (se-store) | ~9,250 | ~7,900–8,300 | no decision chain, live keysets for non-mail lists, user-state import families only, salvage deferred, automatic migration without approval machinery |
+| Process ownership (se-proc) | ~10,950 | ~10,600 | three launch barriers (four on Unix terminal, macOS and uncontained helpers); process.* operations removed |
+| Core and CLI/MCP surface | ~9,050 | ~8,300–8,500 | process tools removed, error catalogue merged, simpler config layers, no N-1 encoders or schema-freeze tooling |
+| Host runtime and harnesses | ~8,900 + 200–350 JS | ~8,700 + 200–350 JS | no embedded credential events; handover durable phases 7 → 5 |
+| Release and packaging | 920–1,540 | 960–1,600 | uninstall and early unsigned archives added |
+| **Core product (alpha critical path)** | | **~38,500–39,700** | |
+| Atlas (after journeys and handover; Jimmy) | 6,000–9,300 | 6,000–9,300 | disabled by default; never holds a milestone |
+| macOS backends (Mac campaign) | ~1,350 | ~1,350 | qualified on Jimmy's borrowed Mac before alpha ships |
+| **Everything** | 47,000–51,000 | **~45,800–50,300** | |
+
+Live handover stays in before alpha (Jimmy): about 2,500–3,000 lines across se-proc, se-host and
+se-store, plus SE Code's side. `forget` stays in alpha (Jimmy), about 600 lines.
+
+## Early proofs (before the broad build)
+
+| Proof | What it settles | Status |
+| --- | --- | --- |
+| E1 Windows handover primitives | named-pipe completion-port replacement across hosts | **PASS 3/3** on the PC; Linux 3/3 |
+| E1b Real-provider handover | Codex 0.166 and Claude 2.1.314 keep the same process and conversation across A→B→A and answer a follow-up | **PASS** Windows 2/2, Linux 2/2 |
+| E2 Embedded startup | B2 ≤ 100 ms with the real FULL commits, new and existing store, Windows with Defender; memory after a real task | Running (Iris) |
+| E3 Write latency | B9 ≤ 20 ms; the 37/67 ms rehearsal traced to commit time (checkpoint in the commit path); rerun with checkpointing moved off the commit path, through a host, on NTFS and ext4 | Running (Nell, 5p) |
+| E4 Attended Claude mail | 25 s renewal under Claude's 30 s fetch limit; mail held during a busy turn | **PASS** on Linux; stop/revocation bound stated (Claude's fetch has no caller abort) |
+| E5 Windowed Codex | stock Codex through the private-socket app-server with a viewable TUI | **PASS** on Linux (0.163); Windows pending |
+| E6 History import | real history imports; interrupted retries reproduce the same events; resumed conversation recalls | **PASS** for Codex on a factory slice; non-fleet history and Claude continuation pending |
+| E7 Linux containment | what ssh, Docker and WSL2 hosts actually get | Pending |
+| E8 Cold hook start | host-start versus direct write on Windows with Defender | Pending |
+| Lost-ACK slice | one message after a dropped reply, through CLI, IPC, MCP and the linked API | Pending |
+| Runner | the journey runner judges Rust from a Rust-only map, launched outside agent trees | Section 90 revised; red-against-stub run pending |
 
 ## Build order
 
-Authors write production code only; reviewers (Opus via Prime, Sol via 5c/Otto) write the
-tests that judge it (Jimmy 2026-10-29). Each wave ends at an outside witness, not a green
-unit suite. A missing interface blocks only its consumer.
+Authors write production code only; reviewers write the tests that judge it (Jimmy 2026-10-29).
+Each wave ends at an outside witness, not a green unit suite.
 
 | Wave | Work | Done when |
 | --- | --- | --- |
-| 0 | se-types complete; store schema, writer, readers; se-proc P00/P01 ports; core registry/dispatcher (K01) | store writes and reads back from outside the writer; `se --version` and help generated from the registry |
-| 1 | se-proc Windows and Linux backends (P02/P03-W/P03-L/P04/P05); host composition, client and factory (H01–H03); core operations | a launched process is owned, observed, stopped and witnessed gone on both OSes |
-| 2 | Host launch/stop, sessions, capture, mail (H04–H09); HTTP + one MCP consumer (H17–H19); CLI and MCP surfaces | Install and Adopt journeys pass on Linux with a stub-free product |
-| 3 | Claude and Codex harnesses (H10–H12), SE Code integration (H13, with Gamma), supervision (H14), config install/remove (H20) | all five journeys pass on Linux and Windows with real Claude and Codex |
-| 4 | Live handover (P06–P08, H15/H16, SE Code side); Atlas | B8 handover probe passes; Atlas index/query witnessed within its budgets |
-| 5 | Release: native builds, Windows signing, bundle in SE Code, stateengine.ai staging | the five journeys pass from the real downloads on clean Windows and Linux |
-
-macOS work (P03-M, P07-M, macOS release) waits for the Mac compatibility campaign.
+| 0 | The early proofs above; the runner red against a stub on Windows and Linux; this reconciliation applied and re-reviewed as one design | every proof has a result and the design is accepted as a whole |
+| 1 | se-types, se-store, sync core registry and hostless CLI, se-proc Windows and Linux backends with the stop witness | J1 from an unsigned archive with install and uninstall scripts |
+| 2 | Host, HTTP/MCP, Claude headless with hooks and capture, launch/stop, remove and uninstall | J2, J3 and J5 with Claude on Linux, then Windows |
+| 3 | Codex, push mail and the attended Claude mod, windowed launch, `doctor --fix CHECK-ID` with printed plans, history import | all five journeys, both providers, Windows and Linux, standalone |
+| 4 | Embedded SE Code and live handover (both directions, every crash phase), `forget`, signing | B1, B2 and B8 on Windows and Linux; J1 from the signed download |
+| 5 | Atlas; macOS campaign; release | the five journeys pass from the real downloads on Windows, Linux and macOS |
 
 ## Proposed owners
 
 | Owner | Work |
 | --- | --- |
 | 5p | se-proc |
-| Nell | se-store |
-| Vera | se-host |
-| Iris | se-types, SE Code API, SE Code integration with Gamma |
+| Nell | se-store and import |
+| Vera | se-host and harnesses |
+| Iris | se-types, the SE Code API, SE Code integration with Gamma |
 | 5b, 5e | se-core and the `se` binary; 5e then Atlas |
-| Milo | release and packaging |
-| 5d | journey runner and per-wave journey witnesses |
+| Milo | release, packaging, install and uninstall |
+| 5d | journey runner and per-wave witnesses |
 | 5c, Otto, Opus (Prime) | reviews and the tests that judge each wave |
 
 ## What "done" means
 
-The five scripted user journeys (Install, Adopt, Come back, Two agents, Remove) pass on clean
-Windows and Linux with real Claude and Codex, inside section 80's budgets, from the real
-release artifacts (Jimmy 2026-10-29). macOS follows in its own campaign.
+The five scripted journeys (Install, Adopt, Come back, Two agents, Remove) pass on clean Windows,
+Linux and macOS with real Claude and Codex, standalone and inside SE Code, within section 80's
+budgets, from the real release artifacts (Jimmy 2026-10-29).

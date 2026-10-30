@@ -1,9 +1,9 @@
 # 00 — Overview and invariants
 
-Status: deep design, 2026-10-30. When texts disagree: Jimmy, then the approved plan (ledger
-`rust-redesign-planned-before-rebuild-2026-10-30`), then `rust-se/docs/OPS.md` (`f8a2e59`), then this
-file, then drafts 01–05. Siblings: 10 types and host API, 20 data model, 30 process ownership,
-40 host runtime and harnesses, 50 surface and errors, 60 Atlas, 70/80/90 and 95 (Prime).
+Status: deep design, reconciled 2026-10-30 against Jimmy's decisions and both whole-design reviews.
+The sections describe one system; where they disagreed they were corrected, not ranked. Siblings:
+10 types and host API, 20 data model, 30 process ownership, 40 host runtime and harnesses,
+50 surface and errors, 60 Atlas, 70/80/90 and 95 (Prime). `docs/OPS.md` is the operation allowlist.
 
 ## 1. The product
 
@@ -16,15 +16,22 @@ people without SE Code, and a thin `se` CLI.
 
 ### 1.2 What it is not
 Factory machinery stays out: campaigns, reviews, landings, gates, mutation checks, census, remote
-compute, brick, routing, Postgres floor administration, mirror and projection repair. The factory
-stays Node and uses the product only through the CLI and MCP, like any user. The boundary is mechanical: `OPS.md` lists
-**59 operations and 25 MCP tools (20 core + 5 Atlas)**; a crate must not add a public operation
-outside it. (The brief for this section said 60; OPS.md's own count is 59 and wins.) Old command
-names get a static "renamed: use …" refusal, never an executable alias.
+compute, brick, routing, Postgres floor administration, mirror and projection repair. The product
+and the factory are two repos (Jimmy 2026-10-30): `rust-se` is the shipped product; the existing Node
+repo becomes the factory and keeps today's Node engine as its own private library. The factory is not
+rewired onto the Rust product in this plan (today 249 of its 391 files import Node product internals
+directly); moving the fleet onto Rust is a separate, later project. The product boundary is
+mechanical: `OPS.md` lists the operations; CLI help, the MCP tool list and their counts are generated
+from the one registry, so no document states a hand-counted number. A crate must not add a public
+operation outside OPS.md. Old command names get a static "renamed: use …" refusal, never an
+executable alias.
 
 ### 1.3 The five journeys (definition of done)
 Each runs as a script on clean Windows, macOS and Linux, with Claude and with Codex, inside SE Code
-and standalone. The scripts live in their own repo, owned by a seat that writes no product code.
+and standalone. Windows and Linux standalone is the first milestone, embedded SE Code the next, and
+macOS is qualified in its own campaign before alpha ships; the build does not wait for it. The
+scripts are owned by a seat that writes no product code, and they run from a scheduler or a
+non-agent shell, never from inside an agent's process tree (owner verbs refuse there).
 
 | ID | Journey | What it forces the design to get right |
 | --- | --- | --- |
@@ -44,12 +51,13 @@ Everything StateEngine adds, not counting the agent CLIs.
 | Re-adopting agents after handover or restart | **≤ 500 ms**, no lost or doubled input | Proposed by Alpha; unmeasured, a build task |
 | Idle cost | **~0 wakeups, < 0.1% CPU** | 0 over 10 min embedded |
 | Idle wakeups, exact | **≤ 1/s** across all StateEngine processes with no session, **≤ 2/s** with one; < 0.1% of one core, over 60 s | — |
-| Persistent processes | **0 embedded, 1 standalone** | 0 added embedded |
+| Persistent processes | **0 embedded while no agent is live, 1 standalone**; after SE Code exits with live agents, the detached `se up` that took them over is the one standalone process and exits 10 minutes after its last live agent | 0 added embedded |
 | CLI read command | **p95 < 20 ms** over 30 runs each of `--version`, `status`, `agent list` (was `agents`), `msg inbox`, `msg list`, `decision list` | — |
 | Standalone daemon memory | **≤ 25 MB** with one live session | 4–12 MB prototypes |
-| CLI write command | **measured, then set** (Jimmy) | hooks through host 7.5 ms typical, 9 ms worst; 8 agents 11 ms worst |
+| CLI write command (B9) | **p95 ≤ 20 ms** (section 80 owns the number) | hooks through host 7.5 ms typical, 9 ms worst; 8 agents 11 ms worst. A later mixed-workload rehearsal measured 37 ms serial and 67 ms with 20 clients; E3 explains the gap before the build |
 
-Line counts (~53k total) are estimates and a review signal, never a reason to cut quality.
+Line counts come from the one size table in section 95; they are estimates and a review signal,
+never a reason to cut quality. No schedule is promised until the early proofs (section 95) settle.
 
 ## 2. System shape
 
@@ -68,8 +76,12 @@ whole life and publishes `<run>/endpoint.json` (IPC address, listener port, host
 `secode|daemon`, generation, API version). It owns all writes (one batching writer), every owned
 process, mail push, the loopback listener and Atlas. SE Code starting under a running daemon asks it
 to hand over (drain, release, exit), then takes the lock and re-adopts the agents; SE Code exiting
-with live agents hands back to a detached `se up`; after an SE Code crash, whichever owner starts next
-adopts them. Handover is section 40; re-adoption is section 30.
+with live agents hands back to a detached `se up` by default (live handover, Jimmy 2026-10-30: in
+before alpha). Participating agents are interrupted to an exact idle before the handover is sealed;
+after SE Code exits, the daemon keeps their processes and capture, while SE Code-native input and
+mail stay held until SE Code reopens and status says so. After an SE Code crash, whichever owner
+starts next adopts them. An ordinary `se down` stops agents on every OS and offers resume. Handover
+is section 40; re-adoption is section 30.
 
 **Reads never need the host.** Every reader opens `state.db` directly in WAL mode (inbox at a million
 events: 3.5 ms). **Writes go through the host when one runs**, and directly when none runs; both call
@@ -77,7 +89,8 @@ the same `se-store` write function, so the paths cannot drift. To make "no host 
 direct writer holds a **shared** lock on `runtime.lock` for the length of its transaction; the host
 needs the **exclusive** lock, so it cannot start mid-write, and on start it scans the pending-effects
 table, which is the whole to-do list (no file watcher on the database). **Custody** (launch, stop,
-wake, process start/stop) always runs in the host; the CLI auto-starts `se up` when needed.
+wake) always runs in the host; when none runs, the CLI starts it through the private runtime
+bootstrap (section 40), never through a public daemon command.
 
 ### 2.2 Processes and threads per mode
 
@@ -165,7 +178,7 @@ sequenceDiagram
   participant N as Next host start
   U->>C: se decide api-shape "One op type per operation"
   C->>C: try shared lock on runtime.lock: granted (no host; none can start now)
-  C->>DB: open; check application_id and user_version (older store: start host to migrate, then forward)
+  C->>DB: open; check application_id and user_version (older store: start host, which migrates at startup, then forward)
   C->>DB: same se-core op, same se-store write: BEGIN IMMEDIATE .. append .. projections .. effects pending .. COMMIT
   C->>C: release shared lock
   C-->>U: DecisionReceipt{committed, proposed}
@@ -239,10 +252,10 @@ se-types  <-  se-store  <-  se-core  <-  se-host  <-  se (binary)
 | Crate | Holds | Our deps | I/O allowed | Async | unsafe |
 | --- | --- | --- | --- | --- | --- |
 | `se-types` | IDs, `SeError` + remedies, `Read<T>`, `Page<T>`/`Window`, receipts, op input/output DTOs, host API types, `API_VERSION` | none | **none** | no | forbid |
-| `se-store` | SQLite open/refuse, event log, projections in the same txn, migrations, backup, salvage, `forget` | se-types | `state.db`, its WAL/SHM, backups | no | forbid |
+| `se-store` | SQLite open/refuse, event log, projections in the same txn, migrations, automatic backup and restore of the newest valid backup, `forget` | se-types | `state.db`, its WAL/SHM, backups | no | forbid |
 | `se-core` | Identity and authority checks, sessions, init/adopt/remove records, messages, decisions, capture records, resume, the `ops!` registry and sync executors | se-types, se-store | **only through se-store** | no | forbid |
-| `se-proc` | All OS-native calls: process identity, Windows jobs, Linux pidfd + cgroup v2, macOS kqueue, peer credentials on IPC, owner-only ACLs | se-types | OS process/security APIs | exit notification via tokio `AsyncFd` (Linux, macOS) or the one shared per-host IOCP collector (Windows); never creates a runtime | **only here**, every block with `// SAFETY:` |
-| `se-atlas` | Code index: walker, tree-sitter, its own db, five queries | se-types | its own `atlas.db`, reads the working tree | its worker is a thread; no tokio | forbid |
+| `se-proc` | All OS-native calls: process identity, Windows jobs, Linux pidfd + cgroup v2, macOS kqueue, peer credentials on IPC, owner-only ACLs | se-types | OS process/security APIs | no tokio: exposes nonblocking descriptors that se-host registers on its own `AsyncFd` reactor (Linux, macOS) and the one shared per-host IOCP collector (Windows); never creates a runtime | **only here**, every block with `// SAFETY:` |
+| `se-atlas` | Code index: walker, tree-sitter, its own db, five queries | se-types | its own `atlas.db`, reads the working tree | incremental updates on a host-scheduled task; the cold index runs in a transient child capped at 64 MB; no tokio in the crate | forbid |
 | `se-host` | Engine/generations, writer thread, IPC, listener, MCP, session tasks, harnesses (Claude, Codex, SE Code), integration config edits, transcript reading, custody executors | se-types, se-store, se-core, se-proc, se-atlas (feature) | sockets, pipes, transcripts, integration files, launch files | **yes** (tokio, on a passed-in handle when embedded) | forbid |
 | `se` | CLI parsing/rendering, `se up`, `se hook`, `se mcp`, doctor, import, env → config, log subscriber | all | argv, env, stdio, TTY, log file | only `se up`/`se mcp` build a runtime | forbid |
 
@@ -380,14 +393,17 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 
 ### 5.8 Versioning
 - One workspace version for all crates, `0.x` through alpha.
-- Host API: `API_VERSION {major, minor}` in se-types, negotiated at `Engine::open` and in the IPC
-  hello; minor is additive only. No dynamic ABI and no hot reload.
-- Outputs: every JSON payload carries `"schema": "se.<family>/vN"`; the external families
-  `stateengine-init/v1`, `seat-stop/v1` and `secode.session-context-v1` keep their decoders.
+- Host API: SE Code links StateEngine statically, so the API is one exact version checked at build
+  and at `Engine::open` (section 10); there is no minor-range negotiation. No dynamic ABI and no hot
+  reload. Library crates use caret dependency ranges, never exact pins, so they never force SE Code's
+  lock (SE Code: tokio "1", rusqlite "0.40" bundled, axum "=0.8.9" in secode-api).
+- Outputs: every JSON payload carries `"schema": "se.<family>/vN"`. The SE Code session-context
+  adapter keeps its frozen format; no N-1 encoders are built until an N-1 exists.
 - Store: `PRAGMA application_id` (constant, refuses foreign files) and `user_version`. Only the host
-  migrates; alpha migrations are additive; a copy of the old store is kept until the next successful
-  start; an older binary refuses to write a newer store. A CLI that finds an older store starts the
-  host to migrate, then continues.
+  migrates, at its own startup, as the sole owner: it takes a verified pre-migration backup, applies
+  supported additive migrations, then serves. There is no manual migration step. A too-new or
+  unsupported store refuses with a remedy; an older binary refuses to write a newer store; if an older
+  host is still running, the new version refuses and says to run `se down` first.
 - The Claude plugin protocol and Codex app-server protocol versions are checked at launch; a too-old
   CLI refuses with the upgrade command.
 
@@ -440,13 +456,20 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 | No file watcher on the database | Plan; measured zero idle CPU |
 | Hooks hand writes to the host | Measured: 52–76 ms direct vs 3 ms bare start |
 | Windows: host holds job handles; host death stops the tree; relaunch resumes | Measured (5p), corrected named-job assumption |
-| Linux: BestAvailable containment. On the first agent launch the host (embedded in SE Code or `se up`) lazily asks the systemd user manager for one delegated user scope for agents only (`systemd-run --user` transient unit, SE Code's existing pattern) and places agents there in cgroup v2 from birth. With no user manager or delegation (containers, WSL without systemd, minimal hosts) agents run in an explicitly `uncontained` process group: launch succeeds, and status and the launch receipt name `containment` and the probe cause. Never a launch refusal (supersedes "refuse if delegation bootstrap fails") | Agreed with Alpha, adopted in 30; measured: 28/28 trees, 15 ms readiness, 2.7 MB (contained path) |
+| Linux: BestAvailable containment. On the first agent launch the host (embedded in SE Code or `se up`) lazily asks the systemd user manager for one delegated user scope for agents only (`systemd-run --user` transient unit, SE Code's existing pattern) and places agents there in cgroup v2 from birth. With no user manager or delegation (containers, WSL without systemd, minimal hosts) agents run in an explicitly `uncontained` process group: launch succeeds, and status and the launch receipt name `containment` and the probe cause. Never a launch refusal. In that mode a stop reports the process-group bound honestly: a tool that calls setsid or double-forks can escape the group, and the stop receipt says so rather than claiming every descendant is gone | Agreed with Alpha, adopted in 30; measured: 28/28 trees, 15 ms readiness, 2.7 MB (contained path) |
 | Claude via launch flags, no config writes; hooks call `se`; mail through the plugin's small JS | Plan; measured (Vera) |
 | Stock Codex over app-server; never bundle a fork | Jimmy 2026-10-23/24; measured with 0.166 |
 | One op definition generates CLI and MCP; OPS.md is the allowlist; old names refuse with a hint | Plan; OPS.md `f8a2e59` |
-| Atlas: own seat, own db, code only, lazy start, off in embedded | Plan; measured: 1.36M lines in 165 s, 20 MB peak, 11 MB settled, 67 ms save-to-search |
-| No hash chain over events; no rollback writer into Node formats (overrides draft 05) | Plan; OPS.md |
-| Only the host migrates; additive migrations; pre-migration copy; backups at start and clean shutdown, two kept | Plan |
+| Atlas: own db, code only, disabled by default in both modes, enabled by one `config.toml` setting; cold index in a transient capped child; built after the five journeys and live handover pass and never holds a milestone | Jimmy 2026-10-30; measured: 1.36M lines in 165 s, 20 MB peak, 11 MB settled, 67 ms save-to-search |
+| No hash chain over events or decisions; immutable typed decision transitions with expected revisions; no rollback writer into Node formats | Reconciliation 2026-10-30; OPS.md |
+| The host migrates automatically at startup as sole owner, after a verified pre-migration backup; no manual migration step; backups at start-of-day and clean shutdown, two kept, restore of the newest valid backup | Reconciliation 2026-10-30; Jimmy 09-02 (no manual steps) and 10-21 (refuse mixed old/new) |
+| Live handover is in before alpha; agents are interrupted to exact idle first; SE Code-native routes stay held while SE Code is gone | Jimmy 2026-10-30 |
+| `forget` is in alpha, built after the five journeys | Jimmy 2026-10-30 |
+| Human-only actions are mistake and drift guards, not proof against a determined agent on the user's own account, and say so | Jimmy 2026-10-30 |
+| Product and factory are separate repos; the factory keeps the Node engine | Jimmy 2026-10-30 |
+| Every public mutation carries one request identity reused across uncertain retries (CLI prints it, MCP requires it) | Reconciliation 2026-10-30 |
+| Codex minimum 0.152 (helper Authorization and credential refresh), one constant | Measured 2026-10-30 |
+| Writes: NORMAL can lose several recent ordinary commits on power loss or OS crash; decisions, credentials and owner records commit FULL | Reconciliation 2026-10-30 |
 | `se forget` really erases, and says what it cannot reach | Plan |
 | Loopback listener on a per-user port chosen at init; human-only actions need a TTY outside agent trees | Plan |
 | No telemetry; downloads from stateengine.ai | Plan defaults |
@@ -455,18 +478,17 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 
 ### 7.2 Open
 
-1. **CLI write budget** — measured, then set by Jimmy. Proposal: p95 ≤ 25 ms through a running host.
-2. **Re-adoption ≤ 500 ms** with no lost or doubled input — unmeasured; a real handover test (30, 40).
-3. **~2 KB per event** — trim what each event stores (20).
-4. **Where the host API types live** for SE Code's public build, which may not see se-types: an
-   SE Code-side trait with our adapter, or a separately licensed DTO crate (10, with Alpha).
-5. **Decision chain** — OPS.md drops event hash chains; recommend no chain for decisions either,
-   keeping imported legacy ledger bytes verbatim (20; Jimmy only if someone objects).
-6. **Auto-started daemon lifetime** — proposal: a daemon auto-started by launch or a hook exits ten
-   minutes after its last session and client end (one timer, armed only then); `se up` stays (40).
-7. **Hook with no host** — cold daemon start from a hook on Windows with Defender is unmeasured; if it
-   misses Claude's hook timeout, the hook writes directly under the shared lock, same store function (40).
-8. **Signing** — Trusted Signing (suggested) or a certificate; Apple Developer ID enrollment (Jimmy).
-9. **Panic strategy** — `catch_unwind` needs `panic = "unwind"` in SE Code's release profile (Alpha).
-10. **Atlas files** — one `atlas.db` or one per project (60).
-11. **Mac hardware** for the compatibility campaign (Prime).
+Each open item is settled by an early proof in section 95, not by argument.
+1. **CLI write budget (B9 ≤ 20 ms)** — a mixed-workload rehearsal measured 37 ms serial and 67 ms
+   with 20 clients. Batching and queueing are fast; the time is in commit, with about one group in
+   eleven paying ~36 ms, consistent with the automatic WAL checkpoint running inside the commit.
+   E3 moves checkpointing off the commit path and re-measures through a host on NTFS and ext4.
+2. **First-bind cost (B2 ≤ 100 ms embedded)** — several FULL commits now precede the first answer
+   (runtime owner, session activation, new-schema publication; embedded binds mint no credentials).
+   E2 measures it on Windows with Defender on a new and an existing store.
+3. **Re-adoption ≤ 500 ms (B8)** — native pipe transfer and real-provider handover pass on Windows and
+   Linux (spikes, 2026-10-30); store lease, capture, queue and timing are measured in the build.
+4. **Hook with no host** — cold start from a hook on Windows with Defender (E8) decides host-start
+   versus a direct write under the shared lock (40).
+5. **Signing** — Trusted Signing (suggested) or a certificate; Apple Developer ID enrollment (Jimmy).
+6. **Mac hardware** for the compatibility campaign (Jimmy's borrowed Mac).
