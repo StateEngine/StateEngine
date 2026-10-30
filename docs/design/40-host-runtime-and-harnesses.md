@@ -1,7 +1,7 @@
 # 40 — Host runtime and harnesses
 
 Design candidate, not runtime implementation or qualification. Owner: Vera.
-Base: accepted main `a644381871cbae5d8e1eaf56559943443b580f35`.
+Base: accepted main `d6058045c2cb0d5ae3cbf10f466e1a7f7749e0c1`.
 This revision folds Prime's Opus return `msg-1f35564dbeb211d846bf5f9c` and Sol's
 `msg-8e0ac6e98350f404c9abe25f`. Verification tier: kernel boundary design;
 compiling declarations here, journey/black-box checks owned by reviewers.
@@ -456,6 +456,31 @@ independently of ordinary G callback fencing. The fence is keyed by the exact
 transfer and retained queue incarnation, not the lifetime of one SE Code epoch.
 The linked TransferId is the checked spelling of the same store transfer
 RecordId, never the native transfer nonce or a newly allocated retry identity.
+On **every handover entry and recovery**, before allocating that identity or a
+replacement successor plan, the factory calls
+HandoverServices::queue_state_for_request(original_key) on the verified actual
+queue. This bounded indexed lookup returns the original typed Frozen or Settled
+plan/checkpoint for (NativeQueueId, request key), including before Prepared.
+The initial native fence atomically stores that key index and the complete plan.
+Unreadable/Unknown results cannot become absence. A factory crash after native freeze but before Prepared
+can leave no transfer identity in the store or caller; queue_state(TransferId)
+alone cannot recover it. Discovery must return the original typed plan/checkpoint
+without parsing an error message. Verify its original key, immutable source/
+destination kind/epoch, source G and queue incarnation: same-key replay retains
+that exact plan/TransferId and any settled result returns its original outcome.
+Only an actual request-key Absent on that verified queue permits new-plan
+preparation; Unreadable/Unknown prevents replacement allocation. A competing
+request cannot overwrite the queue's single open fence: freeze_queue atomically
+checks that invariant and request-key uniqueness before any new fence commit.
+Free-text refusal IDs are informational, never machine recovery inputs.
+
+On process restart or a lost reply before Prepared, discover first, restore the
+original plan, then resolve its actual native state and durable phase using the
+same recovery/abort rules below. An original plan whose pinned peer is lost may
+end in a verified abort; replay does not silently replace its successor or key.
+After discovery, queue_state uses that recovered TransferId. The lookup neither
+claims ownership nor clears a fence; the factory still proves current lease,
+native lineage and terminal FULL outcome before any settlement.
 freeze_queue installs that fence and returns NativeQueueCheckpoint for the
 complete participating native binding set; queue_state(TransferId) resolves the original
 durable result after a lost reply. **The factory** reads/verifies durable phase,
