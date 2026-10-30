@@ -1,7 +1,7 @@
 # 40 — Host runtime and harnesses
 
 Design candidate, not runtime implementation or qualification. Owner: Vera.
-Base: accepted main `d6058045c2cb0d5ae3cbf10f466e1a7f7749e0c1`.
+Base: accepted main `b6977690a24e2d8e9d52ec7956392ac7f64feb5f`.
 This revision folds Prime's Opus return `msg-1f35564dbeb211d846bf5f9c` and Sol's
 `msg-8e0ac6e98350f404c9abe25f`. Verification tier: kernel boundary design;
 compiling declarations here, journey/black-box checks owned by reviewers.
@@ -290,6 +290,11 @@ that service's loss/overflow observations for bounded pinned-source catch-up,
 never full machine/floor scans. Unix sources use the existing native reactors.
 Do not quietly select notify's extra thread or poll watcher. If events are unavailable, expose
 watcher unavailable and rely on real hook/completion plus the bounded live catch-up.
+On Windows share one recursive handle and 64 KiB buffer per trusted provider
+transcript root across sessions; admit at most four such roots within the 0.5 MB
+watcher allocation, retaining the remainder for metadata. Extra/unavailable roots
+report missing watch coverage and use the stated capture backstops, not extra
+per-session buffers or a second collector.
 No extra uncounted watcher thread is reserved. CreateProcess and transcript
 256-KiB chunk reads run as bounded blocking jobs. Exec/provider readiness awaits
 native events outside the pool. A stuck kernel call retains its slot and custody,
@@ -405,6 +410,13 @@ suspend, so a resumed stop is not silently granted a fresh full interval.
 | Normal exit choosing explicit stop | Same stop policy as se down | Same stop policy as se down | Same stop policy as se down |
 | Ordinary SE Code/daemon exit with neither handover nor explicit stop selected | Run graceful stop first: interrupt, save original resume reference and flush capture/debt; then exit. Last job close ends ordinary members; status/resume retain the saved reference and distinguish observed closure from pending readback | Same graceful stop/save/flush; stop and witness exact owned cgroup or explicitly Uncontained group before exit at its achieved bound; saved reference remains available | Same graceful stop/save/flush and exact tracked-group stop/readback at its achieved bound; incomplete closure stays named, saved reference remains available |
 | Same-process generation restart | Arena/job/pipe resources stay with supervisor, no last-handle interval | Arena/FDs stay retained | Arena/FDs stay retained |
+
+“Handover configured” is the default SE Code exit policy with live agents:
+hand them back to a detached se up through the same checked protocol, per section
+00. The ordinary-exit row applies to daemon shutdown or a deliberately selected
+no-handover/stop route after handover is unavailable/refused; a failed transfer
+must stay visible rather than silently abandoning ownership. No extra setup is
+required to enable the default SE Code handback.
 
 Explicit Windows breakaway descendants are outside the stated ordinary-job bound;
 the receipt retains that limitation. Successful staged handover is the narrowly
@@ -524,7 +536,7 @@ epoch, protected queue incarnation and original cut before its first callback.
 A recovery adapter instead proves its fresh epoch through the verified native
 adoption lineage and the same retained queue/transfer, never by pretending to be
 the dead source or successor.
-A second handover plan while a fence is open refuses transfer-in-progress with
+A second handover plan while a fence is open refuses runtime-handover-in-progress with
 the open transfer identity. Resolve the first transfer before starting a reverse
 one; timeout, an empty active map or a new epoch cannot replace that resolution.
 
@@ -628,6 +640,13 @@ inactive copies and ordinary OS crash policy applies; actual native holds/debt
 remain. No receiver may activate from an uncommitted request or channel EOF.
 This is Prime's reconciled drain/freeze-before-Prepared order
 (msg-cf8e46cdeebb8fd10816bdc7), not a final-manifest mutation at ReadyToClaim.
+If native queue freeze committed but no Prepared fact exists, the factory proves
+that absence under the actual source/recovered-source ownership and lease,
+verifies staged-copy closure, then settles the original fence as **Aborted**
+citing that FULL source-owner fact. There is no store transfer phase to append
+or skip in this case. Missing peer/resource/owner proof leaves the fence pending;
+timeout alone cannot abort it. Typed request-key discovery above supplies the
+original plan/checkpoint even after a lost reply or factory process loss.
 
 The source obtains actual TransferManifest from the safe read-only
 ProcessTransfer::transfer_manifest(&TransferOffer) accessor admitted in
@@ -814,10 +833,10 @@ Reuse **the HTTP crate SE Code's server already links**, verified against that
 server's Cargo.lock at build start, with its existing runtime integration.
 The desktop lockfile alone does not establish a shared server dependency; do not
 assume hyper is present or add a second stack. If the server links no HTTP crate,
-use a minimal **POST-only HTTP/1.1 MCP parser**: fixed routes, bounded headers and
-Content-Length body, no chunked/ambiguous framing, pipelining, upgrades or SSE.
-The fixed GET mail/livez auxiliary endpoints below remain supported through the
-same bounded front end, with no request body and no generic HTTP proxy surface.
+use a minimal **fixed-route HTTP/1.1 parser** with bounded headers: the MCP
+endpoint is POST-only with a Content-Length body; mail long-poll and livez are
+separate GET routes with no request body. No chunked/ambiguous framing,
+pipelining, upgrades, SSE or generic HTTP proxy surface is supported.
 Standalone uses the selected common stack/parser. No TLS/client stack or hidden
 process/server per agent is introduced. Both parser choices enforce the same
 Host/Origin/Sec-Fetch-Site, credential and final-envelope budgets below.
@@ -1307,6 +1326,8 @@ Integration obligations still requiring owner review/measurement:
    IOCP stream bridge. ProviderIoPlatform consumes its create/attach/read/write,
    scoped close/completion and manifest-accessor declarations described above;
    native qualification and single-collector integration remain unmeasured.
+   The same se-proc/section-60 owner supplies the shared file-watch service at
+   implementation; capture does not add a separate native watch port.
    No host unsafe or second collector.
 3. **Alpha + host composition** publish the permissive linked API, unify actual
    Tokio/selected-HTTP/SQLite packages, catch unwinds and apply the reconciled route-local
