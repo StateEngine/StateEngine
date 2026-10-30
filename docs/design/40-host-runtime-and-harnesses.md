@@ -505,6 +505,15 @@ one; timeout, an empty active map or a new epoch cannot replace that resolution.
 | Recovered | A checked cold owner supersedes Claimed/Activated; one FULL transaction records the new runtime.owner and original transfer's Recovered outcome with fresh activated custody/capture and retained queue-cut proof; only then may the factory settle that original fence |
 | RecoveryPending | Lost ACK, peer death, ambiguous CAS/lease/stream state; no guessed rollback or second consumer; reconcile exact transfer/receipt/native state |
 
+Finished verifies closure of the source's transferred native resources, not that
+the entire SE Code process has already exited. Retain its native queue adapter
+and private control channel through terminal fence settlement, then allow final
+process exit. Clearing that fence does not enable an old native route: both human
+input and mail promotion still recheck the registered current native target/G.
+A standalone destination leaves those routes NativeDormant; only SE Code's
+verified return/adoption enables them. Thus a still-closing old UI cannot promote
+input in the gap between Finished, settlement and exit.
+
 The ownership row is a CAS and key in the store, not permission to bypass the
 OS lock. Between source release and destination claim neither may write/input.
 A racing third owner sees committed transfer state and refuses ordinary activation;
