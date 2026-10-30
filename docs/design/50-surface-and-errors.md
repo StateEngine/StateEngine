@@ -62,25 +62,34 @@ schema generation. Synchronous `dispatch` returns one of:
 - `OpStep::Complete(output)` for an already measured read/result;
 - `OpStep::Commit { batch, then }`, where `batch` is the store's closed AtomicBatch
   and `then` is a typed operation continuation containing owned values only;
-- `OpStep::Custody(plan)` for native/file work admitted to the host executor.
+- `OpStep::Custody(plan)` for native/file work admitted to the host or hostless CLI custody adapter.
 
-`then` is not a closure and captures no SQL handle, transaction or lock. The async
-host calls `WriterClient::submit`, awaits its Completion on its async task, then
-runs the synchronous continuation with the actual CommitReceipt. Submission is
-bounded admission, not a blocking commit. Core never waits; no host thread calls
-`wait_blocking`. The hostless CLI calls synchronous `DirectStore::append(batch, lease)` and passes its actual CommitReceipt to the same typed continuation. CommitWait::wait_blocking remains CLI-only for a queued writer consumer; it is not a new DirectStore requirement. `se-store` is **Async: futures only at the writer boundary**.
-No write closure or transaction spans an await. Custody continuations may produce
-another typed Commit step; only the host drives this loop.
+`then` is not a closure and captures no SQL handle, transaction or lock. On the
+host, planning and continuation each run in a finite blocking-pool job, admitted
+through the host's bounded worker permits. An owned/Arc reader enters each job;
+the job opens and closes its finite Snapshot there. No SQL read or synchronous
+continuation runs on the async executor. After planning releases its worker
+permit and Snapshot, the async driver calls `WriterClient::submit` and awaits
+CommitWait on the executor. It then admits a new blocking job for the typed
+continuation with the actual CommitReceipt and a fresh Snapshot. No worker
+permit or transaction spans the writer await. Submission is bounded admission,
+not a blocking commit; core never waits. The hostless CLI calls synchronous
+`DirectStore::append(batch, lease)` and passes its actual CommitReceipt to the
+same typed continuation with a fresh finite read. It adds no queued writer or
+future. `se-store` is **Async: futures only at the writer boundary**. Custody
+continuations may produce another typed Commit step, driven by the adapter.
 
 The frozen first-write seam is [se-core::commit](../../crates/se-core/src/commit.rs).
 `Cx` borrows `se-store::Snapshot` and verified Admission, while AtomicBatch and
 CommitReceipt also live in se-store. Dependencies are core -> store -> types;
 there is no types -> store cycle. [The compile-only consumer](commit-bridge-consumer.rs)
-plans message.send and working_state.set, closes the actual planning Snapshot,
-then exercises both routes. The host awaits WriterClient's CommitWait; the CLI
-uses DirectStore::append. Both feed the same typed continuation a real
-CommitReceipt and a fresh finite read for replayed payload IDs. No planner,
-transaction engine or fake store/receipt implementation is supplied.
+exercises message.send and working_state.set through both routes. Its host route
+uses Arc readers and bounded blocking jobs for planning and finish, releases the
+permit around CommitWait, uses the supplied runtime Handle, and statically
+requires a Send future. Its direct route
+remains synchronous. Both resolve replayed payload IDs from the actual receipt
+and a fresh finite read. No planner, transaction engine or fake store/receipt
+implementation is supplied.
 
 **Writer stamp (Prime decision, 2026-10-30).** Every store commit records which writer made it: `WriterMode::Host { generation }` when the running host's writer committed it, `WriterMode::Direct` when the CLI committed with no host running. The store writes this onto the event row in the commit transaction and returns it in `Committed { receipt, wakes, writer }`. The typed continuation copies the actual CommitReceipt writer into the output; it never predicts that stamp before the writer completes. An `Op::run` cannot construct or override a `WriterMode`; the type has no public constructor outside `se-store`. Every output family that carries a store receipt includes `writer` (Appendix A.0 lists them), and it is a required stable field. An outside observer proves routing by comparing `writer.host_generation` with `se status` `$.runtime.generation` and with the event read back through `se history --event`, which carries the same object. No timing is involved. MCP and SE Code calls always commit through a host, so they always report `host`. A replayed receipt reports the writer of the original commit.
 
@@ -165,12 +174,12 @@ The transport wrapper and synchronous dispatcher use the same admission order fo
 2. Resolve project from the bound session or §2.2. A conflicting owner selector refuses.
 3. Validate the closed DTO, UTF-8 limits, revision preconditions and required request identity. Wrong identity kind, unknown fields or changed-body key reuse refuse before effects.
 4. Inspect runtime requirements. Read-only/hostless store work stays synchronous. Writes route to the existing host writer when it owns the lease. A reader/direct connection finding a supported older schema releases its shared lease and uses private host bootstrap for automatic backed-up migration, then reopens the read; it does not ask the user to run se up or upgrade manually. For custody requiring a host, the adapter uses the **private runtime bootstrap**, waits up to ten seconds for readiness and retains the same request identity. There is no public `se daemon` command. Pending returns an explicit readiness/result handle, never a fabricated success.
-5. Synchronous `dispatch` validates/plans and returns Complete, Commit { batch, then } or Custody. The host submits a Commit batch and asynchronously awaits Completion before calling its typed continuation; no host thread blocks on a writer. Its async custody executor performs native work and feeds actual facts back through these synchronous steps. Core does not submit or await commits, and no transaction spans an await.
+5. Synchronous `dispatch` validates/plans and returns Complete, Commit { batch, then } or Custody. The host runs planning and each continuation in separate bounded blocking-pool jobs with owned/Arc readers; only the CommitWait is awaited on the executor between jobs (§1.1). Native custody work feeds actual facts through those synchronous steps; hostless file-only work uses the CLI custody adapter. Core does not submit or await commits, and no transaction spans an await.
 6. Render achieved facts, including original writer on replay. Ordinary refusals return `se.error/v1` on the error channel **without appending a history event**. A prior commit or partial native effect remains an explicit receipt/pending fact, not a refusal erased from the record.
 
 ### 1.5.1 Request identity and bounded inputs
 
-Every public mutation creates its request identity **before first send**. CLI generates and prints one per invocation (stderr before transmission and in the keyed result), and accepts `--key KEY` to retry after an uncertain outcome. MCP mutation input schemas require `idempotency_key` (1–128 bytes); linked and IPC inputs carry the same typed key. The linked ToolCall identity must equal the required `arguments.idempotency_key`; a mismatch refuses before effects. The decision domain key (`key`/CLI KEY) is distinct from this request key. A timeout, lost ACK, reconnect, writer handoff or rerun with `--key` retains it. Reusing it with a changed normalized operation/project/principal/body returns `idempotency-key-reused`, with no second effect. Custody/config/artifact operations also retain their keyed effect plan and readback, rather than repeating a spawn, rotation, restore or overwrite.
+Every public mutation creates its request identity **before first send**. CLI generates and prints one per invocation (stderr before transmission and in the keyed result), and accepts `--key KEY` to retry after an uncertain outcome. MCP mutation input schemas require `idempotency_key` (1–128 bytes); linked and IPC inputs carry the same typed key. The linked ToolCall identity must equal the required `arguments.idempotency_key`; a mismatch refuses before effects. The decision domain key (`key`/CLI KEY) is distinct from this request key. A timeout, lost ACK, reconnect, writer handoff or rerun with `--key` retains it. For store-backed mutations, reusing it with a changed normalized operation/project/principal/body returns `idempotency-key-reused`, with no second effect. Store-backed custody retains its keyed effect plan and readback. File-only general config set, uninstall and restore follow the readback-reconciliation rule owned by [40 §9.5](40-host-runtime-and-harnesses.md#95-owned-configuration-and-remove); they add no receipt journal or durable request ledger.
 
 Only captured turns/hooks and recipient read/ack/dismiss markers use the restricted natural-key path. Their source session/turn or recipient/message/marker identity must already exist before first send; changed content conflicts. Random keys cannot bypass those uniqueness rules. A marker retry returns its original event/writer. Native hook/header-helper stdout retains its consumed protocol; request keys are printed on stderr and retained in their private keyed result, never added as a fake provider header. Session begin/end, working-state, agent create/launch/stop/wake, decisions and owner repairs are keyed mutations, not natural-key exceptions. When a provider has no turn ID, its trusted capture adapter derives the stable identity from the pinned source incarnation/position before first send; a fresh random ID on retry is invalid. Read-only calls cannot provide a mutation identity to acquire authority.
 
@@ -252,6 +261,14 @@ One closed input type per operation is shared by CLI, MCP, IPC and linked calls;
 CLI flag names may select/rename those fields but cannot define different limits
 or defaults. General lists use limit 1–100, default 20; search 1–50, default 20;
 message previews default 400 characters; resume defaults 32 KiB and caps at 1 MiB.
+The host has one shared permit for resume requests with budgets above 32 KiB,
+acquired before allocating the larger packet and held through serialization and
+packet delivery/release, including cancellation. Admission uses the existing
+request deadline/cancellation path; it never allocates a second large packet
+while waiting. With section 80's four total packets, the largest encoded output
+allocation is 1,048,576 + 3 × 32,768 = 1,146,880 bytes. Hostless synchronous CLI
+assembly has only its invocation's packet and does not start a host to acquire a
+permit. CLI, MCP and linked calls through a host share that host-wide permit.
 The public session.turn DTO accepts at most 128 KiB decoded UTF-8 content within
 the existing 1 MiB encoded frame cap. These are se-types constants SESSION_TURN_MAX_CONTENT_BYTES, SESSION_TURN_MAX_METADATA_BYTES and SESSION_TURN_MAX_FRAME_BYTES. Non-content fields, keys and framing occupy
 at most 256 KiB; worst-case six-byte JSON escaping of content uses 768 KiB, so both
@@ -703,7 +720,7 @@ Unknown keys refuse (`input-unknown-field`) on load, naming the line. Dotted nam
 
 ### 7.3 One configuration file and durable agent metadata
 
-General settings live only in the selected `config.toml`; no project settings layer or repository config participates. This includes `capture.enabled` (bool, default true) and the keys above. General file values have exactly one source; saved agent metadata is not a project settings layer. `se config get/list --origin` names the selected file, environment/flag override or built-in default. `config set` of a general key validates the one file value, then uses host file custody for atomic replacement, sync and independent reread. Its protected STATE/receipts journal retains the original key, file preimage/readback and application result outside SQLite and outside the installation. No general key is written to a store event, config head or Snapshot.config, and a receipt never invents an event/writer. Manual file edits take effect on next read or restart; a retry reconciles its original effect and cannot overwrite a later manual edit. The result distinguishes saved file readback from pending host application. It never writes a project override. General settings reject `-p` as inapplicable. Each ConfigKeyMeta marks human_only: true for profiles/permissions, capture/privacy policy, listener/security keys and agent.<A>.can-create; those writes require the same outside-agent-tree owner terminal check as other human-only actions. Non-security keys do not gain a blanket human-only requirement.
+General settings live only in the selected `config.toml`; no project settings layer or repository config participates. This includes `capture.enabled` (bool, default true) and the keys above. General file values have exactly one source; saved agent metadata is not a project settings layer. `se config get/list --origin` names the selected file, environment/flag override or built-in default. `config set` of a general key validates the one file value, then uses the shared file-custody adapter for atomic replacement, sync and independent reread. It is a hostless CLI file write and never starts a runtime. Its retries use the canonical file-state reconciliation rule in [40 §9.5](40-host-runtime-and-harnesses.md#95-owned-configuration-and-remove), with no receipt journal. No general key is written to a store event, config head or Snapshot.config, and a receipt never invents an event/writer. Manual file edits take effect on next read or restart. The result distinguishes saved file readback from pending host application. It never writes a project override. General settings reject `-p` as inapplicable. Each ConfigKeyMeta marks human_only: true for profiles/permissions, capture/privacy policy, listener/security keys and agent.<A>.can-create; those writes require the same outside-agent-tree owner terminal check as other human-only actions. Non-security keys do not gain a blanket human-only requirement.
 
 `agent.<AGENT>.profile`, `.model` and `.can-create` are explicit durable **agent record** updates exposed through `config get/set`, not another configuration source. Only these selectors accept owner project resolution (`-p` when needed); they update/read the canonical agent row with its revision and commit receipt. `.can-create` defaults false, profile/model are the saved identity's values. Flag choices for an invocation do not silently change those saved values. Grants are checked against the current record, not a stale config snapshot. `config list` lists file settings; `agent show` reports saved agent fields.
 
@@ -732,7 +749,6 @@ Static data in `se/src/renamed.rs`, matched on the first one or two argv tokens 
 | `capture-status`, `context`, `init --status` | `se status` |
 | `working-state-show` | `se working-state` |
 | `working-state-set`, `seat-continuity-write` | `se working-state set TEXT --expect REV` |
-
 | `packet` | `se resume --preview AGENT` |
 | `decommission`, `init --remove` | `se remove --project P` |
 | `plugin`, `hook-install`, `hook-uninstall` | `se doctor --fix` (repair setup), `se status` (inspect), `se remove` (remove with the project) |
@@ -747,7 +763,7 @@ Static data in `se/src/renamed.rs`, matched on the first one or two argv tokens 
 
 ## 8. Hazard plans, recovery and supported outcomes
 
-Every hazardous action prints a concrete plan **before effects**: affected IDs/paths, agents ended, credentials revoked/rotated, events lost (zero when measured zero), retained copies and the legal recovery command. Unknown/unreadable consequences refuse rather than print zero. Replaying a keyed action does not apply it twice. Human presence means a verified owner at a TTY outside an agent process tree, as specified in 70; it is a mistake/drift guard, **not proof against a determined agent using that OS account**. Help, refusals and human decision receipts state that bound. No typed-ID confirmation is used.
+Every hazardous action prints a concrete plan **before effects**: affected IDs/paths, agents ended, credentials revoked/rotated, events lost (zero when measured zero), retained copies and the legal recovery command. Unknown/unreadable consequences refuse rather than print zero. Store-backed keyed replays do not duplicate a commit; file-only retries use section 40’s current-state reconciliation rule. Human presence means a verified owner at a TTY outside an agent process tree, as specified in 70; it is a mistake/drift guard, **not proof against a determined agent using that OS account**. Help, refusals and human decision receipts state that bound. No typed-ID confirmation is used.
 
 | Action | Human check / plan | Consequences and boundary |
 | --- | --- | --- |
@@ -766,7 +782,7 @@ History search is a bounded streamed scan with a byte/time window and continuati
 
 `se down` stops all owned agents and runtime on each OS and renders achieved stop witnesses plus original-conversation resume argv. It cannot report success then say agents remain running. Failed/unknown stop witnesses report incomplete facts. Default SE Code exit with live agents instead transfers to detached `se up`; that daemon exits ten minutes after its last live agent. Embedded idle process measurements apply when no agent is live. Embedded session binding uses an in-process handle, adds no credential-issued/activated commits, and still includes runtime.owner/session activation/new-schema FULL cost in E2.
 
-Install/uninstall scripts and SE Code's installer invoke this same `se uninstall` operation rather than reimplementing it. It never kills an agent without the ordinary stop witness. Host-owned file-only plans/readbacks are retained under protected STATE/receipts, outside the replaced database or removed installation, as specified in 20; they supply keyed retry evidence, never a forged event/writer.
+Install/uninstall scripts and SE Code's installer invoke this same `se uninstall` operation rather than reimplementing it. It never kills an agent without the ordinary stop witness. File-only retries follow section 40’s readback-reconciliation rule, without a separate persistent journal; file readbacks never claim an event/writer.
 
 The product is complete only after real Claude and Codex pass all five journeys on clean Windows, Linux and macOS in standalone and embedded compositions. Windows/Linux is intermediate; the borrowed-Mac qualification runs before alpha release, without delaying the build. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable. Atlas is built after journeys/handover and never blocks a milestone; forget and live handover remain before alpha. Numerical budgets live only in section 80, size/build order in 95.
 
@@ -1401,10 +1417,12 @@ For `kind: "session.turn"`, `$.payload` always carries `session_id` Id; `turn_id
 
 The store query carries `session: Option<SessionId>` and exact
 `kinds: Vec<EventKind>` alongside agent/since filters. The exact capture kind is
-`session.turn` throughout store, wire and this appendix. Filtering is applied to
-indexed, bounded store reads before paging, never by reading a broad page and
-post-filtering. An empty filtered page therefore has the declared completeness
-and continuation semantics. Runtime-private kinds remain excluded before reading.
+`session.turn` throughout store, wire and this appendix. The session+kind query
+uses the turns projection’s scoped session/sequence index, then authoritative
+event primary-key reads, within the byte/page budget. It adds neither a broad
+event-kind index nor an event session/kind index to the hot insert path. Filtering
+is applied before paging, never by reading a broad page and post-filtering. An empty
+filtered page therefore has the declared completeness and continuation semantics. Runtime-private kinds remain excluded before reading.
 
 **How an outside judge checks a captured turn (B9 and J3):** drive the real integration exactly as its provider does (Claude hooks/transcript, Codex app-server or SE Code direct capture; section 40), then run `se history --session SESSION_ID --kind session.turn --json` from outside the writer. The turn must appear once with the expected `role`, `body.sha256` and `writer`. Running the same hook again must not add a second row (the turn receipt says `duplicate`).
 
@@ -1426,7 +1444,11 @@ A normal refusal is `se.error/v1`, not a successful hazard result. `plan` contai
 `events_lost: Read<{from_seq, to_seq, count}>`, `retained_copies[]`, and
 `authority_limit` stating the same-user mistake/drift boundary. Measured zero is
 Present with count zero; unknown/unreadable is never zero. Printing the plan is
-not a new durable phase or typed-ID confirmation.
+not a new durable phase or typed-ID confirmation. File-only results use the
+section 40 readback rule: `committed` reports applied requested state and
+`replayed` reports that the current state already matches, without claiming a
+historical store commit or persisted receipt. Partial/unreadable effects remain
+pending or refuse; they are never manufactured as successful original history.
 
 | Family | Additional required fields | Witness and completion rule |
 | --- | --- | --- |

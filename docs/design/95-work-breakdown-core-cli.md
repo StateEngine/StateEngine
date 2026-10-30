@@ -8,16 +8,17 @@ authenticated authority never comes from that DTO.
 
 `se-core` is synchronous validation, planning and receipt construction. A write
 returns `OpStep::Commit { batch, then }`: `then` is a typed continuation, never a
-closure holding a transaction. The async host submits the batch, awaits its
-Completion, then calls the synchronous continuation. Core never waits on a commit;
-the hostless CLI uses synchronous DirectStore::append under its lease. CommitWait::wait_blocking is reserved for synchronous CLI consumers of a queued writer, never the host. Custody is a typed plan
-executed by the host. No core Tokio, filesystem/env access, process handle or
-network client is introduced. Refusals use the error channel without a history
+closure holding a transaction. The host runs planning and continuation in separate
+bounded blocking-pool jobs with owned/Arc readers, releasing the worker permit
+and Snapshot around the executor-only CommitWait. Core never waits on a commit;
+the hostless CLI uses synchronous DirectStore::append under its lease. Custody is
+a typed plan executed by the host or hostless CLI file-custody adapter. No core
+Tokio, filesystem/env access, process handle or network client is introduced. Refusals use the error channel without a history
 write; a lost acknowledgement keeps the original identity and exposes uncertainty.
 
 Dependencies: **F** = shared se-types, including limits/errors and `code` DTOs;
 **S** = section 20 canonical reads, AtomicBatch, expected revisions, idempotency,
-writer completions and file-effect results; **H** = section 40 authority, async
+writer completions; **H** = section 40 authority, async
 custody/IPC/bootstrap, capture and native/file readback adapters; **P** = section 30
 exact-instance native custody; **A** = optional standalone CodeIndex adapter;
 **Q** = section 90's independent runner/reviewer tests and release artifacts.
@@ -97,7 +98,8 @@ A.14; session-start is read-only and hook exit zero is not capture proof.
 One file precedence is flag > env > config.toml > default, without project settings.
 Saved profile/model/create-grant updates are domain records, not config overrides.
 Closed key metadata marks security mutations human-only. Unneeded tuning knobs are
-constants; atomic readback is performed by H and retained with its request key.
+constants; general writes use H’s shared file adapter without starting a runtime.
+File-only retries follow section 40’s readback reconciliation, without a journal.
 Witness: T22, outside readback and J2 safe defaults; doctor cannot select bypass.
 
 **K09 — Runtime/agent custody and MCP adapters (250).** Own core
@@ -121,15 +123,6 @@ prints achieved facts, then removes owned installation/integrations and restores
 managed PATH. Scripts/SE Code's installer call this operation. Witness: T18/T22–T25,
 P7, independent store/artifact readback and J5 PATH restoration. No manual backup,
 salvage, SQL console or second uninstall implementation.
-
-**K11 — Optional standalone code bridge (150).** Own core `src/ops/atlas.rs`.
-Depends K01/K02 and A through `se-types::code`. Cover five bounded Atlas reads,
-coverage/index state and feature-unavailable; se-core never depends on se-atlas.
-Atlas is compiled only into the standalone `se`; it is disabled by default and
-enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting
-returns feature-unavailable. Witness: section 60 public queries, generated
-schemas/tools and optional real query. Built after journeys and handover; never
-an alpha milestone prerequisite or a cold-index engine in core.
 
 ## Binary units
 
@@ -183,10 +176,11 @@ the same uninstall path. No un-witnessed mass termination belongs in a script.
 
 ## Joins and completion
 
-K01/K02 establish shared ports/admission; K03–K11 can proceed in their disjoint
-leaves as S/H/A become available. B01 joins K08, and B02/B03/B05/B06 join their
-named consumers. B04 proceeds against agreed DTOs. A blocked dependency does not
-license taking over another owner's file or introducing a second implementation.
+K01/K02 establish shared ports/admission; K03–K10 can proceed in their disjoint
+leaves as S/H become available. A12 exclusively owns the optional
+`se-core/src/ops/atlas.rs` bridge and its estimate, without a second core unit.
+B01 joins K08, and B02/B03/B05/B06 join their named consumers. B04 proceeds
+against agreed DTOs. A blocked dependency does not license taking over another owner's file or introducing a second implementation.
 
 Q owns independent acceptance, with fixes staying in the responsible production
 unit. It covers CLI/MCP/linked mirrors, required T1–T28 and store P1–P8, the lost-ACK
@@ -199,9 +193,9 @@ and the separate FULL-write bound; this breakdown introduces no duplicate budget
 
 ## Estimate arithmetic
 
-Core K01–K11: **900 + 650 + 650 + 450 + 850 + 650 + 450 + 250 + 250 + 500 + 150
-= 5,750 lines**. Binary B01–B06: **700 + 250 + 550 + 550 + 250 + 300 = 2,600**.
-Combined production estimate: **8,350 lines**, including the 150-line optional
-Atlas bridge built later; the required core/CLI portion is 8,200. External host,
-store, native custody, foundation DTO/catalogue, packaging and reviewer tests are
-excluded. Per-unit estimates are the source for Prime's generated overview table.
+Core K01–K10: **900 + 650 + 650 + 450 + 850 + 650 + 450 + 250 + 250 + 500
+= 5,600 lines**. Binary B01–B06: **700 + 250 + 550 + 550 + 250 + 300 = 2,600**.
+Combined production estimate: **8,200 lines across 16 units**. A12 counts the
+optional 150-line Atlas bridge once within its own composition estimate. External
+host, store, native custody, foundation DTO/catalogue, packaging and reviewer tests
+are excluded. Per-unit estimates are the source for Prime's generated overview table.

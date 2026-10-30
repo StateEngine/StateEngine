@@ -98,7 +98,9 @@ pub struct WorkingStateSetOutput {
     pub commit: CommitReceipt,
 }
 
-/// Synchronous declarations only. Planner validation precedes any submission;
+/// Synchronous declarations only: the host runs planning and finish in bounded
+/// blocking-pool jobs, with owned/Arc readers and no Snapshot across an await.
+/// Planner validation precedes any submission;
 /// both finish methods consume the actual receipt from the same transaction engine.
 /// Finish uses a fresh finite read at/after the receipt to resolve actual committed
 /// payload IDs on replay, never the newly allocated draft IDs. It cannot write.
