@@ -55,6 +55,8 @@ pub enum AdoptionOutcome {
     Exited,
     Unreadable(se_types::ErrorBody),
 }
+/// Host-local observations, not the durable store phase enum. Activated is
+/// transient; no consumers run until the store commits FULL Finished.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HandoverPhase {
     SourceGated,
