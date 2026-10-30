@@ -1,141 +1,164 @@
 # 60 — Atlas: optional source understanding
 
-Design candidate, 2026-10-30. Owner: 5e. This document and the declaration-only
-`crates/se-atlas` specify the implementation; they do not implement it. Authority:
-Jimmy's decisions and OPS.md, then 00, then this design; the appended cold-index
-window decision in 80 supersedes its earlier aggregate-budget ambiguity. The
-prototype remains reference material, not the implementation to copy wholesale.
+Design revision, 2026-10-30. Owner: 5e. This document and the declaration-only
+`crates/se-atlas` specify behavior for later implementation; they implement no
+indexer, database, watcher or runtime. Jimmy's decisions and OPS.md govern, then
+00, then this design. The appended cold-window decision in 80 governs resource
+accounting. The Linux prototype is reference evidence, not production code or
+proof that this revised design fits its budgets.
 
-## 1. Purpose, ownership and dependency boundary
+## 1. Scope, ownership and activation
 
 Atlas answers where code is, who refers to it, what depends on it, what changed,
-and what a file contains. It supplies a small optional code section to resume.
-It never stores conversations, decisions, messages, memories or provider logs.
-The authoritative store remains useful when Atlas is absent, corrupt or disabled.
-No Atlas error prevents a core bind, message or resume. Shutdown/removal still
-reports Atlas resources that could not be drained instead of claiming completion.
+and what a file contains. It supplies optional code context to resume. It stores
+no conversations, decisions, messages, memories, transcript bodies or provider
+logs. The authoritative store, bind, messaging and resume work without Atlas.
+An unreadable index never becomes an empty successful result. Removal still
+reports Atlas handles or data it could not close or erase.
 
-`se-atlas` depends on `se-types`, its own SQLite binding and parsing/walking
-libraries. It does not depend on se-store, se-core, se-host or se-proc. It cannot
-open the authoritative database. The core's CodeIndex port uses shared DTOs;
-se-host adapts that port to the reader declared here, supplies verified project
-scope and edit evidence, schedules work, and owns native process/watch adapters.
-The compile-only crate currently needs only se-types. Future implementation pins
-rusqlite 0.40 with the workspace's single bundled SQLite dependency, Tree-sitter
-and six grammar variants, ignore and an event-only native watch adapter. Never
-install a global Tree-sitter allocator in an embedded process.
+`se-atlas` depends only on se-types and its own parsing, SQLite and native-source
+ports; never se-store, se-core, se-host or se-proc. It never opens the authoritative
+database. Se-host adapts core's shared CodeIndex port, supplies authorized scope
+and edit evidence, schedules work and owns native handles/processes. This
+compile-only crate has only the se-types dependency. Later implementation uses
+workspace-pinned rusqlite 0.40 with ONE bundled libsqlite3-sys, Tree-sitter with
+JS/JSX/TS/TSX/Rust/Python grammars, ignore handling and event-only watches. No
+process-global Tree-sitter allocator is installed by this embedded crate.
 
-There are exactly five OPS operations, shared by CLI and MCP:
+Exactly five OPS reads exist, with the same dispatch for CLI and MCP:
 
-| Operation | CLI | MCP | Result family |
+| Operation | CLI | MCP | Result family/data |
 | --- | --- | --- | --- |
-| atlas.find | atlas find QUERY | stateengine_atlas_find | se.code-hits/v1 |
-| atlas.refs | atlas refs SYMBOL | stateengine_atlas_refs | se.code-refs/v1 |
-| atlas.impact | atlas impact SYMBOL | stateengine_atlas_impact | se.impact/v1 |
-| atlas.changes | atlas changes | stateengine_atlas_changes | se.code-changes/v1 |
-| atlas.outline | atlas outline PATH | stateengine_atlas_outline | se.outline/v1 |
+| atlas.find | atlas find QUERY | stateengine_atlas_find | se.code-hits/v1, Page<CodeHit> |
+| atlas.refs | atlas refs SYMBOL | stateengine_atlas_refs | se.code-refs/v1, Page<Reference> |
+| atlas.impact | atlas impact SYMBOL | stateengine_atlas_impact | se.impact/v1, Impact |
+| atlas.changes | atlas changes | stateengine_atlas_changes | se.code-changes/v1, Page<CodeChange> |
+| atlas.outline | atlas outline PATH | stateengine_atlas_outline | se.outline/v1, Read<Outline> |
 
-Configuration uses config.set; status uses status. No public index, refresh,
-renew, repair or watcher operation is added. The cold worker is an authenticated
-private binary entry mode, reached only over an inherited host-owned handle; it
-is not a clap leaf, MCP tool or user command. Doctor's existing repair workflow
-may retire an owned corrupt cache and schedule the same lifecycle path.
+Configuration is config.set; status is status. No public index, refresh, renew,
+repair or watcher operation is added. The cold child uses a private inherited
+host handle and authenticated entry mode, never another clap leaf or MCP tool.
+Doctor's existing owned-cache repair workflow can retire a corrupt epoch and
+schedule the same lifecycle, without a new command.
 
-Embedded builds have Atlas off in alpha. Standalone builds include the feature;
-per-project activation is explicit `atlas.enabled`. Registering the feature or a
-project does not open a database, walk source, load a grammar or spawn a thread.
-After-ready host activation starts first-use indexing; read methods themselves
-never enable, index or launch a process. A first query may report not indexed and
-the host may separately admit a subsequent after-response activation action.
+Embedded Atlas is OFF for alpha. Standalone includes the feature but defaults
+`atlas.enabled=false`. Registration is metadata-only. **config.set false->true**
+commits the project setting and records a host after-ready activation effect
+(ConfigEnabled), which queues the first cold index if absent. If the host is not
+running, its next normal startup drains that durable effect after ready; config
+set does not start a daemon. Once-enabled host restart/first bound session schedules
+HostRestart/FirstSession reconciliation after the bind response, including cold
+index if its cache is absent. Already-true config set is idempotent. First bind
+never waits for Atlas. Queries, status and resume never index, write, enable, start
+a daemon or schedule an after-query action. A missing cache therefore remains
+honestly absent until one of those explicit host activation events occurs.
 
-## 2. Identity, scope, paths and representation
+## 2. Identity, physical paths and source revisions
 
-One database belongs to one registered canonical physical worktree root. Two
-worktrees of one Git repository have separate caches. The host assigns RootId
-and stores cache location outside source, under its owner-only StateEngine home:
-`atlas/<project-id>/<root-id>/atlas.db`. No user-controlled path is concatenated
-into that destination. One global scheduler, one active parse, one global cold
-child and a bounded connection pool serve all roots; there is no per-agent cache,
-thread, process or duplicate watch subscription for the same physical root.
+One cache belongs to one registered canonical physical worktree. Linked worktrees
+have separate caches. RootId and CacheEpoch reexport se_types::AtlasRootId and
+IndexEpochId, including their validated prefixed UUIDv7 wire forms; no local ID
+copy is introduced. Local Generation is a cache u64 counter, not the shared
+session Generation. Window observations are checked SequenceValue conversions
+with Source::Atlas { project, root, epoch }, never authoritative floor sequences.
+FileId is the first 16 bytes of BLAKE3(root ID, normalized path key), with length-
+delimited fields; it is stable across epochs. Rename is remove+add. SymbolId is
+BLAKE3(root,file,kind,enclosing declaration chain,name,duplicate declaration ordinal).
+A body/signature edit or moved line preserves identity; reordering indistinguishable
+duplicates may change it. SQLite rowids never escape as public identifiers.
 
-RootRegistration is trusted host input, never an MCP input. Reader handles are
-already scoped to one root/project and authorized source visibility. AgentId in
-ResumeRequest and EditEvidence comes from verified host authority, never decoded
-from an agent's request as authority. No cwd, environment or default project can
-replace a missing binding. Source visibility is project-wide; private agent
-continuity and cursors remain in the core's private store.
+RootRegistration is trusted host input, not MCP input. Readers are already bound
+to one project/root and authorized source visibility. Viewer and edit-evidence
+AgentId come from the verified session/host, not request text. No cwd, environment
+or fleet default substitutes for a binding. Code visibility is project-wide;
+private viewer cursors and delivery records belong to core's private store.
 
-RelativePath is UTF-8, nonempty, at most 4096 bytes, slash separated, with neither
-absolute prefix, drive/UNC/device prefix, NUL, empty component, `.` nor `..`.
-Wire paths preserve spelling. Lookup keys use the registered filesystem's case
-mode; do not lowercase every platform. Ambiguous case collisions are refused.
-Non-UTF-8 filenames are counted as unsupported encoding, never lossy-collapsed.
-All opens walk relative to a retained physical root handle with no-follow checks
-for every component, and verify native file/root identity after open. Symlinks,
-Windows reparse points and paths escaping the physical root are not traversed.
-A same-spelling replacement root requires an owner rebind, not silent adoption.
+RelativePath is UTF-8, 1..4096 bytes, slash separated: no absolute/device/drive/UNC
+prefix, NUL, empty component, dot or dot-dot. Preserve spelling; lookup keys follow
+the registered filesystem case mode, with ambiguous collisions refused. Non-UTF-8
+names are counted as unsupported, never lossy-collapsed. Native no-follow opens
+walk relative to a retained physical root handle, verify every component and root
+identity, and refuse symlinks/reparse traversal. Same spelling with new physical
+root identity needs owner rebind. Native unsafe code stays in the host adapter.
 
-IDs on the wire are opaque, never SQLite rowids. Root/File/CacheEpoch/Job IDs
-are 16 bytes; symbol IDs and content hashes 32 bytes. File IDs are stable within
-an epoch while the normalized path exists. A rename is remove plus add; there is
-no guessed semantic rename. SymbolId is BLAKE3(root ID, file ID, kind, enclosing
-symbol chain, normalized name, duplicate ordinal in declaration order), with
-length-delimited inputs. Moving lines or changing a body/signature preserves it;
-reordering indistinguishable duplicate declarations may change their identity.
-Every file has a synthetic module symbol, used for module/import impact edges.
+**Git metadata is an explicit narrow exception, not a source escape.** During
+registration the host reads a bounded .git file (<=4096 bytes), validates linked-
+worktree backpointer and registers physical gitdir/commondir handles and identities.
+Atlas may read only HEAD, its bounded referenced ref, packed-refs, commondir,
+worktree backpointer and info/exclude from these handles (<=2,000,000 metadata
+bytes per reconciliation). No objects, hooks, arbitrary config includes, remote
+access or source outside the root. Physical metadata replacement requires rebind.
+No GIT_* ambient variables or git subprocess. Per-worktree HEAD and shared refs
+are resolved against the appropriate registered directory. This follows Git's
+[repository layout](https://git-scm.com/docs/gitrepository-layout) and
+[worktree metadata layout](https://git-scm.com/docs/git-worktree.html).
 
-Hash original source bytes with BLAKE3. Positions are line 1-based, UTF-8 byte
-column 0-based; spans are end-exclusive and contain original byte offsets. CRLF
-and BOM bytes are not normalized before positioning. Signature hashes use the
-language declaration header token stream excluding trivia and body; body hashes
-use original body bytes, so body comment edits count. Metadata doc text is the
-first documentation line, truncated on a UTF-8 boundary to 160 bytes. Missing
-span/hash is None, never a fabricated zero range or empty-source hash.
+Source positions use original bytes: 1-based lines, 0-based UTF-8 byte columns,
+end-exclusive spans and byte offsets. Do not normalize CRLF/BOM. Hash source with
+BLAKE3. Signature hash covers header tokens without trivia/body; body hash covers
+original body bytes, so body comments count. **Both are Option<ContentHash>** in
+Rust and nullable in SQL. None means syntax absent, whereas Some(hash(empty)) means
+an actual syntactic empty body. Bodyless trait/interface/overload declarations have
+signature Some/body None; synthetic module symbols have both None. Do not infer
+one state from another or fabricate a zero span/hash. Doc metadata is only the
+first documentation line, truncated at a UTF-8 boundary to 160 bytes.
 
-JSON uses snake_case fields, lowercase kebab-case enum tags, decimal counters,
-hex fixed-size IDs/hashes and explicitly tagged states. Durations encode integer
-milliseconds after checked conversion. The dispatcher supplies the schema family;
-no enum Debug output is a wire format. Ordinary DTO text is terminal-escaped by
-the shared renderer; source identifiers/doc comments cannot inject terminal
-controls. The Rust appendix declares all public crate types and signatures;
-future codecs must validate these rules before constructing private newtypes.
+FileIdentity includes volume/file identity, size, mtime, optional ctime and native
+change sequence. Timestamps are a cheap candidate filter, never a content revision.
+Read checks size before allocating, opens no-follow, hashes bounded original bytes,
+and rechecks metadata. **verify reopens the same physical file, rehashes all admitted
+bytes and compares the full content hash plus identity immediately before commit.**
+A same-size in-place edit is Changed even if timestamps are coarse or restored.
+Uncertain timestamps, watcher loss and restart require streamed rehash, not an
+Unchanged claim from stat identity. Reconcile holds at most a 16,384-byte hash buffer
+and a bounded path batch; it may take many work quanta. A change after verification
+can still happen: results carry indexed hash/freshness, and editors must reread
+before acting. This is snapshot evidence, not a filesystem transaction guarantee.
 
-## 3. Persistent format: Atlas owns atlas.db
+## 3. Persistent schema, file transitions and bounds
 
-SQLite application_id is `0x41544c53` (ATLS), user_version 1. Only the host creates,
-upgrades or retires the cache. CLI reads are read-only. A newer version refuses
-without modifying bytes. Corrupt or foreign-application files are unreadable, not
-empty. Doctor may rebuild only an owned cache after preserving diagnostic status;
-never rename/delete an arbitrary file found at the configured path.
+Cache directory is owner-only StateEngine home `atlas/<project-id>/<root-id>/`.
+It contains `current.json` and `epochs/<epoch>/atlas.db` (plus SQLite WAL/SHM).
+Paths derive from validated IDs, never a user destination. Application_id is
+0x41544c53 (ATLS), user_version 1. Only the host creates/upgrades/retires caches;
+CLI is read-only. Newer schema preserves bytes and refuses. Foreign application,
+foreign scope, links or corrupt bytes are unreadable, never an absent index.
 
-Use WAL, synchronous NORMAL, foreign_keys ON, temp_store FILE, mmap_size 0.
-Host connection cache_size is -256 KiB, statement cache at most 16, query arena
-128 KiB. Cold child cache_size at most -2048 KiB and 32 statements. The journal
-size target is 4 MiB after checkpoints; active-reader WAL growth is separately
-bounded by admitting no more than 8 MiB of writes before a reader-drain/checkpoint.
-A busy bounded reader expires rather than allowing indefinite WAL accumulation.
-No periodic checkpoint or expiration timer runs while idle.
+Use WAL, synchronous NORMAL, foreign_keys ON, temp_store FILE, mmap_size 0 and
+4,096-byte pages. At most two in-host connections exist globally: one writer and
+one reader, including hostless requests delegated to the host; no hidden pool.
+Each connection cache is **32 pages =131,072 bytes**, at most eight cached statements
+within a 16,384-byte statement allowance each; query arena 98,304 bytes. Both
+connection objects/SQLite overhead and these reservations must fit the 500,000-byte
+SQL share. Excess statement/overhead allocations fail admission, not borrow an
+unmeasured allowance. Hostless CLI has one RO connection in its own bounded process;
+80's external budget runner accounts for it when present. Cold child cache is
+<=2,000,000 bytes (488 pages =1,998,848 bytes), separate from its parser arena.
+WAL admission stops at 8,000,000 bytes; checkpoint target 4,000,000. Reader transactions
+have bounded query deadlines and close at response completion. External readers
+cannot be forcibly expired: if their pins prevent checkpoint, suspend Atlas writes
+with CacheBusy, preserve the old cache and report it. No idle checkpoint/expiry tick.
 
-The schema below is normative relational layout, not an executable migration in
-this candidate. Integers are checked nonnegative and narrowed only after bounds
-checks; fixed blobs have length constraints; all tables except FTS are STRICT.
-All IDs in child tables refer to this database, never kernel table IDs. String
-length checks omitted from the sketch must enforce the limits in sections 2/5.
+Normative relational layout follows. Checked nonnegative counters and blob/text
+limits in this document also apply where SQL checks are abbreviated. All ordinary
+tables are STRICT. Cached source bodies and transcript text are never stored.
 
 ```sql
 CREATE TABLE meta (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1), project BLOB NOT NULL,
- root BLOB NOT NULL, physical_root BLOB NOT NULL, epoch BLOB NOT NULL,
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), project TEXT NOT NULL,
+ root TEXT NOT NULL, physical_root BLOB NOT NULL, epoch TEXT NOT NULL,
  extractor_version TEXT NOT NULL, ignore_digest BLOB NOT NULL,
- generation INTEGER NOT NULL, observed_serial INTEGER NOT NULL,
- discovery_complete INTEGER NOT NULL, retention_floor INTEGER NOT NULL,
- coverage_json TEXT NOT NULL, state_json TEXT NOT NULL
+ index_generation INTEGER NOT NULL, published_generation INTEGER NOT NULL,
+ observed_serial INTEGER NOT NULL, retention_floor INTEGER NOT NULL,
+ discovery_complete INTEGER NOT NULL, coverage_json TEXT NOT NULL, state_json TEXT NOT NULL
 ) STRICT;
 CREATE TABLE files (
  id INTEGER PRIMARY KEY, key BLOB NOT NULL UNIQUE CHECK(length(key)=16),
  path TEXT NOT NULL, path_key TEXT NOT NULL UNIQUE, language TEXT,
- content_hash BLOB, last_good_hash BLOB, bytes INTEGER NOT NULL,
- identity BLOB NOT NULL, coverage_json TEXT NOT NULL, generation INTEGER NOT NULL
+ indexed_hash BLOB, observed_hash BLOB, bytes INTEGER NOT NULL,
+ identity BLOB NOT NULL, coverage_json TEXT NOT NULL,
+ last_good_generation INTEGER, last_code_generation INTEGER NOT NULL,
+ last_author_generation INTEGER NOT NULL, baseline_reset INTEGER NOT NULL
 ) STRICT;
 CREATE TABLE names(id INTEGER PRIMARY KEY, text TEXT NOT NULL UNIQUE) STRICT;
 CREATE TABLE symbols (
@@ -146,8 +169,7 @@ CREATE TABLE symbols (
  start_byte INTEGER NOT NULL, end_byte INTEGER NOT NULL,
  start_line INTEGER NOT NULL, start_column INTEGER NOT NULL,
  end_line INTEGER NOT NULL, end_column INTEGER NOT NULL,
- exported INTEGER NOT NULL, signature_hash BLOB NOT NULL, body_hash BLOB NOT NULL,
- doc_line TEXT NOT NULL
+ exported INTEGER NOT NULL, signature_hash BLOB, body_hash BLOB, doc_line TEXT NOT NULL
 ) STRICT;
 CREATE INDEX symbols_name ON symbols(name,file,start_byte);
 CREATE INDEX symbols_file ON symbols(file,start_byte,id);
@@ -179,7 +201,7 @@ CREATE VIRTUAL TABLE symbol_fts USING fts5(
 );
 CREATE TABLE generations (
  generation INTEGER PRIMARY KEY, observed_unix_ms INTEGER NOT NULL,
- event_serial INTEGER NOT NULL, coverage_json TEXT NOT NULL
+ event_serial INTEGER NOT NULL, batch_kind TEXT NOT NULL
 ) STRICT;
 CREATE TABLE observed_commits (
  oid BLOB NOT NULL, generation INTEGER NOT NULL REFERENCES generations(generation),
@@ -187,582 +209,624 @@ CREATE TABLE observed_commits (
 ) STRICT;
 CREATE TABLE changes (
  generation INTEGER NOT NULL, ordinal INTEGER NOT NULL,
- file_key BLOB NOT NULL, symbol_key BLOB, path TEXT NOT NULL, kind TEXT NOT NULL,
- pointer_json TEXT NOT NULL, previous_hash BLOB, current_hash BLOB,
- dependent_count INTEGER NOT NULL, dependent_complete INTEGER NOT NULL,
- dependent_generation INTEGER NOT NULL,
+ file_key BLOB, symbol_key BLOB, path TEXT, kind TEXT NOT NULL,
+ pointer_json TEXT, previous_hash BLOB, current_hash BLOB,
+ dependent_count INTEGER, dependent_complete INTEGER, dependent_generation INTEGER,
+ baseline_reset INTEGER NOT NULL, bulk_json TEXT,
  PRIMARY KEY(generation,ordinal)
+) STRICT;
+CREATE INDEX changes_file_generation ON changes(file_key,generation,ordinal);
+CREATE TABLE active_batch (
+ singleton INTEGER PRIMARY KEY CHECK(singleton=1), kind TEXT NOT NULL,
+ first_serial INTEGER NOT NULL, last_serial INTEGER NOT NULL,
+ distinct_files INTEGER NOT NULL, bulk INTEGER NOT NULL, summary_json TEXT NOT NULL
+) STRICT;
+CREATE TABLE staged_changes (
+ ordinal INTEGER PRIMARY KEY, file_key BLOB NOT NULL,
+ payload_json TEXT NOT NULL
 ) STRICT;
 CREATE TABLE authors (
  generation INTEGER NOT NULL, ordinal INTEGER NOT NULL,
- visible_from_generation INTEGER NOT NULL, hint_json TEXT NOT NULL,
- PRIMARY KEY(generation,ordinal,visible_from_generation),
+ resolved_at_generation INTEGER NOT NULL, hint_json TEXT NOT NULL,
+ PRIMARY KEY(generation,ordinal),
  FOREIGN KEY(generation,ordinal) REFERENCES changes(generation,ordinal) ON DELETE CASCADE
 ) STRICT;
+CREATE INDEX authors_resolution ON authors(resolved_at_generation,generation,ordinal);
 ```
 
-The pinned SQLite must support FTS5 contentless_delete (SQLite >=3.43; see [SQLite FTS5 contentless-delete](https://sqlite.org/fts5.html#contentless_delete_tables)); this is a
-build dependency requirement, not a runtime fallback to duplicated full bodies.
-FTS rowid equals symbols.id; explicit FTS deletion/reinsertion is in the same
-transaction as symbol changes. FTS contains names, split identifiers, paths,
-containers and first doc lines only. Original source bodies, full lines and
-transcripts are never persisted. References record call/import/type/value sites,
-not every identifier token. Interning reduces repeated spellings.
+FTS rowid is symbols.id; delete/reinsert in the same file transaction. It stores
+names, split identifiers, paths, containers and first doc lines only. SQLite must
+support [FTS5 contentless-delete](https://sqlite.org/fts5.html#contentless_delete_tables)
+(>=3.43): ordinary DELETE is supported; do not use the legacy FTS delete command.
+References retain syntactic call/import/type/value sites, not every identifier token.
+Names are interned and GC checks every symbols/refs/imports foreign-key use.
 
-A file transaction replaces that file's symbols/refs/imports and FTS rows, computes
-changes against the previous good parse, repairs affected import targets, and
-increments generation atomically. Removing/replacing exported symbols invalidates
-incoming refs before commit (target None and accuracy NameOnly); dependents are
-re-resolved, never left pointing to a
-reused rowid. New/deleted target paths consult import_candidates, including
-previously unresolved imports. An unresolved import must become resolvable when
-its file appears without requiring the importer to be edited.
+A good->good file transaction compares complete parses, replaces that file's
+semantic rows and FTS, repairs affected targets and increments index_generation.
+SignatureChanged takes precedence over BodyChanged; unsupported/nonsemantic edits
+use FileOnly. Replaced/removed exports invalidate incoming refs to NameOnly before
+commit; targets are never reused rowids. New/deleted paths consult import_candidates,
+including previously unresolved imports, so appearance of a target repairs its
+importers without requiring importer edits. Resolution runs in bounded batches;
+Updating remains until invalidations and the observed serial fence are accounted for.
 
-On parse failure/read failure, delete current semantic rows for that file and
-retain its last-good hash plus explicit failure coverage; stale symbols cannot
-masquerade as current. FileOnly change records distinguish unknown semantic diff
-from zero semantic change. On parse error nodes, retain only declarations whose
-spans do not overlap error subtrees and label Partial; do not infer removed
-symbols from an incomplete parse. Resolve affected importers in bounded batches;
-state remains Updating until all admitted invalidations are accounted for.
+**Good->failed/partial/deferred preserves ONE last-good semantic set** with indexed
+hash/generation and explicit Stale coverage plus observed_hash when known. No newly
+partial set replaces it and no stale edge counts as current resolved evidence.
+Find/outline may return visibly stale pointers; refs/impact exclude stale resolved
+edges, with optional NameOnly stale candidates labelled. With no good baseline,
+keep file metadata/valid isolated declarations only as Partial, never a complete tree.
+On recovery, atomically install the new good set and emit FileOnly with
+baseline_reset=true; establish a fresh comparison baseline. Never compare across
+the unknown interval to invent Added/Removed/SignatureChanged/BodyChanged. Consecutive
+good parses resume semantic diffs. Confirmed deletion removes rows; denied/unreadable
+source is Failed/Stale, never Removed. This handles Sol's good->failed->good case
+without keeping unbounded historical graphs or fake deletions.
 
-Retain changes for 30 days of observed activity, capped at 50,000 rows; whichever
-removes rows first advances retention_floor. Prune at activation, commit and drain,
-not by an idle timer. Offline files can physically remain longer than 30 days;
-this is not a timed deletion promise. IDs/hash pointers remain, never historical
-source bodies. Author hints are versioned so an already-fenced page is stable.
-No captured transcript text is accepted as author metadata.
+**Initial cold indexing emits NO changes rows.** It establishes an observation
+baseline, not millions of additions. Subsequent file activity is grouped into a
+source batch: ordinary file-event debounce 15 ms, at most 2 seconds after the
+first event before closing that event batch, timers armed only by events. An explicit
+HEAD/directory/loss reconcile is ONE logical batch through its completed discovery
+fence, however many work quanta it needs; the 2-second event window does not split it. For <=100 distinct files, provisional
+per-file changes live in a bounded SQL staging table, never visible until batch
+publication. On file 101, discard provisional symbol rows and switch to one Bulk
+row (reason, distinct-file count, optional semantic count, <=5 sample paths,
+complete flag). HEAD/directory/overflow reconciles share this rule, including when
+the total is discovered incrementally. No per-symbol rows leak before the threshold
+is known: changes reads use published_generation, separate from index_generation.
+Completed large reconciles publish ONE summary even if processing spans quanta.
+Interrupted bulk publishes an explicitly incomplete summary, not many ordinary rows.
+active_batch has one row and staged_changes shares the normal retention/disk
+ceiling. Publish clears both in the same transaction as published_generation;
+a crash with an unfinished batch forces reconcile and a labelled incomplete Bulk
+summary before reset, never silently advances a resume fence. A normal <=100-file batch is also bounded by 50,000 change rows and 8,000,000 staging
+bytes; hitting either converts it to Bulk. Branch checkout therefore cannot evict
+50,000 historical rows merely through its symbol count. Bulk counts are changes
+observed in this batch, not attribution to any particular agent.
 
-## 4. Lifecycle, first index and scheduling
+All cache growth is bounded by actual work, with no maintenance daemon/timer:
 
-State is the pair (IndexState, Coverage); Current never means complete language
-semantics. The following table accounts for every IndexState variant.
+- Changes: 30 days of observed activity or 50,000 rows, whichever first; prune at
+  activation/commit/drain, advance retention_floor explicitly. Offline physical
+  retention can be longer; no timed-deletion promise. Bulk occupies one row.
+- Generations: one small row per PUBLISHED batch or author-resolution batch, never
+  coverage_json per file save. Retain change anchors plus <=256 commit anchors;
+  prune older unreferenced rows and cap at 50,256. Cursor expiry follows the actual
+  retained floor; no immortal FK from files to the generations table.
+- Authors: exactly one current hint per retained change; updates replace it, never
+  append versions. Hint JSON <=2048 bytes, <=8 evidence IDs (both bounds apply); additional evidence
+  yields Mixed with an explicit optional omitted count (unknown is None). Cascade with change pruning.
+  Late evidence for an expired change is ignored as expired, not resurrected.
+- Names/import-candidate garbage: cleanup with bounded SQL batches after row
+  replacement/deletion, queued across work quanta and finished before Current;
+  stale retained semantic rows keep their necessary names. No unreferenced-name
+  accumulation through repeated saves. observed_commits caps at 256 observations;
+  older commit baselines become BaselineUnavailable explicitly.
+- Per-root disk ceiling: 512,000,000 bytes including DB, WAL, staging and retired
+  epochs; host total Atlas home ceiling 2,000,000,000 bytes. Reserve space for status
+  before writing; stop admission with a visible budget failure before exceeding
+  the ceiling. Max_files=100,000; traversal and database results are streamed.
+  Cold extraction <=65,536 rows/file AND <=8,000,000 emitted bytes; qualified host
+  profiles impose smaller limits inside their parser arena. JSON coverage has
+  fixed reason tags/counters, never a path list proportional to repository size.
 
-| State | Entered by | Next states and trigger |
+Ignore digest changes reconcile eligible files incrementally, remove now-ignored
+rows and add newly eligible paths; they NEVER trigger a cold rebuild. Only extractor/
+schema changes or explicit owned-cache repair require retirement/full cold indexing.
+Abandoned root cleanup runs on explicit unregister/proven deletion events and
+bounded after-ready cache activity. Confirm the parent volume is accessible and
+the physical root is gone; an unplugged/unreadable mount is not deletion. Preserve
+its cache for 30 observed days, then remove only owned files with outside absence
+readback. Unknown files or open retired handles produce Pending. No cleanup occurs
+on unrelated cold start, or while no Atlas activity exists.
+
+## 4. Lifecycle, native events and cold adoption
+
+The state/coverage pair describes actual observations. Current means caught up to
+an event fence, never full compiler semantics. Public section 50 state mapping is
+exhaustive; reasons, progress, coverage and diagnostic accompany the six values.
+
+| Private IndexState | $.atlas.state | Transition/meaning |
 | --- | --- | --- |
-| Disabled | feature/project disabled | Dormant on enable; Closed on removal |
-| Dormant | enabled registration, no activation | Opening after host ready/first-use action; Draining on close |
-| Absent | open verified, database absent | ColdIndexing on admitted worker; Suspended on pressure; Draining |
-| Opening | activated lazy root | Current/VerificationNeeded for validated cache; Absent; Unreadable; Draining |
-| ColdIndexing | owned first full-index child started | Updating after validated adoption and replay; Suspended/Unreadable on failure; Draining |
-| Updating | event/reconcile queue nonempty | Current after queue and serial fence agree; VerificationNeeded on watch loss; Suspended on budget; Draining |
-| Current | caught up to observed event serial | Updating on event; VerificationNeeded on lost watcher/hostless read; Draining |
-| VerificationNeeded | watch loss, host restart, offline reader | Updating on explicit reconcile; Suspended if unavailable; Draining |
-| Suspended | pressure, no reservation, root temporarily unavailable | previous safe cache state on explicit resource/host event; Draining |
-| Unreadable | bad cache/root identity/IO | Opening after owner repair; Draining; never empty Current |
-| Draining | disable, host drain, removal, privacy | Closed after exact worker exit, reader drain and closed handles; remains Draining/Pending if deadline expires |
-| Closed | all owned activity ended | Dormant only through a new registration/activation lifecycle |
+| NotBuilt | not-built | embedded feature missing; no activation |
+| Disabled | disabled | config false; enable -> Dormant |
+| Dormant | absent | registered, no IO; explicit activation -> Opening |
+| Absent | absent | verified no database; admitted child -> ColdIndexing |
+| Opening | updating | validate pointer/scope/schema -> Current/VerificationNeeded/Absent/Unreadable |
+| ColdIndexing | updating | owned child; adoption/replay -> Updating, failed child -> Suspended/Unreadable |
+| Updating | updating | pending files/invalidations; fenced completion -> Current |
+| Current | ready | event -> Updating; loss/restart -> VerificationNeeded |
+| VerificationNeeded | updating | explicit reconcile; partial watch remains visible |
+| Suspended | updating | resource/root unavailable; explicit host/resource event may retry |
+| Unreadable | unreadable | corrupt/scope/IO error; owner repair may reopen |
+| Draining | disabled | Pending on deadline, Closed only after real close |
+| Closed | disabled | new registration/activation required to reopen |
 
-register validates scope/policy without source IO. activate is host-only and may
-open the cache or request work; enqueue is nonblocking, bounded and idempotent for
-coalesced paths. work_quantum does at most the allowance, commits only complete
-file transactions and returns to the host scheduler. next_work is Park unless
-actual work exists, Ready when runnable, or AfterEventDebounce when a real event
-armed a one-shot debounce. reader returns a scoped reader; status is in-memory
-and never triggers IO. captured_edit accepts trusted exact before/after hashes
-and evidence ID only. None on one side means witnessed file absence (create/delete),
-not an unknown hash; both None is invalid and unverified evidence is not admitted.
-close is idempotent and reports Pending/Refused truthfully;
-remove_cache requires Closed. forget_evidence cancels jobs and retires the whole
-cache before returning outside-observed absence of database, WAL and SHM.
+register validates supplied scope/policy without source traversal. activate queues
+an admitted host effect. enqueue coalesces hints without blocking. work_quantum
+runs Discover->Read->Parse->Resolve->Diff->Commit->Prune->Checkpoint within allowance;
+only complete file transactions commit. next_work is Park without actual work,
+Ready with work, or AfterEventDebounce for an event-armed one-shot. reader is scoped;
+status is cached metadata. captured_edit accepts exact registered path, before/after
+content hashes and trusted evidence ID: None on one side is witnessed absence,
+not unknown; both None is invalid. Close is idempotent, reports Pending/Refused and
+never claims stuck filesystem IO disappeared at its deadline.
 
-The event queue is 256 KiB maximum, coalesces up to 1024 paths and is shared by
-roots. Overflow sets a sticky per-root reconcile bit; it cannot silently drop
-work and later report Current. Discovery is streaming, not a full file Vec.
-Default max_files is 100,000; excess files count as deferred and discovery remains
-explicitly bounded. Eligible discovery honors nested .gitignore, .git/info/exclude
-and explicit host-supplied global-ignore policy; the digest includes every rule
-source. IgnorePolicy contains already-loaded global patterns (<=64 KiB total),
-registered generated path prefixes (<=32) and the host-computed digest; it never
-opens an arbitrary global config filename. Repository ignore files are read under
-the registered source boundary. The crate does not inspect ambient environment
-for policy. Ignore
-changes and directory rename/delete produce a subtree reconcile. Git HEAD/ref
-changes are events plus safe metadata reads, never a spawned git command.
+One global low-priority scheduler, one active parse and one global cold child serve
+all roots. No per-agent process, thread, parser tree or watch duplication. Event
+queue <=150,000 bytes and <=256 path hints shared across roots; overflow is a sticky
+root reconcile bit. Discovery/hash scans are streamed and cancellation-aware. Ignore
+policy uses nested .gitignore, registered info/exclude and already-loaded global
+patterns <=32,768 bytes plus <=32 generated prefixes (within queue/metadata shares).
+No ambient global config filename or environment supplies policy. Ignored subtrees
+(.git source contents, node_modules, target, etc. according to rules) are pruned
+before traversal/watch installation; registered Git metadata watches are separate.
 
-Native watches track directories without following links. No PollWatcher,
-periodic rescan, expiry tick or idle polling is permitted. A 15 ms debounce is
-armed only by a source event. Watch loss/overflow is visible immediately and
-requests a reconcile; unsupported native watches report WatchUnavailable and
-retain explicit verification-needed coverage. Reads do not repair that state.
-A session/harness source-change signal can supply events where native watches
-are unavailable. Do not subscribe to Linux IN_OPEN: unrelated source reads must
-not wake the indexer (the prototype's notify backend did).
+Watch behavior is native and event-driven; no PollWatcher, periodic rescan, idle
+retry, expiry or statistics timer. With no active sessions, release root watches,
+SQLite connections, parser and scratch after the batch; the next session triggers
+reconciliation. Observed sources carry watch coverage, not persistent Current.
 
-### 4.1 First full index: short-lived owned child
+| Adapter | Subscription, race and loss handling |
+| --- | --- |
+| Linux inotify | Eligible directories only; no IN_OPEN/access events. For a newly created/moved-in directory install its watch BEFORE streaming its contents; events during the scan dirty its serial fence and cause another bounded pass. Watch exhaustion/permission loss sets PartialWatch/VerificationNeeded with watched/unwatched counts, never Current with full coverage. IN_Q_OVERFLOW triggers full eligible-root reconcile. |
+| Windows ReadDirectoryChangesW | One recursive root handle, **65,536-byte DWORD-aligned buffer**, shared host IOCP. Data/name/size/write events; no source-read wakes. Zero returned bytes or ERROR_NOTIFY_ENUM_DIR sets sticky full reconcile. Recursive Windows API cannot exclude child subtrees: discard ignored events before queueing; ignored churn can still cause overflow, which must remain visible. No pretense that filtering prevents OS buffer loss. |
+| macOS FSEvents | Directory events trigger bounded subtree enumeration/hash comparison; coalesced events with MustScanSubDirs recurse eligible descendants, dropped events trigger full monitored-root reconcile. Root identity loss requires rebind. A directory event is not proof only its immediate children changed. |
 
-Prime’s direct decision msg-63375a5b exempts a cold full index from B4, separately capped
-at **64,000,000 bytes peak RSS**. The daemon remains under B4. The host defers this
-job for machine memory pressure, not merely because the active cold window would
-exceed aggregate 25 MB. Incremental work has no such exemption and stays in-host.
-WorkerPurpose therefore contains only ColdIndex. An explicit full rebuild after
-cache retirement uses the same cold full-index path and separate window; an
-ordinary saved file never acquires that exemption by being called a rebuild.
+The subscribe-before-scan race is documented in [inotify(7)](https://man7.org/linux/man-pages/man7/inotify.7.html).
+Windows loss behavior follows [ReadDirectoryChangesW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-readdirectorychangesw);
+coalescing/reconcile follows [Apple's FSEvents guide](https://developer.apple.com/library/archive/documentation/Darwin/Conceptual/FSEvents_ProgGuide/UsingtheFSEventsFramework/UsingtheFSEventsFramework.html).
+Across platforms, partial registration reports Coverage.watched_directories,
+unwatched_directories and watch_discovery_complete (unknown isn't zero). Native
+metadata allowance permits at most TWO active root subscriptions and, for Linux,
+at most 1024 directory watches with <=64,000 bytes of path mapping globally; excess
+roots/directories remain explicitly partially watched, supplied by harness events
+or session-triggered reconcile. These admission bounds need native qualification;
+OS/kernel watch buffers and allocator retention must appear in the full resource
+accounting, not vanish because their handle count is small. Network/synced roots
+without reliable identity/events degrade explicitly with no polling fallback.
 
-se-host/se-proc owns spawn, exact process birth identity, job/cgroup/QoS, outside
-memory observation, cancellation and reaping. se-atlas only produces WorkerRequest
-and consumes WorkerEvent. One child globally, background priority, no network,
-no provider credentials or session capability in its constructed minimal environment.
-An inherited private pipe carries a one-use JobId and registration/policy. No
-bearer secret in argv, no user-supplied destination and no inherited agent
-process privileges. Frame size <=64 KiB; progress is rate-limited by real completed
-batches, not a periodic heartbeat. Parent cancellation closes the handle and
-se-proc terminates only the exact owned child/job after reading its identity.
+### 4.1 Cold child and atomic epoch discovery
 
-The child writes a unique staging database inside the owned cache directory,
-using no authoritative DB. WorkerRequest specifies parent, child and aggregate
-reservations; in the approved cold window the aggregate ceiling explicitly
-includes parent plus child allowances, while post-window B4 remains 25 MB.
-Default whole-job wall deadline is 15 minutes, cancellation-aware at each file.
-An OS cap/observed budget breach aborts the job; it is never reported complete.
-No next worker is started until the old child is externally reaped.
+80's approved cold-full-index window has a **64,000,000-byte child peak cap** and
+is reported separately; **B4's 25,000,000-byte steady-state measurement is outside
+that window**. No aggregate_ceiling_bytes exists: it falsely implied another cold
+aggregate limit. Host allocation still targets its steady share; defer cold work
+for machine pressure, never merely because parent+child exceeds 25 MB. Only first
+index/extractor rebuild/owned repair uses this transient path. Ordinary incremental
+updates always stay in-host inside B4; relabelling an edit as rebuild grants no exemption.
 
-The child returns candidate epoch and staging location. Parent compares JobId,
-expected old epoch, physical root, project, application/schema IDs, ignore/extractor
-digest and integrity readback. It observes actual child exit outside the writer,
-not just an `Exited` payload from an untrusted stream. Then it drains readers,
-closes old SQLite handles, installs the staged cache under the owned lock, opens
-read-only and reads the new epoch/generation back. A stale job/epoch cannot
-publish. Windows never relies on replacing an open SQLite database. Adoption
-records intent with old/new owned filenames before rename; crash recovery selects
-only an intact cache matching that intent or leaves Unreadable, never guesses by
-mtime. Old files are removed only after successful readback.
+Host/se-proc owns exact spawn/birth identity, containment, background priority,
+outside memory observation, cancellation and reaping. Atlas produces WorkerRequest
+and consumes WorkerEvent, with one-use JobId/root/expected epoch and minimal constructed
+environment, no network/provider/session capabilities and no bearer secret in argv.
+Private inherited pipe frames <=65,536 bytes; progress follows completed batches,
+not heartbeat timers. Whole-job deadline 15 minutes, per-file parse 200 ms. Hard
+cap/observed breach or malformed output aborts; no next child until exact prior reap.
 
-During the child run, the host keeps a bounded dirty-path queue and a sticky
-reconcile marker on overflow. After adoption it replays pending changes in-host;
-Current requires that replay plus a complete serial fence. On worker failure keep
-the prior cache with stale labels, or Absent if none; cancel/delete only owned
-staging files after reap. WorkerLost/Protocol/LeaseStale/Deadline are separate
-causes, not empty-success results.
+The child creates an exclusive staging epoch under the owner directory, checkpoints,
+closes SQLite and exits. Parent independently observes exit/reap, validates job,
+old epoch, project/root/physical identity, schema/application, extractor/ignore inputs
+and staged integrity. Under the cache writer lock it installs the immutable-named
+`epochs/<new-epoch>/atlas.db`, then atomically replaces the <=1024-byte **current.json**
+pointer {schema,project,root,epoch}. Atomic replacement applies only to this small
+pointer; NO open SQLite database is replaced. Independently reopen/read back the
+pointer and new DB before acknowledging adoption. Crash leaves a validated old or
+new pointer, never a choice by mtime; unreferenced staging remains cleanup-owned.
 
-### 4.2 Incremental resource limits
+Every reader, including hostless CLI: read/validate pointer; derive fixed epoch path;
+open that epoch RO/no-follow; validate all IDs/schema; reread pointer. If changed,
+retry once within the query deadline; alternatively return the valid old epoch with
+**epoch_retired=true**, stale coverage and its old epoch cursor. Never turn a swap
+into Absent. A new-epoch reader doesn't need old readers to drain. Old handles continue
+safe bounded RO queries on their epoch; the retired writer is closed and no new
+writes target it. A continuation from a retired epoch on the new pointer refuses
+CursorEpochMismatch with a restart remedy, not silently splice graphs.
 
-The global hard source limit is 512 KiB. Larger files record SourceBytesLimit.
-Generated files are detected by `@generated`, `automatically generated` or
-`DO NOT EDIT` in the first 4096 bytes (ASCII case-insensitive), plus explicit
-configured generated path rules. Numeric/token density alone does not prove a
-file is generated. Generated and unsupported files retain path metadata and
-bounded literal-text search eligibility, with zero semantic-resolution claims.
+Delete retired epoch files best-effort only after validation and local handle close;
+Windows sharing violations remain explicit retired/Pending bytes. The host need
+not discover or kill external CLI PIDs. Keep at most current+ONE retired+ONE staging
+epoch, all inside the disk ceiling. If a still-pinned retirement would require a
+second retired epoch, refuse/defer the next publication as CacheBusy and keep the
+current pointer. Retry cleanup on actual later cache activity/drain, never an idle
+timer or guessed PID kill. Unknown files are preserved. Child failure keeps prior
+cache visibly stale or Absent if none; only exact owned staging is removed after reap.
+Events during cold run coalesce into bounded dirty hints/sticky reconcile; replay
+in-host after adoption. Current requires replay plus serial fence, not child exit alone.
 
-In-host parse admission starts at <=16 KiB source, <=2048 emitted semantic rows,
-<=100 ms progress-callback deadline and a 768 KiB scratch reservation. The source
-buffer, parser tree and extraction arena all count against it. If an input or
-parser allocation cannot be kept inside the Atlas 2 MB share, record ParseWorkLimit
-and keep path/text search available; do not launch a large incremental child or
-borrow an unbounded global allocator. Source up to 512 KiB may be parsed by the
-cold child under its <=200 ms per-file deadline and bounded row/work admission.
-Thus a file fully indexed cold can become deferred after a later edit if it no
-longer meets the smaller host budget; that regression is visible in coverage.
+### 4.2 Incremental parser admission and honest fallback
 
-The input cap and callback are necessary admission limits, not proof of RSS. A
-production parser must demonstrate the 2 MB parent share including grammar loads,
-allocator high-water mark and SQLite before Atlas incremental parsing is enabled.
-A failed reservation suspends/degrades optional semantics and never breaks core.
-The host drops the tree, parser scratch and idle connection at the end of the
-work batch; one parse at a time, no per-root retained trees. Native parsing and
-source IO execute off the request/runtime thread. A deadline cannot make blocking
-filesystem IO disappear: a stuck worker remains Pending at drain, with identity
-and owned resources retained until its real completion.
+Global source cap is **524,288 bytes (512 KiB)** and progress deadline **200 ms**.
+Generated markers (@generated, automatically generated, DO NOT EDIT, ASCII case-
+insensitive first 4096 bytes) and explicit generated rules defer semantics, keeping
+path/text eligibility. Token density alone doesn't prove generated code.
 
-The pipeline is Discover -> Read -> Parse -> Resolve -> Diff -> Commit -> Prune
--> Checkpoint. Parse is CPU-only over SourceSnapshot; no IO from the parser.
-AtlasSource::read_chunk is the separate bounded-text path (max 16 KiB per chunk):
-it reports identity, offset and EOF; a changed identity across chunks aborts with
-partial coverage. A text pointer has no whole-file content hash unless already
-known to match that identity; consumers must reread it. It never bypasses no-follow.
-Read checks size before allocating, opens no-follow, reads bounded bytes, hashes,
-and verifies identity/size again. verify runs before commit. ChangedDuringRead
-requeues once per new event and keeps explicit deferred state; no retry spin.
-Deleted files commit deletion; permission failure is Failed, not Removed. Partial
-progress is durable per file, never one unbounded all-repository transaction.
+The former universal 16 KiB/100 ms host cap was unmeasured and is withdrawn. Host
+admission requires a measured per-grammar/platform profile fitting source, tree,
+extraction, grammar loads and retained allocator high-water mark inside its
+1,000,000-byte parser share and the overall 2,000,000-byte Atlas share. Profile
+limits cannot exceed 512 KiB/200 ms; they may lower source/row/work limits, stated
+in coverage. Without a qualified profile, semantics are ParserUnqualified/deferred,
+not a guessed promise of fit. Keep last-good rows visibly stale and offer bounded
+literal text/path search; never delete the most-edited file's useful baseline just
+because it no longer qualifies. No incremental helper process borrows the cold exemption.
+Native qualification remains an implementation release blocker, not a reason to
+claim this design or compilation passes B4. One parser/tree at a time, release scratch
+and close inactive DB handles after work. Stuck source IO remains owned/Pending.
 
-## 5. Queries, accuracy, snapshots and bounded answers
+AtlasSource::read_chunk is a safe bounded range reader, not a revision guarantee
+across calls. Text queries scan <=32 files and <=262,144 total source bytes INCLUDING
+verification reads, in deterministic FileId order and within the query work budget.
+They admit at most the first 16,384 bytes of each file per request; no intra-file
+continuation. Read that prefix from one no-follow handle, reread/hash the SAME range
+and compare bytes/hash plus physical identity before returning hits. A mismatch
+returns SourceChangedDuringRead/partial with no accepted hits for that file. This
+bounds the extra read cost without claiming stat identity proves content stability.
 
-All five methods are synchronous bounded cache reads executed on a host read
-worker; no runtime blocking, subprocess, LSP, network or write-side scheduling.
-Defaults: 20 results, max 50; 32 KiB response budget, max 64 KiB; 25 ms query work
-budget, never more than 40 ms before formatting. Limit includes every returned
-row, tests included. Inputs longer than 1024 UTF-8 bytes, embedded NUL, zero limits,
-unknown enum values and over-budget requests refuse. Symbol candidates and scope
-lists each cap at 32; recently_edited_symbols caps at 32. All dynamic SQL binds
-values; literal queries are escaped before constructing restricted FTS expressions.
-No arbitrary SQL, FTS syntax, regular expression or filesystem glob is executed.
+If the whole file fits that prefix, also verify EOF/size and return a whole-file
+content_revision; otherwise the range_hash authenticates only those returned bytes,
+CodePointer.content_hash=None/freshness Unknown, and coverage names unscanned bytes.
+**Never resume mid-file from identity/offset or stitch chunks across requests.**
+Continuation moves to the next FileId, leaving that file's rest explicitly unsearched.
+Even an unchanging large file is a bounded prefix search, not exhaustive Text search;
+the UI suggests the user's source-search tool for the remainder. A source change
+can occur after verification, so editors must still reread. No source text persists.
 
-Each read opens one SQLite read transaction, captures epoch/generation plus the
-host's observed event serial, and returns IndexSummary with coverage. Current is
-only caught-up-to-observations at that instant, not proof no future/unobserved file
-change exists. A hostless CLI opens the same cache read-only and labels
-VerificationNeeded/StaleSnapshot; it does not inherit a persisted Current claim.
-An exact CodePointer includes a content hash: consumers must verify it against
-source before using an offset to edit. Queries never guarantee source is still
-unchanged when the caller later acts.
+## 5. Query contracts, precision and pagination
 
-`Read::Present` contains a useful answer even when coverage is partial. A truly
-checked missing file uses Read::Absent with Checked provenance; unreadable uses
-Read::Unreadable or the shared SeError when admission failed before a read. An
-unknown index/baseline uses Read::Unknown, never Absent. Present with zero items
-means zero matches in the declared indexed population; complete negative claims
-also require discovery complete, no deferred/failed eligible files, no relevant
-partial-language edges and Current. Unsupported languages are counted, not
-silently removed from the report. Disabled/not-built is an explicit refusal;
-not-yet-indexed reports atlas-index-absent and status Absent, not empty results.
+Reads are synchronous bounded operations on the host read worker, never its request
+runtime. No subprocess, compiler/LSP, network or write scheduling. Defaults 20 rows,
+max 50; 32,768-byte output/default, max 65,536; query work 25 ms, maximum 40 before
+formatting. Query text <=1024 UTF-8 bytes, lists/selectors <=32; reject NUL, unknown
+tags, zero/invalid limits and overlarge requests. All SQL values bind; restricted
+literal metadata-FTS construction escapes input, never accepts SQL/regex/FTS syntax.
+Dynamic query memory and returned strings count against the shared arena/response
+reservation, not just row counts. Names are stored in full only up to 1024 UTF-8 bytes; an overlong declaration is
+excluded from exact semantics with Partial/ByteLimit coverage and a file pointer,
+never a falsely exact truncated key. Containers/doc strings have the same explicit
+byte accounting; terminal rendering escapes controls.
 
-The shared Page/Window expresses transport bounds, omission and snapshot scope;
-IndexSummary.coverage separately expresses corpus/parser completeness. A bounded
-page can be complete for the indexed population while coverage is partial. Human
-and MCP renderers must show both. An exact omitted count is optional: unknown is
-not zero. Exhausting time/bytes yields partial data plus explicit stop reason,
-remaining cursor where possible and incomplete status (shared CLI exit 2).
-An error before any data returns the shared error envelope. Cancellation after
-some data is explicit incomplete, never apparently exhausted.
+Every method returns **AtlasResult<Answer<Read<T>>>**, including Page<T> inside
+Read for list operations. IndexSummary and snapshot/epoch flags survive Absent,
+Unknown and Unreadable. Admission failures before a scoped cache read use outer
+SeError. A checked missing path is Read::Absent with checked provenance; unbuilt,
+disabled/absent index, partial discovery and unreadable bytes cannot become Present
+zero/Absent. Useful partial results use Present plus honest coverage/window stop.
+The surface serializer includes index/coverage for every case, with existing
+section 50 schema families; it does not replace $.code_changes with prose. Unknown
+omission is None, never zero. Complete negative claims need current fenced discovery,
+no relevant stale/deferred/failed files and complete applicable language coverage.
+Hostless CLI labels VerificationNeeded/StaleSnapshot even when disk recorded Current.
 
-### 5.1 find
+find Symbol ranks ExactName, SplitIdentifier, MetadataFts, ordered by method rank,
+normalized full name (bounded sortable key), FileId, byte offset, SymbolId; camel/snake/acronym/Unicode splitting
+is deterministic under extractor version. Path mode is metadata only. Text mode is
+explicit bounded source scanning as 4.2; default Symbol never silently reads bodies.
 
-SearchKind is Symbol (default), Text or Path, matching section 50. Symbol search
-ranks exact qualified/name matches, identifier-split prefix matches, then FTS
-metadata. Split camelCase, snake_case, acronym boundaries and Unicode identifier
-boundaries deterministically under the pinned extractor version. Stable ordering
-is method rank, normalized name, path, byte offset, symbol ID; no floating-score
-rounding determines cursor order. Ties are deterministic. Explicit path mode
-searches registered relative path metadata and returns a file-only pointer.
+refs accepts ID, path+position (smallest containing declaration) or uniquely-qualified
+name/path/container. Ambiguity returns <=20 candidate pointers plus omitted count;
+missing selector in partial coverage is Unknown, not proof of absence. Order is
+resolved first then NameOnly, FileId/site/kind/stable ID. Default includes labelled
+NameOnly candidates, not compiler-precision claims; empty kinds means all five.
 
-Text mode performs a bounded literal scan of at most 32 registered files and
-256 KiB total source bytes per request, in path order, subject to the same time
-budget and safe Source reader. It can search supported, generated, oversized and
-unsupported-language files, but reports how much was scanned and has a continuation
-for remaining files/offsets. It never reads an entire oversized file into memory.
-Text hits contain a bounded match spelling and byte span, without persisting body
-text. They have FindMethod::Text and no semantic accuracy. Name-only FTS or text
-is never labelled a resolved reference. The default Symbol query does not secretly
-fall back to scanning source; it can suggest `--kind text` for unsupported code.
-
-### 5.2 refs
-
-SymbolSelector accepts an opaque symbol ID, a path+position, or a name optionally
-qualified by path/container. At chooses the smallest declaration span containing
-the position, after validating its line/byte-column against indexed spans. Name
-must resolve uniquely; otherwise return
-atlas-symbol-ambiguous with <=20 candidate pointers and an explicit omitted count.
-A selector not present in a partial index is unknown/incomplete, not proven absent.
-Resolved references precede optional name-only candidates, then path/site/kind/ID.
-Default includes name-only with its label, so useful candidates are visible without
-claiming compiler precision. The internal kinds filter does not create new CLI
-flags. An empty kinds set means all five reference kinds.
-
-Accuracy has exactly three meanings:
-
-| Label | Claim | Exclusions |
+| Accuracy | Claim | Never inferred |
 | --- | --- | --- |
-| LexicalBinding | declaration and use linked through a parsed local lexical scope | not runtime dispatch or macro expansion |
-| ExplicitImport | explicit supported import/export path and binding linked to an indexed declaration | not dynamic loader/package resolver truth |
-| NameOnly | spelling candidate, including unresolved/dynamic cases | never a resolved edge |
+| LexicalBinding | parsed local lexical scope links declaration/use | runtime dispatch, expansion |
+| ExplicitImport | supported explicit import/export binding links indexed declaration | package loader/compiler truth |
+| NameOnly | spelling candidate/unresolved/dynamic site | a resolved edge |
 
-Extraction support is fixed by the versioned language matrix:
+Coverage counts resolved and NameOnly references separately; report their share,
+never describe counting every identifier as cross-file resolution. Stale resolved
+edges do not contribute to current resolved counts.
 
-| Language | Declarations and lexical sites | Explicit cross-file resolution | Known partial cases |
+| Language | Declaration/local support | Cross-file support | Explicit partial cases |
 | --- | --- | --- | --- |
-| JS/JSX | functions/classes/methods, const/let bindings, calls/types where syntactic | static relative ESM import/export, literal relative require; .js/.jsx and index variants | computed members, eval, dynamic import, package exports, prototype dispatch |
-| TS/TSX | JS plus interfaces/types/enums/namespaces and type sites | relative .ts/.tsx/.js/.jsx imports, explicit reexports | tsconfig paths/project references, overload selection, conditional types |
-| Rust | fn/impl/trait/struct/enum/type/const/static/mod/macro declarations, lexical uses | explicit crate/self/super module paths, source mod files and non-glob use aliases | macro expansion, trait dispatch, cfg evaluation, extern package graph, glob inference |
-| Python | def/async def/class, assignments, lexical calls/type names | literal relative imports and registered source-root module files | sys.path mutation, runtime attributes, star imports, dynamic metaclasses |
+| JS/JSX | functions/classes/methods/bindings and syntactic call/type sites | static relative ESM/reexports and literal relative require, extension/index candidates | computed members, eval, dynamic import, package exports, prototype dispatch |
+| TS/TSX | JS plus interfaces/types/enums/namespaces/type sites | relative ts/tsx/js/jsx and explicit reexports | tsconfig paths/project references, overload selection, conditional types |
+| Rust | fn/impl/trait/struct/enum/type/const/static/mod/macro, lexical uses | explicit crate/self/super modules and non-glob aliases | macro expansion, cfg, trait dispatch, extern graph, glob inference |
+| Python | def/async def/class/assignment, lexical calls/type names | literal relative imports/registered source-root modules | sys.path mutation, attributes, star import, metaclasses |
 
-Unsupported constructs produce NameOnly or partial reason, not fabricated binding.
-Reexports are traversed with a visited set, max 8 hops, and explicit unresolved
-coverage on a cycle/limit. Relative resolution tests only the documented extension
-and index/module candidates; external package names remain unresolved. JSX custom
-component names are value references; intrinsic lowercase tags are excluded.
-No Python execution, Rust compiler, TypeScript server or import of project code.
+Reexports max 8 hops with visited-cycle coverage. External packages stay unresolved;
+JSX custom components are value references, lowercase intrinsic tags excluded. No
+project code is executed. Tests/impact remain candidates to inspect/run, not a
+sound guarantee of every runtime dependent.
 
-### 5.3 impact
+impact reverse-BFS default depth 2, valid 1..3; <=512 visited symbols and <=1024 examined
+edges, interned integer IDs in the query arena. Result hop paths retain weakest-hop
+accuracy. Include NameOnly only with explicit labelling. Return tests separately
+using Rust #[test], Python test_ or labelled path heuristics; total row limit includes
+tests. **Recompute this bounded BFS per page**, ordered hop depth/dependent stable ID/
+site; keyset stores only last result key, no frontier/512-ID cursor. Graph work exhaustion
+returns incomplete with an unknown/lower-bound omitted_frontier and NO misleading
+continuation promising complete traversal. A next cursor is possible for ordinary
+row/byte paging of that bounded graph. Narrow depth/scope for work-limit truncation.
 
-Default depth 2, valid 1..3. Traverse reverse resolved call/type/import edges in
-breadth-first order, with <=512 visited symbols, <=1024 examined edges and the
-request row/byte/time bounds. Each result carries its full hop path and per-hop
-accuracy; a chain is never more certain than its least certain edge. Optional
-NameOnly edges remain explicitly labelled throughout. Synthetic module symbols
-permit file/import dependents without inventing a function call graph.
+changes returns immutable code facts oldest-first by (generation,ordinal), plus the
+current latest author hint (provenance may advance independently). Baseline is saved
+cache cursor, previously observed commit or observed Unix time, as OPS requires.
+Agent-default baseline comes from its own verified private cursor; owner without one
+starts at retained floor with explicit label. No request-triggered git diff/indexing.
+Commit must be in <=256 retained observations; repeated commit chooses earliest
+retained observation with working-tree label. Time is index observation time, not
+Git author time; clock regression makes time baseline unavailable. Unknown/expired
+baseline and changed epoch refuse with legal cursor/restart remedy. Bulk facts are
+explicitly summarized, so "lossless" means all published change rows, not a fabricated
+per-symbol history for a branch switch. Removed pointers describe old bytes. Dependent
+counts name the generation/completeness at which they were computed, never fake current.
 
-Return dependents and tests separately. Test classification uses Rust #[test],
-Python test_ declarations or explicit test path conventions; the rendering labels
-path-derived classification as a heuristic. A referencing test is a candidate to
-run, not proof of the full affected suite. omitted_frontier is a lower bound unless
-frontier_count_complete; unknown expansion cannot be represented as zero omitted.
-A continuation contains the bounded BFS frontier and visited IDs; if it cannot
-fit the cursor bound, return incomplete with no next and request a narrower query.
+outline is flat preorder with parent IDs, ordered start_byte/end_byte descending/ID;
+paged ancestors may be omitted but their ID remains. Unsupported/deferred/stale
+coverage returns metadata/useful partial tree, not an invented empty current tree.
+Signature/body None rules apply equally to bodyless declarations and synthetic modules.
 
-### 5.4 changes
+### 5.1 Stable live keysets, not per-edit refusal
 
-Baselines are a cache cursor, a previously observed Git commit, or observed Unix
-time. The optional `since` on an authenticated agent uses that agent's saved
-Atlas cursor; an owner without one starts at the retained floor and receives a
-label saying so. No implicit all-project agent identity. A commit baseline must
-have been observed in this cache; no request-triggered git diff/indexing. Multiple
-observations of the same commit select the earliest retained observation at that
-commit with an explicit working-tree observation label. Time uses
-index observation time, never Git author time; a detected clock regression makes
-time-baseline resolution unavailable rather than guessing chronology.
+AtlasCursor is base64url canonical JSON {version,mode,project,root,epoch,query_digest,
+last_key,generation_hint[,change_fence]}; **encoded maximum 4096 bytes**, decoded at
+most 3072, fitting shared se_types::Cursor. No CBOR/checksum/frontier/resume-ID plan.
+Ordering keys use fixed IDs/offsets and a normalized-name prefix of <=256 UTF-8
+bytes plus full-name hash/ID tie-breaker, not a potentially 4096-byte path. Full
+name equality still uses complete stored bounded names; a sortable prefix never
+claims truncated-name equality. This keeps all keysets within the cursor bound.
+Session scope authorizes the read; cursor is data, not a capability. Digest covers
+mode/filter/order/selector/viewer, not requested page size. Validate lengths/types/
+version/domain before use; shared Cursor isn't an unchecked cast to AtlasCursor.
+Malformed/foreign-root/filter cursors refuse InvalidCursor/QueryMismatch, epoch
+replacement refuses CursorEpochMismatch, retained-row expiry refuses CursorExpired.
 
-Each change has (generation,ordinal), path/hash pointer, change kind and an author
-hint. Added/Removed/SignatureChanged/BodyChanged are semantic diffs of two complete
-file parses. Signature takes precedence when both signature and body change.
-Whitespace-only outer-file changes can be FileOnly; parse failure/unsupported
-changes are FileOnly with partial coverage. Removed pointers describe old bytes,
-not an existing file. Dependent counts are computed at a named generation,
-including completeness/reason; count is not called current after graph advances.
+**Ordinary saves never cause CursorSnapshotChanged.** Non-change queries use stable
+keyset order across generations; if generation differs, return snapshot_advanced=true.
+Moved/replaced/deleted keys may affect live-view coverage: mark window incomplete/
+omission unknown and offer a fresh first page for exhaustive negative claims. No
+OFFSET shifting and no promise of one frozen graph across pages. Changes fixes a
+published change fence for chronological code facts, with latest-at-read author
+metadata and snapshot_advanced when attribution advances. The first response binds
+its fence; new rows wait for the next changes invocation. Resume uses its own fresh
+fence and does not inherit this query continuation. During epoch adoption a returned
+old answer also sets epoch_retired; restarting uses the new pointer explicitly.
 
-Author hints require exact same registered path and before/after hashes from
-captured_edit. One matching agent/evidence is Captured; multiple matching evidence
-facts are Mixed; absent or mismatched evidence is Unknown. Filesystem mtime, Git
-blame, current session and a changed filename do not prove authorship. Later hint
-updates get visible_from_generation, preserving prior query fences. Return changes
-oldest-first by ChangeId for lossless pagination; resume may rank a bounded plan
-separately. Retention gaps, changed epochs and unavailable baselines refuse with
-an explicit restart option; they do not silently reset a caller's baseline.
+## 6. Resume: file groups, late evidence and delivered-only CAS
 
-### 5.5 outline
+resume_code is a private read port, not a sixth Atlas operation. Input is verified
+viewer, saved cursor/revision and <=32 recent edited SymbolIds. Output `items` is
+**$.code_changes: an array of <=5 ResumeChange values**, never pre-rendered text.
+Group edits by FILE, aggregate kinds/change count, one latest pointer and a named
+dependent count; Bulk is one item. Core renders/serializes the items within its
+<=600 UTF-8-byte code-context allocation (including status/omission/retrieval text).
+Atlas port must select items that fit that allocation; core may further omit whole
+items, never silently cut a mandatory label. The compact changes-range cursor has
+no last name/path/frontier and its retrieval text is charged to the SAME 600 bytes;
+if even status plus required retrieval cannot fit, return BudgetExceeded/no advance,
+not a hidden oversized section or an omitted legal route. Delivery/CAS metadata
+is out-of-model control data, not extra uncharged model context.
+Total resume wall budget <=20 ms, SQL
+<=5 ms, including a cold connection/cold cache: unmeasured until native qualification.
+On budget failure preserve the private cursor, show BudgetExceeded, keep core resume
+working. Core can allocate less; Atlas doesn't take private-context capacity itself.
 
-Return a flat pre-order symbol list with parent IDs and original spans; the UI may
-render it as a tree. Pagination can omit an ancestor but preserves its ID and
-states the page boundary. Stable order is start_byte, end_byte descending, ID.
-Unsupported/deferred files return file metadata and FileCoverage, no invented empty
-semantic tree. The outer Read distinguishes a checked missing path from unreadable
-and not-yet-discovered. Surface adapters use atlas-language-unsupported or
-atlas-file-over-budget with the same coverage detail and suggest bounded Text
-search; a useful partial outline remains an explicit partial answer.
+Capture one published fence and group qualifying files in one SQL snapshot.
+Index changes by file/generation and authors by resolved_at_generation; union the
+code/author generation ranges without scanning an unbounded file table. Scan at
+most 512 candidate rows/32 file groups inside the time budget; reaching that bound
+is incomplete, with unknown omitted count, never a checked Zero. Rank
+known OTHER-agent changes affecting the viewer's recent symbols, then other known
+other-agent files, newest first; Bulk is labelled repository activity, never another
+agent's work. At render/query time exclude Captured(viewer), and **exclude Unknown/
+Mixed from other-agent news**, reporting an explicit unattributed omitted count.
+No current session, mtime, blame or filename implies author. Bash/formatter changes
+without captured before/after evidence remain unattributed, not false other-agent news.
 
-### 5.6 Cursor format and common Read/Page seam
+Captured hints require exact path AND before/after hashes plus trusted evidence ID.
+Matching evidence from one distinct agent is Captured (select a stable evidence ID);
+conflicting agents are Mixed, never a confident guess. Late evidence replaces the
+single authors row, increments metadata generation and last_author_generation of
+the affected file, without inventing another code edit. Resume scans files whose
+last_code_generation OR last_author_generation exceeds its saved fence; late known
+other-agent attribution can therefore surface an older edit, labelled
+late_attribution=true. Late self evidence never becomes news. Unattributed facts
+are still available through explicit changes. Expired facts can't be reintroduced.
+A previously delivered true other-agent hint later becoming Mixed is corrected in
+explicit changes/status; provenance uncertainty is visible, no claim of immutable author truth.
 
-AtlasCursor is versioned base64url of a bounded canonical CBOR structure:
-`version, mode, project, root, epoch, fence, query_digest, last_key, state, checksum`.
-Maximum decoded 8192 bytes, encoded 10924 bytes. Checksum detects accidental damage,
-not authority; session/project binding is checked independently. Query digest
-covers filters, order, selector and viewer where relevant, not the requested page
-size. Unknown versions/oversize/malformed/foreign-root/epoch/filter cursors refuse.
-`Page.next` carries the same string in se_types::Cursor; the adapter must validate
-it through AtlasValidation before use. No unchecked cast between store and Atlas
-cursor domains. Ordinary non-change pagination refuses CursorSnapshotChanged if
-generation changed; it does not stitch pages from different symbol graphs. Changes
-use immutable historical rows at a fence and continue until retention expires.
+Available, checked Zero, NeverIndexed, Disabled, Unreadable, BaselineGap, Updating and
+BudgetExceeded differ. Zero needs a valid baseline and complete relevant range;
+no attributed items plus unattributed omissions is NOT "nothing changed". No old
+64-ID plan or thirteen-resume drain: newest groups can appear each time.
 
-The se-types branch currently has Source::{Store,Host,Configuration}; it lacks an
-honest Atlas database source. Required shared-type amendment (owned by section10):
-`Source::Atlas { project: ProjectId, root: [u8;16], epoch: Option<[u8;16]> }`.
-Window from/to are this cache's monotone generation observations converted through
-checked SequenceValue; they are not authoritative event sequences. The distinct
-source disambiguates them. Hostless reads must not claim Host or Configuration.
-This is an integration blocker, not a duplicate Page/Read definition in Atlas.
+The digest is a summary, not lossless delivery of every edit. `omitted_since` is
+a changes-range cursor containing
+the old window lower bound AND this response's published upper fence for explicit
+`atlas changes --since CURSOR` retrieval; it is offered whenever digest items omit
+files/unknown attribution. After the section is ACTUALLY delivered, advance resume
+to that fence even if the summary intentionally omitted files, while the explicit
+changes feed remains independent/lossless within retention. New arrivals beyond
+the fence remain for next resume. Don't advance on query, packet construction,
+timeout, dropped response or a section wholly omitted without its status/retrieval.
 
-## 6. Resume: useful change context without losing unseen work
+Core persists via private **compare_and_set(viewer, delivery EventId, ResumeAdvance)**:
+expected old cursor AND revision must match; next cursor is the offered fence for
+the same root/epoch, never backward. Delivery EventId must identify successful
+context delivery for this offer/viewer, not arbitrary event existence. Offer ID
+makes replay idempotent (AlreadyApplied); concurrent stale offers return Stale and
+recompute from the current cursor, never double-consume or overwrite newer progress.
+The cursor transaction belongs to core's store, never an Atlas write during resume.
+A delivery-capable adapter records delivery before CAS; a consumer without an
+acknowledgement keeps the old cursor and may repeat the summary. Cancellation and
+privacy deletion invalidate old-epoch offers. The bounded offer/delivery association
+has the same core-private retention as its saved cursor, no new Atlas history table.
 
-resume_code is an internal read port, not a sixth Atlas tool. Core passes the
-verified viewer, its persisted Atlas cursor and <=32 recent edited symbols. It
-gets <=5 change bullets, <=600 UTF-8 bytes including status/omission text, <=20 ms
-total wall budget with <=5 ms SQLite query work. Core may allocate less; Atlas
-never takes unused private context budget by itself. The section includes paths,
-change kinds, confidence/coverage and dependent counts where known. No file bodies,
-provider transcript or another agent's private work state enters the section.
+## 7. One error contract and honest cause/remedy
 
-Rank at one fence: known other-agent edits affecting the viewer's recent symbols,
-other known edits, unknown/mixed authors, then self edits; within rank newest first.
-Counts are bounded/lower bounds when incomplete. NeverIndexed, Disabled, Unreadable,
-BaselineGap, Updating, BudgetExceeded and checked Zero are distinct states. Zero
-requires a valid baseline and complete scan of the relevant retained change range;
-Updating with no found rows does not say nothing changed. Read errors carry a
-redacted diagnostic and leave the old cursor intact.
+Outer errors use shared SeError; DTO diagnostics use cloneable **ErrorBody**
+(AtlasFailure), never a noncloneable internal causal chain. IndexSummary/Coverage
+remain cloneable/equatable. Local AtlasErrorCode classifies implementation causes
+only; it allocates no second wire catalog. Detail <=1024 bytes, relative paths,
+no source bodies/secrets/private absolute home paths. Every local cause maps
+exhaustively to typed shared detail; no catch returns an empty vector.
 
-To avoid advancing over unshown changes, the cursor carries a resume plan: at most
-64 ChangeIds from the earliest unconsumed chronological window through a fixed
-scan_tail, reordered only inside that window. Its remaining-ID list, viewer,
-ranking-input digest and fence fit the bounded cursor; author hints are read as
-of that fence. Each response consumes only items actually rendered inside its
-byte budget. offered_cursor contains the remaining plan and old baseline; only
-when the entire plan is shown does it advance baseline to scan_tail. A new plan
-then covers the next chronological window. New arrivals are beyond the fence and
-wait for a later plan, preventing starvation/loss. A changed recent-symbol list
-finishes the old plan before reranking the next; expired rows yield BaselineGap.
-
-Core persists offered_cursor only after the section has actually been delivered
-in a successful context response/turn-delivery record. It must not commit that
-cursor on query, timeout, dropped response, byte-budget omission or mere packet
-construction. If a consumer cannot acknowledge delivery, retaining the old cursor
-and repeating bounded bullets is safer than silently skipping them. Explicit
-changes pagination uses its own baseline and does not mark resume items delivered.
-The host/core owns private cursor storage; Atlas writes nothing during resume.
-
-## 7. Error contract: cause and legal remedy
-
-One wire envelope remains se-types::SeError and section50's se.error/v1. The local
-AtlasErrorCode classifies causes for exhaustive mapping; it does not allocate a
-second global catalog or serialize Rust variants. Detail strings are capped at
-1024 bytes, relative paths only; source bodies, secrets and absolute private home
-paths are never placed in diagnostics. Internal SeError cause is not serialized.
-The following table covers every local variant and maps to existing central codes.
-For common codes, detail.resource identifies Atlas so remedies never target the
-kernel database. A catalog owner may refine the central code, preserving cause.
-
-| Local cause(s) | Central code / class | Why / remedy |
+| Local cause | Shared catalog mapping | Cause and legal action |
 | --- | --- | --- |
-| FeatureDisabled | FeatureDisabled / Refused | project disabled; config set atlas.enabled true |
-| EmbeddedUnavailable | FeatureNotBuilt / Refused | alpha embedded has no Atlas; use standalone build |
-| ConfigurationInvalid | ConfigInvalid / Refused | invalid policy; correct named project setting |
-| RootUnavailable | RepoNotFound / Refused | registered source missing; restore root |
-| RootIdentityChanged | RevisionConflict / Conflict | physical root replaced; owner rebind after inspection |
-| CacheIo, CacheCorrupt | AtlasUnreadable / Unreadable | cache IO/integrity failure; doctor --fix owned cache |
-| CacheTooNew | ConfigVersionUnsupported / Refused | newer cache version; upgrade binary, preserve cache |
-| CacheScopeMismatch, CacheLinkRefused | AtlasUnreadable / Unreadable | foreign scope/link; inspect owned cache location, refuse traversal |
-| CacheBusy | StoreBusy / Unavailable, Atlas resource detail | bounded cache lock wait expired; retry after indicated duration |
-| InvalidPath | AtlasPathOutsideRoot / Refused | path fails root-relative boundary; select registered relative path |
-| UnsupportedPathEncoding | UsageInvalidValue / Usage | non-UTF-8 path cannot be represented; use supported filename encoding |
-| InvalidQuery, InvalidLimit | UsageInvalidValue / Usage | malformed/over-budget request; narrow input or choose documented bounds |
-| AmbiguousSymbol | AtlasSymbolAmbiguous / Usage | more than one declaration; choose returned path/container |
-| InvalidCursor, CursorQueryMismatch | CursorInvalid / Usage | malformed/domain/filter mismatch; restart matching query |
-| CursorEpochMismatch, CursorSnapshotChanged | CursorInvalid / Usage | cache/graph replaced; start a new snapshot |
-| CursorExpired | CursorInvalid / Usage | retained rows expired; choose available baseline |
-| BaselineUnavailable | CursorInvalid / Usage | commit/time baseline never observed or clock uncertain; use returned cursor |
-| WatchUnavailable | AtlasIndexing / Incomplete | native events unavailable; start session reconciliation or use explicit source signal |
-| ResourceBudgetUnavailable | AtlasFileOverBudget / Refused | resource admission failed; wait for pressure to clear or use text search |
-| SourceReadFailed | AtlasUnreadable / Unreadable | source permission/IO failure; restore source access |
-| SourceChangedDuringRead | AtlasIndexing / Incomplete | file changed while read; retry after next source event |
-| ParserFailed | AtlasFileOverBudget / Refused | grammar/work failure; bounded text search, inspect source/diagnostic |
-| ShuttingDown | DeadlineExceeded / Unavailable | root draining; reconnect to next ready generation |
-| Cancelled | Cancelled / Cancelled | explicit cancellation; retry if still wanted |
-| InternalInvariant | Internal / Internal | impossible cache invariant; report redacted diagnostic, keep old cache |
-| WorkerLost | TaskFailed / Internal | owned worker gone without valid result; host may retry admitted first index |
-| WorkerProtocol | TaskFailed / Internal | oversized/malformed/scope-invalid worker output; retire owned staging, report |
-| WorkerLeaseStale | RevisionConflict / Conflict | job or expected epoch superseded; discard old result, use current job |
-| WorkerDeadline | DeadlineExceeded / Unavailable | job deadline reached; retain partial status, retry after cause inspection |
+| FeatureDisabled | FeatureDisabled | explicitly disabled; config set atlas.enabled true |
+| EmbeddedUnavailable | FeatureNotBuilt | use feature-enabled standalone build |
+| ConfigurationInvalid | ConfigValueInvalid | correct the named project policy |
+| RootUnavailable | RepoNotFound | restore registered physical source |
+| RootIdentityChanged | RevisionConflict | inspect and explicitly rebind |
+| CacheIo, CacheCorrupt, CacheScopeMismatch, CacheLinkRefused | AtlasUnreadable | owned cache IO/integrity/scope failure; doctor or inspect location, never source deletion |
+| CacheTooNew | ConfigVersionUnsupported | preserve cache, upgrade binary |
+| CacheBusy | DeadlineExceeded | actual bounded wait for cache lock/checkpoint/retired-epoch slot expired; name that Atlas operation/deadline and retry after readers close |
+| InvalidPath | AtlasPathOutsideRoot | use registered root-relative path |
+| UnsupportedPathEncoding, InvalidQuery, InvalidLimit | UsageInvalidValue | correct encoding/query/bounds |
+| IndexAbsent | AtlasIndexAbsent | enable config schedules background first index |
+| PathUnknown | AtlasPathUnknown | inspect path-mode result and coverage |
+| SymbolUnknown | AtlasSymbolUnknown | search symbol; partial coverage stays Unknown |
+| AmbiguousSymbol | AtlasSymbolAmbiguous | qualify returned candidates |
+| LanguageUnsupported | AtlasLanguageUnsupported | bounded literal text search |
+| FileOverBudget | AtlasFileOverBudget | actual per-file size/work admission; bounded text remains available |
+| InvalidCursor, CursorQueryMismatch, CursorEpochMismatch | CursorInvalid | restart matching query/current epoch |
+| CursorExpired | CursorExpired | choose retained baseline, never silent reset |
+| BaselineUnavailable | CursorInvalid | observed commit/time unavailable; use returned cache cursor |
+| WatchUnavailable, SourceChangedDuringRead | AtlasIndexing | explicitly partial updating; reconcile on next admitted host/source event |
+| ResourceBudgetUnavailable | AtlasResourceBudget | GLOBAL reservation unavailable, resource/requested/available; wait for pressure or use bounded text |
+| ParserFailed | AtlasParseFailed | grammar failure, path/language/reason; bounded text/report diagnostic |
+| SourceReadFailed | AtlasSourceUnreadable | source path permission/IO, restore SOURCE access |
+| ShuttingDown | IpcUnavailable | Atlas host/root draining; reconnect when host ready |
+| Cancelled | Cancelled | explicit cancellation; retry if still wanted |
+| InternalInvariant | Internal | report diagnostic; preserve last safe cache |
+| WorkerLost, WorkerProtocol | TaskFailed | exact worker lost/invalid frames; reap and inspect owned staging |
+| WorkerLeaseStale | RevisionConflict | discard superseded job/epoch result |
+| WorkerDeadline | DeadlineExceeded | actual cold deadline; preserve cache and inspect cause before retry |
 
-Query-level symbol unknown/path unknown/language unsupported/file too large use
-section50's existing Atlas codes, with the coverage rules above. `atlas-indexing`
-is useful partial status, not a catch-all hiding corrupt cache reads. No catch
-returns an empty vector. No automatic timer retries a refused/budgeted worker.
+Section 50 now specifies these three typed Atlas errors and Iris's catalog candidate
+supplies them. Integration must use those approved Detail variants, not silently
+map to AtlasFileOverBudget: a global shortage isn't an oversized file; a grammar
+failure isn't a file limit; a source read failure isn't "can't read atlas.db".
+AtlasErrorDetail reexports shared Detail, so constructor inputs retain typed
+resource/count/path/language/cause fields rather than generic strings that would
+need reparsing. AtlasErrorCode is only local classification; mismatch with the
+selected typed detail is an InternalInvariant. Until the catalog candidate lands,
+this declaration-only crate doesn't construct missing variants or wrong wire errors.
 
-## 8. Shutdown, removal, privacy and operating systems
+## 8. Close, privacy and removal
 
-Drain stops admission, disarms watches, cancels/reaps the exact cold child, finishes
-or rolls back the current file transaction, closes readers/connection/parser, then
-returns Closed. A deadline with pending IO returns Pending and root stays Draining.
-A replacement host cannot publish an old generation's worker result. All watchers,
-handles and tasks belong to a host generation and are released on its close.
+Close stops admission, disarms watches, cancels/reaps the exact cold child, finishes
+or rolls back the file transaction, releases parser and closes local readers/writer.
+Pending IO leaves Draining/Pending; it doesn't become Closed at a deadline. All
+jobs/handles belong to a host generation; replacement hosts reject stale jobs.
+External RO epoch handles can outlive local Closed: remove_cache reports their
+retired files/Pending and never claims those copies erased. Unknown files survive.
 
-remove_cache verifies owner directory/root identity, removes only known cache/WAL/
-SHM/staging files after Closed, reads absence back and returns remaining_paths.
-Unknown files cause incomplete removal rather than recursive deletion. It never
-removes source, .git, provider config or authoritative history. Privacy forgetting
-cancels every job using the old epoch, removes the entire affected cache and
-readbacks absence before claiming the Atlas copy is gone. User source and provider
-transcript copies are separately named residual data; Atlas makes no claim to
-erase them. Retired epochs/cursors cannot resurrect author evidence after deletion.
+remove_cache verifies owner/root identity, removes only known pointer/epoch DB/WAL/
+SHM/staging names after local Closed and readbacks their absence from outside the
+writer. No recursive arbitrary-directory erase, source/.git/provider configuration
+or authoritative history removal. forget_evidence cancels affected jobs, retires
+all affected epochs, invalidates old cursor/offers and requires outside absence
+before claiming this Atlas copy gone. User source/provider transcript residuals
+are separately named. Pinned epochs/unreadable paths remain incomplete privacy
+work, not a completed erase or a forced kill of an external CLI. No retired epoch
+can become current again merely by an old completion/offer arriving.
 
-| OS | Native adapter and boundary | Performance/accounting consequences |
+## 9. Budgets, measurements and five journeys
+
+All budget MB are decimal bytes; KiB is labelled explicitly. Proposed in-host Atlas
+allocation is exactly **2,000,000 bytes** across ALL roots, not per connection/root:
+
+| Allocation | Bytes | Bound |
+| --- | ---: | --- |
+| SQLite + query | 500,000 | two 131,072-byte caches, two <=16,384-byte statement allowances, 98,304-byte query arena, remaining 106,784 for connection/SQLite overhead |
+| Source/parser/extraction/grammar | 1,000,000 | one measured admission profile, including retained allocator pages |
+| Coalesced work queue | 150,000 | <=256 hints, overflow becomes sticky reconcile |
+| Native watches/root/ignore metadata | 200,000 | <=2 active roots, path map cap and bounded policy |
+| Remaining allocator/accounting slack | 150,000 | not an extra pool or a new parser |
+
+These are proposed reservations, NOT measurements. A profile that exceeds one
+share must reduce admission or stay deferred; unused other-core memory and 80's
+4.5 MB reserve are not silently borrowed. No per-root parser/tree/cache pool. Source,
+SQL response data and output serialization ownership must avoid overlapping copies
+beyond these reservations; native adapters include their buffers and kernel charges
+in the external measurement. Global root registration bounds also count here.
+
+80's standalone spend 20.5 MB + reserve 4.5 MB is **25,000,000 bytes steady-state (B4)**.
+Cold child **<=64,000,000 peak** is separately reported only during its finite
+exception window, then reaped. B3 is zero persistent embedded processes/one standalone
+daemon/zero per-agent helpers. Embedded Atlas off adds no grammar/DB/watcher at
+startup; B1 <=30 MB and B2 <=100 ms/first authenticated bind are core budgets.
+Settled Atlas contributes zero timers, CPU and context-switch wakes; B5 <60 CPU ms/
+60 seconds and B6 <=1 context switch/s no session, <=2 one session remain whole-host
+limits. Target save-to-searchable <=200 ms for ADMITTED small updates, query p95 <=50 ms;
+parse deadline 200 ms is a cancellation ceiling, not proof debounce+IO+parse meets
+latency. The six CORE CLI read p95 targets are strictly <20 ms with 30 samples each;
+Atlas's query target isn't a replacement acceptance oracle.
+
+Linux prototype (shared host, not revised-design qualification): StateEngine 6,179
+files / 1,356,850 lines, cold 165.35 s, peak 19.89 MiB, settled 10.60 MiB, DB 275.79 MiB.
+Current Rust SE Code 2,917 files / 851,724 lines, 72.30 s, peak 62.04 MiB, settled
+11.45 MiB, DB 124.80 MiB. Full bodies/every identifier inflated the old DBs; neither
+is retained here. That SE Code peak was **65,048,576 bytes**, exceeding the new
+64,000,000 cap. A 958,433-byte generated Rust file alone peaked 59.25 MiB, motivating
+source/generated admission but NOT proving a smaller file cap fits the parent.
+Eight external-read save witnesses had p95 66.50/98.60 ms. Quiet 60 s endpoint deltas
+were 0 CPU ticks/0 switches in 2 threads: useful proxy, not official oracle.
+20-sample warm/CLI query p95: StateEngine def 0.140/7.50 ms, refs 0.269/12.08,
+impact 1.026/16.15, old full-body FTS 6.437/26.01; Rust SE Code def 0.072/10.60,
+refs 0.115/7.83, impact 0.028/9.75, FTS 1.845/13.45. These don't predict metadata-only
+FTS or qualify 30-run core budgets. Full reference:
+`/mnt/nvme/stateengine/5e-rust-atlas-s5-20261030/S5-REPORT.md`.
+
+| Journey | Atlas behavior | Core boundary |
 | --- | --- | --- |
-| Windows | root/file IDs, owner-only protected ACL, component reparse refusal; ReadDirectoryChangesW data/name/size/write events; no replace-open SQLite assumption | owned child job and background priority; record WorkingSet64 plus private-byte diagnostic; pressure suspend is visible |
-| Linux | retained directory handles, no-follow relative opens, device/inode identity; inotify without access/open events | low-priority owned child/cgroup, no per-event shell; watch limits yield explicit degraded coverage |
-| macOS | physical file identity, owner modes, normalization-aware case lookup; FSEvents coalescing/loss mapped to reconcile | background QoS/owned process handle; no busy reconcile loop on directory coalescing |
+| J1 Install | correct optional SQLite/grammar linkage, no Node | no index/child/watch at install/start |
+| J2 Adopt/real work | explicit enable schedules after-ready cold work | launch/bind/work succeed absent/failed/deferred Atlas |
+| J3 Come back | <=5 file groups, honest omissions and delivery CAS | no query indexing; zero/unknown/unreadable distinct |
+| J4 Two agents | one source index, exact captured provenance | private cursor/revision belongs only to verified viewer |
+| J5 Remove | reap/close/remove owned caches, outside absence | stuck IO/unknown files/pinned epochs reported, source preserved |
 
-Native unsafe code belongs to se-proc/host adapter, not this forbid-unsafe crate.
-Filesystem case policy is measured from registration, not assumed from OS name.
-Network/synced roots that cannot provide the required stable identity/event
-semantics are explicit degraded/unsupported cases; no polling fallback is hidden.
+Five core journeys require neither Atlas enabled nor cold index. Native optional
+qualification must exercise Windows/macOS/Linux, CLI/MCP and both harnesses; attended/
+autonomous use the same readers and host effects. There is no autonomous renewer.
+Read/write mirror: scheduler alone writes; all consumers share query contracts;
+close/privacy covers writer AND readers/retired epochs. Reviewer-owned checks need
+normal edit between pages, branch-switch bulk, initial zero changes, late own/other
+evidence, concurrent resume CAS, good->failed->good/bodyless definitions, same-size
+edits, linked worktrees, new-directory race, overflow/coalesced reconcile, cold
+swap with external Windows reader, ignore growth/GC, absence/unknown/unreadable,
+external save readback, idle and real removal. No author tests/new guards/process
+documents are added. Compilation and static checks establish declarations only.
 
-## 9. Budget allocation, measurements and five journeys
+## 10. Cross-section integration and implementation blockers
 
-All MB in budget claims below are decimal bytes; historical prototype MiB is
-labelled separately. Atlas's in-host share is **2,000,000 bytes**, with a proposed
-allocation: SQLite/query arena 512,000; one parser/source/extraction scratch 768,000;
-queue 256,000; watcher/root metadata 128,000; grammar/allocator slack 336,000.
-These are reservations to verify, not measured facts. The share includes retained
-allocator pages after work. At most one active root connection/parser; inactive
-roots keep bounded registration metadata and no parser/DB handle. Root registry
-metadata beyond the share is subject to host registration bounds, not free memory.
+This revision uses accepted main shared types directly. Source::Atlas and prefixed
+RootId/CacheEpoch are resolved by se-types; there is no stale local clone or request
+to invent a second source. Remaining work before implementation approval:
 
-The 80 daemon allocation is 20.5 MB spend plus 4.5 MB reserve =25 MB. Incremental
-Atlas cannot consume that reserve silently. Embedded Atlas is off, with no startup
-or memory charge. Cold work is after ready and outside first authenticated bind;
-cold full-index child peak <=64 MB, one transient process, separately reported.
-Its host allocation remains inside B4, and the child exits, leaving no settled
-worker. No source activity means zero Atlas CPU/context switches/timers. Save-to-
-searchable target <=200 ms for admitted small-file updates; deferred files retain
-explicit incomplete coverage. Atlas query p95 target <=50 ms; the six core CLI
-read targets remain strictly <20 ms, measured by their separate 30-sample oracle.
+1. Core cannot import se-atlas. Section10 publishes the five query request/result
+   DTOs, ResumeChange/ResumeCode/ResumeAdvance and the CodeIndex/ResumeCursorStore ports
+   in shared se-types::code; Atlas reexports them. Native lifecycle/parser/source
+   declarations stay local. This appendix is the assigned ownership draft, not a
+   competing wire schema or permission for core->Atlas dependency. Surface serializers
+   preserve Answer<Read<T>> metadata and the array code_changes contract.
+2. Integrate the section 50-approved AtlasResourceBudget/AtlasParseFailed/
+   AtlasSourceUnreadable catalog candidate from its owner. CacheBusy uses a real
+   expired bounded wait, not StoreBusy's misleading authoritative-store message.
+   No ad-hoc wire catalog is introduced here.
+3. Windows/macOS/Linux native measurements establish the 2,000,000-byte host share,
+   parser grammar retention, cold 64,000,000 peak, event coverage limits and cold-
+   connection resume 20 ms/SQL 5 ms. Failure means visibly deferred semantics + bounded
+   text/path fallback, never a budget increase or incremental child by assumption.
+4. Host/core owners connect explicit config-enable after-ready effect, generation-
+   scoped worker reap/pointer adoption and delivery-record-backed private CAS.
+   Standalone/embedded entry paths share these contracts; embedded stays off alpha.
 
-Prototype facts (Linux only, shared host, not budget qualification): StateEngine
-6,179 files /1,356,850 lines indexed in 165.35 s, peak 19.89 MiB, settled watcher
-10.60 MiB, DB 275.79 MiB. Current Rust SE Code 2,917 files /851,724 lines indexed in
-72.30 s, peak 62.04 MiB, settled 11.45 MiB, DB 124.80 MiB. Full bodies and every
-identifier occurrence inflated those DBs; this design explicitly omits both.
-An isolated 958,433-byte generated Rust file peaked 59.25 MiB, motivating the
-512 KiB rule and child exit. The SE Code prototype peak was 65,048,576 bytes,
-which exceeds the new 64,000,000-byte child ceiling; this design needs a fresh
-measurement with its generated/size/row limits before claiming compliance. A file cap alone does not establish the 2 MB host share.
-
-Eight real save-to-external-SQLite-read samples had p95 66.50/98.60 ms respectively.
-Sixty-second quiet windows saw zero CPU tick/context-switch deltas in two threads
-on both corpora; endpoint deltas are a proxy, not the official native budget
-runner. Warm production-query/whole-CLI p95 from 20 samples: StateEngine def 0.140/
-7.50 ms, refs 0.269/12.08, impact 1.026/16.15, full-body FTS 6.437/26.01; Rust SECode
-def 0.072/10.60, refs 0.115/7.83, impact 0.028/9.75, full-body FTS 1.845/13.45.
-Those measurements are not a 30-run core acceptance claim or metadata-only FTS
-prediction. Report: `/mnt/nvme/stateengine/5e-rust-atlas-s5-20261030/S5-REPORT.md`.
-
-| Journey | Required behavior with Atlas | Failure/optional boundary |
-| --- | --- | --- |
-| J1 Install | optional grammar/SQLite linkage is packaged consistently; no Node | no DB, index, child or watcher at install/startup |
-| J2 Adopt and real work | core agent launch/bind works, after-ready Atlas may show indexing | core work continues under absent/budgeted/failed Atlas; no first-bind indexing delay |
-| J3 Come back | bounded delivered change section and honest saved cursor | no query-triggered index; disabled/zero/unknown/unreadable remain distinct |
-| J4 Two agents | shared source index, exact captured authorship hints, project-bound reads | private viewer cursor remains core-private; no inferred author from active session |
-| J5 Remove | drain child/readers, remove owned cache with outside absence readback | report unknown files/stuck IO; preserve source and unrelated/user history |
-
-The five journeys do not require Atlas enabled or a cold index (80 decision).
-They establish core budgets; reviewers additionally exercise optional Atlas's
-real CLI and MCP consumer paths on Windows/macOS/Linux, both harnesses through
-the same dispatch. Attended/autonomous have identical optional read behavior;
-there is no autonomous-only renewer. Read/write mirror: scheduler owns writes,
-CLI/MCP share read methods, privacy/removal closes both writer and readers.
-Reviewer checks must include save+external readback, watcher loss, new unresolved
-import target, partial parse, cursor epoch/retention change, unchanged idle, cold
-child exit/failed adoption, privacy removal and response-delivery cursor safety.
-Authors add no tests or new gate machinery. This candidate runs compilation,
-formatting and static source review only; it makes no behavior-readiness claim.
-
-## 10. Integration decisions and remaining blockers
-
-Settled here: one DB per physical worktree, metadata-only FTS, explicit three-level
-accuracy, read-only resume, delivered-only cursor progress, transient first index,
-smaller in-host incremental admission, no idle polling and no additional OPS tools.
-The published se-types foundation supplies IDs/Read/Page/SeError; Atlas depends on
-it rather than defining duplicates. AtlasError DTOs own SeError and deliberately
-are not Clone/Eq, because its causal chain is neither. No test-only fake types are
-used to obtain a compile pass.
-
-Remaining cross-section work before implementation approval:
-
-1. Section10 must add Source::Atlas as specified in 5.6. Current declarations compile
-   without constructing Window, but a truthful page implementation depends on it.
-2. Section50's `atlas-file-over-budget` text says a file stays text-searchable;
-   interpret this as bounded literal search, never a promise to scan every byte.
-   Its doctor repair and disable/re-enable workflows must route through lifecycle,
-   not introduce a new index command. This document adds no CLI flags.
-3. The core registry cannot import Atlas-owned request/result DTOs without an
-   illegal se-core -> se-atlas edge. Section10 must publish the five operation
-   input/output DTOs and the optional resume port in se-types::code; the shapes
-   are specified by this appendix. se-atlas then reexports those DTOs and retains
-   lifecycle/parser/controller types locally. Host adapters implement the port;
-   se-core owns validation/dispatch. This candidate keeps declarations in the
-   assigned crate for review, not a second wire schema; implementation approval
-   requires that shared ownership move.
-4. Native measurements must establish grammar/allocator behavior inside the 2 MB
-   share. If they cannot, reduce incremental semantic admission or defer parsing;
-   do not silently increase B4, move incremental parsing to another helper, or
-   describe a reservation as evidence. Cold prototype numbers do not settle this.
+Commit/time baselines and bounded Text remain because OPS explicitly admits them;
+we simplified their storage/cursor rather than silently deleting operations. The
+64-ID plan, author-version history and CBOR/checksum are removed. No runtime function
+bodies, todo/unimplemented placeholders, SQL executor or test implementation appear
+in the crate below.
 
 ## Appendix A — complete public Rust declarations
 
-The following files are the complete public signature surface of se-atlas. Traits
-have no bodies, and structs/enums have no hidden runtime implementation. All are
-compiled against the published se-types foundation; private fields await validated
-constructors after design approval. No `todo!`, `unimplemented!` or fake returning
-function is required to make the declarations compile.
+These are the exact formatted source files, not abridged examples. All callable
+signatures are trait declarations; behavior awaits design approval.
 
 ### crates/se-atlas/src/lib.rs
 
@@ -781,8 +845,7 @@ pub mod queries;
 ### crates/se-atlas/src/errors.rs
 
 ```rust
-pub use se_types::SeError as AtlasError;
-use std::time::Duration;
+pub use se_types::{Detail as AtlasErrorDetail, ErrorBody as AtlasFailure, SeError as AtlasError};
 
 pub type AtlasResult<T> = Result<T, AtlasError>;
 
@@ -802,12 +865,16 @@ pub enum AtlasErrorCode {
     UnsupportedPathEncoding,
     InvalidQuery,
     InvalidLimit,
+    IndexAbsent,
+    PathUnknown,
+    SymbolUnknown,
     AmbiguousSymbol,
+    LanguageUnsupported,
+    FileOverBudget,
     InvalidCursor,
     CursorEpochMismatch,
     CursorExpired,
     CursorQueryMismatch,
-    CursorSnapshotChanged,
     BaselineUnavailable,
     WatchUnavailable,
     ResourceBudgetUnavailable,
@@ -824,16 +891,9 @@ pub enum AtlasErrorCode {
     WorkerDeadline,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AtlasErrorDetail {
-    pub path: Option<String>,
-    pub observed: Option<String>,
-    pub expected: Option<String>,
-    pub retry_after: Option<Duration>,
-}
-
 /// One wire error remains se-types::SeError. The final central Code allocation
-/// maps every AtlasErrorCode exhaustively; no catch-all or separate envelope.
+/// maps every AtlasErrorCode exhaustively to typed shared Detail. A mismatched
+/// cause/detail is an invariant failure, never a generic string-payload escape.
 pub trait AtlasErrors {
     fn error(&self, code: AtlasErrorCode, detail: AtlasErrorDetail) -> AtlasError;
 }
@@ -842,14 +902,11 @@ pub trait AtlasErrors {
 ### crates/se-atlas/src/model.rs
 
 ```rust
-use crate::errors::AtlasError;
+use crate::errors::AtlasFailure;
 use se_types::{AgentId, EventId, ProjectId};
+pub use se_types::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::{path::PathBuf, time::Duration};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct RootId(pub [u8; 16]);
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct CacheEpoch(pub [u8; 16]);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct AtlasJobId(pub [u8; 16]);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -865,11 +922,11 @@ pub struct FileId(pub [u8; 16]);
 pub struct SymbolId(pub [u8; 32]);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ContentHash(pub [u8; 32]);
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelativePath(pub(crate) String);
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AtlasCursor(pub(crate) String);
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryText(pub(crate) String);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -933,6 +990,10 @@ pub enum CoverageReason {
     ResultLimit,
     ByteLimit,
     WatchLoss,
+    PartialWatch,
+    ParserUnqualified,
+    BaselineReset,
+    BulkChange,
     RetentionGap,
 }
 
@@ -948,22 +1009,41 @@ pub struct Span {
     pub start_byte: u64,
     pub end_byte: u64,
 }
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotFreshness {
+    Current,
+    Stale,
+    Unknown,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodePointer {
     pub file: FileId,
     pub path: RelativePath,
     pub span: Option<Span>,
     pub content_hash: Option<ContentHash>,
+    pub freshness: SnapshotFreshness,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileCoverage {
     Indexed,
-    Partial { reasons: Vec<CoverageReason> },
-    Deferred { reason: CoverageReason },
-    Failed { error: AtlasError },
+    Partial {
+        reasons: Vec<CoverageReason>,
+    },
+    Deferred {
+        reason: CoverageReason,
+    },
+    Failed {
+        error: AtlasFailure,
+    },
+    Stale {
+        reason: CoverageReason,
+        last_good_generation: Generation,
+        observed_hash: Option<ContentHash>,
+        diagnostic: Option<AtlasFailure>,
+    },
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Coverage {
     pub discovered_files: u64,
     pub indexed_files: u64,
@@ -971,11 +1051,18 @@ pub struct Coverage {
     pub deferred_files: u64,
     pub failed_files: u64,
     pub discovery_complete: bool,
+    pub stale_files: u64,
+    pub resolved_references: u64,
+    pub name_only_references: u64,
+    pub watched_directories: u64,
+    pub unwatched_directories: u64,
+    pub watch_discovery_complete: bool,
     pub reasons: Vec<CoverageReason>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IndexState {
+    NotBuilt,
     Disabled,
     Dormant,
     Absent,
@@ -993,15 +1080,15 @@ pub enum IndexState {
         reason: CoverageReason,
     },
     Suspended {
-        reason: AtlasError,
+        reason: AtlasFailure,
     },
     Unreadable {
-        error: AtlasError,
+        error: AtlasFailure,
     },
     Draining,
     Closed,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexSummary {
     pub project: ProjectId,
     pub root: RootId,
@@ -1010,9 +1097,11 @@ pub struct IndexSummary {
     pub state: IndexState,
     pub coverage: Coverage,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Answer<T> {
     pub index: IndexSummary,
+    pub snapshot_advanced: bool,
+    pub epoch_retired: bool,
     pub data: T,
 }
 
@@ -1023,7 +1112,7 @@ pub enum FindMethod {
     MetadataFts,
     Text,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodeHit {
     pub pointer: CodePointer,
     pub symbol: Option<SymbolId>,
@@ -1032,7 +1121,7 @@ pub struct CodeHit {
     pub method: FindMethod,
     pub accuracy: Option<Accuracy>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Reference {
     pub site: CodePointer,
     pub kind: ReferenceKind,
@@ -1041,20 +1130,20 @@ pub struct Reference {
     pub resolved_target: Option<SymbolId>,
     pub accuracy: Accuracy,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImpactHop {
     pub from: SymbolId,
     pub to: SymbolId,
     pub site: CodePointer,
     pub accuracy: Accuracy,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Dependent {
     pub pointer: CodePointer,
     pub symbol: Option<SymbolId>,
     pub hops: Vec<ImpactHop>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Impact {
     pub dependents: Vec<Dependent>,
     pub tests: Vec<Dependent>,
@@ -1064,10 +1153,16 @@ pub struct Impact {
     pub complete: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorHint {
-    Captured { agent: AgentId, evidence: EventId },
-    Mixed { evidence: Vec<EventId> },
+    Captured {
+        agent: AgentId,
+        evidence: EventId,
+    },
+    Mixed {
+        evidence: Vec<EventId>,
+        omitted: Option<u64>,
+    },
     Unknown,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1078,24 +1173,55 @@ pub enum ChangeKind {
     BodyChanged,
     FileOnly,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DependentCount {
     pub count: u64,
     pub at_generation: Generation,
     pub complete: bool,
     pub reason: Option<CoverageReason>,
 }
-#[derive(Debug)]
-pub struct CodeChange {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodeEdit {
     pub id: ChangeId,
     pub pointer: CodePointer,
     pub symbol: Option<SymbolId>,
     pub kind: ChangeKind,
+    pub baseline_reset: bool,
     pub previous_hash: Option<ContentHash>,
     pub author: AuthorHint,
     pub dependents: DependentCount,
 }
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BulkReason {
+    HeadChange,
+    FilesystemBurst,
+    IgnoreReconcile,
+    WatchReconcile,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BulkChange {
+    pub id: ChangeId,
+    pub reason: BulkReason,
+    pub files: u64,
+    pub semantic_changes: Option<u64>,
+    pub sample_paths: Vec<RelativePath>,
+    pub complete: bool,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CodeChange {
+    Edit(Box<CodeEdit>),
+    Bulk(BulkChange),
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceAtlasState {
+    NotBuilt,
+    Disabled,
+    Absent,
+    Updating,
+    Ready,
+    Unreadable,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutlineSymbol {
     pub id: SymbolId,
     pub parent: Option<SymbolId>,
@@ -1103,7 +1229,7 @@ pub struct OutlineSymbol {
     pub kind: SymbolKind,
     pub span: Span,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Outline {
     pub file: CodePointer,
     pub language: Option<Language>,
@@ -1113,16 +1239,31 @@ pub struct Outline {
     pub next: Option<AtlasCursor>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CacheLocation {
     pub directory: PathBuf,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CachePointer {
+    pub schema: u32,
+    pub project: ProjectId,
+    pub root: RootId,
+    pub epoch: CacheEpoch,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitMetadataRegistration {
+    pub physical_git_directory: PathBuf,
+    pub physical_common_directory: PathBuf,
+    pub git_directory_identity: [u8; 32],
+    pub common_directory_identity: [u8; 32],
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootRegistration {
     pub project: ProjectId,
     pub root: RootId,
     pub canonical_source_root: PathBuf,
     pub cache: CacheLocation,
+    pub git_metadata: Option<GitMetadataRegistration>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueryBudget {
@@ -1137,13 +1278,13 @@ pub struct ParseBudget {
     pub max_work: Duration,
     pub reserved_bytes: u32,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IgnorePolicy {
     pub global_patterns: Vec<String>,
     pub generated_prefixes: Vec<RelativePath>,
     pub digest: ContentHash,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AtlasPolicy {
     pub ignore: IgnorePolicy,
     pub enabled: bool,
@@ -1152,6 +1293,7 @@ pub struct AtlasPolicy {
     pub total_reserved_bytes: u32,
     pub change_retention_days: u16,
     pub max_change_rows: u32,
+    pub max_cache_bytes: u64,
 }
 ```
 
@@ -1238,6 +1380,7 @@ pub struct OutlineQuery {
 pub struct ResumeRequest {
     pub viewer: AgentId,
     pub saved_cursor: Option<AtlasCursor>,
+    pub cursor_revision: u64,
     pub recently_edited_symbols: Vec<SymbolId>,
 }
 #[derive(Debug)]
@@ -1251,27 +1394,68 @@ pub enum ResumeCodeState {
     Updating,
     BudgetExceeded,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResumeOfferId(pub [u8; 16]);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ResumeChange {
+    File {
+        pointer: CodePointer,
+        kinds: Vec<ChangeKind>,
+        changes: u64,
+        author: AuthorHint,
+        dependents: DependentCount,
+        late_attribution: bool,
+        baseline_reset: bool,
+    },
+    Bulk(BulkChange),
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResumeAdvance {
+    pub offer: ResumeOfferId,
+    pub expected_cursor: Option<AtlasCursor>,
+    pub expected_revision: u64,
+    pub next_cursor: AtlasCursor,
+    pub fence: Generation,
+}
+#[derive(Debug)]
+pub enum ResumeCursorCommit {
+    Applied { revision: u64 },
+    AlreadyApplied { revision: u64 },
+    Stale { actual_revision: u64 },
+}
+/// Implemented by core's private store. Atlas never writes the viewer cursor.
+/// Delivery must identify a successful context delivery, not mere construction.
+pub trait ResumeCursorStore {
+    fn compare_and_set(
+        &mut self,
+        viewer: &AgentId,
+        delivered: &se_types::EventId,
+        advance: &ResumeAdvance,
+    ) -> AtlasResult<ResumeCursorCommit>;
+}
 #[derive(Debug)]
 pub struct ResumeCode {
     pub index: IndexSummary,
     pub state: ResumeCodeState,
-    pub text: String,
-    pub pointers: Vec<CodePointer>,
-    pub returned: u8,
+    /// The surface's $.code_changes array, never a pre-rendered string.
+    pub items: Vec<ResumeChange>,
     pub omitted: Option<u64>,
+    pub unattributed_omitted: Option<u64>,
     pub complete: bool,
-    pub offered_cursor: Option<AtlasCursor>,
-    pub diagnostic: Option<crate::errors::AtlasError>,
+    /// Lossless explicit changes retrieval starts here, independently of digest delivery.
+    pub omitted_since: Option<AtlasCursor>,
+    pub advance: Option<ResumeAdvance>,
+    pub diagnostic: Option<crate::errors::AtlasFailure>,
 }
 
 /// Bound by the host to one registered project/worktree and authorized source
 /// scope. These methods never enable, open-for-write, index or launch anything.
 pub trait AtlasQueries {
-    fn find(&self, query: &FindQuery) -> AtlasResult<Read<Answer<Page<CodeHit>>>>;
-    fn refs(&self, query: &RefsQuery) -> AtlasResult<Read<Answer<Page<Reference>>>>;
-    fn impact(&self, query: &ImpactQuery) -> AtlasResult<Read<Answer<Impact>>>;
-    fn changes(&self, query: &ChangesQuery) -> AtlasResult<Read<Answer<Page<CodeChange>>>>;
-    fn outline(&self, query: &OutlineQuery) -> AtlasResult<Read<Answer<Outline>>>;
+    fn find(&self, query: &FindQuery) -> AtlasResult<Answer<Read<Page<CodeHit>>>>;
+    fn refs(&self, query: &RefsQuery) -> AtlasResult<Answer<Read<Page<Reference>>>>;
+    fn impact(&self, query: &ImpactQuery) -> AtlasResult<Answer<Read<Impact>>>;
+    fn changes(&self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>>;
+    fn outline(&self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>>;
     fn resume_code(&self, request: &ResumeRequest) -> AtlasResult<ResumeCode>;
     fn status(&self) -> IndexSummary;
 }
@@ -1301,6 +1485,7 @@ use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReconcileReason {
+    ConfigEnabled,
     FirstSession,
     HostRestart,
     WatchOverflow,
@@ -1374,7 +1559,7 @@ pub enum CloseReason {
 pub enum CloseResult {
     Closed,
     Pending { in_flight: u32 },
-    Refused { error: crate::errors::AtlasError },
+    Refused { error: crate::errors::AtlasFailure },
 }
 #[derive(Debug)]
 pub struct CacheRemoval {
@@ -1422,9 +1607,10 @@ pub enum WorkerPurpose {
 }
 #[derive(Debug)]
 pub struct WorkerReservation {
-    pub parent_ceiling_bytes: u64,
-    pub child_ceiling_bytes: u64,
-    pub aggregate_ceiling_bytes: u64,
+    /// B4 is measured outside the separate cold window.
+    pub host_steady_ceiling_bytes: u64,
+    /// Hard cold-child peak, separately observed during the window.
+    pub child_peak_bytes: u64,
     pub wall_deadline: Duration,
 }
 #[derive(Debug)]
@@ -1459,7 +1645,7 @@ pub enum WorkerExit {
         candidate_epoch: CacheEpoch,
     },
     Failed {
-        error: crate::errors::AtlasError,
+        error: crate::errors::AtlasFailure,
     },
     Cancelled,
     Lost,
@@ -1475,6 +1661,9 @@ pub struct FileIdentity {
     pub volume: [u8; 16],
     pub file: [u8; 16],
     pub size: u64,
+    pub mtime_unix_nanos: i128,
+    pub ctime_unix_nanos: Option<i128>,
+    pub change_sequence: Option<u64>,
 }
 #[derive(Debug)]
 pub struct SourceSnapshot {
@@ -1499,6 +1688,10 @@ pub struct SourceChunk {
     pub offset: u64,
     pub bytes: Vec<u8>,
     pub end_of_file: bool,
+    /// Hash of this verified range only; never a full-file revision by inference.
+    pub range_hash: ContentHash,
+    /// Present only after full-file verification, never inferred from stat identity.
+    pub content_revision: Option<ContentHash>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1510,6 +1703,9 @@ pub enum SourceVerification {
 
 /// Uses the registered physical root, no-follow opens and native identity checks.
 /// OS-specific unsafe code remains behind the host/se-proc adapter.
+/// verify rehashes the entire admitted file; identity/size/timestamps alone are
+/// insufficient. read_chunk rereads/verifies the requested bounded range and
+/// never promises a resumable snapshot across calls.
 pub trait AtlasSource {
     fn case_mode(&self) -> CaseMode;
     fn read(&self, path: &RelativePath, budget: ParseBudget) -> AtlasResult<SourceRead>;
@@ -1530,8 +1726,9 @@ pub struct SymbolRecord {
     pub kind: SymbolKind,
     pub span: Span,
     pub exported: bool,
-    pub signature_hash: ContentHash,
-    pub body_hash: ContentHash,
+    /// None means absent syntax; Some(hash(empty)) means an actual empty body.
+    pub signature_hash: Option<ContentHash>,
+    pub body_hash: Option<ContentHash>,
     pub doc_line: String,
 }
 #[derive(Debug)]

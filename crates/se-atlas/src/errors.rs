@@ -1,5 +1,4 @@
-pub use se_types::SeError as AtlasError;
-use std::time::Duration;
+pub use se_types::{Detail as AtlasErrorDetail, ErrorBody as AtlasFailure, SeError as AtlasError};
 
 pub type AtlasResult<T> = Result<T, AtlasError>;
 
@@ -19,12 +18,16 @@ pub enum AtlasErrorCode {
     UnsupportedPathEncoding,
     InvalidQuery,
     InvalidLimit,
+    IndexAbsent,
+    PathUnknown,
+    SymbolUnknown,
     AmbiguousSymbol,
+    LanguageUnsupported,
+    FileOverBudget,
     InvalidCursor,
     CursorEpochMismatch,
     CursorExpired,
     CursorQueryMismatch,
-    CursorSnapshotChanged,
     BaselineUnavailable,
     WatchUnavailable,
     ResourceBudgetUnavailable,
@@ -41,16 +44,9 @@ pub enum AtlasErrorCode {
     WorkerDeadline,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AtlasErrorDetail {
-    pub path: Option<String>,
-    pub observed: Option<String>,
-    pub expected: Option<String>,
-    pub retry_after: Option<Duration>,
-}
-
 /// One wire error remains se-types::SeError. The final central Code allocation
-/// maps every AtlasErrorCode exhaustively; no catch-all or separate envelope.
+/// maps every AtlasErrorCode exhaustively to typed shared Detail. A mismatched
+/// cause/detail is an invariant failure, never a generic string-payload escape.
 pub trait AtlasErrors {
     fn error(&self, code: AtlasErrorCode, detail: AtlasErrorDetail) -> AtlasError;
 }

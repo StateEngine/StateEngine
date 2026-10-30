@@ -1,11 +1,8 @@
-use crate::errors::AtlasError;
+use crate::errors::AtlasFailure;
 use se_types::{AgentId, EventId, ProjectId};
+pub use se_types::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::{path::PathBuf, time::Duration};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct RootId(pub [u8; 16]);
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct CacheEpoch(pub [u8; 16]);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct AtlasJobId(pub [u8; 16]);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -21,11 +18,11 @@ pub struct FileId(pub [u8; 16]);
 pub struct SymbolId(pub [u8; 32]);
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct ContentHash(pub [u8; 32]);
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RelativePath(pub(crate) String);
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AtlasCursor(pub(crate) String);
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryText(pub(crate) String);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -89,6 +86,10 @@ pub enum CoverageReason {
     ResultLimit,
     ByteLimit,
     WatchLoss,
+    PartialWatch,
+    ParserUnqualified,
+    BaselineReset,
+    BulkChange,
     RetentionGap,
 }
 
@@ -104,22 +105,41 @@ pub struct Span {
     pub start_byte: u64,
     pub end_byte: u64,
 }
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotFreshness {
+    Current,
+    Stale,
+    Unknown,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodePointer {
     pub file: FileId,
     pub path: RelativePath,
     pub span: Option<Span>,
     pub content_hash: Option<ContentHash>,
+    pub freshness: SnapshotFreshness,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileCoverage {
     Indexed,
-    Partial { reasons: Vec<CoverageReason> },
-    Deferred { reason: CoverageReason },
-    Failed { error: AtlasError },
+    Partial {
+        reasons: Vec<CoverageReason>,
+    },
+    Deferred {
+        reason: CoverageReason,
+    },
+    Failed {
+        error: AtlasFailure,
+    },
+    Stale {
+        reason: CoverageReason,
+        last_good_generation: Generation,
+        observed_hash: Option<ContentHash>,
+        diagnostic: Option<AtlasFailure>,
+    },
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Coverage {
     pub discovered_files: u64,
     pub indexed_files: u64,
@@ -127,11 +147,18 @@ pub struct Coverage {
     pub deferred_files: u64,
     pub failed_files: u64,
     pub discovery_complete: bool,
+    pub stale_files: u64,
+    pub resolved_references: u64,
+    pub name_only_references: u64,
+    pub watched_directories: u64,
+    pub unwatched_directories: u64,
+    pub watch_discovery_complete: bool,
     pub reasons: Vec<CoverageReason>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IndexState {
+    NotBuilt,
     Disabled,
     Dormant,
     Absent,
@@ -149,15 +176,15 @@ pub enum IndexState {
         reason: CoverageReason,
     },
     Suspended {
-        reason: AtlasError,
+        reason: AtlasFailure,
     },
     Unreadable {
-        error: AtlasError,
+        error: AtlasFailure,
     },
     Draining,
     Closed,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndexSummary {
     pub project: ProjectId,
     pub root: RootId,
@@ -166,9 +193,11 @@ pub struct IndexSummary {
     pub state: IndexState,
     pub coverage: Coverage,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Answer<T> {
     pub index: IndexSummary,
+    pub snapshot_advanced: bool,
+    pub epoch_retired: bool,
     pub data: T,
 }
 
@@ -179,7 +208,7 @@ pub enum FindMethod {
     MetadataFts,
     Text,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodeHit {
     pub pointer: CodePointer,
     pub symbol: Option<SymbolId>,
@@ -188,7 +217,7 @@ pub struct CodeHit {
     pub method: FindMethod,
     pub accuracy: Option<Accuracy>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Reference {
     pub site: CodePointer,
     pub kind: ReferenceKind,
@@ -197,20 +226,20 @@ pub struct Reference {
     pub resolved_target: Option<SymbolId>,
     pub accuracy: Accuracy,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ImpactHop {
     pub from: SymbolId,
     pub to: SymbolId,
     pub site: CodePointer,
     pub accuracy: Accuracy,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Dependent {
     pub pointer: CodePointer,
     pub symbol: Option<SymbolId>,
     pub hops: Vec<ImpactHop>,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Impact {
     pub dependents: Vec<Dependent>,
     pub tests: Vec<Dependent>,
@@ -220,10 +249,16 @@ pub struct Impact {
     pub complete: bool,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuthorHint {
-    Captured { agent: AgentId, evidence: EventId },
-    Mixed { evidence: Vec<EventId> },
+    Captured {
+        agent: AgentId,
+        evidence: EventId,
+    },
+    Mixed {
+        evidence: Vec<EventId>,
+        omitted: Option<u64>,
+    },
     Unknown,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -234,24 +269,55 @@ pub enum ChangeKind {
     BodyChanged,
     FileOnly,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DependentCount {
     pub count: u64,
     pub at_generation: Generation,
     pub complete: bool,
     pub reason: Option<CoverageReason>,
 }
-#[derive(Debug)]
-pub struct CodeChange {
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodeEdit {
     pub id: ChangeId,
     pub pointer: CodePointer,
     pub symbol: Option<SymbolId>,
     pub kind: ChangeKind,
+    pub baseline_reset: bool,
     pub previous_hash: Option<ContentHash>,
     pub author: AuthorHint,
     pub dependents: DependentCount,
 }
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BulkReason {
+    HeadChange,
+    FilesystemBurst,
+    IgnoreReconcile,
+    WatchReconcile,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BulkChange {
+    pub id: ChangeId,
+    pub reason: BulkReason,
+    pub files: u64,
+    pub semantic_changes: Option<u64>,
+    pub sample_paths: Vec<RelativePath>,
+    pub complete: bool,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CodeChange {
+    Edit(Box<CodeEdit>),
+    Bulk(BulkChange),
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SurfaceAtlasState {
+    NotBuilt,
+    Disabled,
+    Absent,
+    Updating,
+    Ready,
+    Unreadable,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OutlineSymbol {
     pub id: SymbolId,
     pub parent: Option<SymbolId>,
@@ -259,7 +325,7 @@ pub struct OutlineSymbol {
     pub kind: SymbolKind,
     pub span: Span,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Outline {
     pub file: CodePointer,
     pub language: Option<Language>,
@@ -269,16 +335,31 @@ pub struct Outline {
     pub next: Option<AtlasCursor>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CacheLocation {
     pub directory: PathBuf,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CachePointer {
+    pub schema: u32,
+    pub project: ProjectId,
+    pub root: RootId,
+    pub epoch: CacheEpoch,
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitMetadataRegistration {
+    pub physical_git_directory: PathBuf,
+    pub physical_common_directory: PathBuf,
+    pub git_directory_identity: [u8; 32],
+    pub common_directory_identity: [u8; 32],
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootRegistration {
     pub project: ProjectId,
     pub root: RootId,
     pub canonical_source_root: PathBuf,
     pub cache: CacheLocation,
+    pub git_metadata: Option<GitMetadataRegistration>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueryBudget {
@@ -293,13 +374,13 @@ pub struct ParseBudget {
     pub max_work: Duration,
     pub reserved_bytes: u32,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IgnorePolicy {
     pub global_patterns: Vec<String>,
     pub generated_prefixes: Vec<RelativePath>,
     pub digest: ContentHash,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AtlasPolicy {
     pub ignore: IgnorePolicy,
     pub enabled: bool,
@@ -308,4 +389,5 @@ pub struct AtlasPolicy {
     pub total_reserved_bytes: u32,
     pub change_retention_days: u16,
     pub max_change_rows: u32,
+    pub max_cache_bytes: u64,
 }

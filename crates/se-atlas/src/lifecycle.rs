@@ -4,6 +4,7 @@ use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReconcileReason {
+    ConfigEnabled,
     FirstSession,
     HostRestart,
     WatchOverflow,
@@ -77,7 +78,7 @@ pub enum CloseReason {
 pub enum CloseResult {
     Closed,
     Pending { in_flight: u32 },
-    Refused { error: crate::errors::AtlasError },
+    Refused { error: crate::errors::AtlasFailure },
 }
 #[derive(Debug)]
 pub struct CacheRemoval {
@@ -125,9 +126,10 @@ pub enum WorkerPurpose {
 }
 #[derive(Debug)]
 pub struct WorkerReservation {
-    pub parent_ceiling_bytes: u64,
-    pub child_ceiling_bytes: u64,
-    pub aggregate_ceiling_bytes: u64,
+    /// B4 is measured outside the separate cold window.
+    pub host_steady_ceiling_bytes: u64,
+    /// Hard cold-child peak, separately observed during the window.
+    pub child_peak_bytes: u64,
     pub wall_deadline: Duration,
 }
 #[derive(Debug)]
@@ -162,7 +164,7 @@ pub enum WorkerExit {
         candidate_epoch: CacheEpoch,
     },
     Failed {
-        error: crate::errors::AtlasError,
+        error: crate::errors::AtlasFailure,
     },
     Cancelled,
     Lost,
@@ -178,6 +180,9 @@ pub struct FileIdentity {
     pub volume: [u8; 16],
     pub file: [u8; 16],
     pub size: u64,
+    pub mtime_unix_nanos: i128,
+    pub ctime_unix_nanos: Option<i128>,
+    pub change_sequence: Option<u64>,
 }
 #[derive(Debug)]
 pub struct SourceSnapshot {
@@ -202,6 +207,10 @@ pub struct SourceChunk {
     pub offset: u64,
     pub bytes: Vec<u8>,
     pub end_of_file: bool,
+    /// Hash of this verified range only; never a full-file revision by inference.
+    pub range_hash: ContentHash,
+    /// Present only after full-file verification, never inferred from stat identity.
+    pub content_revision: Option<ContentHash>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -213,6 +222,9 @@ pub enum SourceVerification {
 
 /// Uses the registered physical root, no-follow opens and native identity checks.
 /// OS-specific unsafe code remains behind the host/se-proc adapter.
+/// verify rehashes the entire admitted file; identity/size/timestamps alone are
+/// insufficient. read_chunk rereads/verifies the requested bounded range and
+/// never promises a resumable snapshot across calls.
 pub trait AtlasSource {
     fn case_mode(&self) -> CaseMode;
     fn read(&self, path: &RelativePath, budget: ParseBudget) -> AtlasResult<SourceRead>;
@@ -233,8 +245,9 @@ pub struct SymbolRecord {
     pub kind: SymbolKind,
     pub span: Span,
     pub exported: bool,
-    pub signature_hash: ContentHash,
-    pub body_hash: ContentHash,
+    /// None means absent syntax; Some(hash(empty)) means an actual empty body.
+    pub signature_hash: Option<ContentHash>,
+    pub body_hash: Option<ContentHash>,
     pub doc_line: String,
 }
 #[derive(Debug)]
