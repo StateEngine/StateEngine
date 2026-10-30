@@ -1,7 +1,7 @@
 # 40 — Host runtime and harnesses
 
 Design candidate, not runtime implementation or qualification. Owner: Vera.
-Reconciliation base: rust-se main `3536238`. Verification tier: kernel boundary design;
+Round-2 reconciliation base: assembled rust-se `f25ca90`. Verification tier: kernel boundary design;
 compiling declarations here, journey/black-box checks owned by reviewers.
 
 ## 1. Outcome, boundaries and source of truth
@@ -44,10 +44,9 @@ import or factory CLI adaptation is part of this product.
 
 No factory tooling, PostgreSQL multiplayer, remote HTTP, provider login manager,
 telemetry, Node runtime, dynamic plugins or new permission bypass is introduced.
-Atlas is feature-absent in the default embedded build and disabled by default
-in both compositions. A feature-enabled build still requires config opt-in. Its build
-follows all five journeys and live handover; it never holds a milestone. Its
-cold-index child has the section-80 transient bound. Agent CLIs
+Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+Its build follows all five journeys and live handover; it never holds a milestone.
+Its cold-index child has the section-80 transient bound. Agent CLIs
 and their tools are separate provider processes, not extra StateEngine processes.
 
 ### 1.1 Evidence and limits
@@ -217,6 +216,23 @@ Unreadable ownership blocks that route; a historical imported PID is never custo
 
 ## 4. Executor, blocking and native thread accounting
 
+The core remains synchronous and never waits on a commit. It returns
+`OpStep::Commit { batch, then }`: an owned typed batch and a typed continuation,
+not a closure holding a transaction or borrowed connection. The host submits
+`batch` through `WriterClient::submit`, awaits its `Completion` on the calling
+async task, then invokes `then` with the actual committed receipt to construct
+the result or next operation step. The store performs SQL on its one writer
+thread; no host thread blocks waiting for that writer, and no core call waits
+for IPC or starts a runtime. `wait_blocking` is CLI-only for hostless execution.
+Submission refusal leaves no accepted write; a timeout, cancellation or lost
+reply after acceptance cannot cancel the batch or invent failure/success.
+Return `commit-outcome-unknown` (Unknown/transient) where the outcome cannot be
+established: CLI remedy “rerun the same command with --key K”; MCP remedy
+“repeat the call with the same idempotency_key”. Retain that original key for
+readback/retry; notify mail/capture consumers only from the
+actual committed receipt/wakes. Native/provider steps run only after their
+required commit continuation, with no SQL transaction or native lock across await.
+
 All async work uses the supplied Tokio Handle. No ambient spawn/current handle,
 nested runtime or block_on. Embedded creates no runtime; standalone has one
 current-thread executor. Constructor stores Handle without I/O/spawn. Tokio is
@@ -239,7 +255,7 @@ per file, including SQLite WAL/SHM, under section 70.
 | Windows native job/process completion | One existing se-proc IOCP collector thread per host | Section-80 custody row includes collector; no RegisterWait pool or second collector |
 | Windows provider stdin/out/err | Overlapped named-pipe host ends and IOCP readiness, bounded buffers | No tokio::fs::File/blocking read wrapper or thread per pipe; detailed below |
 | Transcript watch | Unix native events; Windows uses section 60's shared safe se-proc file-watch service (ReadDirectoryChangesW on the same per-host IOCP) | One shared service for capture/Atlas, no notify-owned helper thread; Section-80 watcher row includes state and any resident stack |
-| Optional Atlas | Config opt-in after journeys and handover, disabled by default | Section-80 standalone Atlas share and separately bounded transient cold child |
+| Optional Atlas | Standalone only, config opt-in after journeys and handover, disabled by default; unavailable embedded | Section-80 standalone Atlas share and separately bounded transient cold child |
 
 On Unix ReactorAdapter takes the owned File from NativeReactor::register, installs
 AsyncFd with requested read/priority interest on the supplied Handle, calls the
@@ -828,7 +844,8 @@ with actual G/epoch and effective cap. OwnerProof MAC is HMAC-SHA256 over
 length-prefixed `se.ipc.owner/v1`, API, epoch/image, server nonce, fresh client
 nonce and verified peer identity. Challenge is channel-bound/one-use; machine
 secret never crosses IPC. Session/Launch bytes travel only after server proof,
-never in logs. Exact API equality, not minor-range negotiation.
+never in logs. Exact API equality applies to operations/hooks, not minor-range
+negotiation; the stop-only control path below is independent of that API.
 
 Call envelope contains API, positive request_id, discovered G, optional per-call
 authority and Operation or Hook. Operation has registry name, closed arguments,
@@ -846,6 +863,30 @@ id/API/G and either typed result or ErrorEnvelope. Transport IDs are not durable
 idempotency keys. Broken post-COMMIT reply resolves by original operation key.
 Five-second hello/write bounds, 30-second ordinary call ceiling; registered
 custody deadlines may return truthful pending rather than block forever.
+
+### 7.1.1 Stop across an API change
+
+`se down` must reach the running host even when its operation API differs from
+the installed client. The same owner-only IPC endpoint accepts a small, fixed
+`se.runtime.stop/v1` control exchange before operation-API negotiation. It uses
+the same native peer/server identity, one-use challenge and owner MAC machinery
+with a distinct stop domain; it carries expected HostEpoch/G, the original
+request key and deadline, never an operation name, actor or session credential.
+Only an outside-agent Owner can use it. This is not a route to execute arbitrary
+old/new operation DTOs and is never exposed over HTTP or session MCP.
+
+The running host executes its own ordinary graceful-down coordinator: stop and
+witness exact owned agents, save resume references, flush capture/debt, drain
+and join, close resources and release the lease in §5 order. The fixed control
+reply reports achieved stop facts, retained resume references and named pending
+obligations, or a refusal; the client renders it without decoding the host's
+operation schema. After a lost reply, reobserve the exact host/lease and original
+stop key before reporting the outcome; endpoint disappearance alone is not proof
+that agents stopped. All Rust API generations retain this stop control version.
+A legacy host lacking it requires its matching `se down` binary and an explicit
+remedy; neither API mismatch nor an unreadable peer permits a PID/name kill or
+a competing writer. Exercise the mismatch and lost-reply paths on Windows,
+Linux and macOS alongside the ordinary shutdown witnesses.
 
 ### 7.2 Owner provenance on every path
 
@@ -1240,8 +1281,9 @@ jobs remain, with one foreground slot available during background work.
 B3's embedded zero persistent-process observation applies when no agent is live.
 Default SE Code exit with live agents instead creates one detached successor;
 that daemon exits ten minutes after its last live agent. Standalone and embedded
-must be measured under those actual compositions. B9 uses section 80's single
-write target; cold direct/FULL tails remain contrary evidence requiring proof,
+must be measured under those actual compositions. B9 measures hosted `msg send`, `working-state set` and `hook claude stop` at
+p95 ≤20 ms. The FULL command family has the separate section-80 E3 bound,
+p95 ≤75 ms on Windows with Defender; cold direct/FULL tails remain contrary evidence requiring proof,
 not weaker authentication or durability. A failed budget blocks release.
 
 Resource defaults in HostLimits are admission/backpressure, not preallocation:
@@ -1249,8 +1291,8 @@ Resource defaults in HostLimits are admission/backpressure, not preallocation:
 per session; bounded aggregate payload/frame/notice permits retain overflow as
 durable debt. Higher negotiated embedded caps must fit section 80's reserve and
 keep aggregate byte caps fixed. Release request parsing buffers before parking;
-never reserve a full header/body buffer per wait. Atlas is disabled by default,
-config opt-in only after the journeys and handover, with a bounded transient cold
+never reserve a full header/body buffer per wait. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+Build it only after the journeys and handover, with a bounded transient cold
 child; it never blocks a milestone. Its embedded absence cannot remove capture's
 shared native watch service.
 
@@ -1291,7 +1333,7 @@ provider discriminants belong in typed causes, not extra public wire codes.
 | Boundary | Public codes / retained cause / legal remedy |
 | --- | --- |
 | Input/wire | usage-invalid-value, input-unknown-field, input-too-large: fix closed schema/budget; no dispatch/marker on invalid input |
-| API/version | api-version-unsupported, runtime-incompatible: upgrade matching side; no negotiation bypass |
+| API/version | api-version-unsupported, runtime-incompatible: upgrade matching side; use §7.1.1's authenticated version-independent control for ordinary down, never arbitrary API negotiation bypass |
 | Native peer/owner provenance | os-user-mismatch, listener-admission-refused, owner-required, human-terminal-required: correct user/native owner route; never ambient fallback |
 | Credential | setup-required, source-unreadable, capability-invalid: detail distinguishes missing/unreadable credential, invalid/revoked/expired capability and unproved binding; actual init/diagnosed repair/renewal/rebind, no owner conversion |
 | Runtime | runtime-not-running, runtime-incompatible, runtime-start-failed, runtime-start-pending: retain hostless/actual-owner/start cause; legal bootstrap/owner inspection, not a PID shortcut |
@@ -1300,7 +1342,7 @@ provider discriminants belong in typed causes, not extra public wire codes.
 | Provider | provider-cli-not-found, provider-incompatible, launch-failed, resume-reference-missing, resume-reference-unverifiable, provider-change-breaks-resume: retain version/feature/app-server cause; install/fix/explicit --new where desired, never silent fresh thread |
 | Process | state-conflict, source-unreadable, usage-invalid-value, job-breakaway-refused, window-unavailable, launch-failed, launch-readiness-timeout, stop-unwitnessed, deadline-exceeded: retain exact identity/bare-PID/partial-stop/native cause and outside observation; no weakened containment/name kill |
 | Capture/config/remove | source-unreadable, transcript-truncated, usage-invalid-value, capture-consent-missing, integration-conflict, integration-failed, remove-incomplete: retain exact source/payload/body/write/readback cause; preserve cursor/foreign bytes/history, repair actual pin/config; hook exit zero is not capture proof |
-| Failure/cancellation | deadline-exceeded, cancelled, internal: original-key outcome readback, retained task/native cause and named route failure or lifecycle-domain poison; mutex poison never success |
+| Failure/cancellation | commit-outcome-unknown (Unknown/transient): rerun the same command with --key K / repeat the call with the same idempotency_key; deadline-exceeded, cancelled, internal retain task/native cause and named route failure or lifecycle-domain poison; mutex poison never success |
 
 A bounded se-proc stop is incomplete at the requested guarantee even if root
 exited; Complete retains its actual supported OS bound. Windows explicit escape,
