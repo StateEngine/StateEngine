@@ -22,8 +22,8 @@ shared declarations move in A01.
 - **se-types:** shared IDs, `Source::Atlas`, `Read`, `Page`, `Window`, typed `Detail`,
   `ErrorBody` and `SeError` already exist. Shared code DTO/port placement does not.
 - **se-store:** se-atlas never depends on it or opens `state.db`. Only core's private
-  resume-cursor CAS and config activation effects use se-store, through their
-  existing owners; these are named separately in A11/A12.
+  resume-cursor CAS uses se-store, through its existing owner (A11). Atlas is enabled by
+  the single `config.toml` setting (section 60), not by a store record (A12).
 - **Host/native:** se-host supplies verified project/viewer authority, lifecycle,
   background scheduling and OS adapters. All eventual unsafe native code stays in
   se-proc behind safe APIs; se-host and se-atlas remain forbid-unsafe. Native APIs
@@ -293,8 +293,8 @@ intact and core resume usable. Explicit changes retains its independent range.
 `crates/se/src/render/atlas.rs` and the Atlas entries in the existing generated CLI/
 MCP dispatch. No second hand-maintained tool catalogue or transport implementation.
 
-**Depends on:** A01–A11/se-types; se-store: config activation effect through core,
-not Atlas; host: normal ready/bind/startup composition, read dispatch and diagnostics.
+**Depends on:** A01–A11/se-types; the `config.toml` Atlas setting read at startup and on
+change (no store record); host: normal ready/bind/startup composition, read dispatch and diagnostics.
 The operation inventory remains exactly the existing five Atlas reads.
 
 **Satisfies:** 60 §1, §4 state mapping, §§5–7/9/10; 80 §§3.1/3.3/3.5/4, B1–B3/B7.
