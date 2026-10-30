@@ -245,6 +245,19 @@ readback/retry; notify mail/capture consumers only from the
 actual committed receipt/wakes. Native/provider steps run only after their
 required commit continuation, with no SQL transaction or native lock across await.
 
+Initial SE Code onboarding belongs to its UI owner/human-presence path, not
+an agent tool, BoundSession or vendor process tree. On structured setup-required,
+it first closes failed-preparation handles/releases any temporary lease, then
+runs the installed bundled se init with literal selected-workspace --repo and
+resolved --home argv, without inherited runtime/store handles. It awaits the
+actual result/readback, then re-prepares before registering/activating. If
+native proof cannot establish the UI owner path
+outside the agent tree, refuse with the init remedy instead of manufacturing
+owner presence. Never pass an agent credential as owner or recursively
+retry a failed init. Decline/failure keeps normal SE Code usable and presents
+the refusal/remedy plus the original setup failure. Init time is reported as
+onboarding/init cost outside B2; it is not an embedded open side effect.
+
 All async work uses the supplied Tokio Handle. No ambient spawn/current handle,
 nested runtime or block_on. Embedded creates no runtime; standalone has one
 current-thread executor. Constructor stores Handle without I/O/spawn. Tokio is
@@ -392,7 +405,12 @@ the error channel without appending a history event.
 Factory preparation is read-only, returns absent/unreadable/version error
 truthfully, and starts no writer/callback/native effect. SE Code registers the
 Prepared Host/G and fresh immutable generation-fenced services before activate.
-Missing store does not implicitly init. Preparation reads the version and plans
+Missing store returns structured `setup-required` to SE Code onboarding. The UI
+owner/human-presence path runs bundled `se --home HOME init --repo DIR` for the
+selected workspace, then re-prepares. Only declined/failed onboarding shows
+“StateEngine has not been initialized for this state home; run se --home HOME
+init --repo DIR.” The preparation/refusal itself creates no store/schema, endpoint,
+writer or credential; unreadable/foreign/unsupported state keeps its diagnosis. Preparation reads the version and plans
 any supported additive migration; activation, under the exclusive runtime lease,
 first verifies a pre-migration backup, applies it and FULL-publishes the version
 before starting ordinary resources. There is no MigrationApproval, plan
@@ -404,19 +422,85 @@ the registered owner; an independent live owner refuses.
 | From | Trigger | Next / actual effect |
 | --- | --- | --- |
 | Unopened | Valid read-only prepare | Prepared, possibly held preparation lease; no worker/native mutation |
-| Prepared | Registered correct G/epoch/services, activate | Activating; start compatible store writer/resources |
+| Prepared | Registered correct G/epoch/services, activate | Activating; validate/open initialized store and native resources; embedded first-bind maintenance retains the store before writer startup |
 | Prepared | Invalid source/G before resource start | Prepared + error |
-| Activating | Initial authenticated first bind/continuity ready | Ready, with route recovery exposed separately |
+| Activating | Initial authenticated ordinary-cold embedded bind | One FULL owner+first-session maintenance commit, then start ordinary writer and return binding/continuity; Ready, with route recovery separate |
+| Activating | Standalone admission, or embedded no-bind deadline/definite first-bind refusal | Fence/join first-bind work, resolve its outcome, then FULL owner-only admission if no pair committed; start writer and become Ready |
 | Activating/Ready | Indexed routes need reconciliation | Recovering; unaffected routes work |
 | Recovering | Required route reconciliation done | Ready |
 | Any owned active state | Writer/lease/collector ownership fault, activate/drain/close panic, or migration failure after resource start | Poisoned, gate G and retain exact partial resources; independent factory restart |
-| Prepared/Ready/Recovering | Explicit drain, native G fenced first | Draining |
-| Draining | All generation tasks joined, unfinished effects durable, writer drained | Drained, still owned until close |
+| Prepared/Activating/Ready/Recovering | Explicit drain/cancel, native G fenced first | Draining; stop new binds and join/resolve any accepted first-bind maintenance job |
+| Draining | All generation tasks joined, unfinished effects durable, writer drained if one existed | Drained; otherwise retain the unique never-started maintenance store, still owned until close |
 | Draining | Deadline/live work/unreadable closure | Remain Draining with named blockers |
 | Drained | Actual matching close | close_clean/checkpoint/resource closure, then Closed |
 | Drained/Poisoned | Independent factory restart of exact call G + stable key | Close old resources safely, fresh Prepared G+1 |
 | Restart closure | Unjoined worker/unsafe ownership | Old quarantined ownership retained; no new writer |
 | Closed | Same-handle close retry | Original result, no reopened resources |
+
+For ordinary embedded cold start, activate may finish its setup with
+Readiness::Prepared while GenerationHealth remains Activating; it does not wait
+for a bind that SE Code can issue only after activate returns. The already
+registered G/services allow the first authenticated bind during Activating.
+No ordinary mutation is admitted until ownership commits. Resolve native
+binding/consent/incumbent witnesses before the bounded blocking maintenance job; call section 20's
+record_first_binding with separate registry-owner and project-session admissions,
+then start the ordinary writer only after the joint FULL receipt. Finish the
+bounded continuity read before returning IssuedSession. Failed pre-COMMIT work
+leaves neither owner nor activation; any prepared native session stays unbound,
+with no provider/tool/mail work authorized and explicit cleanup obligations.
+Post-COMMIT failure retains both keys and known committed facts and keeps
+admission closed. Concurrent distinct first binds wait within the existing
+request/deadline bounds, without a gather timer.
+Standalone admission and live-handover/cold-recovery maintenance retain their
+existing FULL ordering; no transfer barrier is folded into first binding.
+
+The host owns the named constant FIRST_BIND_WINDOW = 10 s. At the moment
+activate returns Readiness::Prepared, set one absolute Instant deadline to that
+moment plus FIRST_BIND_WINDOW. This is separate from activate's
+CallOptions.timeout, which ends with that call; neither retries nor later bind
+calls reset the window. Arm one host-supervisor deadline wake, without polling
+or a per-session timer, and recheck the original deadline before first-bind
+admission and on OS resume under the suspend/resume rule below. If the window
+expires with no bind, or a bind definitely refuses within it, fence new
+first-bind maintenance immediately, join any accepted job and inspect its
+outcome. If neither operation committed, use the ordinary standalone-style FULL
+owner admission and start the normal writer;
+Ready no longer waits for a successful first bind, and status reports the host
+as ready. SE Code receives no failure merely because this window expired: a
+later first bind, like a second bind, uses the writer's ordinary session-activation
+transaction, with its additional FULL cost reported. A bind racing the fallback
+waits for its joined ownership transition within its own call bounds. If the joint
+pair committed, retain its exact receipts/owner, never append a second owner or relabel a known commit as refusal. Unknown COMMIT keeps
+both original keys and a named blocker until bounded readback resolves it; a
+new owner is not guessed. An explicit drain wins against fallback admission,
+fences its gate and joins work before resources can close.
+
+Activating is a normal drainable state even if no bind ever arrives or the first
+bind refuses. Explicit drain fences native G and new binds first, cancels/joins
+any native preparation and waits for the accepted blocking first-bind job to
+finish or resolve its recorded outcome. A pending job cannot publish Ready,
+open ordinary mutation admission or return a new BoundSession after the drain
+fence. Before COMMIT,
+rollback leaves neither owner nor session; a known committed pair remains
+committed even if its reply was lost or cancellation followed it. Keep both
+original keys and known receipts; an unknown COMMIT outcome is resolved by the
+same-key readback, or remains a named Draining blocker. Deadline expiry never
+detaches the job, fabricates poison or releases a still-used lease/store.
+
+A raced committed pair follows ordinary shutdown cleanup for the actual
+activated session/native preparation, retaining its original commit and any
+required terminal FULL facts. Only a real committed session can require that
+cleanup; never create a binding or writer just to label an empty activation
+closed. Flush/drain/join any writer actually used for committed cleanup or
+started before the drain fence. Otherwise reclaim the unique maintenance
+HostStore after its jobs join;
+no writer, owner/session event or flush success is invented just to close.
+DrainReceipt.writer_flushed is false when no writer existed; the retained host
+resource inventory, not that flag alone, proves this absence. From Drained,
+matching close runs close_clean on that unique store with the held lease and
+closes the resources actually acquired, then releases custody and reports Closed.
+This same bounded Activating→Draining→Drained→Closed route handles no bind,
+pre-COMMIT refusal and a commit/reply race without requiring a successful bind.
 
 All unlisted transitions refuse. HostStatus reports its own G/epoch/phase and
 bounded real blockers/counts; status/negotiated/health are nonblocking snapshots.
@@ -1366,9 +1450,12 @@ linked session/continuity response is inside B2, actual task memory is inside
 B1/B4, and B8 begins after independently reported quiescence. A declaration
 compile or arithmetic allocation establishes none of those measurements.
 
-Embedded binds use in-process handles and mint no credentials, removing the two
-credential FULL commits; runtime.owner and any required FULL session activation
-remain inside the first-bind measurement. E2 re-spends the unchanged B2 ceiling
+Embedded binds use in-process handles and mint no credentials. Explicit se init
+creates and FULL-publishes the schema/header first; embedded open never does.
+Ordinary cold first bind records runtime.owner plus the witnessed first session
+in one FULL maintenance transaction before writer startup, with up to two SQLite file
+syncs and any directory sync reported separately. Both records and the complete
+binding/continuity response remain inside the first-bind measurement. E2 re-spends the unchanged B2 ceiling
 using the real FULL set on Windows with Defender, both new and existing store,
 and memory after a real task. Historical FULL commit tails require actual first-bind measurement, not an
 optimistic allocation. Re-adoption, Codex reconnect, backup and optional Atlas run

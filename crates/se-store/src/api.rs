@@ -50,12 +50,13 @@ pub trait StoreFactory {
     /// after verified backup; an older schema never escapes as a HostStore.
     fn open_host(options: &StoreOptions, lease: &dyn RuntimeLease)
     -> StoreResult<Read<Self::Host>>;
-    /// Owner bootstrap with shared runtime lease; publish a new schema no-replace.
+    /// Explicit owner init with shared runtime lease; FULL-publish schema no-replace.
     fn create_direct(
         options: &StoreOptions,
         lease: &dyn RuntimeLease,
         store_id: StoreId,
     ) -> StoreResult<Self::Direct>;
+    /// Explicit owner init only; never an embedded open/activation fallback.
     fn create(
         options: &StoreOptions,
         lease: &dyn RuntimeLease,
@@ -110,6 +111,14 @@ pub trait HostStore: ReadStore + TextStaging + Sized {
         batch: AtomicBatch,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CommitReceipt>;
+    /// Embedded cold first bind only, before writer startup: registry owner and
+    /// project session retain separate admissions/operations but commit FULL
+    /// together. Any member failure rolls back both; no ordinary group exposure.
+    fn record_first_binding(
+        &mut self,
+        binding: FirstBinding,
+        lease: &dyn RuntimeLease,
+    ) -> StoreResult<FirstBindingReceipt>;
     fn checkpoint(
         &mut self,
         mode: CheckpointMode,
@@ -166,6 +175,9 @@ pub(crate) trait TransactionEngine {
         &mut self,
         batches: Vec<AtomicBatch>,
     ) -> StoreResult<Vec<StoreResult<CommitReceipt>>>;
+    /// Private all-or-nothing maintenance wrapper over the same append/apply
+    /// machinery; neither scoped operation may commit without the other.
+    fn commit_first_binding(&mut self, binding: FirstBinding) -> StoreResult<FirstBindingReceipt>;
     fn append_atomic(&mut self, batch: AtomicBatch) -> StoreResult<PreparedReceipt>;
     fn apply(&mut self, event: &StoredEvent) -> StoreResult<()>;
 }

@@ -33,7 +33,7 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | B7 | CLI reads | p95 strictly < 20 ms, 30 runs each of `--version`, `status`, `agent list`, `msg inbox`, `msg list`, `decision list` | Spawn to process exit | `CLI --version`, `CLI contextual read verbs` |
 | B8 | Re-adoption after handover or restart | ≤ 500 ms, no lost or doubled input | Cutover start (after participating agents are interrupted to exact idle) to every live session re-adopted; quiescence time reported separately | **Not yet probed** (§2.6) |
 | B9 | Ordinary CLI writes: `msg send`, `working-state set`, `hook claude stop` | p95 ≤ 20 ms through a running host | Spawn to exit, including IPC/queue/commit/receipt | E3 native CLI probe required; retained mixed writer spike fails (§3.6) |
-| FULL | `se decision ratify`, `se decision reject`, `se decision retract`, `se decision supersede`, `se agent add`, `se config set agent.<A>.profile`, `se config set agent.<A>.model`, `se config set agent.<A>.can-create`, `se init` | p95 ≤ 75 ms on Windows with Defender | Same complete CLI boundary, each concrete command sampled separately through the running host | E3; not yet qualified |
+| FULL | `se decision ratify`, `se decision reject`, `se decision retract`, `se decision supersede`, `se agent add`, `se config set agent.<A>.profile`, `se config set agent.<A>.model`, `se config set agent.<A>.can-create`, `se init` | p95 ≤ 75 ms on Windows with Defender | Spawn to exit; fresh-state init includes hostless schema/publication/setup, other commands use the running host; each sampled separately | E3; not yet qualified |
 
 B1 and B2 are Alpha's requirements. The rest are plan decisions. Budget failures make the Rust run exit
 nonzero even when every behavior row passes. Measurements include embedded
@@ -111,6 +111,9 @@ not just the command label. Sample each listed decision action and agent
 setting separately; general settings writes are not FULL store mutations.
 Use valid changing fixtures so the sample performs the requested mutation,
 including a new project for init, rather than timing an already-matching readback.
+Measure fresh-state init separately as well: protected DB/schema publication,
+required FULL commits and owner/project/agent setup are inside its complete CLI
+clock, even with no host. Moving that work out of B2 cannot hide or waive it.
 Include request framing, queue wait, required COMMIT/sync, receipt
 delivery and process exit; a timeout, lost acknowledgment or refused operation
 cannot become a fast successful sample. Report queue, SQL, sync/checkpoint,
@@ -165,8 +168,11 @@ time conversion before reporting seconds. Unit correctness is checked against
 the actual observer; no unverified existing-runner defect is assumed.
 
 ### 2.6 Early proofs and coverage
-- **E2 / B1/B2:** new and existing stores on Windows with Defender, inside the
-  actual Rust SE Code server. Include first bind, required FULL commits,
+- **E2 / B1/B2:** newly initialized and existing stores on Windows with Defender,
+  inside the actual Rust SE Code server. Run real se init before the newly
+  initialized-store sample and report its cost separately; never call lazy
+  creation or setup-required a successful first bind. Include first bind, the
+  atomic FULL owner/first-session commit,
   supported startup migration/backup when applicable, and after-task memory.
   Existing eight-pair readiness-only A/B measurements do not prove this boundary.
 - **E1 / B8:** both handover directions, source and destination loss around every
@@ -280,28 +286,61 @@ no packet/stack allowance is a measured RSS result.
 ### 3.3 Embedded startup (B2)
 
 An embedded session uses an in-process bound handle and emits no credential
-issuance/activation events. It still pays required FULL runtime.owner, actual
-session activation and new-schema publication. Runtime ownership must commit
-before the writer admits work; first-session activation is not acknowledged
-before its own commit. There is no independent token-minting service or
-credential work hidden outside the first-bind interval.
+issuance/activation events. Explicit `se init` creates and FULL-publishes the
+schema/header and completes project/principal setup first, with its cost measured
+as init above. Absent state refuses with setup-required and the same-home init
+remedy; embedded open never creates it inside or outside a hidden startup clock.
+Newly initialized and existing compatible stores use the same normal B2 first-bind path:
+one FULL maintenance transaction for runtime.owner and the witnessed first
+session, then writer startup and the complete continuity/binding response. UI
+onboarding invokes bundled se init --repo DIR on its owner/human-presence path
+before this interval; a new-store sample means newly initialized state.
+Neither ordinary work nor a bound handle is published before that commit.
 
 | Critical-path work | Current spend status |
 | --- | --- |
-| Native setup, store/header checks and supported upgrade path | Measure in E2; upgrade includes verified pre-migration backup and refuses an active old host with the se down remedy |
-| Initial runtime.owner | One required FULL barrier; no 8 ms fsync assumption |
-| First embedded session activation | One required FULL barrier; no credential.issued/credential.activated barriers |
-| New store/schema publication | Additional required FULL on a fresh store; report its actual ordering/count |
-| Bounded effects/profile load, IPC/native setup, static catalogue and first continuity | Measure with the same build and store; count every serial step |
-| **Spend / reserve** | **Unallocated until E2; no claimed headroom** |
+| Native setup, existing store/header checks and supported upgrade path | Pending quiet-window E2; upgrade includes verified pre-migration backup and refuses an active old host with the se down remedy |
+| Runtime.owner plus first embedded session preparation/activation | One joint FULL maintenance commit; up to two SQLite file fsyncs for its journal protocol, with actual file/directory/checkpoint counts reported; no credential barriers |
+| Fresh schema/header and project/principal setup | Owned by explicit owner/UI se init --repo DIR before the timed embedded interval; report its complete FULL initialization cost separately, including publication readback |
+| Bounded effects/profile load, static catalogue, writer start and first continuity | Pending the same exact-build E2 first-bound response; count every serial step |
+| **Measured B2 spend / reserve** | **Pending quiet-window qualification; no measured headroom or qualification claimed** |
 
-Historical S4 FULL transaction p95 was 41–49 ms; NORMAL hosted hooks were
-7.5–11 ms end-to-end in a different workload. Neither is a current Windows
-FULL cost or permission to subtract syncs from the required contract. Two
-serial FULL barriers already consume most of B2 at the historical cost,
-before other setup; a fresh store adds another. E2 must report the real
-critical path and any miss. The old 75/96 ms readiness-only prototype and
-an 8 ms assumed first-bind commit do not establish this revised boundary.
+The syscall count is not a latency estimate: one FULL transaction can require
+multiple file/directory sync calls, and checkpoint/migration work must retain
+its actual count and time inside the applicable interval. The closed FULL set,
+checkpoint policy and B2 ceiling are unchanged; no directory flush is suppressed.
+Historical readiness-only, separate-barrier and loaded-box timings do not
+qualify this candidate. The loaded Linux runs overlapped a full preflight and a
+system-wide syscall trace; their raw samples remain archived but are excluded
+from qualification and from causal latency conclusions.
+
+Qualification remains pending a quiet-window measurement of the actual Rust
+SE Code first-bound response against its unchanged baseline, with newly
+initialized and existing stores and the same durability/inputs/build. Record load
+beside every result. For the coordinated Linux quiet window, use the exclusive
+heavy slot with no other heavy jobs or system-wide tracing, and require load1
+≤ 10 at each case start. This records Prime's revised criterion after observing
+the parked-runner/desktop idle floor of load1 6–8 on the 48-core box; it does not
+qualify the earlier contended measurements. Retain every paired sample, including
+signed negative differences and failures; file/directory/count traces are
+separate from latency samples. No loaded result or transaction-count arithmetic
+establishes latency headroom. Windows with Defender, after-task memory and full
+native integration remain independently required; both reviews and accepted
+quiet-window numbers gate this candidate's merge.
+
+Section 40's FIRST_BIND_WINDOW = 10 s starts when activate returns Prepared,
+uses an absolute Instant deadline and is rechecked on resume. Window expiry
+with no bind or a definite first-bind refusal within it falls back to owner-only
+FULL admission before writer start; status becomes ready and a later first bind
+uses the ordinary session FULL transaction, like a second bind, without an
+expiry failure to SE Code. Record the actual
+fallback wait/extra barriers rather than pooling it with the normal atomic
+first-bind case. Explicit drain must fence/join a racing commit and retain both
+keys/known outcomes; it cannot force a duplicate owner or a synthetic successful
+binding. Reviewer witnesses include declined/failed onboarding, no side effect
+on missing-state open, bare se/status not-set-up exit 0, whole-pair rollback and
+same-key replay, concurrent first binds, deadline fallback, and close before a
+bind/after refusal/racing COMMIT. Live-handover/recovery barriers stay unchanged.
 
 Startup migration is automatic only in the sole owning host after a verified
 pre-migration backup; too-new/unsupported formats refuse, and an active older
