@@ -1,8 +1,7 @@
 //! Common challenge MAC. Native peer/owner provenance comes from se-proc;
 //! session/launch revocation and operation admission stay in the runtime.
-use super::wire::{
-    MAX_ENDPOINT_BYTES, MAX_FRAME_BYTES, VersionWire, decode_json, encode_frame, encode_json,
-};
+use super::endpoint::VersionWire;
+use super::wire::{MAX_ENDPOINT_BYTES, MAX_FRAME_BYTES, decode_json, encode_frame, encode_json};
 use crate::{EndpointRecord, ServerChallenge};
 use hmac::{Hmac, Mac};
 use se_types::{Result, SeError, Secret};

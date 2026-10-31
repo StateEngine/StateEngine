@@ -1,6 +1,7 @@
 //! Shared blocking/async IPC codec. A transport supplies deadline-aware I/O;
 //! this module never dispatches an operation or interprets a request key.
 use super::auth::{AuthorityRef, AuthorityWire};
+use super::endpoint::VersionWire;
 use se_types::{Result, SeError};
 use serde::{
     Deserialize, Serialize,
@@ -19,29 +20,6 @@ pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_REPLY_BYTES: u32 = 262_144;
 pub const MAX_JSON_DEPTH: u8 = 64;
 pub const MAX_ENDPOINT_BYTES: usize = 16 * 1024;
-
-#[derive(Clone, Copy, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct VersionWire {
-    pub major: u16,
-    pub minor: u16,
-}
-impl From<se_types::ApiVersion> for VersionWire {
-    fn from(version: se_types::ApiVersion) -> Self {
-        Self {
-            major: version.major,
-            minor: version.minor,
-        }
-    }
-}
-impl From<VersionWire> for se_types::ApiVersion {
-    fn from(version: VersionWire) -> Self {
-        Self {
-            major: version.major,
-            minor: version.minor,
-        }
-    }
-}
 
 fn invalid(expected: &str) -> SeError {
     SeError::invalid("IPC frame", expected)

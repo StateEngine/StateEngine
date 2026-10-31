@@ -1,6 +1,6 @@
 //! Endpoint representation only. Protected publication, ownership and actual
 //! server identity are native se-proc operations, not inferred from these bytes.
-use super::wire::{MAX_ENDPOINT_BYTES, VersionWire, decode_json, encode_json};
+use super::wire::{MAX_ENDPOINT_BYTES, decode_json, encode_json};
 use crate::{EndpointRecord, HostKind, IpcEndpoint};
 use se_types::{
     Generation, HostEpoch, IdempotencyKey, NativePath, PathEncoding, Result, SeError, Secret,
@@ -338,4 +338,27 @@ pub(crate) fn validate_selections(value: &Option<Value>, hook: bool) -> Result<(
         ));
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct VersionWire {
+    pub major: u16,
+    pub minor: u16,
+}
+impl From<se_types::ApiVersion> for VersionWire {
+    fn from(version: se_types::ApiVersion) -> Self {
+        Self {
+            major: version.major,
+            minor: version.minor,
+        }
+    }
+}
+impl From<VersionWire> for se_types::ApiVersion {
+    fn from(version: VersionWire) -> Self {
+        Self {
+            major: version.major,
+            minor: version.minor,
+        }
+    }
 }
