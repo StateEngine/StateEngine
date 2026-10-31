@@ -34,6 +34,8 @@ def native_requirements(path, windows):
                 raise ValueError("expected a native Windows PE executable")
             stream.seek(struct.unpack_from("<I", header, 60)[0])
             valid = stream.read(6) == b"PE\0\0\x64\x86"
+            stream.seek(struct.unpack_from("<I", header, 60)[0] + 24)
+            valid = valid and stream.read(2) == b"\x0b\x02"
         else:
             valid = header[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<H", header, 18)[0] == 62
     if not valid:
@@ -83,7 +85,8 @@ def main():
         parser.error("the release profile must explicitly use panic=unwind")
     # Cargo would otherwise accept unrecorded environment/config overrides.
     for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER",
-                 "RUSTC_WORKSPACE_WRAPPER", "RUSTC_BOOTSTRAP"):
+                 "RUSTC_WORKSPACE_WRAPPER", "RUSTC_BOOTSTRAP", "CARGO_BUILD_RUSTFLAGS",
+                 "CARGO_BUILD_RUSTC", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"):
         if os.environ.get(name):
             parser.error(f"unset {name} before the pinned release build")
     if any(k.startswith("CARGO_PROFILE_") or
@@ -105,9 +108,10 @@ def main():
     # Never copy a cached Cargo artifact as an independent rebuild. Both source
     # and scratch prefixes are normalized before compilation, not after hashing.
     with tempfile.TemporaryDirectory(prefix="se-native-build-") as target:
-        mappings = [(ROOT, "/stateengine/source"), (Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")), "/rust/cargo"),
+        mappings = [(ROOT, "/stateengine/source"), (Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")).resolve(), "/rust/cargo"),
                     (sysroot, "/rust/toolchain"), (Path(target), "/stateengine/target")]
-        remaps = [f"--remap-path-prefix={prefix}={replacement}" for prefix, replacement in mappings]
+        remaps = [f"--remap-path-prefix={spelling}={replacement}" for prefix, replacement in mappings
+                  for spelling in sorted({str(prefix), prefix.as_posix()})]
         environment = {**os.environ, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags + remaps),
                        "SOURCE_DATE_EPOCH": str(epoch), "CARGO_INCREMENTAL": "0"}
         built = subprocess.run(argv + ["--target-dir", target], cwd=ROOT, check=True, text=True,
@@ -122,7 +126,7 @@ def main():
     (out / name).chmod(0o755)
     requirements = native_requirements(out / name, "windows" in args.target)
     version = subprocess.run([str(out / name), "--version"], cwd=out, check=True, text=True,
-        stdout=subprocess.PIPE, env={k: v for k, v in {**os.environ, "PATH": os.defpath}.items()
+        stdout=subprocess.PIPE, env={k: v for k, v in {**os.environ, "PATH": ""}.items()
                                     if k in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP")}).stdout.strip()
     packages = {p["id"]: p for p in metadata["packages"]}
     features = {}
