@@ -50,6 +50,9 @@ fn invalid(expected: &str) -> SeError {
 /// Copies retained for channel I/O are erased when their buffer is dropped.
 pub struct WireBytes(Zeroizing<Vec<u8>>);
 impl WireBytes {
+    pub(crate) fn from_owned(bytes: Zeroizing<Vec<u8>>) -> Self {
+        Self(bytes)
+    }
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }

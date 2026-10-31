@@ -154,12 +154,28 @@ pub fn encode_server_hello(hello: &crate::ServerHello) -> Result<super::wire::Wi
         MAX_ENDPOINT_BYTES,
     )
 }
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum ReadyReply {
+    Ready(ReadyWire),
+    Refused { error: se_types::ErrorEnvelope },
+}
+#[derive(Serialize)]
+struct HelloRefusal<'a> {
+    error: &'a se_types::ErrorEnvelope,
+}
+pub fn encode_hello_refusal(error: &se_types::ErrorEnvelope) -> Result<super::wire::WireBytes> {
+    encode_frame(&HelloRefusal { error }, MAX_ENDPOINT_BYTES)
+}
 pub fn decode_server_hello(
     bytes: &[u8],
     sent: &crate::ClientHello,
     challenge: &ServerChallenge,
 ) -> Result<crate::ServerHello> {
-    let wire: ReadyWire = decode_json(bytes, MAX_ENDPOINT_BYTES)?;
+    let wire = match decode_json::<ReadyReply>(bytes, MAX_ENDPOINT_BYTES)? {
+        ReadyReply::Ready(wire) => wire,
+        ReadyReply::Refused { error } => return Err(error.body().clone().into()),
+    };
     if se_types::ApiVersion::from(wire.version) != sent.version
         || wire.epoch != challenge.epoch
         || wire.maximum_reply_bytes > sent.maximum_reply_bytes
@@ -293,6 +309,9 @@ pub struct OwnerChallenge {
     domain: ProofDomain,
 }
 impl OwnerChallenge {
+    pub(crate) fn stop_domain(&mut self) {
+        self.domain = ProofDomain::RuntimeStop;
+    }
     pub fn begin(endpoint: &EndpointRecord, domain: ProofDomain) -> Result<Self> {
         Ok(Self {
             challenge: Some(ServerChallenge {

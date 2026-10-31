@@ -24,7 +24,35 @@ pub struct EndpointRecord {
     pub image_sha256: se_types::Sha256,
 }
 pub struct PeerProof {
-    pub(crate) _private: (),
+    pub(crate) native: se_proc::native_ipc::NativeIpcPeer,
+}
+impl PeerProof {
+    pub fn native(&self) -> &se_proc::native_ipc::NativeIpcPeer {
+        &self.native
+    }
+}
+pub struct NativeIpcPlatform;
+impl IpcPlatform for NativeIpcPlatform {
+    fn peer(&self, channel: BorrowedChannel<'_>) -> se_types::Result<PeerProof> {
+        se_proc::native_ipc::observe_ipc_peer(channel, se_proc::native_ipc::IpcPeerSide::Client)
+            .map(|native| PeerProof { native })
+            .map_err(crate::client::lease::native_error)
+    }
+    fn verify_server(
+        &self,
+        channel: BorrowedChannel<'_>,
+        endpoint: &EndpointRecord,
+    ) -> se_types::Result<PeerProof> {
+        let native = se_proc::native_ipc::observe_ipc_peer(
+            channel,
+            se_proc::native_ipc::IpcPeerSide::Server,
+        )
+        .map_err(crate::client::lease::native_error)?;
+        native
+            .verify_instance(&endpoint.epoch.owner, endpoint.image_sha256)
+            .map_err(crate::client::lease::native_error)?;
+        Ok(PeerProof { native })
+    }
 }
 #[derive(Clone, Debug)]
 pub struct ServerChallenge {
@@ -127,3 +155,9 @@ pub struct HttpChannel {
 pub struct HttpListener {
     pub(crate) _private: (),
 }
+
+#[cfg(feature = "listener")]
+#[path = "ipc/listener.rs"]
+mod listener;
+#[cfg(feature = "listener")]
+pub use listener::*;

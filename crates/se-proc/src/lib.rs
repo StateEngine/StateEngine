@@ -1,4 +1,4 @@
-//! Native process contracts and protected state-file custody.
+//! Native process contracts, protected state files and local IPC custody.
 //!
 //! See docs/design/30-process-ownership.md for normative semantics. The public
 //! process traits remain declarations; NativeStateFiles supplies the real
@@ -8,6 +8,7 @@
 mod error;
 mod identity;
 mod launch;
+pub mod native_ipc;
 mod ownership;
 mod state_files;
 pub use state_files::{

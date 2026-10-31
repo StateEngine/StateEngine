@@ -1,4 +1,5 @@
-//! Compile-only host design; no runtime, provider or listener implementation.
+//! Shared local IPC client/listener and host contracts.
+//! Runtime/provider admission and dispatch are supplied by their host adapters.
 //! Canonical declarations for docs/design/40-host-runtime-and-harnesses.md.
 //! The separately owned permissive linked API remains section 10's contract.
 pub mod client;

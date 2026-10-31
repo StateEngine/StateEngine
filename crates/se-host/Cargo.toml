@@ -9,7 +9,7 @@ publish.workspace = true
 [features]
 default = ["runtime", "listener"]
 runtime = ["dep:tokio"]
-listener = ["runtime"]
+listener = ["runtime", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync"]
 secode = ["runtime"]
 
 [dependencies]
@@ -17,6 +17,12 @@ se-types = { path = "../se-types" }
 se-store = { path = "../se-store" }
 se-proc = { path = "../se-proc" }
 serde_json.workspace = true
+serde.workspace = true
+hmac = "0.12.1"
+sha2.workspace = true
+getrandom = "0.3.4"
+zeroize.workspace = true
+serde_ignored = "0.1.14"
 tokio = { workspace = true, optional = true }
 
 [lints]
