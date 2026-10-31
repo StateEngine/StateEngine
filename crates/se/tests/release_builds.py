@@ -123,7 +123,48 @@ def main():
     print("PASS: actual native dependency inspection refuses an unavailable tool", flush=True)
     assert not command(["git", "status", "--porcelain", "--untracked-files=all"], source)
     assert not command(["git", "status", "--porcelain", "--untracked-files=all"], second)
-    print("2 passed; 0 failed; build reproducibility only, native runtime/J1/R06 qualification remains separate")
+    # Cargo discovers configuration outside the pinned checkout. A refusal
+    # after executing that configuration's wrapper is already too late.
+    marker = out / "ambient-wrapper-executed"
+    wrapper = out / ("untrusted-wrapper.cmd" if sys.platform == "win32" else "untrusted-wrapper.sh")
+    if sys.platform == "win32":
+        wrapper.write_text(f'@echo off\necho executed>"{marker}"\nexit /b 89\n')
+    else:
+        import shlex
+        wrapper.write_text(f'#!/bin/sh\nprintf executed > {shlex.quote(str(marker))}\nexit 89\n')
+        wrapper.chmod(0o700)
+    failures = []
+    for label in ("parent", "parent-legacy", "user-home", "user-home-legacy"):
+        env = dict(os.environ)
+        config = (out / ".cargo" if label.startswith("parent") else out / "hostile-cargo-home")
+        config.mkdir()
+        if label.startswith("user-home"):
+            env["CARGO_HOME"] = str(config)
+        config_path = config / ("config" if label.endswith("legacy") else "config.toml")
+        config_text = '[build]\nrustc-wrapper = ' + json.dumps(str(wrapper)) + '\n[profile.release]\npanic = "abort"\n'
+        config_path.write_text(config_text)
+        (out / (label + "-config.fixture")).write_text(config_text)
+        destination = out / ("refused-" + label)
+        try:
+            result = subprocess.run([sys.executable, str(second / "scripts/release/build.py"), "--target", target,
+                                 "--out", str(destination)], cwd=second, env=env, text=True, capture_output=True, timeout=120)
+            (out / (label + "-override.stderr")).write_text(result.stderr)
+            if result.returncode == 0:
+                failures.append(f"ambient {label} configuration was accepted")
+            if marker.exists():
+                failures.append(f"ambient {label} wrapper executed before refusal")
+                marker.unlink()
+            if "config" not in result.stderr.lower() or "refus" not in result.stderr.lower():
+                failures.append(f"ambient {label} did not give a configuration refusal: {result.stderr}")
+            if (destination / "build.json").exists():
+                failures.append(f"ambient {label} left a qualified build manifest")
+        finally:
+            config_path.unlink()
+            if not any(config.iterdir()):
+                config.rmdir()
+    assert not failures, "; ".join(failures)
+    print("PASS: ambient parent and user Cargo configuration refuse before an untrusted wrapper executes", flush=True)
+    print("3 passed; 0 failed; build reproducibility only, native runtime/J1/R06 qualification remains separate")
 
 
 if __name__ == "__main__":
