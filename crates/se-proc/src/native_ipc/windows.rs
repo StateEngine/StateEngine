@@ -69,7 +69,9 @@ fn create(name: &OsStr, first: bool) -> IpcNativeResult<OwnedHandle> {
     };
     if raw == INVALID_HANDLE_VALUE && first {
         let creation_error = io::Error::last_os_error();
-        if creation_error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+        if matches!(creation_error.raw_os_error(), Some(code)
+            if code == ERROR_ACCESS_DENIED as i32 || code == ERROR_PIPE_BUSY as i32)
+        {
             let display = String::from_utf16_lossy(&name[..name.len().saturating_sub(1)]);
             let (code, reason) = match security::named_owner(&name) {
                 Ok(sid) => (
