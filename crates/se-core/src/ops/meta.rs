@@ -211,6 +211,32 @@ pub fn decode_tool(name: &str, arguments: serde_json::Value) -> Result<AnyOp> {
         .iter()
         .find(|meta| matches!(meta.mcp,McpExposure::Tool {name:registered,..} if registered==name))
         .ok_or_else(|| SeError::invalid("tool", "an exposed registered StateEngine tool name"))?;
+    decode_registered(meta, arguments)
+}
+/// IPC/linked ingress preserves the original key in both its transport identity
+/// and closed DTO. Neither a transport field nor a read can manufacture a write.
+pub fn decode_operation(
+    name: &str,
+    arguments: serde_json::Value,
+    key: Option<&se_types::IdempotencyKey>,
+) -> Result<AnyOp> {
+    let meta = CATALOGUE
+        .iter()
+        .find(|meta| meta.name == name)
+        .ok_or_else(|| SeError::invalid("operation", "an exact registered operation name"))?;
+    let op = decode_registered(meta, arguments)?;
+    if op.idempotency_key() != key {
+        return Err(SeError::invalid(
+            "request identity",
+            "the same original idempotency_key in the transport and mutation DTO; reads carry none",
+        ));
+    }
+    Ok(op)
+}
+fn decode_registered(
+    meta: &crate::registry::OpMeta,
+    arguments: serde_json::Value,
+) -> Result<AnyOp> {
     let (input_schema, _) = schemas(meta.name).ok_or_else(|| internal(meta.name))?;
     let properties = input_schema
         .get("properties")

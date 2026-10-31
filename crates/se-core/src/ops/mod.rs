@@ -14,7 +14,9 @@ pub use cli::{
     CliSelections, CommonArgs, cli_command, from_matches, from_matches_with_key, selected_meta,
 };
 pub use inputs::*;
-pub use meta::{McpTool, decode_tool, mcp_tools, metadata_output, schema_catalogue};
+pub use meta::{
+    McpTool, decode_operation, decode_tool, mcp_tools, metadata_output, schema_catalogue,
+};
 pub use outputs::*;
 use schemars::JsonSchema;
 use se_types::{API_VERSION, IdempotencyKey, Result};
