@@ -368,18 +368,15 @@ impl<T> Page<T> {
                     }
             )
         });
-        let wire_more = window.fields.is_none()
-            && matches!(
-                window.omitted.reason,
-                Some(OmissionReason::Limit | OmissionReason::Budget)
-            );
+        // Minimal wire windows aggregate before/after omissions; without producer
+        // accounting, no-next can mean only earlier rows were omitted.
         if items.len() > window.limit.get() as usize
             || window
                 .fields
                 .as_ref()
                 .is_some_and(|fields| items.len() as u64 != fields.returned)
             || (window.complete && next.is_some())
-            || (next.is_none() && (needs_continuation || wire_more))
+            || (next.is_none() && needs_continuation)
             || (next.is_some() && next == window.from)
         {
             return Err(SeError::invalid(

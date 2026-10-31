@@ -13,39 +13,64 @@ pub enum PathEncoding {
     WindowsUtf16(Vec<u16>),
 }
 
-fn windows_drive_absolute(units: &[u16]) -> bool {
-    matches!(units, [drive, 58, 47 | 92, ..] if *drive <= 127 && (*drive as u8).is_ascii_alphabetic())
+const BACKSLASH: u16 = b'\\' as u16;
+const FORWARD_SLASH: u16 = b'/' as u16;
+const COLON: u16 = b':' as u16;
+const QUESTION_MARK: u16 = b'?' as u16;
+const DOT: u16 = b'.' as u16;
+
+fn windows_separator(unit: u16, verbatim: bool) -> bool {
+    unit == BACKSLASH || (!verbatim && unit == FORWARD_SLASH)
 }
 
-fn complete_unc(units: &[u16]) -> bool {
-    let mut parts = units.split(|unit| matches!(unit, 47 | 92));
+fn windows_drive_absolute(units: &[u16], verbatim: bool) -> bool {
+    matches!(units, [drive, COLON, separator, ..]
+        if u8::try_from(*drive).is_ok_and(|letter| letter.is_ascii_alphabetic())
+            && windows_separator(*separator, verbatim))
+}
+
+fn complete_unc(units: &[u16], verbatim: bool) -> bool {
+    let mut parts = units.split(|unit| windows_separator(*unit, verbatim));
     matches!((parts.next(), parts.next()), (Some(server), Some(share)) if !server.is_empty() && !share.is_empty())
 }
 
+fn unc_tail(units: &[u16]) -> Option<&[u16]> {
+    let prefix = units.get(..4)?;
+    (prefix[3] == BACKSLASH
+        && prefix[..3].iter().zip(b"UNC").all(|(unit, letter)| {
+            u8::try_from(*unit).is_ok_and(|unit| unit.eq_ignore_ascii_case(letter))
+        }))
+    .then_some(&units[4..])
+}
+
 fn windows_absolute(units: &[u16]) -> bool {
-    if windows_drive_absolute(units) {
-        return true;
-    }
-    let Some(tail) = units.strip_prefix(&[92, 92]) else {
-        return false;
-    };
-    if let Some(verbatim) = tail.strip_prefix(&[63, 92]) {
-        if matches!(verbatim, [85 | 117, 78 | 110, 67 | 99, 92, ..]) {
-            return complete_unc(&verbatim[4..]);
+    if let Some(verbatim) = units.strip_prefix(&[BACKSLASH, BACKSLASH, QUESTION_MARK, BACKSLASH]) {
+        if let Some(unc) = unc_tail(verbatim) {
+            return complete_unc(unc, true);
         }
-        if matches!(verbatim, [_, 58, ..]) {
-            return windows_drive_absolute(verbatim);
+        if matches!(verbatim, [_, COLON, ..]) {
+            return windows_drive_absolute(verbatim, true);
         }
-        // Other verbatim roots (for example Volume{GUID}) need their root slash.
+        // Verbatim roots need a literal backslash; forward slash stays data.
         return verbatim
             .iter()
-            .position(|unit| *unit == 92)
+            .position(|unit| *unit == BACKSLASH)
             .is_some_and(|end| end > 0);
     }
-    if let Some(device) = tail.strip_prefix(&[46, 92]) {
-        return !device.is_empty();
+    if let Some(device) = units.strip_prefix(&[BACKSLASH, BACKSLASH, DOT, BACKSLASH]) {
+        return match unc_tail(device) {
+            Some(unc) => complete_unc(unc, false),
+            None => device
+                .first()
+                .is_some_and(|unit| !windows_separator(*unit, false)),
+        };
     }
-    complete_unc(tail)
+    if windows_drive_absolute(units, false) {
+        return true;
+    }
+    matches!(units, [first, second, tail @ ..]
+        if windows_separator(*first, false) && windows_separator(*second, false)
+            && complete_unc(tail, false))
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
