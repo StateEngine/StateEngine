@@ -24,6 +24,14 @@ pub struct WriteTimings {
     pub commit_sync: Duration,
     pub checkpoint: Duration,
     pub group_requests: usize,
+    /// The current outer transaction's measured synchronous setting, including
+    /// promotion by another request. A replay receipt retains its original stamp.
+    pub durability: CommitDurability,
+}
+#[derive(Default)]
+struct TimingBuffer {
+    records: VecDeque<WriteTimings>,
+    dropped: u64,
 }
 struct AdmissionState {
     bytes: usize,
@@ -35,7 +43,7 @@ struct Shared {
     admission: Mutex<AdmissionState>,
     byte_limit: usize,
     request_limit: usize,
-    timings: Mutex<VecDeque<WriteTimings>>,
+    timings: Mutex<TimingBuffer>,
 }
 struct Request {
     batch: AtomicBatch,
@@ -80,6 +88,8 @@ impl Shared {
     }
 }
 impl SqliteClient {
+    /// Legacy bounded diagnostic sample. Use receipt.write_timings for exact
+    /// per-request delivery; this stream refuses once any record was dropped.
     pub fn take_timings(&self) -> StoreResult<Vec<WriteTimings>> {
         let mut q = self.shared.timings.lock().map_err(|_| {
             fail(
@@ -87,7 +97,16 @@ impl SqliteClient {
                 "writer timing buffer poisoned",
             )
         })?;
-        Ok(q.drain(..).collect())
+        if q.dropped != 0 {
+            return Err(fail(
+                StoreErrorCode::ReadIncomplete,
+                format!(
+                    "writer timing buffer dropped {} records; use each host receipt's write_timings",
+                    q.dropped
+                ),
+            ));
+        }
+        Ok(q.records.drain(..).collect())
     }
 }
 impl WriterClient for SqliteClient {
@@ -185,7 +204,7 @@ pub(crate) fn start(
         }),
         byte_limit: options.resident_bytes.get() as usize,
         request_limit,
-        timings: Mutex::new(VecDeque::new()),
+        timings: Mutex::new(TimingBuffer::default()),
     });
     let (sender, receiver) = mpsc::sync_channel(request_limit + 2);
     let client = SqliteClient {
@@ -373,7 +392,7 @@ fn run(
                                 "writer group lost a result",
                             ));
                         }
-                        for ((reply, queued, bytes, key), result) in
+                        for ((reply, queued, bytes, key), mut result) in
                             replies.into_iter().zip(results)
                         {
                             shared.completed(bytes)?;
@@ -383,17 +402,29 @@ fn run(
                                     "writer timing buffer poisoned",
                                 )
                             })?;
-                            if q.len() == 1024 {
-                                q.pop_front();
-                            }
-                            q.push_back(WriteTimings {
+                            let timings = WriteTimings {
                                 request_key: key,
                                 queue: start.saturating_duration_since(queued),
                                 transaction: phases.transaction,
                                 commit_sync: phases.sync,
                                 checkpoint: phases.checkpoint,
                                 group_requests: count,
-                            });
+                                durability: if phases.full {
+                                    CommitDurability::Full
+                                } else {
+                                    CommitDurability::Normal
+                                },
+                            };
+                            if let Ok(receipt) = &mut result {
+                                receipt.write_timings = Some(timings.clone());
+                            }
+                            if q.records.len() == 1024 {
+                                q.records.pop_front();
+                                q.dropped = q.dropped.checked_add(1).ok_or_else(|| {
+                                    invalid("writer diagnostic drop count overflow")
+                                })?;
+                            }
+                            q.records.push_back(timings);
                             drop(q);
                             reply.send(result);
                         }

@@ -205,6 +205,9 @@ pub struct RequestIdentity {
 }
 #[derive(Clone, Debug)]
 pub struct CommitReceipt {
+    /// Current host submission only; never persisted or reconstructed on receipt lookup.
+    /// Direct writes and retained receipt reads leave this absent.
+    pub write_timings: Option<crate::WriteTimings>,
     pub request_key: Option<IdempotencyKey>,
     pub state: CommitState,
     pub primary_event: EventId,

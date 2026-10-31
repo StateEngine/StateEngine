@@ -10,6 +10,7 @@ pub(crate) struct Engine {
 }
 #[derive(Default, Clone, Debug)]
 pub(crate) struct Phases {
+    pub full: bool,
     pub transaction: Duration,
     pub sync: Duration,
     pub checkpoint: Duration,
@@ -148,6 +149,7 @@ impl Engine {
             return Ok((
                 results,
                 Phases {
+                    full,
                     transaction,
                     sync: commit.elapsed(),
                     checkpoint: Duration::ZERO,
@@ -170,6 +172,7 @@ impl Engine {
         Ok((
             results,
             Phases {
+                full,
                 transaction,
                 sync,
                 checkpoint,
@@ -492,6 +495,7 @@ fn receipt_members(
         }
     }
     Ok(CommitReceipt {
+        write_timings: None,
         request_key,
         state: CommitState::Committed,
         primary_event: primary.header.event.clone(),
