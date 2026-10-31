@@ -1,8 +1,12 @@
 //! Native CLI routing. Startup is called at process entry, before Bootstrap
 //! reads configuration and before a worker or store is opened.
+#[path = "route/direct.rs"]
 pub mod direct;
+#[path = "route/files.rs"]
 pub mod files;
+#[path = "route/owner.rs"]
 pub mod owner;
+#[path = "route/setup.rs"]
 pub mod setup;
 
 pub fn initialize_process() -> se_types::Result<()> {
