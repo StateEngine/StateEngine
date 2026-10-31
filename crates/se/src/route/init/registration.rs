@@ -8,6 +8,7 @@ pub(super) fn finish(
     store: &mut SqliteDirect,
     lease: &DirectLease,
 ) -> Result<AnyOutput> {
+    let mut changed = Vec::new();
     let inventory = owner::inventory(store, &lease.files)?;
     let human = match inventory.owners.as_slice() {
         [owner] => owner.clone(),
@@ -44,7 +45,8 @@ pub(super) fn finish(
             },
         );
         snap.close().map_err(|e| store_error(&e))?;
-        append(store, lease, batch?)?;
+        append(store, lease, batch?, &mut changed)?;
+        changed.push("registered the home owner".into());
     }
     let root = NativePath::from_local(repository.path.clone())?;
     let mut found = None;
@@ -109,8 +111,35 @@ pub(super) fn finish(
                 },
             );
             snap.close().map_err(|e| store_error(&e))?;
-            append(store, lease, batch?)?;
-            id
+            let committed = append(store, lease, batch?, &mut changed)?;
+            let mut snap = store
+                .snapshot(read_scope(&admission))
+                .map_err(|e| store_error(&e))?;
+            let event = project::committed_registration(
+                &committed,
+                &mut Cx {
+                    read: &mut snap,
+                    admission: &admission,
+                },
+            );
+            let closed = snap.close().map_err(|e| store_error(&e));
+            let event = match event {
+                Ok(event) => {
+                    closed?;
+                    event
+                }
+                Err(error) => {
+                    return Err(match closed {
+                        Ok(()) => error,
+                        Err(close) => error.with_cause(close),
+                    });
+                }
+            };
+            let project = event;
+            if committed.state == se_store::CommitState::Committed {
+                changed.push("registered the project".into());
+            }
+            project
         }
     };
     admission.scope = Scope::Project(id.clone());
@@ -128,11 +157,18 @@ pub(super) fn finish(
             },
         );
         snap.close().map_err(|e| store_error(&e))?;
-        append(store, lease, batch?)?;
+        append(store, lease, batch?, &mut changed)?;
+        changed.push("registered the project owner".into());
     }
     let (agent, agent_created) = agent_setup::initial_agent(cx, input, store, lease, &admission)?;
     let (port, config_changed) =
         crate::route::init_config::listener_port(cx, &lease.files, observed.os_owner())?;
+    if agent_created {
+        changed.push("created the initial saved agent".into());
+    }
+    if config_changed {
+        changed.push("persisted the initial listener port".into());
+    }
     let mut snap = store
         .snapshot(read_scope(&admission))
         .map_err(|e| store_error(&e))?;
@@ -209,16 +245,7 @@ pub(super) fn finish(
             native_server_port: port,
         },
         integrations: vec![],
-        changed: if created {
-            vec![
-                "registered project, owner and initial agent".into(),
-                "published protected state schema and setup identities".into(),
-            ]
-        } else if config_changed {
-            vec!["persisted initial listener port".into()]
-        } else {
-            vec![]
-        },
+        changed,
         next: NextStep {
             text: "Launch your first agent.".into(),
             command: format!("se launch {}", agent.name),

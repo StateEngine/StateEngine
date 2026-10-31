@@ -7,13 +7,19 @@ use se_host::client::{BlockingIpcClient, lease::Deadline};
 use se_types::{Read, Result, SeError};
 use std::num::NonZeroU32;
 
-pub fn up(cx: &Bootstrap, files: &Files, caller: &Caller, _input: RuntimeUp) -> Result<AnyOutput> {
+pub fn up(
+    cx: &Bootstrap,
+    files: &Files,
+    caller: &Caller,
+    _input: RuntimeUp,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<AnyOutput> {
     if caller.owner.is_none() {
         return Err(SeError::invalid("runtime owner", "native owner authority"));
     }
     let options = execute::options();
     let bound = Deadline::from_options(&options)?;
-    let endpoint = match execute::endpoint(files)? {
+    let (endpoint, process) = match execute::endpoint(files)? {
         Read::Present { value } => {
             BlockingIpcClient::connect_authenticated(
                 &value,
@@ -22,9 +28,10 @@ pub fn up(cx: &Bootstrap, files: &Files, caller: &Caller, _input: RuntimeUp) -> 
                     .ok_or_else(|| SeError::invalid("runtime reply budget", "positive"))?,
                 &options,
             )?;
-            value
+            let process = process::observe(&value, &bound)?;
+            (value, process)
         }
-        Read::Absent { .. } => start(cx, files, &bound)?,
+        Read::Absent { .. } => start(cx, files, &bound, diagnostic)?,
         _ => {
             return Err(scope::unreadable(
                 "runtime endpoint",
@@ -34,14 +41,19 @@ pub fn up(cx: &Bootstrap, files: &Files, caller: &Caller, _input: RuntimeUp) -> 
     };
     Ok(RuntimeStart {
         state: "running".into(),
-        process: process::observe(&endpoint, &bound)?,
+        process,
         generation: endpoint.generation.get(),
         endpoint: status::endpoint_name(&endpoint)?,
     }
     .into())
 }
 #[cfg(any(target_os = "linux", windows))]
-fn start(cx: &Bootstrap, files: &Files, bound: &Deadline) -> Result<se_host::EndpointRecord> {
+fn start(
+    cx: &Bootstrap,
+    files: &Files,
+    bound: &Deadline,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<(se_host::EndpointRecord, ProcessView)> {
     let configuration = match &cx.config.origin {
         Origin::File(path) => path.clone(),
         Origin::BuiltIn => cx.home.join("config.toml"),
@@ -50,7 +62,17 @@ fn start(cx: &Bootstrap, files: &Files, bound: &Deadline) -> Result<se_host::End
     match crate::runtime::host::start(&cx.home, &configuration, machine, bound) {
         Ok(started) => {
             let started: crate::runtime::host::StartedHost = started;
-            Ok(started.endpoint)
+            let process = process::from_identity(&started.ready.identity, bound)?;
+            if !matches!(started.detachment_record, Read::Present { .. }) {
+                diagnostic(&format!(
+                    "Host is running; its protected detachment observation needs retry: {:?}",
+                    started.detachment_record
+                ))
+                .map_err(|error| {
+                    scope::unreadable("startup diagnostic", &error.to_string()).with_cause(error)
+                })?;
+            }
+            Ok((started.endpoint, process))
         }
         Err(failure) => {
             let body = failure.error.body.clone();
@@ -62,7 +84,12 @@ fn start(cx: &Bootstrap, files: &Files, bound: &Deadline) -> Result<se_host::End
     }
 }
 #[cfg(not(any(target_os = "linux", windows)))]
-fn start(_cx: &Bootstrap, _files: &Files, _bound: &Deadline) -> Result<se_host::EndpointRecord> {
+fn start(
+    _cx: &Bootstrap,
+    _files: &Files,
+    _bound: &Deadline,
+    _diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<(se_host::EndpointRecord, ProcessView)> {
     Err(scope::unreadable(
         "runtime startup",
         "detached host startup is unavailable on this platform",

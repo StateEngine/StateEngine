@@ -401,6 +401,7 @@ version = "0.0.1"
 dependencies = [
  "clap",
  "getrandom 0.3.4",
+ "rusqlite",
  "se-core",
  "se-host",
  "se-proc",

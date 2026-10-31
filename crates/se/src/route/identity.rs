@@ -13,6 +13,7 @@ use std::{
     path::Path,
 };
 
+#[cfg(test)]
 pub fn machine(files: &Files) -> Result<Read<MachineId>> {
     machine_identity::read_machine_identity(files.0.root(), &Port(files))
 }

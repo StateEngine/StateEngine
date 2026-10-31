@@ -909,6 +909,11 @@ only when the writer actually ran a checkpoint and measured that call. No
 checkpoint means the key is omitted, never a substituted zero. These transient
 measurements do not change the immutable original receipt or writer on replay.
 
+A completed write may carry optional `$.maintenance_pending: true` when its
+known successful commit still needs checkpoint maintenance. The original
+committed/replayed receipt and writer remain intact; this transient obligation
+is not `commit-outcome-unknown`. Absence makes no claim about maintenance.
+
 Public Page/Window encoders omit internal `Window.snapshot`/`WindowFields`
 accounting. Only opaque cursors cross the CLI, MCP, IPC and linked boundaries;
 store sequence numbers are neither public ordering fields nor revisions.

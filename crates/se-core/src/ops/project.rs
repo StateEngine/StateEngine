@@ -95,3 +95,40 @@ pub fn saved_profile(
         .resolve_profile(&row.profile, row.provider, false)
         .map_err(|error| scope::unreadable("initial agent saved profile", &error.to_string()))
 }
+
+/// Recover the actual project from its retained FULL registration receipt.
+/// A replay never substitutes the fresh ID allocated by a later retry.
+pub fn committed_registration<R: Snapshot>(
+    receipt: &se_store::CommitReceipt,
+    cx: &mut Cx<'_, R>,
+) -> Result<ProjectId> {
+    let event = super::receipt::committed_event(cx.read, receipt)?;
+    if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
+        return Err(scope::unreadable(
+            "setup registration receipt",
+            "committed scope or actor differs",
+        ));
+    }
+    let EventBody::ProjectRegistered { project, .. } = event.body else {
+        return Err(scope::unreadable(
+            "setup registration receipt",
+            "primary event is not a project registration",
+        ));
+    };
+    let current = scope::require_present(
+        cx.read
+            .project(project.clone())
+            .map_err(|e| crate::store_error::store_error(&e))?,
+        "retained initialized project",
+    )?;
+    if !matches!(
+        current.current.body,
+        EventBody::ProjectRegistered { .. } | EventBody::ProjectUpdated { .. }
+    ) {
+        return Err(scope::unreadable(
+            "retained initialized project",
+            "the original project is no longer active; a new setup intent requires a new key",
+        ));
+    }
+    Ok(project)
+}

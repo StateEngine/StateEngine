@@ -55,13 +55,18 @@ pub fn observe(endpoint: &EndpointRecord, bound: &Deadline) -> Result<ProcessVie
             "native start or executable changed since authenticated endpoint verification",
         ));
     }
-    let born = se_proc::observe_process_birth(&live.identity, bound.at()).map_err(native)?;
+    from_identity(&live.identity, bound)
+}
+/// A native committed startup supplies its exact retained identity directly.
+#[cfg(any(target_os = "linux", windows))]
+pub fn from_identity(identity: &se_proc::ProcessIdentity, bound: &Deadline) -> Result<ProcessView> {
+    let born = se_proc::observe_process_birth(identity, bound.at()).map_err(native)?;
     bound.remaining()?;
     Ok(ProcessView {
-        pid: fields.pid.get(),
+        pid: identity.pid.0,
         started_at: receipt::timestamp(born.unix_micros())?,
-        exe: live.identity.image.display().to_string(),
-        machine_id: fields.machine.to_string(),
+        exe: identity.image.display().to_string(),
+        machine_id: identity.machine.to_string(),
     })
 }
 #[cfg(not(any(target_os = "linux", windows)))]

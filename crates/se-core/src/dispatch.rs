@@ -389,6 +389,7 @@ impl Kernel {
                 )?
                 .into(),
             ),
+            AnyOp::EventRead(input) => OpStep::Complete(crate::ops::event::read(input, cx)?.into()),
             AnyOp::MessageList(input) => {
                 OpStep::Complete(crate::ops::message::list(input, cx)?.into())
             }
@@ -413,7 +414,8 @@ impl Kernel {
         cx: &mut Cx<'_, R>,
     ) -> Result<crate::ops::AnyOutput> {
         use crate::ports::Then;
-        match then {
+        let maintenance_pending = receipt.maintenance_pending;
+        let output: Result<crate::ops::AnyOutput> = match then {
             Then::AgentConfig(then) => {
                 Ok(crate::ops::agent_config_receipt::committed(then, receipt, cx)?.into())
             }
@@ -428,6 +430,7 @@ impl Kernel {
                 let raw = self.working_state_committed(then, receipt, cx)?;
                 Ok(crate::ops::receipt::working_state(raw, cx)?.into())
             }
-        }
+        };
+        output.map(|value| value.with_maintenance_pending(maintenance_pending))
     }
 }

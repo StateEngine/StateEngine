@@ -177,6 +177,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("launch"))
             .arg(toggle("adopt")),
         "project.status" => c.arg(toggle("all")),
+        "history.event_read" => c.arg(value("event").required(true)),
         "message.send" => c
             .arg(positional("to", 1, true))
             .arg(positional("body", 2, true))
@@ -376,6 +377,9 @@ pub fn from_matches_with_key(
                 launch: flag(m, "launch"),
                 adopt: flag(m, "adopt"),
                 idempotency_key: key()?,
+            }),
+            "history.event_read" => AnyOp::EventRead(EventRead {
+                event_id: required(m, "event")?,
             }),
             "message.send" => AnyOp::MessageSend(MessageSend {
                 to: required(m, "to")?,

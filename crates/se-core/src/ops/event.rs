@@ -1,0 +1,117 @@
+//! Exact public history reads. Snapshot enforces project/privacy and excludes
+//! runtime-private facts before any public payload is constructed.
+use super::{ActorRef, Named, Writer, inputs::Validate, receipt};
+use crate::{commit::Cx, scope, store_error::store_error};
+use schemars::JsonSchema;
+use se_store::{EventBody, PositionPurpose, Scope, Snapshot, StoredEvent, WriterModeValue};
+use se_types::{Cursor, EventId, ProjectId, Read, Result};
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EventRead {
+    pub event_id: String,
+}
+impl Validate for EventRead {
+    fn validate(&self) -> Result<()> {
+        super::inputs::bounded("event_id", &self.event_id, 512, false)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct HistoryEvent {
+    pub event_id: EventId,
+    pub position: Cursor,
+    pub kind: String,
+    pub recorded_at: String,
+    pub project: Named<ProjectId>,
+    pub actor: ActorRef,
+    pub writer: Writer,
+    pub read_at: Cursor,
+    pub payload: serde_json::Value,
+}
+/// Present events retain Appendix A.14's flat family. Other states preserve the
+/// canonical Read shape rather than manufacturing a payload or not-found error.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum EventOutput {
+    Present(HistoryEvent),
+    Other(Read<HistoryEvent>),
+}
+pub fn read<R: Snapshot>(input: EventRead, cx: &mut Cx<'_, R>) -> Result<EventOutput> {
+    input.validate()?;
+    let project = scope::project(cx.admission)?.clone();
+    let registry = cx.read.legacy_registry().map_err(|e| store_error(&e))?;
+    let id = EventId::from_legacy(input.event_id.clone())
+        .or_else(|_| EventId::from_registered_legacy(input.event_id, &registry))?;
+    drop(registry);
+    let event = match cx.read.event(id).map_err(|e| store_error(&e))? {
+        Read::Present { value } => value,
+        Read::Absent { checked } => return Ok(EventOutput::Other(Read::Absent { checked })),
+        Read::Unreadable {
+            source,
+            reason,
+            error,
+        } => {
+            return Ok(EventOutput::Other(Read::Unreadable {
+                source,
+                reason,
+                error,
+            }));
+        }
+        Read::Unknown { what } => return Ok(EventOutput::Other(Read::Unknown { what })),
+    };
+    if event.header.scope != Scope::Project(project.clone()) {
+        return Err(scope::unreadable(
+            "event scope",
+            "exact event returned outside the authorized project",
+        ));
+    }
+    let project_record = scope::require_present(
+        cx.read
+            .project(project.clone())
+            .map_err(|e| store_error(&e))?,
+        "event project metadata",
+    )?;
+    let name = match &project_record.current.body {
+        EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => {
+            name.clone()
+        }
+        _ => {
+            return Err(scope::unreadable(
+                "event project",
+                "active project metadata is unavailable",
+            ));
+        }
+    };
+    let actor = receipt::actor_ref(cx.read, &event.header.actor)?;
+    let position = cx
+        .read
+        .position_cursor(&event.position, PositionPurpose::History)
+        .map_err(|e| store_error(&e))?;
+    // The checked source is this exact visible event, not a private/global head.
+    let read_at = cx
+        .read
+        .position_cursor(&event.position, PositionPurpose::Checked)
+        .map_err(|e| store_error(&e))?;
+    let (kind, payload) = payload::public(&event, cx.read)?;
+    let writer = match event.writer.kind() {
+        se_store::WriterKind::Direct => Writer::Direct,
+        se_store::WriterKind::Host { generation } => Writer::Host {
+            host_generation: generation.to_string(),
+        },
+    };
+    Ok(EventOutput::Present(HistoryEvent {
+        event_id: event.header.event,
+        position,
+        kind: kind.into(),
+        recorded_at: receipt::timestamp(event.recorded_at_us)?,
+        project: Named { id: project, name },
+        actor,
+        writer,
+        read_at,
+        payload,
+    }))
+}
+
+#[path = "event/payload.rs"]
+mod payload;

@@ -41,6 +41,25 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::DecisionReceipt, AnyOutput::Decision(value)) => {
                 administration::decision(&value.value, out)?
             }
+            (HumanKind::Event, AnyOutput::EventRead(value)) => match &value.value {
+                se_core::ops::EventOutput::Present(event) => {
+                    writeln!(
+                        out,
+                        "{} {} — {} by {} ({})",
+                        event.event_id,
+                        event.kind,
+                        event.project.name,
+                        event.actor.name,
+                        event.recorded_at
+                    )?;
+                    writeln!(
+                        out,
+                        "{}",
+                        serde_json::to_string_pretty(&event.payload).map_err(io::Error::other)?
+                    )?;
+                }
+                se_core::ops::EventOutput::Other(value) => writeln!(out, "{value:?}")?,
+            },
             (HumanKind::MessageReceipt, AnyOutput::MessageSend(value)) => {
                 write::message(&value.value, out)?
             }

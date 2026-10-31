@@ -9,6 +9,11 @@ macro_rules! output_types {
         pub enum AnyOutput { $( $variant(Box<Envelope<$output>>), )+ }
         impl AnyOutput {
             pub fn family(&self) -> Family { match self { $( Self::$variant(_)=><$input>::META.family, )+ } }
+            pub fn maintenance_pending(&self) -> bool { match self { $( Self::$variant(value)=>value.maintenance_pending, )+ } }
+            pub fn with_maintenance_pending(mut self, pending: bool) -> Self {
+                match &mut self { $( Self::$variant(value)=>value.maintenance_pending=pending, )+ }
+                self
+            }
             pub fn human_kind(&self) -> HumanKind { match self { $( Self::$variant(_)=><$input>::META.human, )+ } }
             /// Called by the host with this request's store measurements. Direct
             /// output constructors leave diagnostics absent.
@@ -45,6 +50,7 @@ MetaHelp => MetaHelp, HelpOutput;
 MetaSchema => MetaSchema, SchemaCatalogue;
 ProjectInit => ProjectInit, InitOutput;
 ProjectStatus => ProjectStatus, StatusOutput;
+EventRead => EventRead, EventOutput;
 MessageSend => MessageSend, MessageOutput;
 MessageList => MessageList, MessagePage;
 WorkingStateGet => WorkingStateGet, WorkingStateOutput;

@@ -54,7 +54,8 @@ fn append(
     store: &mut SqliteDirect,
     lease: &DirectLease,
     batch: se_store::AtomicBatch,
-) -> Result<()> {
+    changed: &mut Vec<String>,
+) -> Result<se_store::CommitReceipt> {
     let key = batch.request.as_ref().map(|r| r.key.clone());
     let receipt = store
         .append(batch, lease)
@@ -65,7 +66,11 @@ fn append(
             "identity registration did not return FULL durability",
         ));
     }
-    Ok(())
+    if receipt.maintenance_pending {
+        changed
+            .push("committed setup facts; storage checkpoint maintenance remains pending".into());
+    }
+    Ok(receipt)
 }
 pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
     if cx.session.is_some() {

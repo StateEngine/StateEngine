@@ -67,7 +67,7 @@ pub(super) fn initial_agent(
             "principal inventory exceeded its finite bound",
         ));
     }
-    let created = found.is_none();
+    let mut created = false;
     let agent: AgentId = match found {
         Some(agent) => agent,
         None => {
@@ -92,6 +92,7 @@ pub(super) fn initial_agent(
                 &CliSelections::default(),
             )? {
                 crate::route::direct::Outcome::Complete(AnyOutput::AgentCreate(value)) => {
+                    created = value.value.outcome == AgentOutcome::Created;
                     value.value.agent.id
                 }
                 _ => {

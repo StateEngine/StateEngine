@@ -158,7 +158,7 @@ pub fn dispatch(
         // Activation requires the host's exclusive lease, so the direct shared
         // lease must be gone before spawning or rendezvousing with it.
         drop(lease);
-        return super::runtime_control::up(cx, &files, &caller, input);
+        return super::runtime_control::up(cx, &files, &caller, input, diagnostic);
     }
     let Some(lease) = lease else {
         let target = scope::require_present(

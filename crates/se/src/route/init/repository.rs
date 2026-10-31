@@ -38,6 +38,18 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
             "a state home outside the registered repository; managed init writes no repository files",
         ));
     }
+    if cx.config.value.runtime.listen_port.is_none() {
+        let configuration = match &cx.config.origin {
+            crate::config::Origin::File(selected) => selected.clone(),
+            crate::config::Origin::BuiltIn => cx.home.join("config.toml"),
+        };
+        if canonical_destination(&configuration)?.starts_with(&path) {
+            return Err(SeError::invalid(
+                "setup configuration",
+                "a selected configuration outside the repository when setup must persist its listener port",
+            ));
+        }
+    }
     let name = input
         .name
         .clone()

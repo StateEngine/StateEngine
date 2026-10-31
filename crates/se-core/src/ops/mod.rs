@@ -7,6 +7,7 @@ pub mod agent_config_receipt;
 pub mod agent_status;
 mod cli;
 pub mod decision;
+pub mod event;
 pub mod hook;
 pub mod inputs;
 pub mod installation;
@@ -21,6 +22,7 @@ use crate::registry::*;
 pub use cli::{
     CliSelections, CommonArgs, cli_command, from_matches, from_matches_with_key, selected_meta,
 };
+pub use event::{EventOutput, EventRead, HistoryEvent};
 pub use hook::{HookClaude, HookEvent, HookResult};
 pub use inputs::*;
 pub use meta::{
@@ -39,6 +41,9 @@ pub struct Envelope<T> {
     schema: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diagnostics: Option<OutputDiagnostics>,
+    /// Transient obligation after a known successful commit, never an unknown outcome.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub maintenance_pending: bool,
     #[serde(flatten)]
     pub value: T,
 }
@@ -47,6 +52,7 @@ impl<T> Envelope<T> {
         Self {
             schema: family.schema(),
             diagnostics: None,
+            maintenance_pending: false,
             value,
         }
     }
@@ -106,6 +112,7 @@ ops! {
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
     ProjectStatus => ProjectStatus, StatusOutput, ("project.status",leaf(&["status"]),tool("stateengine_status","Project status","Read setup, agent and runtime facts without changing state."),Either,false,Never,Read,ProjectOrAll,None,"se.status",Status,&["J1","J2"]);
+    EventRead => EventRead, EventOutput, ("history.event_read",leaf(&["history"]),tool("stateengine_event_read","Read a committed event","Read one committed event by ID in the authorized project, with its public payload and provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
     MessageSend => MessageSend, MessageOutput, ("message.send",leaf(&["msg","send"]),tool("stateengine_msg_send","Send a message","Commit a message to another project agent or owner; committed does not mean read."),Either,false,Never,Write,Project,HostForWrites,"se.message-receipt",MessageReceipt,&["J4"]);
     MessageList => MessageList, MessagePage, ("message.list",leaf(&["msg","list"]),tool("stateengine_msg_list","List your messages","List authorized messages with explicit completeness; listing never marks mail read."),Either,false,Never,Read,Project,None,"se.message-page",MessagePage,&["J4"]);
     WorkingStateGet => WorkingStateGet, WorkingStateOutput, ("working_state.get",leaf(&["working-state"]),tool("stateengine_working_state_get","Read working state","Read your saved note and entity revision."),Either,false,Never,Read,Session,None,"se.working-state",WorkingState,&["J3"]);
@@ -189,6 +196,10 @@ impl AnyOutput {
             Self::Uninstall(v) if !v.value.complete => 2,
             Self::RuntimeDown(v) if !v.value.complete => 2,
             Self::RuntimeUp(v) if v.value.state == "pending" => 2,
+            Self::EventRead(v) => match &v.value {
+                EventOutput::Present(_) => 0,
+                EventOutput::Other(value) => value.exit_code(),
+            },
             Self::WorkingStateGet(v) => v.value.value.exit_code(),
             Self::ConfigGet(v) => v.value.value.exit_code(),
             Self::AgentShow(v) => v.value.agent.exit_code(),
