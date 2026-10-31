@@ -1,7 +1,7 @@
 //! Explicit owned paths and non-secret PATH blocks; native custody executes the plan.
 use super::outputs::{
     DirectoryEffect, DirectoryOutcome, FileEffect, FileOutcome, IntegrationEffect, PathEffect,
-    RevocationEffect, StopFact, UninstallOutput, WitnessState,
+    RecoveryDirectoryEffect, RevocationEffect, StopFact, UninstallOutput, WitnessState,
 };
 use se_types::{Detail, IdempotencyKey, Result, SeError, details};
 use std::{
@@ -52,6 +52,27 @@ fn digest(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 impl UninstallPlan {
+    /// Scan these held native directories before any installation/PATH effect.
+    /// The adapter reports every .se-edit-backup-* sibling, even when ownership
+    /// or association cannot be proved, and preserves any unresolved copy.
+    pub fn recovery_directories(&self) -> Result<Vec<PathBuf>> {
+        self.validate()?;
+        Ok(self
+            .files
+            .iter()
+            .map(|file| Path::new(&file.path))
+            .chain(
+                self.path_edits
+                    .iter()
+                    .map(|edit| Path::new(&edit.target))
+                    .filter(|path| path.is_absolute()),
+            )
+            .filter_map(Path::parent)
+            .map(Path::to_path_buf)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect())
+    }
     pub fn validate(&self) -> Result<()> {
         if !self.state_home.is_absolute()
             || self
@@ -91,6 +112,7 @@ impl UninstallPlan {
         for file in &self.files {
             let path = Path::new(&file.path);
             if !bounded_path(&file.path)
+                || path.file_name().is_none()
                 || !digest(&file.sha256)
                 || !files.insert(path.to_path_buf())
             {
@@ -131,7 +153,7 @@ impl UninstallPlan {
             let target_ok = if cfg!(windows) {
                 edit.target == "HKCU\\Environment\\Path"
             } else {
-                bounded_path(&edit.target)
+                bounded_path(&edit.target) && Path::new(&edit.target).file_name().is_some()
             };
             if !target_ok
                 || !targets.insert(&edit.target)
@@ -172,6 +194,7 @@ pub struct UninstallEffects {
     /// Removing the exact owned block/entry is distinct from observing a user edit.
     pub path_complete: bool,
     pub preserved: Vec<String>,
+    pub recovery: Vec<RecoveryDirectoryEffect>,
 }
 fn same_paths(
     planned: impl Iterator<Item = PathBuf>,
@@ -188,6 +211,64 @@ pub fn finish_uninstall(
     effects: UninstallEffects,
 ) -> Result<UninstallOutput> {
     plan.validate()?;
+    let recovery_directories = plan.recovery_directories()?;
+    if !same_paths(
+        recovery_directories.into_iter(),
+        effects.recovery.iter().map(|entry| entry.directory.clone()),
+        effects.recovery.len(),
+    ) {
+        return Err(SeError::invalid(
+            "uninstall recovery readback",
+            "one finite native recovery-sibling inventory for every exact planned parent directory",
+        ));
+    }
+    let targets: BTreeSet<_> = plan
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .chain(plan.path_edits.iter().map(|edit| edit.target.as_str()))
+        .collect();
+    for directory in &effects.recovery {
+        if let se_types::Read::Present { value: copies } = &directory.copies {
+            let mut seen = BTreeSet::new();
+            if copies.len() > 256 {
+                return Err(SeError::invalid(
+                    "recovery inventory",
+                    "at most 256 entries; an exhausted scan must report unreadable/incomplete",
+                ));
+            }
+            for copy in copies {
+                let path = Path::new(&copy.path);
+                if !bounded_path(&copy.path)
+                    || path.parent() != Some(Path::new(&directory.directory))
+                    || !path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.starts_with(".se-edit-backup-"))
+                    || !seen.insert(&copy.path)
+                    || copy.restored_to.as_ref().is_some_and(|target| {
+                        !targets.contains(target.as_str())
+                            || Path::new(target).parent() != path.parent()
+                    })
+                {
+                    return Err(SeError::invalid(
+                        "recovery copy",
+                        "a unique exact backup sibling, preserved unless native proof restores an exact planned target in the same directory",
+                    ));
+                }
+            }
+        }
+    }
+    let recovery_complete = effects.recovery.iter().all(|entry| {
+        entry.witness.state == WitnessState::Witnessed
+            && match &entry.copies {
+                se_types::Read::Absent { .. } => true,
+                se_types::Read::Present { value } => value.iter().all(|copy| {
+                    copy.restored_to.is_some() && copy.witness.state == WitnessState::Witnessed
+                }),
+                _ => false,
+            }
+    });
     if !same_paths(
         plan.files.iter().map(|file| PathBuf::from(&file.path)),
         effects.install_files.iter().map(|file| file.path.clone()),
@@ -223,6 +304,7 @@ pub fn finish_uninstall(
         ) && entry.witness.state == WitnessState::Witnessed
     });
     let complete = files_complete
+        && recovery_complete
         && directories_complete
         && integrations_complete
         && effects
@@ -245,5 +327,6 @@ pub fn finish_uninstall(
         revocations: effects.revocations,
         path: effects.path,
         preserved: effects.preserved,
+        recovery: effects.recovery,
     })
 }

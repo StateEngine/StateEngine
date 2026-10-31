@@ -489,6 +489,23 @@ pub struct UninstallOutput {
     pub revocations: Vec<RevocationEffect>,
     pub path: PathEffect,
     pub preserved: Vec<String>,
+    pub recovery: Vec<RecoveryDirectoryEffect>,
+}
+/// Native no-follow inventory of replacement recovery siblings. A filename
+/// prefix alone never grants deletion or restoration authority.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RecoveryDirectoryEffect {
+    pub directory: String,
+    pub copies: Read<Vec<RecoveryCopy>>,
+    pub witness: Witness,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct RecoveryCopy {
+    pub path: String,
+    /// Set only after native identity/digest/security proof and outside readback
+    /// restore this copy to an exact target in the original uninstall plan.
+    pub restored_to: Option<String>,
+    pub witness: Witness,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LaunchOutput {
