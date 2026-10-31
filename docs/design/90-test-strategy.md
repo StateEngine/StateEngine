@@ -1,6 +1,6 @@
 # 90 — Test strategy
 
-Status: reconciled design, 2026-10-30. Implements the plan's "How we know it works"
+Status: reconciled design, 2026-10-31. Implements the plan's "How we know it works"
 and Jimmy's decisions: the five journeys are the judge; authors write no tests; reviewers add black-box
 tests only where a journey can't reach or a bug was found; about 6–8 property tests for the store.
 
@@ -34,8 +34,10 @@ internal mocks, so a refactor can't break a test that still describes correct be
 | Store property tests | `crates/se-store/tests/`, against the store's public API |
 | Fake provider fixture | `test-support/fake-provider`, `publish = false`, never shipped, excluded from the dependency-direction check |
 
-**Expected size:** 40–60 black-box tests and 8 property tests, each under 2 s, under 3 min per OS. More
-is a review signal that the policy is slipping.
+**Expected size:** 40–60 black-box test functions and 8 property suites. Ordinary bounded checks
+target under 2 s each and under 3 min per OS. The full table-driven native crash campaign (§3.1)
+runs separately in wave 4 and reports its case count and elapsed time; its cases are not extra test
+functions or a promise of a two-second campaign. Growth in functions is a review signal, not a gate.
 
 **Test doubles match the real readers.** The fake provider replays frames recorded from real Claude
 hooks and stock Codex 0.166 app-server runs (host prototype). Nightly journeys against the latest CLIs
@@ -133,7 +135,7 @@ cannot reach its precondition on an OS reports **not reached**, which is never a
 | T5 | G1 human presence | `decision ratify` with piped stdin, and from inside a managed agent tree with an allocated PTY, refuses with its fix | CLI | all |
 | T6 | G2 retries | Identity created before first send; drop the committed reply, retry the same key/body → original receipt and one event; changed body → `idempotency-key-reused`. Every MCP mutation requires its key; natural-key capture/dispositions retain their restricted path | CLI, IPC, MCP, linked API | all |
 | T7 | G2 supersede keeps history | Supersede a decision; history lists both with the transition | CLI | all |
-| T8 | G3 crash after acknowledged write | 100 sends through the host; force-kill after each acknowledged receipt; restart finds every commit once. Separately benchmark the real NORMAL/FULL mix including FULL decision ratify/reject/retract/supersede. Application-crash results do not claim OS-crash or power-loss durability; NORMAL may lose several recent ordinary commits there | CLI | all |
+| T8 | G3 crash after acknowledged write | 100 sends through the host; force-kill after each acknowledged receipt; restart finds every commit once. One table-driven reviewer test also runs the storage crash cases in §3.1. Separately benchmark the real NORMAL/FULL mix including FULL decision ratify/reject/retract/supersede. Application-crash results do not claim OS-crash or power-loss durability; NORMAL may lose several recent ordinary commits there | CLI | all |
 | T9 | G3 pending ≠ delivered | Send to a stopped agent → receipt says `delivery: pending`; never `delivered` until offered | CLI, MCP | all |
 | T10 | G4 absent / unreadable / zero | Fresh home with no store: bare `se` or `se status --json` → measured absence (`setup.state: not-set-up`, `project.state: absent`), onboarding with `se init`, exit 0; store with a foreign `application_id` or bad bytes → Unreadable, exit 3; store unreadable by permission → Unreadable, not Absent; empty inbox → exit 0, zero; newer `user_version` → `store-too-new` | CLI | all |
 | T11 | G4 unknown target | An unknown agent or message id → exit 4 naming the choices | CLI, MCP | all |
@@ -141,7 +143,7 @@ cannot reach its precondition on an OS reports **not reached**, which is never a
 | T13 | G5 truncation is explicit | A 32 KiB message is accepted; one byte over is rejected before any effect on every surface, with no truncation. Page/body budgets remain explicit. Transcript truncation/rotation retains the committed cursor and reports its mismatch, with no silent re-ingest or duplicate | CLI, MCP | all |
 | T14 | G6 pid reuse refuses | Linux: inside `unshare --user --pid --fork --map-root-user`, write `ns_last_pid` so a new process gets the recorded pid, then `stop AGENT` against the recorded managed lifecycle → `stop-unwitnessed` (native IdentityChanged mapped by section 30), with the PID and expected/found start identities in its reason; no signal reaches the impostor, which survives by outside OS readback. Windows: spawn short processes until the pid recycles (bounded; else not reached). macOS: in the Mac campaign | CLI | Linux, Windows |
 | T15 | G6 + G8 orphan descendants | Launch a managed fake-provider fixture that double-forks and calls `setsid`. Windows, and Linux with `containment: "cgroup"`: `stop` → the descendant is gone by OS reread, and the receipt has an outside witness. macOS, and Linux with `containment: "uncontained"`: the bound is that every member still in the tracked process group is gone by OS reread and witnessed; a descendant that left the group with `setsid` is a stated limit (70 §1.2, §2.4), not a failure, and the test reports which bound it judged | CLI, MCP | all |
-| T16 | G6 host restart | Default SE Code exit with live agents transfers to a detached standalone host; reopening transfers back with the original PID/birth/conversation and retained queue. Exercise source/successor death at every committed transfer boundary and lost ACK with the same key. Abrupt host death without a completed transfer is judged separately at the OS crash-policy bound, with saved-conversation recovery and no doubled input | CLI, host API | all |
+| T16 | G6 host restart | Default SE Code exit with live agents transfers to a detached standalone host; reopening transfers back with the original PID/birth/conversation and retained queue. One table-driven reviewer test exercises the transfer crash cases in §3.1, including source/successor death and lost ACK with the same key. Abrupt host death without a completed transfer is judged separately at the OS crash-policy bound, with saved-conversation recovery and no doubled input | CLI, host API | all |
 | T17 | G7 hostless loop | No daemon: init, send, inbox, decide and resume use the same store implementation directly; custody auto-starts through private bootstrap; the next host start delivers pending effects | CLI | all |
 | T18 | G8 integration readback | Adopt writes marked entries; the user edits one; `remove` refuses that entry by name and restores the others byte-for-byte | CLI | all |
 | T19 | 70 §4.2 listener admission | Foreign `Host`, foreign or `null` `Origin`, cross-site `Sec-Fetch-Site`, `text/plain` POST, token in the query, `OPTIONS` → refused; no `Access-Control-*` header ever | HTTP | all |
@@ -154,6 +156,55 @@ cannot reach its precondition on an OS reports **not reached**, which is never a
 | T26 | G1 creator control is narrow | A with `can-create` launches, wakes and stops its direct helper via `target_agent_id`; a grandchild, another agent's helper, an imported agent with no recorded creator, and any target after the grant is revoked → refused; `stop --all` from a session refuses | MCP, CLI | all |
 | T27 | SE Code takeover holds | Through the host API: interrupt, hold, absent from the active map; a later mail wake does not revive the old session or clear the independent human hold; the human-presence guard prevents mistakes/drift, not a determined same-account program | host API | all |
 | T28 | G4 + G8 uncontained is reported, never silent | In a container or user namespace with no systemd user manager: `se launch AGENT` succeeds (no refusal); the launch receipt, `se status --json` and `se agent list --json` all show `containment: "uncontained"` with a non-null `containment_cause`; the human launch line says uncontained; `se doctor` reports `custody.linux-cgroup` as `warning`, not `ok`; `stop` witnesses with `pidfd-exit+pgid-empty`, or `start-identity-exit+pgid-empty` on a kernel without pidfd support, never `cgroup-empty`; the runner accepts either label only when it matches the kernel capability reported by `se doctor`. With a user manager present, the same test sees `cgroup` and a null cause (else that half is not reached) | CLI, MCP | Linux |
+
+### 3.1 Table-driven crash campaigns
+
+The 40–60 black-box test budget counts reviewer test functions, not the cases each function drives.
+Use **one reviewer test per table below**: storage extends T8, transfer extends T16, and launch/stop is
+T29. Each function iterates every applicable row, both sides of each listed boundary, and the declared
+OS/surface variants. Transfer also covers both directions and death of either live peer. These are finite case tables, not separate
+per-phase, per-OS or per-surface suites; property P1 supplements them rather than replacing them.
+
+Each case starts from fresh state, kills a real process at an independently observed boundary, reopens
+through the public consumer, and checks the named durable outcome plus outside native/file effects.
+Use public store/host APIs and native tracing or controlled peers, never private production hooks.
+Record the reached boundary and result for each case; an unavailable observation or unsupported
+precondition is **not reached**, never coverage by inference. Continue independent cases after a
+failure, retain every first result, and report case counts separately from function counts. The tables
+reference the owning contracts below; their phases and legal recovery outcomes remain authoritative.
+
+**Storage — one T8 test** (20: atomic append, first binding, migrations, backups, restore, forget and import):
+
+| Case | Boundaries to cut | Required restart/readback |
+| --- | --- | --- |
+| Ordinary and FULL write groups | Savepoint failure, outer COMMIT, reply/notification | Definite rollback versus unknown commit stays distinct; original-key or natural-key resolution finds all-or-none members, original stamps and exactly one effect; acknowledged process-crash commits survive |
+| Embedded first binding | Paired FULL owner/session commit, writer admission, first-bind deadline/fallback | Both receipts or neither; no speculative fallback after unknown outcome, no second owner/session after lost reply; ordinary work stays gated until the legal owner path completes |
+| Creation and migration | Staged schema, protected publication, verified pre-migration backup, final FULL version publication/readback | No partial ready store or overwrite; old source/backup retained on failure; sole owner completes only a supported migration before admission |
+| Automatic backup | Copy, independent validation, file/directory sync, generation publication and rotation | Partial copy never becomes a valid generation; prior valid generations survive failed publication; recovery selects only an independently validated published image |
+| Explicit restore | Confirmed selection, staged recovery record, guarded publication, outside readback and lost reply | The same restore key returns the published original selection/incarnation even after later writes or backup rotation; no record means no publication; corrupt source/WAL retained and copied custody never becomes live authority |
+| Forget | FULL erasure commit, WAL/cache cleanup, independent absence proof, FULL completion | Pre-commit rollback retains complete bodies; post-commit failure stays frozen/pending until finite cleanup; no early completion or re-ingestion; retained backups/provider copies remain named residuals |
+| User-history import | Imported events plus source checkpoint commit, reply, interrupted resume | Original source unchanged; checkpoint advances only with accounted events; same-source retry neither skips nor duplicates; no imported process/session authority |
+
+**Launch and stop — one T29 test** (30: launch commit grouping, durable recovery table and state transitions):
+
+| Case | Boundaries to cut | Required restart/readback |
+| --- | --- | --- |
+| Launch | C1 reservation, native scope creation, C2 scope checkpoint, native exec/readiness, C3 activation | Recover exactly the last durable reservation/scope/root at the OS crash-policy bound; no fabricated root, launch-ready receipt or ordinary StateEngine admission before C3, and no duplicate launch on uncertain retry |
+| Helper/terminal launch | Additional RootCheckpoint and exec authorization between C2 and C3 | Vendor cannot execute before its recoverable native identity commits; pre-authorization parent loss closes the helper; committed checkpoint remains recoverable |
+| Cancellation and stop | StopRequested CAS, native dispatch, outside exit proof, Exited commit, native release and release acknowledgment | Failed CAS signals nothing; post-CAS uncertainty retains StopUnproved; proof precedes terminal release; an already released exact scope resolves without touching a replacement |
+
+**Live transfer — one T16 test** (20: durable handover table; 40 §6/§6.1: native and store phase tables):
+
+| Case | Boundaries to cut | Required restart/readback |
+| --- | --- | --- |
+| Preparation | Inactive native staging, writer/readers/backup drain, FULL Prepared seal | Before Prepared, staged copies have no authority; after it, no mutable source writer/manifest; only a legal claim or verified preclaim abort can settle the seal |
+| Claim and activation | Source lease release, successor FULL Claimed, each native activation and source-closure/capture-debt/queue proof | Before claim, only proved Aborted may restore the source; after claim, source cannot resume, including on lost ACK; transient activation is not a durable phase |
+| Completion | FULL Finished, ordinary destination admission and reply/ACK | Proofs precede Finished, consumers follow it; lost ACK replays the same transfer with exactly one queued input/effect; surviving native custody retains PID/birth/conversation, while actual host loss uses the declared OS crash-policy recovery |
+| Abort and cold recovery | FULL Aborted; fresh custody proof plus FULL runtime.owner/Recovered | Prepared settles only by the legal abort path; a stranded Claimed transfer uses checked cold Recovered under fresh custody, never stale-successor Finished; required holds and capture debt survive |
+
+Application-process kills establish only application-crash behavior. OS-crash/power-loss claims need
+separate native campaigns at the stated NORMAL/FULL bounds; they cannot be inferred from these tests.
+The full transfer/crash matrix remains wave 4 work; the earlier round-trip slice does not qualify it.
 
 ## 4. Property tests
 
