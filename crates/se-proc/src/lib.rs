@@ -8,7 +8,9 @@
 
 mod entropy;
 pub use entropy::{NativeEntropyError, random_secret};
+mod creation_owner;
 mod error;
+pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
 mod identity;
 mod launch;
 pub mod native_ipc;
