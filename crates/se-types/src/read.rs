@@ -59,7 +59,7 @@ impl Source {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Checked {
     pub source: Source,
-    pub snapshot_to: Option<Sequence>,
+    pub snapshot_to: Option<Cursor>,
     pub observed_at: UnixMicros,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -90,7 +90,7 @@ impl<T> Read<T> {
                 checked.observed_at,
                 checked
                     .snapshot_to
-                    .map(|seq| seq.get().to_string())
+                    .map(|position| position.to_string())
                     .unwrap_or_else(|| "unverified".into())
             ),
         }
@@ -180,9 +180,10 @@ pub enum StopReason {
     Deadline,
     Unsupported,
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 /// Store snapshot bounds are (from, to]: exclusive from, inclusive to.
 /// bytes is producer accounting; foundation does not serialize items to recount it.
+/// Internal accounting only; public Window serialization uses opaque cursors.
 pub struct WindowFields {
     pub source: Source,
     pub from: Sequence,
@@ -215,8 +216,6 @@ struct WindowWire {
     limit: u32,
     complete: bool,
     omitted: Omitted,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    snapshot: Option<WindowFields>,
 }
 fn omission_rank(reason: OmissionReason) -> u8 {
     match reason {
@@ -318,7 +317,6 @@ impl From<Window> for WindowWire {
             limit: value.limit.get(),
             complete: value.complete,
             omitted: value.omitted,
-            snapshot: value.fields,
         }
     }
 }
@@ -336,29 +334,14 @@ impl TryFrom<WindowWire> for Window {
                 "consistent complete/count/reason",
             ));
         }
-        let Some(snapshot) = value.snapshot else {
-            return Ok(Self {
-                fields: None,
-                from: value.from,
-                to: value.to,
-                limit,
-                complete: value.complete,
-                omitted: value.omitted,
-            });
-        };
-        let window = Self::new(snapshot)?;
-        if value.from != window.from
-            || value.to != window.to
-            || limit != window.limit
-            || value.complete != window.complete
-            || value.omitted != window.omitted
-        {
-            return Err(SeError::invalid(
-                "window envelope",
-                "facts matching its snapshot",
-            ));
-        }
-        Ok(window)
+        Ok(Self {
+            fields: None,
+            from: value.from,
+            to: value.to,
+            limit,
+            complete: value.complete,
+            omitted: value.omitted,
+        })
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

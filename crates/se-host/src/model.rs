@@ -21,6 +21,9 @@ pub enum HostPhase {
 #[derive(Clone, Debug)]
 pub struct HostConfig {
     pub home: NativePath,
+    /// Trusted installed native helper; never resolved from provider input/PATH.
+    pub helper_executable: NativePath,
+    pub linux_delegation: se_proc::LinuxDelegation,
     pub kind: HostKind,
     pub limits: HostLimits,
     pub listener: ListenerConfig,

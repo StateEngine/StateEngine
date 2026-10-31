@@ -71,9 +71,10 @@ Every public mutation carries an identity created before its first send. CLI
 invocations generate/print it and accept `--key` for cross-invocation retry; MCP
 mutation schemas require `idempotency_key`; IPC and linked calls preserve it.
 For store-backed mutations, same key with changed input conflicts. File-only
-general config set, uninstall and restore follow section 40’s current-state
-readback reconciliation rather than a separate receipt journal. Only capture
-and read/ack/dismiss marker families use their restricted natural identity, verified by the registry/store.
+general config set and uninstall follow section 40’s current-state
+readback reconciliation rather than a separate receipt journal. Restore retry
+semantics belong to section 20; section 50 defines its receipt.
+Only capture and read/ack/dismiss marker families use their restricted natural identity, verified by the registry/store.
 A retry cannot substitute a new key after an uncertain commit. Linked
 `RequestIdentity` explicitly separates reads, keyed mutations and that natural-key
 exception; selecting the wrong form refuses before effects.
@@ -96,6 +97,12 @@ CLI/IPC `se-types::API_VERSION` is a separate framing identity. A changed public
 Rust field, enum variant, trait method or meaning requires a Cargo/API major
 change; optional fields in a public Rust struct count. The current unshipped
 major-2 design is revised together, not treated as an already released contract.
+
+Linked entity revisions use nonzero `Revision`; event/read positions are opaque
+`Cursor` values, never global sequence numbers. Internal WindowFields accounting
+is not a public wire snapshot. HostConfig carries the trusted installed
+`helper_executable` and typed `linux_delegation` agent-scope policy; the adapter
+maps these to se-host/se-proc without deriving a helper from provider input or PATH.
 
 Every JSON family retains its `schema` identifier and its own major. Those wire
 versions do not imply Rust struct compatibility. There is no N-1 encoder or

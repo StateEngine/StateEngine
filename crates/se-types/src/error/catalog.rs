@@ -50,7 +50,7 @@ codes! {
     RecipientOtherProject => ("recipient-other-project", Refused) { to: String, project: ProjectId } => "{to} is in project {project}", "send from that project";
     RepairRefused => ("repair-refused", Refused) { subject: String, reason: String, next_step: String } => "Repair {subject}: {reason}", "{next_step}";
     RepoInvalid => ("repo-invalid", Refused) { subject: String, reason: String, next_step: String } => "Repository {subject}: {reason}", "{next_step}";
-    ResumeReferenceMissing => ("resume-reference-missing", Refused) { agent: AgentId } => "{agent} has no saved conversation to resume", "Use `se launch {agent} --new`";
+    ResumeReferenceMissing => ("resume-reference-missing", Refused) { agent: AgentId } => "{agent}'s previously saved conversation reference is missing", "Use `se launch {agent} --new`";
     RuntimeIncompatible => ("runtime-incompatible", Refused) { subject: String, reason: String, next_step: String } => "Runtime {subject}: {reason}", "{next_step}";
     SecretToTerminalRefused => ("secret-to-terminal-refused", Refused) { what: String } => "refusing to print {what} to a terminal", "run it through a pipe (integrations only)";
     SessionAlreadyEnded => ("session-already-ended", Refused) { session: SessionId, at: UnixMicros } => "session {session} ended at {at}", "Use `se launch AGENT`";
@@ -85,7 +85,7 @@ codes! {
     LaunchReadinessTimeout => ("launch-readiness-timeout", Incomplete) { agent: AgentId, waited_ms: u64, last_observed: String } => "{agent} started but wasn't ready after {waited_ms} ms", "Use `se agent show {agent}`";
     RemoveIncomplete => ("remove-incomplete", Incomplete) { stopped: Vec<String>, unwitnessed: Vec<String>, remaining: Vec<String> } => "removal partly done: {remaining}", "Use `se remove -p P` (idempotent)";
     RuntimeStartPending => ("runtime-start-pending", Incomplete) { waited_ms: u64 } => "the runtime is still starting after {waited_ms} ms", "Use `se status`";
-    StopUnwitnessed => ("stop-unwitnessed", Incomplete) { scope: String, reason: String, remaining: Vec<String> } => "Stop of {scope} is unconfirmed: {reason}; named remaining {remaining}", "Read `se status` and retry the same keyed stop; unnamed members never count as zero";
+    StopUnwitnessed => ("stop-unwitnessed", Incomplete) { scope: String, reason: String, remaining: Vec<String> } => "Stop of {scope} is unconfirmed: {reason}; named remaining {remaining}", "Read `se status` and retry the same keyed stop; for an uncontained group after a stop that could not be proved (StopUnproved only), owner-human `se stop AGENT --release` relinquishes ownership without signalling or proving exit";
     TranscriptTruncated => ("transcript-truncated", Incomplete) { path: String, offset: u64, size: u64 } => "{path} shrank below the read offset", "captured turns stay; → `se status`";
     AtlasResourceBudget => ("atlas-resource-budget", Unavailable) { resource: String, requested: u64, available: u64 } => "Atlas can't index right now: {resource} needs {requested}, {available} available", "wait for memory pressure to ease, or use bounded text search → `se atlas find QUERY --kind text`";
     DeadlineExceeded => ("deadline-exceeded", Unavailable) { op: String, deadline_ms: u64 } => "`{op}` didn't finish in {deadline_ms} ms", "retry";
@@ -94,7 +94,7 @@ codes! {
     RuntimeNotRunning => ("runtime-not-running", Unavailable) { op: String, reason: String } => "`{op}` needs a ready runtime writer: {reason}", "Reopen the current runtime generation and retry with the original request identity; use `se up` if no runtime is running";
     RuntimeStartFailed => ("runtime-start-failed", Unavailable) { reason: String, log: String } => "the runtime didn't start: {reason}", "see {log}; → `se doctor`";
     StoreBusy => ("store-busy", Unavailable) { waited_ms: u64, reason: String, next_step: String } => "Store unavailable after {waited_ms} ms: {reason}", "{next_step}; retry the same request identity";
-    StoreDiskFull => ("store-disk-full", Unavailable) { path: String, free_bytes: u64 } => "not enough disk space at {path}", "free space and retry";
+    StoreDiskFull => ("store-disk-full", Unavailable) { path: String, free_bytes: Option<u64> } => "not enough disk space at {path}", "free space and retry";
     StoreMigrationRequired => ("store-migration-required", Unavailable) { from: u64, to: u64 } => "Store {from} needs supported additive migration to {to}", "Start `se up`: the sole owning host verifies a pre-migration backup and migrates automatically; an old running host requires `se down` first";
     Internal => ("internal", Internal) { report_id: String, location: String } => "StateEngine hit a bug ({report_id})", "Use `se doctor --bundle` and send it";
     Cancelled => ("cancelled", Cancelled) { op: String } => "`{op}` was interrupted", "rerun; writes are all-or-nothing";
