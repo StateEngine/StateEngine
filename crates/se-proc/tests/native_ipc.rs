@@ -123,8 +123,13 @@ fn protected_reservation_holds_the_name_until_its_native_handles_close() -> Resu
 }
 
 #[cfg(windows)]
-#[test]
-fn client_refuses_a_real_pipe_with_a_world_access_dacl() -> Result<()> {
+fn world_access_pipe(
+    label: &str,
+) -> Result<(
+    std::os::windows::io::OwnedHandle,
+    std::ffi::OsString,
+    String,
+)> {
     use std::{
         mem::size_of,
         os::windows::{
@@ -163,7 +168,7 @@ fn client_refuses_a_real_pipe_with_a_world_access_dacl() -> Result<()> {
     {
         return Err(std::io::Error::last_os_error().into());
     }
-    let root = std::env::temp_dir().join(format!("se-ipc-{}-world-dacl", std::process::id()));
+    let root = std::env::temp_dir().join(format!("se-ipc-{}-{label}", std::process::id()));
     let name = Endpoint::name(&root);
     let wide: Vec<_> = name.encode_wide().chain(Some(0)).collect();
     let attributes = SECURITY_ATTRIBUTES {
@@ -194,6 +199,13 @@ fn client_refuses_a_real_pipe_with_a_world_access_dacl() -> Result<()> {
     }
     // SAFETY: successful CreateNamedPipeW transfers one unique handle.
     let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+    Ok((handle, name, sid))
+}
+
+#[cfg(windows)]
+#[test]
+fn squatter_refusal_retains_owner_or_unreadable_cause_and_legal_action() -> Result<()> {
+    let (handle, name, sid) = world_access_pipe("squatter")?;
     let collision = NativePipeReservation::create(&name)
         .err()
         .ok_or("squatter pipe adopted")?;
@@ -205,6 +217,15 @@ fn client_refuses_a_real_pipe_with_a_world_access_dacl() -> Result<()> {
             && (reason.contains(&sid) || reason.contains("unreadable")),
         "squatter refusal lost its owner/cause/action: {reason}"
     );
+    drop(handle);
+    drop(NativePipeReservation::create(&name)?);
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn client_refuses_a_real_pipe_with_a_world_access_dacl() -> Result<()> {
+    let (handle, name, _) = world_access_pipe("world-dacl")?;
     assert_eq!(
         NativePipeStream::connect(&name, bound(1_000))
             .err()
