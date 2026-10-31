@@ -241,11 +241,17 @@ macro_rules! counter {
             Hash,
             Serialize,
             Deserialize,
-            JsonSchema,
         )]
         #[serde(try_from = "u64", into = "u64")]
-        #[schemars(with = "u64")]
         pub struct $name(u64);
+        impl JsonSchema for $name {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+            fn json_schema(_: &mut SchemaGenerator) -> Schema {
+                json_schema!({"type": "integer", "minimum": if $zero { 0 } else { 1 }, "maximum": i64::MAX})
+            }
+        }
         impl $name {
             pub fn new(value: u64) -> Result<Self> {
                 if value > i64::MAX as u64 || (!$zero && value == 0) {
@@ -274,6 +280,8 @@ macro_rules! counter {
     };
 }
 counter!(Sequence, true);
+// Per-entity committed change counter, never a global event position.
+counter!(Revision, false);
 counter!(UnixMillis, true);
 counter!(UnixMicros, true);
 impl Sequence {

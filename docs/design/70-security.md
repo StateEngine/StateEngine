@@ -108,7 +108,8 @@ Five layers, each of which catches a different mistake:
      absence proves nothing.
 5. **Human-only verbs need human presence.** `decision ratify|reject|retract|supersede`,
    `project.remove`, `store.forget`, `store.restore`, `credential.rotate`,
-   `installation.uninstall`, `doctor.repair` (`se doctor --fix CHECK-ID`), and
+   `installation.uninstall`, `doctor.repair` (`se doctor --fix CHECK-ID`),
+   `agent.stop` release variant (`se stop AGENT --release`), and
    `config.set` of a security key require all of: stdin and stdout are a console/TTY (`isatty`;
    `GetConsoleMode` succeeds), layer 4 says "outside every agent tree", and no `SE_SESSION` is set.
    There is no typed confirmation: Jimmy's ruling that friction is the enemy applies, and the three

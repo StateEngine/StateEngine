@@ -200,16 +200,9 @@ agent, including population Unknown with its reason and gathered diagnostics.
 A failed observation never drops a target or becomes an empty scope; independent
 stops continue. Incomplete exit witnesses keep shutdown/removal incomplete.
 
-For an uncontained Linux/macOS group with no provably live tracked member,
-ordinary stop never signals and records StopUnproved. Human release is legal
-only from StopUnproved, after a stop that could not be proved; Running,
-LeaderExited and Lost first go through ordinary stop. Owner-human
-`se stop AGENT --release` then CAS-commits the generation/revision-bound ownership-release marker and calls
-se-proc `release_uncontained`, which returns ReleasedOwnership, not StopWitness.
-Preserve StopUnproved and diagnostic history; exclude released ownership from
-live/remove blockers and never re-adopt it. Close only tracking registrations/
-identity pins, not the provider port. Remove reports possible remaining members.
-Sections 20/30 own the durable/native mechanics; 50 owns the command/result.
+Uncontained-group stop/release follows [30 — process ownership](30-process-ownership.md);
+[20](20-data-model.md) owns persistence/recovery and [50 A.6/A.8](50-surface-and-errors.md)
+owns the human command and stop/remove results.
 
 ### 3.2 Exit notifications, stop and catch-up
 

@@ -1,10 +1,10 @@
-use crate::{ErrorBody, EventId, IdempotencyKey, Result, SeError, Sequence};
+use crate::{Cursor, ErrorBody, EventId, IdempotencyKey, Result, SeError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct EventRef {
     pub id: EventId,
-    pub sequence: Sequence,
+    pub position: Cursor,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "state", rename_all = "snake_case")]
@@ -17,7 +17,7 @@ pub enum EffectStatus {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Commit<T> {
     pub event_id: EventId,
-    pub sequence: Sequence,
+    pub position: Cursor,
     pub idempotency_key: IdempotencyKey,
     pub value: T,
     pub effects: EffectStatus,
@@ -64,14 +64,10 @@ impl<T> Receipt<T> {
     pub fn validate(&self) -> Result<()> {
         match self {
             Self::Committed { commit } | Self::Replayed { original: commit } => {
-                if commit.sequence == Sequence::ZERO {
-                    return Err(SeError::invalid(
-                        "receipt sequence",
-                        "a committed nonzero sequence",
-                    ));
-                }
+                // The store proves ordering in the authorized cursor scope;
+                // opaque cursor spellings have no chronological ordering here.
                 if let EffectStatus::Witnessed { witness } = &commit.effects
-                    && witness.sequence <= commit.sequence
+                    && (witness.id == commit.event_id || witness.position == commit.position)
                 {
                     return Err(SeError::invalid(
                         "effect witness",

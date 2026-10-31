@@ -28,7 +28,7 @@ pub struct OpMeta {
     pub mcp: McpExposure,
     pub auth: Auth,                    // Owner | Session | Either
     pub anonymous: bool,               // only meta.version / meta.help / meta.schema
-    pub human_only: HumanPolicy,       // Always | Never | ConfigKey
+    pub human_only: HumanPolicy,       // Always | Never | ConfigKey, per input variant
     pub effect: Effect,
     pub scope: Scope,                  // decides which global flags the op accepts
     pub runtime: RuntimeNeed,
@@ -47,7 +47,7 @@ pub enum Selector { Always, Flag(&'static str) }
 pub enum McpExposure { Tool { name: &'static str, title: &'static str, description: &'static str }, None(Reason) }
 pub struct Reason(pub &'static str);   // non-empty, ≥ 12 bytes (const-checked)
 pub enum Auth { Owner, Session, Either }
-pub enum HumanPolicy { Never, Always, ConfigKey, StopRelease }
+pub enum HumanPolicy { Never, Always, ConfigKey }
 pub struct ConfigKeyMeta { pub human_only: bool /* security keys, including agent can-create */ }
 pub enum Effect { Read, Write, Custody, Variant(&'static [(&'static str, Effect)]) }
 pub enum Scope { None, Home, Project, ProjectOrAll, Session }
@@ -171,7 +171,7 @@ Global flags are attached per leaf according to `Scope`: `-p/--project` only for
 
 The transport wrapper and synchronous dispatcher use the same admission order for CLI, MCP, IPC and linked calls:
 
-1. Resolve the registered operation, feature and authority, then its HumanPolicy. Always covers ratify, reject, retract, supersede, remove, forget, restore, credential rotate, uninstall and doctor --fix. ConfigKey covers config.set of security keys, including agent.<A>.can-create. StopRelease requires owner-human admission only for agent.stop's explicit release variant; ordinary stop keeps its existing authority. Other config keys are not human-only by a blanket operation flag. The owner terminal/ancestry proof is verified before any effect; a failed check refuses with the same-user mistake/drift bound.
+1. Resolve the registered operation and its input branch through `Effect::Variant`, then feature, authority and HumanPolicy. Always covers ratify, reject, retract, supersede, remove, forget, restore, credential rotate, uninstall and doctor --fix. The agent.stop release branch is owner/Always/CLI-only; ordinary stop retains either/Never and MCP exposure. ConfigKey covers config.set of security keys, including agent.<A>.can-create. Verify the owner terminal/ancestry proof before effects (70); failure refuses with the same-user mistake/drift bound.
 2. Resolve project from the bound session or §2.2. A conflicting owner selector refuses.
 3. Validate the closed DTO, UTF-8 limits, revision preconditions and required request identity. Wrong identity kind, unknown fields or changed-body key reuse refuse before effects.
 4. Inspect runtime requirements. Read-only/hostless store work stays synchronous. Writes route to the existing host writer when it owns the lease. A reader/direct connection finding a supported older schema releases its shared lease and uses private host bootstrap for automatic backed-up migration, then reopens the read; it does not ask the user to run se up or upgrade manually. For custody or hooks requiring a host, the adapter uses the **private runtime bootstrap**, waits up to ten seconds for readiness and retains the same request identity. There is no public `se daemon` command. Pending returns an explicit readiness/result handle, never a fabricated success.
@@ -194,14 +194,7 @@ Store-backed custody retains its keyed effect plan and readback. File-only
 general config set and uninstall use [40 §9.5](40-host-runtime-and-harnesses.md#95-owned-configuration-and-remove)
 readback reconciliation, without a receipt journal or durable request ledger.
 
-Restore is store-backed: `RecoveryRecorded` binds key K, selected backup id,
-source/target incarnation and the complete original `se.restore/v1` receipt as
-one immutable, bounded payload. The record and its payload are written into the
-staged restored store before publication; all publish together or not at all.
-A retry returns the stored original receipt verbatim before backup selection or
-new preconditions, even after later writes or backup rotation. Nothing is
-reconstructed or refreshed. No record after a crash means no publication; the
-original keyed request may then apply normally (20, restore).
+Restore's store-backed keyed replay, including its verbatim original receipt, is owned by [20 — restore](20-data-model.md).
 
 Only captured turns/hooks and recipient read/ack/dismiss markers use the restricted natural-key path. Their source session/turn or recipient/message/marker identity must already exist before first send; changed content conflicts. Random keys cannot bypass those uniqueness rules. A marker retry returns its original event/writer. Native hook/header-helper stdout retains its consumed protocol; request keys are printed on stderr and retained in their private keyed result, never added as a fake provider header. Session begin/end, working-state, agent create/launch/stop/wake, decisions and owner repairs are keyed mutations, not natural-key exceptions. When a provider has no turn ID, its trusted capture adapter derives the stable identity from the pinned source incarnation/position before first send; a fresh random ID on retry is invalid. Read-only calls cannot provide a mutation identity to acquire authority.
 
@@ -864,6 +857,7 @@ Every hazardous action prints a concrete plan **before effects**: affected IDs/p
 
 | Action | Human check / plan | Consequences and boundary |
 | --- | --- | --- |
+| `se stop AGENT --release` | owner + human-presence; exact single agent and possible remaining members | release contract and limits: A.6; native mechanics: 30; durable marker: 20 |
 | `se remove` | owner + human-presence; exact projects, integrations, agent instances, credentials | stop/revoke only the owned scope; preserve repository files, Git and history; partial witness remains incomplete |
 | `se forget --event ID` | owner + human-presence; exact captured-record revisions and copies | erase store/projections plus WAL/cache readback and no-resurrection checks; name backups/provider transcripts that cannot be erased; never implicit in remove/import |
 | `se import --from-node PATH` | owner; print supported user families, source quiescence, conflicts and counts | original read-only; import identities, agents/profiles, messages/marks, decisions, working state, turns/conversation refs only; no fleet, credentials or live process ownership |
@@ -1214,24 +1208,11 @@ same evidence through retry/recovery and already-released acknowledgment.
 
 Human text follows `enumeration`: `complete` prints the count ("2 processes still running"); `best-effort` or `unavailable` with `population = populated` prints "processes still running in the agent's group; count unavailable" and lists whatever `remaining[]` names, labelled as partial. `population = unknown` prints its reason and all gathered facts; an empty diagnostic list never proves an empty scope.
 
-For an uncontained Linux/macOS group that cannot be tied to a live tracked
-member, ordinary stop refuses to signal and records StopUnproved. Only after
-a stop that could not be proved may owner-human `se stop AGENT --release`
-apply, from StopUnproved only. Running, LeaderExited and Lost must first go
-through ordinary stop; other origins refuse without effects. It is the distinct
-single-target release variant; `--all --release` and MCP/agent
-release inputs refuse before effects. Under lifecycle serialization, drain
-admitted dispatch and CAS-commit `UnwitnessedRelease` for the exact lifecycle,
-generation and resulting entity revision. Then call se-proc `release_uncontained`
-to retire only tracking registrations/identity pins, without signals or closing
-the separate provider port. Its `ReleasedOwnership` is not a StopWitness.
-
-The wire result is `ownership-released`, `complete: false`, an unwitnessed
-Witness and the actual population/diagnostics; it never fabricates exit or zero.
-The marker preserves StopUnproved history, excludes that ownership from live
-admission/remove blockers and prevents recovery re-adoption. Native retirement
-failures remain explicit cleanup debt. Remove prints that processes may remain.
-Section 30 owns the native contract; section 20 owns the durable marker.
+Owner-human CLI `se stop AGENT --release` is single-target and legal only from
+StopUnproved after an ordinary stop that could not be proved; `--all --release`
+and MCP/agent release inputs refuse before effects. [30 — process ownership](30-process-ownership.md)
+owns release mechanics; [20 — data model](20-data-model.md) owns the durable
+marker and recovery. The command reports those facts in the result below.
 
 | Path | Type | Always | Meaning |
 | --- | --- | --- | --- |
@@ -1333,6 +1314,7 @@ Section 30 owns the native contract; section 20 owns the durable marker.
 | `$.projects[].event_id` | Id \| null | yes | the removal event; history is kept |
 | `$.projects[].agents_stopped[]` | `{agent: Ref, prior_state, witness: Witness, process: ProcessId\|null}` | yes | agents that were running; `prior_state` uses the AgentRow session states |
 | `$.projects[].processes_stopped[]` | `{lifecycle_id, process: ProcessId, witness: Witness}` | yes | owned provider/terminal helpers within the removed agent lifecycles |
+| `$.projects[].processes_may_remain[]` | StopResult (A.6) | yes | one retained ownership-released result per released lifecycle, including unknown population/reason and partial diagnostics; these are warnings even when removal succeeds, never agents_stopped or exit witnesses |
 | `$.projects[].credentials_revoked[]` | `{credential_id, kind: "session"\|"launch"\|"bearer", session_id\|null, state: "revoked"\|"already-revoked", at}` | yes | ids only, never secrets |
 | `$.projects[].integrations[]` | `{path, entry, action: "reversed"\|"kept-by-flag"\|"conflict-kept"\|"absent", witness: Witness}` | yes | edits StateEngine owned outside the store. `conflict-kept`: you changed the entry, so remove left it and listed it in `remaining`. |
 | `$.projects[].removed[]` | `{what, path\|null}` | yes | `what` is one of `registration`, `launch-files`, `session-pins`, `atlas-index`, `runtime-endpoint` |
@@ -1352,7 +1334,7 @@ Section 30 owns the native contract; section 20 owns the durable marker.
    "agents_stopped":[{"agent":{"id":"ag_0192f3a0-1111-7aaa-8bbb-000000000004","name":"rev"},"prior_state":"running",
      "witness":{"state":"witnessed","method":"pidfd-exit+cgroup-empty","observed_at":"2026-10-30T12:59:09.800000Z","detail":null},
      "process":{"pid":5120,"started_at":"2026-10-30T12:40:02.000000Z","exe":"/usr/local/bin/codex","machine_id":"m-6a1f"}}],
-   "processes_stopped":[],
+   "processes_stopped":[],"processes_may_remain":[],
    "credentials_revoked":[{"credential_id":"cred_0192f3a2-0000-7000-8000-0000000000c1","kind":"session","session_id":"ses_0192f3c8-0000-7000-8000-00000000000e","state":"revoked","at":"2026-10-30T12:59:09.900000Z"}],
    "integrations":[],
    "removed":[{"what":"registration","path":null},{"what":"launch-files","path":"/home/ana/.local/state/stateengine/launch/prj_0192f3a0"}],

@@ -72,9 +72,8 @@ invocations generate/print it and accept `--key` for cross-invocation retry; MCP
 mutation schemas require `idempotency_key`; IPC and linked calls preserve it.
 For store-backed mutations, same key with changed input conflicts. File-only
 general config set and uninstall follow section 40’s current-state
-readback reconciliation rather than a separate receipt journal. Restore instead
-returns the stored complete original receipt verbatim from its atomically
-published keyed RecoveryRecorded payload (20, 50).
+readback reconciliation rather than a separate receipt journal. Restore retry
+semantics belong to section 20; section 50 defines its receipt.
 Only capture and read/ack/dismiss marker families use their restricted natural identity, verified by the registry/store.
 A retry cannot substitute a new key after an uncertain commit. Linked
 `RequestIdentity` explicitly separates reads, keyed mutations and that natural-key
