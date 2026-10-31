@@ -20,6 +20,40 @@ impl Files {
             .map(Self)
             .map_err(native_error)
     }
+    /// Complete bounded immediate-file inventory through retained native
+    /// custody. A budget or unsafe entry refuses the whole list.
+    pub fn list_owned(
+        &self,
+        directory: &Path,
+        maximum: usize,
+    ) -> StoreResult<Vec<std::path::PathBuf>> {
+        if maximum == 0 {
+            return Err(fail(
+                StoreErrorCode::ReadBudgetTooSmall,
+                "owned file inventory requires a positive maximum",
+            ));
+        }
+        if directory == self.0.root() {
+            self.check_root()?;
+        } else {
+            self.check_path(directory)?;
+        }
+        let paths = self.0.list_owned(directory).map_err(native_error)?;
+        if paths.len() > maximum {
+            return Err(fail(
+                StoreErrorCode::ReadIncomplete,
+                "owned file inventory exceeds its requested maximum; no partial list returned",
+            ));
+        }
+        if paths.iter().any(|path| path.parent() != Some(directory)) {
+            return Err(fail(
+                StoreErrorCode::LocationUnsafe,
+                "native inventory returned a path outside the requested immediate directory",
+            ));
+        }
+        self.check_root()?;
+        Ok(paths)
+    }
 }
 impl Files {
     fn check_root(&self) -> StoreResult<()> {
@@ -51,6 +85,9 @@ impl Files {
     }
 }
 impl StateFiles for Files {
+    fn list_owned(&self, directory: &Path, maximum: usize) -> StoreResult<Vec<std::path::PathBuf>> {
+        Files::list_owned(self, directory, maximum)
+    }
     fn prepare_directory(&self, path: &Path) -> StoreResult<()> {
         if path != self.0.root().join("backups") && path != self.0.root().join("staging") {
             return Err(fail(

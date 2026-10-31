@@ -1,17 +1,21 @@
 //! Finite inventory only: a recovery filename never grants mutation authority.
 use super::*;
+use crate::state_files::effects::InventoryKind;
 use std::{
     ffi::CStr,
     os::{fd::FromRawFd, unix::ffi::OsStringExt},
 };
 
 pub(in crate::state_files) fn scan_recovery(path: &Path) -> Result<Vec<PathBuf>> {
-    scan(path, false)
+    scan(path, InventoryKind::Recovery)
 }
 pub(in crate::state_files) fn scan_temporary(path: &Path) -> Result<Vec<PathBuf>> {
-    scan(path, true)
+    scan(path, InventoryKind::Temporary)
 }
-fn scan(path: &Path, temporary: bool) -> Result<Vec<PathBuf>> {
+pub(in crate::state_files) fn list_names(path: &Path) -> Result<Vec<PathBuf>> {
+    scan(path, InventoryKind::Owned)
+}
+fn scan(path: &Path, kind: InventoryKind) -> Result<Vec<PathBuf>> {
     let parent = super::super::walk_effect_parent(path)?;
     let before = parent
         .metadata()
@@ -79,15 +83,12 @@ fn scan(path: &Path, temporary: bool) -> Result<Vec<PathBuf>> {
         }
         // SAFETY: readdir supplies a terminated d_name valid until next call.
         let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
-        if if temporary {
-            name.starts_with(b".se-profile-") || name.starts_with(b".se-publish-")
-        } else {
-            name.starts_with(b".se-edit-backup-")
-        } {
+        let name = std::ffi::OsString::from_vec(name.to_vec());
+        if kind.includes(&name) {
             if found.len() == 256 {
                 return Err(unsafe_path("recovery inventory exceeds 256 siblings", path));
             }
-            found.push(path.join(std::ffi::OsString::from_vec(name.to_vec())));
+            found.push(path.join(name));
         }
     }
     let outside = super::super::walk_effect_parent(path)?;

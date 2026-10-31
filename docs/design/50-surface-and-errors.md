@@ -902,6 +902,13 @@ Exact field paths for the families the journey runner judges. `$` is the payload
 | Witness | object | `{"state":"witnessed"\|"unwitnessed"\|"not-applicable","method":string\|null,"observed_at":Time\|null,"detail":string\|null}`. A result is `witnessed` only after a re-read from outside the writer (00 G8). `method` is one of `job-empty` (Windows), `pidfd-exit+cgroup-empty` (Linux), `pidfd-exit+cgroup-removed` (Linux original pinned object removed plus root exit), `start-identity-exit+cgroup-empty` and `start-identity-exit+cgroup-removed` (Linux without pidfds, preserving the native identity-recheck bound), `pidfd-exit+pgid-empty` (Linux, `uncontained`), `start-identity-exit+pgid-empty` (Linux without pidfd support: exit confirmed by re-reading the recorded start identity as gone or changed, at the bound section 30 states), `kqueue-exit+pgid-empty` (macOS), `readback` (files and config), `registry-reread`. |
 | ProcessId | object | `{"pid":int,"started_at":Time,"exe":string,"machine_id":string}`. `started_at` is the OS birth time (00 G6). A pid alone never identifies a process. |
 
+When measured for a request, `$.diagnostics.write_timings` carries required
+finite non-negative `queue_ms`, `transaction_ms` and `commit_call_ms`, and
+`durability: "normal" | "full"`. `checkpoint_ms` is optional: it is included
+only when the writer actually ran a checkpoint and measured that call. No
+checkpoint means the key is omitted, never a substituted zero. These transient
+measurements do not change the immutable original receipt or writer on replay.
+
 Public Page/Window encoders omit internal `Window.snapshot`/`WindowFields`
 accounting. Only opaque cursors cross the CLI, MCP, IPC and linked boundaries;
 store sequence numbers are neither public ordering fields nor revisions.
@@ -1426,6 +1433,17 @@ This example exits 1. One check failed, and a failure outranks a warning.
 
 `DecisionRow` is shared by the receipt, the page (A.12) and `se decision show`.
 
+The canonical declaration is `se_types::{DecisionRow, DecisionReceipt}` in
+`crates/se-types/src/surface/decision.rs`. The actual family serializer is
+`se_core::ops::decision_receipt(DecisionReceipt)`, returning the existing core
+`Envelope<DecisionReceipt>`; its `schema` is `se.decision-receipt/v1`. The
+shared `WriteReceipt` is flattened into the top level, never a nested `commit`
+object. The five `DecisionAction` spellings and five `DecisionState` spellings
+are closed enums matching the tables below. These output declarations do not
+register the unfinished FULL operations in `AnyOp`/`AnyOutput` or make them
+executable; future operations consume these types rather than define another
+receipt.
+
 | Path (row = a `DecisionRow`) | Type | Always | Meaning |
 | --- | --- | --- | --- |
 | row`.id` | Id | yes | decision id (`dec_…`) |
@@ -1564,6 +1582,66 @@ Every keyed write result also carries its original `$.idempotency_key`; natural 
  "recorded_at":"2026-10-30T12:20:11.000000Z","agent":{"id":"ag_0192f3a0-1111-7aaa-8bbb-000000000004","name":"rev"},
  "revision":4,"current_revision":4,"bytes":52,"writer":{"mode":"host","host_generation":"7"}}
 ```
+
+### A.13.1 Canonical `se.agent-receipt/v1` declaration
+
+`se_types::AgentReceipt` in `crates/se-types/src/surface/agent.rs` is serialized
+by `se_core::ops::agent_receipt` using the existing family Envelope. Agent add
+uses `action: "create"`; rename reuses this same family. The shared declarations
+of `Named`, `ActorRef`, `Writer`, `CommitState` and the saved Claude/Codex
+`Provider` now live in `se-types`; their existing core names re-export the same
+types and preserve their wire layouts.
+
+| Path | Type | Always | Meaning |
+| --- | --- | --- | --- |
+| `$.schema` | `"se.agent-receipt/v1"` | yes | family |
+| `$.state` | `"committed"` \| `"replayed"` | yes | actual original write outcome |
+| `$.event_id`, `$.recorded_at`, `$.idempotency_key`, `$.writer` | Id, Time, string, Writer | yes | flattened immutable write fields from A.0; replay retains the original event and writer |
+| `$.action` | `"create"` \| `"rename"` | yes | selected operation |
+| `$.outcome` | `"created"` \| `"existing"` \| `"renamed"` \| `"unchanged"` | yes | actual identity effect; not a launch result |
+| `$.agent.id`, `$.agent.name` | Id, string | yes | saved agent identity |
+| `$.agent.provider` | `"claude"` \| `"codex"` | yes | saved provider |
+| `$.agent.model` | string \| null | yes | null selects the provider default |
+| `$.agent.profile` | string | yes | saved named permission profile |
+| `$.previous_name` | string \| null | yes | previous name for rename; null for create |
+| `$.process_started` | false | yes | add/rename never launches a process |
+
+Creation is a FULL store mutation. A judge requires the returned agent id and
+saved metadata to agree with independent `se.agent-status/v1` readback. It
+checks `process_started` is false; a creation receipt cannot substitute for a
+process launch witness. These declarations alone add no executable operation.
+
+### A.13.2 `se.config-receipt/v1` — store-backed agent metadata
+
+`se_types::AgentConfigReceipt` in the same module is the store-backed branch
+for `config set agent.<A>.model`, `.profile` and `.can-create`. Its actual family
+serializer is `se_core::ops::agent_config_receipt`, returning the existing
+`Envelope<AgentConfigReceipt>`. The general `config.toml` file-custody branch
+has no store event or writer and cannot use this payload; section 40 §9.5 still
+governs that separate branch.
+
+| Path | Type | Always | Meaning |
+| --- | --- | --- | --- |
+| `$.schema` | `"se.config-receipt/v1"` | yes | family |
+| `$.storage` | `"agent-record"` | yes | closed discriminator for the store-backed branch |
+| `$.state` | `"committed"` \| `"replayed"` | yes | original write outcome |
+| `$.event_id`, `$.recorded_at`, `$.idempotency_key`, `$.writer` | Id, Time, string, Writer | yes | flattened immutable write fields; no nested `commit` object |
+| `$.project`, `$.agent` | Ref, Ref | yes | exact admitted project and saved agent |
+| `$.key` | string | yes | canonical `agent.<A>.model`, `.profile` or `.can-create` key |
+| `$.previous` | `Read<JSON value>` | yes | measured prior value; present JSON null differs from absence, unreadable and unknown |
+| `$.value` | JSON value | yes | committed setting read back with its native type; `.can-create` is boolean, `.profile` is a string and `.model` is string or null |
+| `$.revision` | int | yes | entity revision committed by this request |
+| `$.current_revision` | int | yes | fresh readback revision; may be later on replay and never replaces the original committed revision |
+| `$.authority.guard` | `"owner-terminal-outside-agent-tree"` \| null | yes | established human-presence guard for `.can-create`; null when no human-presence guard was required |
+| `$.authority.limit` | string | yes | the same mistake/drift-bound disclosure as A.11 |
+
+Agent metadata changes are FULL store mutations. A judge requires the exact
+key/value type and entity to agree with independent `se.config-value/v1`
+readback and checks the committed/replayed event and writer. A failed or
+unreadable resulting readback refuses rather than publishing a guessed success;
+it does not become a null setting. Previous-value Read states remain explicit.
+Transient timings, when measured, use the existing optional outer diagnostics;
+these DTO declarations add no timer, store write or executable command.
 
 ### A.14 `se.event/v1` and `se.history-page/v1` — `se history`, `stateengine_event_read`
 

@@ -53,3 +53,5 @@ pub use owner_probe::{
 pub use ownership::*;
 #[cfg(windows)]
 pub use stdio::*;
+
+pub use state_files::source::{NativeSourcePin, SourceChunk};

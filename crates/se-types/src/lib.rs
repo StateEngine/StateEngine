@@ -8,12 +8,14 @@ mod process;
 mod read;
 mod receipt;
 mod sensitive;
+mod surface;
 pub use error::*;
 pub use id::*;
 pub use process::*;
 pub use read::*;
 pub use receipt::*;
 pub use sensitive::*;
+pub use surface::*;
 pub type Result<T> = std::result::Result<T, SeError>;
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,

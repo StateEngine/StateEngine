@@ -13,6 +13,15 @@ use std::{
 use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
 fn open(path: &Path, directory: bool, access: u32, create: bool) -> Result<File> {
+    open_shared(path, directory, access, create, true)
+}
+fn open_shared(
+    path: &Path,
+    directory: bool,
+    access: u32,
+    create: bool,
+    share_write: bool,
+) -> Result<File> {
     let name = wide(path)?;
     let descriptor = if create {
         Some(security::descriptor(path, false)?)
@@ -39,12 +48,7 @@ fn open(path: &Path, directory: bool, access: u32, create: bool) -> Result<File>
                         GENERIC_READ | DELETE | access | if create { GENERIC_WRITE } else { 0 }
                     }
                 },
-            FILE_SHARE_READ
-                | if directory || access == FILE_READ_ATTRIBUTES {
-                    FILE_SHARE_WRITE | FILE_SHARE_DELETE
-                } else {
-                    FILE_SHARE_DELETE
-                },
+            FILE_SHARE_READ | FILE_SHARE_DELETE | if share_write { FILE_SHARE_WRITE } else { 0 },
             attributes.as_ref().map_or(ptr::null(), |a| a as *const _),
             if create { CREATE_NEW } else { OPEN_EXISTING },
             FILE_FLAG_OPEN_REPARSE_POINT
@@ -88,6 +92,9 @@ struct Parent {
 }
 impl Parent {
     fn open(path: &Path) -> Result<Self> {
+        Self::open_with_access(path, true)
+    }
+    fn open_with_access(path: &Path, writable: bool) -> Result<Self> {
         wide(path)?;
         let mut prefix = PathBuf::new();
         let mut pins = Vec::new();
@@ -150,11 +157,13 @@ impl Parent {
         let identity = metadata(held, path, true, false)?;
         // A separate write-capable pin is used only for the actual final parent,
         // never for drive/system ancestors. It retains native directory flushing.
-        let writable = open(&physical, true, GENERIC_READ | GENERIC_WRITE, false)?;
-        if metadata(&writable, path, true, false)? != identity {
-            return Err(changed("installation parent changed during open", path));
+        if writable {
+            let writable = open(&physical, true, GENERIC_READ | GENERIC_WRITE, false)?;
+            if metadata(&writable, path, true, false)? != identity {
+                return Err(changed("installation parent changed during open", path));
+            }
+            pins.push(writable);
         }
-        pins.push(writable);
         Ok(Self {
             pins,
             path: physical,
@@ -240,25 +249,28 @@ impl Pin {
         // Every account-wide claimant requests WRITE while denying WRITE
         // sharing. An inherited duplicate preserves this exclusion even after
         // the holder process exits and its byte-range lock is released.
-        let file = match open(&physical, false, GENERIC_WRITE, false) {
+        let file = match open_shared(&physical, false, GENERIC_WRITE, false, false) {
             Ok(file) => file,
-            Err(error) if absent(&error) => match open(&physical, false, GENERIC_WRITE, true) {
-                Ok(file) => {
-                    file.sync_all()
-                        .map_err(|error| io_error("flush new installation claim", path, error))?;
-                    parent.sync(path)?;
-                    file
+            Err(error) if absent(&error) => {
+                match open_shared(&physical, false, GENERIC_WRITE, true, false) {
+                    Ok(file) => {
+                        file.sync_all().map_err(|error| {
+                            io_error("flush new installation claim", path, error)
+                        })?;
+                        parent.sync(path)?;
+                        file
+                    }
+                    Err(error)
+                        if error
+                            .source
+                            .as_ref()
+                            .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
+                    {
+                        open_shared(&physical, false, GENERIC_WRITE, false, false)?
+                    }
+                    Err(error) => return Err(claim_error(error)),
                 }
-                Err(error)
-                    if error
-                        .source
-                        .as_ref()
-                        .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
-                {
-                    open(&physical, false, GENERIC_WRITE, false)?
-                }
-                Err(error) => return Err(claim_error(error)),
-            },
+            }
             Err(error) => return Err(claim_error(error)),
         };
         let identity = metadata(&file, path, false, false)?;
@@ -278,10 +290,13 @@ impl Pin {
         self.check()?;
         security::verify_no_foreign_writer(&self.file, &self.path)?;
         // SAFETY: initialized synchronous OVERLAPPED with offset zero, retained
-        // readable record handle, one-byte exclusive lock that fails immediately.
+        // readable record handle and one-byte exclusive lock that fails immediately.
         let mut overlap: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { zeroed() };
-        // SAFETY: retained record handle and writable initialized OVERLAPPED;
-        // this is a nonblocking exclusive lock on the fixed first byte.
+        // Lock outside all representable record content, leaving normal reads
+        // available while retaining the shared protocol's exclusive byte range.
+        overlap.Anonymous.Anonymous.Offset = u32::MAX - 1;
+        overlap.Anonymous.Anonymous.OffsetHigh = u32::MAX;
+        // SAFETY: retained file and initialized overlap identify the high-offset byte.
         if unsafe {
             LockFileEx(
                 self.file.as_raw_handle(),
@@ -328,7 +343,19 @@ impl Pin {
         }
         security::verify_owner(&current, &self.path)
     }
+    fn mutation_guard(&self) -> Result<File> {
+        self.check()?;
+        let guard = open_shared(&self.physical, false, 0, false, false)?;
+        if metadata(&guard, &self.path, false, false)? != self.identity {
+            return Err(changed(
+                "installation object changed before mutation custody",
+                &self.path,
+            ));
+        }
+        Ok(guard)
+    }
     pub(in crate::state_files) fn remove(self, expected: [u8; 32]) -> Result<()> {
+        let _guard = self.mutation_guard()?;
         self.check()?;
         verify(&self.file, &self.path, expected)?;
         self.check()?;
@@ -356,6 +383,7 @@ impl Pin {
         destination: &Path,
         expected: [u8; 32],
     ) -> Result<()> {
+        let _guard = self.mutation_guard()?;
         wide(destination)?;
         if destination.parent() != self.path.parent() || destination == self.path {
             return Err(unsafe_path(
@@ -408,6 +436,7 @@ impl Pin {
         }
     }
     pub(in crate::state_files) fn replace(self, expected: [u8; 32], bytes: &[u8]) -> Result<()> {
+        let _guard = self.mutation_guard()?;
         self.check()?;
         verify(&self.file, &self.path, expected)?;
         let random = random(&self.path)?;
@@ -551,7 +580,7 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
 
 #[path = "recovery_windows.rs"]
 mod recovery;
-pub(in crate::state_files) use recovery::{scan_recovery, scan_temporary};
+pub(in crate::state_files) use recovery::{list_names, scan_recovery, scan_temporary};
 
 pub(in crate::state_files) fn installation_claim_path() -> Result<PathBuf> {
     use std::os::windows::ffi::OsStringExt;
@@ -597,3 +626,7 @@ fn claim_error(
     }
     error
 }
+
+#[path = "source_windows.rs"]
+mod source;
+pub(in crate::state_files) use source::ReadPin;

@@ -9,7 +9,7 @@ use crate::{
     store_error::store_error,
 };
 use se_store::{AtomicBatch, DecisionKind, EventBody, Expected, InputText, Revision, Snapshot};
-use se_types::{DecisionId, IdempotencyKey, Result, SeError};
+use se_types::{DecisionId, EventId, IdempotencyKey, Result, SeError};
 use std::num::NonZeroU64;
 
 /// Owned continuation facts only; receipt construction must read the actual
@@ -34,7 +34,7 @@ fn expected<R: Snapshot>(
     id: &DecisionId,
     want: Option<u64>,
     cx: &mut Cx<'_, R>,
-) -> Result<Revision> {
+) -> Result<(Revision, EventId)> {
     let record = scope::require_present(
         cx.read.decision(id.clone()).map_err(|e| store_error(&e))?,
         &id.to_string(),
@@ -47,7 +47,7 @@ fn expected<R: Snapshot>(
     }
     let value = NonZeroU64::new(want.unwrap_or(record.revision.value.get()))
         .ok_or_else(|| SeError::invalid("expect", "positive entity revision"))?;
-    Ok(Revision { value })
+    Ok((Revision { value }, record.current.header.event))
 }
 fn batch<R: Snapshot>(
     kernel: &Kernel,
@@ -108,7 +108,7 @@ pub fn ratify<R: Snapshot>(
     admitted(cx)?;
     require_human_terminal("decision.ratify", cx.admission, terminal)?;
     let normalized = intent(&input)?;
-    let expected = Expected::Revision(expected(&input.decision_id, input.expect, cx)?);
+    let expected = Expected::Revision(expected(&input.decision_id, input.expect, cx)?.0);
     let body = EventBody::DecisionRatified {
         decision: input.decision_id,
         expected,
@@ -135,7 +135,7 @@ pub fn reject<R: Snapshot>(
     admitted(cx)?;
     require_human_terminal("decision.reject", cx.admission, terminal)?;
     let normalized = intent(&input)?;
-    let expected = Expected::Revision(expected(&input.decision_id, input.expect, cx)?);
+    let expected = Expected::Revision(expected(&input.decision_id, input.expect, cx)?.0);
     let body = EventBody::DecisionRejected {
         decision: input.decision_id,
         expected,
@@ -161,7 +161,7 @@ pub fn retract<R: Snapshot>(
     admitted(cx)?;
     require_human_terminal("decision.retract", cx.admission, terminal)?;
     let normalized = intent(&input)?;
-    let expected = Expected::Revision(expected(&input.decision_id, input.expect, cx)?);
+    let expected = Expected::Revision(expected(&input.decision_id, input.expect, cx)?.0);
     let body = EventBody::DecisionRetracted {
         decision: input.decision_id,
         expected,
@@ -187,8 +187,9 @@ pub fn supersede<R: Snapshot>(
     admitted(cx)?;
     require_human_terminal("decision.supersede", cx.admission, terminal)?;
     let normalized = intent(&input)?;
-    let prior_expected = expected(&input.decision_id, input.expect, cx)?;
-    let replacement_expected = expected(&input.replacement_id, input.replacement_expect, cx)?;
+    let prior_expected = expected(&input.decision_id, input.expect, cx)?.0;
+    let (replacement_expected, cause) =
+        expected(&input.replacement_id, input.replacement_expect, cx)?;
     let body = EventBody::DecisionSuperseded {
         prior: input.decision_id,
         replacement: input.replacement_id,
@@ -196,7 +197,7 @@ pub fn supersede<R: Snapshot>(
         replacement_expected,
         approval: kernel.facts()?.event.clone(),
     };
-    batch(
+    let (mut batch, then) = batch(
         kernel,
         "decision.supersede",
         "supersede",
@@ -204,5 +205,218 @@ pub fn supersede<R: Snapshot>(
         normalized,
         body,
         cx,
-    )
+    )?;
+    // Retain the exact immutable replacement revision consulted by this commit.
+    // Replay can read it directly after later transitions without a history scan.
+    batch.events[0].header.cause = Some(cause);
+    Ok((batch, then))
+}
+
+fn text(value: &se_store::StoredText, subject: &str) -> Result<String> {
+    match value {
+        se_store::StoredText::Present(value) => Ok(value.clone()),
+        _ => Err(scope::unreadable(
+            subject,
+            "original content is unavailable; no complete receipt can be reconstructed",
+        )),
+    }
+}
+fn row<R: Snapshot>(
+    id: &DecisionId,
+    latest: &se_store::StoredEvent,
+    cx: &mut Cx<'_, R>,
+) -> Result<super::DecisionRow> {
+    use super::{DecisionRow, DecisionState, DecisionStatement};
+    let record = scope::require_present(
+        cx.read
+            .decision(id.clone())
+            .map_err(|error| store_error(&error))?,
+        "receipt proposal",
+    )?;
+    let proposal = record.original.as_deref().unwrap_or(&record.current);
+    if proposal.header.scope != cx.admission.scope || latest.header.scope != cx.admission.scope {
+        return Err(scope::unreadable(
+            "decision receipt",
+            "proposal/transition scope differs",
+        ));
+    }
+    let EventBody::DecisionProposed {
+        decision,
+        key,
+        statement,
+        rationale,
+        prior,
+        ..
+    } = &proposal.body
+    else {
+        return Err(scope::unreadable(
+            "decision proposal",
+            "original event is not a proposal",
+        ));
+    };
+    if decision != id || latest.revision.value < proposal.revision.value {
+        return Err(scope::unreadable(
+            "decision receipt",
+            "proposal identity or transition revision differs",
+        ));
+    }
+    let (state, reason, replacement) = match &latest.body {
+        EventBody::DecisionProposed { decision, .. } if decision == id => {
+            (DecisionState::Pending, None, None)
+        }
+        EventBody::DecisionRatified { decision, .. } if decision == id => {
+            (DecisionState::Ratified, None, None)
+        }
+        EventBody::DecisionRejected {
+            decision, reason, ..
+        } if decision == id => (
+            DecisionState::Rejected,
+            Some(text(reason, "rejection reason")?),
+            None,
+        ),
+        EventBody::DecisionRetracted {
+            decision, reason, ..
+        } if decision == id => (
+            DecisionState::Retracted,
+            Some(text(reason, "retraction reason")?),
+            None,
+        ),
+        EventBody::DecisionSuperseded {
+            prior, replacement, ..
+        } if prior == id => (DecisionState::Superseded, None, Some(replacement.clone())),
+        _ => {
+            return Err(scope::unreadable(
+                "decision receipt",
+                "transition does not belong to the proposal",
+            ));
+        }
+    };
+    let statement = text(statement, "decision statement")?;
+    let decided = state != DecisionState::Pending;
+    Ok(DecisionRow {
+        id: id.clone(),
+        key: key.clone(),
+        state,
+        governing: state == DecisionState::Ratified,
+        revision: latest.revision.value.get(),
+        statement: DecisionStatement {
+            bytes: statement.len() as u64,
+            text: statement,
+            complete: true,
+            command: None,
+            argv: None,
+        },
+        rationale: rationale
+            .as_ref()
+            .map(|value| text(value, "decision rationale"))
+            .transpose()?,
+        proposed_by: super::receipt::actor_ref(cx.read, &proposal.header.actor)?,
+        proposed_at: super::receipt::timestamp(proposal.recorded_at_us)?,
+        decided_by: if decided {
+            Some(super::receipt::actor_ref(cx.read, &latest.header.actor)?)
+        } else {
+            None
+        },
+        decided_at: if decided {
+            Some(super::receipt::timestamp(latest.recorded_at_us)?)
+        } else {
+            None
+        },
+        reason,
+        supersedes: prior.clone(),
+        superseded_by: replacement,
+        event_id: latest.header.event.clone(),
+    })
+}
+pub fn committed<R: Snapshot>(
+    then: DecisionThen,
+    receipt: se_store::CommitReceipt,
+    cx: &mut Cx<'_, R>,
+) -> Result<super::DecisionReceipt> {
+    use super::{DecisionAction, ReceiptAuthority, ReceiptGuard};
+    if receipt.request_key.as_ref() != Some(&then.request) {
+        return Err(scope::unreadable(
+            "decision receipt",
+            "request identity differs",
+        ));
+    }
+    let event = super::receipt::committed_event(cx.read, &receipt)?;
+    if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
+        return Err(scope::unreadable(
+            "decision receipt",
+            "original scope/actor differs",
+        ));
+    }
+    let (action, id) = match &event.body {
+        EventBody::DecisionProposed { decision, .. } => (DecisionAction::Propose, decision),
+        EventBody::DecisionRatified { decision, .. } => (DecisionAction::Ratify, decision),
+        EventBody::DecisionRejected { decision, .. } => (DecisionAction::Reject, decision),
+        EventBody::DecisionRetracted { decision, .. } => (DecisionAction::Retract, decision),
+        EventBody::DecisionSuperseded { prior, .. } => (DecisionAction::Supersede, prior),
+        _ => {
+            return Err(scope::unreadable(
+                "decision receipt",
+                "primary event is not a decision operation",
+            ));
+        }
+    };
+    let actual_action = match action {
+        DecisionAction::Propose => "propose",
+        DecisionAction::Ratify => "ratify",
+        DecisionAction::Reject => "reject",
+        DecisionAction::Retract => "retract",
+        DecisionAction::Supersede => "supersede",
+    };
+    if actual_action != then.action {
+        return Err(scope::unreadable(
+            "decision receipt",
+            "operation action differs from its original event",
+        ));
+    }
+    let guarded = action != DecisionAction::Propose;
+    if guarded && !matches!(event.header.actor, se_store::Actor::Human(_)) {
+        return Err(scope::unreadable(
+            "decision approval receipt",
+            "transition was not committed by its owner",
+        ));
+    }
+    let original = row(id, &event, cx)?;
+    let (decision, replaced) = if let EventBody::DecisionSuperseded {
+        replacement,
+        replacement_expected,
+        ..
+    } = &event.body
+    {
+        let cause = event.header.cause.clone().ok_or_else(|| {
+            scope::unreadable(
+                "supersede receipt",
+                "immutable replacement revision reference is absent",
+            )
+        })?;
+        let replacement_event = scope::require_present(
+            cx.read.event(cause).map_err(|error| store_error(&error))?,
+            "superseding replacement revision",
+        )?;
+        if replacement_event.revision.value != replacement_expected.value
+            || !matches!(&replacement_event.body, EventBody::DecisionRatified { decision, .. } if decision == replacement)
+        {
+            return Err(scope::unreadable(
+                "supersede receipt",
+                "referenced replacement revision was not ratified",
+            ));
+        }
+        let mut replacement_row = row(replacement, &replacement_event, cx)?;
+        replacement_row.supersedes = Some(id.clone());
+        (replacement_row, Some(original))
+    } else {
+        (original, None)
+    };
+    Ok(super::DecisionReceipt {
+        commit: super::receipt::write_fields(&receipt, &event)?,
+        authority: ReceiptAuthority {
+            guard: guarded.then_some(ReceiptGuard::OwnerTerminalOutsideAgentTree),
+            limit: "mistake/drift guard; not proof against a determined agent using the same OS account".into(),
+        },
+        action, project: super::receipt::named_project(cx)?, decision, replaced,
+    })
 }

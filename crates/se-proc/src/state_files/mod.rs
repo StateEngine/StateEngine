@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(crate) mod effects;
+pub(crate) mod source;
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]

@@ -684,7 +684,7 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
 
 #[path = "recovery_unix.rs"]
 mod recovery;
-pub(in crate::state_files) use recovery::{scan_recovery, scan_temporary};
+pub(in crate::state_files) use recovery::{list_names, scan_recovery, scan_temporary};
 
 pub(in crate::state_files) fn installation_claim_path() -> Result<PathBuf> {
     use std::os::unix::ffi::OsStringExt;
@@ -750,3 +750,7 @@ fn claim_error(
     }
     error
 }
+
+#[path = "source_unix.rs"]
+mod source;
+pub(in crate::state_files) use source::ReadPin;

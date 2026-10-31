@@ -65,7 +65,10 @@ pub fn named_agent<R: Snapshot>(read: &mut R, agent: &AgentId) -> Result<Named<A
         name: actor.name,
     })
 }
-fn committed_event<R: Snapshot>(read: &mut R, receipt: &CommitReceipt) -> Result<StoredEvent> {
+pub(crate) fn committed_event<R: Snapshot>(
+    read: &mut R,
+    receipt: &CommitReceipt,
+) -> Result<StoredEvent> {
     let event = scope::require_present(
         read.event(receipt.primary_event.clone())
             .map_err(|e| store_error(&e))?,
@@ -84,6 +87,51 @@ fn key(receipt: &CommitReceipt) -> Result<IdempotencyKey> {
         .request_key
         .clone()
         .ok_or_else(|| scope::unreadable("commit receipt", "keyed operation has no request key"))
+}
+pub(crate) fn write_fields(receipt: &CommitReceipt, event: &StoredEvent) -> Result<WriteReceipt> {
+    if event.header.event != receipt.primary_event
+        || !receipt.events.contains(&receipt.primary_event)
+        || event.writer.kind() != receipt.writer.kind()
+        || event.durability != receipt.durability
+    {
+        return Err(scope::unreadable(
+            "write receipt",
+            "immutable primary event or writer differs from its actual completion",
+        ));
+    }
+    Ok(WriteReceipt {
+        state: commit_state(receipt),
+        event_id: receipt.primary_event.clone(),
+        recorded_at: timestamp(event.recorded_at_us)?,
+        idempotency_key: key(receipt)?,
+        writer: writer(receipt),
+    })
+}
+pub(crate) fn named_project<R: Snapshot>(
+    cx: &mut commit::Cx<'_, R>,
+) -> Result<Named<se_types::ProjectId>> {
+    let id = scope::project(cx.admission)?;
+    let record = scope::require_present(
+        cx.read
+            .project(id.clone())
+            .map_err(|error| store_error(&error))?,
+        "receipt project",
+    )?;
+    let name = match &record.current.body {
+        EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => {
+            name.clone()
+        }
+        _ => match record.original.as_deref().map(|event| &event.body) {
+            Some(EventBody::ProjectRegistered { name, .. }) => name.clone(),
+            _ => {
+                return Err(scope::unreadable(
+                    "receipt project",
+                    "named project registration is unavailable",
+                ));
+            }
+        },
+    };
+    Ok(Named { id, name })
 }
 pub fn message<R: Snapshot>(
     output: commit::MessageSendOutput,

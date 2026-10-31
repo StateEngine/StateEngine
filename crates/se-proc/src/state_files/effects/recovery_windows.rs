@@ -1,15 +1,19 @@
 //! Finite, held-parent directory enumeration. Reparse entries are names, not followed.
 use super::*;
+use crate::state_files::effects::InventoryKind;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 pub(in crate::state_files) fn scan_recovery(path: &Path) -> Result<Vec<PathBuf>> {
-    scan(path, false)
+    scan(path, InventoryKind::Recovery)
 }
 pub(in crate::state_files) fn scan_temporary(path: &Path) -> Result<Vec<PathBuf>> {
-    scan(path, true)
+    scan(path, InventoryKind::Temporary)
 }
-fn scan(path: &Path, temporary: bool) -> Result<Vec<PathBuf>> {
-    let parent = Parent::open(path)?;
+pub(in crate::state_files) fn list_names(path: &Path) -> Result<Vec<PathBuf>> {
+    scan(path, InventoryKind::Owned)
+}
+fn scan(path: &Path, kind: InventoryKind) -> Result<Vec<PathBuf>> {
+    let parent = Parent::open_with_access(path, false)?;
     let before = parent
         .file()?
         .metadata()
@@ -55,12 +59,7 @@ fn scan(path: &Path, temporary: bool) -> Result<Vec<PathBuf>> {
             .position(|unit| *unit == 0)
             .ok_or_else(|| unsafe_path("unterminated native recovery name", path))?;
         let name = std::ffi::OsString::from_wide(&entry.cFileName[..length]);
-        if if temporary {
-            name.to_string_lossy().starts_with(".se-profile-")
-                || name.to_string_lossy().starts_with(".se-publish-")
-        } else {
-            name.to_string_lossy().starts_with(".se-edit-backup-")
-        } {
+        if kind.includes(&name) {
             if found.len() == 256 {
                 return Err(unsafe_path("recovery inventory exceeds 256 siblings", path));
             }
@@ -75,7 +74,7 @@ fn scan(path: &Path, temporary: bool) -> Result<Vec<PathBuf>> {
             break;
         }
     }
-    let outside = Parent::open(path)?;
+    let outside = Parent::open_with_access(path, false)?;
     let after = outside
         .file()?
         .metadata()

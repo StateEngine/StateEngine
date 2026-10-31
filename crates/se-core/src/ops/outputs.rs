@@ -22,7 +22,8 @@ pub struct ReceiptWriteTimings {
     pub queue_ms: f64,
     pub transaction_ms: f64,
     pub commit_call_ms: f64,
-    pub checkpoint_ms: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint_ms: Option<f64>,
     pub durability: WriteDurability,
 }
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
@@ -33,18 +34,16 @@ pub enum WriteDurability {
 }
 impl ReceiptWriteTimings {
     pub fn validate(&self) -> se_types::Result<()> {
-        if [
-            self.queue_ms,
-            self.transaction_ms,
-            self.commit_call_ms,
-            self.checkpoint_ms,
-        ]
-        .iter()
-        .any(|value| !value.is_finite() || *value < 0.0)
+        if [self.queue_ms, self.transaction_ms, self.commit_call_ms]
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+            || self
+                .checkpoint_ms
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
         {
             return Err(se_types::SeError::invalid(
                 "write timings",
-                "four finite non-negative measured millisecond values",
+                "three finite non-negative measured millisecond values and an optional measured checkpoint",
             ));
         }
         Ok(())
@@ -54,7 +53,7 @@ impl ReceiptWriteTimings {
             queue_ms: timings.queue.as_secs_f64() * 1000.0,
             transaction_ms: timings.transaction.as_secs_f64() * 1000.0,
             commit_call_ms: timings.commit_sync.as_secs_f64() * 1000.0,
-            checkpoint_ms: timings.checkpoint.as_secs_f64() * 1000.0,
+            checkpoint_ms: timings.checkpoint.map(|value| value.as_secs_f64() * 1000.0),
             durability: match timings.durability {
                 se_store::CommitDurability::Full => WriteDurability::Full,
                 se_store::CommitDurability::Normal => WriteDurability::Normal,
@@ -63,11 +62,6 @@ impl ReceiptWriteTimings {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct Named<I> {
-    pub id: I,
-    pub name: String,
-}
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct NextStep {
     pub text: String,
@@ -418,24 +412,6 @@ pub struct StatusOutput {
     pub next: NextStep,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "mode", rename_all = "lowercase")]
-pub enum Writer {
-    Direct,
-    Host { host_generation: String },
-}
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum CommitState {
-    Committed,
-    Replayed,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-pub struct ActorRef {
-    pub kind: String,
-    pub id: String,
-    pub name: String,
-}
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct BodyDigest {
     pub bytes: u64,
     pub sha256: String,
@@ -611,3 +587,7 @@ pub struct LaunchOutput {
     pub permission_profile: ResolvedProfile,
     pub conversation_id: String,
 }
+
+pub use se_types::{ActorRef, CommitState, Named, Writer};
+mod full_receipts;
+pub use full_receipts::*;

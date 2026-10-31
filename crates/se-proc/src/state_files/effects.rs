@@ -249,3 +249,24 @@ impl NativeInstallationClaim {
         install_hold::run(self._pin.file(), command, args)
     }
 }
+
+#[derive(Clone, Copy)]
+pub(in crate::state_files) enum InventoryKind {
+    Recovery,
+    Temporary,
+    Owned,
+}
+impl InventoryKind {
+    pub(in crate::state_files) fn includes(self, name: &std::ffi::OsStr) -> bool {
+        let bytes = name.as_encoded_bytes();
+        match self {
+            Self::Recovery => bytes.starts_with(b".se-edit-backup-"),
+            Self::Temporary => {
+                bytes.starts_with(b".se-profile-") || bytes.starts_with(b".se-publish-")
+            }
+            Self::Owned => bytes != b"." && bytes != b"..",
+        }
+    }
+}
+#[path = "effects/listing.rs"]
+mod listing;
