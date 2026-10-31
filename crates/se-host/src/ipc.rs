@@ -92,6 +92,16 @@ pub struct IpcEnvelope {
     pub authority: Option<PresentedAuthority>,
     pub request: IpcRequest,
 }
+pub struct IpcResponse {
+    pub version: ApiVersion,
+    pub request_id: u64,
+    pub generation: Generation,
+    pub result: IpcResult,
+}
+pub enum IpcResult {
+    Output(OperationOutput),
+    Error(se_types::ErrorEnvelope),
+}
 /// Concrete common adapters; authorization/dispatch signatures remain the
 /// canonical core/linked-API contract, not parallel public service traits.
 pub struct AdmissionAdapter {
