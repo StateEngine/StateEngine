@@ -6,6 +6,8 @@
 mod cold_capture;
 #[path = "../src/config.rs"]
 mod config;
+#[path = "support/host_continuation.rs"]
+mod continuation_judge;
 #[path = "support/host_executor.rs"]
 mod executor_judge;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
@@ -158,7 +160,7 @@ fn listener_message_working_and_hook() -> Check {
                     credential()?,
                     se_core::ops::AnyOp::WorkingStateSet(se_core::ops::WorkingStateSet {
                         text: "fresh committed state".into(),
-                        expect: se_core::commit::ExpectedRevision::Revision(1),
+                        expect: se_core::commit::ExpectedRevision::Revision(2),
                         idempotency_key: key("listener-working")?,
                         owner_agent: None,
                     }),
@@ -167,8 +169,8 @@ fn listener_message_working_and_hook() -> Check {
                     &options(),
                 )?;
                 let working = serde_json::to_value(working)?;
-                assert_eq!(working["revision"], 2);
-                assert_eq!(working["current_revision"], 2);
+                assert_eq!(working["revision"], 3);
+                assert_eq!(working["current_revision"], 3);
                 let hook = || se_host::ClaudeHookInput {
                     kind: se_host::ClaudeHookKind::Stop,
                     conversation: client_conversation.clone(),

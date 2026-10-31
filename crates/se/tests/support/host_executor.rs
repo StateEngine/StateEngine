@@ -115,6 +115,19 @@ pub async fn uncertain_write(
         matches!(state.current.body,EventBody::WorkingStateSet {text:StoredText::Present(ref text),..} if text=="accepted before cancellation")
     );
     read.close()?;
+    crate::continuation_judge::check(f, runtime, || {
+        let mut routed = call()?;
+        let se_host::HostedInput::Operation(se_core::ops::AnyOp::WorkingStateSet(input)) =
+            &mut routed.admitted.input
+        else {
+            return Err("expected the actual working-state operation".into());
+        };
+        input.text = "accepted before continuation cancellation".into();
+        input.expect = se_core::commit::ExpectedRevision::Revision(1);
+        input.idempotency_key = key("continuation-working")?;
+        Ok(routed)
+    })
+    .await?;
     println!(
         "PASS uncertain_write: cancelled durable SQLite write retained its original key and replay resolved one effect with a fresh continuation snapshot"
     );

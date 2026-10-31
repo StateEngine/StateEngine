@@ -91,7 +91,8 @@ pub(super) fn receive(guard: se_proc::RuntimeBootstrap) -> Result<u8> {
                 limits: se_host::HostLimits {
                     sessions: positive(256)?,
                     active_connections: positive(64)?,
-                    preauth_connections: positive(8)?,
+                    // Admit the supported 20-client burst with bounded headroom.
+                    preauth_connections: positive(32)?,
                     parked_mail_waits: positive(64)?,
                     resident_queue_bytes: positive(1024 * 1024)?,
                     session_notice_ids: positive(128)?,
