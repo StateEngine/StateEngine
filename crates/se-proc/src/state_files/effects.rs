@@ -64,6 +64,12 @@ impl OwnedFile {
     pub fn remove(self, expected: [u8; 32]) -> Result<()> {
         self.0.remove(expected)
     }
+    /// Restore a proved recovery object to an absent exact target in the same
+    /// directory. Native no-replace publication preserves security/identity;
+    /// callers must prove plan association independently of its filename.
+    pub fn restore_to(self, destination: &Path, expected: [u8; 32]) -> Result<()> {
+        self.0.restore_to(destination, expected)
+    }
     /// Atomic replacement, preserving the original file's permissions/security.
     /// The old path and digest are rechecked after staging and before publication.
     /// This is a mistake/drift check, not isolation from a hostile same-user editor.
@@ -122,4 +128,11 @@ pub(super) fn verify(file: &File, path: &Path, expected: [u8; 32]) -> Result<()>
         return Err(changed("owned file digest changed before mutation", path));
     }
     Ok(())
+}
+
+/// Inventory at most 4096 entries and 256 recovery siblings without following
+/// a leaf. Missing directories refuse; an empty complete scan returns [].
+/// The prefix grants no removal/restoration authority.
+pub fn scan_recovery(directory: &Path) -> Result<Vec<std::path::PathBuf>> {
+    os::scan_recovery(directory)
 }

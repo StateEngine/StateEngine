@@ -275,6 +275,62 @@ impl Pin {
             )),
         }
     }
+    pub(in crate::state_files) fn restore_to(
+        self,
+        destination: &Path,
+        expected: [u8; 32],
+    ) -> Result<()> {
+        wide(destination)?;
+        if destination.parent() != self.path.parent() || destination == self.path {
+            return Err(unsafe_path(
+                "recovery target must be a distinct exact name in the held parent",
+                destination,
+            ));
+        }
+        let target = self.parent.path.join(
+            destination
+                .file_name()
+                .ok_or_else(|| unsafe_path("recovery target leaf missing", destination))?,
+        );
+        self.check()?;
+        verify(&self.file, &self.path, expected)?;
+        self.check()?;
+        // SAFETY: two exact normalized names beneath the pinned physical parent;
+        // no REPLACE_EXISTING or copy fallback. The held source identity survives.
+        if unsafe {
+            MoveFileExW(
+                wide(&self.physical)?.as_ptr(),
+                wide(&target)?.as_ptr(),
+                MOVEFILE_WRITE_THROUGH,
+            )
+        } == 0
+        {
+            return Err(last(
+                "restore exact recovery object without replacement",
+                destination,
+            ));
+        }
+        self.parent.sync(destination)?;
+        self.check_parent()?;
+        let outside = open(&target, false, 0, false)?;
+        security::verify_owner(&outside, destination)?;
+        if metadata(&outside, destination, false, false)? != self.identity
+            || digest(&outside, destination)? != expected
+        {
+            return Err(changed(
+                "restored recovery object changed on outside readback",
+                destination,
+            ));
+        }
+        match open(&self.physical, false, 0, false) {
+            Err(error) if absent(&error) => Ok(()),
+            Err(error) => Err(error),
+            Ok(_) => Err(changed(
+                "recovery source pathname reappeared after restoration; preserved",
+                &self.path,
+            )),
+        }
+    }
     pub(in crate::state_files) fn replace(self, expected: [u8; 32], bytes: &[u8]) -> Result<()> {
         self.check()?;
         verify(&self.file, &self.path, expected)?;
@@ -416,3 +472,7 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
         Ok(_) => Err(changed("directory remained after removal", path)),
     }
 }
+
+#[path = "recovery_windows.rs"]
+mod recovery;
+pub(in crate::state_files) use recovery::scan_recovery;

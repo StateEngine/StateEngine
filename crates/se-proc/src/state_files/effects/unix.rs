@@ -354,6 +354,50 @@ impl Pin {
             .sync_all()
             .map_err(|e| io_error("sync raced original recovery parent", path, e))
     }
+    pub(in crate::state_files) fn restore_to(
+        self,
+        destination: &Path,
+        expected: [u8; 32],
+    ) -> Result<()> {
+        components(destination)?;
+        if destination.parent() != self.path.parent() || destination == self.path {
+            return Err(unsafe_path(
+                "recovery target must be a distinct exact name in the held parent",
+                destination,
+            ));
+        }
+        let target = name(
+            destination
+                .file_name()
+                .ok_or_else(|| unsafe_path("recovery target leaf missing", destination))?,
+            destination,
+        )?;
+        self.check()?;
+        verify(&self.file, &self.path, expected)?;
+        self.check()?;
+        move_no_replace(&self.parent, &self.name, &target, destination)?;
+        self.parent
+            .sync_all()
+            .map_err(|e| io_error("sync recovery restoration", destination, e))?;
+        self.check_parent()?;
+        let outside = leaf(&self.parent, &target, destination, false)?;
+        if id(&outside, destination, false, true)? != self.identity
+            || digest(&outside, destination)? != expected
+        {
+            return Err(changed(
+                "restored recovery object changed on outside readback",
+                destination,
+            ));
+        }
+        match leaf(&self.parent, &self.name, &self.path, false) {
+            Err(error) if absent(&error) => Ok(()),
+            Err(error) => Err(error),
+            Ok(_) => Err(changed(
+                "recovery source pathname reappeared after restoration; preserved",
+                &self.path,
+            )),
+        }
+    }
     pub(in crate::state_files) fn replace(self, expected: [u8; 32], bytes: &[u8]) -> Result<()> {
         self.check()?;
         verify(&self.file, &self.path, expected)?;
@@ -557,3 +601,7 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
         Ok(_) => Err(changed("directory remained after removal", path)),
     }
 }
+
+#[path = "recovery_unix.rs"]
+mod recovery;
+pub(in crate::state_files) use recovery::scan_recovery;
