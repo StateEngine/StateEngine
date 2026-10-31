@@ -120,6 +120,9 @@ cleanup() {
     set +e
     rollback_complete=1
     rollback_profile=''
+    if [ -n "$temp_profile" ]; then
+        if rm -f -- "$temp_profile"; then temp_profile=''; else rollback_complete=0; fi
+    fi
     if [ -n "$temp_payload" ] && [ "$payload_destination" -ef "$temp_payload" ]; then
         case "$payload_kind" in binary) published_binary=1 ;; fish) published_fish=1 ;; esac
     fi
@@ -147,6 +150,10 @@ cleanup() {
                 else rm -- "$profile" || rollback_complete=0; fi
             elif [ -n "$current" ] && [ "$current" = "$prior" ]; then :
             elif [ -e "$profile" ] || [ -L "$profile" ]; then rollback_complete=0; fi
+            if [ -n "$rollback_profile" ]; then
+                if rm -f -- "$rollback_profile"; then rollback_profile=''
+                else rollback_complete=0; break; fi
+            fi
         done
         if [ "$published_fish" -eq 1 ]; then
             if [ ! -L "$fish_file" ] && cmp -s -- "$fish_file" "$stage/fish-config"; then rm -- "$fish_file" || rollback_complete=0
