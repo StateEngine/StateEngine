@@ -297,14 +297,23 @@ pub struct ConfigKeyMeta {
     pub agent_record: bool,
 }
 pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
+    if let Some((name, field)) = key
+        .strip_prefix("agent.")
+        .and_then(|key| key.rsplit_once('.'))
+        && !name.is_empty()
+        && matches!(field, "model" | "profile" | "can-create")
+    {
+        return Ok(ConfigKeyMeta {
+            human_only: field != "model",
+            agent_record: true,
+        });
+    }
     let parts: Vec<_> = key.split('.').collect();
     let (human_only, agent_record) = match parts.as_slice() {
         ["default_project"] | ["launch", "provider" | "terminal"] | ["atlas", "enabled"] => (false, false),
         ["runtime", "listen_port"] | ["capture", "enabled"] => (true, false),
         ["providers", "claude" | "codex", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
         ["profiles", name, "sandbox" | "network" | "approval" | "bypass"] if !name.is_empty() => (true, false),
-        ["agent", name, "profile" | "model"] if !name.is_empty() => (false, true),
-        ["agent", name, "can-create"] if !name.is_empty() => (true, true),
         _ => return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField { op: "config".into(), field: key.into(), next_step: "Use se config list for supported file keys; agent fields are profile, model and can-create.".into() }))),
     };
     Ok(ConfigKeyMeta {

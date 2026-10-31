@@ -54,5 +54,8 @@ RuntimeUp => RuntimeUp, RuntimeStart;
 RuntimeDown => RuntimeDown, RuntimeStop;
 Uninstall => Uninstall, UninstallOutput;
 AgentCreate => AgentCreate, AgentReceipt;
+AgentShow => AgentShow, AgentStatusOutput;
+ConfigGet => ConfigGet, ConfigValueOutput;
+ConfigSet => ConfigSet, AgentConfigReceipt;
 Decision => DecisionPropose, DecisionReceipt;
 }

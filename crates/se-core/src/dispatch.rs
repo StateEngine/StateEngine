@@ -292,6 +292,21 @@ impl Kernel {
         op.validate()?;
         crate::admission::authorize(op.meta(), cx.admission, terminal)?;
         Ok(match op {
+            AnyOp::AgentShow(input) => {
+                OpStep::Complete(crate::ops::agent_status::show(input, cx)?.into())
+            }
+            AnyOp::ConfigGet(input) => {
+                OpStep::Complete(crate::ops::agent_config::get(input, cx)?.into())
+            }
+            AnyOp::ConfigSet(input) => {
+                let configuration=self.configuration.as_ref().ok_or_else(||scope::unreadable("saved agent configuration","adapter-resolved ConfigFile must be bound using Kernel::with_configuration"))?;
+                let (batch, then) =
+                    crate::ops::agent_config::set(self, input, configuration, cx, terminal)?;
+                OpStep::Commit {
+                    batch,
+                    then: Then::AgentConfig(then),
+                }
+            }
             AnyOp::AgentCreate(input) => {
                 let configuration = self.configuration.as_ref().ok_or_else(|| {
                     SeError::new(se_types::Detail::Internal(se_types::details::Internal {
@@ -396,6 +411,9 @@ impl Kernel {
     ) -> Result<crate::ops::AnyOutput> {
         use crate::ports::Then;
         match then {
+            Then::AgentConfig(then) => {
+                Ok(crate::ops::agent_config_receipt::committed(then, receipt, cx)?.into())
+            }
             Then::AgentCreate(then) => Ok(crate::ops::agent::committed(then, receipt, cx)?.into()),
             Then::Decision(then) => Ok(crate::ops::decision::committed(then, receipt, cx)?.into()),
             Then::Capture(then) => Ok(crate::ops::hook::committed(then, receipt, cx)?.into()),

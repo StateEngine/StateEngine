@@ -1632,7 +1632,7 @@ governs that separate branch.
 | `$.value` | JSON value | yes | committed setting read back with its native type; `.can-create` is boolean, `.profile` is a string and `.model` is string or null |
 | `$.revision` | int | yes | entity revision committed by this request |
 | `$.current_revision` | int | yes | fresh readback revision; may be later on replay and never replaces the original committed revision |
-| `$.authority.guard` | `"owner-terminal-outside-agent-tree"` \| null | yes | established human-presence guard for `.can-create`; null when no human-presence guard was required |
+| `$.authority.guard` | `"owner-terminal-outside-agent-tree"` \| null | yes | established human-presence guard for `.profile` permission selection and `.can-create`; null for the ordinary `.model` update |
 | `$.authority.limit` | string | yes | the same mistake/drift-bound disclosure as A.11 |
 
 Agent metadata changes are FULL store mutations. A judge requires the exact

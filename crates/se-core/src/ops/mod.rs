@@ -2,6 +2,9 @@
 //! production operations here; no placeholder handlers or phantom tools are exposed.
 pub mod administration;
 pub mod agent;
+pub mod agent_config;
+pub mod agent_config_receipt;
+pub mod agent_status;
 mod cli;
 pub mod decision;
 pub mod hook;
@@ -111,6 +114,9 @@ ops! {
     RuntimeDown => RuntimeDown, RuntimeStop, ("runtime.down",leaf(&["down"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,None,"se.runtime-stop",RuntimeStop,&["J3"]);
     Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal requires the owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);
     AgentCreate => AgentCreate, AgentReceipt, ("agent.create",leaf(&["agent","add"]),tool("stateengine_agent_create","Create an agent","Create a durable agent identity and safe saved profile without launching a process; sessions require their current create grant."),Either,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["E3","J2","J4"]);
+    AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);
+    ConfigGet => ConfigGet, ConfigValueOutput, ("config.get",leaf(&["config","get"]),no_mcp("Saved agent settings are inspected by the owner CLI."),Owner,false,Never,Read,Project,None,"se.config-value",ConfigValue,&["E3"]);
+    ConfigSet => ConfigSet, AgentConfigReceipt, ("config.set",leaf(&["config","set"]),no_mcp("Saved agent metadata changes are owner CLI operations."),Owner,false,ConfigKey,Write,Project,HostForWrites,"se.config-receipt",ConfigReceipt,&["E3"]);
     DecisionPropose => DecisionPropose, DecisionReceipt, ("decision.propose",leaf(&["decide"]),tool("stateengine_decision_propose","Propose a decision","Save a proposal for the owner; a proposal does not ratify itself or become governing."),Either,false,Never,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J3","J4"]);
     DecisionRatify => DecisionRatify, DecisionReceipt, ("decision.ratify",leaf(&["decision","ratify"]),no_mcp("Only an independently verified owner terminal can ratify a proposal."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
     DecisionReject => DecisionReject, DecisionReceipt, ("decision.reject",leaf(&["decision","reject"]),no_mcp("Only an independently verified owner terminal can reject a proposal."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
@@ -127,6 +133,7 @@ impl AnyOp {
             Self::RuntimeDown(v) => Some(&v.idempotency_key),
             Self::Uninstall(v) => Some(&v.idempotency_key),
             Self::AgentCreate(v) => Some(&v.idempotency_key),
+            Self::ConfigSet(v) => Some(&v.idempotency_key),
             Self::DecisionPropose(v) => Some(&v.idempotency_key),
             Self::DecisionRatify(v) => Some(&v.idempotency_key),
             Self::DecisionReject(v) => Some(&v.idempotency_key),
@@ -166,6 +173,8 @@ impl AnyOutput {
             Self::RuntimeDown(v) if !v.value.complete => 2,
             Self::RuntimeUp(v) if v.value.state == "pending" => 2,
             Self::WorkingStateGet(v) => v.value.value.exit_code(),
+            Self::ConfigGet(v) => v.value.value.exit_code(),
+            Self::AgentShow(v) => v.value.agent.exit_code(),
             Self::ProjectStatus(v) => {
                 let project = v.value.project.exit_code();
                 if project != 0 {

@@ -39,7 +39,7 @@ impl CommonArgs {
                 status_all: flag(m, "all"),
                 ..CliSelections::default()
             },
-            "working_state.get" | "working_state.set" => CliSelections {
+            "working_state.get" | "working_state.set" | "agent.show" => CliSelections {
                 agent: text(m, "agent"),
                 ..CliSelections::default()
             },
@@ -202,6 +202,14 @@ fn input_command(name: &str, c: Command) -> Command {
                     .default_value("inbox"),
             ),
         "working_state.get" => c.arg(value("agent")),
+        "agent.show" => c.arg(positional("agent", 1, true)),
+        "config.get" => c
+            .arg(positional("setting_key", 1, true))
+            .arg(toggle("origin")),
+        "config.set" => {
+            c.arg(positional("setting_key", 1, true))
+                .arg(positional("setting_value", 2, true))
+        }
         "agent.create" => c
             .arg(positional("name", 1, true))
             .arg(value("provider").value_parser(["claude", "codex"]))
@@ -317,6 +325,18 @@ pub fn from_matches_with_key(
     };
     let op =
         match meta.name {
+            "agent.show" => AnyOp::AgentShow(AgentShow {
+                target_agent_id: None,
+            }),
+            "config.get" => AnyOp::ConfigGet(ConfigGet {
+                key: required(m, "setting_key")?,
+                origin: flag(m, "origin"),
+            }),
+            "config.set" => AnyOp::ConfigSet(ConfigSet {
+                key: required(m, "setting_key")?,
+                value: required(m, "setting_value")?,
+                idempotency_key: key()?,
+            }),
             "meta.version" => AnyOp::MetaVersion(MetaVersion {}),
             "meta.help" => AnyOp::MetaHelp(MetaHelp {
                 path: if flag(m, "help") {
@@ -546,7 +566,10 @@ impl CliSelections {
             }
         }
         if let Some(selector) = &self.agent {
-            if !matches!(op, AnyOp::WorkingStateGet(_) | AnyOp::WorkingStateSet(_)) {
+            if !matches!(
+                op,
+                AnyOp::WorkingStateGet(_) | AnyOp::WorkingStateSet(_) | AnyOp::AgentShow(_)
+            ) {
                 return Err(unknown_flag(
                     "--agent",
                     op.meta().name,
@@ -559,6 +582,7 @@ impl CliSelections {
             };
             crate::scope::working_agent(cx.admission, Some(&agent), op.meta().name)?;
             match op {
+                AnyOp::AgentShow(input) => input.target_agent_id = Some(agent),
                 AnyOp::WorkingStateGet(input) => input.owner_agent = Some(agent),
                 AnyOp::WorkingStateSet(input) => input.owner_agent = Some(agent),
                 _ => (),
