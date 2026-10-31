@@ -117,7 +117,10 @@ pub fn execute(
                         );
                         close_read(result, read.close())
                     })
-                    .await?;
+                    // A durable receipt has not yet reached the caller. Any
+                    // continuation failure still needs its original retry identity.
+                    .await
+                    .map_err(|error| identity.wait_error(error))?;
                 Ok(ExecutedCall {
                     output,
                     write_timings,
