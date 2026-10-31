@@ -1,0 +1,13 @@
+{
+  "schema": "se.release-inputs/v1",
+  "variant": "standalone",
+  "package": "se",
+  "default_features": false,
+  "features": [],
+  "targets": ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
+  "trust": "unsigned",
+  "api_schema_sources": [
+    "docs/design/10-types-and-host-api.md",
+    "docs/design/50-surface-and-errors.md"
+  ]
+}
