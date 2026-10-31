@@ -301,6 +301,7 @@ pub fn from_matches_with_key(
                 idempotency_key: key()?,
             }),
             "message.list" => AnyOp::MessageList(MessageList {
+                cli_list: true,
                 view: if flag(m, "all") {
                     MessageView::All
                 } else {

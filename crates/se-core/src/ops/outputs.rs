@@ -166,9 +166,26 @@ pub struct FileEffect {
     pub witness: Witness,
 }
 #[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DirectoryOutcome {
+    Removed,
+    AlreadyAbsent,
+    NotEmptyPreserved,
+    Unreadable,
+    Unsafe,
+    Pending,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct DirectoryEffect {
+    pub path: String,
+    pub outcome: DirectoryOutcome,
+    pub witness: Witness,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct IntegrationEffect {
     pub path: String,
     pub entry: String,
+    #[serde(rename = "outcome")]
     pub action: FileOutcome,
     pub witness: Witness,
 }
@@ -359,6 +376,7 @@ pub struct MessageOutput {
 pub struct WorkingStateValue {
     pub text: String,
     pub revision: u64,
+    #[serde(rename = "updated_at")]
     pub recorded_at: String,
 }
 #[derive(Clone, Debug, Serialize, JsonSchema)]
@@ -380,19 +398,50 @@ pub struct WorkingStateReceipt {
 pub struct MessageBody {
     pub text: String,
     pub complete: bool,
+    pub bytes: u64,
+    pub command: Option<String>,
+    pub argv: Option<Vec<String>>,
 }
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct MessageRow {
     pub id: MessageId,
+    pub event_id: EventId,
     pub from: ActorRef,
     pub to: ActorRef,
     pub kind: MessageKind,
-    pub at: String,
-    pub disposition: String,
+    pub sent_at: String,
+    pub reply_to: Option<MessageId>,
+    pub refs: Vec<EventId>,
+    pub delivery: Delivery,
+    pub disposition: Delivery,
     pub body: MessageBody,
+    pub unreadable: Option<UnreadableRow>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct UnreadableRow {
+    pub reason: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct MessageFilter {
+    pub to: Option<ActorRef>,
+    pub from: Option<ActorRef>,
+    pub kind: Option<MessageKind>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct MessagePageView {
+    pub op: String,
+    pub recipient: Option<ActorRef>,
+    pub disposition: String,
+    pub r#box: String,
+    pub filter: MessageFilter,
+    pub inspection: bool,
+    pub full: bool,
+    pub scope: String,
 }
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct MessagePage {
+    pub view: MessagePageView,
+    pub consistency: String,
     #[serde(flatten)]
     pub page: Page<MessageRow>,
     pub unread_total: Option<u64>,
@@ -434,6 +483,7 @@ pub struct UninstallOutput {
     pub idempotency_key: IdempotencyKey,
     pub complete: bool,
     pub install_files: Vec<FileEffect>,
+    pub directories: Vec<DirectoryEffect>,
     pub integrations: Vec<IntegrationEffect>,
     pub stops: Vec<StopFact>,
     pub revocations: Vec<RevocationEffect>,

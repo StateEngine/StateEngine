@@ -1,5 +1,4 @@
-//! Compile-only synchronous commit bridge for the first two write operations.
-//! No planner, writer, transaction engine, runtime stub or default body is implemented.
+//! Synchronous commit bridge for the first two write operations.
 //! AtomicBatch and Snapshot belong to se-store; se-types never depends on se-store.
 use se_store::{Admission, AtomicBatch, CommitReceipt, Snapshot};
 use se_types::{AgentId, IdempotencyKey, MessageId, Result};
@@ -80,12 +79,11 @@ pub struct WorkingStateSet {
 /// Constructed by the future kernel planner from the admitted request and allocated IDs.
 /// The original receipt resolves replay; allocated IDs never enter its semantic fingerprint.
 pub struct MessageSendThen {
-    _request: IdempotencyKey,
-    _message: MessageId,
+    pub(crate) request: IdempotencyKey,
 }
 pub struct WorkingStateSetThen {
-    _request: IdempotencyKey,
-    _agent: AgentId,
+    pub(crate) request: IdempotencyKey,
+    pub(crate) agent: AgentId,
 }
 
 /// Store CommitReceipt is the only writer/event/deduplication source.

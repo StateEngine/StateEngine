@@ -3,8 +3,10 @@
 mod cli;
 pub mod inputs;
 pub mod installation;
+pub mod message;
 mod meta;
 pub mod outputs;
+pub mod receipt;
 pub use crate::commit::{MessageSend, WorkingStateSet};
 use crate::registry::*;
 pub use cli::{CommonArgs, cli_command, from_matches, from_matches_with_key, selected_meta};
@@ -33,8 +35,9 @@ impl<T> Envelope<T> {
 macro_rules! ops {
     ($( $variant:ident => $input:ty, $output:ty,
         ($name:literal, $cli:expr, $mcp:expr, $auth:ident, $anonymous:literal, $human:ident, $effect:ident, $scope:ident, $runtime:ident, $family:literal, $render:ident, $journeys:expr); )+) => {
-        #[derive(Clone, Debug)]
-        pub enum AnyOp { $( $variant($input), )+ }
+        #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+        #[serde(tag="op",content="input",deny_unknown_fields)]
+        pub enum AnyOp { $( #[serde(rename=$name)] $variant($input), )+ }
         #[derive(Clone, Debug, JsonSchema)]
         #[serde(untagged)]
         pub enum AnyOutput { $( $variant(Box<Envelope<$output>>), )+ }
@@ -131,7 +134,46 @@ impl AnyOutput {
         match self {
             Self::Uninstall(v) if !v.value.complete => 2,
             Self::RuntimeDown(v) if !v.value.complete => 2,
-            Self::MessageList(v) if !v.value.page.window().complete() => 2,
+            Self::RuntimeUp(v) if v.value.state == "pending" => 2,
+            Self::WorkingStateGet(v) => v.value.value.exit_code(),
+            Self::ProjectStatus(v) => {
+                let project = v.value.project.exit_code();
+                if project != 0 {
+                    return project;
+                }
+                if matches!(v.value.setup.state, SetupState::Unreadable) {
+                    return 3;
+                }
+                v.value
+                    .agents
+                    .as_ref()
+                    .map(|page| page.window().exit_code(false))
+                    .unwrap_or(0)
+                    .max(
+                        v.value
+                            .projects
+                            .as_ref()
+                            .map(|page| page.window().exit_code(false))
+                            .unwrap_or(0),
+                    )
+            }
+            Self::MessageList(v) => {
+                let page = &v.value.page;
+                let unread = page
+                    .items()
+                    .iter()
+                    .filter(|row| row.disposition.state == "unread")
+                    .count() as u64;
+                if page.items().iter().any(|row| {
+                    row.unreadable.is_some() || (v.value.view.full && !row.body.complete)
+                }) || (v.value.view.op == "inbox"
+                    && v.value.unread_total.is_none_or(|total| total > unread))
+                {
+                    2
+                } else {
+                    page.window().exit_code(false)
+                }
+            }
             _ => 0,
         }
     }

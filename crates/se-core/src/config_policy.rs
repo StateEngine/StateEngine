@@ -268,7 +268,14 @@ impl ConfigFile {
             });
         Ok(ResolvedProfile {
             name: name.into(),
-            sandbox: profile.sandbox,
+            sandbox: if profile.bypass {
+                EffectiveSandbox::Bypass
+            } else {
+                match profile.sandbox {
+                    Sandbox::ReadOnly => EffectiveSandbox::ReadOnly,
+                    Sandbox::WorkspaceWrite => EffectiveSandbox::WorkspaceWrite,
+                }
+            },
             approval,
             network: profile.network,
             bypass: profile.bypass,
@@ -278,10 +285,17 @@ impl ConfigFile {
 #[derive(Clone, Debug, Serialize, JsonSchema)]
 pub struct ResolvedProfile {
     pub name: String,
-    pub sandbox: Sandbox,
+    pub sandbox: EffectiveSandbox,
     pub approval: Approval,
     pub network: bool,
     pub bypass: bool,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum EffectiveSandbox {
+    ReadOnly,
+    WorkspaceWrite,
+    Bypass,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ConfigKeyMeta {

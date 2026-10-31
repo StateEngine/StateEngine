@@ -102,6 +102,9 @@ pub enum MessageBox {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MessageList {
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub cli_list: bool,
     #[serde(default)]
     pub view: MessageView,
     #[serde(default, rename = "box")]
@@ -199,7 +202,8 @@ impl Validate for MessageSend {
             return Err(SeError::invalid("refs", "at most 20 event ids"));
         }
         for reference in &self.refs {
-            se_types::EventId::from_legacy(reference.clone())?;
+            // Historical custom spellings need the admitted snapshot dictionary.
+            bounded("reference", reference, 512, false)?;
         }
         Ok(())
     }
