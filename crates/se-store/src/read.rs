@@ -33,6 +33,7 @@ pub struct SqliteSnapshot {
     pub(crate) db: Connection,
     info: StoreInfo,
     scope: ReadScope,
+    path: std::path::PathBuf,
     slots: Arc<AtomicUsize>,
     _local: PhantomData<Rc<()>>,
 }
@@ -52,8 +53,8 @@ impl SqliteSnapshot {
         }
         let result = (|| {
             let db = connection::connect(&reader.path, false, reader.timeout)?;
-            db.execute_batch("BEGIN").map_err(sql)?;
-            let info = connection::info(&db)?;
+            connection::begin_snapshot(&db, &reader.path)?;
+            let info = connection::info_at(&db, &reader.path)?;
             if info.state != StoreState::Ready {
                 return Err(fail(StoreErrorCode::NotReady, "store is in maintenance"));
             }
@@ -61,6 +62,7 @@ impl SqliteSnapshot {
                 db,
                 info,
                 scope,
+                path: reader.path.clone(),
                 slots: reader.slots.clone(),
                 _local: PhantomData,
             })
@@ -69,6 +71,16 @@ impl SqliteSnapshot {
             reader.slots.fetch_sub(1, Ordering::AcqRel);
         }
         result
+    }
+    fn read_sql(&self, error: rusqlite::Error) -> Box<StoreError> {
+        let interrupted =
+            error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted);
+        let mut mapped = sql(error);
+        if interrupted {
+            mapped.code = StoreErrorCode::ReadIncomplete;
+            mapped.cause = "SQLite read deadline/step budget exhausted".into();
+        }
+        context(mapped, &self.path, StoreIoStage::ReadSnapshot)
     }
     fn event_seq(&self, id: &EventId) -> StoreResult<Option<i64>> {
         let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
@@ -81,15 +93,45 @@ impl SqliteSnapshot {
                 false,
             )?),
         };
-        self.db
+        let row: Option<(i64, Option<Vec<u8>>)> = self
+            .db
             .query_row(
-                "SELECT seq FROM events WHERE event_id=? AND project_id IS ?",
-                crate::sql_value::sql_params![key, p],
-                |r| crate::sql_value::value(r, 0),
+                "SELECT seq,project_id FROM events WHERE event_id=?",
+                [key],
+                |r| {
+                    Ok((
+                        crate::sql_value::value(r, 0)?,
+                        crate::sql_value::value(r, 1)?,
+                    ))
+                },
             )
             .optional()
-            .map_err(sql)
+            .map_err(|error| self.read_sql(error))?;
+        match row {
+            Some((_, project)) if project != p => Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "event is outside admitted scope",
+            )),
+            Some((seq, _)) => Ok(Some(seq)),
+            None => {
+                // Legacy wire IDs use scope-specific storage keys. An alias in another
+                // scope proves exclusion only when it names a retained event.
+                let excluded = canonical(id.as_str()).is_none() && self.db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM identities i JOIN events e ON e.event_id=i.storage_key WHERE i.kind='event' AND i.wire_id=?)",
+                    [id.as_str()],
+                    |r| crate::sql_value::value::<bool>(r, 0),
+                ).map_err(|error| self.read_sql(error))?;
+                if excluded {
+                    return Err(fail(
+                        StoreErrorCode::ScopeMismatch,
+                        "event is outside admitted scope",
+                    ));
+                }
+                Ok(None)
+            }
+        }
     }
+
     fn visible(&self, e: &StoredEvent) -> StoreResult<bool> {
         Ok(match &self.scope.visibility {
             Visibility::Owner | Visibility::SharedProject(_) => true,
@@ -123,7 +165,8 @@ impl SqliteSnapshot {
         })
     }
     fn record(&self, seq: i64) -> StoreResult<StoredEvent> {
-        let e = load_event(&self.db, seq, &self.info)?;
+        let e = load_event(&self.db, seq, &self.info)
+            .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
         if matches!(
             e.body,
             EventBody::RuntimeOwnerEstablished { .. } | EventBody::RuntimeHandoverRecorded { .. }
@@ -145,7 +188,8 @@ impl SqliteSnapshot {
         if !matches!(self.scope.visibility, Visibility::SelfOnly(_)) {
             return self.record(seq);
         }
-        let event = load_event(&self.db, seq, &self.info)?;
+        let event = load_event(&self.db, seq, &self.info)
+            .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
         let project = match &event.body {
             EventBody::ProjectRegistered { project, .. }
             | EventBody::ProjectUpdated { project, .. }
@@ -166,7 +210,8 @@ impl SqliteSnapshot {
         Ok(event)
     }
     fn principal_metadata(&self, seq: i64) -> StoreResult<StoredEvent> {
-        let event = load_event(&self.db, seq, &self.info)?;
+        let event = load_event(&self.db, seq, &self.info)
+            .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
         if event.header.scope != self.scope.admission.scope
             || !matches!(
                 event.body,
@@ -212,7 +257,7 @@ impl SqliteSnapshot {
                 },
             )
             .optional()
-            .map_err(sql)?;
+            .map_err(|error| self.read_sql(error))?;
         match row {
             None => Ok(self.absent(table)),
             Some((revision, seq, first)) => Ok(Read::Present {
@@ -463,7 +508,7 @@ impl Snapshot for SqliteSnapshot {
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let m = key(&self.db, "message", id.as_str(), &scope, false)?;
-        let row:Option<message::MarkRow>=self.db.query_row("SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",crate::sql_value::sql_params![p,m],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).optional().map_err(sql)?;
+        let row:Option<message::MarkRow>=self.db.query_row("SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",crate::sql_value::sql_params![p,m],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).optional().map_err(|error| self.read_sql(error))?;
         match row {
             None => Ok(self.absent("message ID")),
             Some((s, v, d, r, x)) => Ok(Read::Present {
@@ -506,7 +551,7 @@ impl Snapshot for SqliteSnapshot {
             },
             false,
         )?;
-        let op:Option<Vec<u8>>=self.db.query_row("SELECT operation_id FROM operations WHERE scope_key=? AND actor_id=? AND request_key=? AND erased=0",crate::sql_value::sql_params![scope,a,request.as_str()],|r|crate::sql_value::value(r,0)).optional().map_err(sql)?;
+        let op:Option<Vec<u8>>=self.db.query_row("SELECT operation_id FROM operations WHERE scope_key=? AND actor_id=? AND request_key=? AND erased=0",crate::sql_value::sql_params![scope,a,request.as_str()],|r|crate::sql_value::value(r,0)).optional().map_err(|error| self.read_sql(error))?;
         match op {
             Some(op) => Ok(Read::Present {
                 value: crate::transaction::receipt(&self.db, &op, &self.info, Some(request))?,
@@ -536,7 +581,7 @@ impl Snapshot for SqliteSnapshot {
             false,
         )?;
         let p = self.project_bytes()?;
-        let row:Option<ResumeRow>=self.db.query_row("SELECT last_turn_seq,last_working_state_seq,last_cursor_seq,last_session_seq,unread_count,pending_effect_count,last_seq FROM resume_heads WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![p,a],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?))).optional().map_err(sql)?;
+        let row:Option<ResumeRow>=self.db.query_row("SELECT last_turn_seq,last_working_state_seq,last_cursor_seq,last_session_seq,unread_count,pending_effect_count,last_seq FROM resume_heads WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![p,a],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?))).optional().map_err(|error| self.read_sql(error))?;
         let pos = |s| StorePosition::new_internal(self.info.id.clone(), self.info.incarnation, s);
         match row {
             None => Ok(self.absent("resume head")),
@@ -555,7 +600,9 @@ impl Snapshot for SqliteSnapshot {
         }
     }
     fn close(self) -> StoreResult<()> {
-        self.db.execute_batch("ROLLBACK").map_err(sql)
+        self.db
+            .execute_batch("ROLLBACK")
+            .map_err(|error| self.read_sql(error))
     }
     fn history(
         &mut self,

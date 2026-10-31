@@ -431,9 +431,31 @@ pub struct StoreError {
     pub remedy: se_types::Remedy,
     pub retry: se_types::Retry,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoreIoStage {
+    Open,
+    PragmaReadback,
+    BeginSnapshot,
+    HeaderReadback,
+    ReadSnapshot,
+}
 #[derive(Clone, Debug)]
 pub enum StoreDetail {
     None,
+    Sqlite {
+        extended_code: i32,
+        native_os_code: Option<i32>,
+    },
+    Io {
+        /// Path relative to the state directory; never an absolute home or request path.
+        path: String,
+        /// Exact SQLite filename for trusted diagnostics, including native path prefixes.
+        opened_path: String,
+        stage: StoreIoStage,
+        sqlite_extended_code: Option<i32>,
+        /// Captured from the failing native call, never ambient last-error state.
+        native_os_code: Option<i32>,
+    },
     Conflict {
         expected: Expected,
         observed: Option<Revision>,
@@ -480,6 +502,7 @@ pub enum StoreErrorCode {
     Absent,
     AlreadyExists,
     Unreadable,
+    Corrupt,
     ApplicationMismatch,
     TooNew,
     VersionUnsupported,

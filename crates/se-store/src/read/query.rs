@@ -96,19 +96,19 @@ impl SqliteSnapshot {
         let deadline = Instant::now() + budget.deadline;
         self.db
             .progress_handler(1000, Some(move || Instant::now() >= deadline))
-            .map_err(sql_error)?;
+            .map_err(|error| self.read_sql(error))?;
         let result = (|| {
-            let mut q = self.db.prepare(sql).map_err(sql_error)?;
+            let mut q = self.db.prepare(sql).map_err(|error| self.read_sql(error))?;
             q.query_map(rusqlite::params_from_iter(params), |r| {
                 Ok((value(r, 0)?, value(r, 1)?, value(r, 2)?))
             })
-            .map_err(sql_error)?
+            .map_err(|error| self.read_sql(error))?
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(sql_error)
+            .map_err(|error| self.read_sql(error))
         })();
         self.db
             .progress_handler(0, None::<fn() -> bool>)
-            .map_err(sql_error)?;
+            .map_err(|error| self.read_sql(error))?;
         result
     }
     pub(super) fn read_history(
@@ -261,17 +261,7 @@ impl SqliteSnapshot {
         )
     }
 }
-fn sql_error(e: rusqlite::Error) -> Box<StoreError> {
-    if matches!(&e,rusqlite::Error::SqliteFailure(c,_) if c.code==rusqlite::ErrorCode::OperationInterrupted)
-    {
-        fail(
-            StoreErrorCode::ReadIncomplete,
-            "SQLite read deadline/step budget exhausted",
-        )
-    } else {
-        sql(e)
-    }
-}
+
 pub(super) fn event_size(e: &StoredEvent) -> StoreResult<u64> {
     let body = crate::transaction::descriptor(&e.body, |t| match t {
         StoredText::Present(s) => Ok(s.clone()),

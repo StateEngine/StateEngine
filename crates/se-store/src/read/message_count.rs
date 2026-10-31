@@ -33,7 +33,7 @@ impl SqliteSnapshot {
             let total: Option<Option<u64>> = self.db.query_row(
                 "SELECT h.unread_count FROM principals p LEFT JOIN resume_heads h ON h.project_id=p.project_id AND h.principal_id=p.principal_id WHERE p.project_id=? AND p.principal_id=?",
                 crate::sql_value::sql_params![project, recipient], |r| crate::sql_value::value(r,0)
-            ).optional().map_err(sql)?;
+            ).optional().map_err(|error| self.read_sql(error))?;
             return match total {
                 Some(Some(total)) => Ok(total),
                 None => Ok(0), // No registered recipient can own matching messages.
@@ -46,7 +46,7 @@ impl SqliteSnapshot {
         let deadline = Instant::now() + std::time::Duration::from_secs(5);
         self.db
             .progress_handler(1000, Some(move || Instant::now() >= deadline))
-            .map_err(sql)?;
+            .map_err(|error| self.read_sql(error))?;
         let result = (|| {
             let count = |recipient: Option<&[u8]>, sender: Option<&[u8]>| {
                 let h = self
@@ -61,17 +61,7 @@ impl SqliteSnapshot {
                     .query_row(&statement, rusqlite::params_from_iter(args), |r| {
                         crate::sql_value::value::<u64>(r, 0)
                     })
-                    .map_err(|error| match error {
-                        rusqlite::Error::SqliteFailure(code, _)
-                            if code.code == rusqlite::ErrorCode::OperationInterrupted =>
-                        {
-                            fail(
-                                StoreErrorCode::ReadIncomplete,
-                                "mail count SQL deadline exhausted",
-                            )
-                        }
-                        _ => sql(error),
-                    })
+                    .map_err(|error| self.read_sql(error))
             };
             if let Some(own) = &own {
                 let sent_visible = from.as_ref().is_none_or(|sender| sender == own);
@@ -105,7 +95,7 @@ impl SqliteSnapshot {
         })();
         self.db
             .progress_handler(0, None::<fn() -> bool>)
-            .map_err(sql)?;
+            .map_err(|error| self.read_sql(error))?;
         result
     }
 }

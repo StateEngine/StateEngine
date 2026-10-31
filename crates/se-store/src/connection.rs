@@ -9,62 +9,80 @@ pub(crate) fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreRe
     } else {
         OpenFlags::SQLITE_OPEN_READ_ONLY
     };
-    let c = Connection::open_with_flags(
+    let c = open(
         path,
         flags | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )
-    .map_err(sql)?;
-    configure(&c, writable, timeout)?;
+    )?;
+    configure(&c, path, writable, timeout)?;
     Ok(c)
 }
-pub(crate) fn configure(c: &Connection, writable: bool, timeout: Duration) -> StoreResult<()> {
-    if timeout > Duration::from_secs(5) {
-        return Err(invalid("busy timeout exceeds 5000ms"));
-    }
-    c.busy_timeout(timeout).map_err(sql)?;
-    c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA cache_size=-512;").map_err(sql)?;
-    if writable {
-        let journal: String = c
-            .query_row("PRAGMA journal_mode=WAL", [], |r| {
-                crate::sql_value::value(r, 0)
-            })
-            .map_err(sql)?;
-        if journal != "wal" {
-            return Err(fail(StoreErrorCode::PragmaRefused, "WAL refused"));
+pub(crate) fn open(path: &Path, flags: OpenFlags) -> StoreResult<Connection> {
+    Connection::open_with_flags(path, flags | OpenFlags::SQLITE_OPEN_EXRESCODE)
+        .map_err(|error| sqlite_context(error, path, StoreIoStage::Open))
+}
+pub(crate) fn begin_snapshot(c: &Connection, path: &Path) -> StoreResult<()> {
+    c.execute_batch("BEGIN")
+        .map_err(|error| sqlite_context(error, path, StoreIoStage::BeginSnapshot))
+}
+pub(crate) fn info_at(c: &Connection, path: &Path) -> StoreResult<StoreInfo> {
+    info(c).map_err(|error| context(error, path, StoreIoStage::HeaderReadback))
+}
+pub(crate) fn configure(
+    c: &Connection,
+    path: &Path,
+    writable: bool,
+    timeout: Duration,
+) -> StoreResult<()> {
+    let result = (|| {
+        if timeout > Duration::from_secs(5) {
+            return Err(invalid("busy timeout exceeds 5000ms"));
         }
-        c.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit=4194304;").map_err(sql)?;
-    }
-    for (name, arity) in [
-        ("se_erase_operation_allowed", 1),
-        ("se_erase_body_allowed", 2),
-    ] {
-        c.create_scalar_function(
-            name,
-            arity,
-            FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_INNOCUOUS,
-            |_| Ok(0i64),
-        )
-        .map_err(sql)?;
-    }
-    for (name, expected) in [
-        ("foreign_keys", 1i64),
-        ("trusted_schema", 0),
-        ("mmap_size", 0),
-        ("temp_store", 1),
-    ] {
-        let actual: i64 = c
-            .query_row(&format!("PRAGMA {name}"), [], |r| {
-                crate::sql_value::value(r, 0)
-            })
-            .map_err(sql)?;
-        if actual != expected {
-            return Err(fail(
-                StoreErrorCode::PragmaRefused,
-                format!("{name} readback differs"),
-            ));
+        c.busy_timeout(timeout).map_err(sql)?;
+        c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA cache_size=-512;").map_err(sql)?;
+        if writable {
+            let journal: String = c
+                .query_row("PRAGMA journal_mode=WAL", [], |r| {
+                    crate::sql_value::value(r, 0)
+                })
+                .map_err(sql)?;
+            if journal != "wal" {
+                return Err(fail(StoreErrorCode::PragmaRefused, "WAL refused"));
+            }
+            c.execute_batch("PRAGMA synchronous=NORMAL; PRAGMA wal_autocheckpoint=0; PRAGMA journal_size_limit=4194304;").map_err(sql)?;
         }
-    }
-    Ok(())
+        for (name, arity) in [
+            ("se_erase_operation_allowed", 1),
+            ("se_erase_body_allowed", 2),
+        ] {
+            c.create_scalar_function(
+                name,
+                arity,
+                FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_INNOCUOUS,
+                |_| Ok(0i64),
+            )
+            .map_err(sql)?;
+        }
+        for (name, expected) in [
+            ("foreign_keys", 1i64),
+            ("trusted_schema", 0),
+            ("mmap_size", 0),
+            ("temp_store", 1),
+        ] {
+            let actual: i64 = c
+                .query_row(&format!("PRAGMA {name}"), [], |r| {
+                    crate::sql_value::value(r, 0)
+                })
+                .map_err(sql)?;
+            if actual != expected {
+                return Err(fail(
+                    StoreErrorCode::PragmaRefused,
+                    format!("{name} readback differs"),
+                ));
+            }
+        }
+        Ok(())
+    })();
+    result.map_err(|error| context(error, path, StoreIoStage::PragmaReadback))
 }
 pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
     let app: u32 = c

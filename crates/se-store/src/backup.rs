@@ -270,15 +270,15 @@ fn copy(
     context: &BackupContext,
     deadline: Instant,
 ) -> StoreResult<StoreInfo> {
-    source.execute_batch("BEGIN").map_err(sql)?;
-    let info = connection::info(&source)?;
-    let mut destination = Connection::open_with_flags(
-        staging.join(PENDING),
+    let source_path = home.join("state.db");
+    connection::begin_snapshot(&source, &source_path)?;
+    let info = connection::info_at(&source, &source_path)?;
+    let mut destination = connection::open(
+        &staging.join(PENDING),
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_NOFOLLOW
             | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .map_err(sql)?;
+    )?;
     destination
         .execute_batch("PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL")
         .map_err(sql)?;
@@ -318,7 +318,7 @@ fn validate(path: &Path, expected: &StoreInfo, deadline: Instant) -> StoreResult
     let c = connection::connect(path, false, Duration::ZERO)?;
     c.progress_handler(1000, Some(move || Instant::now() >= deadline))
         .map_err(sql)?;
-    let observed = connection::info(&c)?;
+    let observed = connection::info_at(&c, path)?;
     if observed.id != expected.id
         || observed.incarnation != expected.incarnation
         || observed.schema_version != expected.schema_version
@@ -391,7 +391,7 @@ pub(crate) fn run(
     let _slot = Slot(reader.slots.clone());
     (|| {
         let source = reader.connect()?;
-        let pre = connection::info(&source)?;
+        let pre = connection::info_at(&source, &reader.path)?;
         let identity = connection::validate_lease(&pre, lease, LeaseMode::Host)?;
         let pin = context.pin(&pre, &identity, &reader.path)?;
         let mut allocated_stage = None;

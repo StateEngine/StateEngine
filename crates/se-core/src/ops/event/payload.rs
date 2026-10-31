@@ -36,6 +36,25 @@ pub(super) fn public<R: Snapshot>(
         DecisionRejected { decision, reason, .. } => ("decision.rejected", json!({"decision_id":decision,"reason":text(reason)?})),
         DecisionRetracted { decision, reason, .. } => ("decision.retracted", json!({"decision_id":decision,"reason":text(reason)?})),
         DecisionSuperseded { prior, replacement, approval, .. } => ("decision.superseded", json!({"prior":prior,"replacement":replacement,"approval":approval})),
+        SessionTurn { session, provider, vendor_ref, role, text: body, .. } => {
+            if event.header.door != se_store::Door::Hook {
+                return Err(scope::unreadable("turn provenance", "this adapter cannot infer a capture source from an unlabelled legacy door"));
+            }
+            let record = scope::require_present(read.session(session.clone()).map_err(|e| store_error(&e))?, "turn's original session metadata")?;
+            let native = record.original.as_deref().unwrap_or(&record.current);
+            let SessionPrepared { session: original, provider: original_provider, native_ref, .. } = &native.body else {
+                return Err(scope::unreadable("turn session provenance", "original prepared session metadata is unavailable"));
+            };
+            if original != session || original_provider != provider {
+                return Err(scope::unreadable("turn session provenance", "session or provider differs from the committed turn"));
+            }
+            let provider = match provider { se_store::Provider::Claude => "claude", se_store::Provider::Codex => "codex", se_store::Provider::SeCode => "secode" };
+            let role = match role {
+                se_store::Role::User => "user", se_store::Role::Assistant => "assistant",
+                _ => return Err(scope::unreadable("turn role", "the public capture family requires an actual user or assistant turn")),
+            };
+            ("session.turn", json!({"session_id":session,"turn_id":if vendor_ref.is_empty() {None} else {Some(vendor_ref)},"provider":provider,"provider_session":if native_ref.is_empty() {None} else {Some(native_ref)},"role":role,"source":"hook","occurred_at":receipt::timestamp(event.header.occurred_at_us)?,"body":text(body)?}))
+        }
         CaptureSuppressed { session, count, reason, .. } => ("capture.suppressed", json!({"session_id":session,"count":count,"reason":reason})),
         // Later-wave event families require their own complete public projection;
         // they cannot expose raw native/credential fields as a shortcut.

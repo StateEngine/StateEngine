@@ -287,14 +287,14 @@ fn missing_and_corrupt_state_are_not_empty_success() -> Check {
             .err()
             .ok_or("corruption became absence")?
             .code,
-        StoreErrorCode::Unreadable
+        StoreErrorCode::Corrupt
     );
     assert_eq!(
         SqliteFactory::open_direct(&f.options, &*lease)
             .err()
             .ok_or("corruption became absence")?
             .code,
-        StoreErrorCode::Unreadable
+        StoreErrorCode::Corrupt
     );
     assert_eq!(std::fs::read(path)?, b"broken database");
     Ok(())

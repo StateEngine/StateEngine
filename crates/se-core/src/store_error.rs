@@ -11,6 +11,13 @@ pub fn store_error(error: &StoreError) -> SeError {
             reason,
             next_step,
         }),
+        C::Corrupt => Detail::StoreCorrupt(details::StoreCorrupt {
+            path: match &error.detail {
+                se_store::StoreDetail::Io { path, .. } => path.clone(),
+                _ => subject,
+            },
+            check: reason,
+        }),
         C::Busy | C::Backpressure => Detail::StoreBusy(details::StoreBusy {
             waited_ms: 0,
             reason,
@@ -140,6 +147,7 @@ pub fn store_error(error: &StoreError) -> SeError {
             })
         }
     })
+    .with_cause(error.clone())
 }
 
 /// The adapter retains these submitted identities around append/await; lost ACK
@@ -157,7 +165,8 @@ pub fn write_error(
                 key: key.map(ToString::to_string),
                 natural_events: natural_events.to_vec(),
             },
-        ));
+        ))
+        .with_cause(error.clone());
     }
     store_error(error)
 }

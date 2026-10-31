@@ -9,12 +9,12 @@ impl SqliteSnapshot {
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let id = key(&self.db, "session", session.as_str(), &scope, false)?;
         let a = self.agent_bytes(agent)?;
-        self.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND session_id=? AND agent_id=?)",rusqlite::params![p,id,a],|r|r.get(0)).map_err(sql)
+        self.db.query_row("SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND session_id=? AND agent_id=?)",rusqlite::params![p,id,a],|r|r.get(0)).map_err(|error| self.read_sql(error))
     }
     pub(super) fn source_visible(&self, source: &RecordId, agent: &AgentId) -> StoreResult<bool> {
         let p = self.project_bytes()?;
         let a = self.agent_bytes(agent)?;
-        self.db.query_row("SELECT EXISTS(SELECT 1 FROM capture_sources c JOIN sessions s ON s.project_id=c.project_id AND s.session_id=c.session_id WHERE c.project_id=? AND c.source_id=? AND s.agent_id=?)",rusqlite::params![p,source.as_bytes().as_slice(),a],|r|r.get(0)).map_err(sql)
+        self.db.query_row("SELECT EXISTS(SELECT 1 FROM capture_sources c JOIN sessions s ON s.project_id=c.project_id AND s.session_id=c.session_id WHERE c.project_id=? AND c.source_id=? AND s.agent_id=?)",rusqlite::params![p,source.as_bytes().as_slice(),a],|r|r.get(0)).map_err(|error| self.read_sql(error))
     }
     pub(super) fn read_session(&self, id: SessionId) -> StoreResult<Read<ProjectionRecord>> {
         let p = self.project_bytes()?;
@@ -37,7 +37,7 @@ impl SqliteSnapshot {
     }
     pub(super) fn read_capture_source(&self, id: RecordId) -> StoreResult<Read<ProjectionRecord>> {
         let p = self.project_bytes()?;
-        let row:Option<(u64,i64,Vec<u8>)>=self.db.query_row("SELECT revision,last_seq,source_incarnation FROM capture_sources WHERE project_id=? AND source_id=?",rusqlite::params![p,id.as_bytes().as_slice()],|r|Ok((crate::sql_value::value(r,0)?,r.get(1)?,r.get(2)?))).optional().map_err(sql)?;
+        let row:Option<(u64,i64,Vec<u8>)>=self.db.query_row("SELECT revision,last_seq,source_incarnation FROM capture_sources WHERE project_id=? AND source_id=?",rusqlite::params![p,id.as_bytes().as_slice()],|r|Ok((crate::sql_value::value(r,0)?,r.get(1)?,r.get(2)?))).optional().map_err(|error| self.read_sql(error))?;
         let Some((revision, last, incarnation)) = row else {
             return Ok(self.absent("capture source"));
         };
@@ -49,7 +49,7 @@ impl SqliteSnapshot {
                 "capture source belongs to another principal",
             ));
         }
-        let first:Option<i64>=self.db.query_row("SELECT MAX(event_seq) FROM aux_data INDEXED BY capture_source_natural WHERE json_extract(facts,'$.capture_kind')='source' AND json_extract(facts,'$.project')=? AND json_extract(facts,'$.source')=? AND json_extract(facts,'$.incarnation')=? AND event_seq<=?",rusqlite::params![project(&self.scope.admission.scope)?.as_str(),codec::encode(&id)?,codec::encode(&incarnation)?,last],|r|r.get(0)).map_err(sql)?;
+        let first:Option<i64>=self.db.query_row("SELECT MAX(event_seq) FROM aux_data INDEXED BY capture_source_natural WHERE json_extract(facts,'$.capture_kind')='source' AND json_extract(facts,'$.project')=? AND json_extract(facts,'$.source')=? AND json_extract(facts,'$.incarnation')=? AND event_seq<=?",rusqlite::params![project(&self.scope.admission.scope)?.as_str(),codec::encode(&id)?,codec::encode(&incarnation)?,last],|r|r.get(0)).map_err(|error| self.read_sql(error))?;
         let first = first.ok_or_else(|| {
             fail(
                 StoreErrorCode::ProjectionInconsistent,
@@ -79,7 +79,7 @@ impl SqliteSnapshot {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(sql)?;
+            .map_err(|error| self.read_sql(error))?;
         let Some(seq) = seq else {
             return Ok(self.absent("turn"));
         };
