@@ -99,7 +99,7 @@ pub struct IpcResponse {
     pub result: IpcResult,
 }
 pub enum IpcResult {
-    Output(OperationOutput),
+    Output(Box<OperationOutput>),
     Error(se_types::ErrorEnvelope),
 }
 /// Concrete common adapters; authorization/dispatch signatures remain the
