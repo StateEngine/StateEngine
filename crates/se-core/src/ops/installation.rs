@@ -21,6 +21,9 @@ pub struct UninstallFile {
 pub struct UninstallPathEdit {
     pub target: String,
     pub before_sha256: Option<String>,
+    /// Exact original profile length; absent on registry PATH edits and older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_bytes: Option<u64>,
     pub block: String,
 }
 /// An exact tail repair, executed only against the same native file/digest.
@@ -46,6 +49,26 @@ impl UninstallPathEdit {
             ));
         }
         let block = self.block.as_bytes();
+        if let Some(length) = self.before_bytes {
+            let Ok(split) = usize::try_from(length) else {
+                return Ok(None);
+            };
+            if split >= contents.len() {
+                return Ok(None);
+            }
+            let original_matches = match &self.before_sha256 {
+                Some(expected) => format!("{:x}", Sha256::digest(&contents[..split])) == *expected,
+                None => split == 0,
+            };
+            return Ok(
+                (original_matches && block.starts_with(&contents[split..])).then(|| {
+                    ProfileTruncation {
+                        expected_sha256: Sha256::digest(contents).into(),
+                        length,
+                    }
+                }),
+            );
+        }
         let first = contents.len().saturating_sub(block.len());
         let mut prefix = Sha256::new();
         prefix.update(&contents[..first]);
@@ -242,6 +265,8 @@ impl UninstallPlan {
                 || edit.block.len() > 8192
                 || edit.block.contains('\0')
                 || edit.before_sha256.as_ref().is_some_and(|v| !digest(v))
+                || (edit.before_sha256.is_none()
+                    && edit.before_bytes.is_some_and(|length| length != 0))
             {
                 return Err(SeError::invalid(
                     "PATH edit",
