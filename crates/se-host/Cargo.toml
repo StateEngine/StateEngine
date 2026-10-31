@@ -14,6 +14,7 @@ secode = ["runtime"]
 
 [dependencies]
 se-types = { path = "../se-types" }
+se-core = { path = "../se-core" }
 se-store = { path = "../se-store" }
 se-proc = { path = "../se-proc" }
 serde_json.workspace = true

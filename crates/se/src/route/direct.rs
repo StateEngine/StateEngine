@@ -4,10 +4,10 @@ use se_core::{
     commit::{Cx, OpStep},
     dispatch::Kernel,
     ops::{AnyOp, AnyOutput},
-    ports::CustodyPlan,
+    ports::{CustodyPlan, Then},
     store_error::{store_error, write_error},
 };
-use se_store::{Admission, DirectStore, RuntimeLease, Snapshot};
+use se_store::{Admission, DirectStore, ReadStore, RuntimeLease, Snapshot};
 use se_types::Result;
 
 pub enum Outcome {
@@ -22,43 +22,11 @@ pub fn execute<S: DirectStore>(
     admission: &Admission,
     terminal: &HumanTerminal,
     kernel: &Kernel,
-    mut op: AnyOp,
+    op: AnyOp,
     selections: &se_core::ops::CliSelections,
 ) -> Result<Outcome> {
     let operation = op.meta().name;
-    let mut snapshot = store
-        .snapshot(read_scope(admission))
-        .map_err(|e| store_error(&e))?;
-    let selected = selections.apply(
-        &mut op,
-        &mut Cx {
-            read: &mut snapshot,
-            admission,
-        },
-    );
-    let planned = selected.and_then(|()| {
-        kernel.plan(
-            op,
-            &mut Cx {
-                read: &mut snapshot,
-                admission,
-            },
-            terminal,
-        )
-    });
-    let closed = snapshot.close().map_err(|e| store_error(&e));
-    let step = match planned {
-        Ok(step) => {
-            closed?;
-            step
-        }
-        Err(error) => {
-            return Err(match closed {
-                Ok(()) => error,
-                Err(close) => error.with_cause(close),
-            });
-        }
-    };
+    let step = plan(store, admission, terminal, kernel, op, selections)?;
     match step {
         OpStep::Complete(output) => Ok(Outcome::Complete(output)),
         OpStep::Custody(plan) => Ok(Outcome::Custody(plan)),
@@ -100,4 +68,66 @@ pub fn execute<S: DirectStore>(
             }
         }
     }
+}
+
+/// Current-schema WAL reads use an admitted finite Snapshot while the host may
+/// retain its exclusive writer lease. This path cannot append or start a writer.
+pub fn read<S: ReadStore>(
+    store: &S,
+    admission: &Admission,
+    terminal: &HumanTerminal,
+    op: AnyOp,
+    selections: &se_core::ops::CliSelections,
+) -> Result<Outcome> {
+    if op.meta().effect != se_core::registry::Effect::Read {
+        return Err(se_types::SeError::invalid("direct read route", "a registered read operation"));
+    }
+    match plan(store, admission, terminal, &Kernel::read_only(), op, selections)? {
+        OpStep::Complete(output) => Ok(Outcome::Complete(output)),
+        OpStep::Custody(plan) => Ok(Outcome::Custody(plan)),
+        OpStep::Commit { .. } => Err(se_types::SeError::invalid("direct read plan", "a read without a commit step")),
+    }
+}
+fn plan<S: ReadStore>(
+    store: &S,
+    admission: &Admission,
+    terminal: &HumanTerminal,
+    kernel: &Kernel,
+    mut op: AnyOp,
+    selections: &se_core::ops::CliSelections,
+) -> Result<OpStep<AnyOutput, Then, CustodyPlan>> {
+    let mut snapshot = store
+        .snapshot(read_scope(admission))
+        .map_err(|e| store_error(&e))?;
+    let selected = selections.apply(
+        &mut op,
+        &mut Cx {
+            read: &mut snapshot,
+            admission,
+        },
+    );
+    let planned = selected.and_then(|()| {
+        kernel.plan(
+            op,
+            &mut Cx {
+                read: &mut snapshot,
+                admission,
+            },
+            terminal,
+        )
+    });
+    let closed = snapshot.close().map_err(|e| store_error(&e));
+    let step = match planned {
+        Ok(step) => {
+            closed?;
+            step
+        }
+        Err(error) => {
+            return Err(match closed {
+                Ok(()) => error,
+                Err(close) => error.with_cause(close),
+            });
+        }
+    };
+    Ok(step)
 }
