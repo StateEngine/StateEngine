@@ -33,14 +33,21 @@ pub trait StoreFactory {
         options: &StoreOptions,
         budget: ReadBudget,
     ) -> StoreResult<Page<Read<BackupGeneration>>>;
-    /// Owner restore only: recheck newest valid generation and retain source/WAL.
+    /// Resolve the published key before selecting a backup or checking new heads.
+    fn recovery_receipt(
+        options: &StoreOptions,
+        request: &RequestIdentity,
+        admission: &Admission,
+    ) -> StoreResult<Read<RestoreReceipt>>;
+    /// Owner restore only: keyed recovery fact is FULL-staged before publication.
     fn restore_backup(
         options: &StoreOptions,
         backup: BackupGeneration,
+        request: &RequestIdentity,
         target_store: StoreId,
         admission: &Admission,
         lease: &dyn RuntimeLease,
-    ) -> StoreResult<Self::Host>;
+    ) -> StoreResult<RestoreOutcome<Self::Host>>;
     fn open_reader(options: &StoreOptions) -> StoreResult<Read<Self::Reader>>;
     fn open_direct(
         options: &StoreOptions,
@@ -221,7 +228,7 @@ pub struct HistoryQuery {
     /// Empty means every authorized kind; codec rejects unknown exact names.
     pub kinds: Vec<EventKind>,
     pub families: Vec<HistoryFamily>,
-    pub since: Option<Revision>,
+    pub since: Option<StorePosition>,
 }
 #[derive(Clone, Debug)]
 pub struct SearchQuery {
@@ -233,16 +240,17 @@ pub struct SearchQuery {
 pub struct MessageRecord {
     pub message: MessageId,
     pub event: EventId,
-    pub sent: Revision,
+    pub revision: Revision,
+    pub sent: StorePosition,
     pub sender: Actor,
     pub recipient: Actor,
     pub kind: String,
     pub body: StoredText,
     pub refs: Vec<EventId>,
     pub reply_to: Option<MessageId>,
-    pub delivered: Option<Revision>,
-    pub read: Option<Revision>,
-    pub dismissed: Option<Revision>,
+    pub delivered: Option<StorePosition>,
+    pub read: Option<StorePosition>,
+    pub dismissed: Option<StorePosition>,
     pub body_complete: bool,
 }
 #[derive(Clone, Debug)]
@@ -273,6 +281,7 @@ pub struct SearchHit {
 /// Current-head record; body is reconstructed from the owning immutable event.
 #[derive(Clone)]
 pub struct ProjectionRecord {
+    pub revision: Revision,
     pub original: Option<Box<StoredEvent>>,
     pub current: StoredEvent,
 }

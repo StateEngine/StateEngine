@@ -133,6 +133,7 @@ pub enum RecordedIdentity {
     Unreadable { cause: String },
 }
 /// Versioned se-proc reservation/scope/root/process/exit codec; never an OS handle.
+/// Includes ProcessRecord.ownership_release with its generation/entity-counter binding.
 #[derive(Clone, Debug)]
 pub struct NativeCustody {
     pub format_version: u16,
@@ -213,6 +214,7 @@ pub struct NewEvent {
 pub struct StoredEvent {
     pub header: EventHeader,
     pub revision: Revision,
+    pub position: crate::StorePosition,
     pub recorded_at_us: i64,
     pub recorded_incarnation: u64,
     pub writer: crate::WriterMode,
@@ -286,6 +288,7 @@ pub enum EventBody<T> {
         name: String,
         roots: Vec<Root>,
         owner: HumanId,
+        history_from: Option<ProjectId>,
         expected: Expected,
     },
     ProjectUpdated {
@@ -410,6 +413,7 @@ pub enum EventBody<T> {
         decision: DecisionId,
         key: String,
         statement: T,
+        rationale: Option<T>,
         prior: Option<DecisionId>,
         kind: DecisionKind,
     },
@@ -555,7 +559,7 @@ pub enum EventBody<T> {
     },
     BackupRecorded {
         generation: RecordId,
-        through: Revision,
+        through: crate::StorePosition,
         bytes: u64,
         sha256: [u8; 32],
         schema_version: u32,
@@ -619,11 +623,14 @@ pub enum EventBody<T> {
     },
     RecoveryRecorded {
         recovery: RecordId,
+        request_key: IdempotencyKey,
         source: Option<StoreId>,
+        source_incarnation: Option<u64>,
         source_artifact: SourceEvidence,
         target: StoreId,
+        target_incarnation: u64,
         backup: RecordId,
-        restored_through: crate::Revision,
+        restored_through: crate::StorePosition,
         loss: crate::RestoreLoss,
         schema_version: u32,
         witnesses: Vec<EventId>,
@@ -653,6 +660,7 @@ pub enum EffectIntent {
     },
 }
 pub struct AtomicBatch {
+    pub expected_incarnation: u64,
     pub admission: crate::Admission,
     pub request: Option<crate::RequestIdentity>,
     pub events: Vec<NewEvent>,

@@ -18,7 +18,7 @@ HostServices/HandoverServices supplied by SE Code. **Q** = independent section
 The native backend, native queue implementation, kernel/store internals and
 permissive API stay with those owners; this chapter consumes them. The shared
 registry has **58 operations, 24 MCP tools (19 core + 5 Atlas), 52 event kinds
-and 42 application tables**, and user-state import has six families. H18 consumes
+and 42 application tables (including resume_heads)/30 triggers**, and user-state import has six families. H18 consumes
 those generated contracts; none of these counts creates a host-local registry.
 Embedded handles issue no credential; settings are flag > env > config.toml >
 default, with no project layer. No migration-approval, salvage, temporal decision

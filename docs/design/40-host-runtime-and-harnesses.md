@@ -1449,7 +1449,7 @@ uninstall and diagnosed doctor repair, the host executes the exact typed plan
 and printed consequences in section 70; a configuration repair cannot silently
 rotate secrets, restore history or migrate.
 
-File-only general `config.set`, uninstall and restore reconcile retries with the same request key by reading the current file/installation state and reporting the original result if it already matches the request, otherwise applying the requested effect and reading it back; no receipt journal is retained.
+File-only general `config.set` and uninstall reconcile retries with the same request key by reading the current file/installation state and reporting the original result if it already matches the request, otherwise applying the requested effect and reading it back; no receipt journal is retained. Restore instead follows section 20’s keyed RecoveryRecorded publication/replay contract.
 
 `config.toml` is the only effective general-settings authority. General
 `config.set` keys (including `runtime.listen_port`, provider defaults and

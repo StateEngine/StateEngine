@@ -5,7 +5,7 @@ use se_types::{
     ProjectId, Sequence, SessionId, UnixMicros, Window,
 };
 use std::{
-    num::{NonZeroU16, NonZeroU32},
+    num::{NonZeroU16, NonZeroU32, NonZeroU64},
     path::PathBuf,
     time::Duration,
 };
@@ -21,10 +21,17 @@ pub trait RecordIdentity: Sized {
     fn from_bytes(bytes: [u8; 16]) -> StoreResult<Self>;
     fn as_bytes(&self) -> &[u8; 16];
 }
+/// Per-entity counter: creation is one, committed changes increment by one.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Revision {
-    pub incarnation: u64,
-    pub position: Sequence,
+    pub value: NonZeroU64,
+}
+/// Store-owned ordering token; never a wire revision or caller-selected sequence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StorePosition {
+    _store: StoreId,
+    _incarnation: u64,
+    _sequence: Sequence,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Expected {
@@ -70,7 +77,7 @@ pub struct StoreInfo {
     pub id: StoreId,
     pub incarnation: u64,
     pub schema_version: u32,
-    pub head: Option<Revision>,
+    pub head: Option<StorePosition>,
     pub state: StoreState,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,7 +110,7 @@ pub struct RuntimeHandoverRecord {
     pub successor_generation: Generation,
     pub phase: RuntimeHandoverPhase,
     pub manifest_sha256: [u8; 32],
-    pub frozen_at: Revision,
+    pub frozen_at: StorePosition,
     pub deadline_at: UnixMicros,
     /// Present only for Finished; verified before ordinary consumers start.
     pub completion: Option<Box<RuntimeHandoverCompletion>>,
@@ -121,7 +128,7 @@ pub enum RuntimeHandoverPhase {
 #[derive(Clone)]
 pub struct RuntimeHandoverCompletion {
     pub activated_custody_sha256: [u8; 32],
-    pub capture_at: Revision,
+    pub capture_at: StorePosition,
     pub queue_cut_sha256: [u8; 32],
     pub source_closed_sha256: [u8; 32],
 }
@@ -132,7 +139,7 @@ pub struct RuntimeRecoveredTransfer {
     pub transfer: RecordId,
     pub handover_event: EventId,
     pub activated_custody_sha256: [u8; 32],
-    pub capture_at: Revision,
+    pub capture_at: StorePosition,
     pub queue_cut_sha256: [u8; 32],
 }
 /// Non-secret singleton view; private transfer material stays on the host port.
@@ -163,6 +170,7 @@ pub struct ReadBudget {
 }
 
 /// Core computes this from the closed admitted operation input, before allocating IDs.
+/// Includes caller-explicit expectations; excludes default head reads and allocated outputs.
 /// It is never accepted from JSON/MCP or a caller-selected environment value.
 #[derive(Clone, Debug)]
 pub struct IntentDigest {
@@ -183,8 +191,8 @@ pub struct CommitReceipt {
     pub writer: WriterMode,
     pub durability: CommitDurability,
     pub wakes: Vec<Wake>,
-    pub first: Revision,
-    pub last: Revision,
+    pub first: StorePosition,
+    pub last: StorePosition,
     pub events: Vec<EventId>,
 }
 /// Trusted maintenance input, not a public operation or cross-scope admission.
@@ -220,7 +228,7 @@ pub enum CommitDurability {
 pub struct Wake {
     pub project: ProjectId,
     pub principal: Actor,
-    pub through: Revision,
+    pub through: StorePosition,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitState {
@@ -230,7 +238,7 @@ pub enum CommitState {
 }
 #[derive(Clone, Debug)]
 pub struct FlushReport {
-    pub through: Option<Revision>,
+    pub through: Option<StorePosition>,
     pub pending_requests: u32,
     pub indeterminate: Vec<PendingOperation>,
 }
@@ -254,7 +262,7 @@ pub struct BackupContext {
 #[derive(Clone, Debug)]
 pub struct BackupGeneration {
     pub id: RecordId,
-    pub through: Revision,
+    pub through: StorePosition,
     pub schema_version: u32,
     pub bytes: u64,
     pub sha256: [u8; 32],
@@ -266,11 +274,29 @@ pub struct BackupReport {
     pub retained: Vec<BackupGeneration>,
     pub removed: Vec<RecordId>,
 }
+/// Immutable outcome read from the published recovery fact, not current file state.
+#[derive(Clone, Debug)]
+pub struct RestoreReceipt {
+    pub request_key: IdempotencyKey,
+    pub event: EventId,
+    pub backup: RecordId,
+    pub source: Option<StoreId>,
+    pub source_incarnation: Option<u64>,
+    pub target: StoreId,
+    pub target_incarnation: u64,
+    pub restored_through: StorePosition,
+    pub loss: RestoreLoss,
+    pub writer: WriterMode,
+}
+pub struct RestoreOutcome<H> {
+    pub host: H,
+    pub receipt: RestoreReceipt,
+}
 /// Post-backup range lost on explicit restore; None means its upper bound is unknown.
 #[derive(Clone, Debug)]
 pub struct RestoreLoss {
-    pub after: Revision,
-    pub prior_head: Option<Revision>,
+    pub after: StorePosition,
+    pub prior_head: Option<StorePosition>,
 }
 #[derive(Clone, Debug)]
 pub enum EraseField {
@@ -348,13 +374,13 @@ pub struct ImportCounts {
 #[derive(Clone, Debug)]
 pub struct ResumeHead {
     pub principal: Actor,
-    pub turn: Option<Revision>,
-    pub working_state: Option<Revision>,
-    pub cursor: Option<Revision>,
-    pub session: Option<Revision>,
+    pub turn: Option<StorePosition>,
+    pub working_state: Option<StorePosition>,
+    pub cursor: Option<StorePosition>,
+    pub session: Option<StorePosition>,
     pub unread: u64,
     pub pending_effects: u64,
-    pub through: Revision,
+    pub through: StorePosition,
 }
 #[derive(Clone, Debug)]
 pub struct CursorRecord {
@@ -406,6 +432,10 @@ pub enum StoreDetail {
         allowed: u64,
         required: Option<u64>,
     },
+    Space {
+        required: Option<u64>,
+        available: Option<u64>,
+    },
     Maintenance {
         state: StoreState,
         operation: Option<RecordId>,
@@ -428,6 +458,7 @@ pub enum StoreErrorCode {
     Backpressure,
     WriterClosed,
     CommitOutcomeUnknown,
+    DiskFull,
     IdempotencyKeyReused,
     EventIdConflict,
     NaturalKeyConflict,
