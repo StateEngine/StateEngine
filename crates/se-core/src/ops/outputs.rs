@@ -335,9 +335,18 @@ pub struct ResourceSample {
     pub sampled_at: String,
     pub method: String,
 }
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum HostDetachment {
+    WindowsBreakaway,
+    UserManagerUnit,
+    SessionOnly,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeView {
     pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detachment: Option<HostDetachment>,
     pub host: Option<String>,
     pub process: Option<ProcessView>,
     pub generation: Option<u64>,

@@ -1050,6 +1050,7 @@ Codex approval never with bypass false is an ordinary sandboxed policy.
 | `$.runtime.state` | `"running"` \| `"starting"` \| `"draining"` \| `"stopped"` \| `"unknown"` | yes | from `runtime.lock`, the endpoint file and a re-read from outside |
 | `$.runtime.host` | `"daemon"` \| `"secode"` \| null | yes | who owns the runtime |
 | `$.runtime.process` | ProcessId \| null | yes | host process identity (pid + birth) while running, starting or draining |
+| `$.runtime.detachment` | `"session-only"` \| `"windows-breakaway"` \| `"user-manager-unit"` | only when natively measured | Actual startup/recovery detachment, omitted when unobserved. For `session-only`, plain status says "Host: runs as a session process and stops when this login session ends". This does not claim a background service. |
 | `$.runtime.generation` | int \| null | yes | current generation |
 | `$.runtime.endpoint` | string \| null | yes | `127.0.0.1:PORT` |
 | `$.runtime.version` | string \| null | yes | the host's se version |

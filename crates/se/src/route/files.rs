@@ -56,6 +56,43 @@ impl Files {
     }
 }
 impl Files {
+    /// Retire only this caller's exact native staging bytes. A losing create
+    /// can briefly contend with another retirement's cooperating parent pin.
+    pub fn retire_staging(&self, path: &Path, digest: [u8; 32]) -> StoreResult<()> {
+        self.check_path(path)?;
+        if !path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with(".se-stage-"))
+        {
+            return Err(fail(
+                StoreErrorCode::LocationUnsafe,
+                "staging retirement requires a native unique staging name",
+            ));
+        }
+        for attempt in 0..50 {
+            match se_proc::OwnedFile::open(path) {
+                Ok(Some(file)) => {
+                    file.remove(digest).map_err(native_error)?;
+                    return self.check_root();
+                }
+                Ok(None) => return self.check_root(),
+                Err(error)
+                    if error
+                        .source
+                        .as_ref()
+                        .is_some_and(|source| source.kind() == std::io::ErrorKind::WouldBlock)
+                        && attempt < 49 =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10))
+                }
+                Err(error) => return Err(native_error(error)),
+            }
+        }
+        Err(fail(
+            StoreErrorCode::Unreadable,
+            "bounded native staging parent contention did not clear",
+        ))
+    }
     fn check_root(&self) -> StoreResult<()> {
         // The real database read revalidates the original retained root before
         // and after opening. A missing database is still a valid root observation.

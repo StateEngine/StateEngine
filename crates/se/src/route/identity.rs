@@ -27,7 +27,21 @@ pub fn ensure_machine_identity(home: &Path) -> Result<MachineId> {
 }
 pub fn initialize_machine(files: &Files) -> Result<MachineId> {
     machine_identity::ensure_machine_identity(files.0.root(), &Port(files), || {
-        MachineId::new(uuid::Uuid::new_v4().to_string())
+        let random = se_proc::random_secret().map_err(|error| {
+            scope::unreadable("machine identity OS random source", &error.to_string())
+                .with_cause(error)
+        })?;
+        let bytes: [u8; 16] = random.expose()[..16].try_into().map_err(|_| {
+            scope::unreadable(
+                "machine identity OS random source",
+                "native allocator did not supply 16 bytes",
+            )
+        })?;
+        MachineId::new(
+            uuid::Builder::from_random_bytes(bytes)
+                .into_uuid()
+                .to_string(),
+        )
     })
 }
 struct Port<'a>(&'a Files);
@@ -110,44 +124,12 @@ impl MachineIdentityPort for Port<'_> {
         ) {
             Ok(()) => Ok(Publication::Published),
             Err(error) if error.code == se_store::StoreErrorCode::AlreadyExists => {
-                retire_staging(&staged.path, sha2::Sha256::digest(bytes).into())?;
+                self.0
+                    .retire_staging(&staged.path, sha2::Sha256::digest(bytes).into())
+                    .map_err(|error| se_core::store_error::store_error(&error))?;
                 Ok(Publication::AlreadyExists)
             }
             Err(error) => Err(se_core::store_error::store_error(&error)),
         }
     }
-}
-
-fn retire_staging(path: &std::path::Path, digest: [u8; 32]) -> Result<()> {
-    // The effects pin serializes mutations of the shared parent. Competing init
-    // losers can briefly hold it while retiring their own uniquely named files.
-    for attempt in 0..50 {
-        match se_proc::OwnedFile::open(path) {
-            Ok(Some(file)) => {
-                return file.remove(digest).map_err(|error| {
-                    scope::unreadable("machine identity staging cleanup", &error.to_string())
-                });
-            }
-            Ok(None) => return Ok(()),
-            Err(error)
-                if error
-                    .source
-                    .as_ref()
-                    .is_some_and(|source| source.kind() == std::io::ErrorKind::WouldBlock)
-                    && attempt < 49 =>
-            {
-                std::thread::sleep(std::time::Duration::from_millis(10))
-            }
-            Err(error) => {
-                return Err(scope::unreadable(
-                    "machine identity staging cleanup",
-                    &error.to_string(),
-                ));
-            }
-        }
-    }
-    Err(scope::unreadable(
-        "machine identity staging cleanup",
-        "bounded native parent contention did not clear",
-    ))
 }

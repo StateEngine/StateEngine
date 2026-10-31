@@ -35,21 +35,17 @@ fn id(file: &File, path: &Path, directory: bool, owner: bool) -> Result<(u64, u6
     Ok((meta.dev(), meta.ino()))
 }
 
-/// POSIX ACL effective write permissions are reflected in the group mask bits.
-/// Sticky root/user-owned ancestors (for example /tmp) protect owned children;
-/// the final mutation directory must admit no other writer at all.
+/// Share the native private-primary-group ancestor policy. Sticky shared
+/// ancestors protect child names, but the final mutation parent is never shared
+/// with arbitrary users. POSIX ACL write masks remain reflected in mode bits.
 pub(super) fn trusted_directory(file: &File, path: &Path, final_parent: bool) -> Result<()> {
     let meta = file
         .metadata()
         .map_err(|e| io_error("inspect mutation directory security", path, e))?;
-    // SAFETY: immutable native identity query.
-    let user = unsafe { libc::geteuid() };
-    if !meta.is_dir()
-        || (meta.uid() != 0 && meta.uid() != user)
-        || (meta.mode() & 0o022 != 0 && (final_parent || meta.mode() & 0o1000 == 0))
-    {
+    crate::state_files::validate_existing_ancestor(file, path)?;
+    if final_parent && meta.mode() & 0o002 != 0 {
         return Err(unsafe_path(
-            "mutation parent permits another native principal to replace names",
+            "final mutation directory is world-writable",
             path,
         ));
     }

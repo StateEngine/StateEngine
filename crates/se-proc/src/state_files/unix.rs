@@ -161,7 +161,7 @@ fn walk_with_private_root(path: &Path, create: bool, private_root: bool) -> Resu
             super::validate_existing_ancestor(&next, &traversed)?;
         }
         if !private_root {
-            effects::trusted_directory(&next, path, index + 1 == parts.len())?;
+            effects::trusted_directory(&next, &traversed, index + 1 == parts.len())?;
         }
         parent = next;
     }

@@ -13,6 +13,7 @@ pub fn missing(home: String, generated_at: String, checked: String) -> StatusOut
         },
         runtime: RuntimeView {
             state: "unknown".into(),
+            detachment: None,
             host: None,
             process: None,
             generation: None,

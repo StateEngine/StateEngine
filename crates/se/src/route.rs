@@ -1,5 +1,7 @@
 //! Native CLI routing. Startup is called at process entry, before Bootstrap
 //! reads configuration and before a worker or store is opened.
+#[path = "route/credential.rs"]
+pub mod credential;
 #[path = "route/direct.rs"]
 pub mod direct;
 #[path = "route/files.rs"]
