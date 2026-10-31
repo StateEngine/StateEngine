@@ -156,7 +156,10 @@ try {
     }
     $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $priorDigest = if ($hadPath) { Get-TextDigest ([string]$before) } else { $null }
-    $edits = if ($alreadyPresent) { @() } else { @(@{target = 'HKCU\Environment\Path'; before_sha256 = $priorDigest; block = $bin}) }
+    $edits = @()
+    if (-not $alreadyPresent) {
+        $edits += @{target = 'HKCU\Environment\Path'; before_sha256 = $priorDigest; block = $bin}
+    }
     # All checks above are read-only. Record only directories this install creates.
     New-OwnedDirectory $bin
     New-OwnedDirectory $data
