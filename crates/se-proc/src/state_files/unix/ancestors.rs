@@ -79,7 +79,7 @@ fn private_group(gid: libc::gid_t, path: &Path) -> Result<bool> {
             // SAFETY: traverses the native result's terminated member array, retained above.
             let value = unsafe { *member };
             if value.is_null() {
-                return Ok(true);
+                return sole_primary_member(gid, path);
             }
             // SAFETY: non-null member pointers returned by NSS name terminated strings.
             if unsafe { CStr::from_ptr(value) }.to_bytes() != username {
@@ -121,4 +121,80 @@ pub(super) fn validate(file: &File, path: &Path) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+// gr_mem lists supplemental members; another account may also use this GID
+// as its primary group. Check the native account database before calling it
+// private. This module owns the workspace's only NSS enumeration cursor.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn sole_primary_member(gid: libc::gid_t, path: &Path) -> Result<bool> {
+    static ACCOUNTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _lock = ACCOUNTS
+        .lock()
+        .map_err(|_| unsafe_path("native account enumeration lock poisoned", path))?;
+    struct Enumeration;
+    impl Drop for Enumeration {
+        fn drop(&mut self) {
+            // SAFETY: the module mutex still owns this native enumeration cursor.
+            unsafe {
+                libc::endpwent();
+            }
+        }
+    }
+    // SAFETY: serialized native account enumeration, separate from reentrant lookups.
+    unsafe {
+        libc::setpwent();
+    }
+    let _enumeration = Enumeration;
+    let mut size = 1024;
+    let mut buffer = vec![0u8; size];
+    for _ in 0..65536 {
+        loop {
+            // SAFETY: native POD is initialized by the reentrant call below.
+            let mut account: libc::passwd = unsafe { std::mem::zeroed() };
+            let mut found = ptr::null_mut();
+            // SAFETY: exact writable record and retained bounded buffer; the
+            // process-wide NSS enumeration cursor is serialized by ACCOUNTS.
+            let rc = unsafe {
+                libc::getpwent_r(
+                    &mut account,
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len(),
+                    &mut found,
+                )
+            };
+            if rc == libc::ERANGE && size < 1048576 {
+                size *= 2;
+                buffer.resize(size, 0);
+                continue;
+            }
+            if (rc == 0 || rc == libc::ENOENT) && found.is_null() {
+                return Ok(true);
+            }
+            if rc != 0 {
+                return Err(account_error(
+                    path,
+                    "enumerate private primary-group accounts",
+                    rc,
+                ));
+            }
+            // SAFETY: immutable native current-user observation.
+            if account.pw_gid == gid && account.pw_uid != unsafe { libc::geteuid() } {
+                return Ok(false);
+            }
+            break;
+        }
+    }
+    Err(unsafe_path(
+        "private primary-group account enumeration exceeds 65536 records",
+        path,
+    ))
+}
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn sole_primary_member(_gid: libc::gid_t, path: &Path) -> Result<bool> {
+    Err(failure(
+        StateFileErrorCode::Unsupported,
+        "complete private primary-group account enumeration unavailable on this platform",
+        path,
+    ))
 }
