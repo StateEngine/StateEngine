@@ -86,7 +86,8 @@ pub struct Generation(pub u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostGeneration(pub u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Sequence(pub u64);
+/// Per-entity counter; creation is one, every committed change adds one.
+pub struct Revision(pub std::num::NonZeroU64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct UnixMicros(pub u64);
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -176,8 +177,6 @@ pub enum StopReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Window {
     pub source: Source,
-    pub from: Sequence,
-    pub to: Sequence,
     pub start_cursor: Option<Cursor>,
     pub end_cursor: Option<Cursor>,
     pub returned: u64,
@@ -205,7 +204,7 @@ pub struct PageRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventRef {
     pub id: EventId,
-    pub sequence: Sequence,
+    pub position: Cursor,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EffectStatus {
@@ -293,10 +292,23 @@ pub struct Limits {
 #[derive(Clone, Debug)]
 pub struct HostConfig {
     pub state_home: NativePath,
+    /// Installed native se image, supplied by the trusted composition root.
+    pub helper_executable: NativePath,
+    pub linux_delegation: LinuxDelegation,
     pub api: ApiVersion,
     pub kind: HostKind,
     pub features: Vec<Feature>,
     pub limits: Limits,
+}
+/// Agent-scope policy; never a way to move the embedding host.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LinuxDelegation {
+    /// Lazy per-agent manager scope when shipped; wave 1 uses uncontained groups.
+    AutoUserManager,
+    /// Current delegated scope only; never search an arbitrary ancestor.
+    CurrentScope,
+    /// Trusted composition-root selection, not model input.
+    ExplicitRoot(NativePath),
 }
 pub trait Cancellation: Send + Sync + std::fmt::Debug {
     fn is_cancelled(&self) -> bool;
@@ -332,7 +344,7 @@ pub struct BoundSession {
     pub grant: Vec<u8>,
     pub identity: SessionIdentity,
     pub generation: Generation,
-    pub binding_revision: Sequence,
+    pub binding_revision: Revision,
 }
 pub enum Authority {
     Owner(OwnerAuthority),
@@ -365,13 +377,13 @@ pub struct ProjectInfo {
     pub id: ProjectId,
     pub name: String,
     pub root: NativePath,
-    pub revision: Sequence,
+    pub revision: Revision,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoreInfo {
     pub id: StoreId,
     pub version: StoreVersion,
-    pub head: Sequence,
+    pub head: Option<Cursor>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BindingRequest {
@@ -381,14 +393,14 @@ pub struct BindingRequest {
     pub model: ModelIdentity,
     pub conversation: ProviderSessionId,
     pub target: Option<HostSessionTarget>,
-    pub expected_binding_revision: Option<Sequence>,
+    pub expected_binding_revision: Option<Revision>,
     pub capture_consent: bool,
     pub idempotency_key: IdempotencyKey,
 }
 pub struct IssuedSession {
     pub identity: SessionIdentity,
     pub generation: Generation,
-    pub binding_revision: Sequence,
+    pub binding_revision: Revision,
     pub session: BoundSession,
     pub receipt: Receipt<SessionIdentity>,
 }
@@ -622,7 +634,7 @@ pub enum AdoptionState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Adoption {
     pub identity: SessionIdentity,
-    pub binding_revision: Sequence,
+    pub binding_revision: Revision,
     pub state: AdoptionState,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]

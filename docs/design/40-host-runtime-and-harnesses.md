@@ -137,6 +137,13 @@ ownership remains with se-proc; the reference is not a second native owner.
 
 ### 3.1 Launch order (no transaction spans native work)
 
+Plain launch creates an agent's first conversation when it has never had one.
+Otherwise it verifies and resumes the saved conversation, unless the caller
+explicitly chooses `--new`. `resume-reference-missing` means an earlier saved
+reference is now gone; unverifiable existing conversations still refuse.
+This same rule applies to CLI/MCP launch, init `--launch`, and agents created
+by `agent add`; creation alone does not require a conversation reference.
+
 The common launch path has **three commits**; events sharing a row are one
 transaction with one request identity, not separate serial acknowledgments.
 
@@ -160,6 +167,14 @@ that FULL commit. If readiness cannot be proved, return pending/failure while
 retaining native custody, not a partial successful launch. Embedded SE Code has
 no process-bound credential events and uses its distinct in-process bind path.
 
+HostConfig supplies the trusted installed native `helper_executable` and typed
+`linux_delegation` policy in both the linked API and proprietary host model.
+The composition root validates/maps them to se-proc, never resolves a helper
+from provider input or PATH. Delegation selects agent scopes, not a migration
+of SE Code or a runtime-detachment promise. Linux wave 1 uses the uncontained
+process-group path; delegated scopes are wave-4 work (30, Jimmy’s round-4 ruling).
+The scope-capable path below describes that later implementation.
+
 Windows begin_launch associates the job **at creation** using
 PROC_THREAD_ATTRIBUTE_JOB_LIST and explicit CREATE_BREAKAWAY_FROM_JOB, not a
 create-then-assign race. Its job has KILL_ON_JOB_CLOSE | BREAKAWAY_OK, never SILENT.
@@ -179,6 +194,22 @@ nothing; post-CAS native failure becomes StopUnproved with retained cleanup.
 Dropping a future never abandons an OS effect already entered. A checkpoint-commit
 failure cannot authorize vendor execution; revoke helper authorization, witness
 scope/root closure and commit cleanup before release.
+
+Bulk stop, `se down` and uninstall retain one section-50 A.6 StopResult per
+agent, including population Unknown with its reason and gathered diagnostics.
+A failed observation never drops a target or becomes an empty scope; independent
+stops continue. Incomplete exit witnesses keep shutdown/removal incomplete.
+
+For an uncontained Linux/macOS group with no provably live tracked member,
+ordinary stop never signals and records StopUnproved. Human release is legal
+only from StopUnproved, after a stop that could not be proved; Running,
+LeaderExited and Lost first go through ordinary stop. Owner-human
+`se stop AGENT --release` then CAS-commits the generation/revision-bound ownership-release marker and calls
+se-proc `release_uncontained`, which returns ReleasedOwnership, not StopWitness.
+Preserve StopUnproved and diagnostic history; exclude released ownership from
+live/remove blockers and never re-adopt it. Close only tracking registrations/
+identity pins, not the provider port. Remove reports possible remaining members.
+Sections 20/30 own the durable/native mechanics; 50 owns the command/result.
 
 ### 3.2 Exit notifications, stop and catch-up
 
@@ -895,7 +926,7 @@ store amendment; the host supplies real outside facts and holds the OS lease.
 
 RuntimeOwnerEstablished.recovered uses section 20's RuntimeRecoveredTransfer,
 not another recovery event. transfer and handover_event identify the exact current
-Claimed head; capture_at is a real committed revision in the same store,
+Claimed head; capture_at is an opaque committed StorePosition in the same store,
 at least frozen_at and no later than the observed head. The enclosing FULL owner
 event is both new-owner and Recovered completion reference. Its projection keeps
 the original transfer plus Recovered under the fresh epoch/G. A standalone
