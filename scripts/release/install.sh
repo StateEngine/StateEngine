@@ -119,6 +119,7 @@ cleanup() {
     trap - EXIT HUP INT TERM
     set +e
     rollback_complete=1
+    rollback_profile=''
     if [ -n "$temp_payload" ] && [ "$payload_destination" -ef "$temp_payload" ]; then
         case "$payload_kind" in binary) published_binary=1 ;; fish) published_fish=1 ;; esac
     fi
@@ -134,14 +135,14 @@ cleanup() {
             if [ -f "$stage/$name.after-digest" ]; then after=$(cat "$stage/$name.after-digest"); fi
             if [ -n "$after" ] && [ "$current" = "$after" ]; then
                 if [ "$prior" != absent ]; then
-                    temp_profile=$(mktemp "$HOME/.se-profile-XXXXXXXX")
+                    rollback_profile=$(mktemp "$HOME/.se-profile-XXXXXXXX")
                     bytes=$(wc -c < "$profile")
                     block_bytes=$(wc -c < "$stage/path-block")
                     prefix_bytes=$((bytes - block_bytes))
                     if cmp -s -i "$prefix_bytes":0 -- "$profile" "$stage/path-block" &&
-                       cp --attributes-only --preserve=mode,ownership,xattr -- "$profile" "$temp_profile" &&
-                       head -c "$prefix_bytes" -- "$profile" > "$temp_profile" &&
-                       [ "$(file_digest "$temp_profile")" = "$prior" ] && mv -- "$temp_profile" "$profile"; then temp_profile=''
+                       cp --attributes-only --preserve=mode,ownership,xattr -- "$profile" "$rollback_profile" &&
+                       head -c "$prefix_bytes" -- "$profile" > "$rollback_profile" &&
+                       [ "$(file_digest "$rollback_profile")" = "$prior" ] && mv -- "$rollback_profile" "$profile"; then rollback_profile=''
                     else rollback_complete=0; fi
                 else rm -- "$profile" || rollback_complete=0; fi
             elif [ -n "$current" ] && [ "$current" = "$prior" ]; then :
@@ -169,6 +170,7 @@ cleanup() {
         [ "$rollback_complete" -eq 1 ] || printf 'Rollback incomplete; owned paths and blocks remain recorded: %s\n' "$record" >&2
     fi
     [ -z "$temp_profile" ] || rm -- "$temp_profile"
+    [ -z "$rollback_profile" ] || rm -- "$rollback_profile"
     [ -z "$temp_payload" ] || rm -- "$temp_payload"
     if [ -n "$stage" ]; then
         find "$stage" -depth -type f -exec rm -- {} +
