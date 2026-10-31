@@ -23,3 +23,11 @@ unsafe_code = "allow"
 undocumented_unsafe_blocks = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
+
+[[test]]
+name = "ancestor_policy"
+harness = false
+
+[[test]]
+name = "native_entropy"
+harness = false
