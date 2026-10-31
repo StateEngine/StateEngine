@@ -9,6 +9,7 @@ publish.workspace = true
 [dependencies]
 se-types = { path = "../se-types" }
 sha2.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -22,3 +23,11 @@ unsafe_code = "allow"
 undocumented_unsafe_blocks = "deny"
 unwrap_used = "deny"
 expect_used = "deny"
+
+[[test]]
+name = "ancestor_policy"
+harness = false
+
+[[test]]
+name = "native_entropy"
+harness = false

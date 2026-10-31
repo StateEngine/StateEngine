@@ -215,3 +215,10 @@ impl NativeStateFiles {
 pub(crate) fn pin_owned_directory(path: &Path) -> Result<File> {
     os::pin_directory(path)
 }
+
+/// Existing ancestors use the same native account/group policy in every creator.
+/// This never changes permissions and does not validate an owned state root.
+#[cfg(unix)]
+pub(crate) fn validate_existing_ancestor(file: &File, path: &Path) -> Result<()> {
+    os::validate_ancestor(file, path)
+}

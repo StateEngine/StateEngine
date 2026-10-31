@@ -371,6 +371,7 @@ dependencies = [
  "se-types",
  "sha2",
  "windows-sys",
+ "zeroize",
 ]
 
 [[package]]

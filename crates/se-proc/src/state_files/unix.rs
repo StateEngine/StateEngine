@@ -1,4 +1,5 @@
 use super::*;
+mod ancestors;
 use std::{
     ffi::{CString, OsStr},
     io::Read,
@@ -71,7 +72,9 @@ fn walk(path: &Path, create: bool) -> Result<File> {
     )?;
     let parts = components(path)?;
     let mut private = false;
+    let mut traversed = PathBuf::from("/");
     for (index, value) in parts.iter().enumerate() {
+        traversed.push(value);
         let component = name(value, path)?;
         let mut created = false;
         if create {
@@ -141,17 +144,9 @@ fn walk(path: &Path, create: bool) -> Result<File> {
                 .map_err(|e| io_error("sync newly created directory parent", path, e))?;
         }
         if private {
-            metadata(&next, path, true)?;
-        } else if symlink {
-            let meta = next
-                .metadata()
-                .map_err(|e| io_error("inspect system ancestor", path, e))?;
-            if meta.uid() != 0 && meta.uid() != user {
-                return Err(unsafe_path(
-                    "system ancestor owner is not root or current user",
-                    path,
-                ));
-            }
+            metadata(&next, &traversed, true)?;
+        } else {
+            super::validate_existing_ancestor(&next, &traversed)?;
         }
         parent = next;
     }
@@ -351,4 +346,9 @@ impl Directory {
             .map_err(|e| io_error("sync staging parent after rename", staged, e))?;
         Ok(())
     }
+}
+
+/// Shared with the native creator; callers retain the directory being checked.
+pub(super) fn validate_ancestor(file: &File, path: &Path) -> Result<()> {
+    ancestors::validate(file, path)
 }

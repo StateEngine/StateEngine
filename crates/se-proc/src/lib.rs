@@ -5,6 +5,8 @@
 //! protected staging/readback/publication adapter. Native
 //! resource layouts are intentionally opaque; no handle is Clone or Default.
 
+mod entropy;
+pub use entropy::{NativeEntropyError, random_secret};
 mod error;
 mod identity;
 mod launch;
