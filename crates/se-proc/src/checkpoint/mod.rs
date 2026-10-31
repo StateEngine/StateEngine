@@ -4,6 +4,7 @@ use crate::*;
 use se_types::{AgentId, EventId, HumanId, Read, SessionId};
 use serde::{Deserialize, Serialize};
 use std::{io, path::PathBuf};
+pub(crate) mod decimal;
 pub(crate) mod native_path;
 mod validation;
 pub(crate) mod optional_native_path {

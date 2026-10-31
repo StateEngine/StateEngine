@@ -25,9 +25,19 @@ pub enum BootIdentity {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum StartIdentity {
-    Linux { start_ticks: u64 },
-    Windows { creation_filetime: u64 },
-    MacOs { seconds: u64, microseconds: u32 },
+    Linux {
+        #[serde(with = "crate::checkpoint::decimal::u64")]
+        start_ticks: u64,
+    },
+    Windows {
+        #[serde(with = "crate::checkpoint::decimal::u64")]
+        creation_filetime: u64,
+    },
+    MacOs {
+        #[serde(with = "crate::checkpoint::decimal::u64")]
+        seconds: u64,
+        microseconds: u32,
+    },
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -55,6 +65,7 @@ pub struct LiveObservation {
     pub identity: ProcessIdentity,
     pub state: NativeState,
     pub parent: Option<ProcessId>,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub observed_at_unix_ns: u128,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -75,6 +86,7 @@ pub enum ProcessObservation {
         expected: ProcessIdentity,
         evidence: ExitEvidence,
         status: ExitStatus,
+        #[serde(with = "crate::checkpoint::decimal::u128")]
         observed_at_unix_ns: u128,
     },
 }
@@ -84,6 +96,7 @@ pub enum ProcessRead {
     Present(LiveObservation),
     Absent {
         pid: ProcessId,
+        #[serde(with = "crate::checkpoint::decimal::u128")]
         observed_at_unix_ns: u128,
     },
     /// A cold PID query found a zombie without a readable executable. A stop
@@ -94,6 +107,7 @@ pub enum ProcessRead {
         start: StartIdentity,
         state: NativeState,
         status: ExitStatus,
+        #[serde(with = "crate::checkpoint::decimal::u128")]
         observed_at_unix_ns: u128,
     },
 }

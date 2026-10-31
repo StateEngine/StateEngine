@@ -163,6 +163,28 @@ fn reservation(value: &LaunchReservation, lifecycle: &LifecycleId) -> Result<()>
 fn prepared(value: &ScopeCheckpoint, lifecycle: &LifecycleId) -> Result<()> {
     reservation(&value.reservation, lifecycle)?;
     scope(&value.scope)?;
+    let parent_matches = match (&value.parent, &value.reservation.owner.boot) {
+        (ReservationParent::Windows, BootIdentity::WindowsAbsoluteCreationClock) => true,
+        (ReservationParent::MacOs, BootIdentity::MacOs { .. }) => true,
+        (ReservationParent::LinuxTracked, BootIdentity::Linux { .. }) => matches!(
+            value.scope,
+            ScopeIdentity::LinuxPrepared { .. } | ScopeIdentity::LinuxTracked { .. }
+        ),
+        (
+            ReservationParent::Linux {
+                path,
+                inode,
+                boot_id,
+                ..
+            },
+            BootIdentity::Linux { boot_id: current },
+        ) => path.is_absolute() && *inode != 0 && boot_id == current,
+        _ => false,
+    };
+    require(
+        parent_matches,
+        "resolved parent differs from prepared scope/native platform",
+    )?;
     binding(
         &value.scope,
         &value.reservation.owner,
@@ -310,6 +332,30 @@ pub(super) fn checkpoint(value: &Checkpoint) -> Result<()> {
                     && witness.scope_exit.remaining.population == Population::Empty
                     && witness.scope_exit.exit_basis.is_some(),
                 "exit witness lifecycle/scope/empty proof mismatch",
+            )?;
+            let (owner, host, guarantee) = match retained.as_ref() {
+                CheckpointSource::Reservation(v) => (&v.owner, &v.host, None),
+                CheckpointSource::Scope(v) => (
+                    &v.reservation.owner,
+                    &v.reservation.host,
+                    Some(&v.guarantee),
+                ),
+                CheckpointSource::Root(v) => (
+                    &v.scope.reservation.owner,
+                    &v.scope.reservation.host,
+                    Some(&v.scope.guarantee),
+                ),
+                CheckpointSource::Process(v) => (&v.owner, &v.host, Some(&v.guarantee)),
+            };
+            binding(&witness.scope, owner, host, None, &witness.guarantee)?;
+            require(
+                guarantee.is_none_or(|expected| expected == &witness.guarantee),
+                "exit guarantee differs from retained custody",
+            )?;
+            require(
+                witness.scope_exit.exit_basis != Some(ScopeExitBasis::RemovedPinnedLinuxCgroup)
+                    || matches!(witness.scope, ScopeIdentity::LinuxCgroup { .. }),
+                "removed-cgroup exit evidence requires a recorded cgroup",
             )?;
             if let Some(scope) = source_scope(retained) {
                 require(

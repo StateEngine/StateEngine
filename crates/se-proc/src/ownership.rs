@@ -22,7 +22,9 @@ pub enum ScopeIdentity {
     LinuxCgroup {
         #[serde(with = "crate::checkpoint::native_path")]
         path: PathBuf,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
         device: u64,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
         inode: u64,
         boot_id: [u8; 16],
     },
@@ -63,6 +65,7 @@ pub struct ProcessRecord {
     /// The host excludes this durable marker from live admission and recovery.
     pub ownership_release: Option<UnwitnessedRelease>,
     pub exit_status: Option<ExitStatus>,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub observed_at_unix_ns: u128,
     pub argv_sha256: [u8; 32],
 }
@@ -78,6 +81,7 @@ pub struct LaunchReservation {
     pub generation: GenerationId,
     pub scope_nonce: [u8; 16],
     pub parent: ReservationParent,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub created_at_unix_ns: u128,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -87,7 +91,9 @@ pub enum ReservationParent {
     Linux {
         #[serde(with = "crate::checkpoint::native_path")]
         path: PathBuf,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
         device: u64,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
         inode: u64,
         boot_id: [u8; 16],
     },
@@ -169,6 +175,7 @@ pub struct RemainingScope {
     pub population: Population,
     pub known_live: Vec<ProcessIdentity>,
     pub extent: EnumerationExtent,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub observed_at_unix_ns: u128,
 }
 /// Host supplies this only after an ordinary stop yielded durable StopUnproved
@@ -182,6 +189,7 @@ pub struct UnwitnessedRelease {
     pub revision: NonZeroU64,
     pub scope: ScopeIdentity,
     pub remaining: RemainingScope,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub released_at_unix_ns: u128,
 }
 /// Native tracking was relinquished; this is deliberately not a StopWitness.
@@ -238,6 +246,7 @@ pub struct StopWitness {
     pub root: RootWitness,
     pub scope: ScopeIdentity,
     pub scope_exit: ScopeObservation,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub observed_at_unix_ns: u128,
     pub guarantee: ContainmentGuarantee,
 }
