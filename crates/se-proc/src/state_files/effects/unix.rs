@@ -537,9 +537,9 @@ impl Pin {
                 ));
             }
         }
-        // SAFETY: only the checked uniquely-created staging entry is removed.
         if result.is_err()
             && !swapped
+            // SAFETY: retained parent descriptor and checked NUL-terminated staging name.
             && unsafe { libc::unlinkat(self.parent.as_raw_fd(), stage_name.as_ptr(), 0) } < 0
             && io::Error::last_os_error().kind() != io::ErrorKind::NotFound
         {
