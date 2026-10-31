@@ -327,6 +327,9 @@ pub trait Snapshot {
         query: MessageQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>>;
+    /// Exact matching count in this finite snapshot, independent of pagination.
+    /// Uses the same actor/kind/unread and visibility predicates as messages.
+    fn message_count(&mut self, query: MessageQuery) -> StoreResult<u64>;
     fn decision(&mut self, id: DecisionId) -> StoreResult<Read<ProjectionRecord>>;
     fn decisions(
         &mut self,

@@ -141,25 +141,27 @@ impl SqliteSnapshot {
             && query.unread_only
             && query.kind.is_none()
             && query.sender.is_none()
-        {
-            if let Some(recipient) = to.as_ref() {
-                let total:u64=self.db.query_row("SELECT unread_count FROM resume_heads WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![p,recipient],|r|value(r,0)).map_err(sql)?;
-                let remaining = total.checked_sub(items.len() as u64).ok_or_else(|| {
-                    fail(
-                        StoreErrorCode::ProjectionInconsistent,
-                        "unread count is smaller than its eligible page",
-                    )
-                })?;
-                if stop == StopReason::Exhausted && remaining != 0 {
-                    return Err(fail(
-                        StoreErrorCode::ProjectionInconsistent,
-                        "unread count disagrees with exhausted mail query",
-                    ));
+            && query.recipient.is_some()
+            && match &self.scope.visibility {
+                Visibility::SelfOnly(agent) => {
+                    query.recipient.as_ref() == Some(&Actor::Agent(agent.clone()))
                 }
-                Some(remaining)
-            } else {
-                None
+                _ => true,
+            } {
+            let total = self.count_messages(query.clone())?;
+            let remaining = total.checked_sub(items.len() as u64).ok_or_else(|| {
+                fail(
+                    StoreErrorCode::ProjectionInconsistent,
+                    "unread count is smaller than its eligible page",
+                )
+            })?;
+            if stop == StopReason::Exhausted && remaining != 0 {
+                return Err(fail(
+                    StoreErrorCode::ProjectionInconsistent,
+                    "unread count disagrees with exhausted mail query",
+                ));
             }
+            Some(remaining)
         } else {
             None
         };
@@ -192,48 +194,15 @@ impl SqliteSnapshot {
         budget: &ReadBudget,
     ) -> StoreResult<Vec<MarkRow>> {
         let unread = query.unread_only && to.is_some();
-        let index = if to.is_some() {
-            "messages_recipient_seq"
-        } else if from.is_some() {
-            "messages_sender_seq"
-        } else if query.kind.is_some() {
-            "messages_kind_seq"
-        } else {
-            "messages_project_seq"
-        };
-        let mut statement = if unread {
-            String::from(
-                "SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM marks m INDEXED BY marks_unread JOIN messages d ON d.sent_seq=m.message_seq WHERE m.project_id=? AND m.read_seq IS NULL AND m.dismissed_seq IS NULL AND m.message_seq>? AND m.message_seq<=?",
-            )
-        } else {
-            format!(
-                "SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d INDEXED BY {index} JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.sent_seq>? AND d.sent_seq<=?"
-            )
-        };
-        let mut args = vec![
-            Value::Blob(p.into()),
-            Value::Integer(after as i64),
-            Value::Integer(h as i64),
-        ];
-        if let Some(to) = to {
-            statement.push_str(if unread {
-                " AND m.recipient_id=?"
-            } else {
-                " AND d.recipient_id=?"
-            });
-            args.push(Value::Blob(to.into()));
-        }
-        if let Some(from) = from {
-            statement.push_str(" AND d.sender_id=?");
-            args.push(Value::Blob(from.into()));
-        }
-        if let Some(kind) = &query.kind {
-            statement.push_str(" AND d.message_kind=?");
-            args.push(Value::Text(kind.clone()));
-        }
-        if query.unread_only && !unread {
-            statement.push_str(" AND m.read_seq IS NULL AND m.dismissed_seq IS NULL");
-        }
+        let (mut statement, mut args) = mail_sql(
+            p,
+            to,
+            from,
+            query,
+            h,
+            after,
+            "d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq",
+        );
         statement.push_str(if unread {
             " ORDER BY m.message_seq LIMIT ?"
         } else {
@@ -264,4 +233,59 @@ impl SqliteSnapshot {
             _ => sql(e),
         })
     }
+}
+
+pub(super) fn mail_sql(
+    p: &[u8],
+    to: Option<&[u8]>,
+    from: Option<&[u8]>,
+    query: &MessageQuery,
+    h: u64,
+    after: u64,
+    projection: &str,
+) -> (String, Vec<Value>) {
+    let unread = query.unread_only && to.is_some();
+    let index = if to.is_some() {
+        "messages_recipient_seq"
+    } else if from.is_some() {
+        "messages_sender_seq"
+    } else if query.kind.is_some() {
+        "messages_kind_seq"
+    } else {
+        "messages_project_seq"
+    };
+    let mut statement = if unread {
+        format!(
+            "SELECT {projection} FROM marks m INDEXED BY marks_unread JOIN messages d ON d.sent_seq=m.message_seq WHERE m.project_id=? AND m.read_seq IS NULL AND m.dismissed_seq IS NULL AND m.message_seq>? AND m.message_seq<=?"
+        )
+    } else {
+        format!(
+            "SELECT {projection} FROM messages d INDEXED BY {index} JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.sent_seq>? AND d.sent_seq<=?"
+        )
+    };
+    let mut args = vec![
+        Value::Blob(p.into()),
+        Value::Integer(after as i64),
+        Value::Integer(h as i64),
+    ];
+    if let Some(to) = to {
+        statement.push_str(if unread {
+            " AND m.recipient_id=?"
+        } else {
+            " AND d.recipient_id=?"
+        });
+        args.push(Value::Blob(to.into()));
+    }
+    if let Some(from) = from {
+        statement.push_str(" AND d.sender_id=?");
+        args.push(Value::Blob(from.into()));
+    }
+    if let Some(kind) = &query.kind {
+        statement.push_str(" AND d.message_kind=?");
+        args.push(Value::Text(kind.clone()));
+    }
+    if query.unread_only && !unread {
+        statement.push_str(" AND m.read_seq IS NULL AND m.dismissed_seq IS NULL");
+    }
+    (statement, args)
 }

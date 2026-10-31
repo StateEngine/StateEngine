@@ -9,6 +9,7 @@ type ResumeRow = (
 );
 mod cursor;
 mod message;
+mod message_count;
 mod page;
 mod query;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
@@ -430,6 +431,9 @@ impl Snapshot for SqliteSnapshot {
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>> {
         self.read_messages(query, budget)
+    }
+    fn message_count(&mut self, query: MessageQuery) -> StoreResult<u64> {
+        self.count_messages(query)
     }
     fn operation_receipt(
         &mut self,
