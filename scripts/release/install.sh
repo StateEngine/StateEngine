@@ -141,7 +141,9 @@ cleanup() {
             [ "$exit_code" -ne 0 ] || exit_code=1
         fi
     fi
-    if [ "$done_install" -eq 0 ]; then
+    # A losing writer may have created parents that the record owner still needs.
+    # Keep them while any installation record remains, including partial rollback.
+    if [ "$done_install" -eq 0 ] && [ ! -e "$record" ] && [ ! -L "$record" ]; then
         while IFS= read -r directory; do
             [ -z "$directory" ] || rmdir -- "$directory" 2>/dev/null
         done <<DIRECTORIES
