@@ -808,7 +808,7 @@ allocation is exactly **2,000,000 bytes** across ALL roots, not per connection/r
 
 These are proposed reservations, NOT measurements. A profile that exceeds one
 share must reduce admission or stay deferred; unused other-core memory and 80's
-4.5 MB reserve are not silently borrowed. No per-root parser/tree/cache pool. Source,
+3.5 MB reserve are not silently borrowed. No per-root parser/tree/cache pool. Source,
 SQL response data and output serialization ownership must avoid overlapping copies
 beyond these reservations; native adapters include their buffers and kernel charges
 in the external measurement. Global root registration bounds also count here.
