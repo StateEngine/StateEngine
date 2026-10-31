@@ -139,7 +139,7 @@ cleanup() {
                     block_bytes=$(wc -c < "$stage/path-block")
                     prefix_bytes=$((bytes - block_bytes))
                     if cmp -s -i "$prefix_bytes":0 -- "$profile" "$stage/path-block" &&
-                       cp --attributes-only --preserve=mode -- "$profile" "$temp_profile" &&
+                       cp --attributes-only --preserve=mode,ownership,xattr -- "$profile" "$temp_profile" &&
                        head -c "$prefix_bytes" -- "$profile" > "$temp_profile" &&
                        [ "$(file_digest "$temp_profile")" = "$prior" ] && mv -- "$temp_profile" "$profile"; then temp_profile=''
                     else rollback_complete=0; fi
@@ -277,7 +277,7 @@ for name in $profiles; do
     else [ ! -e "$profile" ] && [ ! -L "$profile" ] || fail "login profile appeared during installation: $profile"; fi
     temp_profile=$(mktemp "$HOME/.se-profile-XXXXXXXX")
     if [ "$prior" != absent ]; then
-        cp --attributes-only --preserve=mode -- "$profile" "$temp_profile"
+        cp --attributes-only --preserve=mode,ownership,xattr -- "$profile" "$temp_profile"
         cat -- "$profile" > "$temp_profile"
         [ "$(file_digest "$temp_profile")" = "$prior" ] || fail "login profile changed while reading: $profile"
     fi
