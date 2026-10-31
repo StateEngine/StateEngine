@@ -95,3 +95,6 @@ pub struct HandoverState {
     pub recovery_owner: Option<se_types::EventId>,
     pub unresolved: Vec<se_types::ErrorBody>,
 }
+
+mod inventory;
+pub use inventory::decode_owner_inventory;
