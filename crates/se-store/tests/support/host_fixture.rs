@@ -45,7 +45,7 @@ pub fn options(queue: u16) -> Result<WriterOptions, Box<dyn std::error::Error>> 
         group_bytes: NonZeroU32::new(2 * 1024 * 1024).ok_or("group")?,
     })
 }
-fn epoch() -> Result<HostEpoch, Box<dyn std::error::Error>> {
+pub fn epoch() -> Result<HostEpoch, Box<dyn std::error::Error>> {
     #[cfg(target_os = "linux")]
     let (boot, started) = {
         let stat = std::fs::read_to_string("/proc/self/stat")?;
