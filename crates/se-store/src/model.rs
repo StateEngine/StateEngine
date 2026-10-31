@@ -11,7 +11,7 @@ use std::{
 };
 
 /// Logical internal object (effect/source/import/erasure/process record), never an OS PID.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecordId {
     _bytes: [u8; 16],
 }
@@ -22,7 +22,7 @@ pub trait RecordIdentity: Sized {
     fn as_bytes(&self) -> &[u8; 16];
 }
 /// Per-entity counter: creation is one, committed changes increment by one.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Revision {
     pub value: NonZeroU64,
 }
@@ -33,17 +33,17 @@ pub struct StorePosition {
     _incarnation: u64,
     _sequence: Sequence,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Expected {
     Absent,
     Revision(Revision),
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Actor {
     Human(HumanId),
     Agent(AgentId),
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
     Registry,
     Project(ProjectId),
@@ -487,3 +487,53 @@ pub enum StoreErrorCode {
     ErasurePhysicalGuaranteeUnavailable,
 }
 pub type StoreResult<T> = std::result::Result<T, Box<StoreError>>;
+
+impl RecordId {
+    pub(crate) fn new_internal(bytes: [u8; 16]) -> Self {
+        Self { _bytes: bytes }
+    }
+    pub(crate) fn bytes_internal(&self) -> &[u8; 16] {
+        &self._bytes
+    }
+}
+impl StorePosition {
+    pub(crate) fn new_internal(
+        store: StoreId,
+        incarnation: u64,
+        sequence: u64,
+    ) -> StoreResult<Self> {
+        Ok(Self {
+            _store: store,
+            _incarnation: incarnation,
+            _sequence: Sequence::new(sequence).map_err(crate::error::invalid)?,
+        })
+    }
+    pub(crate) fn sequence(&self) -> u64 {
+        self._sequence.get()
+    }
+    pub(crate) fn belongs(&self, info: &StoreInfo) -> bool {
+        self._store == info.id && self._incarnation == info.incarnation
+    }
+}
+impl WriterMode {
+    pub(crate) fn from_lease(lease: &LeaseIdentity) -> Self {
+        Self {
+            _kind: match lease.mode {
+                LeaseMode::Host => WriterKind::Host {
+                    generation: lease.generation,
+                },
+                LeaseMode::DirectClient => WriterKind::Direct,
+            },
+        }
+    }
+}
+impl WriterModeValue for WriterMode {
+    fn kind(&self) -> WriterKind {
+        self._kind
+    }
+}
+impl BackupContext {
+    pub(crate) fn new_internal() -> Self {
+        Self { _private: () }
+    }
+}

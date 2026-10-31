@@ -7,7 +7,7 @@ use se_types::{
     MessageId, NativePath, ProcessInstance, ProjectId, SessionId,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Door {
     Cli,
     Mcp,
@@ -15,19 +15,19 @@ pub enum Door {
     Host,
     Import,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Provider {
     Claude,
     Codex,
     SeCode,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionProfile {
     ReadOnly,
     WorkspaceWrite,
     NamedFullBypass,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
     pub provider: Provider,
     pub model: Option<String>,
@@ -40,24 +40,24 @@ pub struct Root {
     pub path: NativePath,
     pub canonical_key: Vec<u8>,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PrincipalKind {
     Human,
     Agent,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Consent {
     Capture,
     Suppressed,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Role {
     System,
     User,
     Assistant,
     Tool,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DecisionKind {
     Note,
     Decision,
@@ -96,7 +96,7 @@ pub enum IntegrationState {
     Removed,
     Conflict,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum GrantKey {
     AgentCanCreate(AgentId),
 }

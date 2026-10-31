@@ -23,7 +23,11 @@ pub trait StateFiles: Send + Sync {
     /// All SQLite/backup handles have been closed. Sync staged data, publish without
     /// replacing any destination, and sync/read back the destination parent/name.
     /// Collision must return AlreadyExists and preserve the winner.
-    fn publish_no_replace(&self, staged: &std::path::Path, destination: &std::path::Path) -> StoreResult<()>;
+    fn publish_no_replace(
+        &self,
+        staged: &std::path::Path,
+        destination: &std::path::Path,
+    ) -> StoreResult<()>;
 }
 pub struct ProtectedStaging {
     pub path: std::path::PathBuf,
