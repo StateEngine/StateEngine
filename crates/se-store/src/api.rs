@@ -9,6 +9,25 @@ use std::{future::Future, io::Read as ByteReader, sync::Arc, time::Duration};
 /// caller is trusted; IPC callers cannot construct this object from request JSON.
 pub trait RuntimeLease: Send + Sync {
     fn identity(&self) -> StoreResult<LeaseIdentity>;
+    fn files(&self) -> &dyn StateFiles;
+}
+/// Native adapter owned by se-proc and wired by the CLI/host, never by request JSON.
+/// Every path stays in the held per-user state directory. No shell or ambient umask.
+pub trait StateFiles: Send + Sync {
+    /// Reserve a unique, protected regular staging file in the owned directory.
+    /// Read back owner-only mode/ACL and directory custody before returning.
+    fn create_staging(&self, directory: &std::path::Path) -> StoreResult<ProtectedStaging>;
+    /// Open without following links and verify regular-file identity and owner-only
+    /// file/directory protection. Missing is Absent; unknown/unreadable is not absence.
+    fn readback(&self, path: &std::path::Path) -> StoreResult<Read<std::fs::File>>;
+    /// All SQLite/backup handles have been closed. Sync staged data, publish without
+    /// replacing any destination, and sync/read back the destination parent/name.
+    /// Collision must return AlreadyExists and preserve the winner.
+    fn publish_no_replace(&self, staged: &std::path::Path, destination: &std::path::Path) -> StoreResult<()>;
+}
+pub struct ProtectedStaging {
+    pub path: std::path::PathBuf,
+    pub file: std::fs::File,
 }
 /// Constructors are declarations, not executable fallback/default implementations.
 pub trait StoreFactory {
