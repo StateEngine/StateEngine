@@ -2,14 +2,17 @@
 //! typed adapters add their own operation context without copying native walks.
 use std::{
     collections::BTreeMap,
+    fs::File,
     io,
     mem::{size_of, zeroed},
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+    path::Path,
     ptr,
 };
 use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::ConvertSidToStringSidW, *},
+    Storage::FileSystem::*,
     System::{Diagnostics::ToolHelp::*, Threading::*},
 };
 
@@ -181,4 +184,71 @@ pub(crate) fn parents() -> Result<BTreeMap<u32, u32>> {
         }
     }
     Ok(result)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FileIdentity {
+    #[serde(with = "crate::checkpoint::decimal::u64")]
+    pub volume: u64,
+    pub index: [u8; 16],
+}
+pub(crate) fn open_image(path: &Path, delete: bool) -> Result<File> {
+    let path = crate::state_files::windows::wide(path).map_err(|e| Error {
+        operation: "encode native image path",
+        source: io::Error::other(e),
+    })?;
+    // SAFETY: terminated owned native path and literal no-follow/read protection.
+    let file = File::from(handle(
+        unsafe {
+            CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | READ_CONTROL | if delete { DELETE } else { 0 },
+                FILE_SHARE_READ | FILE_SHARE_DELETE,
+                ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_OPEN_REPARSE_POINT,
+                ptr::null_mut(),
+            )
+        },
+        "pin native image",
+    )?);
+    file_identity(&file)?;
+    Ok(file)
+}
+pub(crate) fn file_identity(file: &File) -> Result<FileIdentity> {
+    // SAFETY: native POD output accepts zero initialization before its sized query.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    // SAFETY: immutable retained file and exact native writable information output.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(last("read native file identity"));
+    }
+    // SAFETY: immutable native type query on the same retained file object.
+    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
+        || info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
+        || info.nNumberOfLinks != 1
+    {
+        return Err(invalid(
+            "read native file identity",
+            "single-link regular disk file required",
+        ));
+    }
+    // SAFETY: FILE_ID_INFO is native POD, initialized before the exact sized query.
+    let mut id: FILE_ID_INFO = unsafe { zeroed() };
+    // SAFETY: retained file and aligned output have the FileIdInfo layout and size.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut id as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(last("read 128-bit native file identity"));
+    }
+    Ok(FileIdentity {
+        volume: id.VolumeSerialNumber,
+        index: id.FileId.Identifier,
+    })
 }

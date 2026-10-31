@@ -28,16 +28,13 @@ pub(super) fn initial_agent(
                 name,
                 ..
             } = &record.current.body
+                && name == &input.agent
+                && found.replace(agent.clone()).is_some()
             {
-                if name == &input.agent {
-                    if found.is_some() {
-                        return Err(scope::unreadable(
-                            "initial agent",
-                            "saved name is ambiguous",
-                        ));
-                    }
-                    found = Some(agent.clone());
-                }
+                return Err(scope::unreadable(
+                    "initial agent",
+                    "saved name is ambiguous",
+                ));
             }
         }
         match page.next() {

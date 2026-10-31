@@ -10,6 +10,8 @@ mod config;
 mod executor_judge;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
+#[path = "support/history_cli.rs"]
+mod history_cli;
 #[path = "../src/runtime/host.rs"]
 mod host;
 #[path = "support/host_fixture.rs"]

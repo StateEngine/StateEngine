@@ -117,6 +117,15 @@ pub fn run(
         };
         dispatch(&context, operation, &mut diagnostic)
     };
+    if result.as_ref().is_ok_and(AnyOutput::maintenance_pending) {
+        // The commit is known to have succeeded. Diagnostic delivery cannot
+        // change its receipt or turn that success into an uncertain outcome.
+        let _ = writeln!(
+            stderr,
+            "warning: the operation committed successfully, but database maintenance is pending; the next write will retry it"
+        )
+        .and_then(|()| stderr.flush());
+    }
     if let Some(event) = hook_event
         && !common.json
     {
