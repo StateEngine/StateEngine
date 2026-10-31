@@ -4,7 +4,7 @@ use se_store::{
     LeaseIdentity, RuntimeLease, StateFiles, StoreDetail, StoreError, StoreErrorCode, StoreResult,
 };
 use se_types::{Read, Remedy, Retry};
-use std::{fs::File, path::Path};
+use std::{fs::File, io::Write, path::{Component, Path}};
 
 pub struct Files(pub NativeStateFiles);
 impl Files {
@@ -17,7 +17,64 @@ impl Files {
             .map_err(native_error)
     }
 }
+impl Files {
+    fn check_root(&self) -> StoreResult<()> {
+        // The real database read revalidates the original retained root before
+        // and after opening. A missing database is still a valid root observation.
+        self.0.readback(&self.0.root().join("state.db")).map_err(native_error)?;
+        Ok(())
+    }
+    fn check_path(&self, path: &Path) -> StoreResult<()> {
+        let relative = path.strip_prefix(self.0.root()).map_err(|_| fail(StoreErrorCode::LocationUnsafe, "owned state effect is outside its retained root"))?;
+        if relative.as_os_str().is_empty() || relative.components().any(|part| !matches!(part, Component::Normal(_))) {
+            return Err(fail(StoreErrorCode::LocationUnsafe, "owned state effect requires a normalized descendant file"));
+        }
+        self.check_root()
+    }
+}
 impl StateFiles for Files {
+    fn prepare_directory(&self, path: &Path) -> StoreResult<()> {
+        if path != self.0.root().join("backups") && path != self.0.root().join("staging") {
+            return Err(fail(StoreErrorCode::LocationUnsafe, "only the fixed state backups/staging directories may be prepared"));
+        }
+        self.check_root()?;
+        self.0.prepare_directory(path).map_err(native_error)?;
+        self.check_root()
+    }
+    fn replace_owned(&self, path: &Path, expected: Option<[u8; 32]>, bytes: &[u8]) -> StoreResult<()> {
+        self.check_path(path)?;
+        // Read through the private-root port before the common native mutation pin.
+        // This preserves owner-only protection in addition to the effects pin's identity.
+        self.0.readback(path).map_err(native_error)?;
+        match (se_proc::OwnedFile::open(path).map_err(native_error)?, expected) {
+            (Some(file), Some(digest)) => file.replace(digest, bytes).map_err(native_error)?,
+            (None, None) => {
+                let parent = path.parent().ok_or_else(|| fail(StoreErrorCode::LocationUnsafe, "manifest parent is absent"))?;
+                let mut staged = self.0.create_staging(parent).map_err(native_error)?;
+                staged.file.write_all(bytes).map_err(|error| fail(StoreErrorCode::Unreadable, &format!("write manifest staging: {error}")))?;
+                staged.file.sync_all().map_err(|error| fail(StoreErrorCode::Unreadable, &format!("sync manifest staging: {error}")))?;
+                drop(staged.file);
+                self.0.publish_no_replace(&staged.path, path).map_err(native_error)?;
+            }
+            _ => return Err(fail(StoreErrorCode::SourceChanged, "owned manifest presence differs from its measured expectation")),
+        }
+        if self.0.readback(path).map_err(native_error)?.is_none() {
+            return Err(fail(StoreErrorCode::SourceChanged, "published state manifest is absent on private-root readback"));
+        }
+        self.check_root()
+    }
+    fn remove_owned(&self, path: &Path, expected: [u8; 32]) -> StoreResult<()> {
+        self.check_path(path)?;
+        self.0.readback(path).map_err(native_error)?;
+        if let Some(file) = se_proc::OwnedFile::open(path).map_err(native_error)? {
+            file.remove(expected).map_err(native_error)?;
+        }
+        if self.0.readback(path).map_err(native_error)?.is_some() {
+            return Err(fail(StoreErrorCode::SourceChanged, "retired state generation remains present"));
+        }
+        self.check_root()
+    }
+
     fn create_staging(&self, directory: &Path) -> StoreResult<se_store::ProtectedStaging> {
         let staged = self.0.create_staging(directory).map_err(native_error)?;
         Ok(se_store::ProtectedStaging {

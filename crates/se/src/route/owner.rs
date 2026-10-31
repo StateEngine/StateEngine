@@ -32,6 +32,12 @@ pub struct FileOwner {
     observed: OwnerObservations,
     session_present: bool,
 }
+/// Decode the complete protected inventory before observing the caller. Every
+/// unresolved decode/index failure refuses, including a pending reservation.
+pub fn from_inventory(inventory: &OwnerGuardInventory) -> Result<FileOwner> {
+    let records = super::custody::records(inventory)?;
+    observe(&records)
+}
 impl FileOwner {
     pub fn os_owner(&self) -> &str {
         &self.observed.os_owner

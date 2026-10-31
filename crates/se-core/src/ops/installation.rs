@@ -4,6 +4,7 @@ use super::outputs::{
     RecoveryDirectoryEffect, RevocationEffect, StopFact, UninstallOutput, WitnessState,
 };
 use se_types::{Detail, IdempotencyKey, Result, SeError, details};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     path::{Component, Path, PathBuf},
@@ -21,6 +22,57 @@ pub struct UninstallPathEdit {
     pub target: String,
     pub before_sha256: Option<String>,
     pub block: String,
+}
+/// An exact tail repair, executed only against the same native file/digest.
+#[derive(Clone, Debug)]
+pub struct ProfileTruncation {
+    pub expected_sha256: [u8; 32],
+    pub length: u64,
+}
+impl UninstallPathEdit {
+    /// Recognise a full or torn append only when every preceding byte matches
+    /// the recorded original. A user edit or unrelated suffix yields no repair.
+    pub fn profile_truncation(&self, contents: &[u8]) -> Result<Option<ProfileTruncation>> {
+        if self.block.is_empty()
+            || self.block.len() > 8192
+            || self
+                .before_sha256
+                .as_ref()
+                .is_some_and(|value| !digest(value))
+        {
+            return Err(SeError::invalid(
+                "profile append recovery",
+                "a bounded recorded block and optional original SHA-256",
+            ));
+        }
+        let block = self.block.as_bytes();
+        let first = contents.len().saturating_sub(block.len());
+        let mut prefix = Sha256::new();
+        prefix.update(&contents[..first]);
+        for split in first..contents.len() {
+            let tail = &contents[split..];
+            if block.starts_with(tail) {
+                let original_matches = match &self.before_sha256 {
+                    Some(expected) => format!("{:x}", prefix.clone().finalize()) == *expected,
+                    None => split == 0,
+                };
+                if original_matches {
+                    return Ok(Some(ProfileTruncation {
+                        expected_sha256: Sha256::digest(contents).into(),
+                        length: split as u64,
+                    }));
+                }
+            }
+            prefix.update(&contents[split..split + 1]);
+        }
+        Ok(None)
+    }
+}
+/// Name matching never substitutes for the native no-follow/current-user proof.
+#[derive(Clone, Debug)]
+pub enum TemporaryFileAuthority {
+    Recorded { sha256: String },
+    NativeOwnedName,
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -72,6 +124,35 @@ impl UninstallPlan {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect())
+    }
+    pub fn temporary_file(&self, path: &Path) -> Result<Option<TemporaryFileAuthority>> {
+        self.validate()?;
+        if !path.is_absolute()
+            || !self
+                .recovery_directories()?
+                .iter()
+                .any(|parent| path.parent() == Some(parent.as_path()))
+        {
+            return Ok(None);
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            return Ok(None);
+        };
+        let Some(suffix) = name
+            .strip_prefix(".se-profile-")
+            .or_else(|| name.strip_prefix(".se-publish-"))
+        else {
+            return Ok(None);
+        };
+        if let Some(file) = self.files.iter().find(|file| Path::new(&file.path) == path) {
+            return Ok(Some(TemporaryFileAuthority::Recorded {
+                sha256: file.sha256.clone(),
+            }));
+        }
+        Ok(
+            (suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+                .then_some(TemporaryFileAuthority::NativeOwnedName),
+        )
     }
     pub fn validate(&self) -> Result<()> {
         if !self.state_home.is_absolute()
@@ -259,8 +340,42 @@ pub fn finish_uninstall(
             }
         }
     }
+    for directory in &effects.recovery {
+        if let se_types::Read::Present { value: files } = &directory.temporary_files {
+            let mut seen = BTreeSet::new();
+            if files.len() > 256 {
+                return Err(SeError::invalid(
+                    "temporary-file inventory",
+                    "at most 256 exact entries, otherwise an explicit incomplete result",
+                ));
+            }
+            for file in files {
+                let path = Path::new(&file.path);
+                if !bounded_path(&file.path)
+                    || path.parent() != Some(Path::new(&directory.directory))
+                    || !seen.insert(&file.path)
+                    || plan.temporary_file(path)?.is_none()
+                {
+                    return Err(SeError::invalid(
+                        "temporary file",
+                        "a unique recorded or exact eight-alphanumeric native-owned temporary sibling",
+                    ));
+                }
+            }
+        }
+    }
     let recovery_complete = effects.recovery.iter().all(|entry| {
         entry.witness.state == WitnessState::Witnessed
+            && match &entry.temporary_files {
+                se_types::Read::Absent { .. } => true,
+                se_types::Read::Present { value: files } => files.iter().all(|file| {
+                    matches!(
+                        file.outcome,
+                        FileOutcome::Removed | FileOutcome::AlreadyAbsent
+                    ) && file.witness.state == WitnessState::Witnessed
+                }),
+                _ => false,
+            }
             && match &entry.copies {
                 se_types::Read::Absent { .. } => true,
                 se_types::Read::Present { value } => value.iter().all(|copy| {

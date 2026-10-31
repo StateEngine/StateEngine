@@ -9,6 +9,60 @@ use se_types::{
 };
 use serde::{Deserialize, Serialize};
 
+/// Host measurements for the exact completed request, outside its immutable
+/// semantic receipt. There is no diagnostics object on a direct write.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OutputDiagnostics {
+    pub write_timings: ReceiptWriteTimings,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiptWriteTimings {
+    pub queue_ms: f64,
+    pub transaction_ms: f64,
+    pub commit_call_ms: f64,
+    pub checkpoint_ms: f64,
+    pub durability: WriteDurability,
+}
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WriteDurability {
+    Full,
+    Normal,
+}
+impl ReceiptWriteTimings {
+    pub fn validate(&self) -> se_types::Result<()> {
+        if [
+            self.queue_ms,
+            self.transaction_ms,
+            self.commit_call_ms,
+            self.checkpoint_ms,
+        ]
+        .iter()
+        .any(|value| !value.is_finite() || *value < 0.0)
+        {
+            return Err(se_types::SeError::invalid(
+                "write timings",
+                "four finite non-negative measured millisecond values",
+            ));
+        }
+        Ok(())
+    }
+    pub fn from_store(timings: &se_store::WriteTimings) -> Self {
+        Self {
+            queue_ms: timings.queue.as_secs_f64() * 1000.0,
+            transaction_ms: timings.transaction.as_secs_f64() * 1000.0,
+            commit_call_ms: timings.commit_sync.as_secs_f64() * 1000.0,
+            checkpoint_ms: timings.checkpoint.as_secs_f64() * 1000.0,
+            durability: match timings.durability {
+                se_store::CommitDurability::Full => WriteDurability::Full,
+                se_store::CommitDurability::Normal => WriteDurability::Normal,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Named<I> {
     pub id: I,
@@ -497,6 +551,9 @@ pub struct UninstallOutput {
 pub struct RecoveryDirectoryEffect {
     pub directory: String,
     pub copies: Read<Vec<RecoveryCopy>>,
+    /// Same finite held-parent scan: exact installer temps with native ownership
+    /// and no-follow custody. Unknown/unreadable scans cannot complete uninstall.
+    pub temporary_files: Read<Vec<FileEffect>>,
     pub witness: Witness,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
