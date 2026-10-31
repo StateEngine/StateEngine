@@ -96,7 +96,8 @@ pub struct NativeStateFiles {
     directory: os::Directory,
 }
 impl NativeStateFiles {
-    /// Opens an existing private state root without following links. Missing,
+    /// Opens an existing private state root without following its final name
+    /// or any owned descendant. Trusted system-ancestor links may resolve. Missing,
     /// unreadable, unsafe and replaced roots are failures, never a new directory.
     pub fn open(root: &Path) -> Result<Self> {
         let directory = os::Directory::open(root)?;
@@ -117,9 +118,23 @@ impl NativeStateFiles {
     }
     pub fn create_staging(&self, directory: &Path) -> Result<ProtectedStateStaging> {
         self.check(directory)?;
-        let result = self.directory.create_staging(directory, &self.root)?;
-        self.check(directory)?;
-        Ok(result)
+        for _ in 0..8 {
+            let random = os::random(directory)?;
+            let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
+            let path = directory.join(format!(".se-stage-{suffix}"));
+            let file = match self.directory.create_staging_at(&path, &self.root) {
+                Ok(file) => file,
+                Err(e) if e.code == StateFileErrorCode::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            };
+            self.check(directory)?;
+            return Ok(ProtectedStateStaging { path, file });
+        }
+        Err(failure(
+            StateFileErrorCode::AlreadyExists,
+            "native staging name collisions",
+            directory,
+        ))
     }
     /// Some is a verified regular, owner-only file. None is witnessed native
     /// absence. Every other read outcome remains a typed error with its cause.
@@ -145,7 +160,37 @@ impl NativeStateFiles {
                 staged,
             ));
         }
-        self.directory.publish(staged, destination, &self.root)?;
+        let source = self.directory.open_for_publication(staged, &self.root)?;
+        source
+            .sync_all()
+            .map_err(|e| io_error("sync staged data", staged, e))?;
+        let before = os::identity(&source, staged)?;
+        self.directory
+            .publish(staged, destination, &self.root, &source)?;
+        let published = self
+            .directory
+            .readback(destination, &self.root)?
+            .ok_or_else(|| {
+                failure(
+                    StateFileErrorCode::SourceChanged,
+                    "published file absent on readback",
+                    destination,
+                )
+            })?;
+        if os::identity(&published, destination)? != before {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "publication identity changed",
+                destination,
+            ));
+        }
+        if self.directory.readback(staged, &self.root)?.is_some() {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "staging name remained after publication",
+                staged,
+            ));
+        }
         self.check(destination)?;
         Ok(())
     }

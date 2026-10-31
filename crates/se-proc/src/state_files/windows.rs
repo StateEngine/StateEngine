@@ -17,30 +17,60 @@ use windows_sys::Win32::{
 mod security;
 use security::descriptor;
 fn wide(path: &Path) -> Result<Vec<u16>> {
-    let value: Vec<_> = path.as_os_str().encode_wide().collect();
-    if value.contains(&0) || value.len() > 32767 {
+    use std::path::Prefix;
+    let units: Vec<_> = path.as_os_str().encode_wide().collect();
+    let prefix = path.components().next();
+    let mut value: Vec<u16> = match prefix {
+        Some(Component::Prefix(p)) => match p.kind() {
+            Prefix::VerbatimDisk(_) | Prefix::VerbatimUNC(_, _) => units,
+            Prefix::Disk(_) if path.is_absolute() => {
+                "\\\\?\\".encode_utf16().chain(units).collect()
+            }
+            Prefix::UNC(_, _) => "\\\\?\\UNC\\"
+                .encode_utf16()
+                .chain(units.into_iter().skip(2))
+                .collect(),
+            _ => {
+                return Err(unsafe_path(
+                    "absolute disk or UNC state path required",
+                    path,
+                ));
+            }
+        },
+        _ => return Err(unsafe_path("absolute native state path required", path)),
+    };
+    for unit in &mut value {
+        if *unit == b'/' as u16 {
+            *unit = b'\\' as u16;
+        }
+    }
+    if value.contains(&0) || value.len() >= 32767 {
         return Err(unsafe_path(
             "bounded native path without NUL required",
             path,
         ));
     }
-    Ok(value.into_iter().chain(Some(0)).collect())
+    value.push(0);
+    Ok(value)
 }
 fn last(operation: &'static str, path: &Path) -> StateFileError {
     io_error(operation, path, io::Error::last_os_error())
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
-struct Identity {
-    volume: u32,
-    index: u64,
+pub(super) struct Identity {
+    volume: u64,
+    index: [u8; 16],
 }
 fn metadata(file: &File, path: &Path, directory: bool, check_security: bool) -> Result<Identity> {
+    // SAFETY: native POD output structures accept an all-zero initialization.
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+    // SAFETY: borrowed live handle and writable native metadata output.
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
         return Err(last("read pinned native file identity", path));
     }
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory
+        // SAFETY: immutable query of this retained native handle.
         || unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
     {
         return Err(unsafe_path(
@@ -52,17 +82,31 @@ fn metadata(file: &File, path: &Path, directory: bool, check_security: bool) -> 
         return Err(unsafe_path("state file has external hard links", path));
     }
     if check_security {
-        security::verify(file, path)?;
+        security::verify(file, path, !directory)?;
+    }
+    // SAFETY: native POD buffer, then a live-handle query for ReFS/NTFS file IDs.
+    let mut id: FILE_ID_INFO = unsafe { zeroed() };
+    // SAFETY: explicit output capacity and correct FileIdInfo structure layout.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut id as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(last("read 128-bit native file identity", path));
     }
     Ok(Identity {
-        volume: info.dwVolumeSerialNumber,
-        index: (info.nFileIndexHigh as u64) << 32 | info.nFileIndexLow as u64,
+        volume: id.VolumeSerialNumber,
+        index: id.FileId.Identifier,
     })
 }
-fn open(path: &Path, directory: bool, create: bool) -> Result<File> {
+fn open(path: &Path, directory: bool, create: bool, write: bool) -> Result<File> {
     let data = wide(path)?;
     let descriptor = if create {
-        Some(descriptor(path)?)
+        Some(descriptor(path, directory)?)
     } else {
         None
     };
@@ -80,10 +124,11 @@ fn open(path: &Path, directory: bool, create: bool) -> Result<File> {
     // Directory pins deny delete sharing for their entire lifetime. File pins
     // permit our own no-replace rename while retaining the original object.
     let share = FILE_SHARE_READ | FILE_SHARE_WRITE | if directory { 0 } else { FILE_SHARE_DELETE };
+    // SAFETY: retained UTF-16 path and optional descriptor outlive this native open.
     let raw = unsafe {
         CreateFileW(
             data.as_ptr(),
-            GENERIC_READ | GENERIC_WRITE | READ_CONTROL,
+            GENERIC_READ | READ_CONTROL | if write { GENERIC_WRITE } else { 0 },
             share,
             attributes.as_ref().map_or(ptr::null(), |a| a as *const _),
             if create { CREATE_NEW } else { OPEN_EXISTING },
@@ -124,19 +169,21 @@ fn walk(path: &Path, create: bool, private_from: Option<&Path>) -> Result<File> 
                     let parent_path = prefix
                         .parent()
                         .ok_or_else(|| unsafe_path("directory parent missing", &prefix))?;
-                    let sd = descriptor(&prefix)?;
+                    let sd = descriptor(&prefix, true)?;
                     let sa = SECURITY_ATTRIBUTES {
                         nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
                         lpSecurityDescriptor: sd.0,
                         bInheritHandle: 0,
                     };
+                    // SAFETY: valid descriptor and terminated native path outlive creation.
                     let created = unsafe { CreateDirectoryW(wide(&prefix)?.as_ptr(), &sa) };
                     if created == 0 {
+                        // SAFETY: reads this thread's immediately preceding native error.
                         if unsafe { GetLastError() } != ERROR_ALREADY_EXISTS {
                             return Err(last("create protected directory", &prefix));
                         }
                     } else {
-                        let parent = open(parent_path, true, false)?;
+                        let parent = open(parent_path, true, false, true)?;
                         metadata(&parent, parent_path, true, false)?;
                         parent
                             .sync_all()
@@ -149,13 +196,15 @@ fn walk(path: &Path, create: bool, private_from: Option<&Path>) -> Result<File> 
         // Ancestors need query/traverse only. The final private root and every
         // descendant receive full protection checks, never an inherited-DACL guess.
         let file = if prefix == path || private_from.is_some_and(|root| prefix.starts_with(root)) {
-            let file = open(&prefix, true, false)?;
+            let file = open(&prefix, true, false, true)?;
             metadata(&file, &prefix, true, true)?;
             file
         } else {
+            let data = wide(&prefix)?;
+            // SAFETY: terminated path, no-follow query handle for ancestor inspection.
             let raw = unsafe {
                 CreateFileW(
-                    wide(&prefix)?.as_ptr(),
+                    data.as_ptr(),
                     FILE_READ_ATTRIBUTES | READ_CONTROL,
                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                     ptr::null(),
@@ -167,7 +216,35 @@ fn walk(path: &Path, create: bool, private_from: Option<&Path>) -> Result<File> 
             if raw == INVALID_HANDLE_VALUE || raw.is_null() {
                 return Err(last("open native ancestor", &prefix));
             }
-            let file = unsafe { File::from_raw_handle(raw) };
+            // SAFETY: successful open transfers one uniquely owned handle.
+            let mut file = unsafe { File::from_raw_handle(raw) };
+            // SAFETY: POD output buffer, live handle and writable output.
+            let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
+            // SAFETY: immutable metadata query using the retained ancestor handle.
+            if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+                return Err(last("read native ancestor", &prefix));
+            }
+            if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                security::verify_system_ancestor(&file, &prefix)?;
+                // SAFETY: only this inspected trusted system ancestor may resolve a reparse point.
+                let raw = unsafe {
+                    CreateFileW(
+                        data.as_ptr(),
+                        FILE_READ_ATTRIBUTES | READ_CONTROL,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        ptr::null(),
+                        OPEN_EXISTING,
+                        FILE_FLAG_BACKUP_SEMANTICS,
+                        ptr::null_mut(),
+                    )
+                };
+                if raw == INVALID_HANDLE_VALUE || raw.is_null() {
+                    return Err(last("resolve trusted native ancestor", &prefix));
+                }
+                // SAFETY: successful open transfers one uniquely owned handle.
+                file = unsafe { File::from_raw_handle(raw) };
+                security::verify_system_ancestor(&file, &prefix)?;
+            }
             metadata(&file, &prefix, true, false)?;
             file
         };
@@ -210,50 +287,20 @@ impl Directory {
             Some(root),
         )
     }
-    pub fn create_staging(&self, directory: &Path, root: &Path) -> Result<ProtectedStateStaging> {
-        let parent = walk(directory, false, Some(root))?;
-        for _ in 0..8 {
-            let mut random = [0; 16];
-            // SAFETY: owned fixed-size buffer; system-preferred CSPRNG requires
-            // no algorithm handle or ambient provider configuration.
-            let status = unsafe {
-                BCryptGenRandom(
-                    ptr::null_mut(),
-                    random.as_mut_ptr(),
-                    random.len() as u32,
-                    BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-                )
-            };
-            if status < 0 {
-                return Err(io_error(
-                    "native staging entropy",
-                    directory,
-                    io::Error::other(format!("BCryptGenRandom NTSTATUS {status}")),
-                ));
-            }
-            let path = directory.join(format!(
-                ".se-stage-{}",
-                random
-                    .iter()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>()
-            ));
-            let file = match open(&path, false, true) {
-                Ok(file) => file,
-                Err(e) if e.code == StateFileErrorCode::AlreadyExists => continue,
-                Err(e) => return Err(e),
-            };
-            metadata(&file, &path, false, true)?;
-            parent
-                .sync_all()
-                .map_err(|e| io_error("flush staging parent", directory, e))?;
-            return Ok(ProtectedStateStaging { path, file });
-        }
-        Err(failure(
-            StateFileErrorCode::AlreadyExists,
-            "native staging name collisions",
-            directory,
-        ))
+    pub fn create_staging_at(&self, path: &Path, root: &Path) -> Result<File> {
+        let parent = self.parent(path, root)?;
+        let file = open(path, false, true, true)?;
+        metadata(&file, path, false, true)?;
+        parent
+            .sync_all()
+            .map_err(|e| io_error("flush staging parent", path, e))?;
+        Ok(file)
+    }
+    pub fn open_for_publication(&self, path: &Path, root: &Path) -> Result<File> {
+        let _parent = self.parent(path, root)?;
+        let file = open(path, false, false, true)?;
+        metadata(&file, path, false, true)?;
+        Ok(file)
     }
     pub fn readback(&self, path: &Path, root: &Path) -> Result<Option<File>> {
         let _parent = match self.parent(path, root) {
@@ -267,7 +314,7 @@ impl Directory {
             }
             Err(e) => return Err(e),
         };
-        let file = match open(path, false, false) {
+        let file = match open(path, false, false, false) {
             Ok(file) => file,
             Err(e)
                 if e.source
@@ -281,20 +328,16 @@ impl Directory {
         metadata(&file, path, false, true)?;
         Ok(Some(file))
     }
-    pub fn publish(&self, staged: &Path, destination: &Path, root: &Path) -> Result<()> {
-        let source = self.readback(staged, root)?.ok_or_else(|| {
-            io_error(
-                "staging file absent",
-                staged,
-                io::Error::from(io::ErrorKind::NotFound),
-            )
-        })?;
-        let before = metadata(&source, staged, false, true)?;
-        source
-            .sync_all()
-            .map_err(|e| io_error("flush staged file", staged, e))?;
+    pub fn publish(
+        &self,
+        staged: &Path,
+        destination: &Path,
+        root: &Path,
+        source: &File,
+    ) -> Result<()> {
         let from = self.parent(staged, root)?;
         let to = self.parent(destination, root)?;
+        // SAFETY: terminated native paths and no replacement/copy flags.
         // No REPLACE_EXISTING or COPY_ALLOWED: an existing destination is never
         // overwritten, and a different volume cannot turn rename into a copy.
         if unsafe {
@@ -314,27 +357,30 @@ impl Directory {
             .map_err(|e| io_error("flush publication directory", destination, e))?;
         from.sync_all()
             .map_err(|e| io_error("flush staging directory after rename", staged, e))?;
-        let published = self.readback(destination, root)?.ok_or_else(|| {
-            failure(
-                StateFileErrorCode::SourceChanged,
-                "published file absent on readback",
-                destination,
-            )
-        })?;
-        if metadata(&published, destination, false, true)? != before {
-            return Err(failure(
-                StateFileErrorCode::SourceChanged,
-                "published object differs from staging pin",
-                destination,
-            ));
-        }
-        if self.readback(staged, root)?.is_some() {
-            return Err(failure(
-                StateFileErrorCode::SourceChanged,
-                "staging name remained after publication",
-                staged,
-            ));
-        }
         Ok(())
     }
+}
+
+pub(super) fn random(path: &Path) -> Result<[u8; 16]> {
+    let mut bytes = [0; 16];
+    // SAFETY: writable fixed-size buffer and system-preferred native CSPRNG.
+    let status = unsafe {
+        BCryptGenRandom(
+            ptr::null_mut(),
+            bytes.as_mut_ptr(),
+            bytes.len() as u32,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    if status < 0 {
+        return Err(io_error(
+            "native staging entropy",
+            path,
+            io::Error::other(format!("BCryptGenRandom NTSTATUS {status}")),
+        ));
+    }
+    Ok(bytes)
+}
+pub(super) fn identity(file: &File, path: &Path) -> Result<Identity> {
+    metadata(file, path, false, true)
 }
