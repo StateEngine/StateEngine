@@ -124,6 +124,22 @@ ops! {
     DecisionSupersede => DecisionSupersede, DecisionReceipt, ("decision.supersede",leaf(&["decision","supersede"]),no_mcp("Only an independently verified owner terminal can supersede a decision."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
 }
 impl AnyOp {
+    /// Shared per-operation/per-key classification for CLI and host admission.
+    pub fn requires_human_terminal(&self) -> Result<bool> {
+        match self.meta().human_only {
+            HumanPolicy::Always => Ok(true),
+            HumanPolicy::Never => Ok(false),
+            HumanPolicy::ConfigKey => match self {
+                Self::ConfigSet(input) => {
+                    Ok(crate::config_policy::key_metadata(&input.key)?.human_only)
+                }
+                _ => Err(crate::scope::unreadable(
+                    "human-presence policy",
+                    "config-key policy has no registered key selector",
+                )),
+            },
+        }
+    }
     pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
         match self {
             Self::ProjectInit(v) => Some(&v.idempotency_key),

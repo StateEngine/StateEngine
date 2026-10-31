@@ -304,7 +304,7 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
         && matches!(field, "model" | "profile" | "can-create")
     {
         return Ok(ConfigKeyMeta {
-            human_only: field != "model",
+            human_only: true,
             agent_record: true,
         });
     }

@@ -291,6 +291,9 @@ impl Kernel {
         }
         op.validate()?;
         crate::admission::authorize(op.meta(), cx.admission, terminal)?;
+        if op.requires_human_terminal()? {
+            crate::admission::require_human_terminal(op.meta().name, cx.admission, terminal)?;
+        }
         Ok(match op {
             AnyOp::AgentShow(input) => {
                 OpStep::Complete(crate::ops::agent_status::show(input, cx)?.into())

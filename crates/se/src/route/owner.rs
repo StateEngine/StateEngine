@@ -39,6 +39,11 @@ pub fn from_inventory(inventory: &OwnerGuardInventory) -> Result<FileOwner> {
     observe(&records)
 }
 impl FileOwner {
+    /// Actual native self-observations, paired by the IPC adapter with the
+    /// host's independently authenticated peer check. No CLI flag supplies them.
+    pub fn observations(&self) -> (&OwnerObservations, bool) {
+        (&self.observed, self.session_present)
+    }
     pub fn os_owner(&self) -> &str {
         &self.observed.os_owner
     }
