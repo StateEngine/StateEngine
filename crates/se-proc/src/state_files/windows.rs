@@ -338,6 +338,39 @@ impl Directory {
             Some(&self.resolved_root),
         )
     }
+    pub fn prepare_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        let parent = self.parent(path, root)?;
+        let absolute = self.absolute(path, root)?;
+        let descriptor = descriptor(path, true)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        // SAFETY: resolved held-root descendant, retained parent and descriptor;
+        // this creates one leaf only and never changes an existing directory.
+        if unsafe { CreateDirectoryW(wide(&absolute)?.as_ptr(), &attributes) } == 0
+            && io::Error::last_os_error().raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32)
+        {
+            return Err(last("create protected child directory", path));
+        }
+        let file = open(&absolute, true, false, true)?;
+        let before = metadata(&file, path, true, true)?;
+        file.sync_all()
+            .map_err(|e| io_error("flush protected child directory", path, e))?;
+        parent
+            .sync_all()
+            .map_err(|e| io_error("flush protected child parent", path, e))?;
+        let outside = open(&absolute, true, false, true)?;
+        if metadata(&outside, path, true, true)? != before {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "prepared directory changed on readback",
+                path,
+            ));
+        }
+        Ok(())
+    }
     pub fn create_staging_at(&self, path: &Path, root: &Path) -> Result<File> {
         let parent = self.parent(path, root)?;
         let file = open(&self.absolute(path, root)?, false, true, true)?;

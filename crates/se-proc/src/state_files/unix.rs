@@ -251,6 +251,55 @@ impl Directory {
         )?;
         Ok((self.directory(parent, root)?, name))
     }
+    pub fn prepare_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        let (parent, name) = self.parent(path, root)?;
+        // SAFETY: one normal component relative to the retained private parent.
+        let created = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } == 0;
+        if !created && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+            return Err(io_error(
+                "create protected child directory",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        // SAFETY: retained parent and literal child; never follow a final link.
+        let file = owned(
+            unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            },
+            "pin protected child directory",
+            path,
+        )?;
+        if created {
+            // SAFETY: only the newly created, now-held directory is protected.
+            if unsafe { libc::fchmod(file.as_raw_fd(), 0o700) } < 0 {
+                return Err(io_error(
+                    "protect new child directory",
+                    path,
+                    io::Error::last_os_error(),
+                ));
+            }
+        }
+        let before = metadata(&file, path, true)?;
+        file.sync_all()
+            .map_err(|e| io_error("sync protected child directory", path, e))?;
+        parent
+            .sync_all()
+            .map_err(|e| io_error("sync protected child parent", path, e))?;
+        let observed = metadata(&self.directory(path, root)?, path, true)?;
+        if (observed.dev(), observed.ino()) != (before.dev(), before.ino()) {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "prepared directory changed on readback",
+                path,
+            ));
+        }
+        Ok(())
+    }
     pub fn create_staging_at(&self, path: &Path, root: &Path) -> Result<File> {
         let (parent, name) = self.parent(path, root)?;
         // SAFETY: private held parent, one native name, atomic exclusive creation.

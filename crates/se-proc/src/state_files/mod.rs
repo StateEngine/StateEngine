@@ -147,6 +147,20 @@ impl NativeStateFiles {
         self.check(path)?;
         Ok(result)
     }
+    /// Prepare one immediate protected child of this held root. Existing unsafe
+    /// directories refuse and are never chmod/chowned to make them admissible.
+    pub fn prepare_directory(&self, path: &Path) -> Result<()> {
+        self.check(path)?;
+        if path.parent() != Some(self.root.as_path()) {
+            return Err(unsafe_path(
+                "directory must be an immediate child of the held root",
+                path,
+            ));
+        }
+        self.directory.prepare_directory(path, &self.root)?;
+        self.check(path)
+    }
+
     /// Call after closing every SQLite/backup handle. The source must be a
     /// native staging name within this held root. A collision preserves both
     /// the winner and the staging file, returning AlreadyExists.
