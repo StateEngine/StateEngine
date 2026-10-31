@@ -16,10 +16,32 @@ pub struct CommonArgs {
     pub quiet: bool,
     pub no_color: bool,
     pub key: Option<IdempotencyKey>,
+    pub selections: CliSelections,
+}
+/// Authenticated CLI routing metadata, separate from model-facing operation DTOs.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CliSelections {
+    pub agent: Option<String>,
+    pub mail_to: Option<String>,
+    pub mail_list: bool,
 }
 impl CommonArgs {
     pub fn from_matches(matches: &ArgMatches) -> Result<Self> {
         let m = deepest(matches).1;
+        let name = selected_meta(matches)?.name;
+        let selections = match name {
+            "working_state.get" | "working_state.set" => CliSelections {
+                agent: text(m, "agent"),
+                ..CliSelections::default()
+            },
+            "message.list" => CliSelections {
+                mail_to: text(m, "to"),
+                mail_list: true,
+                ..CliSelections::default()
+            },
+            _ => CliSelections::default(),
+        };
         Ok(Self {
             home: text(m, "home").map(PathBuf::from),
             project: text(m, "project"),
@@ -27,6 +49,7 @@ impl CommonArgs {
             quiet: flag(m, "quiet"),
             no_color: flag(m, "no_color"),
             key: text(m, "key").map(IdempotencyKey::new).transpose()?,
+            selections,
         })
     }
 }
@@ -330,11 +353,7 @@ pub fn from_matches_with_key(
                 cursor: text(m, "cursor").map(Cursor::new).transpose()?,
                 owner_to: text(m, "to"),
             }),
-            "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet {
-                owner_agent: text(m, "agent")
-                    .map(se_types::AgentId::from_legacy)
-                    .transpose()?,
-            }),
+            "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet { owner_agent: None }),
             "working_state.set" => {
                 let expect = required(m, "expect")?;
                 AnyOp::WorkingStateSet(WorkingStateSet {
@@ -347,9 +366,7 @@ pub fn from_matches_with_key(
                         })?)
                     },
                     idempotency_key: key()?,
-                    owner_agent: text(m, "agent")
-                        .map(se_types::AgentId::from_legacy)
-                        .transpose()?,
+                    owner_agent: None,
                 })
             }
             "runtime.up" => AnyOp::RuntimeUp(RuntimeUp {
@@ -370,4 +387,50 @@ fn number(m: &ArgMatches, id: &str) -> Result<u16> {
     required(m, id)?
         .parse()
         .map_err(|_| SeError::invalid(id, "a bounded positive integer"))
+}
+
+impl CliSelections {
+    /// Called only by the authenticated CLI route inside its admitted finite read.
+    /// The same metadata crosses IPC separately; MCP arguments never carry it.
+    pub fn apply<R: se_store::Snapshot>(
+        &self,
+        op: &mut AnyOp,
+        cx: &mut crate::commit::Cx<'_, R>,
+    ) -> Result<()> {
+        if let Some(selector) = &self.agent {
+            if !matches!(op, AnyOp::WorkingStateGet(_) | AnyOp::WorkingStateSet(_)) {
+                return Err(unknown_flag(
+                    "--agent",
+                    op.meta().name,
+                    "this operation has no agent selector",
+                ));
+            }
+            let actor = crate::scope::actor_selector(cx.read, selector)?;
+            let se_store::Actor::Agent(agent) = actor else {
+                return Err(SeError::invalid("agent", "a project agent, not the owner"));
+            };
+            crate::scope::working_agent(cx.admission, Some(&agent), op.meta().name)?;
+            match op {
+                AnyOp::WorkingStateGet(input) => input.owner_agent = Some(agent),
+                AnyOp::WorkingStateSet(input) => input.owner_agent = Some(agent),
+                _ => (),
+            }
+        }
+        if self.mail_list || self.mail_to.is_some() {
+            match op {
+                AnyOp::MessageList(input) => {
+                    input.cli_list = self.mail_list;
+                    input.owner_to = self.mail_to.clone();
+                }
+                _ => {
+                    return Err(unknown_flag(
+                        "--to",
+                        op.meta().name,
+                        "this operation has no mail filter",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
 }

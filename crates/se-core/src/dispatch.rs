@@ -18,7 +18,7 @@ pub struct CallFacts {
     pub door: Door,
 }
 pub struct Kernel {
-    facts: CallFacts,
+    facts: Option<CallFacts>,
 }
 impl Kernel {
     pub fn new(facts: CallFacts) -> Result<Self> {
@@ -28,23 +28,35 @@ impl Kernel {
                 "nonnegative Unix microseconds",
             ));
         }
-        Ok(Self { facts })
+        Ok(Self { facts: Some(facts) })
     }
-    fn event<R: Snapshot>(&self, body: EventBody<InputText>, cx: &Cx<'_, R>) -> NewEvent {
-        NewEvent {
+    pub const fn read_only() -> Self {
+        Self { facts: None }
+    }
+    fn facts(&self) -> Result<&CallFacts> {
+        self.facts.as_ref().ok_or_else(|| {
+            SeError::invalid(
+                "write allocation",
+                "fresh adapter-provided IDs and time before planning a mutation",
+            )
+        })
+    }
+    fn event<R: Snapshot>(&self, body: EventBody<InputText>, cx: &Cx<'_, R>) -> Result<NewEvent> {
+        let facts = self.facts()?;
+        Ok(NewEvent {
             header: EventHeader {
-                event: self.facts.event.clone(),
+                event: facts.event.clone(),
                 scope: cx.admission.scope.clone(),
                 actor: cx.admission.actor.clone(),
                 session: cx.admission.session.clone(),
                 origin: cx.read.info().id,
-                door: self.facts.door,
-                occurred_at_us: self.facts.occurred_at_us,
+                door: facts.door,
+                occurred_at_us: facts.occurred_at_us,
                 cause: None,
                 supersedes: None,
             },
             body,
-        }
+        })
     }
     fn batch<R: Snapshot>(
         &self,
@@ -120,7 +132,7 @@ impl CoreOps for Kernel {
         let key = input.idempotency_key;
         let event = self.event(
             EventBody::MessageSent {
-                message: self.facts.message.clone(),
+                message: self.facts()?.message.clone(),
                 recipient,
                 kind: kind
                     .as_str()
@@ -131,7 +143,7 @@ impl CoreOps for Kernel {
                 reply_to: input.reply_to,
             },
             cx,
-        );
+        )?;
         let batch = self.batch("message.send", key.clone(), intent, event, cx)?;
         Ok(OpStep::Commit {
             batch,
@@ -196,7 +208,7 @@ impl CoreOps for Kernel {
                 expected,
             },
             cx,
-        );
+        )?;
         let batch = self.batch("working_state.set", key.clone(), intent, event, cx)?;
         Ok(OpStep::Commit {
             batch,

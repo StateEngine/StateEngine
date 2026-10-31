@@ -173,3 +173,56 @@ fn collect_definitions(
     }
     Ok(())
 }
+
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTool {
+    pub name: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub input_schema: serde_json::Value,
+    pub output_schema: serde_json::Value,
+}
+/// The registered admitted rows are the only source of the model-facing tool list.
+pub fn mcp_tools() -> Result<Vec<McpTool>> {
+    let mut tools = Vec::new();
+    for meta in CATALOGUE {
+        if let McpExposure::Tool {
+            name,
+            title,
+            description,
+        } = meta.mcp
+        {
+            let (input_schema, output_schema) =
+                schemas(meta.name).ok_or_else(|| internal(meta.name))?;
+            tools.push(McpTool {
+                name,
+                title,
+                description,
+                input_schema,
+                output_schema,
+            });
+        }
+    }
+    Ok(tools)
+}
+pub fn decode_tool(name: &str, arguments: serde_json::Value) -> Result<AnyOp> {
+    let meta = CATALOGUE
+        .iter()
+        .find(|meta| matches!(meta.mcp,McpExposure::Tool {name:registered,..} if registered==name))
+        .ok_or_else(|| SeError::invalid("tool", "an exposed registered StateEngine tool name"))?;
+    let (input_schema, _) = schemas(meta.name).ok_or_else(|| internal(meta.name))?;
+    let properties = input_schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object);
+    if let Some(arguments) = arguments.as_object() {
+        for field in arguments.keys() {
+            if !properties.is_some_and(|properties| properties.contains_key(field)) {
+                return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField {op:meta.name.into(),field:field.clone(),next_step:"Use the generated tool arguments; actor, project and private owner selectors are supplied by the authenticated route.".into()})));
+            }
+        }
+    }
+    let op:AnyOp=serde_json::from_value(serde_json::json!({"op":meta.name,"input":arguments})).map_err(|error|SeError::new(Detail::UsageInvalidValue(details::UsageInvalidValue {argument:format!("{} arguments",meta.name),got:error.to_string(),expected:"the closed generated input schema; actor and project come from the authenticated session".into()})))?;
+    op.validate()?;
+    Ok(op)
+}

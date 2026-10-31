@@ -7,17 +7,20 @@ pub mod message;
 mod meta;
 pub mod outputs;
 pub mod receipt;
+pub mod status;
 pub use crate::commit::{MessageSend, WorkingStateSet};
 use crate::registry::*;
-pub use cli::{CommonArgs, cli_command, from_matches, from_matches_with_key, selected_meta};
+pub use cli::{
+    CliSelections, CommonArgs, cli_command, from_matches, from_matches_with_key, selected_meta,
+};
 pub use inputs::*;
-pub use meta::{metadata_output, schema_catalogue};
+pub use meta::{McpTool, decode_tool, mcp_tools, metadata_output, schema_catalogue};
 pub use outputs::*;
 use schemars::JsonSchema;
 use se_types::{API_VERSION, IdempotencyKey, Result};
 use serde::{Serialize, Serializer};
 
-#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, serde::Deserialize, JsonSchema)]
 pub struct Envelope<T> {
     schema: String,
     #[serde(flatten)]
@@ -61,12 +64,28 @@ macro_rules! ops {
         impl Serialize for AnyOutput {
             fn serialize<S:Serializer>(&self,serializer:S)->std::result::Result<S::Ok,S::Error> { match self { $( Self::$variant(value)=>value.serialize(serializer), )+ } }
         }
+        impl<'de> serde::Deserialize<'de> for AnyOutput {
+            fn deserialize<D:serde::Deserializer<'de>>(decoder:D)->std::result::Result<Self,D::Error> {
+                let value=<serde_json::Value as serde::Deserialize>::deserialize(decoder)?;
+                let family=value.get("schema").and_then(serde_json::Value::as_str).ok_or_else(||serde::de::Error::custom("missing output family schema"))?;
+                $(if family==<$input>::META.family.schema() {
+                    return serde_json::from_value::<Envelope<$output>>(value).map(|value|Self::$variant(Box::new(value))).map_err(serde::de::Error::custom);
+                })+
+                Err(serde::de::Error::custom("unknown output family schema"))
+            }
+        }
         $(impl From<$output> for AnyOutput {
             fn from(value:$output)->Self { Self::$variant(Box::new(Envelope::new(<$input>::META.family,value))) }
         })+
         $(impl $input { #[allow(non_snake_case)] fn META_REF() -> &'static OpMeta { &Self::META } })+
         pub(crate) fn schemas(name:&str) -> Option<(serde_json::Value,serde_json::Value)> {
-            match name { $( $name=>Some((schemars::schema_for!($input).to_value(),schemars::schema_for!(Envelope<$output>).to_value())), )+ _=>None }
+            match name { $( $name=>{
+                let mut output=schemars::schema_for!(Envelope<$output>).to_value();
+                if let Some(properties)=output.get_mut("properties").and_then(serde_json::Value::as_object_mut) {
+                    properties.insert("schema".into(),serde_json::json!({"const":<$input>::META.family.schema()}));
+                }
+                Some((schemars::schema_for!($input).to_value(),output))
+            }, )+ _=>None }
         }
     }
 }
@@ -178,3 +197,134 @@ impl AnyOutput {
         }
     }
 }
+
+const fn equal(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+const fn same_path(a: &[&str], b: &[&str]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if !equal(a[i], b[i]) {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+// These are source mirror invariants, not a separately maintained catalogue count.
+const _: () = {
+    let mut i = 0;
+    while i < CATALOGUE.len() {
+        let row = CATALOGUE[i];
+        assert!(!row.name.is_empty(), "operation names are nonempty");
+        if let CliExposure::None { reason } = row.cli {
+            assert!(reason.len() >= 12, "omitted CLI exposure needs a reason");
+        }
+        match row.mcp {
+            McpExposure::None { reason } => {
+                assert!(reason.len() >= 12, "omitted MCP exposure needs a reason")
+            }
+            McpExposure::Tool {
+                name,
+                title,
+                description,
+            } => {
+                assert!(name.len() > 12, "MCP tool names start with stateengine_");
+                let prefix = b"stateengine_";
+                let bytes = name.as_bytes();
+                let mut p = 0;
+                while p < prefix.len() {
+                    assert!(
+                        bytes[p] == prefix[p],
+                        "MCP tool names start with stateengine_"
+                    );
+                    p += 1;
+                }
+                while p < bytes.len() {
+                    assert!(
+                        (bytes[p] >= b'a' && bytes[p] <= b'z')
+                            || (bytes[p] >= b'0' && bytes[p] <= b'9')
+                            || bytes[p] == b'_',
+                        "MCP tool names use lowercase ASCII"
+                    );
+                    p += 1;
+                }
+                assert!(
+                    !title.is_empty() && !description.is_empty(),
+                    "exposed tools need readable descriptions"
+                );
+                assert!(
+                    !matches!(row.auth, Auth::Owner),
+                    "owner operations have no MCP tool"
+                );
+            }
+        }
+        if row.anonymous {
+            assert!(
+                equal(row.name, "meta.version")
+                    || equal(row.name, "meta.help")
+                    || equal(row.name, "meta.schema"),
+                "only installed metadata is anonymous"
+            );
+        }
+        if matches!(row.human_only, HumanPolicy::Always | HumanPolicy::ConfigKey) {
+            assert!(
+                matches!(row.auth, Auth::Owner) && matches!(row.mcp, McpExposure::None { .. }),
+                "human operations are owner CLI only"
+            );
+        }
+        let mut j = 0;
+        while j < i {
+            let before = CATALOGUE[j];
+            assert!(
+                !equal(row.name, before.name),
+                "operation names must be unique"
+            );
+            if let (McpExposure::Tool { name: a, .. }, McpExposure::Tool { name: b, .. }) =
+                (row.mcp, before.mcp)
+            {
+                assert!(!equal(a, b), "MCP tool names must be unique");
+            }
+            if let (
+                CliExposure::Leaf {
+                    path: a,
+                    select: a_select,
+                    ..
+                },
+                CliExposure::Leaf {
+                    path: b,
+                    select: b_select,
+                    ..
+                },
+            ) = (row.cli, before.cli)
+                && same_path(a, b)
+            {
+                match (a_select, b_select) {
+                    (Selector::Always, Selector::Always) => {
+                        panic!("CLI leaf paths require distinct selectors")
+                    }
+                    (Selector::Flag(a), Selector::Flag(b)) => {
+                        assert!(!equal(a, b), "CLI leaf paths require distinct selectors")
+                    }
+                    _ => (),
+                }
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+};

@@ -282,7 +282,7 @@ impl ConfigFile {
         })
     }
 }
-#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ResolvedProfile {
     pub name: String,
     pub sandbox: EffectiveSandbox,
@@ -290,7 +290,7 @@ pub struct ResolvedProfile {
     pub network: bool,
     pub bypass: bool,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum EffectiveSandbox {
     ReadOnly,
