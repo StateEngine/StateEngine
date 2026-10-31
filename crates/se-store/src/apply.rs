@@ -1,0 +1,548 @@
+//! Transaction-only projections. No native, network or provider calls.
+use crate::{codec, connection::*, error::*, identity::*, *};
+use rusqlite::{Connection, OptionalExtension, params};
+use serde_json::Value;
+pub(crate) fn expected(
+    c: &Connection,
+    table: &str,
+    filter: &str,
+    keys: &[&dyn rusqlite::ToSql],
+    want: Expected,
+) -> StoreResult<u64> {
+    let old: Option<u64> = c
+        .query_row(
+            &format!("SELECT revision FROM {table} WHERE {filter}"),
+            keys,
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    let matches = match want {
+        Expected::Absent => old.is_none(),
+        Expected::Revision(r) => old == Some(r.value.get()),
+    };
+    if !matches {
+        let mut e = fail(
+            StoreErrorCode::RevisionConflict,
+            format!("{table} expected entity revision differs"),
+        );
+        e.detail = StoreDetail::Conflict {
+            expected: want,
+            observed: old.map(codec::revision).transpose()?,
+        };
+        return Err(e);
+    }
+    old.unwrap_or(0)
+        .checked_add(1)
+        .filter(|v| *v <= i64::MAX as u64)
+        .ok_or_else(|| invalid("entity revision exhausted"))
+}
+pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> {
+    let scope = scope_key(c, &e.header.scope, false)?;
+    let event = key(c, "event", e.header.event.as_str(), &scope, false)?;
+    let existing = c
+        .query_row("SELECT seq FROM events WHERE event_id=?", [event], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(sql)?;
+    if existing.is_some() {
+        return Ok(existing);
+    }
+    let (message, recipient, col) = match &e.body {
+        EventBody::MessageRead { message, recipient } => (message, recipient, "read_seq"),
+        EventBody::MessageDismissed { message, recipient } => (message, recipient, "dismissed_seq"),
+        EventBody::MessageDelivered {
+            message, recipient, ..
+        } => (message, recipient, "delivered_seq"),
+        _ => return Ok(None),
+    };
+    let project = project_id(c, &e.header.scope, false)?;
+    let message = key(c, "message", message.as_str(), &scope, false)?;
+    let recipient = key(
+        c,
+        recipient.kind(),
+        recipient.wire(),
+        if recipient.kind() == "human" {
+            &[0]
+        } else {
+            &scope
+        },
+        false,
+    )?;
+    c.query_row(&format!("SELECT m.{col} FROM marks m JOIN messages d ON d.sent_seq=m.message_seq WHERE d.project_id=? AND d.message_id=? AND m.recipient_id=?"),params![project,message,recipient],|r|r.get(0)).optional().map_err(sql).map(Option::flatten)
+}
+pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
+    use EventBody::*;
+    let s = scope_key(c, &e.header.scope, false)?;
+    match &e.body {
+        ProjectRegistered {
+            project,
+            expected: want,
+            ..
+        } => {
+            let p = key(c, "project", project.as_str(), &[0], false)?;
+            expected(c, "projects", "project_id=?", &[&p], *want)
+        }
+        PrincipalRegistered {
+            principal,
+            expected: want,
+            ..
+        }
+        | PrincipalRenamed {
+            principal,
+            expected: want,
+            ..
+        } => {
+            let a = key(
+                c,
+                principal.kind(),
+                principal.wire(),
+                if principal.kind() == "human" {
+                    &[0]
+                } else {
+                    &s
+                },
+                false,
+            )?;
+            match &e.header.scope {
+                Scope::Registry => expected(c, "owners", "human_id=?", &[&a], *want),
+                _ => {
+                    let p = project_id(c, &e.header.scope, false)?;
+                    expected(
+                        c,
+                        "principals",
+                        "project_id=? AND principal_id=?",
+                        &[&p, &a],
+                        *want,
+                    )
+                }
+            }
+        }
+        ProfileSaved {
+            agent,
+            expected: want,
+            ..
+        }
+        | WorkingStateSet {
+            agent,
+            expected: want,
+            ..
+        } => {
+            let p = project_id(c, &e.header.scope, false)?;
+            let a = key(c, "agent", agent.as_str(), &s, false)?;
+            expected(
+                c,
+                if matches!(&e.body, ProfileSaved { .. }) {
+                    "profiles"
+                } else {
+                    "working_state"
+                },
+                "project_id=? AND agent_id=?",
+                &[&p, &a],
+                *want,
+            )
+        }
+        GrantRecorded {
+            principal,
+            key: grant,
+            expected: want,
+            ..
+        } => {
+            let a = key(
+                c,
+                principal.kind(),
+                principal.wire(),
+                if principal.kind() == "human" {
+                    &[0]
+                } else {
+                    &s
+                },
+                false,
+            )?;
+            expected(
+                c,
+                "grants",
+                "scope_key=? AND principal_id=? AND grant_key=?",
+                &[&s, &a, &codec::encode(grant)?],
+                *want,
+            )
+        }
+        MessageSent { message, .. } => {
+            let p = project_id(c, &e.header.scope, false)?;
+            let m = key(c, "message", message.as_str(), &s, false)?;
+            expected(
+                c,
+                "messages",
+                "project_id=? AND message_id=?",
+                &[&p, &m],
+                Expected::Absent,
+            )
+        }
+        MessageRead { message, .. }
+        | MessageDismissed { message, .. }
+        | MessageDelivered { message, .. } => {
+            let p = project_id(c, &e.header.scope, false)?;
+            let m = key(c, "message", message.as_str(), &s, false)?;
+            let rev: u64 = c
+                .query_row(
+                    "SELECT revision FROM messages WHERE project_id=? AND message_id=?",
+                    params![p, m],
+                    |r| r.get(0),
+                )
+                .map_err(sql)?;
+            rev.checked_add(1)
+                .filter(|v| *v <= i64::MAX as u64)
+                .ok_or_else(|| invalid("message revision exhausted"))
+        }
+        RuntimeOwnerEstablished { expected: want, .. } => {
+            expected(c, "runtime_owner", "singleton=1", &[], *want)
+        }
+        _ => later("event revision"),
+    }
+}
+pub(crate) fn apply(
+    c: &Connection,
+    header: &EventHeader,
+    body: EventBody<InputText>,
+    seq: i64,
+    revision: u64,
+    facts: Value,
+    lease: &LeaseIdentity,
+) -> StoreResult<()> {
+    use EventBody::*;
+    let s = scope_key(c, &header.scope, true)?;
+    let pk = match &header.scope {
+        Scope::Registry => None,
+        Scope::Project(_) => Some(project_id(c, &header.scope, true)?),
+    };
+    let project = || {
+        pk.as_ref().ok_or_else(|| {
+            fail(
+                StoreErrorCode::ScopeMismatch,
+                "project event in registry scope",
+            )
+        })
+    };
+    let actor_key = |a: &Actor| {
+        key(
+            c,
+            a.kind(),
+            a.wire(),
+            if a.kind() == "human" { &[0] } else { &s },
+            true,
+        )
+    };
+    match body {
+        ProjectRegistered {
+            project: p,
+            roots,
+            owner,
+            expected: _,
+            ..
+        } => {
+            if header.actor != Actor::Human(owner.clone()) {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "project registration actor must be its admitted owner",
+                ));
+            }
+            let p = key(c, "project", p.as_str(), &[0], true)?;
+            if pk.as_ref().is_some_and(|scope| *scope != p) {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "project identity differs from event scope",
+                ));
+            }
+            let own = key(c, "human", owner.as_str(), &[0], true)?;
+            let exists: bool = c
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM owners WHERE human_id=?)",
+                    [own],
+                    |r| r.get(0),
+                )
+                .map_err(sql)?;
+            if !exists {
+                return Err(fail(
+                    StoreErrorCode::ReferenceMissing,
+                    "register the owner before the project",
+                ));
+            }
+            c.execute("INSERT INTO projects(project_id,first_seq,revision,last_seq,state) VALUES(?,?,?,?,'active')",params![p,seq,revision,seq]).map_err(sql)?;
+            for root in roots {
+                let encoded = symbol(c, codec::encode(&root.path)?.as_bytes())?;
+                c.execute("INSERT INTO roots(project_id,canonical_key,encoded_path,last_seq) VALUES(?,?,?,?)",params![p,root.canonical_key,encoded,seq]).map_err(sql)?;
+            }
+            codec::aux(c, seq, facts)?;
+        }
+        PrincipalRegistered {
+            principal,
+            kind,
+            owner,
+            created_by,
+            name,
+            ..
+        } => {
+            if name.is_empty() || name.len() > 128 {
+                return Err(invalid("principal name bounds"));
+            }
+            if matches!(principal, Actor::Agent(_))
+                && !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+            {
+                return Err(invalid("agent name grammar"));
+            }
+            if matches!(kind, PrincipalKind::Agent) != matches!(principal, Actor::Agent(_)) {
+                return Err(invalid("principal kind differs from ID"));
+            }
+            let a = actor_key(&principal)?;
+            let own = key(c, "human", owner.as_str(), &[0], true)?;
+            if pk.is_none() {
+                if principal != Actor::Human(owner)
+                    || header.actor != principal
+                    || created_by.is_some()
+                {
+                    return Err(invalid(
+                        "registry owner bootstrap requires self owner, no invented creator",
+                    ));
+                }
+                c.execute("INSERT INTO owners(human_id,display_name,first_seq,revision,last_seq) VALUES(?,?,?,?,?)",params![a,name,seq,revision,seq]).map_err(sql)?;
+            } else {
+                if header.actor != Actor::Human(owner.clone())
+                    && created_by.as_ref() != Some(&header.actor)
+                {
+                    return Err(fail(
+                        StoreErrorCode::CreatorControlRefused,
+                        "creator differs from admitted actor",
+                    ));
+                }
+                let creator = created_by.as_ref().map(actor_key).transpose()?;
+                c.execute("INSERT INTO principals(project_id,principal_id,principal_kind,owner_id,created_by,display_name,first_seq,revision,last_seq) VALUES(?,?,?,?,?,?,?,?,?)",params![project()?,a,if matches!(kind,PrincipalKind::Agent){"agent"}else{"human"},own,creator,name,seq,revision,seq]).map_err(sql)?;
+                c.execute("INSERT INTO resume_heads(project_id,principal_id,unread_count,pending_effect_count,last_seq) VALUES(?,?,0,0,?)",params![project()?,a,seq]).map_err(sql)?;
+            }
+            codec::aux(c, seq, facts)?;
+        }
+        PrincipalRenamed {
+            principal, name, ..
+        } => {
+            let a = actor_key(&principal)?;
+            c.execute("UPDATE principals SET display_name=?,revision=?,last_seq=? WHERE project_id=? AND principal_id=?",params![name,revision,seq,project()?,a]).map_err(sql)?;
+            codec::aux(c, seq, facts)?;
+        }
+        ProfileSaved { agent, profile, .. } => {
+            if matches!(profile.permission, PermissionProfile::NamedFullBypass)
+                && profile.named_profile.is_empty()
+            {
+                return Err(invalid("bypass needs an explicit named profile"));
+            }
+            let a = key(c, "agent", agent.as_str(), &s, true)?;
+            c.execute("INSERT INTO profiles(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq",params![project()?,a,revision,seq]).map_err(sql)?;
+            codec::aux(c, seq, facts)?;
+        }
+        GrantRecorded {
+            principal,
+            key: grant,
+            active,
+            ..
+        } => {
+            if !matches!(header.actor, Actor::Human(_)) {
+                return Err(fail(
+                    StoreErrorCode::CreatorControlRefused,
+                    "only owner may change grants",
+                ));
+            }
+            c.execute("INSERT INTO grants(scope_key,principal_id,grant_key,revision,last_seq,active) VALUES(?,?,?,?,?,?) ON CONFLICT(scope_key,principal_id,grant_key) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,active=excluded.active",params![s,actor_key(&principal)?,codec::encode(&grant)?,revision,seq,active]).map_err(sql)?;
+            codec::aux(c, seq, facts)?;
+        }
+        MessageSent {
+            message,
+            recipient,
+            kind,
+            body,
+            refs,
+            reply_to,
+        } => {
+            if refs.len() > 64 || kind.len() > 128 {
+                return Err(invalid("message refs/kind bounds"));
+            }
+            let m = key(c, "message", message.as_str(), &s, true)?;
+            let recipient = actor_key(&recipient)?;
+            let sender = actor_key(&header.actor)?;
+            let exists: bool = c
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM principals WHERE project_id=? AND principal_id=?)",
+                    params![project()?, recipient],
+                    |r| r.get(0),
+                )
+                .map_err(sql)?;
+            if !exists {
+                return Err(fail(
+                    StoreErrorCode::ReferenceMissing,
+                    "message recipient is not registered in this project",
+                ));
+            }
+            let body = payload(
+                c,
+                seq,
+                "body",
+                &codec::text(body, se_types::MESSAGE_BODY_MAX_BYTES)?,
+            )?;
+            let reply = reply_to
+                .map(|id| key(c, "message", id.as_str(), &s, false))
+                .transpose()?;
+            for r in &refs {
+                let k = key(c, "event", r.as_str(), &s, false)?;
+                let ok: bool = c
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM events WHERE project_id=? AND event_id=?)",
+                        params![project()?, k],
+                        |r| r.get(0),
+                    )
+                    .map_err(sql)?;
+                if !ok {
+                    return Err(fail(
+                        StoreErrorCode::ReferenceMissing,
+                        "message ref outside scope or absent",
+                    ));
+                }
+            }
+            c.execute("INSERT INTO message_data(event_seq,message_id,recipient_id,message_kind,body_payload,refs,reply_to) VALUES(?,?,?,?,?,?,?)",params![seq,m,recipient,kind,body,codec::encode(&refs)?,reply]).map_err(sql)?;
+            c.execute("INSERT INTO messages(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,revision) VALUES(?,?,?,?,?,?,?)",params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
+            c.execute(
+                "INSERT INTO marks(message_seq,project_id,recipient_id) VALUES(?,?,?)",
+                params![seq, project()?, recipient],
+            )
+            .map_err(sql)?;
+            count(c, project()?, &recipient, 1, seq)?;
+            mail_version(c, &s, project()?, &m, seq)?;
+        }
+        body @ (MessageRead { .. } | MessageDismissed { .. } | MessageDelivered { .. }) => {
+            let (message, recipient, column, tag, evidence) = match body {
+                MessageRead { message, recipient } => {
+                    (message, recipient, "read_seq", "read", None)
+                }
+                MessageDismissed { message, recipient } => {
+                    (message, recipient, "dismissed_seq", "dismissed", None)
+                }
+                MessageDelivered {
+                    message,
+                    recipient,
+                    evidence,
+                } => (
+                    message,
+                    recipient,
+                    "delivered_seq",
+                    "delivered",
+                    Some(evidence),
+                ),
+                _ => return Err(invalid("mark dispatch")),
+            };
+            let m = key(c, "message", message.as_str(), &s, false)?;
+            let a = actor_key(&recipient)?;
+            if header.actor != recipient
+                && !matches!(header.actor, Actor::Human(_))
+                && tag != "delivered"
+            {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "recipient marker actor differs",
+                ));
+            }
+            let (sent,unread):(i64,bool)=c.query_row("SELECT d.sent_seq,(m.read_seq IS NULL AND m.dismissed_seq IS NULL) FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=? AND d.recipient_id=?",params![project()?,m,a],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
+            let ev = evidence
+                .map(|v| key(c, "event", v.as_str(), &s, false))
+                .transpose()?;
+            c.execute("INSERT INTO mark_data(event_seq,message_seq,recipient_id,disposition,evidence_event) VALUES(?,?,?,?,?)",params![seq,sent,a,tag,ev]).map_err(sql)?;
+            c.execute(
+                &format!("UPDATE marks SET {column}=? WHERE message_seq=? AND {column} IS NULL"),
+                params![seq, sent],
+            )
+            .map_err(sql)?;
+            c.execute(
+                "UPDATE messages SET revision=? WHERE project_id=? AND message_id=?",
+                params![revision, project()?, m],
+            )
+            .map_err(sql)?;
+            if unread && tag != "delivered" {
+                count(c, project()?, &a, -1, seq)?
+            }
+            mail_version(c, &s, project()?, &m, seq)?;
+        }
+        WorkingStateSet {
+            agent,
+            text,
+            expected: want,
+        } => {
+            let a = key(c, "agent", agent.as_str(), &s, true)?;
+            let p = payload(
+                c,
+                seq,
+                "body",
+                &codec::text(text, se_types::WORKING_STATE_MAX_BYTES)?,
+            )?;
+            let want = match want {
+                Expected::Absent => None,
+                Expected::Revision(r) => Some(r.value.get()),
+            };
+            c.execute("INSERT INTO working_state_data(event_seq,agent_id,text_payload,expected_revision) VALUES(?,?,?,?)",params![seq,a,p,want]).map_err(sql)?;
+            c.execute("INSERT INTO working_state(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq",params![project()?,a,revision,seq]).map_err(sql)?;
+            let changed=c.execute("UPDATE resume_heads SET last_working_state_seq=?,last_seq=? WHERE project_id=? AND principal_id=?",params![seq,seq,project()?,a]).map_err(sql)?;
+            if changed != 1 {
+                return Err(fail(
+                    StoreErrorCode::ProjectionInconsistent,
+                    "working-state resume head absent",
+                ));
+            }
+        }
+        RuntimeOwnerEstablished {
+            epoch,
+            generation,
+            expected_owner_generation,
+            ..
+        } => {
+            if pk.is_some() || lease.mode != LeaseMode::Host || lease.generation != generation.get()
+            {
+                return Err(fail(
+                    StoreErrorCode::GenerationChanged,
+                    "runtime owner requires matching exclusive host generation",
+                ));
+            }
+            let old: Option<u64> = c
+                .query_row(
+                    "SELECT owner_generation FROM runtime_owner WHERE singleton=1",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(sql)?;
+            if old != expected_owner_generation.map(|g| g.get())
+                || old.is_some_and(|g| g >= generation.get())
+            {
+                return Err(fail(
+                    StoreErrorCode::GenerationChanged,
+                    "owner predecessor generation differs",
+                ));
+            }
+            c.execute("INSERT INTO runtime_owner(singleton,owner_generation,owner_epoch,revision,last_seq) VALUES(1,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET owner_generation=excluded.owner_generation,owner_epoch=excluded.owner_epoch,revision=excluded.revision,last_seq=excluded.last_seq",params![generation.get(),codec::encode(&epoch)?,revision,seq]).map_err(sql)?;
+            codec::aux(c, seq, facts)?;
+        }
+        _ => return later("projection"),
+    }
+    Ok(())
+}
+fn count(c: &Connection, p: &[u8], a: &[u8], delta: i64, seq: i64) -> StoreResult<()> {
+    let changed=c.execute("UPDATE resume_heads SET unread_count=unread_count+?,last_seq=? WHERE project_id=? AND principal_id=?",params![delta,seq,p,a]).map_err(sql)?;
+    if changed != 1 {
+        return Err(fail(
+            StoreErrorCode::ProjectionInconsistent,
+            "recipient resume head absent",
+        ));
+    }
+    Ok(())
+}
+fn mail_version(c: &Connection, scope: &[u8], p: &[u8], m: &[u8], seq: i64) -> StoreResult<()> {
+    c.execute("UPDATE list_versions SET valid_to=? WHERE scope_key=? AND family='message' AND entity_key=? AND valid_to IS NULL",params![seq,scope,m]).map_err(sql)?;
+    c.execute("INSERT INTO list_versions(scope_key,family,entity_key,revision,valid_from,sort_seq,first_seq,last_seq,state,sender_id,recipient_id,message_kind,delivered_seq,read_seq,dismissed_seq) SELECT ?,'message',d.message_id,d.revision,?,d.sent_seq,d.sent_seq,?,CASE WHEN m.read_seq IS NULL AND m.dismissed_seq IS NULL THEN 'unread' ELSE 'marked' END,d.sender_id,d.recipient_id,d.message_kind,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",params![scope,seq,seq,p,m]).map_err(sql)?;
+    Ok(())
+}
