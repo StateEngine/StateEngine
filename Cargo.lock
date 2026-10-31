@@ -325,6 +325,7 @@ name = "se-store"
 version = "0.0.1"
 dependencies = [
  "rusqlite",
+ "se-proc",
  "se-types",
  "serde",
  "serde_json",
