@@ -163,8 +163,7 @@ impl IpcListener {
         )
         .await?;
         let bytes = receive(&stream, &deadline, wire::MAX_FRAME_BYTES).await?;
-        let value: serde_json::Value = wire::decode_json(bytes.as_bytes(), wire::MAX_FRAME_BYTES)?;
-        let (challenge, input) = if value.get("protocol").is_some() {
+        let (challenge, input) = if codec::has_stop_protocol(bytes.as_bytes())? {
             let mut challenge = challenge;
             challenge.stop_domain();
             (

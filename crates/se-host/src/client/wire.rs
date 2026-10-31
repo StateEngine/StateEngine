@@ -6,7 +6,8 @@ use serde::{
     Deserialize, Serialize,
     de::{self, DeserializeOwned, DeserializeSeed, MapAccess, SeqAccess, Visitor},
 };
-use serde_json::{Map, Number, Value};
+use serde_json::Value;
+use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 use std::{
     fmt,
@@ -90,21 +91,23 @@ pub fn encode_json<T: Serialize>(value: &T, limit: usize) -> Result<WireBytes> {
     Ok(WireBytes(output.bytes))
 }
 
-/// Reject duplicates throughout arguments too; Value's ordinary decoder would
-/// overwrite an earlier key before the closed core DTO could inspect it.
+/// Validate duplicate fields/depth before typed decoding, including arguments.
+/// The first pass retains keys only, without copying credentials/bodies into a
+/// generic Value tree or normalizing numbers before the core DTO sees them.
 pub fn decode_json<T: DeserializeOwned>(bytes: &[u8], limit: usize) -> Result<T> {
     if bytes.is_empty() || bytes.len() > limit || limit > MAX_FRAME_BYTES {
         return Err(invalid("nonempty JSON within the negotiated byte budget"));
     }
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
-    let value = JsonSeed { depth: 0 }
+    JsonSeed { depth: 0 }
         .deserialize(&mut decoder)
         .map_err(|_| invalid("UTF-8 JSON, unique fields and depth at most 64"))?;
     decoder
         .end()
         .map_err(|_| invalid("one complete JSON value"))?;
     let mut ignored = false;
-    let decoded = serde_ignored::deserialize(value, |_| ignored = true)
+    let mut decoder = serde_json::Deserializer::from_slice(bytes);
+    let decoded = serde_ignored::deserialize(&mut decoder, |_| ignored = true)
         .map_err(|_| invalid("the closed versioned IPC envelope"))?;
     if ignored {
         return Err(invalid("only declared IPC fields"));
@@ -421,11 +424,11 @@ struct JsonSeed {
     depth: u8,
 }
 impl<'de> DeserializeSeed<'de> for JsonSeed {
-    type Value = Value;
+    type Value = ();
     fn deserialize<D: serde::Deserializer<'de>>(
         self,
         decoder: D,
-    ) -> std::result::Result<Value, D::Error> {
+    ) -> std::result::Result<(), D::Error> {
         decoder.deserialize_any(JsonVisitor { depth: self.depth })
     }
 }
@@ -443,54 +446,48 @@ impl JsonVisitor {
     }
 }
 impl<'de> Visitor<'de> for JsonVisitor {
-    type Value = Value;
+    type Value = ();
     fn expecting(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
         out.write_str("bounded JSON")
     }
-    fn visit_bool<E: de::Error>(self, value: bool) -> std::result::Result<Value, E> {
-        Ok(Value::Bool(value))
+    fn visit_bool<E: de::Error>(self, _: bool) -> std::result::Result<(), E> {
+        Ok(())
     }
-    fn visit_i64<E: de::Error>(self, value: i64) -> std::result::Result<Value, E> {
-        Ok(value.into())
+    fn visit_i64<E: de::Error>(self, _: i64) -> std::result::Result<(), E> {
+        Ok(())
     }
-    fn visit_u64<E: de::Error>(self, value: u64) -> std::result::Result<Value, E> {
-        Ok(value.into())
+    fn visit_u64<E: de::Error>(self, _: u64) -> std::result::Result<(), E> {
+        Ok(())
     }
-    fn visit_f64<E: de::Error>(self, value: f64) -> std::result::Result<Value, E> {
-        Number::from_f64(value)
-            .map(Value::Number)
-            .ok_or_else(|| E::custom("non-finite number"))
+    fn visit_f64<E: de::Error>(self, _: f64) -> std::result::Result<(), E> {
+        Ok(())
     }
-    fn visit_str<E: de::Error>(self, value: &str) -> std::result::Result<Value, E> {
-        Ok(Value::String(value.into()))
+    fn visit_str<E: de::Error>(self, _: &str) -> std::result::Result<(), E> {
+        Ok(())
     }
-    fn visit_string<E: de::Error>(self, value: String) -> std::result::Result<Value, E> {
-        Ok(Value::String(value))
+    fn visit_string<E: de::Error>(self, _: String) -> std::result::Result<(), E> {
+        Ok(())
     }
-    fn visit_unit<E: de::Error>(self) -> std::result::Result<Value, E> {
-        Ok(Value::Null)
+    fn visit_unit<E: de::Error>(self) -> std::result::Result<(), E> {
+        Ok(())
     }
-    fn visit_none<E: de::Error>(self) -> std::result::Result<Value, E> {
-        Ok(Value::Null)
+    fn visit_none<E: de::Error>(self) -> std::result::Result<(), E> {
+        Ok(())
     }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> std::result::Result<Value, A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, mut sequence: A) -> std::result::Result<(), A::Error> {
         self.child::<A::Error>()?;
-        let mut values = Vec::new();
-        while let Some(value) = sequence.next_element_seed(self.child()?)? {
-            values.push(value);
-        }
-        Ok(Value::Array(values))
+        while sequence.next_element_seed(self.child()?)?.is_some() {}
+        Ok(())
     }
-    fn visit_map<A: MapAccess<'de>>(self, mut fields: A) -> std::result::Result<Value, A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, mut fields: A) -> std::result::Result<(), A::Error> {
         self.child::<A::Error>()?;
-        let mut values = Map::new();
+        let mut keys = BTreeSet::new();
         while let Some(key) = fields.next_key::<String>()? {
-            if values.contains_key(&key) {
+            if !keys.insert(key) {
                 return Err(de::Error::custom("duplicate IPC JSON field"));
             }
-            let value = fields.next_value_seed(self.child()?)?;
-            values.insert(key, value);
+            fields.next_value_seed(self.child()?)?;
         }
-        Ok(Value::Object(values))
+        Ok(())
     }
 }
