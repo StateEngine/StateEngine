@@ -388,6 +388,8 @@ pub trait Snapshot {
         query: DecisionQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>>;
+    /// One immutable turn by its record ID, under this snapshot's project and visibility.
+    fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>>;
     fn turns(&mut self, agent: AgentId, budget: ReadBudget) -> StoreResult<Page<StoredEvent>>;
     fn capture_source(&mut self, source: RecordId) -> StoreResult<Read<ProjectionRecord>>;
     fn process(&mut self, id: LifecycleId) -> StoreResult<Read<ProjectionRecord>>;

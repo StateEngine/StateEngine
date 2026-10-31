@@ -635,6 +635,9 @@ impl Snapshot for SqliteSnapshot {
         }
         self.list_heads("decisions", "last_seq", &filter, keys, _budget)
     }
+    fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>> {
+        self.read_turn(id)
+    }
     fn turns(&mut self, _agent: AgentId, _budget: ReadBudget) -> StoreResult<Page<StoredEvent>> {
         self.read_turns(_agent, _budget)
     }

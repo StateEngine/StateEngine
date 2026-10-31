@@ -68,6 +68,32 @@ impl SqliteSnapshot {
             },
         })
     }
+    pub(super) fn read_turn(&self, id: RecordId) -> StoreResult<Read<StoredEvent>> {
+        let project = self.project_bytes()?;
+        let seq: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT event_seq FROM turn_data INDEXED BY turn_data_id
+             WHERE project_id=? AND turn_id=?",
+                rusqlite::params![project, id.as_bytes().as_slice()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        let Some(seq) = seq else {
+            return Ok(self.absent("turn"));
+        };
+        let event = self.record(seq)?;
+        if event.header.scope != self.scope.admission.scope
+            || !matches!(&event.body, EventBody::SessionTurn { turn, .. } if *turn == id)
+        {
+            return Err(fail(
+                StoreErrorCode::ProjectionInconsistent,
+                "turn index differs from its immutable event",
+            ));
+        }
+        Ok(Read::Present { value: event })
+    }
     pub(super) fn read_turns(
         &self,
         agent: AgentId,
