@@ -315,7 +315,7 @@ pub(super) fn self_peer() -> IpcNativeResult<NativeIpcPeer> {
 fn observe(pid: u32) -> IpcNativeResult<NativeIpcPeer> {
     // SAFETY: query-only process pin, no inherited handle or native mutation.
     let process = owned(
-        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) },
+        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) },
         "pin IPC peer process",
     )?;
     let sid = security::process_sid(process.as_raw_handle())?;
@@ -364,15 +364,17 @@ fn observe(pid: u32) -> IpcNativeResult<NativeIpcPeer> {
     let image = PathBuf::from(std::ffi::OsString::from_wide(&image));
     let image_sha256 =
         hash_image(File::open(&image).map_err(|e| error("pin IPC peer executable", e))?)?;
-    let mut status = 0;
-    if unsafe { GetExitCodeProcess(process.as_raw_handle(), &mut status) } == 0 {
-        return Err(last("reobserve IPC peer liveness"));
-    }
-    if status != STILL_ACTIVE as u32 {
-        return Err(refuse(
-            IpcNativeErrorCode::PeerChanged,
-            "IPC peer exited during identity readback",
-        ));
+    // SAFETY: the query/synchronize process handle is retained above. Native
+    // signalled state distinguishes exit code 259 from a live process.
+    match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
+        WAIT_TIMEOUT => (),
+        WAIT_OBJECT_0 => {
+            return Err(refuse(
+                IpcNativeErrorCode::PeerChanged,
+                "IPC peer exited during identity readback",
+            ));
+        }
+        _ => return Err(last("reobserve IPC peer liveness")),
     }
     Ok(NativeIpcPeer {
         principal: IpcPrincipal::Windows { sid },
