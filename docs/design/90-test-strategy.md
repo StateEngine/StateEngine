@@ -38,7 +38,7 @@ internal mocks, so a refactor can't break a test that still describes correct be
 is a review signal that the policy is slipping.
 
 **Test doubles match the real readers.** The fake provider replays frames recorded from real Claude
-hooks and stock Codex 0.166 app-server runs (Vera's prototype). Nightly journeys against the latest CLIs
+hooks and stock Codex 0.166 app-server runs (host prototype). Nightly journeys against the latest CLIs
 catch drift; stale recordings are re-recorded, never hand-edited to fit our code.
 
 ## 2. The journeys are the acceptance oracle
@@ -46,7 +46,7 @@ catch drift; stale recordings are re-recorded, never hand-edited to fit our code
 ### 2.1 Where they live and who owns them
 - The independent judge lives in `journeys/` in the Node factory repository. Master
   `9fc45c7234faeb720bad37c4a1d13fab1dcec2bc` contains the accepted runner changes through
-  `31df4e96c93b84ee6e61c2dd775a951e38ae7329`. The journey owner (5d) writes no product code.
+  `31df4e96c93b84ee6e61c2dd775a951e38ae7329`. The journey owner writes no product code.
   Product authors run the judge; independently reviewed runner changes remain the journey owner's work.
 - The Rust product is judged with `--implementation rust` and a `journey-product/v1` descriptor
   selecting only the shipped `rust-v1` map. Node remains the private factory engine; passing its

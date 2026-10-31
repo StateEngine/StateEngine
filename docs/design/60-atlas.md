@@ -1,6 +1,6 @@
 # 60 — Atlas: optional source understanding
 
-Design revision, 2026-10-30. Owner: 5e. This document and the declaration-only
+Design revision, 2026-10-30. Owner: Atlas maintainer. This document and the declaration-only
 `crates/se-atlas` specify behavior for later implementation; they implement no
 indexer, database, watcher or runtime. The scope and activation below incorporate
 the 2026-10-30 reconciliation decisions. Resource accounting uses section 80.

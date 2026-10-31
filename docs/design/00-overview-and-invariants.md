@@ -3,7 +3,7 @@
 Status: deep design, reconciled 2026-10-30 against Jimmy's decisions and both whole-design reviews.
 The sections describe one system; where they disagreed they were corrected, not ranked. Siblings:
 10 types and host API, 20 data model, 30 process ownership, 40 host runtime and harnesses,
-50 surface and errors, 60 Atlas, 70/80/90 and 95 (Prime). `docs/OPS.md` is the operation allowlist.
+50 surface and errors, 60 Atlas, 70/80/90 and 95 (lead maintainer). `docs/OPS.md` is the operation allowlist.
 
 ## 1. The product
 
@@ -477,9 +477,9 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 | Host owns writes through a batching writer; direct write only with no host (resolves the 01/02 conflict) | Measured: 20-agent burst 22/77 ms vs 456–806 ms with lock failures direct |
 | No file watcher on the database | Plan; measured zero idle CPU |
 | Hooks hand writes to the host | Measured: 52–76 ms direct vs 3 ms bare start |
-| Windows: host holds job handles; host death stops the tree; relaunch resumes | Measured (5p), corrected named-job assumption |
+| Windows: host holds job handles; host death stops the tree; relaunch resumes | Measured (process prototype), corrected named-job assumption |
 | Linux: BestAvailable containment. Every LinuxUserManager agent-process launch, including a warm launch, asks for its own delegated scope and short-lived creator (direct user-manager D-Bus StartTransientUnit). The creator starts the root inside that scope and hands custody to the unchanged embedded/standalone host, then exits; no resident helper or one cached scope is assumed. Scope acquisition has a distinct p95 ≤ 200 ms target inside the multi-second contained launch, measured at 148.459 ms desktop (load 25.18→26.03) and 145.384 ms real SSH (load 23.70→24.54); other launch paths retain ≤ 50 ms, these instrumented loaded runs are diagnostic only, and quiet-box qualification with starting load below 4 remains due. Window preparation checks the selected terminal/broker's entry permission before child creation; if unusable it selects uncontained with cause `no-delegation`. With no user manager or delegation (containers, WSL without systemd, minimal hosts) agents run in an explicitly `uncontained` process group: launch succeeds, and status and the launch receipt name `containment` and the probe cause. Never a launch refusal. In that mode a stop reports the process-group bound honestly: a tool that calls setsid or double-forks can escape the group, and the stop receipt says so rather than claiming every descendant is gone | Agreed with Alpha, adopted in 30; historical prototype: 28/28 trees, 15 ms readiness and 2.7 MB, excluding the newly measured fresh-scope stage; current launch latency remains unqualified |
-| Claude via launch flags, no config writes; hooks call `se`; mail through the plugin's small JS | Plan; measured (Vera) |
+| Claude via launch flags, no config writes; hooks call `se`; mail through the plugin's small JS | Plan; measured (host prototype) |
 | Stock Codex over app-server; never bundle a fork | Jimmy 2026-10-23/24; measured with 0.166 |
 | One op definition generates CLI and MCP; OPS.md is the allowlist; old names refuse with a hint | Plan; OPS.md `f8a2e59` |
 | Atlas: own db, code only; compiled only into the standalone `se`, disabled by default and enabled by `atlas.enabled = true` in `config.toml`; in embedded SE Code that setting returns feature-unavailable; cold index in a transient capped child; built after the five journeys and live handover pass and never holds a milestone | Jimmy 2026-10-30; measured: 1.36M lines in 165 s, 20 MB peak, 11 MB settled, 67 ms save-to-search |
