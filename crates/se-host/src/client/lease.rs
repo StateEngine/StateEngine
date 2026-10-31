@@ -108,12 +108,18 @@ pub(crate) fn native_error(cause: se_proc::native_ipc::IpcNativeError) -> SeErro
         }
         _ => se_types::Detail::IpcUnavailable(se_types::details::IpcUnavailable {
             endpoint: "protected local endpoint".into(),
-            reason: cause.to_string(),
+            reason: format!(
+                "{cause}; restore native access or rediscover the protected live endpoint, then retry the original request key"
+            ),
         }),
     };
     SeError::new(detail).with_cause(cause)
 }
-fn native_connect(endpoint: &crate::EndpointRecord, deadline: &Deadline) -> Result<NativeStream> {
+fn native_connect(
+    endpoint: &crate::EndpointRecord,
+    deadline: &Deadline,
+    stop: bool,
+) -> Result<NativeStream> {
     deadline.remaining()?;
     #[cfg(unix)]
     let stream = match &endpoint.address {
@@ -131,11 +137,20 @@ fn native_connect(endpoint: &crate::EndpointRecord, deadline: &Deadline) -> Resu
         }
         _ => return Err(SeError::invalid("IPC endpoint", "a local Windows pipe")),
     };
-    crate::NativeIpcPlatform.verify_server_bounded(
-        stream.channel(),
-        endpoint,
-        &deadline.native_bound(),
-    )?;
+    if stop {
+        se_proc::native_ipc::verify_ipc_stop_server(
+            stream.channel(),
+            &endpoint.epoch.owner,
+            &deadline.native_bound(),
+        )
+        .map_err(native_error)?;
+    } else {
+        crate::NativeIpcPlatform.verify_server_bounded(
+            stream.channel(),
+            endpoint,
+            &deadline.native_bound(),
+        )?;
+    }
     deadline.remaining()?;
     Ok(stream)
 }
@@ -150,7 +165,7 @@ impl crate::client::BlockingIpcClient {
     ) -> Result<BlockingConnection> {
         use super::{auth, wire};
         let deadline = Deadline::from_options(options)?.stage(HELLO_TIMEOUT)?;
-        let mut stream = native_connect(endpoint, &deadline)?;
+        let mut stream = native_connect(endpoint, &deadline, false)?;
         let bytes = wire::read_payload(&mut stream, wire::MAX_ENDPOINT_BYTES)?;
         let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
         if challenge.version != se_types::API_VERSION {
@@ -219,7 +234,7 @@ impl crate::client::BlockingIpcClient {
         }
         let deadline = Deadline::from_options(options)?;
         let hello = deadline.stage(HELLO_TIMEOUT)?;
-        let mut stream = native_connect(endpoint, &hello)?;
+        let mut stream = native_connect(endpoint, &hello, true)?;
         let bytes = wire::read_payload(&mut stream, wire::MAX_ENDPOINT_BYTES)?;
         let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
         let peer = se_proc::native_ipc::observe_ipc_self_bounded(&hello.native_bound())

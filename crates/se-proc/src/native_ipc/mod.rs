@@ -1,7 +1,6 @@
 //! Owner-only local endpoints and native peer observations. No host/store
 //! dependency, authority admission, writer, runtime or Tokio lives here.
 use se_types::{NativePath, ProcessInstance, Sha256, StartIdentity};
-use sha2::{Digest, Sha256 as Hasher};
 use std::{
     io,
     path::Path,
@@ -12,6 +11,8 @@ use std::{
     time::Instant,
 };
 
+mod image;
+use image::hash_image;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -21,11 +22,13 @@ mod unix;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
+mod windows_peer;
+#[cfg(windows)]
 mod windows_security;
 #[cfg(unix)]
 pub use unix::{NativeUnixEndpoint, NativeUnixStream};
 #[cfg(windows)]
-pub use windows::{NativePipeEndpoint, NativePipeReservation, NativePipeStream};
+pub use windows::{NativePipeReservation, NativePipeStream};
 #[cfg(unix)]
 pub type BorrowedIpc<'a> = std::os::fd::BorrowedFd<'a>;
 #[cfg(windows)]
@@ -205,6 +208,25 @@ pub fn observe_ipc_peer_bounded(
         windows::peer(channel, side, bound)
     }
 }
+/// Fixed stop control validates the live recorded process instance and OS owner,
+/// independently of executable path/hash changes caused by an in-place upgrade.
+pub fn verify_ipc_stop_server(
+    channel: BorrowedIpc<'_>,
+    expected: &ProcessInstance,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<()> {
+    bound
+        .remaining()
+        .map_err(|e| error("begin stop server verification", e))?;
+    #[cfg(unix)]
+    unix::stop_server(channel, expected)?;
+    #[cfg(windows)]
+    windows::stop_server(channel, expected)?;
+    bound
+        .remaining()
+        .map(|_| ())
+        .map_err(|e| error("finish stop server verification", e))
+}
 pub fn observe_ipc_self() -> IpcNativeResult<NativeIpcPeer> {
     observe_ipc_self_bounded(&proof_bound())
 }
@@ -226,66 +248,6 @@ fn proof_bound() -> IpcIoBound {
         deadline: Instant::now() + std::time::Duration::from_secs(5),
         cancelled: Arc::new(AtomicBool::new(false)),
     }
-}
-/// Executables larger than this refuse before any content read. The streaming
-/// counter also rejects growth beyond the cap during an observation.
-const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
-
-fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNativeResult<Sha256> {
-    use std::io::Read;
-    let before = file
-        .metadata()
-        .map_err(|e| error("read pinned image metadata", e))?;
-    if !before.is_file() || before.len() > MAX_IMAGE_BYTES {
-        return Err(refuse(
-            IpcNativeErrorCode::Unreadable,
-            "peer executable exceeds the 512 MiB regular-file proof bound",
-        ));
-    }
-    let mut read = 0u64;
-    let mut hasher = Hasher::new();
-    let mut buffer = [0; 64 * 1024];
-    loop {
-        bound
-            .remaining()
-            .map_err(|e| error("peer executable proof deadline", e))?;
-        let count = file
-            .read(&mut buffer)
-            .map_err(|e| error("read pinned peer executable", e))?;
-        if count == 0 {
-            break;
-        }
-        read += count as u64;
-        if read > MAX_IMAGE_BYTES {
-            return Err(refuse(
-                IpcNativeErrorCode::PeerChanged,
-                "peer executable grew beyond proof byte cap",
-            ));
-        }
-        hasher.update(&buffer[..count]);
-    }
-    bound
-        .remaining()
-        .map_err(|e| error("finish peer executable proof", e))?;
-    let after = file
-        .metadata()
-        .map_err(|e| error("reobserve pinned image metadata", e))?;
-    if read != before.len()
-        || !before.is_file()
-        || before.len() != after.len()
-        || before
-            .modified()
-            .map_err(|e| error("read pinned image modification clock", e))?
-            != after
-                .modified()
-                .map_err(|e| error("reobserve pinned image modification clock", e))?
-    {
-        return Err(refuse(
-            IpcNativeErrorCode::PeerChanged,
-            "executable changed while hashing its native pin",
-        ));
-    }
-    Ok(Sha256::from_bytes(hasher.finalize().into()))
 }
 /// Shared native I/O bound; polling never extends the original absolute clock.
 #[derive(Clone)]
@@ -311,4 +273,10 @@ fn native_path(path: &Path) -> IpcNativeResult<NativePath> {
             "peer executable is not an absolute native path",
         )
     })
+}
+
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    // SAFETY: geteuid reads the current native credential without pointers or mutation.
+    unsafe { libc::geteuid() }
 }

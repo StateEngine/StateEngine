@@ -6,9 +6,11 @@ use std::{
     os::{fd::AsRawFd, unix::ffi::OsStringExt},
 };
 pub(super) fn credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32)> {
+    // SAFETY: zero initializes the native POD buffer before getsockopt fills it.
     let mut credentials: libc::xucred = unsafe { zeroed() };
     let mut size = size_of::<libc::xucred>() as libc::socklen_t;
     // SAFETY: borrowed local socket and exact aligned native credential buffer.
+    // SAFETY: retained local socket and exact aligned PID/credential output with its writable size.
     if unsafe {
         libc::getsockopt(
             channel.as_raw_fd(),
@@ -30,6 +32,7 @@ pub(super) fn credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32
     }
     let mut pid: libc::pid_t = 0;
     size = size_of::<libc::pid_t>() as _;
+    // SAFETY: retained local socket and exact aligned PID/credential output with its writable size.
     if unsafe {
         libc::getsockopt(
             channel.as_raw_fd(),
@@ -51,6 +54,7 @@ pub(super) fn credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32
     Ok((credentials.cr_uid, pid as u32))
 }
 fn process(pid: u32) -> IpcNativeResult<libc::proc_bsdinfo> {
+    // SAFETY: zero initializes this fixed-size native POD output before proc_pidinfo fills it.
     let mut info: libc::proc_bsdinfo = unsafe { zeroed() };
     let wanted = size_of::<libc::proc_bsdinfo>() as i32;
     // SAFETY: initialized aligned fixed-size native output for one validated PID.
@@ -70,6 +74,7 @@ fn process(pid: u32) -> IpcNativeResult<libc::proc_bsdinfo> {
 }
 fn image_path(pid: u32) -> IpcNativeResult<std::path::PathBuf> {
     let mut bytes = vec![0; 4096];
+    // SAFETY: writable bounded byte storage and explicit capacity for the selected native PID.
     let count =
         unsafe { libc::proc_pidpath(pid as i32, bytes.as_mut_ptr().cast(), bytes.len() as u32) };
     if count <= 0 || count as usize >= bytes.len() {
@@ -125,4 +130,35 @@ pub(super) fn observe(pid: u32, uid: u32, bound: &IpcIoBound) -> IpcNativeResult
         image: native_path(&image)?,
         image_sha256,
     })
+}
+
+pub(super) fn verify_stop_start(
+    pid: u32,
+    uid: u32,
+    expected: &StartIdentity,
+) -> IpcNativeResult<()> {
+    let before = process(pid)?;
+    let after = process(pid)?;
+    let micros = u32::try_from(before.pbi_start_tvusec).map_err(|_| {
+        refuse(
+            IpcNativeErrorCode::Unreadable,
+            "invalid stop target birth; restore native observation access",
+        )
+    })?;
+    if before.pbi_uid != uid
+        || after.pbi_uid != uid
+        || before.pbi_start_tvsec != after.pbi_start_tvsec
+        || before.pbi_start_tvusec != after.pbi_start_tvusec
+        || expected
+            != &(StartIdentity::Macos {
+                start_seconds: before.pbi_start_tvsec,
+                start_micros: micros,
+            })
+    {
+        return Err(refuse(
+            IpcNativeErrorCode::PeerChanged,
+            "recorded stop target birth or owner changed; rediscover the live host and retry the original stop key",
+        ));
+    }
+    Ok(())
 }

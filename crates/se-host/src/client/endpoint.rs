@@ -314,20 +314,6 @@ pub struct RuntimeStopReply {
     pub outcome: RuntimeStopOutcome,
 }
 
-/// Routing probe only; the selected closed codec subsequently validates every
-/// field/duplicate/depth before admission. Ignored credential bytes are never
-/// materialized as a generic Value merely to choose the fixed control family.
-#[cfg(feature = "listener")]
-pub(crate) fn has_stop_protocol(bytes: &[u8]) -> Result<bool> {
-    #[derive(Deserialize)]
-    struct Probe {
-        protocol: Option<String>,
-    }
-    serde_json::from_slice::<Probe>(bytes)
-        .map(|p| p.protocol.is_some())
-        .map_err(|_| SeError::invalid("IPC handshake", "one UTF-8 JSON object"))
-}
-
 /// Only the authenticated CLI core route decodes/applies this object; the
 /// transport neither invents a selection DTO nor accepts metadata for hooks.
 pub(crate) fn validate_selections(value: &Option<Value>, hook: bool) -> Result<()> {

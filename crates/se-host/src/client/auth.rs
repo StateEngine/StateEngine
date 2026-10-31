@@ -58,14 +58,6 @@ struct HelloRef<'a> {
     maximum_reply_bytes: NonZeroU32,
     authority: AuthorityRef<'a>,
 }
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HelloWire {
-    version: VersionWire,
-    expected_generation: Option<se_types::Generation>,
-    maximum_reply_bytes: NonZeroU32,
-    authority: AuthorityWire,
-}
 pub fn encode_client_hello(hello: &crate::ClientHello) -> Result<super::wire::WireBytes> {
     if hello.maximum_reply_bytes.get() as usize > MAX_FRAME_BYTES {
         return Err(refused("reply cap exceeds 1 MiB"));
@@ -77,20 +69,14 @@ pub fn encode_client_hello(hello: &crate::ClientHello) -> Result<super::wire::Wi
             maximum_reply_bytes: hello.maximum_reply_bytes,
             authority: (&hello.authority).into(),
         },
-        MAX_FRAME_BYTES,
+        MAX_ENDPOINT_BYTES,
     )
 }
 pub fn decode_client_hello(bytes: &[u8]) -> Result<crate::ClientHello> {
-    let wire: HelloWire = decode_json(bytes, MAX_FRAME_BYTES)?;
-    if wire.maximum_reply_bytes.get() as usize > MAX_FRAME_BYTES {
-        return Err(refused("reply cap exceeds 1 MiB"));
+    match super::hello::decode(bytes)? {
+        super::hello::DecodedHandshake::Call(hello) => Ok(hello),
+        _ => Err(refused("an operation hello, not stop control")),
     }
-    Ok(crate::ClientHello {
-        version: wire.version.into(),
-        expected_generation: wire.expected_generation,
-        maximum_reply_bytes: wire.maximum_reply_bytes,
-        authority: wire.authority.into(),
-    })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -378,7 +364,27 @@ pub(crate) mod secret_bytes {
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(
         decoder: D,
     ) -> std::result::Result<se_types::Secret, D::Error> {
-        se_types::Secret::new(Vec::<u8>::deserialize(decoder)?).map_err(de::Error::custom)
+        struct SecretVisitor;
+        impl<'de> de::Visitor<'de> for SecretVisitor {
+            type Value = se_types::Secret;
+            fn expecting(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                out.write_str("1..65536 protected credential bytes")
+            }
+            fn visit_seq<A: de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> std::result::Result<Self::Value, A::Error> {
+                let mut bytes = zeroize::Zeroizing::new(Vec::with_capacity(65536));
+                while let Some(byte) = seq.next_element::<u8>()? {
+                    if bytes.len() == 65536 {
+                        return Err(de::Error::custom("credential exceeds protected byte bound"));
+                    }
+                    bytes.push(byte);
+                }
+                se_types::Secret::new(std::mem::take(&mut *bytes)).map_err(de::Error::custom)
+            }
+        }
+        decoder.deserialize_seq(SecretVisitor)
     }
 }
 
@@ -407,6 +413,12 @@ impl<'a> From<&'a crate::PresentedAuthority> for AuthorityRef<'a> {
 pub(crate) struct ProtectedSecret(
     #[serde(deserialize_with = "secret_bytes::deserialize")] se_types::Secret,
 );
+
+impl ProtectedSecret {
+    pub(crate) fn into_secret(self) -> se_types::Secret {
+        self.0
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(

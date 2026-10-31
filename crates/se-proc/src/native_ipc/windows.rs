@@ -2,15 +2,12 @@ use super::windows_security as security;
 use super::*;
 use std::{
     ffi::OsStr,
-    fs::File,
     io::{Read, Write},
     mem::{size_of, zeroed},
-    num::NonZeroU64,
     os::windows::{
-        ffi::{OsStrExt, OsStringExt},
+        ffi::OsStrExt,
         io::{AsRawHandle, FromRawHandle, OwnedHandle},
     },
-    path::PathBuf,
     ptr,
 };
 use windows_sys::Win32::{
@@ -19,7 +16,7 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
     System::{IO::*, Pipes::*, Threading::*},
 };
-fn owned(raw: HANDLE, operation: &'static str) -> IpcNativeResult<OwnedHandle> {
+pub(super) fn owned(raw: HANDLE, operation: &'static str) -> IpcNativeResult<OwnedHandle> {
     if raw.is_null() || raw == INVALID_HANDLE_VALUE {
         return Err(last(operation));
     }
@@ -70,51 +67,35 @@ fn create(name: &OsStr, first: bool) -> IpcNativeResult<OwnedHandle> {
             &attributes,
         )
     };
+    if raw == INVALID_HANDLE_VALUE && first {
+        let creation_error = io::Error::last_os_error();
+        if creation_error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) {
+            let display = String::from_utf16_lossy(&name[..name.len().saturating_sub(1)]);
+            let (code, reason) = match security::named_owner(&name) {
+                Ok(sid) => (
+                    IpcNativeErrorCode::AlreadyExists,
+                    format!(
+                        "first-instance pipe {display:?} is owned by SID {sid}; ask that owner to close its endpoint or use an unused protected name; this host will not adopt or remove it"
+                    ),
+                ),
+                Err(owner_error) => (
+                    IpcNativeErrorCode::Unreadable,
+                    format!(
+                        "first-instance pipe {display:?} refused creation ({creation_error}); owner SID is unreadable ({owner_error}); restore owner visibility or use an unused protected name; do not adopt or remove the existing name"
+                    ),
+                ),
+            };
+            return Err(IpcNativeError {
+                code,
+                operation: "create first owner-only IPC pipe",
+                source: io::Error::new(io::ErrorKind::PermissionDenied, reason),
+            });
+        }
+        return Err(error("create first owner-only IPC pipe", creation_error));
+    }
     let handle = owned(raw, "create owner-only IPC pipe")?;
     security::verify(handle.as_raw_handle())?;
     Ok(handle)
-}
-/// One pending instance remains held while accepted instances are in use.
-/// First-instance collision refuses; no existing pipe is adopted or removed.
-pub struct NativePipeEndpoint {
-    name: std::ffi::OsString,
-    pending: OwnedHandle,
-}
-impl NativePipeEndpoint {
-    pub fn bind(name: &OsStr) -> IpcNativeResult<Self> {
-        Ok(Self {
-            name: name.to_owned(),
-            pending: create(name, true)?,
-        })
-    }
-    pub fn accept(&mut self, bound: IpcIoBound) -> IpcNativeResult<NativePipeStream> {
-        let event = owned(
-            unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) },
-            "create IPC connect event",
-        )?;
-        // SAFETY: zero is the documented initial OVERLAPPED state; the event
-        // and stack record stay alive until this exact operation is drained.
-        let mut operation: OVERLAPPED = unsafe { zeroed() };
-        operation.hEvent = event.as_raw_handle();
-        let connected = unsafe { ConnectNamedPipe(self.pending.as_raw_handle(), &mut operation) };
-        if connected == 0 {
-            let code = unsafe { GetLastError() };
-            if code == ERROR_IO_PENDING {
-                wait(self.pending.as_raw_handle(), &mut operation, &bound)
-                    .map_err(|e| error("accept IPC client", e))?;
-            } else if code != ERROR_PIPE_CONNECTED {
-                return Err(error(
-                    "accept IPC client",
-                    io::Error::from_raw_os_error(code as i32),
-                ));
-            }
-        }
-        let next = create(&self.name, false)?;
-        let handle = std::mem::replace(&mut self.pending, next);
-        let stream = NativePipeStream { handle, bound };
-        peer(stream.channel(), IpcPeerSide::Client, &stream.bound)?;
-        Ok(stream)
-    }
 }
 pub struct NativePipeStream {
     handle: OwnedHandle,
@@ -129,6 +110,7 @@ impl NativePipeStream {
                 .map_err(|e| error("connect IPC deadline", e))?;
             // Identification SQOS is present before connect, preventing a
             // squatter from impersonating this client with its full token.
+            // SAFETY: the bounded native pipe name outlives CreateFile; Identification SQOS is set before connection.
             let raw = unsafe {
                 CreateFileW(
                     name.as_ptr(),
@@ -146,6 +128,8 @@ impl NativePipeStream {
                 let stream = Self { handle, bound };
                 return Ok(stream);
             }
+            // SAFETY: reads the error of the immediately preceding native call on this thread.
+            // SAFETY: reads this thread's immediately preceding native operation error.
             let code = unsafe { GetLastError() };
             if code != ERROR_PIPE_BUSY {
                 return Err(error(
@@ -154,7 +138,10 @@ impl NativePipeStream {
                 ));
             }
             let milliseconds = remaining.as_millis().clamp(1, 10) as u32;
+            // SAFETY: retained NUL-terminated pipe name and bounded native wait; no ownership transfers.
             if unsafe { WaitNamedPipeW(name.as_ptr(), milliseconds) } == 0 {
+                // SAFETY: reads the error of the immediately preceding native call on this thread.
+                // SAFETY: reads this thread's immediately preceding native operation error.
                 let code = unsafe { GetLastError() };
                 if code != ERROR_SEM_TIMEOUT {
                     return Err(error(
@@ -182,6 +169,7 @@ impl NativePipeStream {
         }
         self.bound.remaining()?;
         let event = owned(
+            // SAFETY: null descriptor/name select a new noninherited unnamed event, uniquely owned by owned().
             unsafe { CreateEventW(ptr::null(), 1, 0, ptr::null()) },
             "create IPC I/O event",
         )
@@ -195,6 +183,7 @@ impl NativePipeStream {
         // handle remains owned, and wait drains OVERLAPPED before any return.
         let reading = matches!(&buffer, PipeBuffer::Read(_));
         let result = match buffer {
+            // SAFETY: writable live slice and OVERLAPPED/event remain retained until wait drains this operation.
             PipeBuffer::Read(bytes) => unsafe {
                 ReadFile(
                     self.handle.as_raw_handle(),
@@ -204,6 +193,7 @@ impl NativePipeStream {
                     &mut operation,
                 )
             },
+            // SAFETY: readable live slice and OVERLAPPED/event remain retained until wait drains this operation.
             PipeBuffer::Write(bytes) => unsafe {
                 WriteFile(
                     self.handle.as_raw_handle(),
@@ -215,6 +205,8 @@ impl NativePipeStream {
             },
         };
         if result == 0 {
+            // SAFETY: reads the error of the immediately preceding native call on this thread.
+            // SAFETY: reads this thread's immediately preceding native operation error.
             let code = unsafe { GetLastError() };
             if code != ERROR_IO_PENDING {
                 if reading
@@ -236,9 +228,11 @@ impl NativePipeStream {
 fn wait(handle: HANDLE, operation: &mut OVERLAPPED, bound: &IpcIoBound) -> io::Result<usize> {
     loop {
         let mut count = 0;
+        // SAFETY: live pipe and the same retained OVERLAPPED, with writable count output.
         if unsafe { GetOverlappedResult(handle, operation, &mut count, 0) } != 0 {
             return Ok(count as usize);
         }
+        // SAFETY: reads this thread's immediately preceding native operation error.
         let code = unsafe { GetLastError() };
         if code != ERROR_IO_INCOMPLETE {
             return Err(io::Error::from_raw_os_error(code as i32));
@@ -259,11 +253,13 @@ fn wait(handle: HANDLE, operation: &mut OVERLAPPED, bound: &IpcIoBound) -> io::R
                 };
             }
         };
+        // SAFETY: the event belongs to the retained operation and the wait is bounded by its original deadline.
         let outcome = unsafe {
             WaitForSingleObject(operation.hEvent, remaining.as_millis().clamp(1, 10) as u32)
         };
         if outcome == WAIT_FAILED {
             let reason = io::Error::last_os_error();
+            // SAFETY: cancel and join this exact operation before its buffers/event can be dropped.
             unsafe {
                 CancelIoEx(handle, operation);
                 GetOverlappedResult(handle, operation, &mut count, 1);
@@ -294,103 +290,6 @@ impl Write for NativePipeStream {
         Ok(())
     }
 }
-pub(super) fn peer(
-    channel: BorrowedIpc<'_>,
-    side: IpcPeerSide,
-    bound: &IpcIoBound,
-) -> IpcNativeResult<NativeIpcPeer> {
-    let mut pid = 0;
-    let ok = match side {
-        IpcPeerSide::Client => unsafe {
-            GetNamedPipeClientProcessId(channel.as_raw_handle(), &mut pid)
-        },
-        IpcPeerSide::Server => unsafe {
-            GetNamedPipeServerProcessId(channel.as_raw_handle(), &mut pid)
-        },
-    };
-    if ok == 0 {
-        return Err(last("read native pipe peer process ID"));
-    }
-    observe(pid, bound)
-}
-pub(super) fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
-    observe(std::process::id(), bound)
-}
-fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
-    // SAFETY: query-only process pin, no inherited handle or native mutation.
-    let process = owned(
-        unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) },
-        "pin IPC peer process",
-    )?;
-    let sid = security::process_sid(process.as_raw_handle())?;
-    if sid != security::current_sid()? {
-        return Err(refuse(
-            IpcNativeErrorCode::UnsafeEndpoint,
-            "IPC peer process SID differs from current user",
-        ));
-    }
-    let mut creation = unsafe { zeroed() };
-    let mut exit = unsafe { zeroed() };
-    let mut kernel = unsafe { zeroed() };
-    let mut user = unsafe { zeroed() };
-    // SAFETY: one pinned process and four aligned stack FILETIME outputs.
-    if unsafe {
-        GetProcessTimes(
-            process.as_raw_handle(),
-            &mut creation,
-            &mut exit,
-            &mut kernel,
-            &mut user,
-        )
-    } == 0
-    {
-        return Err(last("read peer process creation clock"));
-    }
-    let creation_filetime = NonZeroU64::new(
-        (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime),
-    )
-    .ok_or_else(|| {
-        refuse(
-            IpcNativeErrorCode::Unreadable,
-            "invalid native process birth",
-        )
-    })?;
-    let mut image = vec![0; 32768];
-    let mut length = image.len() as u32;
-    // SAFETY: retained bounded UTF-16 output buffer and native process pin.
-    if unsafe {
-        QueryFullProcessImageNameW(process.as_raw_handle(), 0, image.as_mut_ptr(), &mut length)
-    } == 0
-    {
-        return Err(last("read IPC peer executable"));
-    }
-    image.truncate(length as usize);
-    let image = PathBuf::from(std::ffi::OsString::from_wide(&image));
-    let image_sha256 = hash_image(
-        File::open(&image).map_err(|e| error("pin IPC peer executable", e))?,
-        bound,
-    )?;
-    // SAFETY: the query/synchronize process handle is retained above. Native
-    // signalled state distinguishes exit code 259 from a live process.
-    match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
-        WAIT_TIMEOUT => (),
-        WAIT_OBJECT_0 => {
-            return Err(refuse(
-                IpcNativeErrorCode::PeerChanged,
-                "IPC peer exited during identity readback",
-            ));
-        }
-        _ => return Err(last("reobserve IPC peer liveness")),
-    }
-    Ok(NativeIpcPeer {
-        principal: IpcPrincipal::Windows { sid },
-        pid,
-        started: StartIdentity::Windows { creation_filetime },
-        image: native_path(&image)?,
-        image_sha256,
-    })
-}
-
 /// Reserves the first protected instance while an evented host creates later
 /// instances through its existing reactor. The occupied reservation cannot
 /// receive application calls. No Tokio dependency or handle ownership cast is
@@ -422,6 +321,7 @@ impl NativePipeReservation {
         )?;
         security::verify(client.as_raw_handle())?;
         let mut pid = 0;
+        // SAFETY: retained pipe handle and initialized writable PID output; this call grants no authority.
         if unsafe { GetNamedPipeServerProcessId(client.as_raw_handle(), &mut pid) } == 0 {
             return Err(last("verify IPC reservation server"));
         }
@@ -446,6 +346,7 @@ impl NativePipeReservation {
     pub fn verify_reactor_instance(&self, channel: BorrowedIpc<'_>) -> IpcNativeResult<()> {
         security::verify(channel.as_raw_handle())?;
         let mut pid = 0;
+        // SAFETY: retained pipe handle and initialized writable PID output; this call grants no authority.
         if unsafe { GetNamedPipeServerProcessId(channel.as_raw_handle(), &mut pid) } == 0 {
             return Err(last("verify evented IPC server"));
         }
@@ -458,3 +359,5 @@ impl NativePipeReservation {
         Ok(())
     }
 }
+
+pub(super) use super::windows_peer::{peer, self_peer, stop_server};

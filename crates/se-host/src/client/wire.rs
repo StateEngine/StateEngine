@@ -62,7 +62,7 @@ pub fn encode_json<T: Serialize>(value: &T, limit: usize) -> Result<WireBytes> {
         return Err(invalid("a nonzero budget at most 1 MiB"));
     }
     let mut output = LimitedBuffer {
-        bytes: Zeroizing::new(Vec::new()),
+        bytes: Zeroizing::new(Vec::with_capacity(limit)),
         limit,
     };
     serde_json::to_writer(&mut output, value)

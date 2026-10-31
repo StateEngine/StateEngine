@@ -42,10 +42,7 @@ fn stamp(file: &File) -> IpcNativeResult<(u64, u64)> {
 }
 fn socket_stamp(path: &Path) -> IpcNativeResult<(u64, u64)> {
     let m = fs::symlink_metadata(path).map_err(|e| error("read IPC socket identity", e))?;
-    if !m.file_type().is_socket()
-        || m.mode() & 0o777 != 0o600
-        || m.uid() != unsafe { libc::geteuid() }
-    {
+    if !m.file_type().is_socket() || m.mode() & 0o777 != 0o600 || m.uid() != current_uid() {
         return Err(refuse(
             IpcNativeErrorCode::UnsafeEndpoint,
             "IPC socket must be current-owner mode 0600",
@@ -100,26 +97,6 @@ impl NativeUnixEndpoint {
         self.listener
             .try_clone()
             .map_err(|e| error("duplicate IPC listener for reactor", e))
-    }
-    pub fn accept(&self, bound: IpcIoBound) -> IpcNativeResult<NativeUnixStream> {
-        loop {
-            bound
-                .remaining()
-                .map_err(|e| error("accept IPC deadline", e))?;
-            match self.listener.accept() {
-                Ok((stream, _)) => {
-                    stream
-                        .set_nonblocking(false)
-                        .map_err(|e| error("configure accepted IPC stream", e))?;
-                    peer(stream.as_fd(), &bound)?;
-                    return Ok(NativeUnixStream { stream, bound });
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(2))
-                }
-                Err(e) => return Err(error("accept IPC client", e)),
-            }
-        }
     }
     /// Caller first joins every reactor clone/connection. A replaced socket or
     /// directory refuses removal, preserving the replacement and its cause.
@@ -177,6 +154,7 @@ impl NativeUnixStream {
         let flags = libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK;
         #[cfg(not(target_os = "linux"))]
         let flags = libc::SOCK_STREAM;
+        // SAFETY: AF_UNIX and these flags request one fresh socket; no borrowed pointer is passed.
         let raw = unsafe { libc::socket(libc::AF_UNIX, flags, 0) };
         if raw < 0 {
             return Err(last("create IPC client socket"));
@@ -184,6 +162,7 @@ impl NativeUnixStream {
         // SAFETY: successful socket allocation transfers unique FD ownership.
         let stream = unsafe { UnixStream::from_raw_fd(raw) };
         // CLOEXEC is set before publication to a caller and never inherited.
+        // SAFETY: this newly owned live socket FD is configured with the documented close-on-exec flag.
         if unsafe { libc::fcntl(raw, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
             return Err(last("protect IPC client descriptor"));
         }
@@ -193,6 +172,7 @@ impl NativeUnixStream {
         bound
             .remaining()
             .map_err(|e| error("connect IPC deadline", e))?;
+        // SAFETY: the exact initialized sockaddr_un buffer and live socket outlive synchronous connect.
         let rc = unsafe {
             libc::connect(
                 raw,
@@ -247,7 +227,7 @@ impl NativeUnixStream {
             ));
         }
         let (uid, _) = process::credentials(stream.as_fd())?;
-        if uid != unsafe { libc::geteuid() } {
+        if uid != current_uid() {
             return Err(refuse(
                 IpcNativeErrorCode::UnsafeEndpoint,
                 "IPC server is a different native user",
@@ -317,7 +297,7 @@ impl Write for NativeUnixStream {
 }
 pub(super) fn peer(channel: BorrowedIpc<'_>, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     let (uid, pid) = process::credentials(channel)?;
-    if uid != unsafe { libc::geteuid() } {
+    if uid != current_uid() {
         return Err(refuse(
             IpcNativeErrorCode::UnsafeEndpoint,
             "IPC peer is a different native user",
@@ -326,5 +306,19 @@ pub(super) fn peer(channel: BorrowedIpc<'_>, bound: &IpcIoBound) -> IpcNativeRes
     process::observe(pid, uid, bound)
 }
 pub(super) fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
-    process::observe(std::process::id(), unsafe { libc::geteuid() }, bound)
+    process::observe(std::process::id(), current_uid(), bound)
+}
+
+pub(super) fn stop_server(
+    channel: BorrowedIpc<'_>,
+    expected: &ProcessInstance,
+) -> IpcNativeResult<()> {
+    let (uid, pid) = process::credentials(channel)?;
+    if uid != current_uid() || pid != expected.fields().pid.get() {
+        return Err(refuse(
+            IpcNativeErrorCode::PeerChanged,
+            "stop target PID or OS user differs; rediscover the current endpoint and retry the original stop key",
+        ));
+    }
+    process::verify_stop_start(pid, uid, &expected.fields().started)
 }

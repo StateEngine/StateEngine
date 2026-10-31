@@ -56,3 +56,5 @@ pub mod auth;
 pub mod endpoint;
 pub mod lease;
 pub mod wire;
+
+pub mod hello;

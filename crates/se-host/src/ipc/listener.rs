@@ -36,6 +36,7 @@ pub struct IpcListener {
     record: EndpointRecord,
     runtime: Handle,
     blocking: Arc<Semaphore>,
+    connections: Arc<Semaphore>,
 }
 #[cfg(windows)]
 fn evented_pipe(native: &NativeEndpoint) -> Result<NativeListener> {
@@ -96,11 +97,12 @@ impl IpcListener {
             record,
             runtime,
             blocking,
+            connections: Arc::new(Semaphore::new(32)),
         })
     }
     /// The caller can cancel idle accept by dropping its future. No peer JSON
     /// or credential is read until bounded native peer proof has succeeded.
-    pub async fn accept(&mut self, cancelled: Arc<AtomicBool>) -> Result<PendingIpcHandshake> {
+    pub async fn accept(&mut self, cancelled: Arc<AtomicBool>) -> Result<AcceptedIpcStream> {
         #[cfg(unix)]
         let stream = self
             .listener
@@ -124,7 +126,48 @@ impl IpcListener {
             timeout: HELLO_TIMEOUT,
             cancelled,
         })?;
-        let stream = Arc::new(stream);
+        let connection_slot=Arc::clone(&self.connections).try_acquire_owned().map_err(|_|SeError::new(se_types::Detail::StoreBusy(se_types::details::StoreBusy {waited_ms:0,reason:"IPC connection limit is occupied".into(),next_step:"Close an existing connection or retry after its bounded handshake deadline, preserving the original request key.".into()})))?;
+        Ok(AcceptedIpcStream {
+            stream: Arc::new(stream),
+            record: self.record.clone(),
+            runtime: self.runtime.clone(),
+            blocking: Arc::clone(&self.blocking),
+            connection_slot,
+            deadline,
+        })
+    }
+    pub fn close(self) -> Result<()> {
+        let Self {
+            native, listener, ..
+        } = self;
+        drop(listener);
+        #[cfg(unix)]
+        {
+            native.close().map_err(native_error)
+        }
+        #[cfg(windows)]
+        {
+            drop(native);
+            Ok(())
+        }
+    }
+}
+/// OS accept is complete. Drive this handshake in a per-connection task;
+/// a silent peer occupies only its own bounded slot and absolute hello clock.
+pub struct AcceptedIpcStream {
+    stream: Arc<NativeStream>,
+    record: EndpointRecord,
+    runtime: Handle,
+    blocking: Arc<Semaphore>,
+    connection_slot: tokio::sync::OwnedSemaphorePermit,
+    deadline: Deadline,
+}
+impl AcceptedIpcStream {
+    pub async fn handshake(self) -> Result<PendingIpcHandshake> {
+        let deadline = self.deadline;
+        let connection_slot = self.connection_slot;
+        deadline.remaining()?;
+        let stream = self.stream;
         let permit = bounded(&deadline, self.blocking.clone().acquire_owned())
             .await?
             .map_err(|_| {
@@ -163,20 +206,12 @@ impl IpcListener {
             &deadline,
         )
         .await?;
-        let bytes = receive(&stream, &deadline, wire::MAX_FRAME_BYTES).await?;
-        let (challenge, input) = if codec::has_stop_protocol(bytes.as_bytes())? {
-            let mut challenge = challenge;
+        let bytes = receive(&stream, &deadline, wire::MAX_ENDPOINT_BYTES).await?;
+        let input = crate::client::hello::decode(bytes.as_bytes())?;
+        let mut challenge = challenge;
+        if matches!(input, HandshakeInput::Stop(_)) {
             challenge.stop_domain();
-            (
-                challenge,
-                HandshakeInput::Stop(codec::decode_stop(bytes.as_bytes())?),
-            )
-        } else {
-            (
-                challenge,
-                HandshakeInput::Call(auth::decode_client_hello(bytes.as_bytes())?),
-            )
-        };
+        }
         Ok(PendingIpcHandshake {
             stream,
             proof,
@@ -184,28 +219,11 @@ impl IpcListener {
             input,
             record: self.record.clone(),
             deadline,
+            connection_slot,
         })
     }
-    pub fn close(self) -> Result<()> {
-        let Self {
-            native, listener, ..
-        } = self;
-        drop(listener);
-        #[cfg(unix)]
-        {
-            native.close().map_err(native_error)
-        }
-        #[cfg(windows)]
-        {
-            drop(native);
-            Ok(())
-        }
-    }
 }
-pub enum HandshakeInput {
-    Call(ClientHello),
-    Stop(codec::RuntimeStopRequest),
-}
+pub use crate::client::hello::DecodedHandshake as HandshakeInput;
 /// Runtime admission owns this value until it has checked current credentials,
 /// ancestry/provenance, revocation and generation. MAC validity alone is not Owner.
 pub struct PendingIpcHandshake {
@@ -215,6 +233,7 @@ pub struct PendingIpcHandshake {
     input: HandshakeInput,
     record: EndpointRecord,
     deadline: Deadline,
+    connection_slot: tokio::sync::OwnedSemaphorePermit,
 }
 impl PendingIpcHandshake {
     pub fn peer(&self) -> &PeerProof {
@@ -289,6 +308,7 @@ impl PendingIpcHandshake {
             hello: ready,
             authority: hello.authority,
             awaiting: None,
+            _connection_slot: self.connection_slot,
         })
     }
     pub async fn finish_stop(
@@ -323,6 +343,7 @@ pub struct IpcConnection {
     hello: ServerHello,
     authority: PresentedAuthority,
     awaiting: Option<u64>,
+    _connection_slot: tokio::sync::OwnedSemaphorePermit,
 }
 impl IpcConnection {
     pub fn connection_authority(&self) -> &PresentedAuthority {

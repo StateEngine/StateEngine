@@ -6,6 +6,7 @@ use std::{
     os::{fd::AsRawFd, unix::fs::MetadataExt},
 };
 pub(super) fn credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32)> {
+    // SAFETY: zero initializes this native POD output before getsockopt fills it.
     let mut info: libc::ucred = unsafe { zeroed() };
     let mut length = size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: a borrowed live socket, aligned ucred output and exact size.
@@ -104,4 +105,27 @@ pub(super) fn observe(pid: u32, uid: u32, bound: &IpcIoBound) -> IpcNativeResult
         image: native_path(&image)?,
         image_sha256,
     })
+}
+
+pub(super) fn verify_stop_start(
+    pid: u32,
+    uid: u32,
+    expected: &StartIdentity,
+) -> IpcNativeResult<()> {
+    let before = start(pid)?;
+    let path = Path::new("/proc").join(pid.to_string());
+    let owner = fs::metadata(&path).map_err(|e| error("read stop target owner", e))?;
+    if expected
+        != &(StartIdentity::Linux {
+            start_ticks: before,
+        })
+        || owner.uid() != uid
+        || start(pid)? != before
+    {
+        return Err(refuse(
+            IpcNativeErrorCode::PeerChanged,
+            "recorded stop target birth or owner changed; rediscover the live host and retry the original stop key",
+        ));
+    }
+    Ok(())
 }
