@@ -6,6 +6,12 @@ use std::{
 };
 
 pub(in crate::state_files) fn scan_recovery(path: &Path) -> Result<Vec<PathBuf>> {
+    scan(path, false)
+}
+pub(in crate::state_files) fn scan_temporary(path: &Path) -> Result<Vec<PathBuf>> {
+    scan(path, true)
+}
+fn scan(path: &Path, temporary: bool) -> Result<Vec<PathBuf>> {
     let parent = super::super::walk_effect_parent(path)?;
     let before = parent
         .metadata()
@@ -73,7 +79,11 @@ pub(in crate::state_files) fn scan_recovery(path: &Path) -> Result<Vec<PathBuf>>
         }
         // SAFETY: readdir supplies a terminated d_name valid until next call.
         let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
-        if name.starts_with(b".se-edit-backup-") {
+        if if temporary {
+            name.starts_with(b".se-profile-") || name.starts_with(b".se-publish-")
+        } else {
+            name.starts_with(b".se-edit-backup-")
+        } {
             if found.len() == 256 {
                 return Err(unsafe_path("recovery inventory exceeds 256 siblings", path));
             }

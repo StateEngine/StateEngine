@@ -3,6 +3,12 @@ use super::*;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 pub(in crate::state_files) fn scan_recovery(path: &Path) -> Result<Vec<PathBuf>> {
+    scan(path, false)
+}
+pub(in crate::state_files) fn scan_temporary(path: &Path) -> Result<Vec<PathBuf>> {
+    scan(path, true)
+}
+fn scan(path: &Path, temporary: bool) -> Result<Vec<PathBuf>> {
     let parent = Parent::open(path)?;
     let before = parent
         .file()?
@@ -49,7 +55,12 @@ pub(in crate::state_files) fn scan_recovery(path: &Path) -> Result<Vec<PathBuf>>
             .position(|unit| *unit == 0)
             .ok_or_else(|| unsafe_path("unterminated native recovery name", path))?;
         let name = std::ffi::OsString::from_wide(&entry.cFileName[..length]);
-        if name.to_string_lossy().starts_with(".se-edit-backup-") {
+        if if temporary {
+            name.to_string_lossy().starts_with(".se-profile-")
+                || name.to_string_lossy().starts_with(".se-publish-")
+        } else {
+            name.to_string_lossy().starts_with(".se-edit-backup-")
+        } {
             if found.len() == 256 {
                 return Err(unsafe_path("recovery inventory exceeds 256 siblings", path));
             }

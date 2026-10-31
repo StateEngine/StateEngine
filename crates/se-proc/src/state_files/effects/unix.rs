@@ -236,6 +236,84 @@ impl Pin {
         pin.check()?;
         Ok(Some(pin))
     }
+    pub(in crate::state_files) fn create_claim(path: &Path) -> Result<Self> {
+        if let Some(pin) = Self::open(path).map_err(claim_error)? {
+            if pin
+                .file
+                .metadata()
+                .map_err(|error| io_error("inspect permanent claim mode", path, error))?
+                .mode()
+                & 0o077
+                != 0
+            {
+                return Err(unsafe_path(
+                    "permanent installation claim must be owner-only",
+                    path,
+                ));
+            }
+            return Ok(pin);
+        }
+        let (directory, leaf_name) = parent(path)?;
+        // SAFETY: held trusted parent, exclusive no-follow private creation;
+        // the existing permanent claim inode is never truncated or replaced.
+        let raw = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                leaf_name.as_ptr(),
+                libc::O_RDWR | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600,
+            )
+        };
+        if raw < 0 {
+            if io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
+                return Err(io_error(
+                    "create shared installation claim",
+                    path,
+                    io::Error::last_os_error(),
+                ));
+            }
+        } else {
+            let file = owned(raw, "create shared installation claim", path)?;
+            file.sync_all()
+                .map_err(|error| io_error("sync installation claim", path, error))?;
+            directory
+                .sync_all()
+                .map_err(|error| io_error("sync installation claim parent", path, error))?;
+        }
+        Self::open(path)
+            .map_err(claim_error)?
+            .ok_or_else(|| changed("new installation claim disappeared", path))
+    }
+    pub(in crate::state_files) fn claim_record(&self) -> Result<()> {
+        self.check()?;
+        let security = self.file.metadata().map_err(|error| {
+            io_error("inspect installation claim protection", &self.path, error)
+        })?;
+        if security.mode() & 0o022 != 0 {
+            return Err(unsafe_path(
+                "installation record permits another native writer",
+                &self.path,
+            ));
+        }
+        #[cfg(target_os = "macos")]
+        metadata::check_directory_acl(&self.file, &self.path)?;
+        lock(&self.file, &self.path).map_err(|mut error| {
+            error.operation =
+                "installation record is busy; retry after install or uninstall finishes";
+            error
+        })?;
+        // The file claim remains held while unrelated children use the parent
+        // mutation lock. Rename/digest checks still guard every later effect.
+        // SAFETY: release only this pin's own cooperating-parent flock.
+        if unsafe { libc::flock(self.parent.as_raw_fd(), libc::LOCK_UN) } < 0 {
+            return Err(io_error(
+                "release installer claim parent lock",
+                &self.path,
+                io::Error::last_os_error(),
+            ));
+        }
+        self.check()
+    }
     pub(in crate::state_files) fn file(&self) -> &File {
         &self.file
     }
@@ -537,9 +615,11 @@ impl Pin {
                 ));
             }
         }
+        // SAFETY: only the checked uniquely-created staging entry is removed.
         if result.is_err()
             && !swapped
-            // SAFETY: retained parent descriptor and checked NUL-terminated staging name.
+            // SAFETY: retained parent descriptor and NUL-terminated staging leaf;
+            // this removes only the validated staging name within that parent.
             && unsafe { libc::unlinkat(self.parent.as_raw_fd(), stage_name.as_ptr(), 0) } < 0
             && io::Error::last_os_error().kind() != io::ErrorKind::NotFound
         {
@@ -604,4 +684,69 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
 
 #[path = "recovery_unix.rs"]
 mod recovery;
-pub(in crate::state_files) use recovery::scan_recovery;
+pub(in crate::state_files) use recovery::{scan_recovery, scan_temporary};
+
+pub(in crate::state_files) fn installation_claim_path() -> Result<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    let diagnostic = Path::new("native account profile");
+    // SAFETY: reentrant account lookup with owned bounded storage; native result
+    // pointers are copied before the storage is released.
+    let uid = unsafe { libc::geteuid() };
+    for size in [4096usize, 16384, 65536, 262144] {
+        // SAFETY: native POD account output, initialized result pointer and owned buffer.
+        let mut account: libc::passwd = unsafe { std::mem::zeroed() };
+        let mut storage = vec![0u8; size];
+        let mut result = std::ptr::null_mut();
+        // SAFETY: account/result are writable native output pointers and storage
+        // has the stated length; all returned pointers are copied while it lives.
+        let code = unsafe {
+            libc::getpwuid_r(
+                uid,
+                &mut account,
+                storage.as_mut_ptr().cast(),
+                storage.len(),
+                &mut result,
+            )
+        };
+        if code == libc::ERANGE {
+            continue;
+        }
+        if code != 0 {
+            return Err(io_error(
+                "resolve native account profile",
+                diagnostic,
+                io::Error::from_raw_os_error(code),
+            ));
+        }
+        if result.is_null() || account.pw_dir.is_null() {
+            return Err(unsafe_path(
+                "native account has no profile directory",
+                diagnostic,
+            ));
+        }
+        // SAFETY: successful getpwuid_r provides a terminated directory in storage.
+        let home = unsafe { std::ffi::CStr::from_ptr(account.pw_dir) }
+            .to_bytes()
+            .to_vec();
+        let path = PathBuf::from(std::ffi::OsString::from_vec(home));
+        components(&path)?;
+        return Ok(path.join(".stateengine-install.lock"));
+    }
+    Err(unsafe_path(
+        "native account profile lookup exceeds its finite bound",
+        diagnostic,
+    ))
+}
+
+fn claim_error(
+    mut error: crate::state_files::StateFileError,
+) -> crate::state_files::StateFileError {
+    if error
+        .source
+        .as_ref()
+        .is_some_and(|cause| cause.raw_os_error() == Some(libc::EWOULDBLOCK))
+    {
+        error.operation = "installation record is busy; retry after install or uninstall finishes";
+    }
+    error
+}

@@ -80,12 +80,25 @@ pub fn read<S: ReadStore>(
     selections: &se_core::ops::CliSelections,
 ) -> Result<Outcome> {
     if op.meta().effect != se_core::registry::Effect::Read {
-        return Err(se_types::SeError::invalid("direct read route", "a registered read operation"));
+        return Err(se_types::SeError::invalid(
+            "direct read route",
+            "a registered read operation",
+        ));
     }
-    match plan(store, admission, terminal, &Kernel::read_only(), op, selections)? {
+    match plan(
+        store,
+        admission,
+        terminal,
+        &Kernel::read_only(),
+        op,
+        selections,
+    )? {
         OpStep::Complete(output) => Ok(Outcome::Complete(output)),
         OpStep::Custody(plan) => Ok(Outcome::Custody(plan)),
-        OpStep::Commit { .. } => Err(se_types::SeError::invalid("direct read plan", "a read without a commit step")),
+        OpStep::Commit { .. } => Err(se_types::SeError::invalid(
+            "direct read plan",
+            "a read without a commit step",
+        )),
     }
 }
 fn plan<S: ReadStore>(

@@ -33,11 +33,15 @@ fn open(path: &Path, directory: bool, access: u32, create: bool) -> Result<File>
                 | if directory {
                     FILE_READ_ATTRIBUTES | access
                 } else {
-                    GENERIC_READ | DELETE | if create { GENERIC_WRITE } else { 0 }
+                    if access == FILE_READ_ATTRIBUTES {
+                        FILE_READ_ATTRIBUTES
+                    } else {
+                        GENERIC_READ | DELETE | access | if create { GENERIC_WRITE } else { 0 }
+                    }
                 },
             FILE_SHARE_READ
-                | if directory {
-                    FILE_SHARE_WRITE
+                | if directory || access == FILE_READ_ATTRIBUTES {
+                    FILE_SHARE_WRITE | FILE_SHARE_DELETE
                 } else {
                     FILE_SHARE_DELETE
                 },
@@ -204,6 +208,7 @@ pub(in crate::state_files) struct Pin {
     parent: Parent,
     file: File,
     identity: Identity,
+    claim: bool,
 }
 impl Pin {
     pub(in crate::state_files) fn open(path: &Path) -> Result<Option<Self>> {
@@ -225,9 +230,73 @@ impl Pin {
             parent,
             file,
             identity,
+            claim: false,
         };
         pin.check()?;
         Ok(Some(pin))
+    }
+    pub(in crate::state_files) fn create_claim(path: &Path) -> Result<Self> {
+        let (parent, physical) = location(path)?;
+        // Every account-wide claimant requests WRITE while denying WRITE
+        // sharing. An inherited duplicate preserves this exclusion even after
+        // the holder process exits and its byte-range lock is released.
+        let file = match open(&physical, false, GENERIC_WRITE, false) {
+            Ok(file) => file,
+            Err(error) if absent(&error) => match open(&physical, false, GENERIC_WRITE, true) {
+                Ok(file) => {
+                    file.sync_all()
+                        .map_err(|error| io_error("flush new installation claim", path, error))?;
+                    parent.sync(path)?;
+                    file
+                }
+                Err(error)
+                    if error
+                        .source
+                        .as_ref()
+                        .is_some_and(|cause| cause.kind() == io::ErrorKind::AlreadyExists) =>
+                {
+                    open(&physical, false, GENERIC_WRITE, false)?
+                }
+                Err(error) => return Err(claim_error(error)),
+            },
+            Err(error) => return Err(claim_error(error)),
+        };
+        let identity = metadata(&file, path, false, false)?;
+        security::verify(&file, path, true)?;
+        let pin = Self {
+            path: path.into(),
+            physical,
+            parent,
+            file,
+            identity,
+            claim: true,
+        };
+        pin.check()?;
+        Ok(pin)
+    }
+    pub(in crate::state_files) fn claim_record(&self) -> Result<()> {
+        self.check()?;
+        security::verify_no_foreign_writer(&self.file, &self.path)?;
+        // SAFETY: initialized synchronous OVERLAPPED with offset zero, retained
+        // readable record handle, one-byte exclusive lock that fails immediately.
+        let mut overlap: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { zeroed() };
+        if unsafe {
+            LockFileEx(
+                self.file.as_raw_handle(),
+                LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                0,
+                1,
+                0,
+                &mut overlap,
+            )
+        } == 0
+        {
+            return Err(last(
+                "installation record is busy; retry after install or uninstall finishes",
+                &self.path,
+            ));
+        }
+        self.check()
     }
     pub(in crate::state_files) fn file(&self) -> &File {
         &self.file
@@ -244,7 +313,12 @@ impl Pin {
     }
     pub(in crate::state_files) fn check(&self) -> Result<()> {
         self.check_parent()?;
-        let current = open(&self.physical, false, 0, false)?;
+        let current = open(
+            &self.physical,
+            false,
+            if self.claim { FILE_READ_ATTRIBUTES } else { 0 },
+            false,
+        )?;
         if metadata(&current, &self.path, false, false)? != self.identity
             || metadata(&self.file, &self.path, false, false)? != self.identity
         {
@@ -475,4 +549,49 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
 
 #[path = "recovery_windows.rs"]
 mod recovery;
-pub(in crate::state_files) use recovery::scan_recovery;
+pub(in crate::state_files) use recovery::{scan_recovery, scan_temporary};
+
+pub(in crate::state_files) fn installation_claim_path() -> Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::OwnedHandle;
+    use windows_sys::Win32::{
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+        UI::Shell::GetUserProfileDirectoryW,
+    };
+    let path = Path::new("native account profile");
+    let mut token = ptr::null_mut();
+    // SAFETY: current process, query-only token and valid native output pointer.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(last("open native account token", path));
+    }
+    // SAFETY: successful OpenProcessToken transfers one uniquely owned handle.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let mut buffer = vec![0u16; 32768];
+    let mut size = buffer.len() as u32;
+    // SAFETY: retained query token and initialized bounded UTF-16 output.
+    if unsafe { GetUserProfileDirectoryW(token.as_raw_handle(), buffer.as_mut_ptr(), &mut size) }
+        == 0
+    {
+        return Err(last("resolve native account profile", path));
+    }
+    let end = buffer
+        .iter()
+        .position(|unit| *unit == 0)
+        .ok_or_else(|| unsafe_path("native profile is unterminated", path))?;
+    let profile = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..end]));
+    wide(&profile)?;
+    Ok(profile.join(".stateengine-install.lock"))
+}
+
+fn claim_error(
+    mut error: crate::state_files::StateFileError,
+) -> crate::state_files::StateFileError {
+    if error
+        .source
+        .as_ref()
+        .is_some_and(|cause| matches!(cause.raw_os_error(), Some(32 | 33)))
+    {
+        error.operation = "installation record is busy; retry after install or uninstall finishes";
+    }
+    error
+}

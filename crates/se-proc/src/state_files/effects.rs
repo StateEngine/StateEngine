@@ -32,6 +32,11 @@ impl OwnedFile {
     pub fn open(path: &Path) -> Result<Option<Self>> {
         os::Pin::open(path).map(|pin| pin.map(Self))
     }
+    /// Acquire the admitted record-local installer hold before reading bytes.
+    /// A separate account-wide claim is required for pattern-based temp cleanup.
+    pub fn claim_installation_record(&mut self) -> Result<()> {
+        self.0.claim_record()
+    }
     pub fn sha256(&mut self) -> Result<[u8; 32]> {
         self.0.check()?;
         let value = digest(self.0.file(), self.0.path())?;
@@ -63,6 +68,54 @@ impl OwnedFile {
     /// completion includes an independent reopen witnessing native absence.
     pub fn remove(self, expected: [u8; 32]) -> Result<()> {
         self.0.remove(expected)
+    }
+    /// Compare the complete observed file, then atomically publish exactly its
+    /// retained prefix through the same security-preserving replacement path.
+    /// Keeping the displaced object protects edits racing Unix publication;
+    /// in-place truncation could irretrievably discard a concurrent append.
+    pub fn truncate(self, expected: [u8; 32], length: u64) -> Result<()> {
+        const MAX_PREFIX: u64 = 1024 * 1024;
+        self.0.check()?;
+        let path = self.0.path();
+        let original = self
+            .0
+            .file()
+            .metadata()
+            .map_err(|error| io_error("inspect compare-and-truncate source", path, error))?;
+        if length > original.len() || length > MAX_PREFIX {
+            return Err(failure(
+                StateFileErrorCode::Unsupported,
+                "truncate requires an existing prefix within the one-MiB profile bound",
+                path,
+            ));
+        }
+        let mut source = self.0.file();
+        source
+            .seek(SeekFrom::Start(0))
+            .map_err(|error| io_error("seek retained profile prefix", path, error))?;
+        let mut prefix = Vec::new();
+        let mut hash = Sha256::new();
+        let mut block = [0u8; 65536];
+        loop {
+            let count = source
+                .read(&mut block)
+                .map_err(|error| io_error("read compare-and-truncate source", path, error))?;
+            if count == 0 {
+                break;
+            }
+            hash.update(&block[..count]);
+            let retain = (length.saturating_sub(prefix.len() as u64) as usize).min(count);
+            prefix.extend_from_slice(&block[..retain]);
+        }
+        if prefix.len() as u64 != length || <[u8; 32]>::from(hash.finalize()) != expected {
+            return Err(changed(
+                "profile changed while observing its retained prefix",
+                path,
+            ));
+        }
+        // The exact bytes retained came from the same stream as the expected
+        // complete digest. Replacement verifies that digest again at publication.
+        self.replace(expected, &prefix)
     }
     /// Restore a proved recovery object to an absent exact target in the same
     /// directory. Native no-replace publication preserves security/identity;
@@ -134,5 +187,65 @@ pub(super) fn verify(file: &File, path: &Path, expected: [u8; 32]) -> Result<()>
 /// a leaf. Missing directories refuse; an empty complete scan returns [].
 /// The prefix grants no removal/restoration authority.
 pub fn scan_recovery(directory: &Path) -> Result<Vec<std::path::PathBuf>> {
-    os::scan_recovery(directory)
+    let paths = os::scan_recovery(directory)?;
+    if paths.iter().any(|path| path.to_str().is_none()) {
+        return Err(failure(
+            StateFileErrorCode::Unsupported,
+            "recovery pathname is not lossless UTF-8; inventory is incomplete",
+            directory,
+        ));
+    }
+    Ok(paths)
+}
+
+/// The same finite held-parent inventory for installer staging names. Core
+/// separately decides whether a returned name is recorded or has the exact
+/// admitted suffix; this function never opens or removes a discovered leaf.
+pub fn scan_temporary(directory: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let paths = os::scan_temporary(directory)?;
+    if paths.iter().any(|path| path.to_str().is_none()) {
+        return Err(failure(
+            StateFileErrorCode::Unsupported,
+            "temporary pathname is not lossless UTF-8; inventory is incomplete",
+            directory,
+        ));
+    }
+    Ok(paths)
+}
+
+/// One native-account-wide installer/uninstaller claim, independent of SE_HOME
+/// or overridden HOME. The permanent owner-only lock file is never unlinked.
+pub struct NativeInstallationClaim {
+    _pin: os::Pin,
+}
+impl NativeInstallationClaim {
+    pub fn acquire() -> Result<Self> {
+        let path = os::installation_claim_path()?;
+        let pin = os::Pin::create_claim(&path)?;
+        pin.claim_record()?;
+        Ok(Self { _pin: pin })
+    }
+}
+
+#[cfg(unix)]
+#[path = "effects/install_hold_unix.rs"]
+mod install_hold;
+#[cfg(windows)]
+#[path = "effects/install_hold_windows.rs"]
+mod install_hold;
+
+impl NativeInstallationClaim {
+    /// Run an explicitly named installer command with inherited standard I/O.
+    /// The child also retains the kernel claim, so killing its holder never
+    /// permits another installer while that child can still change files.
+    pub fn run_child(self, command: &std::ffi::OsStr, args: &[std::ffi::OsString]) -> Result<i32> {
+        if !Path::new(command).is_absolute() {
+            return Err(failure(
+                StateFileErrorCode::Unsupported,
+                "installer command must be an absolute executable path",
+                Path::new(command),
+            ));
+        }
+        install_hold::run(self._pin.file(), command, args)
+    }
 }
