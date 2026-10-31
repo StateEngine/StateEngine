@@ -217,7 +217,7 @@ pub(super) fn apply(
                 (&old.instance, &identity.instance),
                 (
                     RecordedIdentity::Present(_),
-                    RecordedIdentity::Absent { .. }
+                    RecordedIdentity::Absent { .. } | RecordedIdentity::Unreadable { .. }
                 )
             )
         {
