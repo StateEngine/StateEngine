@@ -1,5 +1,5 @@
 //! Private pre-admission inventory for the native owner guard, never a product reader.
-mod process;
+use crate::codec::process;
 use crate::{connection, error::*, identity, open::SqliteReader, *};
 use rusqlite::Connection;
 use se_types::Read;
@@ -138,7 +138,8 @@ fn inventory(
             size.checked_add(2048)
                 .ok_or_else(|| invalid("owner-guard process size overflow"))?,
         )?;
-        let identity = process::decode(db, seq, &project, &id, revision.value.get(), &state)?;
+        let identity =
+            process::identity(db, seq, &project, &id, revision.value.get(), &state, true)?;
         processes.push(OwnerGuardProcess {
             project: identity::wire(db, "project", &project, &[0])?
                 .parse()

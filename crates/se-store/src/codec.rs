@@ -1,5 +1,6 @@
 pub(crate) mod capture;
 pub(crate) mod event;
+pub(crate) mod process;
 pub(crate) mod session;
 // Closed wave-1 metadata codec; text lives only in its typed payload column.
 use crate::{error::*, identity::*, *};
@@ -92,6 +93,7 @@ pub(crate) fn body(
 ) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
     Ok(match kind {
+        "process.registered" | "process.transition" => process::body(c, seq, kind, scope)?,
         "message.sent" => {
             let (message,recipient,kind,refs,reply):(Vec<u8>,Vec<u8>,String,String,Option<Vec<u8>>)=c.query_row("SELECT message_id,recipient_id,message_kind,refs,reply_to FROM message_data WHERE event_seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).map_err(sql)?;
             let s = scope_key(c, scope, false)?;
@@ -296,6 +298,8 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "grant.recorded",
             json!({"principal":principal,"key":key,"active":active,"expected":expected}),
         ),
+        ProcessRegistered { .. } => ("process.registered", Value::Null),
+        ProcessTransition { .. } => ("process.transition", Value::Null),
         SessionPrepared { .. } => ("session.prepared", Value::Null),
         SessionActivated { .. } => ("session.activated", Value::Null),
         SessionEnded { .. } => ("session.ended", Value::Null),

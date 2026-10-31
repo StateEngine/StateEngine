@@ -156,9 +156,10 @@ impl SqliteSnapshot {
         ];
         if let Some(agent) = query.agent {
             let a = self.agent_bytes(&agent)?;
-            sql.push_str(" AND (actor_id=? OR seq IN (SELECT event_seq FROM turn_data WHERE project_id=? AND agent_id=?))");
+            sql.push_str(" AND (actor_id=? OR seq IN (SELECT event_seq FROM turn_data WHERE project_id=? AND agent_id=?) OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=events.seq AND d.principal_id=?))");
             params.push(rusqlite::types::Value::Blob(a.clone()));
             params.push(rusqlite::types::Value::Blob(self.project_bytes()?));
+            params.push(rusqlite::types::Value::Blob(a.clone()));
             params.push(rusqlite::types::Value::Blob(a));
         }
         if let Some(session) = query.session {
@@ -168,11 +169,12 @@ impl SqliteSnapshot {
         }
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
             let a = self.agent_bytes(agent)?;
-            sql.push_str(" AND (actor_id=? OR seq IN (SELECT sent_seq FROM messages WHERE project_id=? AND recipient_id=?) OR seq IN (SELECT event_seq FROM turn_data WHERE project_id=? AND agent_id=?))");
+            sql.push_str(" AND (actor_id=? OR seq IN (SELECT sent_seq FROM messages WHERE project_id=? AND recipient_id=?) OR seq IN (SELECT event_seq FROM turn_data WHERE project_id=? AND agent_id=?) OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=events.seq AND d.principal_id=?))");
             params.push(rusqlite::types::Value::Blob(a.clone()));
             params.push(rusqlite::types::Value::Blob(self.project_bytes()?));
             params.push(rusqlite::types::Value::Blob(a.clone()));
             params.push(rusqlite::types::Value::Blob(self.project_bytes()?));
+            params.push(rusqlite::types::Value::Blob(a.clone()));
             params.push(rusqlite::types::Value::Blob(a));
         }
         if !query.kinds.is_empty() {

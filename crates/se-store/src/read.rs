@@ -113,6 +113,10 @@ impl SqliteSnapshot {
                         EventBody::CaptureProgress { source, .. } => {
                             self.source_visible(source, a)?
                         }
+                        EventBody::ProcessRegistered { identity, .. }
+                        | EventBody::ProcessTransition { identity, .. } => {
+                            identity.principal == who
+                        }
                         _ => false,
                     }
             }
@@ -638,7 +642,15 @@ impl Snapshot for SqliteSnapshot {
         self.read_capture_source(_source)
     }
     fn process(&mut self, _id: LifecycleId) -> StoreResult<Read<ProjectionRecord>> {
-        later("process")
+        let p = self.project_bytes()?;
+        let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let id = key(&self.db, "lifecycle", _id.as_str(), &s, false)?;
+        self.head(
+            "processes",
+            "project_id=? AND process_id=?",
+            &[&p, &id],
+            Some("first_seq"),
+        )
     }
     fn processes(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         later("processes")

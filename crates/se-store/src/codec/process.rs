@@ -1,11 +1,68 @@
-use super::*;
+use crate::{error::*, identity, *};
+use rusqlite::Connection;
 use se_types::{NativePath, ProcessFields, ProcessInstance, Sha256, StartIdentity};
 use std::num::NonZeroU32;
-pub(super) fn stored_size(db: &Connection, seq: i64) -> StoreResult<usize> {
+pub(crate) fn name(value: ProcessState) -> &'static str {
+    match value {
+        ProcessState::Reserved => "reserved",
+        ProcessState::Starting => "starting",
+        ProcessState::Running => "running",
+        ProcessState::LeaderExited => "leader-exited",
+        ProcessState::StopRequested => "stop-requested",
+        ProcessState::StopUnproved => "stop-unproved",
+        ProcessState::Exited => "exited",
+        ProcessState::Lost => "lost",
+        ProcessState::Historical => "historical",
+    }
+}
+pub(crate) fn body(
+    c: &Connection,
+    seq: i64,
+    kind: &str,
+    scope: &Scope,
+) -> StoreResult<EventBody<StoredText>> {
+    let p = crate::connection::project_id(c, scope, false)?;
+    let (id,rev,to,expected,observation): (Vec<u8>,u64,String,Option<u64>,Option<Vec<u8>>) = c.query_row(
+        "SELECT d.process_id,e.entity_revision,d.state,d.expected_revision,d.observation_event FROM process_data d JOIN events e ON e.seq=d.event_seq WHERE d.event_seq=?",
+        [seq], |r|Ok((r.get(0)?,crate::sql_value::value(r,1)?,r.get(2)?,crate::sql_value::value(r,3)?,r.get(4)?))).map_err(sql)?;
+    let value = Box::new(identity(c, seq, &p, &id, rev, &to, false)?);
+    let to = state(&to)?;
+    if kind == "process.registered" {
+        if rev != 1 || expected.is_some() || observation.is_some() {
+            return Err(invalid("process registration has transition facts"));
+        }
+        return Ok(EventBody::ProcessRegistered {
+            identity: value,
+            initial: to,
+        });
+    }
+    let facts = super::facts(c, seq)?;
+    let scope = crate::identity::scope_key(c, scope, false)?;
+    Ok(EventBody::ProcessTransition {
+        process: value.record.clone(),
+        expected: Expected::Revision(super::revision(
+            expected.ok_or_else(|| invalid("process expected revision absent"))?,
+        )?),
+        from: super::field(&facts, "from")?,
+        to,
+        observation: crate::identity::wire(
+            c,
+            "event",
+            &observation.ok_or_else(|| invalid("process observation absent"))?,
+            &scope,
+        )?
+        .parse()
+        .map_err(invalid)?,
+        outcome: super::field(&facts, "outcome")?,
+        containment: value.containment.clone(),
+        identity: value,
+    })
+}
+pub(crate) fn stored_size(db: &Connection, seq: i64) -> StoreResult<usize> {
     let size:i64=db.query_row("SELECT length(d.custody)+COALESCE(length(d.birth_identity),0)+COALESCE(length(d.identity_cause),0)+COALESCE(length(d.containment_unknown_reason),0)+COALESCE(length(m.value),0)+COALESCE(length(b.value),0)+COALESCE(length(x.value),0) FROM process_data d LEFT JOIN symbols m ON m.id=d.machine_id LEFT JOIN symbols b ON b.id=d.boot_identity LEFT JOIN symbols x ON x.id=d.executable WHERE d.event_seq=?",[seq],|r|r.get(0)).map_err(sql)?;
     usize::try_from(size).map_err(invalid)
 }
-pub(super) fn state(value: &str) -> StoreResult<ProcessState> {
+pub(crate) fn state(value: &str) -> StoreResult<ProcessState> {
     Ok(match value {
         "reserved" => ProcessState::Reserved,
         "starting" => ProcessState::Starting,
@@ -32,14 +89,21 @@ fn symbol(db: &Connection, id: Option<i64>) -> StoreResult<Vec<u8>> {
     )
     .map_err(sql)
 }
-pub(super) fn decode(
+pub(crate) fn identity(
     db: &Connection,
     seq: i64,
     project: &[u8],
     id: &[u8],
     expected_revision: u64,
     expected_state: &str,
+    owner_only: bool,
 ) -> StoreResult<ProcessIdentityRecord> {
+    if stored_size(db, seq)? > 2 * 1024 * 1024 {
+        return Err(fail(
+            StoreErrorCode::Unreadable,
+            "process identity row exceeds the materialization bound",
+        ));
+    }
     let mut q=db.prepare("SELECT d.*,e.project_id,e.kind,e.schema_version,e.entity_revision FROM process_data d JOIN events e ON e.seq=d.event_seq WHERE d.event_seq=?").map_err(sql)?;
     let mut rows = q.query([seq]).map_err(sql)?;
     let row = rows.next().map_err(sql)?.ok_or_else(|| {
@@ -126,7 +190,7 @@ pub(super) fn decode(
         "absent" => RecordedIdentity::Absent {
             reason: text("identity_cause")?,
         },
-        "unreadable" => {
+        "unreadable" if owner_only => {
             return Err(fail(
                 StoreErrorCode::Unreadable,
                 format!(
@@ -135,6 +199,9 @@ pub(super) fn decode(
                 ),
             ));
         }
+        "unreadable" => RecordedIdentity::Unreadable {
+            cause: text("identity_cause")?,
+        },
         _ => return Err(invalid("process identity state")),
     };
     if !matches!(
@@ -144,7 +211,16 @@ pub(super) fn decode(
                 RootIdentityState::NoChildCreated | RootIdentityState::Unpublished,
                 RecordedIdentity::Absent { .. }
             )
-    ) {
+    ) && (owner_only
+        || !matches!(
+            (&root_identity, &instance, expected_state),
+            (
+                RootIdentityState::Unknown,
+                RecordedIdentity::Absent { .. } | RecordedIdentity::Unreadable { .. },
+                "lost" | "historical"
+            )
+        ))
+    {
         return Err(fail(
             StoreErrorCode::Unreadable,
             "unresolved process has unknown or inconsistent root identity",
@@ -190,7 +266,7 @@ pub(super) fn decode(
     };
     let version: u16 = row.get("custody_version").map_err(sql)?;
     let record = blob("custody")?;
-    if version != 1 || record.is_empty() {
+    if version != 1 || record.is_empty() || record.len() > 1024 * 1024 {
         return Err(fail(
             StoreErrorCode::Unreadable,
             "process custody version/bytes missing or unsupported",

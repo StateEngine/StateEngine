@@ -62,7 +62,7 @@ pub enum DecisionKind {
     Note,
     Decision,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProcessState {
     Reserved,
     Starting,
@@ -108,7 +108,7 @@ pub struct SourceEvidence {
     pub length: u64,
     pub sha256: Option<[u8; 32]>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ProcessIdentityRecord {
     pub record: LifecycleId,
     pub principal: Actor,
@@ -119,14 +119,14 @@ pub struct ProcessIdentityRecord {
     pub containment: ContainmentFact,
 }
 /// Durable native checkpoint fact, not a claim about current PID liveness.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RootIdentityState {
     NoChildCreated,
     Unpublished,
     Identified,
     Unknown,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum RecordedIdentity {
     Present(ProcessInstance),
     Absent { reason: String },
@@ -134,7 +134,7 @@ pub enum RecordedIdentity {
 }
 /// Versioned se-proc reservation/scope/root/process/exit codec; never an OS handle.
 /// Includes ProcessRecord.ownership_release with its generation/entity-counter binding.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NativeCustody {
     pub format_version: u16,
     pub record: Vec<u8>,

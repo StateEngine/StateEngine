@@ -2,6 +2,7 @@
 pub(crate) mod capture;
 pub(crate) mod credential;
 pub(crate) mod decision;
+pub(crate) mod process;
 pub(crate) mod session;
 use crate::{codec, connection::*, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
@@ -227,6 +228,7 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         RuntimeOwnerEstablished { expected: want, .. } => {
             expected(c, "runtime_owner", "singleton=1", &[], *want)
         }
+        ProcessRegistered { .. } | ProcessTransition { .. } => process::revision(c, e),
         SessionPrepared { .. }
         | SessionActivated { .. }
         | SessionEnded { .. }
@@ -275,6 +277,9 @@ pub(crate) fn apply(
         )
     };
     match body {
+        b @ (ProcessRegistered { .. } | ProcessTransition { .. }) => {
+            process::apply(c, header, b, seq, revision, lease)?
+        }
         ProjectRegistered {
             project: p,
             roots,

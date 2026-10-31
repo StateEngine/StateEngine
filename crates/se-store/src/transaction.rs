@@ -553,6 +553,19 @@ pub(crate) fn descriptor<T>(
     use serde_json::json;
     let (kind, facts) = codec::metadata(b)?;
     let hot = match b {
+        ProcessRegistered { identity, initial } => json!({"identity":identity,"initial":initial}),
+        ProcessTransition {
+            process,
+            identity,
+            expected,
+            from,
+            to,
+            observation,
+            outcome,
+            containment,
+        } => {
+            json!({"process":process,"identity":identity,"expected":expected,"from":from,"to":to,"observation":observation,"outcome":outcome,"containment":containment})
+        }
         MessageSent {
             message,
             recipient,
