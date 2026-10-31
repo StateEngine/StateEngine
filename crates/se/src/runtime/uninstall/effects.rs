@@ -84,6 +84,7 @@ pub(super) fn scan(plan: &UninstallPlan, parents: &[PathBuf]) -> Vec<RecoveryDir
         let (copies,state,detail)=match se_proc::scan_recovery(directory) {
             Ok(paths)=>(Read::Present {value:paths.into_iter().map(|path|RecoveryCopy {path:path.display().to_string(),restored_to:None,
                 witness:witness(WitnessState::Unknown,"recovery sibling preserved; filename grants no mutation authority",None)}).collect()},WitnessState::Witnessed,None),
+            Err(error) if error.source.as_ref().is_some_and(|cause|cause.kind()==io::ErrorKind::NotFound)=>(Read::Absent { checked:format!("native no-follow directory lookup: {error}; {}",clock()) },WitnessState::Witnessed,None),
             Err(error)=>(Read::Unreadable {source:directory.display().to_string(),reason:error.to_string(),error:None},WitnessState::Failed,Some(error.to_string())),
         };
         RecoveryDirectoryEffect {directory:directory.display().to_string(),copies,temporary_files:temporary_inventory(plan,directory),witness:witness(state,"finite native no-follow recovery-sibling scan",detail)}
@@ -137,8 +138,27 @@ pub(super) fn preserved(home: &Path) -> Vec<String> {
 }
 
 fn temporary_inventory(plan: &UninstallPlan, directory: &Path) -> Read<Vec<FileEffect>> {
+    let names = match se_proc::scan_temporary(directory) {
+        Ok(names) => names,
+        Err(error)
+            if error
+                .source
+                .as_ref()
+                .is_some_and(|cause| cause.kind() == io::ErrorKind::NotFound) =>
+        {
+            return Read::Absent {
+                checked: format!("native no-follow directory lookup: {error}; {}", clock()),
+            };
+        }
+        Err(error) => {
+            return Read::Unreadable {
+                source: directory.display().to_string(),
+                reason: error.to_string(),
+                error: None,
+            };
+        }
+    };
     let result: Result<Vec<FileEffect>> = (|| {
-        let names = se_proc::scan_temporary(directory).map_err(native_error)?;
         let mut effects = Vec::new();
         for path in names {
             if plan.temporary_file(&path)?.is_some() {

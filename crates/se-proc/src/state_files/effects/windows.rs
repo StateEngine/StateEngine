@@ -280,6 +280,8 @@ impl Pin {
         // SAFETY: initialized synchronous OVERLAPPED with offset zero, retained
         // readable record handle, one-byte exclusive lock that fails immediately.
         let mut overlap: windows_sys::Win32::System::IO::OVERLAPPED = unsafe { zeroed() };
+        // SAFETY: retained record handle and writable initialized OVERLAPPED;
+        // this is a nonblocking exclusive lock on the fixed first byte.
         if unsafe {
             LockFileEx(
                 self.file.as_raw_handle(),

@@ -24,13 +24,8 @@ use recovery::recover;
 
 pub(super) fn execute(
     cx: &Bootstrap,
-    plan: &UninstallPlan,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
-) -> Result<UninstallEffects> {
-    plan.validate()?;
-    if plan.state_home != cx.home {
-        return Err(invalid("uninstall plan belongs to another state home"));
-    }
+) -> Result<(UninstallPlan, UninstallEffects)> {
     // Missing runtime endpoints are deliberately not consulted as an empty-process proof.
     match route::setup::inspect(&cx.home, clock())? {
         route::setup::Setup::Absent(_) => (),
@@ -50,12 +45,42 @@ pub(super) fn execute(
     let owner = route::owner::observe(&[])?; // measured store absence above, never endpoint absence.
     owner.authorize(
         "installation.uninstall",
-        &plan.owner,
+        owner.os_owner(),
         cx.session.is_some(),
         true,
     )?;
     let mut installation_claim =
         Some(se_proc::NativeInstallationClaim::acquire().map_err(native_error)?);
+    let record_path = cx.home.join("standalone-install.json");
+    let mut record = OwnedFile::open(&record_path)
+        .map_err(native_error)?
+        .ok_or_else(|| invalid("the owned installation record is absent"))?;
+    record.claim_installation_record().map_err(native_error)?;
+    let record_bytes = record.read(1024 * 1024).map_err(native_error)?;
+    let record_digest = record.sha256().map_err(native_error)?;
+    if record_digest != <[u8; 32]>::from(Hasher::digest(&record_bytes)) {
+        return Err(conflict(&record_path.to_string_lossy()));
+    }
+    let parsed: InstallRecord = serde_json::from_slice(&record_bytes)
+        .map_err(|error| invalid("the held installation record is invalid").with_cause(error))?;
+    if parsed.schema != "stateengine-install/v1" {
+        return Err(invalid(
+            "the held installation record has a different schema or owner",
+        ));
+    }
+    owner.authorize(
+        "installation.uninstall",
+        &parsed.owner,
+        cx.session.is_some(),
+        true,
+    )?;
+    let owned_plan = Installation {
+        record_path: record_path.clone(),
+        record: parsed,
+    }
+    .plan()?;
+    let plan = &owned_plan;
+    let mut record = Some(record);
     let current = std::env::current_exe()
         .map_err(|error| unreadable(Path::new("running executable"), error))?;
     let canonical = std::fs::canonicalize(&current).map_err(|error| unreadable(&current, error))?;
@@ -74,36 +99,7 @@ pub(super) fn execute(
         ));
     }
     let image = matches.remove(0);
-    let record_path = cx.home.join("standalone-install.json");
-    let mut record = OwnedFile::open(&record_path)
-        .map_err(native_error)?
-        .ok_or_else(|| invalid("the owned installation record is absent"))?;
-    record.claim_installation_record().map_err(native_error)?;
-    let record_bytes = record.read(1024 * 1024).map_err(native_error)?;
-    let record_digest = record.sha256().map_err(native_error)?;
-    if record_digest != <[u8; 32]>::from(Hasher::digest(&record_bytes)) {
-        return Err(conflict(&record_path.to_string_lossy()));
-    }
-    let parsed: InstallRecord = serde_json::from_slice(&record_bytes)
-        .map_err(|error| invalid("the held installation record is invalid").with_cause(error))?;
-    if parsed.schema != "stateengine-install/v1" || parsed.owner != plan.owner {
-        return Err(invalid(
-            "the held installation record has a different schema or owner",
-        ));
-    }
-    let held_plan = Installation {
-        record_path: record_path.clone(),
-        record: parsed,
-    }
-    .plan()?;
-    if serde_json::to_value(&held_plan)
-        .map_err(|e| invalid("cannot encode held plan").with_cause(e))?
-        != serde_json::to_value(plan)
-            .map_err(|e| invalid("cannot encode admitted plan").with_cause(e))?
-    {
-        return Err(conflict(&record_path.to_string_lossy()));
-    }
-    let mut record = Some(record);
+
     let mut effects = UninstallEffects {
         install_files: Vec::new(),
         directories: Vec::new(),
@@ -168,7 +164,7 @@ pub(super) fn execute(
             &mut effects,
             "recovery inventory is unreadable or contains unresolved copies",
         );
-        return Ok(effects);
+        return Ok((owned_plan, effects));
     }
     let mut safe = true;
     reconcile_paths(plan, &mut effects);
@@ -315,5 +311,5 @@ pub(super) fn execute(
         }
     }
     drop(installation_claim.take());
-    Ok(effects)
+    Ok((owned_plan, effects))
 }

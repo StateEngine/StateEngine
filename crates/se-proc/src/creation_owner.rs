@@ -155,6 +155,8 @@ mod windows {
         // SAFETY: retained token buffers provide native SID pointers.
         if user_sid.is_null()
             || owner_sid.is_null()
+            // SAFETY: non-null SID pointers are backed by the retained native
+            // token information buffers above.
             || unsafe { IsValidSid(user_sid) == 0 || IsValidSid(owner_sid) == 0 }
         {
             return Err(refuse("invalid native token owner/user SID"));

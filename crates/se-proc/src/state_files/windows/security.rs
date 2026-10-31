@@ -183,7 +183,7 @@ pub(in crate::state_files) fn verify_owner(file: &File, path: &Path) -> Result<(
     }
     Ok(())
 }
-pub(super) fn verify(
+pub(crate) fn verify(
     file: &File,
     path: &Path,
     inherited_from_protected_parent: bool,

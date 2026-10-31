@@ -4,9 +4,25 @@ use super::*;
 
 pub(super) fn resolved(entry: &RecoveryDirectoryEffect) -> bool {
     entry.witness.state == WitnessState::Witnessed
-        && matches!(&entry.temporary_files,Read::Present {value} if value.iter().all(|file|matches!(file.outcome,FileOutcome::Removed|FileOutcome::AlreadyAbsent) && file.witness.state==WitnessState::Witnessed))
-        && matches!(&entry.copies,Read::Present {value} if value.iter().all(|copy|copy.restored_to.is_some() && copy.witness.state==WitnessState::Witnessed))
+        && match &entry.temporary_files {
+            Read::Absent { .. } => true,
+            Read::Present { value } => value.iter().all(|file| {
+                matches!(
+                    file.outcome,
+                    FileOutcome::Removed | FileOutcome::AlreadyAbsent
+                ) && file.witness.state == WitnessState::Witnessed
+            }),
+            _ => false,
+        }
+        && match &entry.copies {
+            Read::Absent { .. } => true,
+            Read::Present { value } => value.iter().all(|copy| {
+                copy.restored_to.is_some() && copy.witness.state == WitnessState::Witnessed
+            }),
+            _ => false,
+        }
 }
+
 struct Candidate {
     copy: String,
     target: String,
