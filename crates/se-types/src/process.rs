@@ -12,6 +12,42 @@ pub enum PathEncoding {
     UnixBytes(Vec<u8>),
     WindowsUtf16(Vec<u16>),
 }
+
+fn windows_drive_absolute(units: &[u16]) -> bool {
+    matches!(units, [drive, 58, 47 | 92, ..] if *drive <= 127 && (*drive as u8).is_ascii_alphabetic())
+}
+
+fn complete_unc(units: &[u16]) -> bool {
+    let mut parts = units.split(|unit| matches!(unit, 47 | 92));
+    matches!((parts.next(), parts.next()), (Some(server), Some(share)) if !server.is_empty() && !share.is_empty())
+}
+
+fn windows_absolute(units: &[u16]) -> bool {
+    if windows_drive_absolute(units) {
+        return true;
+    }
+    let Some(tail) = units.strip_prefix(&[92, 92]) else {
+        return false;
+    };
+    if let Some(verbatim) = tail.strip_prefix(&[63, 92]) {
+        if matches!(verbatim, [85 | 117, 78 | 110, 67 | 99, 92, ..]) {
+            return complete_unc(&verbatim[4..]);
+        }
+        if matches!(verbatim, [_, 58, ..]) {
+            return windows_drive_absolute(verbatim);
+        }
+        // Other verbatim roots (for example Volume{GUID}) need their root slash.
+        return verbatim
+            .iter()
+            .position(|unit| *unit == 92)
+            .is_some_and(|end| end > 0);
+    }
+    if let Some(device) = tail.strip_prefix(&[46, 92]) {
+        return !device.is_empty();
+    }
+    complete_unc(tail)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(try_from = "PathEncoding", into = "PathEncoding")]
 pub struct NativePath(PathEncoding);
@@ -22,13 +58,7 @@ impl NativePath {
                 !bytes.is_empty() && bytes.len() <= 32768 && bytes[0] == b'/' && !bytes.contains(&0)
             }
             PathEncoding::WindowsUtf16(units) => {
-                let absolute = units.len() >= 3
-                    && ((units[0] <= 127
-                        && (units[0] as u8).is_ascii_alphabetic()
-                        && units[1] == 58
-                        && matches!(units[2], 47 | 92))
-                        || (units[0] == 92 && units[1] == 92));
-                absolute && units.len() <= 32768 && !units.contains(&0)
+                units.len() <= 32768 && !units.contains(&0) && windows_absolute(units)
             }
         };
         if !valid {

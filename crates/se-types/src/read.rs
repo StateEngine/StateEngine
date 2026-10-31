@@ -359,10 +359,15 @@ struct PageWire<T> {
 }
 impl<T> Page<T> {
     pub fn new(items: Vec<T>, window: Window, next: Option<Cursor>) -> Result<Self> {
-        let known_after = window
-            .fields
-            .as_ref()
-            .is_some_and(|fields| matches!(fields.omitted_after, Omission::Known { .. }));
+        let needs_continuation = window.fields.as_ref().is_some_and(|fields| {
+            matches!(
+                fields.omitted_after,
+                Omission::Known { .. }
+                    | Omission::Unknown {
+                        reason: OmissionReason::Limit | OmissionReason::Budget
+                    }
+            )
+        });
         let wire_more = window.fields.is_none()
             && matches!(
                 window.omitted.reason,
@@ -374,7 +379,7 @@ impl<T> Page<T> {
                 .as_ref()
                 .is_some_and(|fields| items.len() as u64 != fields.returned)
             || (window.complete && next.is_some())
-            || (next.is_none() && (known_after || wire_more))
+            || (next.is_none() && (needs_continuation || wire_more))
             || (next.is_some() && next == window.from)
         {
             return Err(SeError::invalid(

@@ -1,7 +1,7 @@
 use crate::{Result, SeError};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, fmt, num::NonZeroU64, str::FromStr};
+use std::{borrow::Cow, fmt, str::FromStr};
 use uuid::{Builder, Uuid, Variant, Version};
 
 macro_rules! ids {
@@ -28,6 +28,13 @@ macro_rules! ids {
                 Ok(Self(format!("{}{}", Self::PREFIX,id)))
             }
             pub fn as_str(&self) -> &str { &self.0 }
+            /// Canonical UUIDv7 storage bytes; legacy spellings need the store's
+            /// scoped identity dictionary instead of a fabricated UUID key.
+            pub fn canonical_bytes(&self) -> Result<Option<[u8; 16]>> {
+                let Some(suffix) = self.0.strip_prefix(Self::PREFIX) else { return Ok(None); };
+                let id = Uuid::parse_str(suffix).map_err(|_| SeError::invalid(stringify!($name), "canonical UUIDv7"))?;
+                Ok(Some(*id.as_bytes()))
+            }
             /// Explicit importer entrypoint: legacy text is data, never authority.
             /// A UUID-shaped suffix must be canonical new-format, not a legacy bypass.
             pub fn from_legacy(value: impl Into<String>) -> Result<Self> {
@@ -212,10 +219,15 @@ pub(crate) fn validate_opaque(value: &str, max: usize, field: &str) -> Result<()
 }
 macro_rules! opaque {
     ($($name:ident => $max:literal),+ $(,)?) => {$ (
-        #[derive(Clone,Debug,Eq,PartialEq,Ord,PartialOrd,Hash,Serialize,Deserialize,JsonSchema)]
+        #[derive(Clone,Debug,Eq,PartialEq,Ord,PartialOrd,Hash,Serialize,Deserialize)]
         #[serde(try_from="String",into="String")]
-        #[schemars(with="String")]
         pub struct $name(String);
+        impl JsonSchema for $name {
+            fn schema_name()->Cow<'static,str>{stringify!($name).into()}
+            fn json_schema(_: &mut SchemaGenerator)->Schema {
+                json_schema!({"type":"string","minLength":1,"maxLength":$max,"pattern":"^[!-~]+$"})
+            }
+        }
         impl $name {
             pub fn new(value:impl Into<String>)->Result<Self>{let value=value.into();validate_opaque(&value,$max,stringify!($name))?;Ok(Self(value))}
             pub fn as_str(&self)->&str{&self.0}
@@ -289,30 +301,8 @@ impl Sequence {
 }
 macro_rules! generation {
     ($name:ident) => {
-        #[derive(
-            Clone,
-            Copy,
-            Debug,
-            Eq,
-            PartialEq,
-            Ord,
-            PartialOrd,
-            Hash,
-            Serialize,
-            Deserialize,
-            JsonSchema,
-        )]
-        #[serde(transparent)]
-        pub struct $name(NonZeroU64);
+        counter!($name, false);
         impl $name {
-            pub fn new(value: u64) -> Result<Self> {
-                NonZeroU64::new(value)
-                    .map(Self)
-                    .ok_or_else(|| SeError::invalid(stringify!($name), "a nonzero generation"))
-            }
-            pub const fn get(self) -> u64 {
-                self.0.get()
-            }
             pub fn successor(self) -> Result<Self> {
                 self.get()
                     .checked_add(1)
@@ -324,10 +314,17 @@ macro_rules! generation {
 }
 generation!(Generation);
 generation!(HostGeneration);
-#[derive(Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Copy, Eq, PartialEq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
-#[schemars(with = "String")]
 pub struct Sha256([u8; 32]);
+impl JsonSchema for Sha256 {
+    fn schema_name() -> Cow<'static, str> {
+        "Sha256".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"})
+    }
+}
 impl Sha256 {
     pub const fn from_bytes(value: [u8; 32]) -> Self {
         Self(value)

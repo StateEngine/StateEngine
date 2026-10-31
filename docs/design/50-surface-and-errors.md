@@ -655,7 +655,7 @@ The table below mirrors `crates/se-types/src/error/catalog.rs`; typed detail fie
 | --- | --- | --- | --- | --- |
 | atlas-indexing | I | indexed: u64, total: u64 | index is {indexed}/{total} files; results may be partial | retry later |
 | atlas-parse-failed | I | path: String, language: String, reason: String | Atlas couldn't parse {path} ({language}): {reason} | results for this file use bounded text search; → `se doctor --bundle` to report the diagnostic |
-| cursor-expired | I | oldest_available: u64 | the cursor is older than retained history | rerun without `--since` |
+| cursor-expired | I | oldest_available: Cursor | the cursor is older than retained history | rerun without `--since` |
 | forget-incomplete | I | erased: Vec<String>, residual: Vec<String> | erased in the store; copies remain in {residual} | delete or let backups expire; provider transcripts belong to Claude/Codex |
 | import-incomplete | I | families: Vec<ImportFamilyIssue> | import finished with rejected rows | rerun (idempotent); see the receipt |
 | launch-readiness-timeout | I | agent: AgentId, waited_ms: u64, last_observed: String | {agent} started but wasn't ready after {waited_ms} ms | Use `se agent show {agent}` |

@@ -79,7 +79,7 @@ codes! {
     StateConflict => ("state-conflict", Conflict) { subject: String, reason: String, next_step: String } => "State conflict {subject}: {reason}", "{next_step}";
     AtlasIndexing => ("atlas-indexing", Incomplete) { indexed: u64, total: u64 } => "index is {indexed}/{total} files; results may be partial", "retry later";
     AtlasParseFailed => ("atlas-parse-failed", Incomplete) { path: String, language: String, reason: String } => "Atlas couldn't parse {path} ({language}): {reason}", "results for this file use bounded text search; → `se doctor --bundle` to report the diagnostic";
-    CursorExpired => ("cursor-expired", Incomplete) { oldest_available: u64 } => "the cursor is older than retained history", "rerun without `--since`";
+    CursorExpired => ("cursor-expired", Incomplete) { oldest_available: Cursor } => "the cursor is older than retained history", "rerun without `--since`";
     ForgetIncomplete => ("forget-incomplete", Incomplete) { erased: Vec<String>, residual: Vec<String> } => "erased in the store; copies remain in {residual}", "delete or let backups expire; provider transcripts belong to Claude/Codex";
     ImportIncomplete => ("import-incomplete", Incomplete) { families: Vec<ImportFamilyIssue> } => "import finished with rejected rows", "rerun (idempotent); see the receipt";
     LaunchReadinessTimeout => ("launch-readiness-timeout", Incomplete) { agent: AgentId, waited_ms: u64, last_observed: String } => "{agent} started but wasn't ready after {waited_ms} ms", "Use `se agent show {agent}`";
