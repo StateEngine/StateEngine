@@ -25,7 +25,7 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | # | Budget | Threshold | Boundary | Runner probe |
 | --- | --- | --- | --- | --- |
 | B1 | Memory added inside SE Code | ≤ 30,000,000 bytes | A/B against a baseline SE Code server | `embedded A/B` |
-| B2 | Startup added to SE Code | ≤ 100 ms, including the first bound session | Spawn to complete authenticated `/api/session` response | `embedded A/B` |
+| B2 | Delay StateEngine adds to SE Code | In-window first bind: one combined check, p95 ≤ 100 ms including the first bound session; late path: two checks, each p95 ≤ 100 ms | Late check 1: added startup at server start; late check 2: delay before the user's first request in a session, against a run with no StateEngine bound, not the bind RPC alone; measure each check on its own with its own n and over-count, never subtract from a summed figure | `embedded A/B`, actual first-request consumer |
 | B3 | Persistent processes added | 0 while embedded with no live agent; exactly 1 standalone or detached handback daemon; 0 persistent helpers per agent | Outside inventory by exact pid + birth; include the daemon after SE Code exits | `standalone persistent processes`, `persistent processes after 1/2 seat(s)` |
 | B4 | Standalone memory | ≤ 25,000,000 bytes with one live session, after one real agent task | Sum over every attributed StateEngine process | `standalone RSS one session` |
 | B5 | Idle CPU | < 0.1% of one core (< 60 ms CPU per 60 s) | All StateEngine processes, 60 s with no product queries | `idle no session`, `idle one session` |
@@ -300,15 +300,28 @@ nothing in the repository; a new-store sample means newly initialized state.
 Neither ordinary work nor a bound handle is published before that commit.
 
 A late first bind is an ordinary path: sign-in can exceed FIRST_BIND_WINDOW.
-Measure a host with its standalone-style runtime.owner already FULL-committed
-and writer running before that first authenticated session request. Keep the
-same baseline and time both owner startup plus the later session response, and
-the late request alone; every engine step and required FULL barrier stays in
-its applicable interval. User sign-in/consent idle time is outside engine-added
-B2 latency and is retained separately alongside full elapsed-to-first-bind time.
-The probe waits beyond the ten-second window and independently reads the owner
-and zero sessions before binding, then reads back the distinct FULL activation;
-it cannot reuse the prompt joint-commit sample as a late-bind measurement.
+B2 retains one combined check for an in-window first bind. For the late path,
+judge two checks separately, each p95 ≤ 100 ms: StateEngine's added startup at
+server start, and the delay it adds before the user's first request in a session
+against a run with no StateEngine bound. For the session check, bind and then send the first real message, timing
+request-to-first-response in paired runs with and without StateEngine bound.
+Use SE Code's deterministic local-script provider for this pre-build consumer
+probe. Session creation or the bind RPC alone cannot close the check; preserve
+HTTP prompt acknowledgement and actual assistant response as distinct facts.
+Measure each check on its own, with its own n and over-count, never by
+subtracting from a summed figure. User sign-in/consent idle time separates the
+two moments and is retained alongside full elapsed-to-first-request time;
+combining those two separate costs is a diagnostic, not a third B2 check.
+
+The late-path host has its standalone-style runtime.owner FULL-committed and
+writer running before the first user request. Independently witness that owner
+and zero sessions before the late binding and the distinct FULL activation
+after it; retain every engine step/barrier in the check where it occurs.
+Linux startup comparisons use the same quiet-box load conditions as the
+in-window measurements, with the actual load named. If a check misses only
+when loaded, report both loaded and quiet cohorts; never swap one for the other
+or discard the loaded samples. A successful refusal or prompt-path joint-commit
+sample cannot stand in for this late first-request measurement.
 
 | Critical-path work | Current spend status |
 | --- | --- |
