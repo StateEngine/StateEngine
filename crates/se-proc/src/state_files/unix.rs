@@ -142,7 +142,10 @@ fn walk_with_private_root(path: &Path, create: bool, private_root: bool) -> Resu
             path,
         )?;
         if created {
-            // SAFETY: chmod the just-opened owned directory, never its pathname.
+            // mkdirat does not bind a later open to the object it created.
+            // Refuse an unsafe replacement before changing its permissions.
+            metadata(&next, path, true)?;
+            // SAFETY: the held descriptor passed owner/protection validation.
             if unsafe { libc::fchmod(next.as_raw_fd(), 0o700) } < 0 {
                 return Err(io_error(
                     "protect newly created directory",
@@ -274,8 +277,11 @@ impl Directory {
             "pin protected child directory",
             path,
         )?;
+        // A successful mkdir does not identify the object opened afterward.
+        // Validate first so an unsafe replacement is never repaired in place.
+        metadata(&file, path, true)?;
         if created {
-            // SAFETY: only the newly created, now-held directory is protected.
+            // SAFETY: the held descriptor passed owner/protection validation.
             if unsafe { libc::fchmod(file.as_raw_fd(), 0o700) } < 0 {
                 return Err(io_error(
                     "protect new child directory",
