@@ -123,6 +123,7 @@ impl Engine {
                     "writer reopen identity/readiness differs",
                 ));
             }
+            let mut committed = Vec::new();
             for pending in &self.pending {
                 match &pending.operation {
                     PendingOperation::CallerKey(key) => {
@@ -133,10 +134,12 @@ impl Engine {
                             rusqlite::params![scope,actor,key.as_str()],|r|r.get(0)).optional().map_err(sql)?;
                         if let Some(op) = op {
                             receipt(&self.db, &op, &info, Some(key.clone()))?;
+                            committed.push(pending.clone());
                         }
                     }
                     PendingOperation::NaturalEvents(events) => {
                         let scope = scope_key(&self.db, &pending.scope, false)?;
+                        let mut present = 0;
                         for event in events {
                             let id = key(&self.db, "event", event.as_str(), &scope, false)?;
                             let seq: Option<i64> = self
@@ -148,18 +151,22 @@ impl Engine {
                                 .map_err(sql)?;
                             if let Some(seq) = seq {
                                 crate::read::load_event(&self.db, seq, &info)?;
+                                present += 1;
                             }
+                        }
+                        if present == events.len() {
+                            committed.push(pending.clone());
                         }
                     }
                 }
             }
-            Ok(())
+            Ok(committed)
         })();
         let rollback = self.db.execute_batch("ROLLBACK").map_err(sql);
         self.db
             .progress_handler(0, None::<fn() -> bool>)
             .map_err(sql)?;
-        checked?;
+        let committed = checked?;
         rollback?;
         if !matches!(
             lease.files().readback(path)?,
@@ -170,8 +177,9 @@ impl Engine {
                 "protected state-file readback changed during writer reopen",
             ));
         }
-        // The database is writable again, but original callers must still
-        // resolve their acknowledgements. A successful retry removes its entry.
+        // A fully verified durable receipt resolves its pending outcome.
+        // Remaining identities stay named until their callers retry them.
+        self.pending.retain(|pending| !committed.contains(pending));
         self.poisoned = false;
         Ok(())
     }

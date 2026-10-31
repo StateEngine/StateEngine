@@ -533,8 +533,30 @@ pub(crate) fn apply(
                     "recipient marker actor differs",
                 ));
             }
-            let (sent,unread):(i64,bool)=c.query_row("SELECT d.sent_seq,(m.read_seq IS NULL AND m.dismissed_seq IS NULL) FROM messages d JOIN marks
-                    m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=? AND d.recipient_id=?",crate::sql_value::sql_params![project()?,m,a],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?))).map_err(sql)?;
+            let (sent, unread): (i64, bool) = c
+                .query_row(
+                    "SELECT d.sent_seq,(m.read_seq IS NULL AND m.dismissed_seq IS NULL)
+                 FROM messages d JOIN marks m ON m.message_seq=d.sent_seq
+                 WHERE d.project_id=? AND d.message_id=? AND d.recipient_id=?",
+                    crate::sql_value::sql_params![project()?, m, a],
+                    |r| {
+                        Ok((
+                            crate::sql_value::value(r, 0)?,
+                            crate::sql_value::value(r, 1)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(sql)?
+                .ok_or_else(|| {
+                    fail(
+                        StoreErrorCode::ScopeMismatch,
+                        format!(
+                            "message {} is unavailable to the named recipient",
+                            message.as_str()
+                        ),
+                    )
+                })?;
             let ev = evidence
                 .map(|v| key(c, "event", v.as_str(), &s, false))
                 .transpose()?;

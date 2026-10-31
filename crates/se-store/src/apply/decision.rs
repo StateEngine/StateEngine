@@ -137,15 +137,22 @@ pub(super) fn apply(
         ));
     }
     let replacement = replacement
-        .map(|(id, expected)| {
-            let id = k(&id)?;
+        .map(|(replacement, expected)| {
+            let id = k(&replacement)?;
             let (state, revision): (String, u64) = c
                 .query_row(
                     "SELECT state,revision FROM decisions WHERE project_id=? AND decision_id=?",
                     sql_params![p, id],
                     |r| Ok((value(r, 0)?, value(r, 1)?)),
                 )
-                .map_err(sql)?;
+                .optional()
+                .map_err(sql)?
+                .ok_or_else(|| {
+                    fail(
+                        StoreErrorCode::ReferenceMissing,
+                        format!("replacement decision {} is absent", replacement.as_str()),
+                    )
+                })?;
             if state != "ratified" || revision != expected.value.get() {
                 return Err(fail(
                     StoreErrorCode::RevisionConflict,
