@@ -29,6 +29,11 @@ pub use uninstall::{
 };
 mod ownership;
 mod state_files;
+pub use state_files::effects::{DirectoryRemoval, OwnedFile, remove_empty_directory};
+#[cfg(windows)]
+pub use state_files::user_path::{
+    NativeUserPath, PathKind, PathObservation, PathUpdateError, PathUpdatePhase, PathWriteWitness,
+};
 pub use state_files::{
     NativeStateFiles, ProtectedStateStaging, StateFileError, StateFileErrorCode,
 };

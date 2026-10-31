@@ -1,4 +1,6 @@
 use super::*;
+#[path = "effects/windows.rs"]
+pub(super) mod effects;
 use std::{
     mem::{size_of, zeroed},
     os::windows::{
@@ -16,8 +18,26 @@ use windows_sys::Win32::{
 
 pub(crate) mod security;
 use security::descriptor;
+fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
+    let units: Vec<_> = value.encode_wide().collect();
+    if units.contains(&(b':' as u16))
+        || units
+            .last()
+            .is_some_and(|unit| *unit == b'.' as u16 || *unit == b' ' as u16)
+    {
+        return Err(unsafe_path("ambiguous native path component", path));
+    }
+    Ok(())
+}
 pub(crate) fn wide(path: &Path) -> Result<Vec<u16>> {
     use std::path::Prefix;
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => validate_component(value, path)?,
+            Component::Prefix(_) | Component::RootDir => (),
+            _ => return Err(unsafe_path("normalized native path required", path)),
+        }
+    }
     let units: Vec<_> = path.as_os_str().encode_wide().collect();
     let prefix = path.components().next();
     let mut value: Vec<u16> = match prefix {
@@ -156,14 +176,6 @@ fn walk(path: &Path, create: bool, private_from: Option<&Path>) -> Result<File> 
             }
             Component::RootDir => prefix.push(component.as_os_str()),
             Component::Normal(n) => {
-                let units: Vec<_> = n.encode_wide().collect();
-                if units.contains(&(b':' as u16))
-                    || units
-                        .last()
-                        .is_some_and(|u| *u == b'.' as u16 || *u == b' ' as u16)
-                {
-                    return Err(unsafe_path("ambiguous native directory component", path));
-                }
                 prefix.push(n);
                 if create {
                     let parent_path = prefix

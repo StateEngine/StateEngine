@@ -172,6 +172,14 @@ pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
     }
     Ok(())
 }
+pub(in crate::state_files) fn verify_owner(file: &File, path: &Path) -> Result<()> {
+    let user = User::current(path)?;
+    let (_descriptor, owner, _) = security(file, path, false)?;
+    if !equal(owner, user.sid()) {
+        return Err(unsafe_path("file owner differs from current OS user", path));
+    }
+    Ok(())
+}
 pub(crate) fn verify(
     file: &File,
     path: &Path,

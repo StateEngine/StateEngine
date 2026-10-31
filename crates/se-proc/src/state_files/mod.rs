@@ -6,8 +6,11 @@ use std::{
     io,
     path::{Path, PathBuf},
 };
+pub(crate) mod effects;
 #[cfg(unix)]
 mod unix;
+#[cfg(windows)]
+pub(crate) mod user_path;
 #[cfg(windows)]
 pub(crate) mod windows;
 #[cfg(unix)]

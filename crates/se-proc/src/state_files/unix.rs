@@ -1,5 +1,7 @@
 use super::*;
 mod ancestors;
+#[path = "effects/unix.rs"]
+pub(super) mod effects;
 use std::{
     ffi::{CString, OsStr},
     io::Read,
@@ -58,6 +60,12 @@ fn components(path: &Path) -> Result<Vec<&OsStr>> {
         .collect()
 }
 fn walk(path: &Path, create: bool) -> Result<File> {
+    walk_with_private_root(path, create, true)
+}
+pub(super) fn walk_effect_parent(path: &Path) -> Result<File> {
+    walk_with_private_root(path, false, false)
+}
+fn walk_with_private_root(path: &Path, create: bool, private_root: bool) -> Result<File> {
     let root = CString::new("/").map_err(|_| unsafe_path("native root", path))?;
     // SAFETY: constant path, successful open supplies an independently owned FD.
     let mut parent = owned(
@@ -71,6 +79,9 @@ fn walk(path: &Path, create: bool) -> Result<File> {
         path,
     )?;
     let parts = components(path)?;
+    if !private_root {
+        effects::trusted_directory(&parent, path, parts.is_empty())?;
+    }
     let mut private = false;
     let mut traversed = PathBuf::from("/");
     for (index, value) in parts.iter().enumerate() {
@@ -89,7 +100,7 @@ fn walk(path: &Path, create: bool) -> Result<File> {
                 ));
             }
         }
-        private |= created || index + 1 == parts.len();
+        private |= created || (private_root && index + 1 == parts.len());
         // SAFETY: initialized writable stat output and held parent/component.
         let mut link: libc::stat = unsafe { std::mem::zeroed() };
         // SAFETY: no-follow stat inspects the actual named directory entry.
@@ -147,6 +158,9 @@ fn walk(path: &Path, create: bool) -> Result<File> {
             metadata(&next, &traversed, true)?;
         } else {
             super::validate_existing_ancestor(&next, &traversed)?;
+        }
+        if !private_root {
+            effects::trusted_directory(&next, path, index + 1 == parts.len())?;
         }
         parent = next;
     }
