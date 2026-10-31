@@ -282,6 +282,42 @@ pub struct AgentRow {
     pub unread: Option<u64>,
     pub last_activity_at: Option<String>,
 }
+/// Public configuration readback. A present JSON value retains its setting type;
+/// absence and a failed read must not become a successful null value.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ConfigValueOutput {
+    pub key: String,
+    pub value: Read<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+}
+impl ConfigValueOutput {
+    pub fn into_envelope(self) -> super::Envelope<Self> {
+        super::Envelope::new(
+            crate::registry::Family {
+                name: "se.config-value",
+                major: 1,
+            },
+            self,
+        )
+    }
+}
+/// Single-agent readback reuses the status/list row without flattening Read.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct AgentStatusOutput {
+    pub agent: Read<AgentRow>,
+}
+impl AgentStatusOutput {
+    pub fn into_envelope(self) -> super::Envelope<Self> {
+        super::Envelope::new(
+            crate::registry::Family {
+                name: "se.agent-status",
+                major: 1,
+            },
+            self,
+        )
+    }
+}
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum SetupState {

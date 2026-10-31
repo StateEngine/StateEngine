@@ -1523,6 +1523,30 @@ The same decision after `se decision ratify dec_…` run in the owner's terminal
  "consistency":"live-keyset","window":{"from":null,"to":"c1.ZDE","limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null}
 ```
 
+### A.12.1 `se.config-value/v1` and `se.agent-status/v1` — independent readback
+
+The published DTOs are `se_core::ops::{ConfigValueOutput, AgentStatusOutput}`
+in `crates/se-core/src/ops/outputs.rs`. Their `into_envelope` methods add the
+literal family `schema` first. These declarations do not add operations to the
+executable catalogue: a runner must still refuse an unsupported command rather
+than substitute fixture data for installed readback.
+
+| Path | Type | Always | Meaning |
+| --- | --- | --- | --- |
+| `$.schema` | `"se.config-value/v1"` | config value | family |
+| `$.key` | string | config value | exact canonical setting key, including `agent.<A>.*` for saved agent metadata |
+| `$.value` | `Read<JSON value>` | config value | present retains the setting's boolean, number, string, array or object type; a present JSON null is distinct from absent, unreadable and unknown |
+| `$.origin` | string | when origin was requested and established | selected file, environment/flag override, built-in default or saved agent field; omitted otherwise |
+| `$.schema` | `"se.agent-status/v1"` | agent status | family |
+| `$.agent` | `Read<AgentRow>` | agent status | present value is exactly A.2's row, including nested session, conversation and resume objects |
+
+Configuration values follow the existing redaction policy; no credential or
+secret becomes a readback value. A judge accepts a value or agent fact only from
+`state: "present"`, compares the native JSON type and exact value, and fails
+closed on the other three Read states. Neither family carries an event or
+writer stamp because these are reads. Optional timing diagnostics use the same
+outer envelope as other outputs and are absent when there is no measured write.
+
 ### A.13 Other write receipts carrying `writer`
 
 Every keyed write result also carries its original `$.idempotency_key`; natural capture/marker results carry `$.request_identity` with `kind: "natural"` and its source session/turn or recipient/message/marker fields. Each committed/replayed family below carries `$.schema`, `$.state` (`committed` \| `replayed`), `$.event_id` (Id), `$.recorded_at` and `$.writer` (A.0), together with the fields listed.
