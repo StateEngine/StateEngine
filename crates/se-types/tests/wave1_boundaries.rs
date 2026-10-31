@@ -147,7 +147,11 @@ fn unknown_count_limit_pages_cannot_lose_their_continuation() -> Check {
         assert_eq!(serde_json::to_value(decoded)?, wire);
         let mut missing = wire;
         missing["next"] = Value::Null;
-        assert!(serde_json::from_value::<Page<String>>(missing).is_err());
+        // Wire counts have no before/after direction. Retain incompleteness;
+        // the production builder above enforces next for known remaining rows.
+        let partial: Page<String> = serde_json::from_value(missing)?;
+        assert!(!partial.window().complete());
+        assert_eq!(partial.window().exit_code(true), 2);
     }
     // Error payloads expose a cursor, never the store's numeric retained position.
     let detail: se_types::Detail = serde_json::from_value(json!({
@@ -163,5 +167,41 @@ fn unknown_count_limit_pages_cannot_lose_their_continuation() -> Check {
         }))
         .is_err()
     );
+    Ok(())
+}
+
+/// Bug: 31c0ef5 — a legal page with omissions before its range could not decode.
+#[test]
+fn pages_with_only_prior_omissions_roundtrip_without_a_next_cursor() -> Check {
+    for reason in [OmissionReason::Limit, OmissionReason::Budget] {
+        let window = Window::new(WindowFields {
+            source: Source::Configuration {
+                location: "review fixture".into(),
+            },
+            from: Sequence::new(3)?,
+            to: Sequence::new(4)?,
+            start_cursor: Some(Cursor::new("c.start")?),
+            end_cursor: Some(Cursor::new("c.end")?),
+            returned: 1,
+            limit: NonZeroU32::MIN,
+            bytes: 1,
+            max_bytes: NonZeroU32::new(32).ok_or("byte limit")?,
+            omitted_before: Omission::Known {
+                count: 3.try_into()?,
+                reason,
+            },
+            omitted_after: Omission::None,
+            unreadable: 0,
+            stop_reason: StopReason::Exhausted,
+        })?;
+        let page = Page::new(vec!["row"], window, None)?;
+        let wire = serde_json::to_value(page)?;
+        let round: Page<String> = serde_json::from_value(wire.clone())?;
+        assert_eq!(serde_json::to_value(&round)?, wire);
+        assert!(round.next().is_none());
+        assert!(!round.window().complete());
+        assert_eq!(round.window().exit_code(true), 2);
+        assert_eq!(round.window().omitted().count, Some(3));
+    }
     Ok(())
 }

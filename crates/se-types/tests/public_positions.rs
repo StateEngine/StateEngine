@@ -97,9 +97,14 @@ fn page_roundtrip_keeps_omission_and_requires_progressing_continuation() -> Chec
     assert_eq!(value["window"]["omitted"]["count"], 1);
     let round: Page<String> = serde_json::from_value(value.clone())?;
     assert_eq!(serde_json::to_value(round)?, value);
+    assert!(Page::new(vec!["row"], window()?, None).is_err());
     let mut absent_next = value.clone();
     absent_next["next"] = Value::Null;
-    assert!(serde_json::from_value::<Page<String>>(absent_next).is_err());
+    // Minimal wire omits omission direction; this can also represent rows omitted
+    // before the selected range. Only the producer has enough facts to require next.
+    let partial: Page<String> = serde_json::from_value(absent_next)?;
+    assert!(!partial.window().complete());
+    assert_eq!(partial.window().exit_code(true), 2);
     let mut stalled_next = value.clone();
     stalled_next["next"] = json!("c.start");
     assert!(serde_json::from_value::<Page<String>>(stalled_next).is_err());

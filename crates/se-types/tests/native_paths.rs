@@ -54,3 +54,41 @@ fn native_path_ingress_requires_a_complete_absolute_path_and_preserves_units()
     );
     Ok(())
 }
+
+/// Bug: 31c0ef5 — namespace UNC and verbatim slash rules differed from Windows.
+#[test]
+fn windows_namespace_paths_keep_their_own_separator_rules() -> Result<(), Box<dyn std::error::Error>>
+{
+    let cases = [
+        ("//server/share", true),
+        ("//server/share/agent.exe", true),
+        (r"C:/agent.exe", true),
+        (r"\\?\C:\agent.exe", true),
+        (r"\\?\UNC\server\share\agent.exe", true),
+        (r"\\.\UNC\server\share\agent.exe", true),
+        (r"\\.\UNC\server", false),
+        (r"\\.\UNC\server\", false),
+        (r"\\.\", false),
+        (r"\\?\C:/agent.exe", false),
+        (r"\\?\UNC\server/share", false),
+        (r"\\?\UNC\server/share\", false),
+    ];
+    let mut mismatches = Vec::new();
+    for (text, expected) in cases {
+        let encoding = PathEncoding::WindowsUtf16(text.encode_utf16().collect());
+        let wire = serde_json::to_value(&encoding)?;
+        let constructed = NativePath::from_encoded(encoding.clone());
+        let decoded = serde_json::from_value::<NativePath>(wire);
+        if constructed.is_ok() != expected || decoded.is_ok() != expected {
+            mismatches.push((text, expected, constructed.is_ok(), decoded.is_ok()));
+        }
+        if let Ok(path) = constructed {
+            assert_eq!(path.encoded(), &encoding);
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "path/expected/constructor/JSON: {mismatches:?}"
+    );
+    Ok(())
+}
