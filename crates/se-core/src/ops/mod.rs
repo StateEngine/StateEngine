@@ -1,6 +1,7 @@
 //! The operation list for the executable wave-one surface. Later waves add their
 //! production operations here; no placeholder handlers or phantom tools are exposed.
 mod cli;
+pub mod hook;
 pub mod inputs;
 pub mod installation;
 pub mod message;
@@ -13,6 +14,7 @@ use crate::registry::*;
 pub use cli::{
     CliSelections, CommonArgs, cli_command, from_matches, from_matches_with_key, selected_meta,
 };
+pub use hook::{HookClaude, HookEvent, HookResult};
 pub use inputs::*;
 pub use meta::{
     McpTool, decode_operation, decode_tool, mcp_tools, metadata_output, schema_catalogue,
@@ -118,6 +120,7 @@ ops! {
     MessageList => MessageList, MessagePage, ("message.list",leaf(&["msg","list"]),tool("stateengine_msg_list","List your messages","List authorized messages with explicit completeness; listing never marks mail read."),Either,false,Never,Read,Project,None,"se.message-page",MessagePage,&["J4"]);
     WorkingStateGet => WorkingStateGet, WorkingStateOutput, ("working_state.get",leaf(&["working-state"]),tool("stateengine_working_state_get","Read working state","Read your saved note and entity revision."),Either,false,Never,Read,Session,None,"se.working-state",WorkingState,&["J3"]);
     WorkingStateSet => WorkingStateSet, WorkingStateReceipt, ("working_state.set",leaf(&["working-state","set"]),tool("stateengine_working_state_set","Replace working state","Replace your note with the revision you read or absent for the first write."),Either,false,Never,Write,Session,HostForWrites,"se.working-state-receipt",WorkingStateReceipt,&["J3"]);
+    HookClaude => HookClaude, HookResult, ("hook.claude",CliExposure::Leaf {path:&["hook","claude"],hidden:true,select:Selector::Always},no_mcp("Provider hooks use authenticated native stdin and pinned-source capture."),Session,false,Never,Custody,Session,HostAutoStart,"se.hook-result",Hook,&["E3","J3"]);
     RuntimeUp => RuntimeUp, RuntimeStart, ("runtime.up",leaf(&["up"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,HostAutoStart,"se.runtime-start",RuntimeStart,&["J3"]);
     RuntimeDown => RuntimeDown, RuntimeStop, ("runtime.down",leaf(&["down"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,None,"se.runtime-stop",RuntimeStop,&["J3"]);
     Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal requires the owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);

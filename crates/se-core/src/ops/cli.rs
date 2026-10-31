@@ -155,6 +155,7 @@ fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> 
     } else {
         command.subcommand(update(
             Command::new(*head)
+                .hide(hidden)
                 .disable_help_flag(true)
                 .disable_version_flag(true)
                 .disable_help_subcommand(true),
@@ -206,6 +207,12 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("expect").required(true))
             .arg(value("agent")),
         "runtime.up" => c.arg(toggle("foreground")),
+        "hook.claude" => c.arg(positional("event", 1, true).value_parser([
+            "session-start",
+            "prompt",
+            "stop",
+            "stop-failure",
+        ])),
         _ => c,
     }
 }
@@ -258,6 +265,14 @@ pub fn from_matches_with_key(
             "read-only calls do not accept a mutation key",
         ));
     }
+    if meta.name == "hook.claude"
+        && (common.key.is_some() || common.project.is_some() || common.json)
+    {
+        return Err(SeError::invalid(
+            "hook flags",
+            "provider protocol output, bound session project and the existing natural capture identity; no --json, --project or --key",
+        ));
+    }
     if meta.name == "meta.version"
         && (!path.is_empty() || common.quiet || common.no_color || flag(m, "help"))
     {
@@ -304,6 +319,10 @@ pub fn from_matches_with_key(
                 } else {
                     flag(m, "all")
                 },
+            }),
+            "hook.claude" => AnyOp::HookClaude(HookClaude {
+                event: serde_json::from_value(serde_json::Value::String(required(m, "event")?))
+                    .map_err(|_| SeError::invalid("event", "a fixed Claude hook event"))?,
             }),
             "project.init" => AnyOp::ProjectInit(ProjectInit {
                 repo: text(m, "repo"),

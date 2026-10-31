@@ -310,6 +310,7 @@ impl Kernel {
             AnyOp::RuntimeUp(input) => OpStep::Custody(CustodyPlan::RuntimeUp(input)),
             AnyOp::RuntimeDown(input) => OpStep::Custody(CustodyPlan::RuntimeDown(input)),
             AnyOp::Uninstall(input) => OpStep::Custody(CustodyPlan::Uninstall(input)),
+            AnyOp::HookClaude(input) => OpStep::Custody(CustodyPlan::ClaudeHook(input)),
             AnyOp::MetaVersion(_) | AnyOp::MetaHelp(_) | AnyOp::MetaSchema(_) => {
                 return Err(scope::unreadable(
                     "metadata dispatch",
@@ -326,6 +327,7 @@ impl Kernel {
     ) -> Result<crate::ops::AnyOutput> {
         use crate::ports::Then;
         match then {
+            Then::Capture(then) => Ok(crate::ops::hook::committed(then, receipt, cx)?.into()),
             Then::MessageSend(then) => {
                 let raw = self.message_committed(then, receipt, cx)?;
                 Ok(crate::ops::receipt::message(raw, cx)?.into())

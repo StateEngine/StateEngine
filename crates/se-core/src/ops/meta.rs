@@ -38,6 +38,12 @@ pub fn metadata_output(op: &AnyOp) -> Result<Option<AnyOutput>> {
                     }))
                 })?;
             }
+            if value.all {
+                fn reveal(command: clap::Command) -> clap::Command {
+                    command.hide(false).mut_subcommands(reveal)
+                }
+                command = reveal(command);
+            }
             Ok(Some(
                 HelpOutput {
                     path: value.path.clone(),
