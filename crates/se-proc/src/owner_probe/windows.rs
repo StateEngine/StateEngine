@@ -29,10 +29,10 @@ fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
     // SAFETY: the successful creation/open call transfers one native reference.
     Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
 }
-fn owner() -> Result<NativeOwner> {
+fn owner(process: &OwnedHandle) -> Result<NativeOwner> {
     let mut raw = ptr::null_mut();
-    // SAFETY: current-process pseudo handle and writable owned-token output.
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
+    // SAFETY: retained process query handle and writable owned-token output.
+    if unsafe { OpenProcessToken(process.as_raw_handle(), TOKEN_QUERY, &mut raw) } == 0 {
         return Err(last("open current OS owner token"));
     }
     let token = handle(raw, "open current OS owner token")?;
@@ -192,14 +192,33 @@ fn stamp(pid: ProcessId, parent: ProcessId, process: &OwnedHandle) -> Result<Pro
         },
     })
 }
+pub(super) fn console_presence() -> Result<(bool, bool)> {
+    Ok((console(STD_INPUT_HANDLE)?, console(STD_OUTPUT_HANDLE)?))
+}
 pub(super) fn observe(
+    target: ProcessId,
+    expected: Option<&StartIdentity>,
     records: &[ProcessRecord],
-) -> Result<(NativeOwner, bool, bool, Vec<AgentTreeMatch>)> {
-    let user = owner()?;
-    let stdin = console(STD_INPUT_HANDLE)?;
-    let stdout = console(STD_OUTPUT_HANDLE)?;
+) -> Result<OwnerTreeObservation> {
+    let target_pin =
+        open(target)?.ok_or_else(|| refuse("bind observed owner", "target process absent"))?;
+    let first = stamp(target, ProcessId(0), &target_pin)?;
+    if expected.is_some_and(|expected| expected != &first.start) {
+        return Err(refuse(
+            "bind observed owner",
+            "target process start changed",
+        ));
+    }
+    // SAFETY: retained SYNCHRONIZE process handle; zero timeout does not block.
+    if unsafe { WaitForSingleObject(target_pin.as_raw_handle(), 0) } != WAIT_TIMEOUT {
+        return Err(refuse(
+            "bind observed owner",
+            "target is exited or unreadable",
+        ));
+    }
+    let user = owner(&target_pin)?;
     let snapshot = parents()?;
-    let mut pid = ProcessId(std::process::id());
+    let mut pid = target;
     let mut ancestry: Vec<(ProcessStamp, OwnedHandle)> = Vec::new();
     while pid.0 != 0 {
         if ancestry.len() >= 4096 || ancestry.iter().any(|(p, _)| p.pid == pid) {
@@ -283,8 +302,9 @@ pub(super) fn observe(
                 let job = handle(raw, "open recorded job for membership query")?;
                 let mut member = 0;
                 // SAFETY: retained query-only job/process handles and initialized membership output.
-                if unsafe { IsProcessInJob(GetCurrentProcess(), job.as_raw_handle(), &mut member) }
-                    == 0
+                if unsafe {
+                    IsProcessInJob(target_pin.as_raw_handle(), job.as_raw_handle(), &mut member)
+                } == 0
                 {
                     return Err(last("query native managed-job membership"));
                 }
@@ -317,8 +337,17 @@ pub(super) fn observe(
             ));
         }
     }
-    if owner()? != user {
+    // SAFETY: the exact target process remains pinned through the entire walk.
+    if unsafe { WaitForSingleObject(target_pin.as_raw_handle(), 0) } != WAIT_TIMEOUT
+        || stamp(target, ProcessId(0), &target_pin)?.start != first.start
+        || owner(&target_pin)? != user
+    {
         return Err(refuse("recheck native owner", "OS owner changed"));
     }
-    Ok((user, stdin, stdout, matches))
+    Ok(OwnerTreeObservation {
+        owner: user,
+        pid: target,
+        start: first.start,
+        agent_trees: matches,
+    })
 }

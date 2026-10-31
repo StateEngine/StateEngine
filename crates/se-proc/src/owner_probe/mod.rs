@@ -103,33 +103,87 @@ impl ProcessStamp {
     }
 }
 
-/// Observes this process without accepting a caller's identity, user, terminal
-/// flags or environment claims. All ancestry and scope reads must succeed;
-/// access denial, changed identities and capacity limits return an error.
-///
+/// Selects the current process or a process instance already proved by IPC.
+/// A PID alone is never sufficient. The observer checks the supplied start
+/// binding before and after the same ancestry and scope walk used for self.
+#[derive(Clone, Copy, Debug)]
+pub enum OwnerTarget<'a> {
+    Current,
+    Process {
+        pid: ProcessId,
+        start: &'a StartIdentity,
+    },
+}
+
+/// Native owner and managed-tree facts about the selected process. Remote
+/// observations do not borrow this host's console or environment as peer facts.
+#[derive(Debug)]
+pub struct OwnerTreeObservation {
+    owner: NativeOwner,
+    pid: ProcessId,
+    start: StartIdentity,
+    agent_trees: Vec<AgentTreeMatch>,
+}
+impl OwnerTreeObservation {
+    pub fn owner(&self) -> &NativeOwner {
+        &self.owner
+    }
+    pub fn pid(&self) -> ProcessId {
+        self.pid
+    }
+    pub fn start(&self) -> &StartIdentity {
+        &self.start
+    }
+    pub fn agent_trees(&self) -> &[AgentTreeMatch] {
+        &self.agent_trees
+    }
+}
+
+/// Observe an already-proved process against the complete protected inventory.
+/// These facts grant no authority. Unreadable or changed ancestry, scopes or
+/// start bindings are errors, never an observation that the peer is outside.
 /// Uncontained escape/reparenting has the explicit bound in §70: a descendant
-/// which has left its recorded session/group and lost the recorded ancestry
-/// cannot be recognized by these mistake/drift checks.
-pub fn observe_owner_self(records: &[ProcessRecord]) -> Result<OwnerObservation> {
+/// which left its session/group and lost its ancestry cannot be recognized.
+pub fn observe_owner(
+    target: OwnerTarget<'_>,
+    records: &[ProcessRecord],
+) -> Result<OwnerTreeObservation> {
     if records.len() > 16384 {
         return Err(refuse("observe owner", "agent-record capacity exceeded"));
     }
-    let session_present = std::env::var_os("SE_SESSION").is_some();
-    let provider_marker_present = ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI"]
-        .iter()
-        .any(|key| std::env::var_os(key).is_some());
+    let (pid, expected) = match target {
+        OwnerTarget::Current => (ProcessId(std::process::id()), None),
+        OwnerTarget::Process { pid, start } => (pid, Some(start)),
+    };
+    if pid.0 == 0 || pid.0 > i32::MAX as u32 {
+        return Err(refuse("observe owner", "invalid target process ID"));
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    let (owner, stdin_console, stdout_console, agent_trees) = unix::observe(records)?;
+    {
+        unix::observe(pid, expected, records)
+    }
     #[cfg(windows)]
-    let (owner, stdin_console, stdout_console, agent_trees) = windows::observe(records)?;
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-    return Err(refuse("observe owner", "unsupported native platform"));
+    {
+        windows::observe(pid, expected, records)
+    }
+}
+
+/// Self observation also reads actual standard streams and process markers.
+/// Kept as a compatible wrapper for hostless owner admission.
+pub fn observe_owner_self(records: &[ProcessRecord]) -> Result<OwnerObservation> {
+    let observed = observe_owner(OwnerTarget::Current, records)?;
+    #[cfg(unix)]
+    let (stdin_console, stdout_console) = unix::console()?;
+    #[cfg(windows)]
+    let (stdin_console, stdout_console) = windows::console_presence()?;
     Ok(OwnerObservation {
-        owner,
+        owner: observed.owner,
         stdin_console,
         stdout_console,
-        session_present,
-        provider_marker_present,
-        agent_trees,
+        session_present: std::env::var_os("SE_SESSION").is_some(),
+        provider_marker_present: ["CLAUDECODE", "CODEX_THREAD_ID", "CODEX_CI"]
+            .iter()
+            .any(|key| std::env::var_os(key).is_some()),
+        agent_trees: observed.agent_trees,
     })
 }

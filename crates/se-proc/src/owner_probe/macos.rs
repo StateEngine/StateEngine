@@ -31,7 +31,7 @@ pub(super) fn boot() -> Result<BootIdentity> {
         microseconds: time.tv_usec,
     })
 }
-pub(super) fn stamp(pid: ProcessId, boot: &BootIdentity) -> Result<ProcessStamp> {
+fn info(pid: ProcessId) -> Result<libc::proc_bsdinfo> {
     if pid.0 == 0 || pid.0 > i32::MAX as u32 {
         return Err(refuse("read owner ancestry", "invalid process ID"));
     }
@@ -51,6 +51,17 @@ pub(super) fn stamp(pid: ProcessId, boot: &BootIdentity) -> Result<ProcessStamp>
     {
         return Err(native("read owner ancestry", io::Error::last_os_error()));
     }
+    Ok(info)
+}
+pub(super) fn owner(pid: ProcessId) -> Result<NativeOwner> {
+    let info = info(pid)?;
+    Ok(NativeOwner::Unix {
+        real_uid: info.pbi_ruid,
+        effective_uid: info.pbi_uid,
+    })
+}
+pub(super) fn stamp(pid: ProcessId, boot: &BootIdentity) -> Result<ProcessStamp> {
+    let info = info(pid)?;
     // SAFETY: positive native PID selector; failure is preserved as unreadable ancestry.
     let session = unsafe { libc::getsid(pid.0 as i32) };
     if session < 0 {

@@ -369,6 +369,8 @@ version = "0.0.1"
 dependencies = [
  "libc",
  "se-types",
+ "serde",
+ "serde_json",
  "sha2",
  "windows-sys",
  "zeroize",

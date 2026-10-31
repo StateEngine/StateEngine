@@ -8,6 +8,11 @@
 
 mod entropy;
 pub use entropy::{NativeEntropyError, random_secret};
+mod checkpoint;
+pub use checkpoint::{
+    Checkpoint, CheckpointError, CheckpointKind, CheckpointPrincipal, CheckpointSource,
+    HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,
+};
 mod creation_owner;
 mod error;
 pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
@@ -34,8 +39,8 @@ pub use error::*;
 pub use identity::*;
 pub use launch::*;
 pub use owner_probe::{
-    AgentTreeBasis, AgentTreeMatch, NativeOwner, OwnerObservation, OwnerProbeError,
-    observe_owner_self,
+    AgentTreeBasis, AgentTreeMatch, NativeOwner, OwnerObservation, OwnerProbeError, OwnerTarget,
+    OwnerTreeObservation, observe_owner, observe_owner_self,
 };
 pub use ownership::*;
 #[cfg(windows)]

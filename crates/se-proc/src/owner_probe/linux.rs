@@ -53,6 +53,9 @@ pub(super) fn stamp(pid: ProcessId, boot: &BootIdentity) -> Result<ProcessStamp>
         .windows(2)
         .rposition(|p| p == b") ")
         .ok_or_else(|| refuse("read owner ancestry", "malformed proc stat"))?;
+    if matches!(data.get(end + 2), Some(b'Z' | b'X' | b'x')) {
+        return Err(refuse("read owner ancestry", "process has exited"));
+    }
     let fields: Vec<_> = data[end + 2..]
         .split(u8::is_ascii_whitespace)
         .filter(|p| !p.is_empty())
@@ -78,6 +81,35 @@ pub(super) fn stamp(pid: ProcessId, boot: &BootIdentity) -> Result<ProcessStamp>
         start: StartIdentity::Linux {
             start_ticks: number(19)?,
         },
+    })
+}
+pub(super) fn owner(pid: ProcessId) -> Result<NativeOwner> {
+    let data = bytes(Path::new(&format!("/proc/{}/status", pid.0)), 65536)?;
+    let mut lines = data
+        .split(|b| *b == b'\n')
+        .filter_map(|line| line.strip_prefix(b"Uid:"));
+    let line = lines
+        .next()
+        .ok_or_else(|| refuse("read target owner", "native UID record absent"))?;
+    if lines.next().is_some() {
+        return Err(refuse("read target owner", "duplicate native UID record"));
+    }
+    let values: Vec<_> = line
+        .split(u8::is_ascii_whitespace)
+        .filter(|s| !s.is_empty())
+        .collect();
+    if values.len() != 4 {
+        return Err(refuse("read target owner", "invalid native UID record"));
+    }
+    let number = |value: &[u8]| -> Result<u32> {
+        std::str::from_utf8(value)
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| refuse("read target owner", "invalid native UID"))
+    };
+    Ok(NativeOwner::Unix {
+        real_uid: number(values[0])?,
+        effective_uid: number(values[1])?,
     })
 }
 fn unescape(value: &[u8]) -> Result<PathBuf> {
@@ -114,8 +146,8 @@ fn unescape(value: &[u8]) -> Result<PathBuf> {
     }
     Ok(path)
 }
-pub(super) fn in_cgroup(root: &Path, device: u64, inode: u64) -> Result<bool> {
-    let before = bytes(Path::new("/proc/self/cgroup"), 65536)?;
+pub(super) fn in_cgroup(pid: ProcessId, root: &Path, device: u64, inode: u64) -> Result<bool> {
+    let before = bytes(Path::new(&format!("/proc/{}/cgroup", pid.0)), 65536)?;
     let mut lines = before
         .split(|c| *c == b'\n')
         .filter_map(|line| line.strip_prefix(b"0::"));
@@ -185,7 +217,7 @@ pub(super) fn in_cgroup(root: &Path, device: u64, inode: u64) -> Result<bool> {
             }
         }
     }
-    if bytes(Path::new("/proc/self/cgroup"), 65536)? != before {
+    if bytes(Path::new(&format!("/proc/{}/cgroup", pid.0)), 65536)? != before {
         return Err(refuse(
             "recheck cgroup membership",
             "membership changed during observation",

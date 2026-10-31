@@ -1,18 +1,15 @@
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// A query selector, never custody or a legal stop target by itself.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProcessId(pub u32);
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct MachineId(pub [u8; 16]);
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct LifecycleId(pub [u8; 16]);
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub use se_types::{HostGeneration as GenerationId, LifecycleId, MachineId};
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HostInstanceId(pub [u8; 16]);
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct GenerationId(pub u64);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum BootIdentity {
     Linux {
         boot_id: [u8; 16],
@@ -25,22 +22,26 @@ pub enum BootIdentity {
     /// not a guessed boot time, supplies Windows object continuity.
     WindowsAbsoluteCreationClock,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum StartIdentity {
     Linux { start_ticks: u64 },
     Windows { creation_filetime: u64 },
     MacOs { seconds: u64, microseconds: u32 },
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessIdentity {
     pub machine: MachineId,
     pub boot: BootIdentity,
     pub pid: ProcessId,
     pub start: StartIdentity,
     /// Exact native path, not display text, a basename, or executable-name filter.
+    #[serde(with = "crate::checkpoint::native_path")]
     pub image: PathBuf,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum NativeState {
     Running,
     Stopped,
@@ -48,21 +49,24 @@ pub enum NativeState {
     ExitedAwaitingReap,
     Exited,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LiveObservation {
     pub identity: ProcessIdentity,
     pub state: NativeState,
     pub parent: Option<ProcessId>,
     pub observed_at_unix_ns: u128,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ExitEvidence {
     KernelHandleSignalled,
     NativeExitedRecord { state: NativeState },
     Absent,
     Replaced { observed: ProcessIdentity },
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ProcessObservation {
     Live(LiveObservation),
     /// Includes the original expected instance, even when its image is no
@@ -74,7 +78,8 @@ pub enum ProcessObservation {
         observed_at_unix_ns: u128,
     },
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ProcessRead {
     Present(LiveObservation),
     Absent {
@@ -94,13 +99,15 @@ pub enum ProcessRead {
 }
 
 /// Native status is independent of proof that an instance exited.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ExitStatus {
     Code(u32),
     Signal { number: u32, core_dumped: bool },
     Unavailable { reason: ExitStatusUnavailable },
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ExitStatusUnavailable {
     NotOurChild,
     ReapedBeforeRecovery,

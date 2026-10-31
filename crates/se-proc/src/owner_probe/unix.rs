@@ -5,14 +5,7 @@ use super::macos as os;
 use super::*;
 use crate::ScopeIdentity;
 
-pub(super) fn observe(
-    records: &[ProcessRecord],
-) -> Result<(NativeOwner, bool, bool, Vec<AgentTreeMatch>)> {
-    // SAFETY: native process/user queries have no pointers or side effects.
-    let owner = NativeOwner::Unix {
-        real_uid: unsafe { libc::getuid() },
-        effective_uid: unsafe { libc::geteuid() },
-    };
+pub(super) fn console() -> Result<(bool, bool)> {
     let console = |fd| -> Result<bool> {
         // SAFETY: native standard descriptor selector; error remains distinct from non-terminal.
         if unsafe { libc::isatty(fd) } == 1 {
@@ -28,9 +21,25 @@ pub(super) fn observe(
     };
     let stdin = console(libc::STDIN_FILENO)?;
     let stdout = console(libc::STDOUT_FILENO)?;
+    Ok((stdin, stdout))
+}
+
+pub(super) fn observe(
+    pid: ProcessId,
+    expected: Option<&StartIdentity>,
+    records: &[ProcessRecord],
+) -> Result<OwnerTreeObservation> {
     let boot = os::boot()?;
+    let first = os::stamp(pid, &boot)?;
+    if expected.is_some_and(|expected| expected != &first.start) {
+        return Err(refuse(
+            "bind observed owner",
+            "target process start changed",
+        ));
+    }
+    let owner = os::owner(pid)?;
     let mut ancestry = Vec::new();
-    let mut next = ProcessId(std::process::id());
+    let mut next = pid;
     while next.0 != 0 {
         if ancestry.len() >= 4096 || ancestry.iter().any(|p: &ProcessStamp| p.pid == next) {
             return Err(refuse(
@@ -108,7 +117,7 @@ pub(super) fn observe(
                     if (BootIdentity::Linux { boot_id: *boot_id }) != boot {
                         return Err(refuse("inspect managed cgroup", "inconsistent cgroup boot"));
                     }
-                    if os::in_cgroup(path, *device, *inode)? {
+                    if os::in_cgroup(pid, path, *device, *inode)? {
                         Some(AgentTreeBasis::Cgroup)
                     } else {
                         None
@@ -139,18 +148,16 @@ pub(super) fn observe(
             ));
         }
     }
-    if owner
-        != (NativeOwner::Unix {
-            // SAFETY: native immutable user query without pointer arguments.
-            real_uid: unsafe { libc::getuid() },
-            // SAFETY: native immutable effective-user query without pointer arguments.
-            effective_uid: unsafe { libc::geteuid() },
-        })
-    {
+    if owner != os::owner(pid)? || os::stamp(pid, &boot)? != first {
         return Err(refuse(
             "recheck native owner",
-            "OS user changed during observation",
+            "target owner or process changed during observation",
         ));
     }
-    Ok((owner, stdin, stdout, matches))
+    Ok(OwnerTreeObservation {
+        owner,
+        pid,
+        start: first.start,
+        agent_trees: matches,
+    })
 }
