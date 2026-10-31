@@ -4,6 +4,8 @@
 pub mod direct;
 #[path = "route/files.rs"]
 pub mod files;
+#[path = "route/identity.rs"]
+pub mod identity;
 #[path = "route/owner.rs"]
 pub mod owner;
 #[path = "route/setup.rs"]
