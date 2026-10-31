@@ -10,8 +10,29 @@ pub fn read(
     project: &ProjectId,
     event: &EventId,
 ) -> Result<(Output, serde_json::Value), Box<dyn std::error::Error>> {
+    let output = command(home, project, event, true).output()?;
+    let value = serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!(
+            "actual history JSON: {error}; stdout={}; stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })?;
+    Ok((output, value))
+}
+pub fn human(
+    home: &Path,
+    project: &ProjectId,
+    event: &EventId,
+) -> Result<Output, Box<dyn std::error::Error>> {
+    Ok(command(home, project, event, false).output()?)
+}
+fn command(home: &Path, project: &ProjectId, event: &EventId, json: bool) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
-    command.args(["--json", "--home"]).arg(home).args([
+    if json {
+        command.arg("--json");
+    }
+    command.arg("--home").arg(home).args([
         "--project",
         project.as_str(),
         "history",
@@ -30,15 +51,7 @@ pub fn read(
     ] {
         command.env_remove(name);
     }
-    let output = command.output()?;
-    let value = serde_json::from_slice(&output.stdout).map_err(|error| {
-        format!(
-            "actual history JSON: {error}; stdout={}; stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        )
-    })?;
-    Ok((output, value))
+    command
 }
 /// Protects: the real Claude Stop capture is independently readable through the public CLI event family, with complete turn payload and original host provenance.
 pub fn captured_turn(

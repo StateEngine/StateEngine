@@ -14,6 +14,7 @@ use std::{
 };
 
 #[cfg(test)]
+#[allow(dead_code)] // Used by the integration test's imported module, not the binary test target.
 pub fn machine(files: &Files) -> Result<Read<MachineId>> {
     machine_identity::read_machine_identity(files.0.root(), &Port(files))
 }

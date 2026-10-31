@@ -167,3 +167,51 @@ fn corrupt_store_retains_public_integrity_code() -> Check {
     assert_eq!(std::fs::read(path)?, b"damaged SQLite header");
     Ok(())
 }
+
+/// Protects: default event inspection shows a registration's public subject and role instead of dropping all non-body payload fields that --json preserves.
+#[test]
+fn default_output_keeps_registration_payload() -> Check {
+    let f = Fixture::new()?;
+    let (mut store, lease) = f.direct()?;
+    store.append(
+        f.batch(
+            f.owner_project(),
+            None,
+            vec![EventBody::PrincipalRegistered {
+                principal: Actor::Human(f.owner.clone()),
+                kind: PrincipalKind::Human,
+                owner: f.owner.clone(),
+                created_by: None,
+                name: "Owner".into(),
+                role: "owner".into(),
+                expected: Expected::Absent,
+            }],
+        )?,
+        &*lease,
+    )?;
+    let mut snapshot = store.snapshot(f.scoped(Visibility::Owner))?;
+    let principal = present(snapshot.principal(Actor::Agent(f.a.clone()))?)?;
+    let id = principal.current.header.event;
+    snapshot.close()?;
+    let (json, value) = history_cli::read(&f.options.state_directory, &f.project, &id)?;
+    assert!(
+        json.status.success(),
+        "registration readback failed: {value}"
+    );
+    assert_eq!(value["payload"]["name"], "Alpha");
+    assert_eq!(value["payload"]["role"], "builder");
+    let human = history_cli::human(&f.options.state_directory, &f.project, &id)?;
+    let text = String::from_utf8(human.stdout)?;
+    assert!(
+        human.status.success(),
+        "default history read refused: {}",
+        String::from_utf8_lossy(&human.stderr)
+    );
+    assert!(
+        text.contains("Alpha") && text.to_lowercase().contains("builder"),
+        "default history lost registration payload: {text}"
+    );
+    store.close()?;
+    drop(lease);
+    Ok(())
+}
