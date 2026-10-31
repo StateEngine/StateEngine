@@ -5,9 +5,12 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import struct
 import subprocess
 import sys
+import tempfile
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,6 +24,40 @@ def digest(path):
 def run(*argv):
     return subprocess.run(argv, cwd=ROOT, check=True, text=True,
                           stdout=subprocess.PIPE).stdout.strip()
+
+
+def native_requirements(path, windows):
+    with path.open("rb") as stream:
+        header = stream.read(64)
+        if windows:
+            if header[:2] != b"MZ" or len(header) != 64:
+                raise ValueError("expected a native Windows PE executable")
+            stream.seek(struct.unpack_from("<I", header, 60)[0])
+            valid = stream.read(6) == b"PE\0\0\x64\x86"
+        else:
+            valid = header[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<H", header, 18)[0] == 62
+    if not valid:
+        raise ValueError("native executable architecture is not x86_64")
+    inspector = shutil.which("dumpbin.exe" if windows else "readelf")
+    if not inspector:
+        raise ValueError("install native binutils or use the Visual Studio x64 Native Tools shell; dependency inspector is absent")
+    options = ["/DEPENDENTS"] if windows else ["--wide", "--dynamic", "--program-headers", "--version-info"]
+    environment = {**os.environ, "LC_ALL": "C"}
+    report = subprocess.run([inspector, *options, str(path)], check=True, text=True,
+                            stdout=subprocess.PIPE, env=environment).stdout
+    pattern = r"^\s+([\w.+-]+\.dll)\s*$" if windows else r"\(NEEDED\).*\[([^\]]+)\]"
+    needed = sorted(set(re.findall(pattern, report, re.M | re.I)))
+    if not needed:
+        raise ValueError("dependency inspector reported no readable native requirements")
+    if windows and any(re.match(r"(vcruntime|msvcp|ucrtbase|api-ms-win-crt)", name, re.I) for name in needed):
+        raise ValueError("Windows release unexpectedly requires a separate C runtime")
+    interpreters = re.findall(r"Requesting program interpreter: ([^\]]+)", report) if not windows else []
+    if not windows and len(interpreters) != 1:
+        raise ValueError("GNU/Linux executable must report exactly one dynamic interpreter")
+    return {"format": "PE32+" if windows else "ELF64", "architecture": "x86_64",
+            "needed": needed, "interpreter": None if windows else interpreters[0],
+            "symbol_versions": [] if windows else sorted(set(re.findall(r"Name: ([\w.]+)", report))),
+            "inspector_sha256": digest(Path(inspector))}
 
 
 def main():
@@ -46,29 +83,47 @@ def main():
         parser.error("the release profile must explicitly use panic=unwind")
     # Cargo would otherwise accept unrecorded environment/config overrides.
     for name in ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "RUSTC", "RUSTC_WRAPPER",
-                 "RUSTC_WORKSPACE_WRAPPER", "CARGO_PROFILE_RELEASE_PANIC"):
+                 "RUSTC_WORKSPACE_WRAPPER", "RUSTC_BOOTSTRAP"):
         if os.environ.get(name):
             parser.error(f"unset {name} before the pinned release build")
-    if any(k.startswith("CARGO_TARGET_") and k.endswith("_RUSTFLAGS") for k in os.environ):
-        parser.error("unset CARGO_TARGET_*_RUSTFLAGS before the pinned release build")
+    if any(k.startswith("CARGO_PROFILE_") or
+           (k.startswith("CARGO_TARGET_") and k.endswith(("_RUSTFLAGS", "_LINKER"))) for k in os.environ):
+        parser.error("unset Cargo profile, target rustflags and target linker overrides before the pinned release build")
     metadata = json.loads(run("cargo", "+" + toolchain, "metadata", "--offline", "--locked",
                               "--format-version=1"))
     source = run("git", "rev-parse", "HEAD")
+    epoch = int(run("git", "show", "-s", "--format=%ct", "HEAD"))
+    sysroot = Path(run("rustc", "+" + toolchain, "--print", "sysroot"))
+    config = tomllib.loads((ROOT / ".cargo/config.toml").read_text())
+    flags = config.get("target", {}).get(args.target, {}).get("rustflags", [])
     argv = ["cargo", "+" + toolchain, "build", "--offline", "--locked", "--release",
             "--package", inputs["package"], "--no-default-features", "--target", args.target,
             "--jobs", "1", "--message-format=json-render-diagnostics"]
     if inputs["features"]:
         argv += ["--features", ",".join(inputs["features"])]
-    built = subprocess.run(argv, cwd=ROOT, check=True, text=True, stdout=subprocess.PIPE)
-    artifacts = [json.loads(line) for line in built.stdout.splitlines() if line.strip()]
-    artifacts = [a for a in artifacts if a.get("reason") == "compiler-artifact"]
-    binary = [a for a in artifacts if a.get("executable") and a["target"]["name"] == "se"]
-    if len(binary) != 1:
-        raise ValueError("Cargo did not report exactly one se executable")
-    out.mkdir(parents=True)
     name = "se.exe" if "windows" in args.target else "se"
-    shutil.copyfile(binary[0]["executable"], out / name)
+    # Never copy a cached Cargo artifact as an independent rebuild. Both source
+    # and scratch prefixes are normalized before compilation, not after hashing.
+    with tempfile.TemporaryDirectory(prefix="se-native-build-") as target:
+        mappings = [(ROOT, "/stateengine/source"), (Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")), "/rust/cargo"),
+                    (sysroot, "/rust/toolchain"), (Path(target), "/stateengine/target")]
+        remaps = [f"--remap-path-prefix={prefix}={replacement}" for prefix, replacement in mappings]
+        environment = {**os.environ, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags + remaps),
+                       "SOURCE_DATE_EPOCH": str(epoch), "CARGO_INCREMENTAL": "0"}
+        built = subprocess.run(argv + ["--target-dir", target], cwd=ROOT, check=True, text=True,
+                               stdout=subprocess.PIPE, env=environment)
+        artifacts = [json.loads(line) for line in built.stdout.splitlines() if line.strip()]
+        artifacts = [a for a in artifacts if a.get("reason") == "compiler-artifact"]
+        binary = [a for a in artifacts if a.get("executable") and a["target"]["name"] == "se"]
+        if len(binary) != 1:
+            raise ValueError("Cargo did not report exactly one se executable")
+        out.mkdir(parents=True)
+        shutil.copyfile(binary[0]["executable"], out / name)
     (out / name).chmod(0o755)
+    requirements = native_requirements(out / name, "windows" in args.target)
+    version = subprocess.run([str(out / name), "--version"], cwd=out, check=True, text=True,
+        stdout=subprocess.PIPE, env={k: v for k, v in {**os.environ, "PATH": os.defpath}.items()
+                                    if k in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP")}).stdout.strip()
     packages = {p["id"]: p for p in metadata["packages"]}
     features = {}
     notices = out / "notices"
@@ -92,7 +147,6 @@ def main():
             ("name", "version", "source", "license", "repository")}, indent=2) + "\n")
         for path in sorted(texts):
             shutil.copyfile(path, dest / path.name)
-    sysroot = Path(run("rustc", "+" + toolchain, "--print", "sysroot"))
     rust_notices = sysroot / "share/doc/rust"
     if not (rust_notices / "licenses").is_dir() or not (rust_notices / "COPYRIGHT.html").is_file():
         raise ValueError("Rust toolchain notices are absent; install its documentation component")
@@ -100,9 +154,12 @@ def main():
     shutil.copyfile(rust_notices / "COPYRIGHT.html", notices / "rust-toolchain/COPYRIGHT.html")
     manifest = {"schema": "se.release-build/v1", "variant": "standalone", "trust": "unsigned",
         "source_commit": source, "source_tree": run("git", "rev-parse", "HEAD^{tree}"),
-        "source_timestamp": int(run("git", "show", "-s", "--format=%ct", "HEAD")),
+        "source_timestamp": epoch,
         "version": cargo["workspace"]["package"]["version"], "target": args.target,
         "toolchain": toolchain, "compiler": compiler, "panic": "unwind",
+        "rustflags": flags, "source_date_epoch": epoch, "fresh_target": True,
+        "path_remap": {name: value for name, (_, value) in zip(("source", "cargo", "toolchain", "target"), mappings)},
+        "native_requirements": requirements, "version_stdout": version,
         "default_features": False, "features": inputs["features"], "compiled_features": features,
         "cargo_lock_sha256": digest(ROOT / "Cargo.lock"),
         "inputs_sha256": digest(ROOT / "scripts/release/inputs.json"),
@@ -113,13 +170,13 @@ def main():
     # A source change during a build must not acquire the old source pin.
     if run("git", "rev-parse", "HEAD") != source or run("git", "status", "--porcelain"):
         raise ValueError("source changed while compiling; discard this unpinned build output")
-    (out / "build.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (out / "build.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(out / "build.json")
 
 
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, struct.error, subprocess.CalledProcessError) as error:
         print(f"release build refused: {error}", file=sys.stderr)
         sys.exit(1)
