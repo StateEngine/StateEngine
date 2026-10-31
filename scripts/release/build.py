@@ -23,7 +23,24 @@ def digest(path):
 
 def run(*argv):
     return subprocess.run(argv, cwd=ROOT, check=True, text=True,
-                          stdout=subprocess.PIPE).stdout.strip()
+                          stdout=subprocess.PIPE, env={**os.environ, "RUSTUP_AUTO_INSTALL": "0"}).stdout.strip()
+
+
+def checked_cargo_home():
+    home = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
+    home = (home if home.is_absolute() else ROOT / home).resolve()
+    candidates = [ROOT / ".cargo/config", home / "config", home / "config.toml"]
+    candidates += [parent / ".cargo" / name for parent in ROOT.parents for name in ("config", "config.toml")]
+    for candidate in candidates:
+        if candidate == ROOT / ".cargo/config.toml":
+            continue  # The committed workspace configuration is the pinned input.
+        try:
+            candidate.lstat()
+        except FileNotFoundError:
+            continue
+        raise ValueError(f"external Cargo configuration is not a pinned build input: {candidate}; "
+                         "use a clean parent path and a CARGO_HOME without configuration overrides")
+    return home
 
 
 def native_requirements(path, windows):
@@ -76,6 +93,7 @@ def main():
         parser.error("--out must be a new directory outside the source tree")
     if run("git", "status", "--porcelain", "--untracked-files=all"):
         parser.error("commit the release source first; the source tree is not clean")
+    cargo_home = checked_cargo_home()
     toolchain = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]["channel"]
     compiler = run("rustc", "+" + toolchain, "-vV")
     if f"host: {args.target}" not in compiler.splitlines():
@@ -92,14 +110,16 @@ def main():
     if any(k.startswith("CARGO_PROFILE_") or
            (k.startswith("CARGO_TARGET_") and k.endswith(("_RUSTFLAGS", "_LINKER"))) for k in os.environ):
         parser.error("unset Cargo profile, target rustflags and target linker overrides before the pinned release build")
-    metadata = json.loads(run("cargo", "+" + toolchain, "metadata", "--offline", "--locked",
+    overrides = ["--config", 'build.rustc-wrapper=""', "--config", 'build.rustc-workspace-wrapper=""',
+                 "--config", 'profile.release.panic="unwind"']
+    metadata = json.loads(run("cargo", "+" + toolchain, *overrides, "metadata", "--offline", "--locked",
                               "--format-version=1"))
     source = run("git", "rev-parse", "HEAD")
     epoch = int(run("git", "show", "-s", "--format=%ct", "HEAD"))
     sysroot = Path(run("rustc", "+" + toolchain, "--print", "sysroot"))
     config = tomllib.loads((ROOT / ".cargo/config.toml").read_text())
     flags = config.get("target", {}).get(args.target, {}).get("rustflags", [])
-    argv = ["cargo", "+" + toolchain, "build", "--offline", "--locked", "--release",
+    argv = ["cargo", "+" + toolchain, *overrides, "build", "--offline", "--locked", "--release",
             "--package", inputs["package"], "--no-default-features", "--target", args.target,
             "--jobs", "1", "--message-format=json-render-diagnostics"]
     if inputs["features"]:
@@ -108,12 +128,12 @@ def main():
     # Never copy a cached Cargo artifact as an independent rebuild. Both source
     # and scratch prefixes are normalized before compilation, not after hashing.
     with tempfile.TemporaryDirectory(prefix="se-native-build-") as target:
-        mappings = [(ROOT, "/stateengine/source"), (Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo")).resolve(), "/rust/cargo"),
+        mappings = [(ROOT, "/stateengine/source"), (cargo_home, "/rust/cargo"),
                     (sysroot, "/rust/toolchain"), (Path(target), "/stateengine/target")]
         remaps = [f"--remap-path-prefix={spelling}={replacement}" for prefix, replacement in mappings
                   for spelling in sorted({str(prefix), prefix.as_posix()})]
         environment = {**os.environ, "CARGO_ENCODED_RUSTFLAGS": "\x1f".join(flags + remaps),
-                       "SOURCE_DATE_EPOCH": str(epoch), "CARGO_INCREMENTAL": "0"}
+                       "SOURCE_DATE_EPOCH": str(epoch), "CARGO_INCREMENTAL": "0", "RUSTUP_AUTO_INSTALL": "0"}
         built = subprocess.run(argv + ["--target-dir", target], cwd=ROOT, check=True, text=True,
                                stdout=subprocess.PIPE, env=environment)
         artifacts = [json.loads(line) for line in built.stdout.splitlines() if line.strip()]
@@ -162,6 +182,7 @@ def main():
         "version": cargo["workspace"]["package"]["version"], "target": args.target,
         "toolchain": toolchain, "compiler": compiler, "panic": "unwind",
         "rustflags": flags, "source_date_epoch": epoch, "fresh_target": True,
+        "cargo_config_overrides": overrides,
         "path_remap": {name: value for name, (_, value) in zip(("source", "cargo", "toolchain", "target"), mappings)},
         "native_requirements": requirements, "version_stdout": version,
         "default_features": False, "features": inputs["features"], "compiled_features": features,
@@ -174,6 +195,7 @@ def main():
     # A source change during a build must not acquire the old source pin.
     if run("git", "rev-parse", "HEAD") != source or run("git", "status", "--porcelain"):
         raise ValueError("source changed while compiling; discard this unpinned build output")
+    checked_cargo_home()
     (out / "build.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(out / "build.json")
 

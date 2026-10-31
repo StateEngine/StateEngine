@@ -55,20 +55,24 @@ case ${SHELL-} in
         plain_path "$fish_file"
         [ ! -e "$fish_file" ] || fail "existing fish configuration is preserved: $fish_file"
         ;;
-    *)
+    ''|*/sh|*/bash|*/dash|*/ksh|*/zsh)
         if [ -e "$HOME/.bash_profile" ] || [ -L "$HOME/.bash_profile" ]; then profiles="$profiles .bash_profile"
         elif [ -e "$HOME/.bash_login" ] || [ -L "$HOME/.bash_login" ]; then profiles="$profiles .bash_login"; fi
         case ${SHELL-} in */zsh) profiles="$profiles .zprofile" ;; esac
         ;;
+    *) fail 'supported login shells are sh, bash, dash, ksh, zsh and fish; open one of these shells before installing' ;;
 esac
+profile_digests=''
 for name in $profiles; do
     profile=$HOME/$name
     plain_path "$profile"
     if [ -e "$profile" ]; then
         [ -f "$profile" ] && [ -r "$profile" ] && [ -w "$profile" ] || fail "login profile is unreadable or not writable: $profile"
         if grep -q -F '# >>> StateEngine PATH >>>' "$profile"; then fail "unrecorded PATH block is preserved: $profile"; fi
-        file_digest "$profile" > /dev/null
-    fi
+        prior=$(file_digest "$profile")
+    else prior=absent; fi
+    profile_digests="$profile_digests$name $prior
+"
 done
 # The inventory contains only safe relative names, so this list needs no path splitting.
 asset_files='manifest.json build.json NOTICE.txt uninstall.sh'
@@ -79,6 +83,9 @@ owner=$(id -u)
 created_directories=''
 stage=''
 temp_profile=''
+temp_payload=''
+payload_destination=''
+payload_kind=''
 claimed=0
 published_assets=0
 published_binary=0
@@ -93,22 +100,51 @@ create_directory() {
     elif [ -d "$1" ] && [ ! -L "$1" ]; then :
     else fail "cannot create installation directory: $1"; fi
 }
+publish_file() {
+    # Copy and flush on the destination filesystem, then claim without overwrite.
+    temp_payload=$(mktemp "$(dirname -- "$2")/.se-publish-XXXXXXXX")
+    payload_destination=$2
+    payload_kind=$4
+    cp -- "$1" "$temp_payload"
+    chmod "$3" "$temp_payload"
+    sync "$temp_payload"
+    ln -- "$temp_payload" "$2" || fail "destination appeared during installation: $2"
+    case "$4" in binary) published_binary=1 ;; fish) published_fish=1 ;; esac
+    rm -- "$temp_payload"
+    temp_payload=''
+    sync "$2" "$(dirname -- "$2")"
+}
 cleanup() {
     exit_code=$?
     trap - EXIT HUP INT TERM
     set +e
     rollback_complete=1
+    if [ -n "$temp_payload" ] && [ "$payload_destination" -ef "$temp_payload" ]; then
+        case "$payload_kind" in binary) published_binary=1 ;; fish) published_fish=1 ;; esac
+    fi
+    if [ "$claimed" -eq 1 ] && [ -d "$assets" ] && [ ! -d "$stage/assets" ]; then published_assets=1; fi
     if [ "$done_install" -eq 0 ]; then
         for name in $profiles; do
             [ "$claimed" -eq 1 ] || continue
             profile=$HOME/$name
-            if [ ! -L "$profile" ] && cmp -s -- "$profile" "$stage/$name.after"; then
-                if [ -f "$stage/$name.before" ]; then
+            prior=$(cat "$stage/$name.digest")
+            current=''
+            if [ ! -L "$profile" ] && [ -f "$profile" ]; then current=$(file_digest "$profile"); fi
+            after=''
+            if [ -f "$stage/$name.after-digest" ]; then after=$(cat "$stage/$name.after-digest"); fi
+            if [ -n "$after" ] && [ "$current" = "$after" ]; then
+                if [ "$prior" != absent ]; then
                     temp_profile=$(mktemp "$HOME/.se-profile-XXXXXXXX")
-                    if cp -p -- "$stage/$name.before" "$temp_profile" && mv -- "$temp_profile" "$profile"; then temp_profile=''
+                    bytes=$(wc -c < "$profile")
+                    block_bytes=$(wc -c < "$stage/path-block")
+                    prefix_bytes=$((bytes - block_bytes))
+                    if cmp -s -i "$prefix_bytes":0 -- "$profile" "$stage/path-block" &&
+                       cp --attributes-only --preserve=mode -- "$profile" "$temp_profile" &&
+                       head -c "$prefix_bytes" -- "$profile" > "$temp_profile" &&
+                       [ "$(file_digest "$temp_profile")" = "$prior" ] && mv -- "$temp_profile" "$profile"; then temp_profile=''
                     else rollback_complete=0; fi
                 else rm -- "$profile" || rollback_complete=0; fi
-            elif [ -f "$stage/$name.before" ] && cmp -s -- "$profile" "$stage/$name.before"; then :
+            elif [ -n "$current" ] && [ "$current" = "$prior" ]; then :
             elif [ -e "$profile" ] || [ -L "$profile" ]; then rollback_complete=0; fi
         done
         if [ "$published_fish" -eq 1 ]; then
@@ -133,6 +169,7 @@ cleanup() {
         [ "$rollback_complete" -eq 1 ] || printf 'Rollback incomplete; owned paths and blocks remain recorded: %s\n' "$record" >&2
     fi
     [ -z "$temp_profile" ] || rm -- "$temp_profile"
+    [ -z "$temp_payload" ] || rm -- "$temp_payload"
     if [ -n "$stage" ]; then
         find "$stage" -depth -type f -exec rm -- {} +
         find "$stage" -depth -type d -exec rmdir -- {} \;
@@ -174,14 +211,11 @@ case ":$PATH:" in
 esac
 # <<< StateEngine PATH <<<
 BLOCK
-for name in $profiles; do
-    profile=$HOME/$name
-    if [ -e "$profile" ]; then
-        cp -p -- "$profile" "$stage/$name.before"
-        cp -p -- "$profile" "$stage/$name.after"
-    else : > "$stage/$name.after"; fi
-    cat "$stage/path-block" >> "$stage/$name.after"
-done
+while read -r name prior; do
+    [ -z "$name" ] || printf '%s\n' "$prior" > "$stage/$name.digest"
+done <<DIGESTS
+$profile_digests
+DIGESTS
 if [ -n "$fish_file" ]; then
     cat > "$stage/fish-config" <<'FISH'
 # StateEngine PATH (owned standalone configuration)
@@ -215,7 +249,8 @@ DIRECTORIES
     comma=''
     for name in $profiles; do
         printf '%s\n    {"target": ' "$comma"; json_string "$HOME/$name"; printf ', "before_sha256": '
-        if [ -f "$stage/$name.before" ]; then checksum=$(file_digest "$stage/$name.before"); json_string "$checksum"; else printf null; fi
+        prior=$(cat "$stage/$name.digest")
+        if [ "$prior" != absent ]; then json_string "$prior"; else printf null; fi
         printf ', "block": '; json_block "$stage/path-block"; printf '}'
         comma=','
     done
@@ -228,26 +263,31 @@ sync "$record" "$data"
 mv -T -n -- "$stage/assets" "$assets"
 [ ! -d "$stage/assets" ] || fail 'installation assets appeared during installation'
 published_assets=1
-cp -- "$bundle/se" "$stage/se"
-chmod 755 "$stage/se"
-ln -- "$stage/se" "$bin/se" || fail 'the destination command appeared during installation'
-published_binary=1
+publish_file "$bundle/se" "$bin/se" 755 binary
 if [ -n "$fish_file" ]; then
-    ln -- "$stage/fish-config" "$fish_file" || fail 'fish configuration appeared during installation'
-    published_fish=1
+    publish_file "$stage/fish-config" "$fish_file" 600 fish
 fi
 for name in $profiles; do
     profile=$HOME/$name
-    if [ -f "$stage/$name.before" ]; then
-        if [ -L "$profile" ] || ! cmp -s -- "$profile" "$stage/$name.before"; then
+    prior=$(cat "$stage/$name.digest")
+    if [ "$prior" != absent ]; then
+        if [ -L "$profile" ] || [ ! -f "$profile" ] || [ "$(file_digest "$profile")" != "$prior" ]; then
             fail "login profile changed during installation: $profile"
         fi
     else [ ! -e "$profile" ] && [ ! -L "$profile" ] || fail "login profile appeared during installation: $profile"; fi
     temp_profile=$(mktemp "$HOME/.se-profile-XXXXXXXX")
-    cp -p -- "$stage/$name.after" "$temp_profile"
+    if [ "$prior" != absent ]; then
+        cp --attributes-only --preserve=mode -- "$profile" "$temp_profile"
+        cat -- "$profile" > "$temp_profile"
+        [ "$(file_digest "$temp_profile")" = "$prior" ] || fail "login profile changed while reading: $profile"
+    fi
+    cat "$stage/path-block" >> "$temp_profile"
+    after=$(file_digest "$temp_profile")
+    printf '%s\n' "$after" > "$stage/$name.after-digest"
+    sync "$temp_profile"
     mv -- "$temp_profile" "$profile"
     temp_profile=''
-    cmp -s -- "$profile" "$stage/$name.after" || fail "login profile readback failed: $profile"
+    [ "$(file_digest "$profile")" = "$after" ] || fail "login profile readback failed: $profile"
 done
 for relative in $asset_files; do cmp -s -- "$assets/$relative" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done
 cmp -s -- "$bin/se" "$bundle/se" || fail 'installed binary readback failed'

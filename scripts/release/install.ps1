@@ -247,8 +247,10 @@ try {
             [IO.File]::Delete($record)
         } catch { $rollbackComplete = $false; [Console]::Error.WriteLine("Ownership-record rollback incomplete: $($_.Exception.Message)") }
     }
-    for ($i = $created.Count - 1; $i -ge 0; $i--) {
-        try { [IO.Directory]::Delete($created[$i], $false) } catch { }
+    if (-not $record -or -not (Test-Path -LiteralPath $record)) {
+        for ($i = $created.Count - 1; $i -ge 0; $i--) {
+            try { [IO.Directory]::Delete($created[$i], $false) } catch { }
+        }
     }
     if (-not $rollbackComplete) { [Console]::Error.WriteLine("Ownership record retained for se uninstall: $record") }
     exit 1
