@@ -217,19 +217,38 @@ class LinuxInstaller(unittest.TestCase):
         # Both installers must reach the exclusive claim after preflight. This
         # prevents an up-front exists check from masquerading as a race witness.
         shim = tools / "ln"
-        shim.write_text('#!/bin/sh\nfor destination do :; done\ncase "$destination" in */se) exec /usr/bin/ln "$@";; esac\nprintf "CLAIM-READY\\n"\nIFS= read -r release\nexec /usr/bin/ln "$@"\n')
+        shim.write_text('#!/bin/sh\nfor destination do :; done\ncase "$destination" in */se) exec /usr/bin/ln "$@";; esac\n'
+                        'for source do case "$source" in */install.json) break;; esac; done\n'
+                        'printf "CLAIM-READY:%s\\n" "$source"\nIFS= read -r release\n'
+                        'if /usr/bin/ln "$@"; then printf "CLAIM-WON\\n"; IFS= read -r release; exit 0; else exit 1; fi\n')
         shim.chmod(0o700)
         environment["PATH"] = str(tools) + ":" + environment["PATH"]
         processes = [subprocess.Popen(argv, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
         try:
+            plans = []
             for process in processes:
                 self.assertTrue(select.select([process.stdout], [], [], 10)[0], "installer never reached the atomic claim")
-                self.assertEqual(process.stdout.readline(), b"CLAIM-READY\n")
+                ready = process.stdout.readline().decode().strip()
+                self.assertTrue(ready.startswith("CLAIM-READY:"), ready)
+                plans.append(json.loads(Path(ready.removeprefix("CLAIM-READY:")).read_bytes()))
             self.assertFalse(list(home.rglob("standalone-install.json")), "neither paused installer has claimed the record")
-            for process in processes:
-                process.stdin.write(b"go\n")
-                process.stdin.flush()
-            outputs = [process.communicate(timeout=30) for process in processes]
+            # Make the installer which created the asset parent lose. Its
+            # rollback must not remove a directory the winner still needs.
+            parent = str(home / ".local/share/stateengine")
+            owners = [i for i, plan in enumerate(plans) if parent in plan["created_directories"]]
+            self.assertEqual(len(owners), 1)
+            loser, winner = owners[0], 1 - owners[0]
+            processes[winner].stdin.write(b"claim\n")
+            processes[winner].stdin.flush()
+            self.assertTrue(select.select([processes[winner].stdout], [], [], 10)[0])
+            self.assertEqual(processes[winner].stdout.readline(), b"CLAIM-WON\n")
+            processes[loser].stdin.write(b"claim\n")
+            processes[loser].stdin.flush()
+            outputs = [None, None]
+            outputs[loser] = processes[loser].communicate(timeout=30)
+            processes[winner].stdin.write(b"publish\n")
+            processes[winner].stdin.flush()
+            outputs[winner] = processes[winner].communicate(timeout=30)
         finally:
             for process in processes:
                 if process.stdin and not process.stdin.closed:
