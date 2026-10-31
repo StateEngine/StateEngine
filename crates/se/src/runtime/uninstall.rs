@@ -26,23 +26,30 @@ pub(super) fn execute(
     cx: &Bootstrap,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
 ) -> Result<(UninstallPlan, UninstallEffects)> {
-    // Missing runtime endpoints are deliberately not consulted as an empty-process proof.
-    match route::setup::inspect(&cx.home, clock())? {
-        route::setup::Setup::Absent(_) => (),
+    // Store absence and an initialized, record-free store are distinct native
+    // observations. Endpoint absence never supplies an empty-process proof.
+    let (owner, store_observation) = match route::setup::inspect(&cx.home, clock())? {
+        route::setup::Setup::Absent(_) => (
+            route::owner::observe(&[])?,
+            "runtime store absence measured",
+        ),
         route::setup::Setup::Present(reader) => {
             let files = route::files::Files::open(&cx.home)
                 .map_err(|e| se_core::store_error::store_error(&e))?;
             let inventory = route::owner::inventory(&reader, &files)?;
-            return Err(se_core::scope::unreadable(
-                "uninstall runtime control",
-                &format!(
-                    "the store has {} unresolved process records; the bounded stop and durable session-revocation consumer must complete before removing installation files",
-                    inventory.processes.len()
-                ),
-            ));
+            if inventory.has_process_records {
+                return Err(SeError::new(Detail::StateConflict(details::StateConflict {
+                    subject: "uninstall process inventory".into(),
+                    reason: "recorded agent processes exist, including any exited or released records; this build supports uninstall only before agents have been launched".into(),
+                    next_step: "Preserve the installation and retained data; uninstall with recorded agents requires the supported lifecycle-control build".into(),
+                })));
+            }
+            (
+                route::owner::from_inventory(&inventory)?,
+                "initialized store; protected home-wide process inventory is empty",
+            )
         }
-    }
-    let owner = route::owner::observe(&[])?; // measured store absence above, never endpoint absence.
+    };
     owner.authorize(
         "installation.uninstall",
         owner.os_owner(),
@@ -135,8 +142,8 @@ pub(super) fn execute(
     let parents = plan.recovery_directories()?;
     effects.recovery = scan(plan, &parents);
     // Diagnostics flush before recovery restoration, PATH edits or file removal.
-    let mut diagnosis = String::from(
-        "Uninstall: runtime store absence measured. Agents ended: 0; credentials revoked: 0; events lost: 0. User repositories, retained history/configuration and provider login are preserved.\n",
+    let mut diagnosis = format!(
+        "Uninstall: {store_observation}. Agents ended: 0; credentials revoked: 0; events lost: 0. User repositories, retained history/configuration and provider login are preserved.\n",
     );
     for file in &plan.files {
         diagnosis.push_str(&format!(

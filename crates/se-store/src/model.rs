@@ -59,6 +59,9 @@ pub enum Scope {
 pub struct OwnerGuardInventory {
     pub store: StoreInfo,
     pub owners: Vec<HumanId>,
+    /// Any process row across this home, including exited, historical and released records.
+    /// Read under the same protected snapshot as the unresolved native inventory.
+    pub has_process_records: bool,
     pub processes: Vec<OwnerGuardProcess>,
 }
 #[derive(Clone, Debug)]

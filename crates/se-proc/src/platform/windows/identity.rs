@@ -153,6 +153,15 @@ pub(super) fn observe(
     }))
 }
 
+/// Uses native identity and liveness only; no observation wall-clock sample.
+pub(crate) fn verify_live_identity(expected: &ProcessIdentity) -> ProcResult<()> {
+    let pin = lookup(expected.pid)?.ok_or_else(|| changed(expected, None))?;
+    let found = identity(expected.machine.clone(), expected.pid, &pin)?;
+    if &found != expected || exit_status(&pin)?.is_some() {
+        return Err(changed(expected, Some(&found)));
+    }
+    Ok(())
+}
 pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
     let Some(handle) = lookup(pid)? else {
         return Ok(ProcessRead::Absent {

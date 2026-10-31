@@ -140,6 +140,9 @@ pub fn dispatch(
             &caller.terminal,
         )?;
     }
+    if let AnyOp::RuntimeDown(input) = op {
+        return super::runtime_control::down(&files, input);
+    }
     let identity = LeaseIdentity {
         store: Some(reader.info().map_err(|e| store_error(&e))?.id),
         generation: caller.admission.generation,
@@ -151,6 +154,12 @@ pub fn dispatch(
         identity,
     )
     .map_err(|e| store_error(&e))?;
+    if let AnyOp::RuntimeUp(input) = op {
+        // Activation requires the host's exclusive lease, so the direct shared
+        // lease must be gone before spawning or rendezvousing with it.
+        drop(lease);
+        return super::runtime_control::up(cx, &files, &caller, input);
+    }
     let Some(lease) = lease else {
         let target = scope::require_present(
             endpoint(&files)?,
@@ -201,9 +210,19 @@ pub fn dispatch(
 fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
     match outcome {
         direct::Outcome::Complete(output) => Ok(output),
-        direct::Outcome::Custody(_) => Err(scope::unreadable(
-            "runtime custody",
-            "the requested custody coordinator has not completed; no process or effect is claimed",
-        )),
+        direct::Outcome::Custody(plan) => Err(SeError::new(se_types::Detail::Internal(
+            se_types::details::Internal {
+                report_id: "unrouted-cli-custody".into(),
+                location: match plan {
+                    se_core::ports::CustodyPlan::ClaudeHook(_) => "hook",
+                    se_core::ports::CustodyPlan::Initialize(_) => "init",
+                    se_core::ports::CustodyPlan::ObserveStatus(_) => "status",
+                    se_core::ports::CustodyPlan::RuntimeUp(_) => "runtime.up",
+                    se_core::ports::CustodyPlan::RuntimeDown(_) => "runtime.down",
+                    se_core::ports::CustodyPlan::Uninstall(_) => "uninstall",
+                }
+                .into(),
+            },
+        ))),
     }
 }

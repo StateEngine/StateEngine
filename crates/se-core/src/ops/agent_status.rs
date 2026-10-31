@@ -5,6 +5,78 @@ use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{Actor, EventBody, Snapshot};
 use se_types::{Read, Result, SeError};
 
+/// Saved agents in this finite principal page. Native lifecycle facts remain
+/// explicitly unknown; reading this page never starts or resumes a process.
+pub fn page<R: Snapshot>(
+    budget: se_store::ReadBudget,
+    cx: &mut Cx<'_, R>,
+) -> Result<se_types::Page<AgentRow>> {
+    let principals = cx.read.principals(budget).map_err(|e| store_error(&e))?;
+    let mut fields = principals.window().fields().cloned().ok_or_else(|| {
+        scope::unreadable(
+            "agent status page",
+            "store window accounting is unavailable",
+        )
+    })?;
+    let next = principals.next().cloned();
+    let mut rows = Vec::new();
+    for record in principals.into_items() {
+        let agent = match record.current.body {
+            EventBody::PrincipalRegistered {
+                principal: Actor::Agent(agent),
+                ..
+            }
+            | EventBody::PrincipalRenamed {
+                principal: Actor::Agent(agent),
+                ..
+            } => agent,
+            _ => continue,
+        };
+        if matches!(&cx.admission.actor,Actor::Agent(bound) if bound!=&agent) {
+            continue;
+        }
+        let mut row = scope::require_present(
+            show(
+                AgentShow {
+                    target_agent_id: Some(agent.clone()),
+                },
+                cx,
+            )?
+            .agent,
+            "saved agent page row",
+        )?;
+        row.unread = Some(
+            cx.read
+                .message_count(se_store::MessageQuery {
+                    recipient: Some(Actor::Agent(agent)),
+                    sender: None,
+                    kind: None,
+                    unread_only: true,
+                    full_body: false,
+                })
+                .map_err(|e| store_error(&e))?,
+        );
+        rows.push(row);
+    }
+    fields.returned = rows.len() as u64;
+    fields.bytes = serde_json::to_vec(&rows)
+        .map_err(|e| scope::unreadable("agent status page encoding", &e.to_string()))?
+        .len() as u64;
+    if fields.bytes > u64::from(fields.max_bytes.get()) {
+        return Err(scope::unreadable(
+            "agent status page",
+            "expanded saved rows exceed the finite response byte budget",
+        ));
+    }
+    // Principal omissions cannot be relabelled as an exact count of agents.
+    if next.is_some() {
+        fields.omitted_after = se_types::Omission::Unknown {
+            reason: se_types::OmissionReason::Limit,
+        };
+    }
+    se_types::Page::new(rows, se_types::Window::new(fields)?, next)
+}
+
 pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentStatusOutput> {
     let agent = scope::working_agent(cx.admission, input.target_agent_id.as_ref(), "agent.show")?;
     let principal = cx

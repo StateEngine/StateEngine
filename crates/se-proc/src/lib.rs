@@ -75,3 +75,6 @@ pub use state_files::user_path::{
 
 mod entropy;
 pub use entropy::{NativeEntropyError, random_secret};
+
+mod birth_time;
+pub use birth_time::{ProcessBirthTime, observe_process_birth};

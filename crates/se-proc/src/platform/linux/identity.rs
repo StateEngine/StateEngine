@@ -123,6 +123,45 @@ pub(super) fn valid_pid(pid: ProcessId) -> ProcResult<()> {
     }
     Ok(())
 }
+/// Exact live identity check without sampling the observation wall clock.
+/// Used while the birth-time adapter independently retains a native pidfd.
+pub(crate) fn verify_live_identity(expected: &ProcessIdentity) -> ProcResult<()> {
+    let boot = boot()?;
+    let before = stat(expected.pid)?.ok_or_else(|| changed(expected, None))?;
+    let image = fs::read_link(format!("/proc/{}/exe", expected.pid.0)).map_err(|e| {
+        native(
+            ProcErrorCode::IdentityUnreadable,
+            "read birth-time executable",
+            e,
+        )
+    })?;
+    let after = stat(expected.pid)?.ok_or_else(|| changed(expected, None))?;
+    let final_image = fs::read_link(format!("/proc/{}/exe", expected.pid.0)).map_err(|e| {
+        native(
+            ProcErrorCode::IdentityUnreadable,
+            "recheck birth-time executable",
+            e,
+        )
+    })?;
+    let found = ProcessIdentity {
+        machine: expected.machine.clone(),
+        boot,
+        pid: expected.pid,
+        start: StartIdentity::Linux {
+            start_ticks: before.start,
+        },
+        image,
+    };
+    if before.state == NativeState::ExitedAwaitingReap
+        || after.state == NativeState::ExitedAwaitingReap
+        || before.start != after.start
+        || found.image != final_image
+        || &found != expected
+    {
+        return Err(changed(expected, Some(&found)));
+    }
+    Ok(())
+}
 pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
     let boot = boot()?;
     let Some(before) = stat(pid)? else {

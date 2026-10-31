@@ -18,6 +18,10 @@ mod init;
 mod init_config;
 #[path = "route/owner.rs"]
 pub mod owner;
+#[path = "route/process.rs"]
+mod process;
+#[path = "route/runtime.rs"]
+mod runtime_control;
 #[path = "route/select.rs"]
 mod select;
 #[path = "route/setup.rs"]

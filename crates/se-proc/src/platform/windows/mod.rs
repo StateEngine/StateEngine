@@ -8,8 +8,8 @@ use crate::platform::{Progress, empty};
 use crate::runtime::notify::Hub;
 use crate::support::*;
 use crate::*;
-pub(crate) use identity::read_process;
 use identity::*;
+pub(crate) use identity::{read_process, verify_live_identity};
 use std::{mem::zeroed, ptr, sync::Arc};
 use windows_sys::Win32::{Foundation::*, System::JobObjects::*};
 

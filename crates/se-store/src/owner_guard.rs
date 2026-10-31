@@ -91,6 +91,13 @@ fn inventory(
             "owner-guard metadata exceeds the byte budget; no inventory returned",
         ));
     }
+    let has_process_records = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM processes LIMIT 1)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
     let mut bytes = 1024usize;
     let mut count = 0usize;
     let mut charge = |size: usize| -> StoreResult<()> {
@@ -158,6 +165,7 @@ fn inventory(
     Ok(OwnerGuardInventory {
         store,
         owners,
+        has_process_records,
         processes,
     })
 }
