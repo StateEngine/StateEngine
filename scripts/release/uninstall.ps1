@@ -5,7 +5,9 @@ try {
     if ($env:OS -ne 'Windows_NT') { throw 'this script requires Windows' }
     $root = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'StateEngine'))
     $binary = Join-Path $root 'bin\se.exe'
-    $record = Join-Path $root 'bin\install.json'
+    if ($env:SE_HOME -and -not [IO.Path]::IsPathRooted($env:SE_HOME)) { throw 'SE_HOME must be absolute' }
+    $data = if ($env:SE_HOME) { [IO.Path]::GetFullPath($env:SE_HOME) } else { $root }
+    $record = Join-Path $data 'standalone-install.json'
     foreach ($path in @($binary, $record)) {
         $part = [IO.Path]::GetFullPath($path)
         while ($part) {

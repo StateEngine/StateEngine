@@ -2,8 +2,10 @@
 # The native owner operation prints its plan and owns stop, removal and readback.
 set -eu
 binary=$HOME/.local/bin/se
-record=$HOME/.local/bin/install.json
+data=${SE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/stateengine}
+record=$data/standalone-install.json
 for path in "$binary" "$record"; do
+    case "$path" in /*) ;; *) printf 'Uninstall refused: installation paths must be absolute.\n' >&2; exit 1 ;; esac
     while [ "$path" != / ]; do
         if [ -L "$path" ]; then printf 'Uninstall refused: linked installation path: %s\n' "$path" >&2; exit 1; fi
         path=$(dirname -- "$path")

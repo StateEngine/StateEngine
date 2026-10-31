@@ -9,15 +9,17 @@ $created = New-Object 'System.Collections.Generic.List[string]'
 $record = $null
 $registry = $null
 
-function Assert-PlainPath([string]$Path) {
+function Assert-PlainPath([string]$Path, [switch]$AllowCloudSource) {
     $part = [IO.Path]::GetFullPath($Path)
     while ($part) {
         if ([IO.File]::Exists($part) -or [IO.Directory]::Exists($part)) {
             if (([IO.File]::GetAttributes($part) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "linked path is preserved: $part"
+                Initialize-NativeTypes
+                if (-not $AllowCloudSource -or -not [StateEngineInstall.Native]::IsCloud($part)) {
+                    throw "linked path is preserved: $part"
+                }
             }
         }
-        if (Test-Path -LiteralPath (Join-Path $part '.git')) { throw "installation must be outside a repository: $part" }
         $part = [IO.Path]::GetDirectoryName($part)
     }
 }
@@ -28,28 +30,64 @@ function Get-PlainFiles([string]$Root) {
         $dir = $pending.Pop()
         foreach ($path in [IO.Directory]::EnumerateFileSystemEntries($dir)) {
             $attr = [IO.File]::GetAttributes($path)
-            if (($attr -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "archive contains a link: $path" }
+            if (($attr -band [IO.FileAttributes]::ReparsePoint) -ne 0) { Assert-PlainPath $path -AllowCloudSource }
             if (($attr -band [IO.FileAttributes]::Directory) -ne 0) { $pending.Push($path) }
             else { $path }
         }
     }
 }
 function Get-Digest([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-TextDigest([string]$Text) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { ([BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($Text)))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
 function New-OwnedDirectory([string]$Path) {
     if (-not [IO.Directory]::Exists($Path)) {
         $parent = [IO.Path]::GetDirectoryName($Path)
         if ($parent) { New-OwnedDirectory $parent }
-        [void][IO.Directory]::CreateDirectory($Path)
-        $created.Add($Path)
+        Initialize-NativeTypes
+        if ([StateEngineInstall.Native]::MakeDirectory($Path)) { $created.Add($Path) }
+        Assert-PlainPath $Path
     }
 }
-function Notify-Environment {
-    if (-not ('StateEngineInstall.EnvironmentNotice' -as [type])) {
+function Initialize-NativeTypes {
+    if (-not ('StateEngineInstall.Native' -as [type])) {
         Add-Type @'
 using System;
+using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 namespace StateEngineInstall {
-    public static class EnvironmentNotice {
+    public static class Native {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct AttributeTag { public uint Attributes; public uint Tag; }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(string name, uint access, uint sharing,
+            IntPtr security, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int kind,
+            out AttributeTag info, uint size);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateDirectory(string name, IntPtr security);
+        public static bool MakeDirectory(string path) {
+            if (CreateDirectory(path, IntPtr.Zero)) return true;
+            int error = Marshal.GetLastWin32Error();
+            if (error == 183 && Directory.Exists(path)) return false;
+            throw new Win32Exception(error);
+        }
+        // Cloud placeholders are not name-surrogate links. Only source reads admit them.
+        // https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-point-tags
+        public static bool IsCloud(string path) {
+            using (SafeFileHandle handle = CreateFile(path, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {
+                if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                AttributeTag info;
+                if (!GetFileInformationByHandleEx(handle, 9, out info, 8))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                return (info.Tag & 0xffff0fffu) == 0x9000001au;
+            }
+        }
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr parameter,
             string text, uint flags, uint timeout, out UIntPtr result);
@@ -57,8 +95,11 @@ namespace StateEngineInstall {
 }
 '@
     }
+}
+function Notify-Environment {
+    Initialize-NativeTypes
     $result = [UIntPtr]::Zero
-    [void][StateEngineInstall.EnvironmentNotice]::SendMessageTimeout([IntPtr]0xffff, 0x1a,
+    [void][StateEngineInstall.Native]::SendMessageTimeout([IntPtr]0xffff, 0x1a,
         [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
 }
 try {
@@ -66,7 +107,7 @@ try {
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) { throw 'this archive requires Windows x86_64' }
     if ([Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne 'X64') { throw 'this archive requires native Windows x86_64' }
     $bundle = [IO.Path]::GetFullPath($PSScriptRoot)
-    Assert-PlainPath $bundle
+    Assert-PlainPath $bundle -AllowCloudSource
     $archiveFiles = @(Get-PlainFiles $bundle)
     $listed = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($line in [IO.File]::ReadAllLines((Join-Path $bundle 'SHA256SUMS'))) {
@@ -87,35 +128,41 @@ try {
     $bin = Join-Path $root 'bin'
     $binary = Join-Path $bin 'se.exe'
     $assets = Join-Path $root 'installation'
-    $record = Join-Path $bin 'install.json'
+    if ($env:SE_HOME -and -not [IO.Path]::IsPathRooted($env:SE_HOME)) { throw 'SE_HOME must be absolute' }
+    $data = if ($env:SE_HOME) { [IO.Path]::GetFullPath($env:SE_HOME) } else { $root }
+    $record = Join-Path $data 'standalone-install.json'
     foreach ($path in @($root, $bin, $assets, $record)) { Assert-PlainPath $path }
     foreach ($path in @($binary, $assets, $record)) {
         if (Test-Path -LiteralPath $path) { throw "existing installation path is preserved; run se uninstall before reinstalling: $path" }
     }
     $collision = Get-Command se -ErrorAction SilentlyContinue
     if ($collision) { throw "another se command is already on PATH: $($collision.Source)" }
-    $registry = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
-    $hadPath = $registry.GetValueNames() -contains 'Path'
+    $registry = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+    $hadPath = $null -ne $registry -and $registry.GetValueNames() -contains 'Path'
     $before = if ($hadPath) { $registry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } else { $null }
     $kind = if ($hadPath) { $registry.GetValueKind('Path') } else { [Microsoft.Win32.RegistryValueKind]::ExpandString }
     if ($hadPath -and $kind -notin @([Microsoft.Win32.RegistryValueKind]::String, [Microsoft.Win32.RegistryValueKind]::ExpandString)) { throw 'the user PATH has an unsupported registry type' }
     $alreadyPresent = @(([string]$before).Split(';') | Where-Object { $_.TrimEnd('\') -ieq $bin.TrimEnd('\') }).Count -gt 0
     $after = if ($alreadyPresent) { [string]$before } elseif ([string]::IsNullOrEmpty($before)) { $bin } else { [string]$before + ';' + $bin }
-    $files = @(@{path = 'bin/se.exe'; sha256 = Get-Digest (Join-Path $bundle 'se.exe')})
+    $files = @(@{path = $binary; sha256 = Get-Digest (Join-Path $bundle 'se.exe')})
     $copies = @(@{from = (Join-Path $bundle 'se.exe'); to = $binary})
     foreach ($path in $archiveFiles) {
         $relative = $path.Substring($bundle.Length + 1).Replace('\', '/')
         if ($relative -in @('manifest.json', 'build.json', 'NOTICE.txt', 'uninstall.ps1') -or $relative.StartsWith('notices/')) {
             $destination = Join-Path $assets $relative
             $copies += @{from = $path; to = $destination}
-            $files += @{path = ('installation/' + $relative); sha256 = Get-Digest $path}
+            $files += @{path = $destination; sha256 = Get-Digest $path}
         }
     }
     $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $edits = if ($alreadyPresent) { @() } else { @(@{target = 'HKCU\Environment\Path'; before = $before; after = $after}) }
-    $owned = [ordered]@{schema = 'stateengine-install/v1'; install_root = $root; owner = $owner;
-        files = $files; path_edits = @($edits)}
+    $priorDigest = if ($hadPath) { Get-TextDigest ([string]$before) } else { $null }
+    $edits = if ($alreadyPresent) { @() } else { @(@{target = 'HKCU\Environment\Path'; before_sha256 = $priorDigest; block = $bin}) }
+    # All checks above are read-only. Record only directories this install creates.
     New-OwnedDirectory $bin
+    New-OwnedDirectory $data
+    foreach ($copy in $copies) { New-OwnedDirectory ([IO.Path]::GetDirectoryName($copy.to)) }
+    $owned = [ordered]@{schema = 'stateengine-install/v1'; owner = $owner;
+        files = $files; created_directories = $created.ToArray(); path_edits = @($edits)}
     # Claim the record with create-new before copying files or changing PATH.
     $stream = [IO.File]::Open($record, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     $claimed = $true
@@ -138,11 +185,12 @@ try {
     } finally { $stream.Dispose() }
     foreach ($copy in $copies) {
         Assert-PlainPath $copy.to
-        New-OwnedDirectory ([IO.Path]::GetDirectoryName($copy.to))
         [IO.File]::Copy($copy.from, $copy.to, $false)
         $written.Add($copy.to)
         if ((Get-Digest $copy.to) -ne (Get-Digest $copy.from)) { throw "installed file readback failed: $($copy.to)" }
     }
+    if ($null -ne $registry) { $registry.Dispose() }
+    $registry = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
     $now = $registry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
     if ($now -cne $before) { throw 'the user PATH changed during installation' }
     if (-not $alreadyPresent) {
@@ -167,8 +215,7 @@ try {
     foreach ($path in $written) {
         try {
             Assert-PlainPath $path
-            $relative = $path.Substring($root.Length + 1).Replace('\', '/')
-            $entry = $files | Where-Object { $_.path -ceq $relative }
+            $entry = $files | Where-Object { $_.path -ceq $path }
             if ((Get-Digest $path) -ne $entry.sha256) { throw 'installed file was edited' }
             [IO.File]::Delete($path)
         } catch { $rollbackComplete = $false; [Console]::Error.WriteLine("Rollback preserves ${path}: $($_.Exception.Message)") }
