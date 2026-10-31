@@ -1,0 +1,146 @@
+#![allow(
+    dead_code,
+    reason = "Shared fixtures serve codecs and native transport test binaries."
+)]
+use se_host::*;
+#[cfg(unix)]
+use se_types::NativePath;
+use se_types::{
+    API_VERSION, BootId, ErrorEnvelope, Generation, HostEpoch, HostGeneration, IdempotencyKey,
+    MachineId, ProcessFields, ProcessInstance, RenderCx, SeError, Secret, Sha256,
+};
+use std::{
+    error::Error,
+    fs,
+    num::NonZeroU32,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+pub type Check = Result<(), Box<dyn Error>>;
+static NEXT: AtomicU64 = AtomicU64::new(1);
+static FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub struct Home(
+    pub PathBuf,
+    #[allow(
+        dead_code,
+        reason = "Avoids concurrent native image hashing in bounded handshake fixtures."
+    )]
+    std::sync::MutexGuard<'static, ()>,
+);
+impl Home {
+    pub fn new() -> Result<Self, Box<dyn Error>> {
+        let guard = FIXTURES.lock().unwrap_or_else(|e| e.into_inner());
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let path = std::env::temp_dir().join(format!("oi-{}-{nonce}-{n}", std::process::id()));
+        drop(se_proc::NativeStateFiles::create(&path)?);
+        Ok(Self(path, guard))
+    }
+    pub fn record(&self) -> Result<EndpointRecord, Box<dyn Error>> {
+        let observed = se_proc::native_ipc::observe_ipc_self()?;
+        #[cfg(unix)]
+        let address = IpcEndpoint::UnixSocket(NativePath::from_local(self.0.join("ipc"))?);
+        #[cfg(windows)]
+        let address = IpcEndpoint::WindowsPipe(format!(
+            r"\\.\pipe\otto-ipc-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let epoch = HostEpoch {
+            owner: ProcessInstance::from_observation(ProcessFields {
+                machine: MachineId::new("ipc-review-host")?,
+                boot: BootId::new("native-start-observation")?,
+                pid: NonZeroU32::new(observed.pid()).ok_or("PID zero")?,
+                started: observed.started().clone(),
+                executable: observed.image().clone(),
+                argv_sha256: Sha256::from_bytes([0; 32]),
+            })?,
+            generation: HostGeneration::new(7)?,
+        };
+        Ok(EndpointRecord {
+            schema: 1,
+            address,
+            epoch,
+            generation: Generation::new(11)?,
+            kind: HostKind::Standalone,
+            listener_port: None,
+            api: API_VERSION,
+            package_version: "0.0.1".into(),
+            image_sha256: observed.image_sha256(),
+        })
+    }
+}
+impl Drop for Home {
+    fn drop(&mut self) {
+        if let Err(e) = fs::remove_dir_all(&self.0) {
+            eprintln!("fixture cleanup {}: {e}", self.0.display());
+        }
+    }
+}
+pub fn options(timeout: Duration) -> client::ClientOptions {
+    client::ClientOptions {
+        expected_generation: None,
+        timeout,
+        cancelled: Arc::new(AtomicBool::new(false)),
+    }
+}
+pub fn bound(timeout: Duration) -> se_proc::native_ipc::IpcIoBound {
+    se_proc::native_ipc::IpcIoBound {
+        deadline: Instant::now() + timeout,
+        cancelled: Arc::new(AtomicBool::new(false)),
+    }
+}
+pub fn call() -> Result<IpcEnvelope, Box<dyn Error>> {
+    Ok(IpcEnvelope {
+        version: API_VERSION,
+        request_id: 9,
+        generation: Generation::new(11)?,
+        authority: None,
+        cli_selections: None,
+        request: IpcRequest::Operation(RawOperation {
+            name: "working-state.set".into(),
+            arguments: serde_json::json!({"text":"a visible effect"}),
+            key: Some(IdempotencyKey::new("opaque/key:9-vs-transport-9")?),
+        }),
+    })
+}
+pub fn response() -> Result<IpcResponse, Box<dyn Error>> {
+    Ok(IpcResponse {
+        version: API_VERSION,
+        request_id: 9,
+        generation: Generation::new(11)?,
+        result: IpcResult::Output(Box::new(OperationOutput {
+            schema: "se.test/v1".into(),
+            value: serde_json::json!({"through":"opaque-position"}),
+            window: None,
+        })),
+    })
+}
+pub fn payload(frame: &client::wire::WireBytes) -> Result<Vec<u8>, Box<dyn Error>> {
+    Ok(client::wire::read_payload(
+        &mut std::io::Cursor::new(frame.as_bytes()),
+        client::wire::MAX_FRAME_BYTES,
+    )?
+    .as_bytes()
+    .to_vec())
+}
+pub fn refusal() -> Result<ErrorEnvelope, Box<dyn Error>> {
+    Ok(ErrorEnvelope::new(
+        SeError::invalid("review admission", "a joined runtime authorization").body,
+        &RenderCx {
+            project: None,
+            agent: None,
+            commands: None,
+        },
+    )?)
+}
+pub fn secret(byte: u8) -> Result<Secret, Box<dyn Error>> {
+    Ok(Secret::new(vec![byte; 32])?)
+}
+pub fn nonzero(value: u32) -> Result<NonZeroU32, Box<dyn Error>> {
+    NonZeroU32::new(value).ok_or_else(|| "zero bound".into())
+}
