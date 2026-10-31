@@ -528,6 +528,62 @@ frames/bytes, observed SQLite syscall writes and DB/WAL size separately.
 Trace only the separate single-message diagnostics, never the latency cases;
 retain setup/shutdown writes and distinguish OS writes from physical device I/O.
 
+The coordinated W2 component rerun completed **16/16 behavior witnesses** on
+2026-10-31: twelve untraced mixed cases and four separate traced single-message
+cases. Every case started at load1 ≤10 (7.76–9.47). Each mixed case retained
+4,944 operations and 56 policy-FULL decisions, original order/payload, the same
+native binary and builtin 256-page checkpoint policy. Exact table contents, counts,
+integrity/FKs and FULL promotion decisions passed outside readback. Independent
+recalculation confirmed each NORMAL/FULL and per-kind p95/p99/max; no cohorts
+are pooled. ACK milliseconds below are **p95 / p99 / max**; promotion counts
+are NORMAL requests executed in a mixed FULL group.
+
+| Page | list_versions | Clients | NORMAL ACK ms | FULL ACK ms | Promoted |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 4 KiB | yes | 1 | 12.469/15.806/33.214 | 13.901/14.405/14.405 | 0 |
+| 4 KiB | no | 1 | 11.500/13.197/23.431 | 11.104/13.546/13.546 | 0 |
+| 16 KiB | yes | 1 | 50.140/59.294/69.213 | 44.032/51.319/51.319 | 0 |
+| 16 KiB | no | 1 | 28.231/53.443/77.251 | 34.412/53.092/53.092 | 0 |
+| 4 KiB | yes | 8 | 54.858/60.521/72.141 | 70.101/72.140/72.140 | 119 |
+| 4 KiB | no | 8 | 33.696/38.727/51.796 | 41.960/43.032/43.032 | 117 |
+| 16 KiB | yes | 8 | 65.920/70.913/75.950 | 72.287/76.471/76.471 | 151 |
+| 16 KiB | no | 8 | 38.488/46.119/67.324 | 55.634/55.650/55.650 | 124 |
+| 4 KiB | yes | 20 | 50.116/55.419/63.538 | 55.767/55.769/55.769 | 277 |
+| 4 KiB | no | 20 | 45.104/52.751/62.451 | 52.737/54.094/54.094 | 238 |
+| 16 KiB | yes | 20 | 62.941/77.242/90.778 | 66.947/79.710/79.710 | 287 |
+| 16 KiB | no | 20 | 64.279/73.745/91.704 | 83.543/91.690/91.690 | 247 |
+
+A seeded `msg send` contains 1,161 prepared input bytes and adds 262 payload
+content bytes. It writes one statement each to operations, events,
+operation_events, aux_data, identities, legacy_ids, payloads, message_data,
+messages, marks, resume_heads and, when retained, list_versions. Exact affected
+index definitions and row deltas are in the audit; these are logical SQL/index
+touches, not a claim that every index rewrites one physical page. External
+single-transaction WAL extent and whole-run OS write bytes:
+
+| Page | list_versions | WAL frames | WAL bytes including header | OS write bytes including setup/shutdown |
+| --- | --- | ---: | ---: | ---: |
+| 4 KiB | yes | 39 | 160,712 | 329,180 |
+| 4 KiB | no | 32 | 131,872 | 271,668 |
+| 16 KiB | yes | 34 | 557,904 | 1,148,260 |
+| 16 KiB | no | 27 | 443,048 | 918,716 |
+
+Each trace observes six sync calls, including setup journal and clean shutdown;
+main-DB checkpoint/setup writes remain separate from WAL in the raw audit.
+These are syscall bytes, never device/NAND writes. Fixed 256 pages still
+confounds page size with 1 MiB/4 MiB checkpoint cadence. Removing list_versions
+also loses historical mail windows; no compatibility or product-policy change
+is inferred. The archived harness has 43 tables (42 without list_versions),
+not the final R4 DDL. The 16 KiB/256-page baseline and hosted B9 decision remain
+unchanged; in particular the component results do not invoke the eight-agent
+fallback or qualify CLI/IPC/auth/launch barriers.
+
+The first attempt is retained: all sixteen cases failed before samples because
+the immutable inputs were read-only and native fs::copy preserved that mode;
+a separate SQLite open reproduced SQLITE_READONLY. The corrected runner stages
+private writable, byte-identical baseline copies before measured work, retaining
+all input hashes and the original native binary. No successful timing was rerun.
+
 Launch qualification uses the actual causal sequence: C1 FULL, C2, C3 FULL,
 and RootCheckpoint before exec on the four-commit Unix paths. Wave 1 Linux uses
 that four-commit uncontained path. The ≤ 50 ms non-scope launch target includes
@@ -542,8 +598,12 @@ Raw writer data remains under `/mnt/nvme/stateengine/nell-import-rehearsal-20261
 and `nell-e3-write-latency-20261030/`; independent analysis is
 `5p-e3-write-decomposition-20261030/NATIVE-REPORT.txt` under the same root.
 The selected-transport quiet receipt is
-`5p-e7-containment-20261030/SCOPE-DIRECT-QUIET-RESULT.txt` there. W2 results
-remain pending the coordinated quiet window and will be recorded separately.
+`5p-e7-containment-20261030/SCOPE-DIRECT-QUIET-RESULT.txt` there. W2 artifacts are
+`5p-r4-w2-20261031/quiet-run-2/{binding.json,summary.json,INDEPENDENT-AUDIT.txt}`;
+raw samples, traces, per-case witnesses and load admission are alongside them.
+The unchanged native binary SHA-256 is `1c270fef4969f7ca9ede674f5050d3c044d7735bdd8e40d9db718d3e53b24b77`;
+summary SHA-256 is `d57b5900cca15670b5b0d7d5e26e5fe0c33925bd87b5dab6a4fff48ada16f775`.
+The failed setup attempt is retained separately in `quiet-run-1`.
 
 ### 3.7 Idle wakeups (B6)
 | Source | No session | One session |
