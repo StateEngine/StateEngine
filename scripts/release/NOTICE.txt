@@ -1,0 +1,7 @@
+StateEngine
+
+License identifier: LicenseRef-StateEngine-Proprietary
+StateEngine is proprietary software. This archive does not grant an open-source license.
+
+Third-party notices and license texts are included in notices/.
+This development distribution is unsigned.
