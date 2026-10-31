@@ -265,12 +265,10 @@ pub fn from_matches_with_key(
             "read-only calls do not accept a mutation key",
         ));
     }
-    if meta.name == "hook.claude"
-        && (common.key.is_some() || common.project.is_some() || common.json)
-    {
+    if meta.name == "hook.claude" && (common.key.is_some() || common.project.is_some()) {
         return Err(SeError::invalid(
             "hook flags",
-            "provider protocol output, bound session project and the existing natural capture identity; no --json, --project or --key",
+            "bound session project and the existing natural capture identity; no --project or --key; --json selects the explicit receipt",
         ));
     }
     if meta.name == "meta.version"
