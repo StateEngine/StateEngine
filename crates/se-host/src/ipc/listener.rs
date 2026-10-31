@@ -131,6 +131,7 @@ impl IpcListener {
                 SeError::invalid("IPC native admission", "an open bounded blocking pool")
             })?;
         let observed = Arc::clone(&stream);
+        let native_bound = deadline.native_bound();
         let proof = bounded(
             &deadline,
             self.runtime.spawn_blocking(move || {
@@ -145,7 +146,7 @@ impl IpcListener {
                     use std::os::windows::io::AsHandle;
                     observed.as_handle()
                 };
-                NativeIpcPlatform.peer(channel)
+                NativeIpcPlatform.peer_bounded(channel, &native_bound)
             }),
         )
         .await?

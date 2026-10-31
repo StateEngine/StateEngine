@@ -179,50 +179,99 @@ pub enum IpcPeerSide {
     Client,
     Server,
 }
+/// Compatibility entry: finite five-second proof budget. Handshakes use the
+/// bounded entry below so native work retains their original absolute clock.
 pub fn observe_ipc_peer(
     channel: BorrowedIpc<'_>,
     side: IpcPeerSide,
 ) -> IpcNativeResult<NativeIpcPeer> {
+    observe_ipc_peer_bounded(channel, side, &proof_bound())
+}
+pub fn observe_ipc_peer_bounded(
+    channel: BorrowedIpc<'_>,
+    side: IpcPeerSide,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<NativeIpcPeer> {
+    bound
+        .remaining()
+        .map_err(|e| error("begin native peer proof", e))?;
     #[cfg(unix)]
     {
         let _ = side;
-        unix::peer(channel)
+        unix::peer(channel, bound)
     }
     #[cfg(windows)]
     {
-        windows::peer(channel, side)
+        windows::peer(channel, side, bound)
     }
 }
 pub fn observe_ipc_self() -> IpcNativeResult<NativeIpcPeer> {
+    observe_ipc_self_bounded(&proof_bound())
+}
+pub fn observe_ipc_self_bounded(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
+    bound
+        .remaining()
+        .map_err(|e| error("begin native self proof", e))?;
     #[cfg(unix)]
     {
-        unix::self_peer()
+        unix::self_peer(bound)
     }
     #[cfg(windows)]
     {
-        windows::self_peer()
+        windows::self_peer(bound)
     }
 }
-fn hash_image(mut file: std::fs::File) -> IpcNativeResult<Sha256> {
+fn proof_bound() -> IpcIoBound {
+    IpcIoBound {
+        deadline: Instant::now() + std::time::Duration::from_secs(5),
+        cancelled: Arc::new(AtomicBool::new(false)),
+    }
+}
+/// Executables larger than this refuse before any content read. The streaming
+/// counter also rejects growth beyond the cap during an observation.
+const MAX_IMAGE_BYTES: u64 = 512 * 1024 * 1024;
+
+fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNativeResult<Sha256> {
     use std::io::Read;
     let before = file
         .metadata()
         .map_err(|e| error("read pinned image metadata", e))?;
+    if !before.is_file() || before.len() > MAX_IMAGE_BYTES {
+        return Err(refuse(
+            IpcNativeErrorCode::Unreadable,
+            "peer executable exceeds the 512 MiB regular-file proof bound",
+        ));
+    }
+    let mut read = 0u64;
     let mut hasher = Hasher::new();
     let mut buffer = [0; 64 * 1024];
     loop {
+        bound
+            .remaining()
+            .map_err(|e| error("peer executable proof deadline", e))?;
         let count = file
             .read(&mut buffer)
             .map_err(|e| error("read pinned peer executable", e))?;
         if count == 0 {
             break;
         }
+        read += count as u64;
+        if read > MAX_IMAGE_BYTES {
+            return Err(refuse(
+                IpcNativeErrorCode::PeerChanged,
+                "peer executable grew beyond proof byte cap",
+            ));
+        }
         hasher.update(&buffer[..count]);
     }
+    bound
+        .remaining()
+        .map_err(|e| error("finish peer executable proof", e))?;
     let after = file
         .metadata()
         .map_err(|e| error("reobserve pinned image metadata", e))?;
-    if !before.is_file()
+    if read != before.len()
+        || !before.is_file()
         || before.len() != after.len()
         || before
             .modified()

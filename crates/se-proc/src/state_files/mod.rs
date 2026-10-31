@@ -208,3 +208,10 @@ impl NativeStateFiles {
         self.directory.check_name(&self.root)
     }
 }
+
+/// Shared owned-root traversal for native IPC: trusted system ancestors may
+/// resolve links; the owned directory itself remains no-follow and owner-only.
+#[cfg(unix)]
+pub(crate) fn pin_owned_directory(path: &Path) -> Result<File> {
+    os::pin_directory(path)
+}

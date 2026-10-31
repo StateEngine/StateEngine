@@ -112,7 +112,7 @@ impl NativePipeEndpoint {
         let next = create(&self.name, false)?;
         let handle = std::mem::replace(&mut self.pending, next);
         let stream = NativePipeStream { handle, bound };
-        peer(stream.channel(), IpcPeerSide::Client)?;
+        peer(stream.channel(), IpcPeerSide::Client, &stream.bound)?;
         Ok(stream)
     }
 }
@@ -294,7 +294,11 @@ impl Write for NativePipeStream {
         Ok(())
     }
 }
-pub(super) fn peer(channel: BorrowedIpc<'_>, side: IpcPeerSide) -> IpcNativeResult<NativeIpcPeer> {
+pub(super) fn peer(
+    channel: BorrowedIpc<'_>,
+    side: IpcPeerSide,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<NativeIpcPeer> {
     let mut pid = 0;
     let ok = match side {
         IpcPeerSide::Client => unsafe {
@@ -307,12 +311,12 @@ pub(super) fn peer(channel: BorrowedIpc<'_>, side: IpcPeerSide) -> IpcNativeResu
     if ok == 0 {
         return Err(last("read native pipe peer process ID"));
     }
-    observe(pid)
+    observe(pid, bound)
 }
-pub(super) fn self_peer() -> IpcNativeResult<NativeIpcPeer> {
-    observe(std::process::id())
+pub(super) fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
+    observe(std::process::id(), bound)
 }
-fn observe(pid: u32) -> IpcNativeResult<NativeIpcPeer> {
+fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     // SAFETY: query-only process pin, no inherited handle or native mutation.
     let process = owned(
         unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) },
@@ -362,8 +366,10 @@ fn observe(pid: u32) -> IpcNativeResult<NativeIpcPeer> {
     }
     image.truncate(length as usize);
     let image = PathBuf::from(std::ffi::OsString::from_wide(&image));
-    let image_sha256 =
-        hash_image(File::open(&image).map_err(|e| error("pin IPC peer executable", e))?)?;
+    let image_sha256 = hash_image(
+        File::open(&image).map_err(|e| error("pin IPC peer executable", e))?,
+        bound,
+    )?;
     // SAFETY: the query/synchronize process handle is retained above. Native
     // signalled state distinguishes exit code 259 from a live process.
     match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {

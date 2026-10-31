@@ -59,7 +59,7 @@ fn start(pid: u32) -> IpcNativeResult<u64> {
             )
         })
 }
-pub(super) fn observe(pid: u32, uid: u32) -> IpcNativeResult<NativeIpcPeer> {
+pub(super) fn observe(pid: u32, uid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     if pid == 0 || pid > i32::MAX as u32 {
         return Err(refuse(
             IpcNativeErrorCode::Unreadable,
@@ -79,8 +79,10 @@ pub(super) fn observe(pid: u32, uid: u32) -> IpcNativeResult<NativeIpcPeer> {
     let image = fs::read_link(&executable).map_err(|e| error("read peer executable path", e))?;
     // Opening /proc/PID/exe pins the actual executable, not a later file which
     // happens to occupy the same display path.
-    let image_sha256 =
-        hash_image(File::open(&executable).map_err(|e| error("pin peer executable", e))?)?;
+    let image_sha256 = hash_image(
+        File::open(&executable).map_err(|e| error("pin peer executable", e))?,
+        bound,
+    )?;
     if start(pid)? != before
         || fs::read_link(&executable).map_err(|e| error("reobserve peer executable", e))? != image
         || fs::metadata(&path)

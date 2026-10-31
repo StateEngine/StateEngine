@@ -84,7 +84,7 @@ fn image_path(pid: u32) -> IpcNativeResult<std::path::PathBuf> {
     bytes.truncate(end);
     Ok(OsString::from_vec(bytes).into())
 }
-pub(super) fn observe(pid: u32, uid: u32) -> IpcNativeResult<NativeIpcPeer> {
+pub(super) fn observe(pid: u32, uid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     if pid == 0 || pid > i32::MAX as u32 {
         return Err(refuse(
             IpcNativeErrorCode::Unreadable,
@@ -93,8 +93,10 @@ pub(super) fn observe(pid: u32, uid: u32) -> IpcNativeResult<NativeIpcPeer> {
     }
     let before = process(pid)?;
     let image = image_path(pid)?;
-    let image_sha256 =
-        hash_image(File::open(&image).map_err(|e| error("pin peer executable", e))?)?;
+    let image_sha256 = hash_image(
+        File::open(&image).map_err(|e| error("pin peer executable", e))?,
+        bound,
+    )?;
     let after = process(pid)?;
     if before.pbi_uid != uid
         || after.pbi_uid != uid

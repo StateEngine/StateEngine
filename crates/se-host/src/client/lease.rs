@@ -114,7 +114,6 @@ pub(crate) fn native_error(cause: se_proc::native_ipc::IpcNativeError) -> SeErro
     SeError::new(detail).with_cause(cause)
 }
 fn native_connect(endpoint: &crate::EndpointRecord, deadline: &Deadline) -> Result<NativeStream> {
-    use crate::IpcPlatform;
     deadline.remaining()?;
     #[cfg(unix)]
     let stream = match &endpoint.address {
@@ -132,7 +131,11 @@ fn native_connect(endpoint: &crate::EndpointRecord, deadline: &Deadline) -> Resu
         }
         _ => return Err(SeError::invalid("IPC endpoint", "a local Windows pipe")),
     };
-    crate::NativeIpcPlatform.verify_server(stream.channel(), endpoint)?;
+    crate::NativeIpcPlatform.verify_server_bounded(
+        stream.channel(),
+        endpoint,
+        &deadline.native_bound(),
+    )?;
     deadline.remaining()?;
     Ok(stream)
 }
@@ -164,7 +167,8 @@ impl crate::client::BlockingIpcClient {
         }
         let authority = match credential {
             ClientCredential::Machine(key) => {
-                let peer = se_proc::native_ipc::observe_ipc_self().map_err(native_error)?;
+                let peer = se_proc::native_ipc::observe_ipc_self_bounded(&deadline.native_bound())
+                    .map_err(native_error)?;
                 let nonce = auth::fresh_nonce()?;
                 let mac = auth::create_owner_mac(
                     &key,
@@ -218,7 +222,8 @@ impl crate::client::BlockingIpcClient {
         let mut stream = native_connect(endpoint, &hello)?;
         let bytes = wire::read_payload(&mut stream, wire::MAX_ENDPOINT_BYTES)?;
         let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
-        let peer = se_proc::native_ipc::observe_ipc_self().map_err(native_error)?;
+        let peer = se_proc::native_ipc::observe_ipc_self_bounded(&hello.native_bound())
+            .map_err(native_error)?;
         let nonce = auth::fresh_nonce()?;
         let mac = auth::create_owner_mac(
             machine_key,

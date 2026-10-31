@@ -4,76 +4,36 @@ use super::linux as process;
 use super::macos as process;
 use super::*;
 use std::{
-    ffi::CString,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{Read, Write},
     mem::{size_of, zeroed},
     os::{
-        fd::{AsFd, AsRawFd, FromRawFd},
+        fd::{AsFd, FromRawFd},
         unix::{
             ffi::OsStrExt,
-            fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
+            fs::{FileTypeExt, MetadataExt, PermissionsExt},
             net::{UnixListener, UnixStream},
         },
     },
-    path::{Component, PathBuf},
+    path::PathBuf,
     time::Duration,
 };
 
 fn private_directory(path: &Path) -> IpcNativeResult<File> {
-    if !path.is_absolute() {
-        return Err(refuse(
-            IpcNativeErrorCode::UnsafeEndpoint,
-            "absolute IPC directory required",
-        ));
-    }
-    let mut name = PathBuf::from("/");
-    let mut pin = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
-        .open(&name)
-        .map_err(|e| error("open IPC filesystem root", e))?;
-    for component in path.components() {
-        match component {
-            Component::RootDir => continue,
-            Component::Normal(part) => name.push(part),
-            _ => {
-                return Err(refuse(
-                    IpcNativeErrorCode::UnsafeEndpoint,
-                    "normalized IPC directory required",
-                ));
-            }
-        }
-        // O_NOFOLLOW applies to each independently pinned component. No
-        // permissions on existing ancestors are changed by IPC publication.
-        let part = CString::new(component.as_os_str().as_bytes())
-            .map_err(|_| refuse(IpcNativeErrorCode::UnsafeEndpoint, "NUL in IPC directory"))?;
-        // SAFETY: one normalized component, live pinned parent, close-on-exec
-        // result, and no path component may be followed as a symlink.
-        let raw = unsafe {
-            libc::openat(
-                pin.as_raw_fd(),
-                part.as_ptr(),
-                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
-            )
-        };
-        if raw < 0 {
-            return Err(last("open IPC directory without links"));
-        }
-        pin = unsafe { File::from_raw_fd(raw) };
-    }
+    let pin = crate::state_files::pin_owned_directory(path)
+        .map_err(|e| error("pin protected IPC directory", io::Error::other(e)))?;
     let meta = pin
         .metadata()
-        .map_err(|e| error("read IPC directory owner", e))?;
-    // SAFETY: geteuid reads this process's effective native credential.
-    if meta.uid() != unsafe { libc::geteuid() } || meta.mode() & 0o777 != 0o700 {
+        .map_err(|e| error("read IPC directory mode", e))?;
+    if meta.mode() & 0o777 != 0o700 {
         return Err(refuse(
             IpcNativeErrorCode::UnsafeEndpoint,
-            "IPC directory must be current-owner mode 0700",
+            "IPC directory must be mode 0700",
         ));
     }
     Ok(pin)
 }
+
 fn stamp(file: &File) -> IpcNativeResult<(u64, u64)> {
     let m = file
         .metadata()
@@ -151,7 +111,7 @@ impl NativeUnixEndpoint {
                     stream
                         .set_nonblocking(false)
                         .map_err(|e| error("configure accepted IPC stream", e))?;
-                    peer(stream.as_fd())?;
+                    peer(stream.as_fd(), &bound)?;
                     return Ok(NativeUnixStream { stream, bound });
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -355,7 +315,7 @@ impl Write for NativeUnixStream {
         self.stream.flush()
     }
 }
-pub(super) fn peer(channel: BorrowedIpc<'_>) -> IpcNativeResult<NativeIpcPeer> {
+pub(super) fn peer(channel: BorrowedIpc<'_>, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     let (uid, pid) = process::credentials(channel)?;
     if uid != unsafe { libc::geteuid() } {
         return Err(refuse(
@@ -363,8 +323,8 @@ pub(super) fn peer(channel: BorrowedIpc<'_>) -> IpcNativeResult<NativeIpcPeer> {
             "IPC peer is a different native user",
         ));
     }
-    process::observe(pid, uid)
+    process::observe(pid, uid, bound)
 }
-pub(super) fn self_peer() -> IpcNativeResult<NativeIpcPeer> {
-    process::observe(std::process::id(), unsafe { libc::geteuid() })
+pub(super) fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
+    process::observe(std::process::id(), unsafe { libc::geteuid() }, bound)
 }

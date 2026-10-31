@@ -158,6 +158,12 @@ fn walk(path: &Path, create: bool) -> Result<File> {
     Ok(parent)
 }
 
+pub(super) fn pin_directory(path: &Path) -> Result<File> {
+    let file = walk(path, false)?;
+    metadata(&file, path, true)?;
+    Ok(file)
+}
+
 pub(super) fn random(path: &Path) -> Result<[u8; 16]> {
     let mut bytes = [0; 16];
     File::open("/dev/urandom")

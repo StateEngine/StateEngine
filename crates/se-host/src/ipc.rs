@@ -32,6 +32,38 @@ impl PeerProof {
     }
 }
 pub struct NativeIpcPlatform;
+impl NativeIpcPlatform {
+    pub fn peer_bounded(
+        &self,
+        channel: BorrowedChannel<'_>,
+        bound: &se_proc::native_ipc::IpcIoBound,
+    ) -> se_types::Result<PeerProof> {
+        se_proc::native_ipc::observe_ipc_peer_bounded(
+            channel,
+            se_proc::native_ipc::IpcPeerSide::Client,
+            bound,
+        )
+        .map(|native| PeerProof { native })
+        .map_err(crate::client::lease::native_error)
+    }
+    pub fn verify_server_bounded(
+        &self,
+        channel: BorrowedChannel<'_>,
+        endpoint: &EndpointRecord,
+        bound: &se_proc::native_ipc::IpcIoBound,
+    ) -> se_types::Result<PeerProof> {
+        let native = se_proc::native_ipc::observe_ipc_peer_bounded(
+            channel,
+            se_proc::native_ipc::IpcPeerSide::Server,
+            bound,
+        )
+        .map_err(crate::client::lease::native_error)?;
+        native
+            .verify_instance(&endpoint.epoch.owner, endpoint.image_sha256)
+            .map_err(crate::client::lease::native_error)?;
+        Ok(PeerProof { native })
+    }
+}
 impl IpcPlatform for NativeIpcPlatform {
     fn peer(&self, channel: BorrowedChannel<'_>) -> se_types::Result<PeerProof> {
         se_proc::native_ipc::observe_ipc_peer(channel, se_proc::native_ipc::IpcPeerSide::Client)
