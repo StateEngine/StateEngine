@@ -487,3 +487,7 @@ fn capacity_error(reason: &str) -> SeError {
         next_step: "Close an existing connection or wait for a bounded handshake to expire, then retry the original request key.".into(),
     }))
 }
+
+#[cfg(test)]
+#[path = "listener/capacity_tests.rs"]
+mod capacity_tests;
