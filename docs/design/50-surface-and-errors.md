@@ -895,8 +895,8 @@ Exact field paths for the families the journey runner judges. `$` is the payload
 | Cmd | two sibling keys | `command`: string, the full line quoted for the current platform's shell. `argv`: string[], the exact tokens, starting with `"se"`. A judge runs `argv` verbatim. Wherever a row below says "+ Cmd", both keys sit in that object. When there is no command, both are null. |
 | `Read<T>` | `{"state":"present","value":T}` \| `{"state":"absent","checked":string}` \| `{"state":"unreadable","source":string,"reason":string}` \| `{"state":"unknown","what":string}` | `checked` names what was consulted to establish the absence. |
 | `Window` | `{"from":Cursor\|null,"to":Cursor\|null,"limit":int,"complete":bool,"omitted":{"count":int\|null,"reason":string\|null}}` | `complete: true` implies `omitted.count == 0` and `omitted.reason == null`. `count: null` means the number left out is unknown. `reason` is one of `limit`, `budget`, `unreadable`, `source-incomplete`. |
-| List consistency | family metadata | Every non-mail list result includes `consistency: "live-keyset"` alongside its canonical Page/Window; mail uses its unchanged stable-window contract. This is an operation-family label, not another completeness type. |
-| `Page<T>` | `{"items":[T],"window":Window,"next":Cursor\|null}` | `next` is non-null exactly when following it can return more. Mail retains stable windows. Non-mail pages are labelled `consistency: "live-keyset"`; continuation advances a stable key without snapshot membership. Complete means complete for the measured range, not an immutable historical list. |
+| List consistency | family metadata | Every list result, including mail, includes `consistency: "live-keyset"` alongside its canonical Page/Window. This is an operation-family label, not another completeness type; A.5 owns mail semantics. |
+| `Page<T>` | `{"items":[T],"window":Window,"next":Cursor\|null}` | `next` is non-null exactly when following it can return more. Continuation advances a stable key without snapshot membership; all list families are labelled `consistency: "live-keyset"`. Complete means complete for the measured range, not an immutable historical list. |
 | Receipt state | string | `committed`: a new event was appended. `replayed`: section 00's "already done" (same idempotency key and same body, so no new event). `pending`: committed, but the follow-up is not confirmed yet. `refused`: appears only inside bulk results; when a whole call is refused, the output is an `se.error/v1` payload instead. |
 | Writer | object | `{"mode":"host","host_generation":string}` \| `{"mode":"direct"}`. Records who committed the event the receipt refers to. `host`: the running host's writer committed it, and `host_generation` is the decimal text of that host's generation (the same number as `se.status/v1` `$.runtime.generation`, e.g. `"7"`). `direct`: the CLI committed it with no host running, and the key `host_generation` is absent. The value is stored on the event row at commit, so a `replayed` receipt reports the original commit's writer. Families that carry `$.writer` (always present): `se.message-receipt/v1`, `se.message-read/v1`, `se.disposition-receipt/v1`, `se.decision-receipt/v1`, `se.working-state-receipt/v1`, `se.turn-receipt/v1`, `se.agent-receipt/v1`. See §1.1, "Writer stamp". |
 | Witness | object | `{"state":"witnessed"\|"unwitnessed"\|"not-applicable","method":string\|null,"observed_at":Time\|null,"detail":string\|null}`. A result is `witnessed` only after a re-read from outside the writer (00 G8). `method` is one of `job-empty` (Windows), `pidfd-exit+cgroup-empty` (Linux), `pidfd-exit+cgroup-removed` (Linux original pinned object removed plus root exit), `start-identity-exit+cgroup-empty` and `start-identity-exit+cgroup-removed` (Linux without pidfds, preserving the native identity-recheck bound), `pidfd-exit+pgid-empty` (Linux, `uncontained`), `start-identity-exit+pgid-empty` (Linux without pidfd support: exit confirmed by re-reading the recorded start identity as gone or changed, at the bound section 30 states), `kqueue-exit+pgid-empty` (macOS), `readback` (files and config), `registry-reread`. |
@@ -1131,11 +1131,19 @@ These counters cover the host process. When `$.runtime.host` is `daemon`, that p
 
 ### A.5 `se.message-page/v1` — `se msg inbox`, `se msg list`, `stateengine_msg_list`
 
-`{schema, view, unread_total}` plus the `Page<MessageRow>` keys.
+`{schema, consistency, view, unread_total}` plus the `Page<MessageRow>` keys.
+
+Mail is a live keyset in immutable sent order: each page reads current membership,
+delivery/disposition and unread counts, and continuation advances the last sent
+key. Concurrent arrivals or marker/supersession changes may alter later pages;
+unchanged data concatenates without gaps. No first-page high-water pins later
+membership or disposition as-of that earlier read. The Page/Window shape is
+unchanged; [20 — bounded reads](20-data-model.md) owns the indexed reader/cursor.
 
 | Path | Type | Always | Meaning |
 | --- | --- | --- | --- |
 | `$.schema` | `"se.message-page/v1"` | yes | |
+| `$.consistency` | `"live-keyset"` | yes | current-state keyset; no historical inbox snapshot |
 | `$.view.op` | `"inbox"` \| `"list"` | yes | which operation produced it |
 | `$.view.recipient` | Ref + kind \| null | yes | whose inbox (the caller, or an agent the owner is inspecting); null for an owner list with no recipient filter |
 | `$.view.disposition` | `"unread"` \| `"all"` | yes | an inbox is always `unread` |
@@ -1166,7 +1174,7 @@ These counters cover the host process. When `$.runtime.host` is `daemon`, that p
 Markers are untouched: producing this family (inbox, list, `--full` or not, owner or session) never creates or changes a delivered, read or dismissed marker. `disposition` and `delivery` report the stored state as it was when the page was read. Observing history is not the recipient reading it; only `se.message-read/v1` and `se.disposition-receipt/v1` write markers.
 
 ```json
-{"schema":"se.message-page/v1",
+{"schema":"se.message-page/v1","consistency":"live-keyset",
  "view":{"op":"inbox","recipient":{"kind":"agent","id":"ag_0192f3a0-1111-7aaa-8bbb-000000000004","name":"rev"},"disposition":"unread","box":"inbox",
          "filter":{"to":null,"from":null,"kind":null},"inspection":false,"full":false,"scope":"own"},
  "unread_total":3,
@@ -1591,13 +1599,7 @@ section 40 readback rule: `committed` reports applied requested state and
 historical store commit or persisted receipt. Partial/unreadable effects remain
 pending or refuse; they are never manufactured as successful original history.
 
-Restore retry is exact receipt replay, not file-state reconciliation. It returns
-the stored original receipt, including its original plan, stop/revocation and
-preservation witnesses, loss facts, writer, timestamps and state; even the state
-field is not rewritten. This complete UTF-8 family payload is immutable, bounded
-by section 20's 1 MiB limit and retained with RecoveryRecorded before publication.
-No field is reconstructed from current files, agents or backups, and no fresh
-observation is substituted. Current facts require a separate read operation.
+Restore retry and the stored original receipt are owned by [20 — restore](20-data-model.md); the family fields below do not introduce file-state reconciliation.
 
 | Family | Additional required fields | Witness and completion rule |
 | --- | --- | --- |

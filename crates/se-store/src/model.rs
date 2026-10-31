@@ -11,7 +11,7 @@ use std::{
 };
 
 /// Logical internal object (effect/source/import/erasure/process record), never an OS PID.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RecordId {
     _bytes: [u8; 16],
 }
@@ -22,7 +22,7 @@ pub trait RecordIdentity: Sized {
     fn as_bytes(&self) -> &[u8; 16];
 }
 /// Per-entity counter: creation is one, committed changes increment by one.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Revision {
     pub value: NonZeroU64,
 }
@@ -34,19 +34,39 @@ pub struct StorePosition {
     _sequence: Sequence,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PositionPurpose {
+    Receipt,
+    Checked,
+    History,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Expected {
     Absent,
     Revision(Revision),
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Actor {
     Human(HumanId),
     Agent(AgentId),
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
     Registry,
     Project(ProjectId),
+}
+/// Facts for the trusted native owner observer; these do not grant owner authority.
+#[derive(Clone, Debug)]
+pub struct OwnerGuardInventory {
+    pub store: StoreInfo,
+    pub owners: Vec<HumanId>,
+    pub processes: Vec<OwnerGuardProcess>,
+}
+#[derive(Clone, Debug)]
+pub struct OwnerGuardProcess {
+    pub project: ProjectId,
+    pub revision: Revision,
+    pub state: crate::ProcessState,
+    pub identity: crate::ProcessIdentityRecord,
 }
 /// Supplied by admitted core policy; this is not a deserializable authority credential.
 #[derive(Clone, Debug)]
@@ -185,6 +205,11 @@ pub struct RequestIdentity {
 }
 #[derive(Clone, Debug)]
 pub struct CommitReceipt {
+    /// Current host submission only; never persisted or reconstructed on receipt lookup.
+    /// Direct writes and retained receipt reads leave this absent.
+    pub write_timings: Option<crate::WriteTimings>,
+    /// A known commit succeeded but its checkpoint/maintenance still needs retry.
+    pub maintenance_pending: bool,
     pub request_key: Option<IdempotencyKey>,
     pub state: CommitState,
     pub primary_event: EventId,
@@ -238,11 +263,12 @@ pub enum CommitState {
 }
 #[derive(Clone, Debug)]
 pub struct FlushReport {
+    pub maintenance_pending: bool,
     pub through: Option<StorePosition>,
     pub pending_requests: u32,
     pub indeterminate: Vec<PendingOperation>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PendingOperation {
     CallerKey(IdempotencyKey),
     NaturalEvents(Vec<EventId>),
@@ -257,7 +283,7 @@ pub struct CheckpointReport {
 /// Private implementation retains store/incarnation/generation and pin/cancel state.
 #[derive(Clone)]
 pub struct BackupContext {
-    _private: (),
+    pub(crate) state: std::sync::Arc<crate::backup_context::State>,
 }
 #[derive(Clone, Debug)]
 pub struct BackupGeneration {
@@ -419,6 +445,8 @@ pub enum StoreDetail {
         scope: Scope,
         actor: Actor,
         key: IdempotencyKey,
+        /// Present for a conflicting retained caller key; never a minted ID.
+        original_event: Option<EventId>,
     },
     Entity {
         family: HistoryFamily,
@@ -487,3 +515,48 @@ pub enum StoreErrorCode {
     ErasurePhysicalGuaranteeUnavailable,
 }
 pub type StoreResult<T> = std::result::Result<T, Box<StoreError>>;
+
+impl RecordId {
+    pub(crate) fn new_internal(bytes: [u8; 16]) -> Self {
+        Self { _bytes: bytes }
+    }
+    pub(crate) fn bytes_internal(&self) -> &[u8; 16] {
+        &self._bytes
+    }
+}
+impl StorePosition {
+    pub(crate) fn new_internal(
+        store: StoreId,
+        incarnation: u64,
+        sequence: u64,
+    ) -> StoreResult<Self> {
+        Ok(Self {
+            _store: store,
+            _incarnation: incarnation,
+            _sequence: Sequence::new(sequence).map_err(crate::error::invalid)?,
+        })
+    }
+    pub(crate) fn sequence(&self) -> u64 {
+        self._sequence.get()
+    }
+    pub(crate) fn belongs(&self, info: &StoreInfo) -> bool {
+        self._store == info.id && self._incarnation == info.incarnation
+    }
+}
+impl WriterMode {
+    pub(crate) fn from_lease(lease: &LeaseIdentity) -> Self {
+        Self {
+            _kind: match lease.mode {
+                LeaseMode::Host => WriterKind::Host {
+                    generation: lease.generation,
+                },
+                LeaseMode::DirectClient => WriterKind::Direct,
+            },
+        }
+    }
+}
+impl WriterModeValue for WriterMode {
+    fn kind(&self) -> WriterKind {
+        self._kind
+    }
+}

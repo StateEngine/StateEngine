@@ -7,7 +7,7 @@ use se_types::{
     MessageId, NativePath, ProcessInstance, ProjectId, SessionId,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Door {
     Cli,
     Mcp,
@@ -15,19 +15,19 @@ pub enum Door {
     Host,
     Import,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Provider {
     Claude,
     Codex,
     SeCode,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionProfile {
     ReadOnly,
     WorkspaceWrite,
     NamedFullBypass,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Profile {
     pub provider: Provider,
     pub model: Option<String>,
@@ -35,34 +35,34 @@ pub struct Profile {
     pub named_profile: String,
     pub effort: Option<String>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Root {
     pub path: NativePath,
     pub canonical_key: Vec<u8>,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PrincipalKind {
     Human,
     Agent,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Consent {
     Capture,
     Suppressed,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Role {
     System,
     User,
     Assistant,
     Tool,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DecisionKind {
     Note,
     Decision,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ProcessState {
     Reserved,
     Starting,
@@ -96,11 +96,11 @@ pub enum IntegrationState {
     Removed,
     Conflict,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum GrantKey {
     AgentCanCreate(AgentId),
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SourceEvidence {
     pub path: NativePath,
     pub incarnation: Vec<u8>,
@@ -108,7 +108,7 @@ pub struct SourceEvidence {
     pub length: u64,
     pub sha256: Option<[u8; 32]>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ProcessIdentityRecord {
     pub record: LifecycleId,
     pub principal: Actor,
@@ -119,14 +119,14 @@ pub struct ProcessIdentityRecord {
     pub containment: ContainmentFact,
 }
 /// Durable native checkpoint fact, not a claim about current PID liveness.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RootIdentityState {
     NoChildCreated,
     Unpublished,
     Identified,
     Unknown,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum RecordedIdentity {
     Present(ProcessInstance),
     Absent { reason: String },
@@ -134,12 +134,12 @@ pub enum RecordedIdentity {
 }
 /// Versioned se-proc reservation/scope/root/process/exit codec; never an OS handle.
 /// Includes ProcessRecord.ownership_release with its generation/entity-counter binding.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct NativeCustody {
     pub format_version: u16,
     pub record: Vec<u8>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ContainmentFact {
     NotLaunched,
     Unknown {
@@ -155,13 +155,13 @@ pub enum ContainmentFact {
         probe: Option<EventId>,
     },
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ContainmentKind {
     Cgroup,
     Job,
     ProcessGroup,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ContainmentCause {
     NoUserManager,
     NoDelegation,

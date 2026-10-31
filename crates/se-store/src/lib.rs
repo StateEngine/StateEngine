@@ -1,11 +1,26 @@
-//! Compile-only storage design contract. No SQLite implementation is admitted.
-//!
+//! SQLite authority and bounded direct/host writer paths.
 //! Normative behavior and formats: docs/design/20-data-model.md.
-//! All executable functions are trait declarations, without stub/default bodies.
 mod api;
+mod apply;
+mod backup;
+mod backup_context;
+mod codec;
+mod completion;
+mod connection;
+mod credential;
+mod error;
 mod event;
+mod identity;
 mod model;
-
+mod open;
+mod owner_guard;
+mod read;
+mod sql_value;
+mod transaction;
+mod writer;
 pub use api::*;
 pub use event::*;
 pub use model::*;
+pub use open::{SqliteDirect, SqliteFactory, SqliteHost, SqliteReader};
+pub use read::SqliteSnapshot;
+pub use writer::{SqliteClient, SqliteWriter, WriteTimings};

@@ -36,12 +36,11 @@ owns request identity: CLI generates/prints a key before first send and accepts
 `--key` for retries; MCP requires `idempotency_key`, preserved by linked/IPC calls.
 Keyed store replay precedes new preconditions; changed intent conflicts. Only
 captured turns/hooks and recipient read/ack/dismiss use restricted natural keys.
-File-only config/uninstall reconcile current state; restore instead returns the
-stored complete original receipt verbatim from its atomically published
-RecoveryRecorded payload. Shared DTO validation rejects
+File-only config/uninstall reconcile current state; [20](design/20-data-model.md)
+owns restore replay. Shared DTO validation rejects
 message bodies over 32 KiB and working state over 16 KiB before effects.
 
-Non-mail list results are labelled live keysets, not temporal snapshots; mail retains stable unread/message windows. History search is a bounded streamed scan, without FTS. Ordinary refusals return structured errors without a history write.
+All list results, including mail, are labelled live keysets; [50 A.5](design/50-surface-and-errors.md) owns current mail windows/counts without historical membership or disposition. History search is a bounded streamed scan, without FTS. Ordinary refusals return structured errors without a history write.
 
 Common CLI rendering flags are `--json`, `-q`, `--no-color`, `-h/--help` and `-V/--version`. Human output is readable by default; structured output does not share stdout with diagnostics. Bare `se` uses `project.status` plus its next-step renderer, with unconfigured onboarding when there is no project; it is not another mutating operation. Global flags are not accepted inertly by unrelated operations.
 

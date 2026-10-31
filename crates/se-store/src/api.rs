@@ -9,8 +9,76 @@ use std::{future::Future, io::Read as ByteReader, sync::Arc, time::Duration};
 /// caller is trusted; IPC callers cannot construct this object from request JSON.
 pub trait RuntimeLease: Send + Sync {
     fn identity(&self) -> StoreResult<LeaseIdentity>;
+    fn files(&self) -> &dyn StateFiles;
 }
-/// Constructors are declarations, not executable fallback/default implementations.
+/// Native adapter owned by se-proc and wired by the CLI/host, never by request JSON.
+/// Every path stays in the held per-user state directory. No shell or ambient umask.
+pub trait StateFiles: Send + Sync {
+    /// Return at most maximum immediate, owned regular files under retained
+    /// no-follow directory custody; over-budget and unreadable are errors.
+    fn list_owned(
+        &self,
+        directory: &std::path::Path,
+        maximum: usize,
+    ) -> StoreResult<Vec<std::path::PathBuf>> {
+        let _ = (directory, maximum);
+        Err(crate::error::fail(
+            StoreErrorCode::BackupFailed,
+            "native bounded backup listing is not wired",
+        ))
+    }
+    /// Ensure a fixed descendant directory exists with native owner-only protection.
+    /// Validate existing custody without repairing permissions or following links.
+    fn prepare_directory(&self, path: &std::path::Path) -> StoreResult<()> {
+        let _ = path;
+        Err(crate::error::fail(
+            StoreErrorCode::BackupFailed,
+            "native protected backup directory preparation is not wired",
+        ))
+    }
+    /// Reserve a unique, protected regular staging file in the owned directory.
+    /// Read back owner-only mode/ACL and directory custody before returning.
+    fn create_staging(&self, directory: &std::path::Path) -> StoreResult<ProtectedStaging>;
+    /// Open without following links and verify regular-file identity and owner-only
+    /// file/directory protection. Missing is Absent; unknown/unreadable is not absence.
+    fn readback(&self, path: &std::path::Path) -> StoreResult<Read<std::fs::File>>;
+    /// All SQLite/backup handles have been closed. Sync staged data, publish without
+    /// replacing any destination, and sync/read back the destination parent/name.
+    /// Collision must return AlreadyExists and preserve the winner.
+    fn publish_no_replace(
+        &self,
+        staged: &std::path::Path,
+        destination: &std::path::Path,
+    ) -> StoreResult<()>;
+    /// Compare-and-replace one owned manifest under held no-follow custody.
+    /// Stage/sync new bytes, recheck old digest/identity, atomically publish and witness.
+    fn replace_owned(
+        &self,
+        path: &std::path::Path,
+        expected_sha256: Option<[u8; 32]>,
+        bytes: &[u8],
+    ) -> StoreResult<()> {
+        let _ = (path, expected_sha256, bytes);
+        Err(crate::error::fail(
+            StoreErrorCode::BackupFailed,
+            "native owned manifest replacement is not wired",
+        ))
+    }
+    /// Unlink only the held owned regular file matching the expected complete digest.
+    /// Success includes parent sync and independent absence readback.
+    fn remove_owned(&self, path: &std::path::Path, expected_sha256: [u8; 32]) -> StoreResult<()> {
+        let _ = (path, expected_sha256);
+        Err(crate::error::fail(
+            StoreErrorCode::BackupFailed,
+            "native owned generation retirement is not wired",
+        ))
+    }
+}
+pub struct ProtectedStaging {
+    pub path: std::path::PathBuf,
+    pub file: std::fs::File,
+}
+/// Role-bound constructors; opening never initializes missing state.
 pub trait StoreFactory {
     type Reader: ReadStore;
     type Direct: DirectStore;
@@ -78,6 +146,13 @@ pub trait ReadStore {
     fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>>;
     fn inspect_backups(&self, budget: ReadBudget) -> StoreResult<Page<Read<BackupGeneration>>>;
     fn snapshot(&self, scope: ReadScope) -> StoreResult<Self::Snapshot>;
+    /// Trusted bootstrap inventory after protected native file access, before Admission.
+    /// Across the whole home; returns only a complete finite result, never a partial page.
+    fn owner_guard(
+        &self,
+        files: &dyn StateFiles,
+        budget: ReadBudget,
+    ) -> StoreResult<OwnerGuardInventory>;
     /// Bootstrap-only hash lookup used by the trusted capability verifier before
     /// constructing Admission; never an operation/tool or a principal fallback.
     fn credential(&self, secret_sha256: [u8; 32]) -> StoreResult<Read<CredentialRecord>>;
@@ -172,28 +247,6 @@ pub trait WriterClient: Clone + Send + Sync {
 }
 /// Await-only host completion. DirectStore::append returns CommitReceipt synchronously.
 pub trait CommitWait: Future<Output = StoreResult<CommitReceipt>> + Send {}
-/// Private implementation seam: both host group commit and direct append use
-/// this exact transaction engine. SQL handles never appear in the public API.
-#[allow(
-    dead_code,
-    reason = "Compile-only private transaction contract; implementation is not admitted."
-)]
-pub(crate) trait TransactionEngine {
-    fn commit_group(
-        &mut self,
-        batches: Vec<AtomicBatch>,
-    ) -> StoreResult<Vec<StoreResult<CommitReceipt>>>;
-    /// Private all-or-nothing maintenance wrapper over the same append/apply
-    /// machinery; neither scoped operation may commit without the other.
-    fn commit_first_binding(&mut self, binding: FirstBinding) -> StoreResult<FirstBindingReceipt>;
-    fn append_atomic(&mut self, batch: AtomicBatch) -> StoreResult<PreparedReceipt>;
-    fn apply(&mut self, event: &StoredEvent) -> StoreResult<()>;
-}
-/// Cannot be returned to a caller as a durable receipt before group COMMIT.
-pub(crate) struct PreparedReceipt {
-    _private: (),
-}
-
 #[derive(Clone, Debug)]
 pub struct MessageQuery {
     pub recipient: Option<Actor>,
@@ -294,6 +347,13 @@ pub trait Snapshot {
     /// Bound to this snapshot's admitted project and recorded import sources.
     fn legacy_registry(&self) -> StoreResult<Self::LegacyRegistry<'_>>;
     fn info(&self) -> StoreInfo;
+    /// Encode an admitted, visible position for a public receipt/checked/history
+    /// field. Binds store/incarnation, scope, principal and purpose; no arithmetic.
+    fn position_cursor(
+        &self,
+        position: &StorePosition,
+        purpose: PositionPurpose,
+    ) -> StoreResult<se_types::Cursor>;
     /// runtime.* facts are private: known excluded IDs return a typed refusal.
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>>;
     /// Excludes runtime.* facts, including their native nonces.
@@ -319,6 +379,9 @@ pub trait Snapshot {
         query: MessageQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>>;
+    /// Exact matching count in this finite snapshot, independent of pagination.
+    /// Uses the same actor/kind/unread and visibility predicates as messages.
+    fn message_count(&mut self, query: MessageQuery) -> StoreResult<u64>;
     fn decision(&mut self, id: DecisionId) -> StoreResult<Read<ProjectionRecord>>;
     fn decisions(
         &mut self,

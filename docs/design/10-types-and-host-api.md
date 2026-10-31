@@ -58,9 +58,9 @@ containment and outside stop witnesses on each OS.
 `Read<T>` preserves Present, Absent, Unreadable and Unknown. A failed read cannot
 become an empty list or an absence proof. `Window`/`Page<T>` disclose the selected
 range, item/byte limits, omissions, unreadable sources and continuation.
-Mail keeps its stable unread/message windows and counts. Non-mail lists use
-labelled live keysets; following them does not promise a historical snapshot or
-unchanging membership. Source-incomplete and newly arrived mail remain explicit.
+Mail and non-mail lists use labelled live keysets; [50 A.5](50-surface-and-errors.md)
+defines current mail windows/counts, without historical membership or disposition.
+Source-incomplete and newly arrived mail remain explicit.
 
 `Receipt<T>` distinguishes committed, original-key replay, refusal and pending
 follow-up. Writer stamps come from the store transaction and replay keeps the
