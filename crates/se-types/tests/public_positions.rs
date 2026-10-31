@@ -35,6 +35,7 @@ fn window() -> Result<Window, Box<dyn Error>> {
     })?)
 }
 
+/// Bug: 500da05 — receipt and witness codecs exposed global numeric positions.
 #[test]
 fn receipt_roundtrip_has_opaque_positions_on_commit_and_witness() -> Check {
     for state in ["committed", "replayed"] {
@@ -54,6 +55,7 @@ fn receipt_roundtrip_has_opaque_positions_on_commit_and_witness() -> Check {
     Ok(())
 }
 
+/// Protects: G3 — a commit cannot witness itself; opaque spelling proves no order.
 #[test]
 fn witness_cannot_be_its_commit_and_cursor_spelling_is_not_order() -> Check {
     let good: Receipt<Value> = serde_json::from_value(receipt())?;
@@ -67,6 +69,7 @@ fn witness_cannot_be_its_commit_and_cursor_spelling_is_not_order() -> Check {
     Ok(())
 }
 
+/// Bug: 500da05 — Window serialization exposed private numeric snapshot bounds.
 #[test]
 fn real_window_encoder_omits_internal_numeric_accounting() -> Check {
     let original = window()?;
@@ -85,6 +88,7 @@ fn real_window_encoder_omits_internal_numeric_accounting() -> Check {
     Ok(())
 }
 
+/// Protects: G5 — partial pages retain omissions and a progressing continuation.
 #[test]
 fn page_roundtrip_keeps_omission_and_requires_progressing_continuation() -> Check {
     let page = Page::new(vec!["row"], window()?, Some(Cursor::new("c.end")?))?;
@@ -105,6 +109,7 @@ fn page_roundtrip_keeps_omission_and_requires_progressing_continuation() -> Chec
     Ok(())
 }
 
+/// Bug: 500da05 — absent-read text exposed a private numeric snapshot position.
 #[test]
 fn checked_and_absent_read_never_render_numeric_store_position() -> Check {
     let checked = Checked {
@@ -124,6 +129,7 @@ fn checked_and_absent_read_never_render_numeric_store_position() -> Check {
     Ok(())
 }
 
+/// Protects: C1 — entity revisions are positive signed-store counters in wire/schema.
 #[test]
 fn revision_runtime_and_generated_schema_agree_at_both_edges() -> Check {
     for value in [json!(0), json!(-1), json!(i64::MAX as u64 + 1)] {
