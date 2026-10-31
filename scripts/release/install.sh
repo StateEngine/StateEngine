@@ -6,7 +6,8 @@ fail() { printf 'Install refused: %s\n' "$*" >&2; exit 1; }
 [ "$#" -eq 0 ] || fail 'usage: sh ./install.sh'
 [ "$(uname -s):$(uname -m)" = Linux:x86_64 ] || fail 'this archive requires Linux x86_64'
 bundle=$(CDPATH='' cd -P -- "$(dirname -- "$0")" && pwd)
-[ -z "$(find "$bundle" -type l -print -quit)" ] || fail 'extract the archive without symbolic links'
+links=$(find "$bundle" -type l -print -quit)
+[ -z "$links" ] || fail 'extract the archive without symbolic links'
 (cd "$bundle" && sha256sum --check --strict --quiet SHA256SUMS) || fail 'archive checksums do not match'
 if LC_ALL=C grep -v -q '^[0-9a-f]\{64\}  [A-Za-z0-9_./+-]\{1,\}$' "$bundle/SHA256SUMS"; then fail 'invalid checksum inventory'; fi
 actual_files=$(find "$bundle" -type f -printf '%P\n')
@@ -83,7 +84,7 @@ cleanup() {
                 else printf 'Rollback preserves changed installation file: %s\n' "$file" >&2; fi
             done
             find "$assets" -depth -type d -exec rmdir -- {} \; 2>/dev/null
-            [ ! -e "$assets" ] || rollback_complete=0
+            if [ -e "$assets" ] || [ -L "$assets" ]; then rollback_complete=0; fi
         fi
         if [ "$claimed" -eq 1 ] && [ "$rollback_complete" -eq 1 ] && [ "$record" -ef "$stage/install.json" ]; then rm -- "$record"; fi
         [ "$rollback_complete" -eq 1 ] || printf 'Rollback is incomplete; ownership record retained for se uninstall: %s\n' "$record" >&2
@@ -91,6 +92,10 @@ cleanup() {
     [ -z "$temp_profile" ] || rm -- "$temp_profile"
     find "$stage" -depth -type f -exec rm -- {} +
     find "$stage" -depth -type d -exec rmdir -- {} \;
+    if [ -e "$stage" ]; then
+        printf 'Installation scratch cleanup incomplete: %s\n' "$stage" >&2
+        [ "$exit_code" -ne 0 ] || exit_code=1
+    fi
     exit "$exit_code"
 }
 trap cleanup EXIT
@@ -138,9 +143,10 @@ json_file() {
 hash() { sum=$(sha256sum -- "$1") || return "$?"; printf '%s' "${sum%% *}"; }
 find "$stage/assets" -type f -print > "$stage/asset-files"
 LC_ALL=C sort "$stage/asset-files" -o "$stage/asset-files"
+owner=$(id -u)
 {
     printf '{\n  "schema": "stateengine-install/v1",\n  "install_root": '; json_string "$root"
-    printf ',\n  "owner": '; json_string "$(id -u)"
+    printf ',\n  "owner": '; json_string "$owner"
     checksum=$(hash "$bundle/se")
     printf ',\n  "files": [\n    {"path": "bin/se", "sha256": "%s"}' "$checksum"
     while IFS= read -r file; do
@@ -160,8 +166,10 @@ LC_ALL=C sort "$stage/asset-files" -o "$stage/asset-files"
     printf '\n  ]}\n'
 } > "$stage/install.json"
 # A durable ownership description precedes effects. A retry never overwrites it.
+sync "$stage/install.json"
 ln -- "$stage/install.json" "$record" || fail 'another installation already owns the record'
 claimed=1
+sync "$record" "$bin"
 mv -T -n -- "$stage/assets" "$assets"
 [ ! -d "$stage/assets" ] || fail 'installation assets appeared during installation'
 published_assets=1

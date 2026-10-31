@@ -91,7 +91,8 @@ def main():
             name = script + (".ps1" if windows else ".sh")
             shutil.copyfile(SCRIPTS / name, root / name)
         shutil.copyfile(SCRIPTS / "NOTICE.txt", root / "NOTICE.txt")
-        command = ".\\install.ps1" if windows else "sh ./install.sh"
+        command = ("powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\install.ps1"
+                   if windows else "sh ./install.sh")
         (root / "README.txt").write_text(
             f'StateEngine {metadata["version"]} ({metadata["target"]})\n'
             f'Unsigned development archive; source {metadata["source_commit"]}.\n\n'
