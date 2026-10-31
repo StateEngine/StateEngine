@@ -584,7 +584,7 @@ public operation still supplies Page/Window if it paginates the merged result.
 | StopUnproved, ownership retained | explicit retry, fresh observation/CAS/token | StopRequested |
 | StopUnproved, uncontained tracked group | owner-human release CAS after an ordinary stop could not be proved; no signal | StopUnproved with ownership_release; no live ownership or recovery re-adoption, not Exited |
 | nonterminal | irrecoverable native custody, actual host/boot loss | Lost, never assumed stopped |
-| Lost | authorized native recovery + store CAS succeeds | actual Running, LeaderExited or StopUnproved |
+| Lost without ownership release | authorized native recovery + store CAS succeeds | actual Running, LeaderExited or StopUnproved |
 | Lost | old required scope/instances exit proved | Exited |
 | Exited | durable witness committed, native release succeeds, release acknowledgment committed | terminal released; history retained |
 | imported | import | Historical; cannot become live custody |
