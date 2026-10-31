@@ -29,6 +29,7 @@ pub fn inventory<R: ReadStore>(store: &R, files: &dyn StateFiles) -> Result<Owne
 }
 
 pub struct FileOwner {
+    native: se_proc::OwnerObservation,
     observed: OwnerObservations,
     session_present: bool,
 }
@@ -39,10 +40,10 @@ pub fn from_inventory(inventory: &OwnerGuardInventory) -> Result<FileOwner> {
     observe(&records)
 }
 impl FileOwner {
-    /// Actual native self-observations, paired by the IPC adapter with the
-    /// host's independently authenticated peer check. No CLI flag supplies them.
-    pub fn observations(&self) -> (&OwnerObservations, bool) {
-        (&self.observed, self.session_present)
+    /// Exact result of the complete-inventory native self-check, consumed by
+    /// the host's sole presence attestation constructor. No CLI flag supplies it.
+    pub fn native_observation(&self) -> &se_proc::OwnerObservation {
+        &self.native
     }
     pub fn os_owner(&self) -> &str {
         &self.observed.os_owner
@@ -102,5 +103,6 @@ pub fn observe(records: &[ProcessRecord]) -> Result<FileOwner> {
             provider_marker: observed.provider_marker_present(),
         },
         session_present: observed.session_present(),
+        native: observed,
     })
 }
