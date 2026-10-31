@@ -309,6 +309,7 @@ pub struct OwnerChallenge {
     domain: ProofDomain,
 }
 impl OwnerChallenge {
+    #[cfg(feature = "listener")]
     pub(crate) fn stop_domain(&mut self) {
         self.domain = ProofDomain::RuntimeStop;
     }

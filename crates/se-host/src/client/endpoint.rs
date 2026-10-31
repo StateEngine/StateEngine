@@ -317,6 +317,7 @@ pub struct RuntimeStopReply {
 /// Routing probe only; the selected closed codec subsequently validates every
 /// field/duplicate/depth before admission. Ignored credential bytes are never
 /// materialized as a generic Value merely to choose the fixed control family.
+#[cfg(feature = "listener")]
 pub(crate) fn has_stop_protocol(bytes: &[u8]) -> Result<bool> {
     #[derive(Deserialize)]
     struct Probe {
