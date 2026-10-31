@@ -286,7 +286,13 @@ impl NativeUnixStream {
                 "IPC endpoint changed during connection",
             ));
         }
-        peer(stream.as_fd())?;
+        let (uid, _) = process::credentials(stream.as_fd())?;
+        if uid != unsafe { libc::geteuid() } {
+            return Err(refuse(
+                IpcNativeErrorCode::UnsafeEndpoint,
+                "IPC server is a different native user",
+            ));
+        }
         stream
             .set_nonblocking(false)
             .map_err(|e| error("configure IPC stream", e))?;
@@ -301,6 +307,9 @@ impl NativeUnixStream {
 }
 impl Read for NativeUnixStream {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
         loop {
             let remaining = self.bound.remaining()?;
             self.stream
@@ -321,6 +330,9 @@ impl Read for NativeUnixStream {
 }
 impl Write for NativeUnixStream {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
         loop {
             let remaining = self.bound.remaining()?;
             self.stream

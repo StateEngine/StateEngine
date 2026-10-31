@@ -70,12 +70,6 @@ fn create(name: &OsStr, first: bool) -> IpcNativeResult<OwnedHandle> {
             &attributes,
         )
     };
-    if raw == INVALID_HANDLE_VALUE && unsafe { GetLastError() } == ERROR_ACCESS_DENIED && first {
-        return Err(refuse(
-            IpcNativeErrorCode::AlreadyExists,
-            "first IPC pipe instance unavailable",
-        ));
-    }
     let handle = owned(raw, "create owner-only IPC pipe")?;
     security::verify(handle.as_raw_handle())?;
     Ok(handle)
@@ -150,7 +144,6 @@ impl NativePipeStream {
                 let handle = owned(raw, "open IPC pipe")?;
                 security::verify(handle.as_raw_handle())?;
                 let stream = Self { handle, bound };
-                peer(stream.channel(), IpcPeerSide::Server)?;
                 return Ok(stream);
             }
             let code = unsafe { GetLastError() };
