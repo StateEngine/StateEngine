@@ -269,7 +269,9 @@ impl Engine {
                     };
                     return Err(error);
                 }
-                return receipt(&self.db, &op, info, Some(request.key.clone()));
+                let mut retained = receipt(&self.db, &op, info, Some(request.key.clone()))?;
+                retained.state = CommitState::Replayed;
+                return Ok(retained);
             }
         }
         if batch.expected_incarnation != info.incarnation
@@ -337,7 +339,9 @@ impl Engine {
                     }
                     seqs.push(seq);
                 }
-                return receipt_members(&self.db, &seqs, info, None);
+                let mut retained = receipt_members(&self.db, &seqs, info, None)?;
+                retained.state = CommitState::NaturalKeyReplay;
+                return Ok(retained);
             }
         }
         let mut op_hash = Sha256::new();
