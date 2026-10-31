@@ -1,4 +1,5 @@
 //! Transaction-only projections. No native, network or provider calls.
+pub(crate) mod decision;
 use crate::{codec, connection::*, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
@@ -207,6 +208,11 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
                 .filter(|v| *v <= i64::MAX as u64)
                 .ok_or_else(|| invalid("message revision exhausted"))
         }
+        EventBody::DecisionProposed { .. }
+        | EventBody::DecisionRatified { .. }
+        | EventBody::DecisionRejected { .. }
+        | EventBody::DecisionRetracted { .. }
+        | EventBody::DecisionSuperseded { .. } => decision::revision(c, e),
         RuntimeOwnerEstablished { expected: want, .. } => {
             expected(c, "runtime_owner", "singleton=1", &[], *want)
         }
@@ -539,6 +545,11 @@ pub(crate) fn apply(
             c.execute("INSERT INTO runtime_owner(singleton,owner_generation,owner_epoch,revision,last_seq) VALUES(1,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET owner_generation=excluded.owner_generation,owner_epoch=excluded.owner_epoch,revision=excluded.revision,last_seq=excluded.last_seq",crate::sql_value::sql_params![generation.get(),codec::encode(&epoch)?,revision,seq]).map_err(sql)?;
             codec::aux(c, seq, facts)?;
         }
+        b @ (DecisionProposed { .. }
+        | DecisionRatified { .. }
+        | DecisionRejected { .. }
+        | DecisionRetracted { .. }
+        | DecisionSuperseded { .. }) => decision::apply(c, header, b, seq, revision)?,
         _ => return later("projection"),
     }
     Ok(())

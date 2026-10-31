@@ -516,7 +516,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
             | RecoveryRecorded { .. }
     )
 }
-fn descriptor<T>(
+pub(crate) fn descriptor<T>(
     b: &EventBody<T>,
     text: impl Fn(&T) -> StoreResult<String>,
 ) -> StoreResult<String> {
@@ -547,6 +547,40 @@ fn descriptor<T>(
             text: t,
             expected,
         } => json!({"agent":agent,"text":text(t)?,"expected":expected}),
+        DecisionProposed {
+            decision,
+            key,
+            statement,
+            rationale,
+            prior,
+            kind,
+        } => {
+            json!({"decision":decision,"key":key,"statement":text(statement)?,"rationale":rationale.as_ref().map(&text).transpose()?,"prior":prior,"kind":kind})
+        }
+        DecisionRatified {
+            decision,
+            expected,
+            approval,
+        } => json!({"decision":decision,"expected":expected,"approval":approval}),
+        DecisionRejected {
+            decision,
+            expected,
+            reason,
+        }
+        | DecisionRetracted {
+            decision,
+            expected,
+            reason,
+        } => json!({"decision":decision,"expected":expected,"reason":text(reason)?}),
+        DecisionSuperseded {
+            prior,
+            replacement,
+            prior_expected,
+            replacement_expected,
+            approval,
+        } => {
+            json!({"prior":prior,"replacement":replacement,"prior_expected":prior_expected,"replacement_expected":replacement_expected,"approval":approval})
+        }
         _ => facts,
     };
     codec::encode(&(kind, hot))

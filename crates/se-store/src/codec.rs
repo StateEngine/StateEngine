@@ -125,6 +125,11 @@ pub(crate) fn body(
                     .unwrap_or(Expected::Absent),
             }
         }
+        "decision.proposed"
+        | "decision.ratified"
+        | "decision.rejected"
+        | "decision.retracted"
+        | "decision.superseded" => crate::apply::decision::decode(c, seq, kind, scope)?,
         _ => {
             let v = facts(c, seq)?;
             match kind {
@@ -254,6 +259,11 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "runtime.owner",
             json!({"epoch":epoch,"generation":generation,"expected_owner_generation":expected_owner_generation,"expected":expected,"witnesses":witnesses}),
         ),
+        DecisionProposed { .. } => ("decision.proposed", Value::Null),
+        DecisionRatified { .. } => ("decision.ratified", Value::Null),
+        DecisionRejected { .. } => ("decision.rejected", Value::Null),
+        DecisionRetracted { .. } => ("decision.retracted", Value::Null),
+        DecisionSuperseded { .. } => ("decision.superseded", Value::Null),
         _ => return later("this event kind"),
     })
 }

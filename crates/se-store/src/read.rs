@@ -1,4 +1,5 @@
 mod page;
+mod query;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
 use rusqlite::{Connection, OptionalExtension, params};
 use se_types::{
@@ -243,7 +244,7 @@ impl se_types::LegacyIdRegistry for LegacyRegistry<'_> {
             se_types::IdKind::SessionId => "session",
             _ => return Ok(false),
         };
-        self.snapshot.db.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE kind=? AND wire_id=? AND scope_key=? AND encoding='registered-exception')",crate::sql_value::sql_params![kind,text,scope],|r|crate::sql_value::value(r,0)).map_err(|e|se_types::SeError::invalid("legacy registry",&e.to_string()))
+        self.snapshot.db.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE kind=? AND wire_id=? AND scope_key=? AND encoding='registered-exception')",rusqlite::params![kind,text,scope],|r|crate::sql_value::value(r,0)).map_err(|e|se_types::SeError::invalid("legacy registry",&e.to_string()))
     }
 }
 impl Snapshot for SqliteSnapshot {
@@ -571,16 +572,35 @@ impl Snapshot for SqliteSnapshot {
         _query: HistoryQuery,
         _budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>> {
-        later("history")
+        self.read_history(_query, _budget)
     }
     fn search(&mut self, _query: SearchQuery, _budget: ReadBudget) -> StoreResult<Page<SearchHit>> {
         later("search")
     }
     fn projects(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        later("projects")
+        if !matches!(self.scope.visibility, Visibility::Owner) {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "project enumeration is owner-only",
+            ));
+        }
+        self.list_heads("projects", "first_seq", "state='active'", vec![], _budget)
     }
     fn principals(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        later("principals")
+        let p = self.project_bytes()?;
+        if matches!(self.scope.visibility, Visibility::SelfOnly(_)) {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "principal list requires shared-project admission",
+            ));
+        }
+        self.list_heads(
+            "principals",
+            "first_seq",
+            "project_id=?",
+            vec![rusqlite::types::Value::Blob(p)],
+            _budget,
+        )
     }
     fn session(&mut self, _id: SessionId) -> StoreResult<Read<ProjectionRecord>> {
         later("session")
@@ -589,14 +609,45 @@ impl Snapshot for SqliteSnapshot {
         later("sessions")
     }
     fn decision(&mut self, _id: DecisionId) -> StoreResult<Read<ProjectionRecord>> {
-        later("decision")
+        let p = self.project_bytes()?;
+        let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let d = key(&self.db, "decision", _id.as_str(), &s, false)?;
+        self.head(
+            "decisions",
+            "project_id=? AND decision_id=?",
+            &[&p, &d],
+            Some("proposed_seq"),
+        )
     }
     fn decisions(
         &mut self,
         _query: DecisionQuery,
         _budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>> {
-        later("decisions")
+        let p = self.project_bytes()?;
+        if _query.history {
+            return Err(fail(
+                StoreErrorCode::InvalidTransition,
+                "use immutable history for decision history",
+            ));
+        }
+        let mut filter = String::from("project_id=?");
+        let mut keys = vec![rusqlite::types::Value::Blob(p)];
+        if _query.pending_only {
+            filter.push_str(" AND state='proposed'")
+        }
+        if let Some(id) = _query.id {
+            let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
+            filter.push_str(" AND decision_id=?");
+            keys.push(rusqlite::types::Value::Blob(key(
+                &self.db,
+                "decision",
+                id.as_str(),
+                &s,
+                false,
+            )?));
+        }
+        self.list_heads("decisions", "last_seq", &filter, keys, _budget)
     }
     fn turns(&mut self, _agent: AgentId, _budget: ReadBudget) -> StoreResult<Page<StoredEvent>> {
         later("turns")

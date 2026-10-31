@@ -317,6 +317,13 @@ pub trait Snapshot {
     /// Bound to this snapshot's admitted project and recorded import sources.
     fn legacy_registry(&self) -> StoreResult<Self::LegacyRegistry<'_>>;
     fn info(&self) -> StoreInfo;
+    /// Encode an admitted, visible position for a public receipt/checked/history
+    /// field. Binds store/incarnation, scope, principal and purpose; no arithmetic.
+    fn position_cursor(
+        &self,
+        position: &StorePosition,
+        purpose: PositionPurpose,
+    ) -> StoreResult<se_types::Cursor>;
     /// runtime.* facts are private: known excluded IDs return a typed refusal.
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>>;
     /// Excludes runtime.* facts, including their native nonces.
