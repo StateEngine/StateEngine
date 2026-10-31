@@ -70,8 +70,9 @@ for name in $profiles; do
         [ -f "$profile" ] && [ -r "$profile" ] && [ -w "$profile" ] || fail "login profile is unreadable or not writable: $profile"
         if grep -q -F '# >>> StateEngine PATH >>>' "$profile"; then fail "unrecorded PATH block is preserved: $profile"; fi
         prior=$(file_digest "$profile")
-    else prior=absent; fi
-    profile_digests="$profile_digests$name $prior
+        prior_bytes=$(wc -c < "$profile")
+    else prior=absent; prior_bytes=0; fi
+    profile_digests="$profile_digests$name $prior $prior_bytes
 "
 done
 # The inventory contains only safe relative names, so this list needs no path splitting.
@@ -82,7 +83,6 @@ done
 owner=$(id -u)
 created_directories=''
 stage=''
-temp_profile=''
 temp_payload=''
 payload_destination=''
 payload_kind=''
@@ -114,15 +114,57 @@ publish_file() {
     temp_payload=''
     sync "$2" "$(dirname -- "$2")"
 }
+# Hash only the original prefix through a FIFO; no profile bytes reach disk.
+prefix_digest() {
+    hash_scratch=$(mktemp -d "$stage/.hash-XXXXXXXX") || return 1
+    mkfifo "$hash_scratch/input" || return 1
+    sha256sum < "$hash_scratch/input" > "$hash_scratch/result" &
+    hash_pid=$!
+    head_status=0
+    head -c "$2" -- "$1" > "$hash_scratch/input" || head_status=$?
+    hash_status=0
+    wait "$hash_pid" || hash_status=$?
+    rm -- "$hash_scratch/input" || return 1
+    [ "$head_status" -eq 0 ] && [ "$hash_status" -eq 0 ] || return 1
+    hash_value=$(cat "$hash_scratch/result") || return 1
+    rm -- "$hash_scratch/result" || return 1
+    rmdir -- "$hash_scratch" || return 1
+    printf '%s' "${hash_value%% *}"
+}
+profile_append_matches() {
+    profile=$HOME/$1
+    [ ! -L "$profile" ] && [ -f "$profile" ] || return 1
+    prior=$(cat "$stage/$1.digest") || return 1
+    prior_bytes=$(cat "$stage/$1.bytes") || return 1
+    current_bytes=$(wc -c < "$profile") || return 1
+    block_bytes=$(wc -c < "$stage/path-block") || return 1
+    appended_bytes=$((current_bytes - prior_bytes))
+    [ "$appended_bytes" -ge 0 ] && [ "$appended_bytes" -le "$block_bytes" ] || return 1
+    if [ "$prior" != absent ]; then
+        prefix=$(prefix_digest "$profile" "$prior_bytes") || return 1
+        [ "$prefix" = "$prior" ] || return 1
+    else [ "$prior_bytes" -eq 0 ] || return 1; fi
+    cmp -s -n "$appended_bytes" -i "$prior_bytes":0 -- "$profile" "$stage/path-block"
+}
+remove_stale_temps() {
+    plain_path "$1"
+    [ -d "$1" ] || return 0
+    [ -r "$1" ] && [ -x "$1" ] || fail "cannot inspect stale installation scratch: $1"
+    for stale in "$1/$2"????????; do
+        [ -f "$stale" ] && [ ! -L "$stale" ] || continue
+        suffix=${stale##*/}
+        suffix=${suffix#"$2"}
+        case "$suffix" in *[!0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz]*) continue ;; esac
+        stale_owner=$(stat -c %u -- "$stale") || fail "cannot read stale installation scratch owner: $stale"
+        [ "$stale_owner" = "$owner" ] || continue
+        rm -- "$stale" || fail "cannot remove owned stale installation scratch: $stale"
+    done
+}
 cleanup() {
     exit_code=$?
     trap - EXIT HUP INT TERM
     set +e
     rollback_complete=1
-    rollback_profile=''
-    if [ -n "$temp_profile" ]; then
-        if rm -f -- "$temp_profile"; then temp_profile=''; else rollback_complete=0; fi
-    fi
     if [ -n "$temp_payload" ] && [ "$payload_destination" -ef "$temp_payload" ]; then
         case "$payload_kind" in binary) published_binary=1 ;; fish) published_fish=1 ;; esac
     fi
@@ -132,28 +174,17 @@ cleanup() {
             [ "$claimed" -eq 1 ] || continue
             profile=$HOME/$name
             prior=$(cat "$stage/$name.digest")
-            current=''
-            if [ ! -L "$profile" ] && [ -f "$profile" ]; then current=$(file_digest "$profile"); fi
-            after=''
-            if [ -f "$stage/$name.after-digest" ]; then after=$(cat "$stage/$name.after-digest"); fi
-            if [ -n "$after" ] && [ "$current" = "$after" ]; then
-                if [ "$prior" != absent ]; then
-                    rollback_profile=$(mktemp "$HOME/.se-profile-XXXXXXXX")
-                    bytes=$(wc -c < "$profile")
-                    block_bytes=$(wc -c < "$stage/path-block")
-                    prefix_bytes=$((bytes - block_bytes))
-                    if cmp -s -i "$prefix_bytes":0 -- "$profile" "$stage/path-block" &&
-                       cp --attributes-only --preserve=mode,ownership,xattr -- "$profile" "$rollback_profile" &&
-                       head -c "$prefix_bytes" -- "$profile" > "$rollback_profile" &&
-                       [ "$(file_digest "$rollback_profile")" = "$prior" ] && mv -- "$rollback_profile" "$profile"; then rollback_profile=''
+            if [ -f "$stage/$name.started" ]; then
+                if profile_append_matches "$name"; then
+                    if [ "$prior" = absent ]; then
+                        if rm -- "$profile"; then sync "$HOME" || rollback_complete=0
+                        else rollback_complete=0; fi
+                    elif truncate -s "$prior_bytes" -- "$profile" && sync "$profile" &&
+                         [ "$(file_digest "$profile")" = "$prior" ]; then :
                     else rollback_complete=0; fi
-                else rm -- "$profile" || rollback_complete=0; fi
-            elif [ -n "$current" ] && [ "$current" = "$prior" ]; then :
+                else rollback_complete=0; fi
+            elif [ ! -L "$profile" ] && [ -f "$profile" ] && [ "$(file_digest "$profile")" = "$prior" ]; then :
             elif [ -e "$profile" ] || [ -L "$profile" ]; then rollback_complete=0; fi
-            if [ -n "$rollback_profile" ]; then
-                if rm -f -- "$rollback_profile"; then rollback_profile=''
-                else rollback_complete=0; break; fi
-            fi
         done
         if [ "$published_fish" -eq 1 ]; then
             if [ ! -L "$fish_file" ] && cmp -s -- "$fish_file" "$stage/fish-config"; then rm -- "$fish_file" || rollback_complete=0
@@ -176,10 +207,9 @@ cleanup() {
         if [ "$claimed" -eq 1 ] && [ "$rollback_complete" -eq 1 ] && [ "$record" -ef "$stage/install.json" ]; then rm -- "$record"; fi
         [ "$rollback_complete" -eq 1 ] || printf 'Rollback incomplete; owned paths and blocks remain recorded: %s\n' "$record" >&2
     fi
-    [ -z "$temp_profile" ] || rm -- "$temp_profile"
-    [ -z "$rollback_profile" ] || rm -- "$rollback_profile"
     [ -z "$temp_payload" ] || rm -- "$temp_payload"
     if [ -n "$stage" ]; then
+        find "$stage" -depth -type p -exec rm -- {} +
         find "$stage" -depth -type f -exec rm -- {} +
         find "$stage" -depth -type d -exec rmdir -- {} \;
         if [ -e "$stage" ]; then
@@ -220,8 +250,11 @@ case ":$PATH:" in
 esac
 # <<< StateEngine PATH <<<
 BLOCK
-while read -r name prior; do
-    [ -z "$name" ] || printf '%s\n' "$prior" > "$stage/$name.digest"
+while read -r name prior prior_bytes; do
+    if [ -n "$name" ]; then
+        printf '%s\n' "$prior" > "$stage/$name.digest"
+        printf '%s\n' "$prior_bytes" > "$stage/$name.bytes"
+    fi
 done <<DIGESTS
 $profile_digests
 DIGESTS
@@ -269,6 +302,10 @@ sync "$stage/install.json"
 ln -- "$stage/install.json" "$record" || fail 'another installation already owns the record'
 claimed=1
 sync "$record" "$data"
+# Only the exclusive claimant may scrub earlier scratch in shared destinations.
+remove_stale_temps "$HOME" .se-profile-
+remove_stale_temps "$bin" .se-publish-
+if [ -n "$fish_file" ]; then remove_stale_temps "$(dirname -- "$fish_file")" .se-publish-; fi
 mv -T -n -- "$stage/assets" "$assets"
 [ ! -d "$stage/assets" ] || fail 'installation assets appeared during installation'
 published_assets=1
@@ -284,19 +321,13 @@ for name in $profiles; do
             fail "login profile changed during installation: $profile"
         fi
     else [ ! -e "$profile" ] && [ ! -L "$profile" ] || fail "login profile appeared during installation: $profile"; fi
-    temp_profile=$(mktemp "$HOME/.se-profile-XXXXXXXX")
-    if [ "$prior" != absent ]; then
-        cp --attributes-only --preserve=mode,ownership,xattr -- "$profile" "$temp_profile"
-        cat -- "$profile" > "$temp_profile"
-        [ "$(file_digest "$temp_profile")" = "$prior" ] || fail "login profile changed while reading: $profile"
+    if [ "$prior" = absent ]; then
+        (set -C; : > "$profile") || fail "login profile appeared during installation: $profile"
     fi
-    cat "$stage/path-block" >> "$temp_profile"
-    after=$(file_digest "$temp_profile")
-    printf '%s\n' "$after" > "$stage/$name.after-digest"
-    sync "$temp_profile"
-    mv -- "$temp_profile" "$profile"
-    temp_profile=''
-    [ "$(file_digest "$profile")" = "$after" ] || fail "login profile readback failed: $profile"
+    : > "$stage/$name.started"
+    cat "$stage/path-block" >> "$profile"
+    sync "$profile" "$HOME"
+    profile_append_matches "$name" && [ "$appended_bytes" -eq "$block_bytes" ] || fail "login profile append readback failed: $profile"
 done
 for relative in $asset_files; do cmp -s -- "$assets/$relative" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done
 cmp -s -- "$bin/se" "$bundle/se" || fail 'installed binary readback failed'
