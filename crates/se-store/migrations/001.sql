@@ -433,7 +433,7 @@ CREATE TABLE legacy_ids(
   imported_seq INTEGER NOT NULL REFERENCES events(seq),
   PRIMARY KEY(import_id,family,legacy_id)
 ) STRICT, WITHOUT ROWID;
--- Non-mail lists read current heads with live keysets, not temporal versions.
+-- Mutable lists read current heads with live keysets, not temporal versions.
 CREATE INDEX projects_order ON projects(first_seq,project_id);
 CREATE INDEX principals_order ON principals(project_id,first_seq,principal_id);
 CREATE INDEX sessions_order ON sessions(project_id,first_seq,session_id);
