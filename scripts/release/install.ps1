@@ -42,12 +42,27 @@ function Get-TextDigest([string]$Text) {
     try { ([BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($Text)))).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
 }
-function New-OwnedDirectory([string]$Path) {
+function Set-NativeOwner([string]$Path, [Security.Principal.SecurityIdentifier]$Owner) {
+    Assert-PlainPath $Path
+    $security = Get-Acl -LiteralPath $Path
+    if ($security.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $Owner.Value) {
+        $security.SetOwner($Owner)
+        Set-Acl -LiteralPath $Path -AclObject $security
+    }
+    $readback = Get-Acl -LiteralPath $Path
+    if ($readback.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $Owner.Value) {
+        throw "installed native-owner readback failed: $Path"
+    }
+}
+function New-OwnedDirectory([string]$Path, [Security.Principal.SecurityIdentifier]$Owner) {
     if (-not [IO.Directory]::Exists($Path)) {
         $parent = [IO.Path]::GetDirectoryName($Path)
-        if ($parent) { New-OwnedDirectory $parent }
+        if ($parent) { New-OwnedDirectory $parent $Owner }
         Initialize-NativeTypes
-        if ([StateEngineInstall.Native]::MakeDirectory($Path)) { $created.Add($Path) }
+        if ([StateEngineInstall.Native]::MakeDirectory($Path)) {
+            $created.Add($Path)
+            Set-NativeOwner $Path $Owner
+        }
         Assert-PlainPath $Path
     }
 }
@@ -154,16 +169,17 @@ try {
             $files += @{path = $destination; sha256 = Get-Digest $path}
         }
     }
-    $owner = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $owner = $ownerSid.Value
     $priorDigest = if ($hadPath) { Get-TextDigest ([string]$before) } else { $null }
     $edits = @()
     if (-not $alreadyPresent) {
         $edits += @{target = 'HKCU\Environment\Path'; before_sha256 = $priorDigest; block = $bin}
     }
     # All checks above are read-only. Record only directories this install creates.
-    New-OwnedDirectory $bin
-    New-OwnedDirectory $data
-    foreach ($copy in $copies) { New-OwnedDirectory ([IO.Path]::GetDirectoryName($copy.to)) }
+    New-OwnedDirectory $bin $ownerSid
+    New-OwnedDirectory $data $ownerSid
+    foreach ($copy in $copies) { New-OwnedDirectory ([IO.Path]::GetDirectoryName($copy.to)) $ownerSid }
     $owned = [ordered]@{schema = 'stateengine-install/v1'; owner = $owner;
         files = $files; created_directories = $created.ToArray(); path_edits = @($edits)}
     # Claim the record with create-new before copying files or changing PATH.
@@ -190,6 +206,7 @@ try {
         Assert-PlainPath $copy.to
         [IO.File]::Copy($copy.from, $copy.to, $false)
         $written.Add($copy.to)
+        Set-NativeOwner $copy.to $ownerSid
         if ((Get-Digest $copy.to) -ne (Get-Digest $copy.from)) { throw "installed file readback failed: $($copy.to)" }
     }
     if ($null -ne $registry) { $registry.Dispose() }
