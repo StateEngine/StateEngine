@@ -42,6 +42,7 @@ def contents(root):
 class LinuxInstaller(unittest.TestCase):
     archive = None
     source_root = None
+    maxDiff = None
 
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory(prefix="se-installer-judge-")
@@ -327,6 +328,45 @@ class LinuxInstaller(unittest.TestCase):
         self.assertFalse(record.exists())
         self.assertEqual(contents(home), before, "complete rollback removes only new files/directories and preserves prior history")
 
+    def test_failure_after_real_profile_publication_restores_or_preserves_foreign_edits(self):
+        for concurrent_edit in (False, True):
+            with self.subTest(concurrent_edit=concurrent_edit):
+                home = self.home("profile-rollback-" + str(concurrent_edit))
+                profile = home / ".profile"
+                prior = b"# original profile credential=judge-profile-secret\r\n"
+                profile.write_bytes(prior)
+                profile.chmod(0o640)
+                os.setxattr(profile, b"user.se-install-judge", b"preserve-profile-metadata")
+                (home / ".bash_profile").write_bytes(b"# original bash profile\n")
+                before = contents(home)
+                tools = self.root / ("profile-fault-tools-" + str(concurrent_edit))
+                tools.mkdir()
+                shim = tools / "mv"
+                shim.write_text(
+                    '#!/bin/sh\nfor destination do :; done\ncase "$destination" in */.bash_profile)\n'
+                    '  grep -q -F "# >>> StateEngine PATH >>>" "$HOME/.profile" || exit 75\n'
+                    '  test -f "$HOME/.local/state/stateengine/standalone-install.json" || exit 76\n'
+                    '  printf "JUDGE-AFTER-PROFILE-PUBLICATION\\n" >&2\n'
+                    + ('  printf "# concurrent foreign edit\\n" >> "$HOME/.profile"\n' if concurrent_edit else '')
+                    + '  exit 78;;\nesac\nexec /usr/bin/mv "$@"\n')
+                shim.chmod(0o700)
+                argv, environment = self.command(home)
+                environment["PATH"] = str(tools) + ":" + environment["PATH"]
+                run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn(b"JUDGE-AFTER-PROFILE-PUBLICATION", run.stderr)
+                self.assertEqual(os.getxattr(profile, b"user.se-install-judge"), b"preserve-profile-metadata")
+                record = home / ".local/state/stateengine/standalone-install.json"
+                if concurrent_edit:
+                    self.assertIn(b"Rollback incomplete", run.stderr)
+                    self.assertTrue(record.is_file(), "unresolved foreign edits retain exact recovery ownership")
+                    self.assertTrue(profile.read_bytes().startswith(prior))
+                    self.assertTrue(profile.read_bytes().endswith(b"# concurrent foreign edit\n"))
+                    self.assertIn(b"# >>> StateEngine PATH >>>", profile.read_bytes())
+                else:
+                    self.assertEqual(contents(home), before, "published profile rollback restores original bytes, mode and owned paths")
+                    self.assertFalse(record.exists())
+
     def test_abrupt_loss_after_claim_retains_recoverable_nonsecret_ownership(self):
         home = self.home("interrupted")
         prior = b"# credential=not-a-real-interruption-secret\n"
@@ -337,6 +377,14 @@ class LinuxInstaller(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
         raw = record.read_bytes()
         self.assertNotIn(b"not-a-real-interruption-secret", raw)
+        # The profile itself is the sole allowed copy. Check the complete
+        # private fixture, including the state home, installer scratch and
+        # temporary publication files, rather than only the JSON record.
+        for path in self.root.rglob("*"):
+            if path == home / ".profile" or not path.is_file():
+                continue
+            self.assertNotIn(b"not-a-real-interruption-secret", path.read_bytes(),
+                             f"interrupted installer retained profile secrets in {path}")
         ownership = json.loads(raw)
         self.assertNotIn("install_root", ownership)
         self.assertIn(str(home / ".local/bin/se"), {entry["path"] for entry in ownership["files"]})
@@ -347,6 +395,34 @@ class LinuxInstaller(unittest.TestCase):
                 self.assertEqual(digest(Path(entry["path"])), entry["sha256"])
         self.assertFalse((home / ".local/bin/se").exists())
         self.assertEqual((home / ".profile").read_bytes(), prior)
+
+    def test_unsupported_login_shells_refuse_without_creating_install_state(self):
+        for shell in ("/bin/csh", "/bin/tcsh", "/usr/bin/nu"):
+            with self.subTest(shell=shell):
+                home = self.home(Path(shell).name)
+                before = contents(home)
+                argv, environment = self.command(home)
+                environment["SHELL"] = shell
+                run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+                self.assertNotEqual(run.returncode, 0, "unsupported login shell was told installation succeeded")
+                self.assertIn(b"Install refused:", run.stderr)
+                self.assertRegex(run.stderr.decode(), r"sh|bash|zsh|fish")
+                self.assertEqual(contents(home), before)
+
+    def test_state_home_on_another_filesystem_does_not_break_binary_publication(self):
+        if not Path("/dev/shm").is_dir() or Path("/dev/shm").stat().st_dev == self.root.stat().st_dev:
+            self.skipTest("no independent writable filesystem: cross-filesystem install NOT GRADED")
+        with tempfile.TemporaryDirectory(prefix="se-installer-state-", dir="/dev/shm") as state:
+            home = self.home("cross-filesystem")
+            argv, environment = self.command(home)
+            environment["SE_HOME"] = state
+            run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+            self.assertEqual(run.returncode, 0, run.stderr.decode(errors="replace"))
+            record = Path(state) / "standalone-install.json"
+            self.assertTrue(record.is_file())
+            self.assertEqual((home / ".local/bin/se").read_bytes(), (self.bundle / "se").read_bytes())
+            for entry in json.loads(record.read_text())["files"]:
+                self.assertEqual(digest(Path(entry["path"])), entry["sha256"])
 
 
 if __name__ == "__main__":
