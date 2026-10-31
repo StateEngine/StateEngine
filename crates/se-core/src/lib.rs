@@ -2,3 +2,6 @@
 
 /// S-R1 compile-only read/batch/typed-continuation seam.
 pub mod commit;
+
+pub mod registry;
+pub mod config_policy;
