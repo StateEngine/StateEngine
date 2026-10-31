@@ -10,6 +10,7 @@ mod event;
 mod identity;
 mod model;
 mod open;
+mod owner_guard;
 mod read;
 mod sql_value;
 mod transaction;

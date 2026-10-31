@@ -119,6 +119,7 @@ pub(crate) fn wire(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> S
             "decision" => "dec_",
             "event" => "ev_",
             "store" => "store_",
+            "lifecycle" => "life_",
             _ => return Err(invalid("unknown identity kind")),
         };
         return Ok(format!("{prefix}{id}"));

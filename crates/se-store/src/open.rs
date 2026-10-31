@@ -21,6 +21,8 @@ pub struct SqliteHost {
     pub(crate) reader: SqliteReader,
     pub(crate) engine: Engine,
     pub(crate) context: BackupContext,
+    // Declared after engine so SQLite closes before custody is released.
+    pub(crate) lease: Option<Arc<dyn RuntimeLease>>,
 }
 impl SqliteReader {
     fn for_options(o: &StoreOptions) -> StoreResult<Self> {
@@ -36,7 +38,7 @@ impl SqliteReader {
             slots: Arc::new(AtomicUsize::new(0)),
         })
     }
-    fn connect(&self) -> StoreResult<Connection> {
+    pub(crate) fn connect(&self) -> StoreResult<Connection> {
         connection::connect(&self.path, false, self.timeout)
     }
 }
@@ -146,7 +148,7 @@ impl SqliteFactory {
             }
             c.close().map_err(|(_, e)| sql(e))?;
             match lease.files().readback(&staged)? {
-                Read::Present { value: file } => file.sync_all().map_err(invalid)?,
+                Read::Present { .. } => {}
                 _ => {
                     return Err(fail(
                         StoreErrorCode::Unreadable,
@@ -246,6 +248,7 @@ impl StoreFactory for SqliteFactory {
                             poisoned: false,
                         },
                         context: BackupContext::new_internal(),
+                        lease: None,
                     },
                 })
             }
@@ -276,6 +279,7 @@ impl StoreFactory for SqliteFactory {
             reader,
             engine,
             context: BackupContext::new_internal(),
+            lease: None,
         })
     }
     fn backup(
@@ -344,6 +348,13 @@ impl ReadStore for SqliteReader {
             }),
         }
     }
+    fn owner_guard(
+        &self,
+        files: &dyn StateFiles,
+        budget: ReadBudget,
+    ) -> StoreResult<OwnerGuardInventory> {
+        crate::owner_guard::read(self, files, budget)
+    }
     fn credential(&self, _: [u8; 32]) -> StoreResult<Read<CredentialRecord>> {
         later("capability credential lookup")
     }
@@ -373,6 +384,13 @@ macro_rules! delegate_reads {
             }
             fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>> {
                 self.reader.runtime_owner()
+            }
+            fn owner_guard(
+                &self,
+                files: &dyn StateFiles,
+                budget: ReadBudget,
+            ) -> StoreResult<OwnerGuardInventory> {
+                self.reader.owner_guard(files, budget)
             }
             fn credential(&self, h: [u8; 32]) -> StoreResult<Read<CredentialRecord>> {
                 self.reader.credential(h)

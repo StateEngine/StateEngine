@@ -54,6 +54,20 @@ pub enum Scope {
     Registry,
     Project(ProjectId),
 }
+/// Facts for the trusted native owner observer; these do not grant owner authority.
+#[derive(Clone, Debug)]
+pub struct OwnerGuardInventory {
+    pub store: StoreInfo,
+    pub owners: Vec<HumanId>,
+    pub processes: Vec<OwnerGuardProcess>,
+}
+#[derive(Clone, Debug)]
+pub struct OwnerGuardProcess {
+    pub project: ProjectId,
+    pub revision: Revision,
+    pub state: crate::ProcessState,
+    pub identity: crate::ProcessIdentityRecord,
+}
 /// Supplied by admitted core policy; this is not a deserializable authority credential.
 #[derive(Clone, Debug)]
 pub struct Admission {

@@ -140,7 +140,7 @@ impl WriterClient for SqliteClient {
     }
 }
 pub(crate) fn start(
-    host: SqliteHost,
+    mut host: SqliteHost,
     options: WriterOptions,
     lease: Arc<dyn RuntimeLease>,
 ) -> StoreResult<SqliteWriter> {
@@ -157,7 +157,7 @@ pub(crate) fn start(
     }
     if options.maximum_requests.get() > 256
         || options.queue_requests.get() > 256
-        || options.resident_bytes.get() > 8 * 1024 * 1024
+        || options.resident_bytes.get() > 1024 * 1024
         || options.group_bytes.get() > 2 * 1024 * 1024
     {
         return Err(invalid("writer options exceed bounded request/byte limits"));
@@ -172,6 +172,7 @@ pub(crate) fn start(
             ));
         }
     }
+    host.lease = Some(lease.clone());
     // Two reserved control slots: at most one pending flush, and the unique
     // owner's drain. Regular submissions remain bounded by queue_requests.
     let request_limit = options.queue_requests.get() as usize;

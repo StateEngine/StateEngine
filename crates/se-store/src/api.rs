@@ -101,6 +101,13 @@ pub trait ReadStore {
     fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>>;
     fn inspect_backups(&self, budget: ReadBudget) -> StoreResult<Page<Read<BackupGeneration>>>;
     fn snapshot(&self, scope: ReadScope) -> StoreResult<Self::Snapshot>;
+    /// Trusted bootstrap inventory after protected native file access, before Admission.
+    /// Across the whole home; returns only a complete finite result, never a partial page.
+    fn owner_guard(
+        &self,
+        files: &dyn StateFiles,
+        budget: ReadBudget,
+    ) -> StoreResult<OwnerGuardInventory>;
     /// Bootstrap-only hash lookup used by the trusted capability verifier before
     /// constructing Admission; never an operation/tool or a principal fallback.
     fn credential(&self, secret_sha256: [u8; 32]) -> StoreResult<Read<CredentialRecord>>;
