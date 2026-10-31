@@ -17,9 +17,42 @@ pub fn forward(
     selections: &CliSelections,
     options: &ClientOptions,
 ) -> Result<AnyOutput> {
-    let started = Instant::now();
     let expected = op.meta().family.schema();
     let call = operation(op, selections, endpoint.generation)?;
+    exchange(endpoint, credential, call, &expected, options)
+}
+
+/// Hooks use their closed native request branch with no CLI scope metadata and
+/// no direct-write fallback. The caller retains its source's natural identity.
+pub fn forward_hook(
+    endpoint: &EndpointRecord,
+    credential: ClientCredential,
+    hook: se_host::ClaudeHookInput,
+    options: &ClientOptions,
+) -> Result<AnyOutput> {
+    exchange(
+        endpoint,
+        credential,
+        IpcEnvelope {
+            version: se_types::API_VERSION,
+            request_id: 1,
+            generation: endpoint.generation,
+            authority: None,
+            cli_selections: None,
+            request: IpcRequest::Hook(hook),
+        },
+        &se_core::ops::HookClaude::META.family.schema(),
+        options,
+    )
+}
+fn exchange(
+    endpoint: &EndpointRecord,
+    credential: ClientCredential,
+    call: IpcEnvelope,
+    expected: &str,
+    options: &ClientOptions,
+) -> Result<AnyOutput> {
+    let started = Instant::now();
     let mut connection = BlockingIpcClient::connect_authenticated(
         endpoint,
         credential,
@@ -45,7 +78,7 @@ pub fn forward(
         cancelled: options.cancelled.clone(),
     };
     let output = connection.exchange(call, &exchange_options)?;
-    decode(output, &expected)
+    decode(output, expected)
 }
 
 /// The complete closed input, including its original request key, is unchanged.
@@ -98,7 +131,7 @@ pub fn decode(output: OperationOutput, expected: &str) -> Result<AnyOutput> {
 fn call_operation(call: &IpcEnvelope) -> &str {
     match &call.request {
         IpcRequest::Operation(op) => &op.name,
-        IpcRequest::Hook(_) => "local IPC",
+        IpcRequest::Hook(_) => "hook.claude",
     }
 }
 fn invalid(expected: &str) -> SeError {
