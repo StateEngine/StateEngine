@@ -1,4 +1,4 @@
-//! Bounded native envelope carried only by the inherited protected stdin file.
+//! Bounded envelope carried by the inherited anonymous pipe, never a pathname.
 use super::*;
 use sha2::{Digest, Sha256};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -7,24 +7,24 @@ pub(super) struct Frame {
     pub parent: UninstallProcessIdentity,
     pub target: FileId,
     pub helper: FileId,
-    pub frame: FileId,
     pub digest: [u8; 32],
     pub nonce: [u8; 32],
     pub deadline: u64,
     pub root: PathBuf,
+    pub cleanup_root: PathBuf,
+    pub directory: Option<staging::DirectoryCustody>,
     pub helper_path: PathBuf,
-    pub frame_path: PathBuf,
     pub plan: Vec<u8>,
 }
 impl Frame {
     pub fn encode(&self) -> Result<Vec<u8>> {
-        let mut data = b"SEUNINST1".to_vec();
+        let mut data = b"SEUNINST2".to_vec();
         for value in self.handles {
             data.extend(value.to_le_bytes());
         }
         data.extend(self.parent.pid.to_le_bytes());
         data.extend(self.parent.creation_filetime.to_le_bytes());
-        for file in [self.target, self.helper, self.frame] {
+        for file in [self.target, self.helper] {
             data.extend(file.volume.to_le_bytes());
             data.extend(file.index);
         }
@@ -34,8 +34,8 @@ impl Frame {
         for path in [
             &self.parent.image,
             &self.root,
+            &self.cleanup_root,
             &self.helper_path,
-            &self.frame_path,
         ] {
             let units: Vec<_> = path.as_os_str().encode_wide().collect();
             if !path.is_absolute() || units.len() > 32760 || units.contains(&0) {
@@ -46,6 +46,10 @@ impl Frame {
                 data.extend(unit.to_le_bytes());
             }
         }
+        let directory = serde_json::to_vec(&self.directory)
+            .map_err(|e| error("encode uninstall directory custody", io::Error::other(e)))?;
+        data.extend((directory.len() as u32).to_le_bytes());
+        data.extend(directory);
         if self.plan.is_empty() || self.plan.len() > 1024 * 1024 {
             return Err(refuse(
                 "encode uninstall envelope",
@@ -73,7 +77,7 @@ impl Frame {
             ));
         }
         let mut input = Reader(body);
-        if input.take(9)? != b"SEUNINST1" {
+        if input.take(9)? != b"SEUNINST2" {
             return Err(refuse(
                 "authenticate uninstall envelope",
                 "unsupported native envelope",
@@ -101,14 +105,22 @@ impl Frame {
         };
         let target = file()?;
         let helper = file()?;
-        let frame = file()?;
         let digest = input.array()?;
         let nonce = input.array()?;
         let deadline = input.u64()?;
         let image = input.path()?;
         let root = input.path()?;
+        let cleanup_root = input.path()?;
         let helper_path = input.path()?;
-        let frame_path = input.path()?;
+        let directory_size = input.u32()? as usize;
+        if directory_size > 256 * 1024 {
+            return Err(refuse(
+                "read uninstall directory custody",
+                "record capacity exceeded",
+            ));
+        }
+        let directory = serde_json::from_slice(input.take(directory_size)?)
+            .map_err(|e| error("read uninstall directory custody", io::Error::other(e)))?;
         let size = input.u32()? as usize;
         if size == 0 || size > 1024 * 1024 {
             return Err(refuse(
@@ -132,13 +144,13 @@ impl Frame {
             },
             target,
             helper,
-            frame,
             digest,
             nonce,
             deadline,
             root,
+            cleanup_root,
+            directory,
             helper_path,
-            frame_path,
             plan,
         })
     }

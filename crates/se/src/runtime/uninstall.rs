@@ -51,6 +51,13 @@ pub(super) fn execute(
     )?;
     let mut installation_claim =
         Some(se_proc::NativeInstallationClaim::acquire().map_err(native_error)?);
+    #[cfg(windows)]
+    super::helper_cleanup::retry(
+        &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
+        installation_claim
+            .as_ref()
+            .ok_or_else(|| invalid("native installation claim missing"))?,
+    )?;
     let record_path = cx.home.join("standalone-install.json");
     let mut record = OwnedFile::open(&record_path)
         .map_err(native_error)?

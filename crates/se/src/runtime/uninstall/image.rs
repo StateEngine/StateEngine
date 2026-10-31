@@ -61,6 +61,7 @@ pub(super) fn remove_image(
     let receipt = helper.authorize().map_err(|e| {
         se_core::scope::unreadable("Windows uninstall authorization", &e.to_string())
     })?;
+    crate::runtime::helper_cleanup::verify(&cx.home, &receipt.helper_cleanup)?;
     Ok(file_effect(
         &file.path,
         FileOutcome::Pending,

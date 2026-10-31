@@ -9,7 +9,8 @@ pub struct NativeUninstallHandoff {
     nonce: [u8; 32],
     deadline: u64,
     ready_seen: bool,
-    staged_paths: [PathBuf; 2],
+    staged_paths: [PathBuf; 1],
+    cleanup: UninstallHelperCleanup,
 }
 impl NativeUninstallHandoff {
     /// Core must first validate/record the complete plan and human admission.
@@ -28,6 +29,17 @@ impl NativeUninstallHandoff {
             let mut target = native::open_image(&parent.image, false)?;
             let target_id = native::file_id(&target)?;
             let digest = native::digest(&mut target)?;
+            let original_root = files.root().to_owned();
+            let staging = if staging::elevated()? {
+                Some(staging::Staging::create(files)?)
+            } else {
+                None
+            };
+            if let Some(stage) = &staging {
+                pending.push(stage.directory.path.clone());
+            }
+            let stage_directory = staging.as_ref().map(|stage| stage.directory.clone());
+            let files = staging.as_ref().map_or(files, |stage| stage.files());
             let mut staged = files.create_staging(files.root()).map_err(custody)?;
             pending.push(staged.path.clone());
             io::copy(&mut target, &mut staged.file)
@@ -36,19 +48,28 @@ impl NativeUninstallHandoff {
                 .file
                 .sync_all()
                 .map_err(|e| error("flush staged uninstall helper", e))?;
-            if native::digest(&mut staged.file)? != digest {
-                return Err(refuse(
-                    "read back staged uninstall helper",
-                    "staged image bytes differ from installed image",
-                ));
+            if staging.is_some() {
+                staging::verify_high(&staged.file, false)?;
             }
             let helper_path = staged.path.with_extension("exe");
             drop(staged.file);
             files
                 .publish_no_replace(&staged.path, &helper_path)
                 .map_err(custody)?;
-            pending[0] = helper_path.clone();
-            let helper_file = native::open_image(&helper_path, false)?;
+            if let Some(last) = pending.last_mut() {
+                *last = helper_path.clone();
+            }
+            // The retained read pin denies write sharing before digest readback,
+            // and remains held through CreateProcessW. A raced writer either
+            // prevents this open or changes the bytes that this pin verifies.
+            let mut helper_pin = native::open_image(&helper_path, false)?;
+            if native::digest(&mut helper_pin)? != digest {
+                return Err(refuse(
+                    "read back staged uninstall helper",
+                    "staged image bytes differ from installed image",
+                ));
+            }
+            let helper_file = native::delete_on_close(&helper_pin)?;
             protected(&helper_file, &helper_path)?;
             let helper_id = native::file_id(&helper_file)?;
             let (authorize_read, authorize_write) = native::pipe()?;
@@ -64,8 +85,7 @@ impl NativeUninstallHandoff {
                 native::duplicate(authorize_read.as_raw_handle(), FILE_GENERIC_READ, true)?,
                 native::duplicate(ready_write.as_raw_handle(), FILE_GENERIC_WRITE, true)?,
             ];
-            let mut frame_file = files.create_staging(files.root()).map_err(custody)?;
-            pending.push(frame_file.path.clone());
+            let (plan_read, mut plan_write) = native::pipe()?;
             let mut nonce = [0; 32];
             // SAFETY: owned fixed buffer and native system-preferred entropy source.
             if unsafe {
@@ -92,31 +112,30 @@ impl NativeUninstallHandoff {
                 parent: parent.clone(),
                 target: target_id,
                 helper: helper_id,
-                frame: native::file_id(&frame_file.file)?,
                 digest,
                 nonce,
                 deadline,
                 root: files.root().to_owned(),
+                cleanup_root: original_root.clone(),
+                directory: stage_directory.clone(),
                 helper_path: helper_path.clone(),
-                frame_path: frame_file.path.clone(),
                 plan: plan.to_vec(),
             };
-            frame_file
-                .file
-                .write_all(&frame.encode()?)
-                .map_err(|e| error("write protected uninstall plan", e))?;
-            frame_file
-                .file
-                .sync_all()
-                .map_err(|e| error("flush protected uninstall plan", e))?;
-            drop(frame_file.file);
-            let plan_read = files
-                .readback(&frame_file.path)
-                .map_err(custody)?
-                .ok_or_else(|| refuse("read back protected uninstall plan", "plan disappeared"))?;
+            let encoded = frame.encode()?;
             let stdin = native::duplicate(plan_read.as_raw_handle(), FILE_GENERIC_READ, true)?;
             let mut handles = inherited.each_ref().map(AsRawHandle::as_raw_handle);
             let process = spawn::start(&helper_path, &stdin, &mut handles)?;
+            // The child is now reading. Writing before spawning would block
+            // once the bounded anonymous pipe fills. Only this parent owns its
+            // write end; dropping it supplies EOF to the inherited reader.
+            drop(stdin);
+            drop(plan_read);
+            check_deadline(deadline)?;
+            plan_write
+                .write_all(&encoded)
+                .map_err(|e| error("write private uninstall plan pipe", e))?;
+            drop(plan_write);
+            check_deadline(deadline)?;
             let helper = native::process_identity(&process)?;
             if native::file_id(&native::open_image(&helper.image, false)?)? != helper_id {
                 return Err(refuse(
@@ -124,6 +143,14 @@ impl NativeUninstallHandoff {
                     "launched image differs from protected helper",
                 ));
             }
+            let cleanup = UninstallHelperCleanup::new(
+                original_root,
+                helper_path.clone(),
+                &helper,
+                helper_id,
+                digest,
+                stage_directory,
+            );
             Ok(Self {
                 parent,
                 helper,
@@ -133,7 +160,8 @@ impl NativeUninstallHandoff {
                 nonce,
                 deadline,
                 ready_seen: false,
-                staged_paths: [helper_path, frame_file.path],
+                staged_paths: [helper_path],
+                cleanup,
             })
         })();
         result.map_err(|mut e: UninstallNativeError| {
@@ -144,8 +172,11 @@ impl NativeUninstallHandoff {
     pub fn helper(&self) -> &UninstallProcessIdentity {
         &self.helper
     }
-    pub fn staged_paths(&self) -> [&Path; 2] {
-        [&self.staged_paths[0], &self.staged_paths[1]]
+    pub fn staged_paths(&self) -> [&Path; 1] {
+        [&self.staged_paths[0]]
+    }
+    pub fn staging_directory(&self) -> Option<&Path> {
+        self.cleanup.directory_path()
     }
     pub fn poll_ready(&mut self) -> Result<UninstallReady> {
         check_deadline(self.deadline)?;
@@ -188,7 +219,9 @@ impl NativeUninstallHandoff {
         Ok(UninstallHandoffReceipt {
             pending_image: self.parent.image.clone(),
             parent: self.parent,
+            pending_helper: self.helper.image.clone(),
             helper: self.helper,
+            helper_cleanup: self.cleanup,
         })
     }
 }

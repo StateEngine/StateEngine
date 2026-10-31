@@ -122,7 +122,7 @@ fn binding(
         "native scope/owner/platform/nonce/guarantee mismatch",
     )
 }
-fn reservation(value: &LaunchReservation, lifecycle: &LifecycleId) -> Result<()> {
+pub(super) fn reservation(value: &LaunchReservation, lifecycle: &LifecycleId) -> Result<()> {
     require(
         value.format_version == 1
             && &value.lifecycle == lifecycle
@@ -160,7 +160,7 @@ fn reservation(value: &LaunchReservation, lifecycle: &LifecycleId) -> Result<()>
     }
     Ok(())
 }
-fn prepared(value: &ScopeCheckpoint, lifecycle: &LifecycleId) -> Result<()> {
+pub(super) fn prepared(value: &ScopeCheckpoint, lifecycle: &LifecycleId) -> Result<()> {
     reservation(&value.reservation, lifecycle)?;
     scope(&value.scope)?;
     let parent_matches = match (&value.parent, &value.reservation.owner.boot) {
@@ -193,7 +193,7 @@ fn prepared(value: &ScopeCheckpoint, lifecycle: &LifecycleId) -> Result<()> {
         &value.guarantee,
     )
 }
-fn root(value: &RootCheckpoint, lifecycle: &LifecycleId) -> Result<()> {
+pub(super) fn root(value: &RootCheckpoint, lifecycle: &LifecycleId) -> Result<()> {
     prepared(&value.scope, lifecycle)?;
     identity(&value.pre_exec)?;
     require(
@@ -217,7 +217,7 @@ fn remaining(value: &RemainingScope) -> Result<()> {
     }
     Ok(())
 }
-fn process(value: &ProcessRecord, lifecycle: &LifecycleId) -> Result<()> {
+pub(super) fn process(value: &ProcessRecord, lifecycle: &LifecycleId) -> Result<()> {
     require(
         value.format_version == 1 && &value.lifecycle == lifecycle && value.host.0 != [0; 16],
         "process record version/lifecycle/host mismatch",

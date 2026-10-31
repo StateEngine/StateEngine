@@ -238,7 +238,7 @@ impl NativeInstallationClaim {
     /// Run an explicitly named installer command with inherited standard I/O.
     /// The child also retains the kernel claim, so killing its holder never
     /// permits another installer while that child can still change files.
-    pub fn run_child(self, command: &std::ffi::OsStr, args: &[std::ffi::OsString]) -> Result<i32> {
+    pub fn run_child(&self, command: &std::ffi::OsStr, args: &[std::ffi::OsString]) -> Result<i32> {
         if !Path::new(command).is_absolute() {
             return Err(failure(
                 StateFileErrorCode::Unsupported,
@@ -246,7 +246,7 @@ impl NativeInstallationClaim {
                 Path::new(command),
             ));
         }
-        install_hold::run(self._pin.file(), command, args)
+        install_hold::run(self._pin.file(), command, args, None)
     }
 }
 
@@ -270,3 +270,60 @@ impl InventoryKind {
 }
 #[path = "effects/listing.rs"]
 mod listing;
+
+#[path = "effects/created.rs"]
+mod created;
+pub use created::{CreatedDirectoryCleanup, NativeDirectoryCreation};
+
+impl NativeInstallationClaim {
+    /// Pass exactly the native creator's published directory custody to the
+    /// installer body. No caller-supplied absence list becomes ownership.
+    pub fn run_child_with_created_directories(
+        &self,
+        command: &std::ffi::OsStr,
+        args: &[std::ffi::OsString],
+        creation: &NativeDirectoryCreation,
+    ) -> Result<i32> {
+        if !Path::new(command).is_absolute() {
+            return Err(failure(
+                StateFileErrorCode::Unsupported,
+                "installer command must be absolute",
+                Path::new(command),
+            ));
+        }
+        let mut value = String::new();
+        for path in creation.paths() {
+            let text = path.to_str().ok_or_else(|| {
+                failure(
+                    StateFileErrorCode::Unsupported,
+                    "created directory path is not UTF-8",
+                    &path,
+                )
+            })?;
+            if text.bytes().any(|byte| byte.is_ascii_control()) {
+                return Err(failure(
+                    StateFileErrorCode::Unsupported,
+                    "installer directory paths cannot contain control characters",
+                    &path,
+                ));
+            }
+            if !value.is_empty() {
+                value.push('\n');
+            }
+            value.push_str(text);
+        }
+        if value.len() > 32768 {
+            return Err(failure(
+                StateFileErrorCode::Unsupported,
+                "created-directory handoff exceeds 32 KiB",
+                Path::new(command),
+            ));
+        }
+        install_hold::run(
+            self._pin.file(),
+            command,
+            args,
+            Some(std::ffi::OsStr::new(&value)),
+        )
+    }
+}

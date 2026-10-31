@@ -33,14 +33,7 @@ impl Bootstrap {
     /// A session handle is opaque here. Only the native admission adapter may
     /// verify it; its presence must never fall through to owner authentication.
     pub fn resolve(home: Option<PathBuf>, project: Option<String>, no_color: bool) -> Result<Self> {
-        let home = match home {
-            Some(path) => path,
-            None => match variable("SE_HOME")? {
-                Some(path) => PathBuf::from(path),
-                None => default_home()?,
-            },
-        };
-        let home = absolute(home, "state home")?;
+        let home = state_home(home)?;
         let selected_config = variable("SE_CONFIG")?;
         let config_explicit = selected_config.is_some();
         let config_path = match selected_config {
@@ -82,6 +75,19 @@ impl Bootstrap {
             }),
         })
     }
+}
+
+/// Resolve only the state-home selection. The private installer entry uses the
+/// same platform policy without loading configuration or a session credential.
+pub(crate) fn state_home(home: Option<PathBuf>) -> Result<PathBuf> {
+    let home = match home {
+        Some(path) => path,
+        None => match variable("SE_HOME")? {
+            Some(path) => PathBuf::from(path),
+            None => default_home()?,
+        },
+    };
+    absolute(home, "state home")
 }
 
 fn session_input() -> Result<Option<Secret>> {

@@ -16,9 +16,13 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
     System::{Console::*, Threading::*},
 };
+mod cleanup;
+mod debt;
+pub use debt::{HelperCleanupOutcome, UninstallHelperCleanup};
 mod frame;
 mod native;
 mod spawn;
+mod staging;
 use frame::Frame;
 
 #[derive(Debug)]
@@ -58,8 +62,10 @@ pub struct UninstallProcessIdentity {
     pub creation_filetime: u64,
     pub image: PathBuf,
 }
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileId {
+    #[serde(with = "crate::checkpoint::decimal::u64")]
     volume: u64,
     index: [u8; 16],
 }
@@ -74,19 +80,36 @@ pub struct UninstallHandoffReceipt {
     pub helper: UninstallProcessIdentity,
     /// Handoff is pending. This receipt never claims image deletion or success.
     pub pending_image: PathBuf,
+    /// The running helper is removed only at its later kernel teardown.
+    pub pending_helper: PathBuf,
+    pub helper_cleanup: UninstallHelperCleanup,
 }
 #[derive(Debug)]
 pub struct UninstallImageWitness {
     parent: UninstallProcessIdentity,
     helper: UninstallProcessIdentity,
+    pending_helper: Option<(PathBuf, String)>,
+    cleanup: UninstallHelperCleanup,
 }
 impl UninstallImageWitness {
+    /// Carrier failure leaves this exact cleanup debt; it never invalidates
+    /// the separately witnessed removal of the original installed image.
+    pub fn helper_cleanup(&self) -> &UninstallHelperCleanup {
+        &self.cleanup
+    }
+    pub fn pending_helper(&self) -> Option<(&Path, &str)> {
+        self.pending_helper
+            .as_ref()
+            .map(|(path, why)| (path.as_path(), why.as_str()))
+    }
     pub fn parent(&self) -> &UninstallProcessIdentity {
         &self.parent
     }
     pub fn helper(&self) -> &UninstallProcessIdentity {
         &self.helper
     }
+    /// This witness proves the parent image only. Helper cleanup must be read
+    /// back externally after the helper has exited.
     pub fn removed_image(&self) -> &Path {
         &self.parent.image
     }

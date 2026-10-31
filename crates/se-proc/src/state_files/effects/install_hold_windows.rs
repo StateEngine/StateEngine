@@ -125,7 +125,12 @@ fn quote(value: &OsStr, line: &mut Vec<u16>, path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn run(claim: &File, executable: &OsStr, args: &[OsString]) -> Result<i32> {
+pub(super) fn run(
+    claim: &File,
+    executable: &OsStr,
+    args: &[OsString],
+    created: Option<&OsStr>,
+) -> Result<i32> {
     let path = Path::new(executable);
     let mut application: Vec<_> = executable.encode_wide().collect();
     if application.contains(&0) {
@@ -150,6 +155,7 @@ pub(super) fn run(claim: &File, executable: &OsStr, args: &[OsString]) -> Result
         ));
     }
     line.push(0);
+    let environment = environment::build(created, path)?;
     let claim = duplicate(claim.as_raw_handle(), path)?;
     let mut owned = vec![claim];
     let mut stdio = [ptr::null_mut(); 3];
@@ -188,8 +194,10 @@ pub(super) fn run(claim: &File, executable: &OsStr, args: &[OsString]) -> Result
             ptr::null(),
             ptr::null(),
             1,
-            EXTENDED_STARTUPINFO_PRESENT,
-            ptr::null(),
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+            environment
+                .as_ref()
+                .map_or(ptr::null(), |block| block.as_ptr().cast()),
             ptr::null(),
             &startup.StartupInfo,
             &mut process,
@@ -217,3 +225,6 @@ pub(super) fn run(claim: &File, executable: &OsStr, args: &[OsString]) -> Result
     }
     Ok(code as i32)
 }
+
+#[path = "install_environment_windows.rs"]
+mod environment;

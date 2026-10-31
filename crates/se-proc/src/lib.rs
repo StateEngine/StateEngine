@@ -6,16 +6,12 @@
 //! Windows private uninstall handoff have concrete native implementations. Native
 //! resource layouts are intentionally opaque; no handle is Clone or Default.
 
-mod entropy;
-pub use entropy::{NativeEntropyError, random_secret};
 mod checkpoint;
 pub use checkpoint::{
     Checkpoint, CheckpointError, CheckpointKind, CheckpointPrincipal, CheckpointSource,
     HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,
 };
-mod creation_owner;
 mod error;
-pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
 mod identity;
 mod launch;
 pub mod native_ipc;
@@ -24,19 +20,12 @@ mod owner_probe;
 mod uninstall;
 #[cfg(windows)]
 pub use uninstall::{
-    NativeUninstallHandoff, NativeUninstallHelper, UninstallHandoffReceipt, UninstallImageWitness,
-    UninstallNativeError, UninstallProcessIdentity, UninstallReady,
+    HelperCleanupOutcome, NativeUninstallHandoff, NativeUninstallHelper, UninstallHandoffReceipt,
+    UninstallHelperCleanup, UninstallImageWitness, UninstallNativeError, UninstallProcessIdentity,
+    UninstallReady,
 };
 mod ownership;
 mod state_files;
-pub use state_files::effects::{
-    DirectoryRemoval, NativeInstallationClaim, OwnedFile, remove_empty_directory, scan_recovery,
-    scan_temporary,
-};
-#[cfg(windows)]
-pub use state_files::user_path::{
-    NativeUserPath, PathKind, PathObservation, PathUpdateError, PathUpdatePhase, PathWriteWitness,
-};
 pub use state_files::{
     NativeStateFiles, ProtectedStateStaging, StateFileError, StateFileErrorCode,
 };
@@ -47,13 +36,42 @@ pub use error::*;
 pub use identity::*;
 pub use launch::*;
 pub use owner_probe::{
-    AgentTreeBasis, AgentTreeMatch, NativeOwner, OwnerObservation, OwnerProbeError, OwnerTarget,
-    OwnerTreeObservation, observe_owner, observe_owner_self,
+    AgentTreeBasis, AgentTreeMatch, AncestryBound, NativeOwner, OwnerObservation, OwnerProbeError,
+    OwnerTarget, OwnerTreeObservation, observe_owner, observe_owner_self,
 };
 pub use ownership::*;
 #[cfg(windows)]
 pub use stdio::*;
 
+#[cfg(any(target_os = "linux", windows))]
+mod bootstrap;
+#[cfg(any(target_os = "linux", windows))]
+pub use bootstrap::{
+    NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, current_process_identity,
+    current_runtime_identity,
+};
+#[cfg(any(target_os = "linux", windows))]
+mod platform;
+#[cfg(any(target_os = "linux", windows))]
+mod runtime;
+#[cfg(any(target_os = "linux", windows))]
+mod support;
+#[cfg(windows)]
+mod windows_native;
+#[cfg(any(target_os = "linux", windows))]
+pub use runtime::read_process;
+mod creation_owner;
+pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
+
+pub use state_files::effects::{
+    CreatedDirectoryCleanup, DirectoryRemoval, NativeDirectoryCreation, NativeInstallationClaim,
+    OwnedFile, remove_empty_directory, scan_recovery, scan_temporary,
+};
 pub use state_files::source::{NativeSourcePin, SourceChunk};
+#[cfg(windows)]
+pub use state_files::user_path::{
+    NativeUserPath, PathKind, PathObservation, PathUpdateError, PathUpdatePhase, PathWriteWitness,
+};
 
-
+mod entropy;
+pub use entropy::{NativeEntropyError, random_secret};

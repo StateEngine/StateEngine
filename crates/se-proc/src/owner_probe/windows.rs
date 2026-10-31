@@ -2,88 +2,27 @@ use super::*;
 use crate::ScopeIdentity;
 use std::{
     collections::BTreeMap,
-    mem::{size_of, zeroed},
     os::windows::{
         ffi::OsStrExt,
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        io::{AsRawHandle, OwnedHandle},
     },
-    ptr,
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Security::{Authorization::ConvertSidToStringSidW, *},
     Storage::FileSystem::{FILE_TYPE_CHAR, FILE_TYPE_DISK, FILE_TYPE_PIPE, GetFileType},
-    System::{
-        Console::*, Diagnostics::ToolHelp::*, JobObjects::*, SystemServices::JOB_OBJECT_QUERY,
-        Threading::*,
-    },
+    System::{Console::*, JobObjects::*, SystemServices::JOB_OBJECT_QUERY, Threading::*},
 };
 
 fn last(operation: &'static str) -> OwnerProbeError {
     native(operation, io::Error::last_os_error())
 }
 fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
-    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-        return Err(last(operation));
-    }
-    // SAFETY: the successful creation/open call transfers one native reference.
-    Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+    crate::windows_native::handle(raw, operation).map_err(|e| native(e.operation, e.source))
 }
 fn owner(process: &OwnedHandle) -> Result<NativeOwner> {
-    let mut raw = ptr::null_mut();
-    // SAFETY: retained process query handle and writable owned-token output.
-    if unsafe { OpenProcessToken(process.as_raw_handle(), TOKEN_QUERY, &mut raw) } == 0 {
-        return Err(last("open current OS owner token"));
-    }
-    let token = handle(raw, "open current OS owner token")?;
-    let mut size = 0;
-    // SAFETY: documented sizing call with null buffer and writable length output.
-    unsafe {
-        GetTokenInformation(
-            token.as_raw_handle(),
-            TokenUser,
-            ptr::null_mut(),
-            0,
-            &mut size,
-        );
-    }
-    if size < size_of::<TOKEN_USER>() as u32 || size > 65536 {
-        return Err(refuse("read current OS owner", "invalid token user size"));
-    }
-    let mut data = vec![0usize; (size as usize).div_ceil(size_of::<usize>())];
-    // SAFETY: retained token handle and aligned output buffer with explicit byte capacity.
-    if unsafe {
-        GetTokenInformation(
-            token.as_raw_handle(),
-            TokenUser,
-            data.as_mut_ptr().cast(),
-            size,
-            &mut size,
-        )
-    } == 0
-    {
-        return Err(last("read current OS owner"));
-    }
-    // SAFETY: aligned successful TOKEN_USER buffer remains retained while its embedded SID is read.
-    let user = unsafe { &*data.as_ptr().cast::<TOKEN_USER>() };
-    let mut text = ptr::null_mut();
-    // SAFETY: retained valid token SID and writable LocalFree-owned text output.
-    if unsafe { ConvertSidToStringSidW(user.User.Sid, &mut text) } == 0 {
-        return Err(last("encode current OS owner SID"));
-    }
-    let mut length = 0;
-    // SAFETY: native SID conversion returns a terminated UTF-16 allocation retained through this scan.
-    while unsafe { *text.add(length) } != 0 {
-        length += 1;
-    }
-    // SAFETY: length was measured inside the retained native UTF-16 allocation.
-    let sid = String::from_utf16(unsafe { std::slice::from_raw_parts(text, length) });
-    // SAFETY: text was allocated by the matching LocalFree-family conversion API.
-    unsafe {
-        LocalFree(text.cast());
-    }
     Ok(NativeOwner::Windows {
-        sid: sid.map_err(|_| refuse("encode current OS owner SID", "invalid native SID text"))?,
+        sid: crate::windows_native::process_sid(process.as_raw_handle())
+            .map_err(|e| native(e.operation, e.source))?,
     })
 }
 fn console(which: STD_HANDLE) -> Result<bool> {
@@ -109,48 +48,10 @@ fn console(which: STD_HANDLE) -> Result<bool> {
     }
 }
 fn parents() -> Result<BTreeMap<u32, u32>> {
-    let snapshot = handle(
-        // SAFETY: native POD output accepts an all-zero initialization.
-        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) },
-        "snapshot native ancestry",
-    )?;
-    // SAFETY: native POD output accepts an all-zero initialization.
-    let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
-    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-    // SAFETY: retained snapshot and initialized PROCESSENTRY32W with its exact native size.
-    if unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) } == 0 {
-        return Err(last("read native ancestry snapshot"));
-    }
-    let mut result = BTreeMap::new();
-    loop {
-        if result.len() >= 65536 {
-            return Err(refuse(
-                "read native ancestry",
-                "process snapshot capacity exceeded",
-            ));
-        }
-        if result
-            .insert(entry.th32ProcessID, entry.th32ParentProcessID)
-            .is_some()
-        {
-            return Err(refuse(
-                "read native ancestry",
-                "duplicate PID in process snapshot",
-            ));
-        }
-        // SAFETY: retained snapshot and writable, correctly sized process-entry output.
-        if unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) } == 0 {
-            // SAFETY: reads this thread's immediately preceding native error without clearing it.
-            if unsafe { GetLastError() } != ERROR_NO_MORE_FILES {
-                return Err(last("finish native ancestry snapshot"));
-            }
-            break;
-        }
-    }
-    Ok(result)
+    crate::windows_native::parents().map_err(|e| native(e.operation, e.source))
 }
 fn open(pid: ProcessId) -> Result<Option<OwnedHandle>> {
-    // SAFETY: reads this thread's immediately preceding native error without clearing it.
+    // SAFETY: query/synchronize rights on a numeric ancestor selector; no mutation or inheritance.
     let raw = unsafe {
         OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
@@ -158,38 +59,22 @@ fn open(pid: ProcessId) -> Result<Option<OwnedHandle>> {
             pid.0,
         )
     };
-    // SAFETY: native POD output accepts an all-zero initialization.
+    // SAFETY: reads the immediately preceding OpenProcess error on this thread.
     if raw.is_null() && unsafe { GetLastError() } == ERROR_INVALID_PARAMETER {
         return Ok(None);
     }
     handle(raw, "open native ancestor").map(Some)
 }
 fn stamp(pid: ProcessId, parent: ProcessId, process: &OwnedHandle) -> Result<ProcessStamp> {
-    let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) =
-        // SAFETY: native POD output accepts an all-zero initialization.
-        unsafe { zeroed() };
-    // SAFETY: retained process query handle and four initialized FILETIME outputs.
-    if unsafe {
-        GetProcessTimes(
-            process.as_raw_handle(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
-        )
-    } == 0
-    {
-        return Err(last("read native ancestor start"));
-    }
+    let creation_filetime = crate::windows_native::process_start(process.as_raw_handle())
+        .map_err(|e| native(e.operation, e.source))?;
     Ok(ProcessStamp {
         pid,
         parent,
         group: ProcessId(0),
         session: ProcessId(0),
         boot: BootIdentity::WindowsAbsoluteCreationClock,
-        start: StartIdentity::Windows {
-            creation_filetime: (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64,
-        },
+        start: StartIdentity::Windows { creation_filetime },
     })
 }
 pub(super) fn console_presence() -> Result<(bool, bool)> {
@@ -221,6 +106,7 @@ pub(super) fn observe(
     let mut pid = target;
     let mut ancestry: Vec<(ProcessStamp, OwnedHandle)> = Vec::new();
     let mut exited_creator: Option<(ProcessStamp, OwnedHandle)> = None;
+    let mut ancestry_bound = AncestryBound::Complete;
     while pid.0 != 0 {
         if ancestry.len() >= 4096 || ancestry.iter().any(|(p, _)| p.pid == pid) {
             return Err(refuse(
@@ -231,8 +117,47 @@ pub(super) fn observe(
         // Windows retains the numeric creator PID after that process exits.
         // A positively absent/reused creator ends the live chain. Job membership
         // remains independently checked, including after a leader has exited.
-        let Some(process) = open(pid)? else {
-            break;
+        let process = match open(pid) {
+            Ok(Some(process)) => process,
+            Ok(None) => break,
+            Err(cause)
+                if pid != target
+                    && cause.source.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) =>
+            {
+                // Root queryability is relative to the caller's actual token.
+                // A protected SYSTEM creator ends the permitted live walk; keep
+                // the actual bound so admission never calls this a full census.
+                // Keep following only the snapshot's numeric creators. Those
+                // numbers cannot prove outside membership, but a recorded root
+                // PID above this bound must conservatively refuse admission.
+                let mut unqueried = pid.0;
+                let mut seen = std::collections::BTreeSet::new();
+                while unqueried != 0 {
+                    if seen.len() >= 4096 || !seen.insert(unqueried) {
+                        return Err(refuse(
+                            "inspect bounded ancestry",
+                            "snapshot ancestry cycle or capacity exceeded",
+                        ));
+                    }
+                    if records.iter().any(|record| record.root.pid.0 == unqueried) {
+                        return Err(refuse(
+                            "inspect bounded ancestry",
+                            "unopenable ancestor chain reaches a recorded agent root PID; birth cannot be verified",
+                        ));
+                    }
+                    let Some(parent) = snapshot.get(&unqueried) else {
+                        break;
+                    };
+                    unqueried = *parent;
+                }
+                ancestry_bound = AncestryBound::UnopenableAncestor {
+                    pid,
+                    native_code: cause.source.raw_os_error(),
+                    reason: format!("ancestor not ours: unopenable ({})", cause.source),
+                };
+                break;
+            }
+            Err(cause) => return Err(cause),
         };
         // Toolhelp omits exited objects even while a handle still opens them,
         // and a reused creator may have appeared after the snapshot. Check the
@@ -325,7 +250,7 @@ pub(super) fn observe(
                 .encode_wide()
                 .chain(Some(0))
                 .collect();
-            // SAFETY: reads this thread's immediately preceding native error without clearing it.
+            // SAFETY: bounded terminated recorded job name; query access grants no signal authority.
             let raw = unsafe { OpenJobObjectW(JOB_OBJECT_QUERY, 0, name.as_ptr()) };
             // SAFETY: reads this thread's immediately preceding native error without clearing it.
             if raw.is_null() && unsafe { GetLastError() } == ERROR_FILE_NOT_FOUND {
@@ -394,5 +319,6 @@ pub(super) fn observe(
         pid: target,
         start: first.start,
         agent_trees: matches,
+        ancestry_bound,
     })
 }

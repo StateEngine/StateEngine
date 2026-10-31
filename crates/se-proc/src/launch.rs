@@ -163,6 +163,9 @@ pub struct RuntimeLaunchSpec {
 }
 /// An exact child pin retained until runtime.lock/endpoint readiness is proved.
 pub struct RuntimeChild {
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) state: crate::bootstrap::Parent,
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub(crate) _private: (),
 }
 pub struct RuntimeLaunch {

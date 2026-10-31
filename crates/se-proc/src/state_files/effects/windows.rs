@@ -630,3 +630,9 @@ fn claim_error(
 #[path = "source_windows.rs"]
 mod source;
 pub(in crate::state_files) use source::ReadPin;
+
+#[path = "created_windows.rs"]
+mod created;
+pub(in crate::state_files) use created::{
+    CreatedDirectory, prepare_created_directory, validate_creation_target,
+};

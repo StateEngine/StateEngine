@@ -203,3 +203,17 @@ fn known_fields(
     }
     Ok(())
 }
+
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) fn validate_recovery(source: &RecoverySource) -> Result<(), CheckpointError> {
+    match source {
+        RecoverySource::Reservation(value) => validation::reservation(value, &value.lifecycle),
+        RecoverySource::Prepared(value) => {
+            validation::prepared(value, &value.reservation.lifecycle)
+        }
+        RecoverySource::RootPrepared(value) => {
+            validation::root(value, &value.scope.reservation.lifecycle)
+        }
+        RecoverySource::Record(value) => validation::process(value, &value.lifecycle),
+    }
+}

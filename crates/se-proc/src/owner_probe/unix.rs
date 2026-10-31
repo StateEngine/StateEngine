@@ -159,5 +159,6 @@ pub(super) fn observe(
         pid,
         start: first.start,
         agent_trees: matches,
+        ancestry_bound: AncestryBound::Complete,
     })
 }

@@ -750,3 +750,9 @@ fn claim_error(
 #[path = "source_unix.rs"]
 mod source;
 pub(in crate::state_files) use source::ReadPin;
+
+#[path = "created_unix.rs"]
+mod created;
+pub(in crate::state_files) use created::{
+    CreatedDirectory, prepare_created_directory, validate_creation_target,
+};

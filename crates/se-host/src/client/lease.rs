@@ -14,6 +14,7 @@ pub const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[derive(Clone)]
 pub struct Deadline {
     at: Instant,
     budget: Duration,

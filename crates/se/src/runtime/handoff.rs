@@ -74,6 +74,13 @@ impl Plan {
     }
 }
 impl Completion {
+    pub(crate) fn record_helper_cleanup(
+        &self,
+        debt: &se_proc::UninstallHelperCleanup,
+    ) -> Result<()> {
+        super::helper_cleanup::publish(&self.installation.state_home, &self._claim, debt)
+    }
+
     /// Called only after native proof of the exact parent's exit and image
     /// deletion. The running helper's own cleanup remains externally witnessed.
     pub(crate) fn finish(self) -> Result<()> {

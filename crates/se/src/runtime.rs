@@ -351,3 +351,9 @@ pub fn uninstall(
 #[cfg(windows)]
 #[path = "runtime/handoff.rs"]
 pub(crate) mod handoff;
+
+#[cfg(windows)]
+pub(crate) mod helper_cleanup;
+
+#[path = "runtime/host.rs"]
+pub mod host;

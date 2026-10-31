@@ -84,22 +84,8 @@ impl User {
         unsafe { (&*self.storage.as_ptr().cast::<TOKEN_USER>()).User.Sid }
     }
     fn text(&self, path: &Path) -> Result<String> {
-        let mut raw = ptr::null_mut();
-        // SAFETY: retained valid token SID and writable LocalFree-owned text output.
-        if unsafe { ConvertSidToStringSidW(self.sid(), &mut raw) } == 0 {
-            return Err(last("encode user SID", path));
-        }
-        let allocation = Allocation(raw.cast());
-        let mut len = 0;
-        // SAFETY: native SID conversion returns a terminated UTF-16 allocation.
-        while unsafe { *raw.add(len) } != 0 {
-            len += 1;
-        }
-        // SAFETY: length was measured within that retained native terminated string.
-        let text = String::from_utf16(unsafe { std::slice::from_raw_parts(raw, len) })
-            .map_err(|_| unsafe_path("malformed native SID text", path))?;
-        drop(allocation);
-        Ok(text)
+        crate::windows_native::sid_text(self.sid())
+            .map_err(|e| io_error(e.operation, path, e.source))
     }
 }
 pub(super) fn descriptor(path: &Path, directory: bool) -> Result<Allocation> {

@@ -162,6 +162,8 @@ struct CallRef<'a> {
     generation: se_types::Generation,
     authority: Option<AuthorityRef<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    presence: &'a Option<super::presence::OwnerPresence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cli_selections: &'a Option<Value>,
     request: RequestRef<'a>,
 }
@@ -219,6 +221,7 @@ struct CallWire {
     request_id: NonZeroU64,
     generation: se_types::Generation,
     authority: Option<AuthorityWire>,
+    presence: Option<super::presence::OwnerPresence>,
     cli_selections: Option<Value>,
     request: RequestWire,
 }
@@ -276,6 +279,7 @@ pub fn encode_call(call: &crate::IpcEnvelope) -> Result<WireBytes> {
             request_id,
             generation: call.generation,
             authority: call.authority.as_ref().map(AuthorityRef::from),
+            presence: &call.presence,
             cli_selections: &call.cli_selections,
             request,
         },
@@ -307,6 +311,7 @@ pub fn decode_call(payload: &[u8]) -> Result<crate::IpcEnvelope> {
         request_id: wire.request_id.get(),
         generation: wire.generation,
         authority: wire.authority.map(Into::into),
+        presence: wire.presence,
         cli_selections: wire.cli_selections,
         request,
     })

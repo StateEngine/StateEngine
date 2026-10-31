@@ -6,7 +6,7 @@ use std::{
     mem::{size_of, zeroed},
     os::windows::{
         ffi::OsStrExt,
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        io::{AsRawHandle, OwnedHandle},
     },
     ptr,
 };
@@ -17,11 +17,7 @@ use windows_sys::Win32::{
     System::{IO::*, Pipes::*, Threading::*},
 };
 pub(super) fn owned(raw: HANDLE, operation: &'static str) -> IpcNativeResult<OwnedHandle> {
-    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-        return Err(last(operation));
-    }
-    // SAFETY: the successful native allocation transfers one unique handle.
-    Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+    crate::windows_native::handle(raw, operation).map_err(|e| error(e.operation, e.source))
 }
 fn wide(name: &OsStr) -> IpcNativeResult<Vec<u16>> {
     let value: Vec<_> = name.encode_wide().collect();

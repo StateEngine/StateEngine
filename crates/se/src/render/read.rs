@@ -30,6 +30,15 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         Read::Unknown { what } => writeln!(out, "Project unknown: {what}")?,
     }
     writeln!(out, "Runtime: {}", value.runtime.state)?;
+    if matches!(
+        value.runtime.detachment.as_ref(),
+        Some(HostDetachment::SessionOnly)
+    ) {
+        writeln!(
+            out,
+            "Host: runs as a session process and stops when this login session ends"
+        )?;
+    }
     if let Some(process) = &value.runtime.process {
         writeln!(
             out,

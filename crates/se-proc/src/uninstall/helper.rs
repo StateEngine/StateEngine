@@ -6,13 +6,13 @@ pub struct NativeUninstallHelper {
     helper: UninstallProcessIdentity,
     target: File,
     helper_file: File,
-    frame_file: File,
     authorize: File,
     ready: File,
     ready_sent: bool,
     authorized: bool,
-    helper_unlinked: bool,
-    frame_unlinked: bool,
+    cleanup: Option<cleanup::Carrier>,
+    cleanup_failure: Option<String>,
+    helper_cleanup: UninstallHelperCleanup,
     image_unlinked: bool,
 }
 impl NativeUninstallHelper {
@@ -35,33 +35,36 @@ impl NativeUninstallHelper {
         // SAFETY: native startup owns this inherited handle; duplicate before
         // reading, so Rust never claims the process's standard-input reference.
         let raw = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-        let mut frame_file = File::from(native::inherited(raw as usize as u64)?);
-        protected(&frame_file, Path::new("<inherited uninstall plan>"))?;
-        let frame_id = native::file_id(&frame_file)?;
+        let mut frame_pipe = File::from(native::inherited(raw as usize as u64)?);
+        native::require_pipe(&frame_pipe)?;
         let mut data = Vec::new();
-        Read::by_ref(&mut frame_file)
+        Read::by_ref(&mut frame_pipe)
             .take(2 * 1024 * 1024 + 1)
             .read_to_end(&mut data)
             .map_err(|e| error("read inherited uninstall plan", e))?;
         let frame = Frame::decode(&data)?;
         check_deadline(frame.deadline)?;
-        if frame.frame != frame_id || frame.deadline.saturating_sub(clock()) > 300000 {
+        if frame.deadline.saturating_sub(clock()) > 300000 {
             return Err(refuse(
                 "authenticate uninstall envelope",
-                "file identity or deadline mismatch",
+                "deadline out of bounds",
+            ));
+        }
+        if let Some(directory) = &frame.directory {
+            let _directory_pin = staging::verify_directory(directory)?;
+            if directory.path != frame.root {
+                return Err(refuse(
+                    "authenticate elevated staging",
+                    "directory custody differs from held root",
+                ));
+            }
+        } else if frame.root != frame.cleanup_root {
+            return Err(refuse(
+                "authenticate staging root",
+                "unexpected alternate staging root",
             ));
         }
         let files = NativeStateFiles::open(&frame.root).map_err(custody)?;
-        let published = files
-            .readback(&frame.frame_path)
-            .map_err(custody)?
-            .ok_or_else(|| refuse("authenticate uninstall plan", "protected plan name absent"))?;
-        if native::file_id(&published)? != frame_id {
-            return Err(refuse(
-                "authenticate uninstall plan",
-                "inherited plan differs from protected file",
-            ));
-        }
         let [parent, target, helper_file, authorize, ready] = frame.handles.map(native::inherited);
         let parent = parent?;
         let mut target = File::from(target?);
@@ -99,24 +102,50 @@ impl NativeUninstallHelper {
                 "staged helper object changed",
             ));
         }
+        if frame.directory.is_some() {
+            staging::verify_high(&helper_file, false)?;
+        }
+        let helper_cleanup = UninstallHelperCleanup::new(
+            frame.cleanup_root.clone(),
+            frame.helper_path.clone(),
+            &helper,
+            frame.helper,
+            frame.digest,
+            frame.directory.clone(),
+        );
         Ok(Some(Self {
             frame,
             parent,
             helper,
             target,
             helper_file,
-            frame_file,
             authorize: File::from(authorize?),
             ready: File::from(ready?),
             ready_sent: false,
             authorized: false,
-            helper_unlinked: false,
-            frame_unlinked: false,
+            cleanup: None,
+            cleanup_failure: None,
+            helper_cleanup,
             image_unlinked: false,
         }))
     }
-    pub fn staged_paths(&self) -> [&Path; 2] {
-        [&self.frame.helper_path, &self.frame.frame_path]
+    pub fn staged_paths(&self) -> [&Path; 1] {
+        [&self.frame.helper_path]
+    }
+    /// A failed carrier does not prevent uninstall. Core must display this
+    /// exact path and retain it for the next install/uninstall cleanup attempt.
+    pub fn pending_helper(&self) -> Option<(&Path, &str)> {
+        self.cleanup_failure
+            .as_deref()
+            .map(|why| (self.frame.helper_path.as_path(), why))
+    }
+    pub fn staging_directory(&self) -> Option<&Path> {
+        self.frame.directory.as_ref().map(|d| d.path.as_path())
+    }
+    /// Persist this exact custody under the install claim before announce_ready
+    /// and authorization; an image-removal witness is deliberately not required.
+    pub fn helper_cleanup(&self) -> &UninstallHelperCleanup {
+        &self.helper_cleanup
     }
     pub fn core_plan(&self) -> &[u8] {
         &self.frame.plan
@@ -124,8 +153,8 @@ impl NativeUninstallHelper {
     pub fn parent(&self) -> &UninstallProcessIdentity {
         &self.frame.parent
     }
-    /// After core validates its plan. Prove temporary artifact names removed
-    /// before the original parent is allowed to commit its exit/handoff.
+    /// After core validates its plan, announce readiness. The running helper remains pinned for kernel cleanup at exit;
+    /// readiness never claims that its own image has already been removed.
     pub fn announce_ready(&mut self) -> Result<()> {
         check_deadline(self.frame.deadline)?;
         if self.ready_sent {
@@ -134,16 +163,38 @@ impl NativeUninstallHelper {
                 "readiness already sent",
             ));
         }
-        if !self.helper_unlinked {
-            native::unlink(&self.helper_file, true)?;
-            self.helper_unlinked = true;
+        if native::file_id(&self.helper_file)? != self.frame.helper {
+            return Err(refuse(
+                "verify staged helper before readiness",
+                "held helper object changed",
+            ));
         }
-        native::absent_name(&self.frame.helper_path)?;
-        if !self.frame_unlinked {
-            native::unlink(&self.frame_file, true)?;
-            self.frame_unlinked = true;
+        if self.cleanup.is_none() && self.cleanup_failure.is_none() {
+            match cleanup::Carrier::start(
+                &self.helper_file,
+                self.frame.deadline,
+                &self.frame.root,
+                self.frame.directory.as_ref(),
+            )
+            .and_then(|mut carrier| {
+                carrier.ensure_ready()?;
+                Ok(carrier)
+            }) {
+                Ok(carrier) => self.cleanup = Some(carrier),
+                // CLM/AppLocker/WDAC can forbid the system carrier. Image
+                // removal still proceeds; the exact helper remains explicit
+                // cleanup debt until an external observer sees it absent.
+                Err(cause) => {
+                    self.cleanup_failure = Some(if self.frame.directory.is_some() {
+                        format!(
+                            "{cause}; High staging cleanup requires elevated se install or se uninstall"
+                        )
+                    } else {
+                        cause.to_string()
+                    })
+                }
+            }
         }
-        native::absent_name(&self.frame.frame_path)?;
         let mut frame = [0; 33];
         frame[0] = b'R';
         frame[1..].copy_from_slice(&self.frame.nonce);
@@ -199,6 +250,10 @@ impl NativeUninstallHelper {
         Ok(UninstallImageWitness {
             parent: self.frame.parent.clone(),
             helper: self.helper.clone(),
+            cleanup: self.helper_cleanup.clone(),
+            pending_helper: self
+                .pending_helper()
+                .map(|(path, why)| (path.to_owned(), why.to_owned())),
         })
     }
 }

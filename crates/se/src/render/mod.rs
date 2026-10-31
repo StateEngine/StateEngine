@@ -1,3 +1,4 @@
+mod administration;
 pub mod error;
 mod read;
 mod write;
@@ -24,6 +25,21 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::Init, AnyOutput::ProjectInit(value)) => write::init(&value.value, out)?,
             (HumanKind::Status, AnyOutput::ProjectStatus(value)) => {
                 read::status(&value.value, out)?
+            }
+            (HumanKind::ConfigReceipt, AnyOutput::ConfigSet(value)) => {
+                administration::config(&value.value, out)?
+            }
+            (HumanKind::ConfigValue, AnyOutput::ConfigGet(value)) => {
+                administration::config_value(&value.value, out)?
+            }
+            (HumanKind::AgentStatus, AnyOutput::AgentShow(value)) => {
+                administration::agent_status(&value.value, out)?
+            }
+            (HumanKind::AgentReceipt, AnyOutput::AgentCreate(value)) => {
+                administration::agent(&value.value, out)?
+            }
+            (HumanKind::DecisionReceipt, AnyOutput::Decision(value)) => {
+                administration::decision(&value.value, out)?
             }
             (HumanKind::MessageReceipt, AnyOutput::MessageSend(value)) => {
                 write::message(&value.value, out)?

@@ -400,6 +400,7 @@ name = "se"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "getrandom 0.3.4",
  "se-core",
  "se-host",
  "se-proc",
@@ -408,6 +409,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
  "toml",
  "uuid",
 ]

@@ -1,7 +1,7 @@
 use se_types::PathEncoding;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-pub(super) fn encoded(path: &Path) -> Result<PathEncoding, &'static str> {
+pub(crate) fn encoded(path: &Path) -> Result<PathEncoding, &'static str> {
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt;

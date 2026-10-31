@@ -85,7 +85,20 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
         ));
     }
     let completion = handoff.prepare(&helper.parent().image)?;
+    completion.record_helper_cleanup(helper.helper_cleanup())?;
     helper.announce_ready().map_err(native_error)?;
+    if let Some(directory) = helper.staging_directory() {
+        eprintln!(
+            "Protected helper staging directory: {}; cleanup remains journaled until outside readback",
+            directory.display()
+        );
+    }
+    if let Some((path, reason)) = helper.pending_helper() {
+        eprintln!(
+            "Helper cleanup pending at {}: {reason}; retry install or uninstall after the helper exits",
+            path.display()
+        );
+    }
     while !helper.poll_parent_exit().map_err(native_error)? {
         // The native envelope owns the finite deadline and exact-instance wait.
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -95,6 +108,13 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
         "Removed installed image: {} (native parent exit and deletion witnessed)",
         witness.removed_image().display()
     );
+    crate::runtime::helper_cleanup::verify(&plan.state_home, witness.helper_cleanup())?;
+    if let Some((path, reason)) = witness.pending_helper() {
+        eprintln!(
+            "Helper cleanup pending at {}: {reason}; retry install or uninstall after the helper exits",
+            path.display()
+        );
+    }
     completion.finish()?;
     Ok(0)
 }
@@ -105,26 +125,5 @@ pub fn dispatch_install_hold(args: &[OsString]) -> Option<Result<i32>> {
     if args.get(1).map(OsString::as_os_str) != Some(OsStr::new("__install-hold")) {
         return None;
     }
-    Some((|| {
-        if args.get(2).map(OsString::as_os_str) != Some(OsStr::new("--")) || args.len() < 4 {
-            return Err(SeError::invalid(
-                "private install hold",
-                "__install-hold -- <absolute executable> [arguments...]",
-            ));
-        }
-        let claim = se_proc::NativeInstallationClaim::acquire().map_err(install_error)?;
-        claim.run_child(&args[3], &args[4..]).map_err(install_error)
-    })())
-}
-fn install_error(error: se_proc::StateFileError) -> SeError {
-    SeError::new(se_types::Detail::StateConflict(
-        se_types::details::StateConflict {
-            subject: "native installation claim".into(),
-            reason: error.to_string(),
-            next_step:
-                "Retry after install or uninstall finishes; preserve the permanent claim file"
-                    .into(),
-        },
-    ))
-    .with_cause(error)
+    Some(crate::installer::run(args))
 }

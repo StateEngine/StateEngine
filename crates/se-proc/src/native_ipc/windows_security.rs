@@ -1,15 +1,7 @@
 //! Aligned token buffers and LocalFree-owned descriptor/SID allocations stay
 //! alive for every native call that borrows them. Handles are never inherited.
 use super::*;
-use std::{
-    ffi::OsStr,
-    mem::size_of,
-    os::windows::{
-        ffi::OsStrExt,
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
-    },
-    ptr,
-};
+use std::{ffi::OsStr, mem::size_of, os::windows::ffi::OsStrExt, ptr};
 use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
@@ -26,84 +18,15 @@ impl Drop for Allocation {
         }
     }
 }
-fn token_user(process: HANDLE) -> IpcNativeResult<String> {
-    let mut raw = ptr::null_mut();
-    // SAFETY: retained query-capable process handle and writable output for one owned noninherited token handle.
-    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut raw) } == 0 {
-        return Err(last("open IPC peer token"));
-    }
-    // SAFETY: successful OpenProcessToken transfers one unique token handle.
-    let token = unsafe { OwnedHandle::from_raw_handle(raw) };
-    let mut length = 0;
-    // SAFETY: live token; null/zero sizing buffer and initialized writable byte-count output.
-    unsafe {
-        GetTokenInformation(
-            token.as_raw_handle(),
-            TokenUser,
-            ptr::null_mut(),
-            0,
-            &mut length,
-        );
-    }
-    if length < size_of::<TOKEN_USER>() as u32 || length > 65536 {
-        return Err(last("size IPC peer SID"));
-    }
-    let mut storage = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
-    // SAFETY: pointer-aligned retained storage of the exact probed size; the
-    // token is held and the API may not write beyond the supplied capacity.
-    if unsafe {
-        GetTokenInformation(
-            token.as_raw_handle(),
-            TokenUser,
-            storage.as_mut_ptr().cast(),
-            length,
-            &mut length,
-        )
-    } == 0
-    {
-        return Err(last("read IPC peer SID"));
-    }
-    // SAFETY: successful TOKEN_USER output in retained pointer-aligned storage.
-    let sid = unsafe { (*storage.as_ptr().cast::<TOKEN_USER>()).User.Sid };
-    sid_text(sid)
-}
 fn sid_text(sid: PSID) -> IpcNativeResult<String> {
-    // SAFETY: a non-null SID is borrowed from the retained successful native security output.
-    if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
-        return Err(refuse(
-            IpcNativeErrorCode::Unreadable,
-            "invalid native IPC SID",
-        ));
-    }
-    let mut raw = ptr::null_mut();
-    // SAFETY: validated retained SID and writable output for a LocalFree-owned UTF-16 string.
-    if unsafe { ConvertSidToStringSidW(sid, &mut raw) } == 0 {
-        return Err(last("encode IPC SID"));
-    }
-    let allocation = Allocation(raw.cast());
-    let mut length = 0;
-    // SAFETY: the retained native conversion result is a NUL-terminated SID string, scanned only to its bounded length.
-    while length < 256 && unsafe { *raw.add(length) } != 0 {
-        length += 1;
-    }
-    if length == 256 {
-        return Err(refuse(
-            IpcNativeErrorCode::Unreadable,
-            "oversized native SID",
-        ));
-    }
-    // SAFETY: the measured UTF-16 extent remains in the retained native conversion allocation.
-    let value = String::from_utf16(unsafe { std::slice::from_raw_parts(raw, length) })
-        .map_err(|_| refuse(IpcNativeErrorCode::Unreadable, "invalid SID text"))?;
-    drop(allocation);
-    Ok(value)
+    crate::windows_native::sid_text(sid).map_err(|e| error(e.operation, e.source))
 }
 pub(super) fn current_sid() -> IpcNativeResult<String> {
     // SAFETY: GetCurrentProcess returns the documented borrowed pseudo handle, not an owned allocation.
-    token_user(unsafe { GetCurrentProcess() })
+    process_sid(unsafe { GetCurrentProcess() })
 }
 pub(super) fn process_sid(process: HANDLE) -> IpcNativeResult<String> {
-    token_user(process)
+    crate::windows_native::process_sid(process).map_err(|e| error(e.operation, e.source))
 }
 pub(super) fn descriptor() -> IpcNativeResult<Allocation> {
     let sid = current_sid()?;

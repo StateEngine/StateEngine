@@ -3,6 +3,7 @@ mod compat;
 mod config;
 mod grammar;
 mod hook;
+mod installer;
 mod ipc;
 mod private_entry;
 mod render;
@@ -179,6 +180,9 @@ fn main() -> std::process::ExitCode {
     if let Err(error) = bootstrap::initialize_file_owner() {
         return finish(Err(error), &args);
     }
+    if let Some(result) = runtime::host::dispatch(&args) {
+        return finish(result, &args);
+    }
     if let Some(result) = private_entry::dispatch_install_hold(&args) {
         match result {
             // run_child has returned and dropped its holder. Preserve every
@@ -190,6 +194,5 @@ fn main() -> std::process::ExitCode {
     if let Some(result) = private_entry::dispatch(&args, private_entry::receive_uninstall_handoff) {
         return finish(result, &args);
     }
-    println!("se {}", env!("CARGO_PKG_VERSION"));
-    std::process::ExitCode::SUCCESS
+    std::process::ExitCode::from(run(args, route::execute::dispatch).unwrap_or(70))
 }

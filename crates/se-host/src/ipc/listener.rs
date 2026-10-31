@@ -9,6 +9,9 @@ use crate::client::{
     wire,
 };
 use channel::{bounded, receive, send};
+#[path = "listener/connection.rs"]
+mod connection;
+pub use connection::IpcConnection;
 use se_types::{Result, SeError};
 use std::sync::{Arc, atomic::AtomicBool};
 use tokio::{runtime::Handle, sync::Semaphore};
@@ -413,70 +416,6 @@ impl PendingIpcHandshake {
             &deadline.stage(WRITE_TIMEOUT)?,
         )
         .await
-    }
-}
-pub struct IpcConnection {
-    stream: Option<Arc<NativeStream>>,
-    peer: PeerProof,
-    hello: ServerHello,
-    authority: PresentedAuthority,
-    awaiting: Option<u64>,
-    _connection_slot: tokio::sync::OwnedSemaphorePermit,
-}
-impl IpcConnection {
-    pub fn connection_authority(&self) -> &PresentedAuthority {
-        &self.authority
-    }
-    pub fn peer(&self) -> &PeerProof {
-        &self.peer
-    }
-    pub fn negotiated(&self) -> &ServerHello {
-        &self.hello
-    }
-    /// Runtime rechecks G, revocation and scope for each returned envelope before
-    /// dispatch. A per-call invalid credential must not use connection authority.
-    pub async fn read_request(&mut self, deadline: &Deadline) -> Result<IpcEnvelope> {
-        if self.awaiting.is_some() {
-            return Err(SeError::invalid(
-                "IPC request",
-                "one outstanding operation per connection",
-            ));
-        }
-        let stream = self
-            .stream
-            .take()
-            .ok_or_else(|| SeError::invalid("IPC channel", "a complete prior exchange"))?;
-        let bytes = receive(&stream, deadline, wire::MAX_FRAME_BYTES).await?;
-        let call = wire::decode_call(bytes.as_bytes())?;
-        if call.version != self.hello.version || call.generation != self.hello.generation {
-            return Err(SeError::invalid(
-                "IPC call",
-                "the exact negotiated API and generation",
-            ));
-        }
-        self.awaiting = Some(call.request_id);
-        self.stream = Some(stream);
-        Ok(call)
-    }
-    pub async fn reply(&mut self, response: &IpcResponse, deadline: &Deadline) -> Result<()> {
-        if self.awaiting != Some(response.request_id)
-            || response.version != self.hello.version
-            || response.generation != self.hello.generation
-        {
-            return Err(SeError::invalid(
-                "IPC reply",
-                "the exact outstanding request ID, API and generation",
-            ));
-        }
-        let frame = wire::encode_response(response, self.hello.maximum_reply_bytes.get() as usize)?;
-        let stream = self
-            .stream
-            .take()
-            .ok_or_else(|| SeError::invalid("IPC channel", "a complete prior exchange"))?;
-        send(&stream, &frame, &deadline.stage(WRITE_TIMEOUT)?).await?;
-        self.awaiting = None;
-        self.stream = Some(stream);
-        Ok(())
     }
 }
 

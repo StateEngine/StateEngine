@@ -1,24 +1,24 @@
 use super::*;
+
+#[cfg(test)]
+#[path = "../../tests/support/uninstall_handle_flags.rs"]
+mod handle_flag_tests;
 use sha2::{Digest, Sha256};
 use std::{
     mem::{size_of, zeroed},
     os::windows::{
         ffi::OsStringExt,
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        io::{AsRawHandle, OwnedHandle},
     },
     ptr,
 };
-use windows_sys::Win32::System::{Diagnostics::ToolHelp::*, Pipes::*};
+use windows_sys::Win32::System::Pipes::*;
 
 pub(super) fn last(operation: &'static str) -> UninstallNativeError {
     error(operation, io::Error::last_os_error())
 }
 pub(super) fn handle(raw: HANDLE, operation: &'static str) -> Result<OwnedHandle> {
-    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-        return Err(last(operation));
-    }
-    // SAFETY: successful open/create returns one owned native reference.
-    Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+    crate::windows_native::handle(raw, operation).map_err(|e| error(e.operation, e.source))
 }
 pub(super) fn wide(path: &Path) -> Result<Vec<u16>> {
     crate::state_files::windows::wide(path).map_err(custody)
@@ -40,6 +40,31 @@ pub(super) fn open_image(path: &Path, delete: bool) -> Result<File> {
     let file = File::from(owned);
     file_id(&file)?;
     Ok(file)
+}
+/// Arm kernel cleanup on the exact staged object before it has an image section.
+/// All inheritable copies refer to this same native file object; no filename is
+/// reopened after launch to acquire delete-on-close authority.
+pub(super) fn delete_on_close(file: &File) -> Result<File> {
+    let armed = File::from(handle(
+        // SAFETY: retained verified staged object, explicit read/delete access
+        // and share-delete; successful reopen transfers one independent file object.
+        unsafe {
+            ReOpenFile(
+                file.as_raw_handle(),
+                GENERIC_READ | READ_CONTROL | DELETE,
+                FILE_SHARE_READ,
+                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_DELETE_ON_CLOSE,
+            )
+        },
+        "arm staged helper delete-on-close",
+    )?);
+    if file_id(&armed)? != file_id(file)? {
+        return Err(refuse(
+            "arm staged helper cleanup",
+            "staged object identity changed",
+        ));
+    }
+    Ok(armed)
 }
 pub(super) fn file_id(file: &File) -> Result<FileId> {
     // SAFETY: native POD output accepts an all-zero initialization.
@@ -101,22 +126,8 @@ pub(super) fn digest(file: &mut File) -> Result<[u8; 32]> {
     Ok(hash.finalize().into())
 }
 pub(super) fn process_identity(process: &OwnedHandle) -> Result<UninstallProcessIdentity> {
-    let (mut created, mut exited, mut kernel, mut user): (FILETIME, FILETIME, FILETIME, FILETIME) =
-        // SAFETY: native POD output accepts an all-zero initialization.
-        unsafe { zeroed() };
-    // SAFETY: retained process query handle and four initialized FILETIME outputs.
-    if unsafe {
-        GetProcessTimes(
-            process.as_raw_handle(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
-        )
-    } == 0
-    {
-        return Err(last("read uninstall process start"));
-    }
+    let creation_filetime = crate::windows_native::process_start(process.as_raw_handle())
+        .map_err(|e| error(e.operation, e.source))?;
     let mut image = vec![0u16; 32768];
     let mut length = image.len() as u32;
     // SAFETY: retained process handle and writable UTF-16 buffer with explicit capacity.
@@ -139,7 +150,7 @@ pub(super) fn process_identity(process: &OwnedHandle) -> Result<UninstallProcess
     }
     Ok(UninstallProcessIdentity {
         pid,
-        creation_filetime: (created.dwHighDateTime as u64) << 32 | created.dwLowDateTime as u64,
+        creation_filetime,
         image: std::ffi::OsString::from_wide(&image[..length as usize]).into(),
     })
 }
@@ -185,8 +196,11 @@ pub(super) fn inherited(raw: u64) -> Result<OwnedHandle> {
             "uninstall handle was not inherited",
         ));
     }
-    // Borrow startup's original; keep a separate, non-inheritable native pin.
-    duplicate_same(raw, false)
+    // Duplicate before clearing startup's original. Neither reference can leak
+    // into a later helper/carrier child after this function returns.
+    let duplicate = duplicate_same(raw, false)?;
+    clear_inherit(raw)?;
+    Ok(duplicate)
 }
 pub(super) fn duplicate_same(raw: HANDLE, inherit: bool) -> Result<OwnedHandle> {
     let mut out = ptr::null_mut();
@@ -206,6 +220,16 @@ pub(super) fn duplicate_same(raw: HANDLE, inherit: bool) -> Result<OwnedHandle> 
         return Err(last("duplicate uninstall handle with exact access"));
     }
     handle(out, "duplicate uninstall handle with exact access")
+}
+pub(super) fn require_pipe(file: &File) -> Result<()> {
+    // SAFETY: immutable type query on the retained inherited handle.
+    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_PIPE {
+        return Err(refuse(
+            "authenticate uninstall envelope",
+            "inherited anonymous pipe required",
+        ));
+    }
+    Ok(())
 }
 pub(super) fn pipe() -> Result<(File, File)> {
     let mut read = ptr::null_mut();
@@ -250,7 +274,7 @@ pub(super) fn poll_frame(file: &mut File) -> Result<Option<[u8; 33]>> {
     Ok(Some(frame))
 }
 pub(super) fn exited(process: &OwnedHandle) -> Result<bool> {
-    // SAFETY: native POD output accepts an all-zero initialization.
+    // SAFETY: retained synchronize-capable exact process handle and zero timeout.
     match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
         WAIT_OBJECT_0 => Ok(true),
         WAIT_TIMEOUT => Ok(false),
@@ -258,28 +282,18 @@ pub(super) fn exited(process: &OwnedHandle) -> Result<bool> {
     }
 }
 pub(super) fn actual_parent() -> Result<u32> {
-    let snapshot = handle(
-        // SAFETY: native POD output accepts an all-zero initialization.
-        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) },
-        "snapshot helper creator",
-    )?;
-    // SAFETY: native POD output accepts an all-zero initialization.
-    let mut entry: PROCESSENTRY32W = unsafe { zeroed() };
-    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-    // SAFETY: retained snapshot and initialized PROCESSENTRY32W with its exact native size.
-    if unsafe { Process32FirstW(snapshot.as_raw_handle(), &mut entry) } == 0 {
-        return Err(last("read helper creator snapshot"));
-    }
-    loop {
-        if entry.th32ProcessID == std::process::id() {
-            return Ok(entry.th32ParentProcessID);
-        }
-        // SAFETY: retained snapshot and writable, correctly sized process-entry output.
-        if unsafe { Process32NextW(snapshot.as_raw_handle(), &mut entry) } == 0 {
-            return Err(last("find helper creator in snapshot"));
-        }
-    }
+    crate::windows_native::parents()
+        .map_err(|e| error(e.operation, e.source))?
+        .get(&std::process::id())
+        .copied()
+        .ok_or_else(|| {
+            refuse(
+                "read actual helper creator",
+                "current helper missing from native ancestry snapshot",
+            )
+        })
 }
+
 pub(super) fn unlink(file: &File, posix: bool) -> Result<()> {
     // ReOpenFile creates an independent native file object for POSIX unlink.
     // Its close removes the name even while inherited read pins remain open.
@@ -343,4 +357,13 @@ pub(super) fn absent_name(path: &Path) -> Result<()> {
         "read back removed uninstall name",
         "name remains or was replaced; replacement preserved",
     ))
+}
+
+pub(super) fn clear_inherit(raw: HANDLE) -> Result<()> {
+    // SAFETY: caller retains this exact valid handle-table entry; only its
+    // inheritance flag changes, not rights, object lifetime or another process.
+    if unsafe { SetHandleInformation(raw, HANDLE_FLAG_INHERIT, 0) } == 0 {
+        return Err(last("clear uninstall handle inheritance"));
+    }
+    Ok(())
 }

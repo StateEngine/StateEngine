@@ -33,6 +33,17 @@ pub struct AgentTreeMatch {
     pub record_index: usize,
     pub basis: AgentTreeBasis,
 }
+/// The Windows live ancestry walk can stop at a protected SYSTEM creator.
+/// This explicit read bound grants no agent match or owner authority by itself.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AncestryBound {
+    Complete,
+    UnopenableAncestor {
+        pid: ProcessId,
+        native_code: Option<i32>,
+        reason: String,
+    },
+}
 /// Constructible only by the native observer. Callers cannot assert owner or
 /// terminal flags. Environment values (including session credentials) are not
 /// retained or exposed.
@@ -44,6 +55,7 @@ pub struct OwnerObservation {
     session_present: bool,
     provider_marker_present: bool,
     agent_trees: Vec<AgentTreeMatch>,
+    ancestry_bound: AncestryBound,
 }
 impl OwnerObservation {
     pub fn owner(&self) -> &NativeOwner {
@@ -60,6 +72,9 @@ impl OwnerObservation {
     }
     pub fn provider_marker_present(&self) -> bool {
         self.provider_marker_present
+    }
+    pub fn ancestry_bound(&self) -> &AncestryBound {
+        &self.ancestry_bound
     }
     pub fn agent_trees(&self) -> &[AgentTreeMatch] {
         &self.agent_trees
@@ -123,6 +138,7 @@ pub struct OwnerTreeObservation {
     pid: ProcessId,
     start: StartIdentity,
     agent_trees: Vec<AgentTreeMatch>,
+    ancestry_bound: AncestryBound,
 }
 impl OwnerTreeObservation {
     pub fn owner(&self) -> &NativeOwner {
@@ -133,6 +149,9 @@ impl OwnerTreeObservation {
     }
     pub fn start(&self) -> &StartIdentity {
         &self.start
+    }
+    pub fn ancestry_bound(&self) -> &AncestryBound {
+        &self.ancestry_bound
     }
     pub fn agent_trees(&self) -> &[AgentTreeMatch] {
         &self.agent_trees
@@ -185,5 +204,6 @@ pub fn observe_owner_self(records: &[ProcessRecord]) -> Result<OwnerObservation>
             .iter()
             .any(|key| std::env::var_os(key).is_some()),
         agent_trees: observed.agent_trees,
+        ancestry_bound: observed.ancestry_bound,
     })
 }

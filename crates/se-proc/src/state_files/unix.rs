@@ -60,12 +60,20 @@ fn components(path: &Path) -> Result<Vec<&OsStr>> {
         .collect()
 }
 fn walk(path: &Path, create: bool) -> Result<File> {
-    walk_with_private_root(path, create, true)
+    walk_with_private_root(path, create, true, false)
 }
 pub(super) fn walk_effect_parent(path: &Path) -> Result<File> {
-    walk_with_private_root(path, false, false)
+    walk_with_private_root(path, false, false, false)
 }
-fn walk_with_private_root(path: &Path, create: bool, private_root: bool) -> Result<File> {
+pub(super) fn walk_effect_parent_for_creation(path: &Path) -> Result<File> {
+    walk_with_private_root(path, false, false, true)
+}
+fn walk_with_private_root(
+    path: &Path,
+    create: bool,
+    private_root: bool,
+    sticky_final: bool,
+) -> Result<File> {
     let root = CString::new("/").map_err(|_| unsafe_path("native root", path))?;
     // SAFETY: constant path, successful open supplies an independently owned FD.
     let mut parent = owned(
@@ -80,7 +88,7 @@ fn walk_with_private_root(path: &Path, create: bool, private_root: bool) -> Resu
     )?;
     let parts = components(path)?;
     if !private_root {
-        effects::trusted_directory(&parent, path, parts.is_empty())?;
+        effects::trusted_directory(&parent, path, parts.is_empty() && !sticky_final)?;
     }
     let mut private = false;
     let mut traversed = PathBuf::from("/");
@@ -161,7 +169,7 @@ fn walk_with_private_root(path: &Path, create: bool, private_root: bool) -> Resu
             super::validate_existing_ancestor(&next, &traversed)?;
         }
         if !private_root {
-            effects::trusted_directory(&next, &traversed, index + 1 == parts.len())?;
+            effects::trusted_directory(&next, path, index + 1 == parts.len() && !sticky_final)?;
         }
         parent = next;
     }

@@ -141,6 +141,30 @@ impl SqliteSnapshot {
         }
         Ok(e)
     }
+    fn project_metadata(&self, seq: i64) -> StoreResult<StoredEvent> {
+        if !matches!(self.scope.visibility, Visibility::SelfOnly(_)) {
+            return self.record(seq);
+        }
+        let event = load_event(&self.db, seq, &self.info)?;
+        let project = match &event.body {
+            EventBody::ProjectRegistered { project, .. }
+            | EventBody::ProjectUpdated { project, .. }
+            | EventBody::ProjectRemoved { project, .. } => project,
+            _ => {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "public project metadata has a different event kind",
+                ));
+            }
+        };
+        if self.scope.admission.scope != Scope::Project(project.clone()) {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "public project metadata is outside the admitted project",
+            ));
+        }
+        Ok(event)
+    }
     fn principal_metadata(&self, seq: i64) -> StoreResult<StoredEvent> {
         let event = load_event(&self.db, seq, &self.info)?;
         if event.header.scope != self.scope.admission.scope
@@ -196,6 +220,8 @@ impl SqliteSnapshot {
                     revision: codec::revision(revision)?,
                     current: if table == "principals" {
                         self.principal_metadata(seq)?
+                    } else if table == "projects" {
+                        self.project_metadata(seq)?
                     } else {
                         self.record(seq)?
                     },
@@ -204,6 +230,8 @@ impl SqliteSnapshot {
                         .map(|s| {
                             if table == "principals" {
                                 self.principal_metadata(s).map(Box::new)
+                            } else if table == "projects" {
+                                self.project_metadata(s).map(Box::new)
                             } else {
                                 self.record(s).map(Box::new)
                             }

@@ -8,6 +8,15 @@ pub fn refusal(args: &[OsString]) -> Option<SeError> {
     let rest = &args[command..];
     let first = rest.first()?.to_str()?;
     let second = rest.get(1).and_then(|arg| arg.to_str());
+    if first == "launch" {
+        return Some(SeError::new(Detail::FeatureUnavailable(
+            details::FeatureUnavailable {
+                subject: "agent launch".into(),
+                reason: "launching agents isn't available in this build yet".into(),
+                next_step: "Use se init to save a project and se status to inspect it.".into(),
+            },
+        )));
+    }
     let pair = match (first, second) {
         ("seat", Some("create")) => Some("se agent add NAME"),
         ("seat", Some("launch")) => Some("se launch AGENT"),

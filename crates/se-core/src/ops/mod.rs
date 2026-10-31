@@ -13,6 +13,7 @@ pub mod installation;
 pub mod message;
 mod meta;
 pub mod outputs;
+pub mod project;
 pub mod receipt;
 pub mod status;
 pub use crate::commit::{MessageSend, WorkingStateSet};

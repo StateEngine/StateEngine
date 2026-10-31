@@ -31,6 +31,42 @@ pub(super) fn start(
     stdin: &OwnedHandle,
     inherited: &mut [windows_sys::Win32::Foundation::HANDLE],
 ) -> Result<OwnedHandle> {
+    let mut line: Vec<u16> = std::ffi::OsStr::new("se --stateengine-private-uninstall-handoff")
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+    command(&native::wide(path)?, &mut line, stdin, inherited, 0, None)
+}
+pub(super) fn command(
+    application: &[u16],
+    line: &mut [u16],
+    stdin: &OwnedHandle,
+    inherited: &[HANDLE],
+    flags: u32,
+    environment: Option<&[u16]>,
+) -> Result<OwnedHandle> {
+    let result = command_inner(application, line, stdin, inherited, flags, environment);
+    // Originals in this process must not remain inheritable for later children.
+    // Child-table entries are independent and retain their startup flags.
+    let mut clear_error = None;
+    for raw in inherited.iter().copied().chain(Some(stdin.as_raw_handle())) {
+        if let Err(cause) = native::clear_inherit(raw) {
+            clear_error.get_or_insert(cause);
+        }
+    }
+    match (result, clear_error) {
+        (Ok(process), None) => Ok(process),
+        (Err(cause), _) | (Ok(_), Some(cause)) => Err(cause),
+    }
+}
+fn command_inner(
+    application: &[u16],
+    line: &mut [u16],
+    stdin: &OwnedHandle,
+    inherited: &[HANDLE],
+    flags: u32,
+    environment: Option<&[u16]>,
+) -> Result<OwnedHandle> {
     let mut size = 0;
     // SAFETY: documented sizing or initialization call with retained aligned storage and size output.
     unsafe {
@@ -43,7 +79,7 @@ pub(super) fn start(
         memory: vec![0; size.div_ceil(size_of::<usize>())],
         initialized: false,
     };
-    // SAFETY: standard-handle selector is a native constant; no pointers are dereferenced.
+    // SAFETY: retained aligned attribute storage has the size returned by the native sizing call.
     if unsafe {
         InitializeProcThreadAttributeList(attributes.memory.as_mut_ptr().cast(), 1, 0, &mut size)
     } == 0
@@ -85,22 +121,18 @@ pub(super) fn start(
     startup.StartupInfo.hStdOutput = streams[0].as_raw_handle();
     startup.StartupInfo.hStdError = streams[1].as_raw_handle();
     startup.lpAttributeList = attributes.memory.as_mut_ptr().cast();
-    let mut line: Vec<u16> = std::ffi::OsStr::new("se --stateengine-private-uninstall-handoff")
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
     // SAFETY: native POD output accepts an all-zero initialization.
     let mut result: PROCESS_INFORMATION = unsafe { zeroed() };
     // SAFETY: terminated owned command/path buffers, initialized startup outputs, and explicit retained inheritance list.
     if unsafe {
         CreateProcessW(
-            native::wide(path)?.as_ptr(),
+            application.as_ptr(),
             line.as_mut_ptr(),
             ptr::null(),
             ptr::null(),
             1,
-            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
-            ptr::null(),
+            EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | flags,
+            environment.map_or(ptr::null(), |block| block.as_ptr().cast()),
             ptr::null(),
             &startup.StartupInfo,
             &mut result,
@@ -110,6 +142,9 @@ pub(super) fn start(
         return Err(native::last("launch protected uninstall helper"));
     }
     let process = native::handle(result.hProcess, "pin uninstall helper")?;
+    for stream in &streams {
+        native::clear_inherit(stream.as_raw_handle())?;
+    }
     let _thread = native::handle(result.hThread, "close uninstall helper thread")?;
     Ok(process)
 }

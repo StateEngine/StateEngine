@@ -38,12 +38,37 @@ pub(super) async fn receive(
     deadline: &Deadline,
     limit: usize,
 ) -> Result<wire::WireBytes> {
+    receive_optional(stream, deadline, limit)
+        .await?
+        .ok_or_else(|| {
+            wire::io_failure("incomplete IPC frame", io::ErrorKind::UnexpectedEof.into())
+        })
+}
+pub(super) async fn receive_optional(
+    stream: &NativeStream,
+    deadline: &Deadline,
+    limit: usize,
+) -> Result<Option<wire::WireBytes>> {
     let mut header = [0; 4];
-    exact(stream, &mut header, deadline).await?;
+    loop {
+        bounded(deadline, stream.readable())
+            .await?
+            .map_err(|error| wire::io_failure("wait IPC header", error))?;
+        match stream.try_read(&mut header) {
+            Ok(0) => return Ok(None),
+            Ok(count) => {
+                exact(stream, &mut header[count..], deadline).await?;
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(error) => return Err(wire::io_failure("read IPC header", error)),
+        }
+    }
     let mut bytes = Zeroizing::new(vec![0; wire::frame_length(header, limit)?]);
     exact(stream, &mut bytes, deadline).await?;
-    Ok(wire::WireBytes::from_owned(bytes))
+    Ok(Some(wire::WireBytes::from_owned(bytes)))
 }
+
 pub(super) async fn send(
     stream: &NativeStream,
     frame: &wire::WireBytes,

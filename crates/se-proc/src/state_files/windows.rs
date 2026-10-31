@@ -143,7 +143,13 @@ fn open(path: &Path, directory: bool, create: bool, write: bool) -> Result<File>
         };
     // Directory pins deny delete sharing for their entire lifetime. File pins
     // permit our own no-replace rename while retaining the original object.
-    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | if directory { 0 } else { FILE_SHARE_DELETE };
+    let share = FILE_SHARE_READ
+        | if directory || !create {
+            FILE_SHARE_WRITE
+        } else {
+            0
+        }
+        | if directory { 0 } else { FILE_SHARE_DELETE };
     // SAFETY: retained UTF-16 path and optional descriptor outlive this native open.
     let raw = unsafe {
         CreateFileW(

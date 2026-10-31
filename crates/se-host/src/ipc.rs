@@ -150,6 +150,9 @@ pub struct IpcEnvelope {
     pub request_id: u64,
     pub generation: Generation,
     pub authority: Option<PresentedAuthority>,
+    /// Native CLI console observation. Owner MAC plus a matching native peer
+    /// check are required before it can establish human presence.
+    pub presence: Option<crate::client::presence::OwnerPresence>,
     /// Raw CLI route metadata, decoded by the core's sole CliSelections DTO
     /// inside the admitted snapshot. Never merged into MCP operation inputs;
     /// hooks carry None and a supplied filter never widens authority.

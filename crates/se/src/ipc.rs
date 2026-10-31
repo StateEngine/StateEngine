@@ -4,7 +4,8 @@ use se_core::ops::{AnyOp, AnyOutput, CliSelections};
 use se_host::{
     EndpointRecord, IpcEnvelope, IpcRequest, OperationOutput, RawOperation,
     client::{
-        BlockingIpcClient, ClientOptions, lease::ClientCredential, wire::DEFAULT_REPLY_BYTES,
+        BlockingIpcClient, ClientOptions, lease::ClientCredential, presence::OwnerPresence,
+        wire::DEFAULT_REPLY_BYTES,
     },
 };
 use se_types::{Detail, Result, SeError, details};
@@ -15,10 +16,16 @@ pub fn forward(
     credential: ClientCredential,
     op: AnyOp,
     selections: &CliSelections,
+    observation: Option<&se_proc::OwnerObservation>,
     options: &ClientOptions,
 ) -> Result<AnyOutput> {
     let expected = op.meta().family.schema();
-    let call = operation(op, selections, endpoint.generation)?;
+    let mut call = operation(op, selections, endpoint.generation)?;
+    // Only the owner-authenticated route can carry the native self-observation.
+    // Session and launch credentials never gain human presence from metadata.
+    if matches!(&credential, ClientCredential::Machine(_)) {
+        call.presence = observation.map(OwnerPresence::from_observation);
+    }
     exchange(endpoint, credential, call, &expected, options)
 }
 
@@ -38,6 +45,7 @@ pub fn forward_hook(
             request_id: 1,
             generation: endpoint.generation,
             authority: None,
+            presence: None,
             cli_selections: None,
             request: IpcRequest::Hook(hook),
         },
@@ -103,6 +111,7 @@ pub fn operation(
         request_id: 1,
         generation,
         authority: None,
+        presence: None,
         cli_selections: Some(
             serde_json::to_value(selections)
                 .map_err(|_| invalid("serializable CLI routing metadata"))?,
