@@ -1,5 +1,5 @@
 use crate::*;
-use std::{path::PathBuf, sync::Arc, time::Instant};
+use std::{num::NonZeroU64, path::PathBuf, sync::Arc, time::Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ScopeIdentity {
@@ -54,6 +54,9 @@ pub struct ProcessRecord {
     pub guarantee: ContainmentGuarantee,
     pub entry: EntryMethod,
     pub state: LifecycleState,
+    /// Human-released custody stays StopUnproved, never a fabricated Exited.
+    /// The host excludes this durable marker from live admission and recovery.
+    pub ownership_release: Option<UnwitnessedRelease>,
     pub exit_status: Option<ExitStatus>,
     pub observed_at_unix_ns: u128,
     pub argv_sha256: [u8; 32],
@@ -157,6 +160,22 @@ pub struct RemainingScope {
     pub extent: EnumerationExtent,
     pub observed_at_unix_ns: u128,
 }
+/// Host supplies this only after owner-human admission and a committed CAS.
+/// Revision is the resulting nonzero per-lifecycle revision, not an event seq.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnwitnessedRelease {
+    pub lifecycle: LifecycleId,
+    pub generation: GenerationId,
+    pub revision: NonZeroU64,
+    pub scope: ScopeIdentity,
+    pub remaining: RemainingScope,
+    pub released_at_unix_ns: u128,
+}
+/// Native tracking was relinquished; this is deliberately not a StopWitness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReleasedOwnership {
+    pub release: UnwitnessedRelease,
+}
 /// Native basis for an empty scope; absence alone cannot construct a witness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScopeExitBasis {
@@ -246,6 +265,8 @@ pub enum RecoveryDisposition {
     InspectTrackedMacOs,
     ReconcileReservation,
     ReleaseExitedScope,
+    /// Reconcile the committed human release; never acquire signal authority.
+    ReleaseUncontainedOwnership,
     Historical,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -259,6 +280,7 @@ pub enum RecoveryOutcome {
         record: Box<ProcessRecord>,
     },
     Exited(Box<StopWitness>),
+    ReleasedOwnership(Box<ReleasedOwnership>),
     PendingScope {
         process: OwnedProcess,
         checkpoint: Box<ScopeCheckpoint>,
@@ -326,6 +348,14 @@ pub trait ProcessRuntime: Send + Sync {
     /// Natural exit, failed launch and graceful shutdown need no stop ticket.
     fn witness_exit(&self, process: &OwnedProcess) -> ProcResult<StopObservation>;
     fn release(&self, process: &OwnedProcess, witness: &StopWitness) -> ProcResult<()>;
+    /// LinuxTracked/MacOsTracked only: no signal, job close or invented exit.
+    /// The host first commits release.revision for this lifecycle/generation.
+    /// Revoke all arena references and close tracking pins, not provider ports.
+    fn release_uncontained(
+        &self,
+        process: &OwnedProcess,
+        release: &UnwitnessedRelease,
+    ) -> ProcResult<ReleasedOwnership>;
     fn plan_recovery(&self, source: RecoverySource) -> ProcResult<RecoveryPlan>;
     fn recover(&self, plan: RecoveryPlan, generation: GenerationId) -> ProcResult<RecoveryOutcome>;
 }

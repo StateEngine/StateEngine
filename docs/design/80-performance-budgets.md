@@ -32,7 +32,7 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | B6 | Idle wakeups | ≤ 1/s with no session; ≤ 2/s with one | Same | Same |
 | B7 | CLI reads | p95 strictly < 20 ms, 30 runs each of `--version`, `status`, `agent list`, `msg inbox`, `msg list`, `decision list` | Spawn to process exit | `CLI --version`, `CLI contextual read verbs` |
 | B8 | Re-adoption after handover or restart | ≤ 500 ms, no lost or doubled input | Cutover start (after participating agents are interrupted to exact idle) to every live session re-adopted; quiescence time reported separately | **Not yet probed** (§2.6) |
-| B9 | Ordinary CLI writes: `msg send`, `working-state set`, `hook claude stop` | p95 ≤ 20 ms through a running host | Spawn to exit, including IPC/queue/commit/receipt | E3 native CLI probe required; retained mixed writer spike fails (§3.6) |
+| B9 | Ordinary CLI writes: `msg send`, `working-state set`, `hook claude stop` | Serial p95 ≤20 ms; eight-agent target initially ≤20 ms, with Jimmy’s ≤50 ms fallback if the quiet hosted rerun misses | Each command separately, spawn to exit through a running host; one in-flight write per agent, including FULL queue delay | Wave-1 hosted E3; component observations are not acceptance (§3.6) |
 | FULL | `se decision ratify`, `se decision reject`, `se decision retract`, `se decision supersede`, `se agent add`, `se config set agent.<A>.profile`, `se config set agent.<A>.model`, `se config set agent.<A>.can-create`, `se init` | p95 ≤ 75 ms on Windows with Defender | Spawn to exit; fresh-state init includes hostless schema/publication/setup, other commands use the running host; each sampled separately | E3; not yet qualified |
 
 B1 and B2 are SE Code's requirements. The rest are plan decisions. Budget failures make the Rust run exit
@@ -69,7 +69,7 @@ Long operations have their own targets, measured on StateEngine's share only:
   Direct SSH RPC p95 91.323 ms and post-reply placement p95 59.225 ms explain
   distinct stages; quantiles are not additive. No store/provider/full-launch
   integration was measured. Re-measure acquisition on a quiet box before
-  qualification, in the coordinated measurement window with starting load below 4.
+  qualification; the selected-transport quiet run below completes that step.
   The loaded runs overlapped a full preflight and system-wide syscall tracing;
   they remain raw diagnostics, not reliable latency conclusions or proof of
   the 200 ms target. The old first-launch-only 20–60 ms estimate is withdrawn.
@@ -81,19 +81,26 @@ Long operations have their own targets, measured on StateEngine's share only:
 - **Atlas** (standalone only, opt-in and off the milestone path): cold index peak ≤ 64 MB in its own process (§3.2); save-to-searchable
   ≤ 200 ms (prototype 67 ms); query p95 ≤ 50 ms (prototype 7–16 ms); zero idle wakeups once settled.
 
-The private Linux manager transport uses dbus 0.9.10, default features off,
-vendored only (libdbus-sys 0.2.7), with no Tokio/futures dependency. A build-only
-Linux x86-64 linker probe with release/LTO/strip/panic-abort was 611,472 bytes
-versus 307,648 bytes for the matching std-only executable: **303,824 additional
-bytes (~297 KiB)** for this exercised transport surface. Allow roughly 384 KiB
-in planning, not zero dependency cost; final combined StateEngine/SE Code
-marginal artifact size still must be measured. This is artifact size, not
-B1's resident-memory increase; B1 retains its separate RSS measurement. The probe only links
-a private client branch; it never executes a bus request or measures latency.
-It confirms no dynamic libdbus/libsystemd dependency. Existing scope timings
-used libsystemd plus placement polling, so they do not qualify the selected
-dbus-rs event-driven path. Its first qualification waits for the designated
-quiet window and the actual selected bytes.
+Linux cgroups are wave-4 work; wave 1 uses the uncontained process-group path.
+The corrected quiet selected-libdbus helper passed 30/30 on the local box at
+load1 5.79–5.81: scope readiness p95 156.922 ms, maximum 158.153 ms; all helpers
+exited and pinned scopes were empty/removed. Its earlier watch-initialization
+failure is retained. These are scope-only results, not SSH-origin selected-
+transport timing, host/CLI launch or store-barrier qualification.
+
+Wave 4 tries pure-Rust/MIT zbus first. Compare release/LTO/strip artifact delta,
+resident memory and fresh-scope readiness against the same libdbus consumer;
+include bus setup, subscription, exact job completion, placement and FD custody.
+Any helper executor/thread is counted. Use the libdbus fallback if zbus misses
+the agreed scope budget; no transport is installed or selected by declaration
+success. No resident helper, reused scope or untrusted bus address is allowed.
+
+The retained build-only libdbus probe added 303,824 bytes over std-only
+(611,472 versus 307,648), with roughly 384 KiB planned, not a hard size gate or
+RSS claim. The fallback is `dbus` 0.9.10/default-features=false/vendored through
+`libdbus-sys` 0.2.7 with AFL-2.1 notices/election. Final combined marginal size and
+RSS, and all zbus costs, remain unmeasured. Only Linux target dependencies are
+admitted in wave 4; this amendment adds none.
 
 ## 2. How the runner measures
 
@@ -104,8 +111,14 @@ including the cold first call. Nearest-rank p95 of 30 is the 29th sorted sample.
 For B7's strict threshold, **at most one run in 30 may reach 20 ms.** On Windows the first run of a new binary under Defender is the likely outlier, so a
 second slow run is a real failure.
 
-For B9 sample each of its three named ordinary-write commands through an
-already running host. Sample every FULL-command family separately under the
+For B9 sample each named ordinary-write command through an already running
+host at serial and eight independent agents, one in-flight CLI write each.
+Report each command/client cohort unpooled; delay behind FULL traffic counts.
+The separate twenty-agent burst requires worst case ≤ 100 ms and no lost writes.
+If the quiet hosted rerun misses the initial eight-agent ≤ 20 ms target, Jimmy
+permits eight-agent p95 ≤ 50 ms while serial stays ≤ 20 ms; build continues without
+a write-path redesign. A component rerun never substitutes for that host/CLI
+check or silently applies its fallback. Sample every FULL-command family separately under the
 FULL row on Windows with Defender; retain actual durability and batch promotion,
 not just the command label. Sample each listed decision action and agent
 setting separately; general settings writes are not FULL store mutations.
@@ -128,6 +141,20 @@ workload to expose ordinary requests promoted into FULL batches and their delay.
 | Linux | `/proc/<pid>/smaps_rollup` `Rss` | Includes shared, file-backed pages (our binary's code, libc), hence the code-pages line in §3 |
 | Windows | `WorkingSet64` | The OS can trim a working set; runs should also record private bytes, as a diagnostic only |
 | macOS | `proc_pid_rusage` `ri_phys_footprint` | Footprint, not RSS: excludes clean file-backed pages. Comparable within a platform only |
+
+Wave 2 measures **combined resident memory after a real provider task** in the
+thin linked SE Code slice, as well as startup/first bind. Record the complete
+SE Code+StateEngine resident total and the matched SE Code-only total, then
+apply B1 to their added-memory difference. Include every attributed helper and
+committed stack; exclude provider CLI memory consistently on both sides.
+
+The task must do independently read-back work and exercise capture/mail or
+continuity before sampling the still-open session. Retain the task peak and
+the post-task settled sample with caches/queues intact; no artificial reopen,
+cache flush or forced allocator trim. Report native process/birth inventory,
+per-process resident values and baseline alongside the result. Wave 2 cannot
+claim memory qualification from a startup-only sample; B4 also keeps its
+one-session after-task boundary.
 
 ### 2.3 Idle on Linux (B5, B6): reaped-child accounting
 Endpoint sampling of `/proc/<pid>/task/*/status` misses threads and helpers that exit inside the
@@ -483,15 +510,40 @@ handover spend is inferred from these mixed-workload quantiles.
 Keep **commit-driven autocheckpoint**, 16 KiB pages and 256 pages, as the
 section-20 baseline. The measured contribution does not justify moving
 checkpoints to a worker, hiding their latency, or weakening NORMAL/FULL.
-The store maintainer owns writer/schema reruns; any supported policy change is reviewed once
-and applied consistently across 20/40/80/95 with queue/WAL/memory costs. Complete
-E3 still requires the approved real host/command consumer and both sampling
-classes; it remains unqualified, with the Linux ordinary component over target.
+Wave 1 now includes installed CLI→authenticated IPC→host→production writer,
+representative schema and mixed NORMAL/FULL traffic. J1 plus this hosted E3
+result is the wave exit. Split queue, transaction, sync/checkpoint and receipt;
+no codec/auth/startup/IPC cost may remain outside the complete command clock.
+Apply the serial/eight/twenty targets in §1 and retain the actual failure.
 
-Raw data: `/mnt/nvme/stateengine/nell-import-rehearsal-20261030/` (initial),
-`/mnt/nvme/stateengine/nell-e3-write-latency-20261030/` (native).
-Independent analysis: `/mnt/nvme/stateengine/5p-e3-write-decomposition-20261030/
-NATIVE-REPORT.txt`, `native-decomposition.json` and `analyze-native.py`.
+The R4 prerequisite rerun compares 4 KiB/16 KiB pages with/without list_versions
+using the existing native workload, one case at a time in heavy.py's exclusive
+slot with load1 ≤ 10 at every start and no concurrent heavy job or system tracing.
+Record load, exact schema/plan/binary, durability and all samples. A fixed 256-page
+autocheckpoint changes byte cadence from 1 MiB to 4 MiB with page size; report it,
+not a pure page-granularity attribution. Removing list_versions is a labelled
+experiment that loses historical windows, not an approved product schema.
+Report one msg-send's logical row/index touches, payload bytes, appended WAL
+frames/bytes, observed SQLite syscall writes and DB/WAL size separately.
+Trace only the separate single-message diagnostics, never the latency cases;
+retain setup/shutdown writes and distinguish OS writes from physical device I/O.
+
+Launch qualification uses the actual causal sequence: C1 FULL, C2, C3 FULL,
+and RootCheckpoint before exec on the four-commit Unix paths. Wave 1 Linux uses
+that four-commit uncontained path. The ≤ 50 ms non-scope launch target includes
+both FULL commits, the other required barriers and native creation/identity;
+provider startup alone is excluded. Measure the whole sequence and every
+barrier in hosted E3; neither summed marginal percentiles nor batching across
+native effects establishes it. A miss remains a launch-budget miss for the
+maintainer’s decision, not permission to omit a commit or borrow the wave 4
+scope-stage allowance. Keep one target; do not add another local budget table.
+
+Raw writer data remains under `/mnt/nvme/stateengine/nell-import-rehearsal-20261030/`
+and `nell-e3-write-latency-20261030/`; independent analysis is
+`5p-e3-write-decomposition-20261030/NATIVE-REPORT.txt` under the same root.
+The selected-transport quiet receipt is
+`5p-e7-containment-20261030/SCOPE-DIRECT-QUIET-RESULT.txt` there. W2 results
+remain pending the coordinated quiet window and will be recorded separately.
 
 ### 3.7 Idle wakeups (B6)
 | Source | No session | One session |
