@@ -33,7 +33,7 @@ impl Kernel {
     pub const fn read_only() -> Self {
         Self { facts: None }
     }
-    fn facts(&self) -> Result<&CallFacts> {
+    pub(crate) fn facts(&self) -> Result<&CallFacts> {
         self.facts.as_ref().ok_or_else(|| {
             SeError::invalid(
                 "write allocation",
@@ -41,7 +41,11 @@ impl Kernel {
             )
         })
     }
-    fn event<R: Snapshot>(&self, body: EventBody<InputText>, cx: &Cx<'_, R>) -> Result<NewEvent> {
+    pub(crate) fn event<R: Snapshot>(
+        &self,
+        body: EventBody<InputText>,
+        cx: &Cx<'_, R>,
+    ) -> Result<NewEvent> {
         let facts = self.facts()?;
         Ok(NewEvent {
             header: EventHeader {
@@ -58,7 +62,7 @@ impl Kernel {
             body,
         })
     }
-    fn batch<R: Snapshot>(
+    pub(crate) fn batch<R: Snapshot>(
         &self,
         operation: &'static str,
         key: IdempotencyKey,
@@ -86,7 +90,7 @@ impl Kernel {
         })
     }
 }
-fn admitted<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
+pub(crate) fn admitted<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
     scope::project(cx.admission)?;
     match (&cx.admission.actor, &cx.admission.session) {
         (Actor::Agent(_), Some(_)) | (Actor::Human(_), None) => Ok(()),

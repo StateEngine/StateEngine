@@ -1,6 +1,8 @@
 //! The operation list for the executable wave-one surface. Later waves add their
 //! production operations here; no placeholder handlers or phantom tools are exposed.
+pub mod administration;
 mod cli;
+pub mod decision;
 pub mod hook;
 pub mod inputs;
 pub mod installation;
