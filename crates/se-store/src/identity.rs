@@ -66,8 +66,8 @@ pub(crate) fn key(
     let old: Option<Vec<u8>> = db
         .query_row(
             "SELECT storage_key FROM identities WHERE kind=? AND scope_key=? AND wire_id=?",
-            params![kind, scope, wire],
-            |r| r.get(0),
+            crate::sql_value::sql_params![kind, scope, wire],
+            |r| crate::sql_value::value(r, 0),
         )
         .optional()
         .map_err(sql)?;
@@ -84,7 +84,7 @@ pub(crate) fn key(
     bytes[6] = (bytes[6] & 15) | 0x80;
     bytes[8] = (bytes[8] & 63) | 0x80;
     if insert {
-        db.execute("INSERT INTO identities(storage_key,kind,wire_id,scope_key,encoding) VALUES(?,?,?,?,'legacy-shape')",params![bytes,kind,wire,scope]).map_err(sql)?;
+        db.execute("INSERT INTO identities(storage_key,kind,wire_id,scope_key,encoding) VALUES(?,?,?,?,'legacy-shape')",crate::sql_value::sql_params![bytes,kind,wire,scope]).map_err(sql)?;
     }
     Ok(bytes)
 }
@@ -119,8 +119,8 @@ pub(crate) fn wire(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> S
     }
     db.query_row(
         "SELECT wire_id FROM identities WHERE storage_key=? AND kind=? AND scope_key=?",
-        params![bytes.as_slice(), kind, scope],
-        |r| r.get(0),
+        crate::sql_value::sql_params![bytes.as_slice(), kind, scope],
+        |r| crate::sql_value::value(r, 0),
     )
     .map_err(sql)
 }
@@ -129,7 +129,7 @@ pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM owners WHERE human_id=?)",
             [bytes],
-            |r| r.get(0),
+            |r| crate::sql_value::value(r, 0),
         )
         .map_err(sql)?;
     if owner {

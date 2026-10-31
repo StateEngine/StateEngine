@@ -35,7 +35,7 @@ pub struct Profile {
     pub named_profile: String,
     pub effort: Option<String>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Root {
     pub path: NativePath,
     pub canonical_key: Vec<u8>,

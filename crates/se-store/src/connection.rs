@@ -25,7 +25,9 @@ pub(crate) fn configure(c: &Connection, writable: bool, timeout: Duration) -> St
     c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA cache_size=-512;").map_err(sql)?;
     if writable {
         let journal: String = c
-            .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
+            .query_row("PRAGMA journal_mode=WAL", [], |r| {
+                crate::sql_value::value(r, 0)
+            })
             .map_err(sql)?;
         if journal != "wal" {
             return Err(fail(StoreErrorCode::PragmaRefused, "WAL refused"));
@@ -51,7 +53,9 @@ pub(crate) fn configure(c: &Connection, writable: bool, timeout: Duration) -> St
         ("temp_store", 1),
     ] {
         let actual: i64 = c
-            .query_row(&format!("PRAGMA {name}"), [], |r| r.get(0))
+            .query_row(&format!("PRAGMA {name}"), [], |r| {
+                crate::sql_value::value(r, 0)
+            })
             .map_err(sql)?;
         if actual != expected {
             return Err(fail(
@@ -64,7 +68,9 @@ pub(crate) fn configure(c: &Connection, writable: bool, timeout: Duration) -> St
 }
 pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
     let app: u32 = c
-        .query_row("PRAGMA application_id", [], |r| r.get(0))
+        .query_row("PRAGMA application_id", [], |r| {
+            crate::sql_value::value(r, 0)
+        })
         .map_err(sql)?;
     if app != APP {
         return Err(fail(
@@ -73,7 +79,7 @@ pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
         ));
     }
     let version: u32 = c
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .query_row("PRAGMA user_version", [], |r| crate::sql_value::value(r, 0))
         .map_err(sql)?;
     if version != SCHEMA {
         return Err(fail(
@@ -89,7 +95,13 @@ pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
         .query_row(
             "SELECT store_id,incarnation,state FROM store_info WHERE singleton=1",
             [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| {
+                Ok((
+                    crate::sql_value::value(r, 0)?,
+                    crate::sql_value::value(r, 1)?,
+                    crate::sql_value::value(r, 2)?,
+                ))
+            },
         )
         .map_err(sql)?;
     let id = StoreId::from_bytes(id.try_into().map_err(|_| invalid("store_id length"))?)
@@ -105,7 +117,7 @@ pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
         .query_row(
             "SELECT seq FROM events ORDER BY seq DESC LIMIT 1",
             [],
-            |r| r.get(0),
+            |r| crate::sql_value::value(r, 0),
         )
         .optional()
         .map_err(sql)?;
@@ -150,7 +162,7 @@ pub(crate) fn symbol(c: &Connection, value: &[u8]) -> StoreResult<i64> {
     )
     .map_err(sql)?;
     c.query_row("SELECT id FROM symbols WHERE value=?", [value], |r| {
-        r.get(0)
+        crate::sql_value::value(r, 0)
     })
     .map_err(sql)
 }
@@ -158,7 +170,7 @@ pub(crate) fn payload(c: &Connection, seq: i64, field: &str, text: &str) -> Stor
     use sha2::{Digest, Sha256};
     c.execute(
         "INSERT INTO payloads(event_seq,field,encoding,content,sha256) VALUES(?,?,'utf8',?,?)",
-        params![
+        crate::sql_value::sql_params![
             seq,
             field,
             text.as_bytes(),

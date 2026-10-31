@@ -13,7 +13,7 @@ pub(crate) fn expected(
         .query_row(
             &format!("SELECT revision FROM {table} WHERE {filter}"),
             keys,
-            |r| r.get(0),
+            |r| crate::sql_value::value(r, 0),
         )
         .optional()
         .map_err(sql)?;
@@ -42,12 +42,24 @@ pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> 
     let event = key(c, "event", e.header.event.as_str(), &scope, false)?;
     let existing = c
         .query_row("SELECT seq FROM events WHERE event_id=?", [event], |r| {
-            r.get(0)
+            crate::sql_value::value(r, 0)
         })
         .optional()
         .map_err(sql)?;
     if existing.is_some() {
         return Ok(existing);
+    }
+    if let EventBody::MessageSent { message, .. } = &e.body {
+        let p = project_id(c, &e.header.scope, false)?;
+        let m = key(c, "message", message.as_str(), &scope, false)?;
+        return c
+            .query_row(
+                "SELECT sent_seq FROM messages WHERE project_id=? AND message_id=?",
+                crate::sql_value::sql_params![p, m],
+                |r| crate::sql_value::value(r, 0),
+            )
+            .optional()
+            .map_err(sql);
     }
     let (message, recipient, col) = match &e.body {
         EventBody::MessageRead { message, recipient } => (message, recipient, "read_seq"),
@@ -70,7 +82,7 @@ pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> 
         },
         false,
     )?;
-    c.query_row(&format!("SELECT m.{col} FROM marks m JOIN messages d ON d.sent_seq=m.message_seq WHERE d.project_id=? AND d.message_id=? AND m.recipient_id=?"),params![project,message,recipient],|r|r.get(0)).optional().map_err(sql).map(Option::flatten)
+    c.query_row(&format!("SELECT m.{col} FROM marks m JOIN messages d ON d.sent_seq=m.message_seq WHERE d.project_id=? AND d.message_id=? AND m.recipient_id=?"),crate::sql_value::sql_params![project,message,recipient],|r|crate::sql_value::value(r,0)).optional().map_err(sql).map(Option::flatten)
 }
 pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
     use EventBody::*;
@@ -187,8 +199,8 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
             let rev: u64 = c
                 .query_row(
                     "SELECT revision FROM messages WHERE project_id=? AND message_id=?",
-                    params![p, m],
-                    |r| r.get(0),
+                    crate::sql_value::sql_params![p, m],
+                    |r| crate::sql_value::value(r, 0),
                 )
                 .map_err(sql)?;
             rev.checked_add(1)
@@ -259,7 +271,7 @@ pub(crate) fn apply(
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM owners WHERE human_id=?)",
                     [own],
-                    |r| r.get(0),
+                    |r| crate::sql_value::value(r, 0),
                 )
                 .map_err(sql)?;
             if !exists {
@@ -268,10 +280,10 @@ pub(crate) fn apply(
                     "register the owner before the project",
                 ));
             }
-            c.execute("INSERT INTO projects(project_id,first_seq,revision,last_seq,state) VALUES(?,?,?,?,'active')",params![p,seq,revision,seq]).map_err(sql)?;
+            c.execute("INSERT INTO projects(project_id,first_seq,revision,last_seq,state) VALUES(?,?,?,?,'active')",crate::sql_value::sql_params![p,seq,revision,seq]).map_err(sql)?;
             for root in roots {
                 let encoded = symbol(c, codec::encode(&root.path)?.as_bytes())?;
-                c.execute("INSERT INTO roots(project_id,canonical_key,encoded_path,last_seq) VALUES(?,?,?,?)",params![p,root.canonical_key,encoded,seq]).map_err(sql)?;
+                c.execute("INSERT INTO roots(project_id,canonical_key,encoded_path,last_seq) VALUES(?,?,?,?)",crate::sql_value::sql_params![p,root.canonical_key,encoded,seq]).map_err(sql)?;
             }
             codec::aux(c, seq, facts)?;
         }
@@ -307,7 +319,7 @@ pub(crate) fn apply(
                         "registry owner bootstrap requires self owner, no invented creator",
                     ));
                 }
-                c.execute("INSERT INTO owners(human_id,display_name,first_seq,revision,last_seq) VALUES(?,?,?,?,?)",params![a,name,seq,revision,seq]).map_err(sql)?;
+                c.execute("INSERT INTO owners(human_id,display_name,first_seq,revision,last_seq) VALUES(?,?,?,?,?)",crate::sql_value::sql_params![a,name,seq,revision,seq]).map_err(sql)?;
             } else {
                 if header.actor != Actor::Human(owner.clone())
                     && created_by.as_ref() != Some(&header.actor)
@@ -318,8 +330,8 @@ pub(crate) fn apply(
                     ));
                 }
                 let creator = created_by.as_ref().map(actor_key).transpose()?;
-                c.execute("INSERT INTO principals(project_id,principal_id,principal_kind,owner_id,created_by,display_name,first_seq,revision,last_seq) VALUES(?,?,?,?,?,?,?,?,?)",params![project()?,a,if matches!(kind,PrincipalKind::Agent){"agent"}else{"human"},own,creator,name,seq,revision,seq]).map_err(sql)?;
-                c.execute("INSERT INTO resume_heads(project_id,principal_id,unread_count,pending_effect_count,last_seq) VALUES(?,?,0,0,?)",params![project()?,a,seq]).map_err(sql)?;
+                c.execute("INSERT INTO principals(project_id,principal_id,principal_kind,owner_id,created_by,display_name,first_seq,revision,last_seq) VALUES(?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![project()?,a,if matches!(kind,PrincipalKind::Agent){"agent"}else{"human"},own,creator,name,seq,revision,seq]).map_err(sql)?;
+                c.execute("INSERT INTO resume_heads(project_id,principal_id,unread_count,pending_effect_count,last_seq) VALUES(?,?,0,0,?)",crate::sql_value::sql_params![project()?,a,seq]).map_err(sql)?;
             }
             codec::aux(c, seq, facts)?;
         }
@@ -327,7 +339,7 @@ pub(crate) fn apply(
             principal, name, ..
         } => {
             let a = actor_key(&principal)?;
-            c.execute("UPDATE principals SET display_name=?,revision=?,last_seq=? WHERE project_id=? AND principal_id=?",params![name,revision,seq,project()?,a]).map_err(sql)?;
+            c.execute("UPDATE principals SET display_name=?,revision=?,last_seq=? WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![name,revision,seq,project()?,a]).map_err(sql)?;
             codec::aux(c, seq, facts)?;
         }
         ProfileSaved { agent, profile, .. } => {
@@ -337,7 +349,7 @@ pub(crate) fn apply(
                 return Err(invalid("bypass needs an explicit named profile"));
             }
             let a = key(c, "agent", agent.as_str(), &s, true)?;
-            c.execute("INSERT INTO profiles(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq",params![project()?,a,revision,seq]).map_err(sql)?;
+            c.execute("INSERT INTO profiles(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq",crate::sql_value::sql_params![project()?,a,revision,seq]).map_err(sql)?;
             codec::aux(c, seq, facts)?;
         }
         GrantRecorded {
@@ -352,7 +364,7 @@ pub(crate) fn apply(
                     "only owner may change grants",
                 ));
             }
-            c.execute("INSERT INTO grants(scope_key,principal_id,grant_key,revision,last_seq,active) VALUES(?,?,?,?,?,?) ON CONFLICT(scope_key,principal_id,grant_key) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,active=excluded.active",params![s,actor_key(&principal)?,codec::encode(&grant)?,revision,seq,active]).map_err(sql)?;
+            c.execute("INSERT INTO grants(scope_key,principal_id,grant_key,revision,last_seq,active) VALUES(?,?,?,?,?,?) ON CONFLICT(scope_key,principal_id,grant_key) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,active=excluded.active",crate::sql_value::sql_params![s,actor_key(&principal)?,codec::encode(&grant)?,revision,seq,active]).map_err(sql)?;
             codec::aux(c, seq, facts)?;
         }
         MessageSent {
@@ -372,8 +384,8 @@ pub(crate) fn apply(
             let exists: bool = c
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM principals WHERE project_id=? AND principal_id=?)",
-                    params![project()?, recipient],
-                    |r| r.get(0),
+                    crate::sql_value::sql_params![project()?, recipient],
+                    |r| crate::sql_value::value(r, 0),
                 )
                 .map_err(sql)?;
             if !exists {
@@ -396,8 +408,8 @@ pub(crate) fn apply(
                 let ok: bool = c
                     .query_row(
                         "SELECT EXISTS(SELECT 1 FROM events WHERE project_id=? AND event_id=?)",
-                        params![project()?, k],
-                        |r| r.get(0),
+                        crate::sql_value::sql_params![project()?, k],
+                        |r| crate::sql_value::value(r, 0),
                     )
                     .map_err(sql)?;
                 if !ok {
@@ -407,11 +419,11 @@ pub(crate) fn apply(
                     ));
                 }
             }
-            c.execute("INSERT INTO message_data(event_seq,message_id,recipient_id,message_kind,body_payload,refs,reply_to) VALUES(?,?,?,?,?,?,?)",params![seq,m,recipient,kind,body,codec::encode(&refs)?,reply]).map_err(sql)?;
-            c.execute("INSERT INTO messages(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,revision) VALUES(?,?,?,?,?,?,?)",params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
+            c.execute("INSERT INTO message_data(event_seq,message_id,recipient_id,message_kind,body_payload,refs,reply_to) VALUES(?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,m,recipient,kind,body,codec::encode(&refs)?,reply]).map_err(sql)?;
+            c.execute("INSERT INTO messages(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,revision) VALUES(?,?,?,?,?,?,?)",crate::sql_value::sql_params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
             c.execute(
                 "INSERT INTO marks(message_seq,project_id,recipient_id) VALUES(?,?,?)",
-                params![seq, project()?, recipient],
+                crate::sql_value::sql_params![seq, project()?, recipient],
             )
             .map_err(sql)?;
             count(c, project()?, &recipient, 1, seq)?;
@@ -449,19 +461,19 @@ pub(crate) fn apply(
                     "recipient marker actor differs",
                 ));
             }
-            let (sent,unread):(i64,bool)=c.query_row("SELECT d.sent_seq,(m.read_seq IS NULL AND m.dismissed_seq IS NULL) FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=? AND d.recipient_id=?",params![project()?,m,a],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
+            let (sent,unread):(i64,bool)=c.query_row("SELECT d.sent_seq,(m.read_seq IS NULL AND m.dismissed_seq IS NULL) FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=? AND d.recipient_id=?",crate::sql_value::sql_params![project()?,m,a],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?))).map_err(sql)?;
             let ev = evidence
                 .map(|v| key(c, "event", v.as_str(), &s, false))
                 .transpose()?;
-            c.execute("INSERT INTO mark_data(event_seq,message_seq,recipient_id,disposition,evidence_event) VALUES(?,?,?,?,?)",params![seq,sent,a,tag,ev]).map_err(sql)?;
+            c.execute("INSERT INTO mark_data(event_seq,message_seq,recipient_id,disposition,evidence_event) VALUES(?,?,?,?,?)",crate::sql_value::sql_params![seq,sent,a,tag,ev]).map_err(sql)?;
             c.execute(
                 &format!("UPDATE marks SET {column}=? WHERE message_seq=? AND {column} IS NULL"),
-                params![seq, sent],
+                crate::sql_value::sql_params![seq, sent],
             )
             .map_err(sql)?;
             c.execute(
                 "UPDATE messages SET revision=? WHERE project_id=? AND message_id=?",
-                params![revision, project()?, m],
+                crate::sql_value::sql_params![revision, project()?, m],
             )
             .map_err(sql)?;
             if unread && tag != "delivered" {
@@ -485,9 +497,9 @@ pub(crate) fn apply(
                 Expected::Absent => None,
                 Expected::Revision(r) => Some(r.value.get()),
             };
-            c.execute("INSERT INTO working_state_data(event_seq,agent_id,text_payload,expected_revision) VALUES(?,?,?,?)",params![seq,a,p,want]).map_err(sql)?;
-            c.execute("INSERT INTO working_state(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq",params![project()?,a,revision,seq]).map_err(sql)?;
-            let changed=c.execute("UPDATE resume_heads SET last_working_state_seq=?,last_seq=? WHERE project_id=? AND principal_id=?",params![seq,seq,project()?,a]).map_err(sql)?;
+            c.execute("INSERT INTO working_state_data(event_seq,agent_id,text_payload,expected_revision) VALUES(?,?,?,?)",crate::sql_value::sql_params![seq,a,p,want]).map_err(sql)?;
+            c.execute("INSERT INTO working_state(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq",crate::sql_value::sql_params![project()?,a,revision,seq]).map_err(sql)?;
+            let changed=c.execute("UPDATE resume_heads SET last_working_state_seq=?,last_seq=? WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![seq,seq,project()?,a]).map_err(sql)?;
             if changed != 1 {
                 return Err(fail(
                     StoreErrorCode::ProjectionInconsistent,
@@ -512,7 +524,7 @@ pub(crate) fn apply(
                 .query_row(
                     "SELECT owner_generation FROM runtime_owner WHERE singleton=1",
                     [],
-                    |r| r.get(0),
+                    |r| crate::sql_value::value(r, 0),
                 )
                 .optional()
                 .map_err(sql)?;
@@ -524,7 +536,7 @@ pub(crate) fn apply(
                     "owner predecessor generation differs",
                 ));
             }
-            c.execute("INSERT INTO runtime_owner(singleton,owner_generation,owner_epoch,revision,last_seq) VALUES(1,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET owner_generation=excluded.owner_generation,owner_epoch=excluded.owner_epoch,revision=excluded.revision,last_seq=excluded.last_seq",params![generation.get(),codec::encode(&epoch)?,revision,seq]).map_err(sql)?;
+            c.execute("INSERT INTO runtime_owner(singleton,owner_generation,owner_epoch,revision,last_seq) VALUES(1,?,?,?,?) ON CONFLICT(singleton) DO UPDATE SET owner_generation=excluded.owner_generation,owner_epoch=excluded.owner_epoch,revision=excluded.revision,last_seq=excluded.last_seq",crate::sql_value::sql_params![generation.get(),codec::encode(&epoch)?,revision,seq]).map_err(sql)?;
             codec::aux(c, seq, facts)?;
         }
         _ => return later("projection"),
@@ -532,7 +544,7 @@ pub(crate) fn apply(
     Ok(())
 }
 fn count(c: &Connection, p: &[u8], a: &[u8], delta: i64, seq: i64) -> StoreResult<()> {
-    let changed=c.execute("UPDATE resume_heads SET unread_count=unread_count+?,last_seq=? WHERE project_id=? AND principal_id=?",params![delta,seq,p,a]).map_err(sql)?;
+    let changed=c.execute("UPDATE resume_heads SET unread_count=unread_count+?,last_seq=? WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![delta,seq,p,a]).map_err(sql)?;
     if changed != 1 {
         return Err(fail(
             StoreErrorCode::ProjectionInconsistent,
@@ -542,7 +554,7 @@ fn count(c: &Connection, p: &[u8], a: &[u8], delta: i64, seq: i64) -> StoreResul
     Ok(())
 }
 fn mail_version(c: &Connection, scope: &[u8], p: &[u8], m: &[u8], seq: i64) -> StoreResult<()> {
-    c.execute("UPDATE list_versions SET valid_to=? WHERE scope_key=? AND family='message' AND entity_key=? AND valid_to IS NULL",params![seq,scope,m]).map_err(sql)?;
-    c.execute("INSERT INTO list_versions(scope_key,family,entity_key,revision,valid_from,sort_seq,first_seq,last_seq,state,sender_id,recipient_id,message_kind,delivered_seq,read_seq,dismissed_seq) SELECT ?,'message',d.message_id,d.revision,?,d.sent_seq,d.sent_seq,?,CASE WHEN m.read_seq IS NULL AND m.dismissed_seq IS NULL THEN 'unread' ELSE 'marked' END,d.sender_id,d.recipient_id,d.message_kind,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",params![scope,seq,seq,p,m]).map_err(sql)?;
+    c.execute("UPDATE list_versions SET valid_to=? WHERE scope_key=? AND family='message' AND entity_key=? AND valid_to IS NULL",crate::sql_value::sql_params![seq,scope,m]).map_err(sql)?;
+    c.execute("INSERT INTO list_versions(scope_key,family,entity_key,revision,valid_from,sort_seq,first_seq,last_seq,state,sender_id,recipient_id,message_kind,delivered_seq,read_seq,dismissed_seq) SELECT ?,'message',d.message_id,d.revision,?,d.sent_seq,d.sent_seq,?,CASE WHEN m.read_seq IS NULL AND m.dismissed_seq IS NULL THEN 'unread' ELSE 'marked' END,d.sender_id,d.recipient_id,d.message_kind,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",crate::sql_value::sql_params![scope,seq,seq,p,m]).map_err(sql)?;
     Ok(())
 }

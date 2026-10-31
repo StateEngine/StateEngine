@@ -1,4 +1,5 @@
-//! Closed wave-1 metadata codec; text lives only in its typed payload column.
+pub(crate) mod event;
+// Closed wave-1 metadata codec; text lives only in its typed payload column.
 use crate::{error::*, identity::*, *};
 use rusqlite::{Connection, params};
 use serde::{Serialize, de::DeserializeOwned};
@@ -17,7 +18,7 @@ pub(crate) fn field<T: DeserializeOwned>(v: &Value, k: &str) -> StoreResult<T> {
 pub(crate) fn aux(c: &Connection, seq: i64, v: Value) -> StoreResult<()> {
     c.execute(
         "INSERT INTO aux_data(event_seq,facts) VALUES(?,?)",
-        params![seq, encode(&v)?],
+        crate::sql_value::sql_params![seq, encode(&v)?],
     )
     .map_err(sql)?;
     Ok(())
@@ -25,7 +26,7 @@ pub(crate) fn aux(c: &Connection, seq: i64, v: Value) -> StoreResult<()> {
 pub(crate) fn facts(c: &Connection, seq: i64) -> StoreResult<Value> {
     let s: String = c
         .query_row("SELECT facts FROM aux_data WHERE event_seq=?", [seq], |r| {
-            r.get(0)
+            crate::sql_value::value(r, 0)
         })
         .map_err(sql)?;
     serde_json::from_str(&s).map_err(invalid)
@@ -47,8 +48,8 @@ pub(crate) fn stored_text(c: &Connection, seq: i64, field: &str) -> StoreResult<
     let bytes: Vec<u8> = c
         .query_row(
             "SELECT content FROM payloads WHERE event_seq=? AND field=?",
-            params![seq, field],
-            |r| r.get(0),
+            crate::sql_value::sql_params![seq, field],
+            |r| crate::sql_value::value(r, 0),
         )
         .map_err(sql)?;
     Ok(StoredText::Present(
@@ -64,7 +65,7 @@ pub(crate) fn body(
     use EventBody::*;
     Ok(match kind {
         "message.sent" => {
-            let (message,recipient,kind,refs,reply):(Vec<u8>,Vec<u8>,String,String,Option<Vec<u8>>)=c.query_row("SELECT message_id,recipient_id,message_kind,refs,reply_to FROM message_data WHERE event_seq=?",[seq],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(sql)?;
+            let (message,recipient,kind,refs,reply):(Vec<u8>,Vec<u8>,String,String,Option<Vec<u8>>)=c.query_row("SELECT message_id,recipient_id,message_kind,refs,reply_to FROM message_data WHERE event_seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).map_err(sql)?;
             let s = scope_key(c, scope, false)?;
             MessageSent {
                 message: wire(c, "message", &message, &s)?.parse().map_err(invalid)?,
@@ -78,7 +79,7 @@ pub(crate) fn body(
             }
         }
         "message.read" | "message.dismissed" | "message.delivered" => {
-            let (message,recipient,evidence):(Vec<u8>,Vec<u8>,Option<Vec<u8>>)=c.query_row("SELECT d.message_id,m.recipient_id,m.evidence_event FROM mark_data m JOIN message_data d ON d.event_seq=m.message_seq WHERE m.event_seq=?",[seq],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(sql)?;
+            let (message,recipient,evidence):(Vec<u8>,Vec<u8>,Option<Vec<u8>>)=c.query_row("SELECT d.message_id,m.recipient_id,m.evidence_event FROM mark_data m JOIN message_data d ON d.event_seq=m.message_seq WHERE m.event_seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).map_err(sql)?;
             let s = scope_key(c, scope, false)?;
             let message = wire(c, "message", &message, &s)?.parse().map_err(invalid)?;
             let recipient = actor(c, &recipient, &s)?;
@@ -104,7 +105,12 @@ pub(crate) fn body(
                 .query_row(
                     "SELECT agent_id,expected_revision FROM working_state_data WHERE event_seq=?",
                     [seq],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| {
+                        Ok((
+                            crate::sql_value::value(r, 0)?,
+                            crate::sql_value::value(r, 1)?,
+                        ))
+                    },
                 )
                 .map_err(sql)?;
             WorkingStateSet {

@@ -48,7 +48,7 @@ impl Engine {
             .map_err(sql)?;
         let setting: i64 = self
             .db
-            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .query_row("PRAGMA synchronous", [], |r| crate::sql_value::value(r, 0))
             .map_err(sql)?;
         if setting != if full { 2 } else { 1 } {
             self.poisoned = true;
@@ -73,7 +73,12 @@ impl Engine {
                 .query_row(
                     "SELECT owner_generation,phase FROM runtime_owner WHERE singleton=1",
                     [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| {
+                        Ok((
+                            crate::sql_value::value(r, 0)?,
+                            crate::sql_value::value(r, 1)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(sql)?;
@@ -180,14 +185,22 @@ impl Engine {
         let (_, log, done): (i64, i64, i64) = self
             .db
             .query_row("PRAGMA wal_checkpoint(NOOP)", [], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                Ok((
+                    crate::sql_value::value(r, 0)?,
+                    crate::sql_value::value(r, 1)?,
+                    crate::sql_value::value(r, 2)?,
+                ))
             })
             .map_err(sql)?;
         if log >= 256 && log > done {
             let _: (i64, i64, i64) = self
                 .db
                 .query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                    Ok((
+                        crate::sql_value::value(r, 0)?,
+                        crate::sql_value::value(r, 1)?,
+                        crate::sql_value::value(r, 2)?,
+                    ))
                 })
                 .map_err(sql)?;
         }
@@ -237,7 +250,7 @@ impl Engine {
             }
         }
         if let Some(request) = &batch.request {
-            let found:Option<(Vec<u8>,Vec<u8>,u16,String)>=self.db.query_row("SELECT operation_id,fingerprint,fingerprint_codec,COALESCE((SELECT kind FROM events WHERE operation_id=operations.operation_id ORDER BY seq LIMIT 1),'') FROM operations WHERE scope_key=? AND actor_id=? AND request_key=? AND erased=0",params![scope,actor,request.key.as_str()],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+            let found:Option<(Vec<u8>,Vec<u8>,u16,String)>=self.db.query_row("SELECT operation_id,fingerprint,fingerprint_codec,COALESCE((SELECT kind FROM events WHERE operation_id=operations.operation_id ORDER BY seq LIMIT 1),'') FROM operations WHERE scope_key=? AND actor_id=? AND request_key=? AND erased=0",crate::sql_value::sql_params![scope,actor,request.key.as_str()],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?))).optional().map_err(sql)?;
             if let Some((op, digest, version, _)) = found {
                 if digest != request.intent.sha256 || version != request.intent.codec_version {
                     return Err(fail(
@@ -285,6 +298,37 @@ impl Engine {
                 ));
             }
         }
+        if batch.request.is_none() {
+            let prior = batch
+                .events
+                .iter()
+                .map(|e| apply::natural(&self.db, e))
+                .collect::<StoreResult<Vec<_>>>()?;
+            if prior.iter().all(Option::is_some) {
+                let mut seqs = Vec::new();
+                for ((e, description), seq) in batch.events.iter().zip(&descriptors).zip(prior) {
+                    let seq = seq.ok_or_else(|| invalid("natural membership disappeared"))?;
+                    let old = crate::read::load_event(&self.db, seq, info)?;
+                    let bytes = descriptor(&old.body, |t| match t {
+                        StoredText::Present(s) => Ok(s.clone()),
+                        StoredText::Erased { .. } => {
+                            Err(fail(StoreErrorCode::ContentErased, "event content erased"))
+                        }
+                    })?;
+                    if description != &bytes
+                        || e.header.actor != old.header.actor
+                        || e.header.scope != old.header.scope
+                    {
+                        return Err(fail(
+                            StoreErrorCode::NaturalKeyConflict,
+                            "natural identity differs from its retained fact",
+                        ));
+                    }
+                    seqs.push(seq);
+                }
+                return receipt_members(&self.db, &seqs, info, None);
+            }
+        }
         let mut op_hash = Sha256::new();
         op_hash.update(&scope);
         op_hash.update(&actor);
@@ -295,8 +339,7 @@ impl Engine {
         let op = op_hash.finalize()[..16].to_vec();
         let writer = WriterMode::from_lease(&self.identity);
         let (mode, generation) = stamp(&writer);
-        self.db.execute("INSERT INTO operations(operation_id,scope_key,actor_id,request_key,fingerprint_codec,fingerprint,recorded_incarnation,writer_mode,host_generation,durability) VALUES(?,?,?,?,?,?,?,?,?,?)",params![op,scope,actor,batch.request.as_ref().map(|r|r.key.as_str()),batch.request.as_ref().map(|r|r.intent.codec_version).unwrap_or(1),batch.request.as_ref().map(|r|r.intent.sha256.to_vec()),info.incarnation,mode,generation,if full{"full"}else{"normal"}]).map_err(sql)?;
-        let mut any_new = false;
+        self.db.execute("INSERT INTO operations(operation_id,scope_key,actor_id,request_key,fingerprint_codec,fingerprint,recorded_incarnation,writer_mode,host_generation,durability) VALUES(?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![op,scope,actor,batch.request.as_ref().map(|r|r.key.as_str()),batch.request.as_ref().map(|r|r.intent.codec_version).unwrap_or(1),batch.request.as_ref().map(|r|r.intent.sha256.to_vec()),info.incarnation,mode,generation,if full{"full"}else{"normal"}]).map_err(sql)?;
         for (ordinal, (e, description)) in batch.events.into_iter().zip(descriptors).enumerate() {
             let prior = apply::natural(&self.db, &e)?;
             let seq = if let Some(seq) = prior {
@@ -318,7 +361,6 @@ impl Engine {
                 }
                 seq
             } else {
-                any_new = true;
                 let revision = apply::revision_for(&self.db, &e)?;
                 let (kind, facts) = codec::metadata(&e.body)?;
                 let event = key(&self.db, "event", e.header.event.as_str(), &scope, true)?;
@@ -346,7 +388,7 @@ impl Engine {
                     .as_ref()
                     .map(|v| key(&self.db, "event", v.as_str(), &scope, false))
                     .transpose()?;
-                self.db.execute("INSERT INTO events(event_id,project_id,actor_id,session_id,origin_id,door,kind,schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,durability,operation_id,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id) VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)",params![event,p,actor,session,canonical(info.id.as_str()).ok_or_else(||invalid("canonical StoreId required"))?,door(e.header.door),kind,info.incarnation,revision,mode,generation,if full{"full"}else{"normal"},op,e.header.occurred_at_us,recorded,cause,supersedes]).map_err(sql)?;
+                self.db.execute("INSERT INTO events(event_id,project_id,actor_id,session_id,origin_id,door,kind,schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,durability,operation_id,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id) VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![event,p,actor,session,canonical(info.id.as_str()).ok_or_else(||invalid("canonical StoreId required"))?,door(e.header.door),kind,info.incarnation,revision,mode,generation,if full{"full"}else{"normal"},op,e.header.occurred_at_us,recorded,cause,supersedes]).map_err(sql)?;
                 let seq = self.db.last_insert_rowid();
                 apply::apply(
                     &self.db,
@@ -359,13 +401,7 @@ impl Engine {
                 )?;
                 seq
             };
-            self.db.execute("INSERT INTO operation_events(operation_id,ordinal,event_seq,newly_appended) VALUES(?,?,?,?)",params![op,ordinal,seq,prior.is_none()]).map_err(sql)?;
-        }
-        if !any_new && batch.request.is_none() {
-            return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                "keyless natural no-op is resolved before operation allocation",
-            ));
+            self.db.execute("INSERT INTO operation_events(operation_id,ordinal,event_seq,newly_appended) VALUES(?,?,?,?)",crate::sql_value::sql_params![op,ordinal,seq,prior.is_none()]).map_err(sql)?;
         }
         receipt(&self.db, &op, info, batch.request.map(|r| r.key))
     }
@@ -395,7 +431,7 @@ pub(crate) fn receipt(
         .prepare("SELECT event_seq FROM operation_events WHERE operation_id=? ORDER BY ordinal")
         .map_err(sql)?;
     let seqs = q
-        .query_map([op], |r| r.get::<_, i64>(0))
+        .query_map([op], |r| crate::sql_value::value::<i64>(r, 0))
         .map_err(sql)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(sql)?;
@@ -405,6 +441,14 @@ pub(crate) fn receipt(
             "operation membership absent or exceeds bound",
         ));
     }
+    receipt_members(c, &seqs, info, request_key)
+}
+fn receipt_members(
+    c: &Connection,
+    seqs: &[i64],
+    info: &StoreInfo,
+    request_key: Option<se_types::IdempotencyKey>,
+) -> StoreResult<CommitReceipt> {
     let events = seqs
         .iter()
         .map(|s| crate::read::load_event(c, *s, info))

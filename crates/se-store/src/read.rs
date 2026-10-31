@@ -1,3 +1,4 @@
+mod page;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
 use rusqlite::{Connection, OptionalExtension, params};
 use se_types::{
@@ -69,8 +70,8 @@ impl SqliteSnapshot {
         self.db
             .query_row(
                 "SELECT seq FROM events WHERE event_id=? AND project_id IS ?",
-                params![key, p],
-                |r| r.get(0),
+                crate::sql_value::sql_params![key, p],
+                |r| crate::sql_value::value(r, 0),
             )
             .optional()
             .map_err(sql)
@@ -132,7 +133,13 @@ impl SqliteSnapshot {
                     original.unwrap_or("NULL")
                 ),
                 keys,
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| {
+                    Ok((
+                        crate::sql_value::value(r, 0)?,
+                        crate::sql_value::value(r, 1)?,
+                        crate::sql_value::value(r, 2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(sql)?;
@@ -208,118 +215,6 @@ impl SqliteSnapshot {
             body_complete: true,
         })
     }
-    fn page<T>(
-        &self,
-        items: Vec<T>,
-        budget: &ReadBudget,
-        binding: &str,
-        h: u64,
-        after: u64,
-        last: u64,
-        more: bool,
-        bytes: u64,
-        stop: StopReason,
-    ) -> StoreResult<Page<T>> {
-        let next = if more {
-            Some(self.cursor(binding, h, last)?)
-        } else {
-            None
-        };
-        let window = Window::new(WindowFields {
-            source: Source::Store {
-                store: self.info.id.clone(),
-                project: match &self.scope.admission.scope {
-                    Scope::Project(p) => Some(p.clone()),
-                    _ => None,
-                },
-            },
-            from: Sequence::new(after).map_err(invalid)?,
-            to: Sequence::new(h).map_err(invalid)?,
-            start_cursor: budget.page.after.clone(),
-            end_cursor: next.clone(),
-            returned: items.len() as u64,
-            limit: budget.page.limit,
-            bytes,
-            max_bytes: budget.page.max_bytes,
-            omitted_before: Omission::None,
-            omitted_after: if more {
-                Omission::Unknown {
-                    reason: if stop == StopReason::ItemLimit {
-                        OmissionReason::Limit
-                    } else {
-                        OmissionReason::Budget
-                    },
-                }
-            } else {
-                Omission::None
-            },
-            unreadable: 0,
-            stop_reason: stop,
-        })
-        .map_err(invalid)?;
-        Page::new(items, window, next).map_err(invalid)
-    }
-    fn cursor(&self, binding: &str, h: u64, after: u64) -> StoreResult<Cursor> {
-        // Encoded internal coordinates have no public numeric interpretation.
-        let raw = codec::encode(&(
-            self.info.id.as_str(),
-            self.info.incarnation,
-            binding,
-            h,
-            after,
-        ))?;
-        Cursor::new(
-            raw.as_bytes()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect::<String>(),
-        )
-        .map_err(invalid)
-    }
-    fn window(&self, budget: &ReadBudget, binding: &str, live: bool) -> StoreResult<(u64, u64)> {
-        if budget.page.limit.get() > 1000
-            || budget.page.max_bytes.get() > 2 * 1024 * 1024
-            || budget.deadline.is_zero()
-        {
-            return Err(fail(
-                StoreErrorCode::ReadBudgetTooSmall,
-                "page needs limit 1..1000, bytes 1..2MiB, and a finite nonzero deadline",
-            ));
-        }
-        let h = self
-            .info
-            .head
-            .as_ref()
-            .map(StorePosition::sequence)
-            .unwrap_or(0);
-        let Some(cursor) = &budget.page.after else {
-            return Ok((h, 0));
-        };
-        let mut bytes = Vec::new();
-        for pair in cursor.as_str().as_bytes().chunks(2) {
-            if pair.len() != 2 {
-                return Err(fail(StoreErrorCode::CursorInvalid, "malformed cursor"));
-            }
-            let s = std::str::from_utf8(pair).map_err(invalid)?;
-            bytes.push(u8::from_str_radix(s, 16).map_err(invalid)?)
-        }
-        let (store, inc, query, prior, last): (String, u64, String, u64, u64) =
-            serde_json::from_slice(&bytes)
-                .map_err(|_| fail(StoreErrorCode::CursorInvalid, "cursor cannot be decoded"))?;
-        if store != self.info.id.as_str() || inc != self.info.incarnation {
-            return Err(fail(
-                StoreErrorCode::CursorStale,
-                "cursor store/incarnation changed",
-            ));
-        }
-        if query != binding || last > prior || prior > h {
-            return Err(fail(
-                StoreErrorCode::CursorInvalid,
-                "cursor scope/query/window mismatch",
-            ));
-        }
-        Ok((if live { h } else { prior }, last))
-    }
 }
 impl Drop for SqliteSnapshot {
     fn drop(&mut self) {
@@ -348,7 +243,7 @@ impl se_types::LegacyIdRegistry for LegacyRegistry<'_> {
             se_types::IdKind::SessionId => "session",
             _ => return Ok(false),
         };
-        self.snapshot.db.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE kind=? AND wire_id=? AND scope_key=? AND encoding='registered-exception')",params![kind,text,scope],|r|r.get(0)).map_err(|e|se_types::SeError::invalid("legacy registry",&e.to_string()))
+        self.snapshot.db.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE kind=? AND wire_id=? AND scope_key=? AND encoding='registered-exception')",crate::sql_value::sql_params![kind,text,scope],|r|crate::sql_value::value(r,0)).map_err(|e|se_types::SeError::invalid("legacy registry",&e.to_string()))
     }
 }
 impl Snapshot for SqliteSnapshot {
@@ -443,7 +338,7 @@ impl Snapshot for SqliteSnapshot {
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let m = key(&self.db, "message", id.as_str(), &scope, false)?;
-        let row:Option<(i64,u64,Option<u64>,Option<u64>,Option<u64>)>=self.db.query_row("SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",params![p,m],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).optional().map_err(sql)?;
+        let row:Option<(i64,u64,Option<u64>,Option<u64>,Option<u64>)>=self.db.query_row("SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",crate::sql_value::sql_params![p,m],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).optional().map_err(sql)?;
         match row {
             None => Ok(self.absent("message ID")),
             Some((s, v, d, r, x)) => Ok(Read::Present {
@@ -506,7 +401,7 @@ impl Snapshot for SqliteSnapshot {
         let rows = (|| {
             let mut stmt=self.db.prepare("SELECT sort_seq,revision,delivered_seq,read_seq,dismissed_seq FROM list_versions WHERE scope_key=? AND family='message' AND sort_seq>? AND sort_seq<=? AND valid_from<=? AND (valid_to IS NULL OR ?<valid_to) AND (? IS NULL OR recipient_id=?) AND (? IS NULL OR sender_id=?) AND (? IS NULL OR message_kind=?) AND (?=0 OR state='unread') AND (? IS NULL OR sender_id=? OR recipient_id=?) ORDER BY sort_seq,entity_key LIMIT ?").map_err(sql)?;
             stmt.query_map(
-                params![
+                crate::sql_value::sql_params![
                     scope,
                     after,
                     h,
@@ -526,11 +421,11 @@ impl Snapshot for SqliteSnapshot {
                 ],
                 |r| {
                     Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, u64>(1)?,
-                        r.get::<_, Option<u64>>(2)?,
-                        r.get::<_, Option<u64>>(3)?,
-                        r.get::<_, Option<u64>>(4)?,
+                        crate::sql_value::value::<i64>(r, 0)?,
+                        crate::sql_value::value::<u64>(r, 1)?,
+                        crate::sql_value::value::<Option<u64>>(r, 2)?,
+                        crate::sql_value::value::<Option<u64>>(r, 3)?,
+                        crate::sql_value::value::<Option<u64>>(r, 4)?,
                     ))
                 },
             )
@@ -620,7 +515,7 @@ impl Snapshot for SqliteSnapshot {
             },
             false,
         )?;
-        let op:Option<Vec<u8>>=self.db.query_row("SELECT operation_id FROM operations WHERE scope_key=? AND actor_id=? AND request_key=? AND erased=0",params![scope,a,request.as_str()],|r|r.get(0)).optional().map_err(sql)?;
+        let op:Option<Vec<u8>>=self.db.query_row("SELECT operation_id FROM operations WHERE scope_key=? AND actor_id=? AND request_key=? AND erased=0",crate::sql_value::sql_params![scope,a,request.as_str()],|r|crate::sql_value::value(r,0)).optional().map_err(sql)?;
         match op {
             Some(op) => Ok(Read::Present {
                 value: crate::transaction::receipt(&self.db, &op, &self.info, Some(request))?,
@@ -650,7 +545,7 @@ impl Snapshot for SqliteSnapshot {
             false,
         )?;
         let p = self.project_bytes()?;
-        let row:Option<(Option<u64>,Option<u64>,Option<u64>,Option<u64>,u64,u64,u64)>=self.db.query_row("SELECT last_turn_seq,last_working_state_seq,last_cursor_seq,last_session_seq,unread_count,pending_effect_count,last_seq FROM resume_heads WHERE project_id=? AND principal_id=?",params![p,a],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?))).optional().map_err(sql)?;
+        let row:Option<(Option<u64>,Option<u64>,Option<u64>,Option<u64>,u64,u64,u64)>=self.db.query_row("SELECT last_turn_seq,last_working_state_seq,last_cursor_seq,last_session_seq,unread_count,pending_effect_count,last_seq FROM resume_heads WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![p,a],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?))).optional().map_err(sql)?;
         let pos = |s| StorePosition::new_internal(self.info.id.clone(), self.info.incarnation, s);
         match row {
             None => Ok(self.absent("resume head")),
@@ -736,68 +631,4 @@ impl Snapshot for SqliteSnapshot {
     }
 }
 
-pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreResult<StoredEvent> {
-    let (id,p,actor_id,session,origin,door,kind,version,inc,rev,mode,generation,durability,occurred,recorded,cause,supersedes):(Vec<u8>,Option<Vec<u8>>,Vec<u8>,Option<Vec<u8>>,Vec<u8>,String,String,u32,u64,u64,String,Option<u64>,String,i64,i64,Option<Vec<u8>>,Option<Vec<u8>>)=c.query_row("SELECT event_id,project_id,actor_id,session_id,origin_id,door,kind,schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,durability,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id FROM events WHERE seq=?",[seq],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?,r.get(5)?,r.get(6)?,r.get(7)?,r.get(8)?,r.get(9)?,r.get(10)?,r.get(11)?,r.get(12)?,r.get(13)?,r.get(14)?,r.get(15)?,r.get(16)?))).map_err(sql)?;
-    if version != 1 {
-        return Err(fail(
-            StoreErrorCode::Unreadable,
-            "unknown event schema version",
-        ));
-    }
-    let scope = match p {
-        Some(p) => Scope::Project(wire(c, "project", &p, &[0])?.parse().map_err(invalid)?),
-        None => Scope::Registry,
-    };
-    let s = scope_key(c, &scope, false)?;
-    let parse_event = |k: &[u8]| wire(c, "event", k, &s).and_then(|v| v.parse().map_err(invalid));
-    let writer = match (mode.as_str(), generation) {
-        ("direct", None) => LeaseIdentity {
-            store: Some(info.id.clone()),
-            generation: 1,
-            mode: LeaseMode::DirectClient,
-        },
-        ("host", Some(g)) if g > 0 => LeaseIdentity {
-            store: Some(info.id.clone()),
-            generation: g,
-            mode: LeaseMode::Host,
-        },
-        _ => return Err(invalid("invalid persisted writer stamp")),
-    };
-    Ok(StoredEvent {
-        header: EventHeader {
-            event: parse_event(&id)?,
-            scope: scope.clone(),
-            actor: actor(c, &actor_id, &s)?,
-            session: session
-                .map(|v| wire(c, "session", &v, &s).and_then(|v| v.parse().map_err(invalid)))
-                .transpose()?,
-            origin: StoreId::from_bytes(
-                origin.try_into().map_err(|_| invalid("origin ID length"))?,
-            )
-            .map_err(invalid)?,
-            door: match door.as_str() {
-                "cli" => Door::Cli,
-                "mcp" => Door::Mcp,
-                "hook" => Door::Hook,
-                "host" => Door::Host,
-                "import" => Door::Import,
-                _ => return Err(invalid("invalid stored door")),
-            },
-            occurred_at_us: occurred,
-            cause: cause.map(|v| parse_event(&v)).transpose()?,
-            supersedes: supersedes.map(|v| parse_event(&v)).transpose()?,
-        },
-        revision: codec::revision(rev)?,
-        position: StorePosition::new_internal(info.id.clone(), inc, seq as u64)?,
-        recorded_at_us: recorded,
-        recorded_incarnation: inc,
-        writer: WriterMode::from_lease(&writer),
-        durability: match durability.as_str() {
-            "normal" => CommitDurability::Normal,
-            "full" => CommitDurability::Full,
-            _ => return Err(invalid("invalid persisted durability")),
-        },
-        body: codec::body(c, seq, &kind, &scope)?,
-        erased_fields: Vec::new(),
-    })
-}
+pub(crate) use crate::codec::event::load_event;

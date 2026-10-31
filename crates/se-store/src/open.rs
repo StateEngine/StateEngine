@@ -116,7 +116,7 @@ impl SqliteFactory {
                 .map_err(sql)?;
             c.execute_batch(include_str!("../migrations/001.sql"))
                 .map_err(sql)?;
-            c.execute("INSERT INTO store_info(singleton,store_id,incarnation,created_at_us,state) VALUES(1,?,1,?,'ready')",params![crate::identity::canonical(id.as_str()).ok_or_else(||invalid("canonical store identity required"))?,connection::now()?]).map_err(sql)?;
+            c.execute("INSERT INTO store_info(singleton,store_id,incarnation,created_at_us,state) VALUES(1,?,1,?,'ready')",crate::sql_value::sql_params![crate::identity::canonical(id.as_str()).ok_or_else(||invalid("canonical store identity required"))?,connection::now()?]).map_err(sql)?;
             c.execute_batch("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)")
                 .map_err(sql)?;
             let info = connection::info(&c)?;
@@ -277,7 +277,7 @@ impl ReadStore for SqliteReader {
     fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>> {
         let c = self.connect()?;
         let info = connection::info(&c)?;
-        let row:Option<(String,u64,u64,i64)>=c.query_row("SELECT owner_epoch,owner_generation,revision,last_seq FROM runtime_owner WHERE singleton=1",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(sql)?;
+        let row:Option<(String,u64,u64,i64)>=c.query_row("SELECT owner_epoch,owner_generation,revision,last_seq FROM runtime_owner WHERE singleton=1",[],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?))).optional().map_err(sql)?;
         match row {
             None => Ok(Read::Absent {
                 checked: "runtime_owner singleton absent".into(),
@@ -381,7 +381,7 @@ impl HostStore for SqliteHost {
     fn runtime_ownership_fact(&self, id: se_types::EventId) -> StoreResult<Read<StoredEvent>> {
         let s = vec![0];
         let k = crate::identity::key(&self.engine.db, "event", id.as_str(), &s, false)?;
-        let seq:Option<i64>=self.engine.db.query_row("SELECT seq FROM events WHERE event_id=? AND kind IN ('runtime.owner','runtime.handover') AND project_id IS NULL",[k],|r|r.get(0)).optional().map_err(sql)?;
+        let seq:Option<i64>=self.engine.db.query_row("SELECT seq FROM events WHERE event_id=? AND kind IN ('runtime.owner','runtime.handover') AND project_id IS NULL",[k],|r|crate::sql_value::value(r,0)).optional().map_err(sql)?;
         match seq {
             None => Ok(Read::Absent {
                 checked: "private runtime event ID absent".into(),
@@ -445,9 +445,9 @@ impl HostStore for SqliteHost {
                 [],
                 |r| {
                     Ok(CheckpointReport {
-                        busy: r.get::<_, i64>(0)? != 0,
-                        wal_frames: r.get(1)?,
-                        checkpointed_frames: r.get(2)?,
+                        busy: crate::sql_value::value::<i64>(r, 0)? != 0,
+                        wal_frames: crate::sql_value::value(r, 1)?,
+                        checkpointed_frames: crate::sql_value::value(r, 2)?,
                     })
                 },
             )

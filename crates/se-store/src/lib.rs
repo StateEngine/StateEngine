@@ -11,6 +11,7 @@ mod identity;
 mod model;
 mod open;
 mod read;
+mod sql_value;
 mod transaction;
 mod writer;
 pub use api::*;
