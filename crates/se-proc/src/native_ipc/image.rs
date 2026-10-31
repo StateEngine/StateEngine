@@ -1,5 +1,8 @@
 //! Bounded executable proofs, cached only by stable native file identity,
 //! modification time and size. A pathname is never a cache identity.
+//! Same-inode rewrites which preserve size and restore the exact modification
+//! timestamp can reuse a cached digest. This cache detects ordinary upgrades and
+//! drift; it is not protection against hostile same-user file mutation.
 use super::*;
 use sha2::{Digest, Sha256 as Hasher};
 use std::{

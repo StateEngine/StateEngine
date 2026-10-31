@@ -1,22 +1,17 @@
 //! Evented transport on the supplied runtime. Native proof work shares the
 //! caller's bounded blocking admission; this module creates no runtime/thread.
 use super::*;
+#[path = "listener/channel.rs"]
+mod channel;
 use crate::client::{
     auth, endpoint as codec,
     lease::{Deadline, HELLO_TIMEOUT, WRITE_TIMEOUT, native_error},
     wire,
 };
+use channel::{bounded, receive, send};
 use se_types::{Result, SeError};
-use std::{
-    io,
-    sync::{Arc, atomic::AtomicBool},
-};
-use tokio::{
-    runtime::Handle,
-    sync::Semaphore,
-    time::{Instant, timeout_at},
-};
-use zeroize::Zeroizing;
+use std::sync::{Arc, atomic::AtomicBool};
+use tokio::{runtime::Handle, sync::Semaphore};
 #[cfg(unix)]
 type NativeEndpoint = se_proc::native_ipc::NativeUnixEndpoint;
 #[cfg(windows)]
@@ -37,6 +32,8 @@ pub struct IpcListener {
     runtime: Handle,
     blocking: Arc<Semaphore>,
     connections: Arc<Semaphore>,
+    preauth: Arc<Semaphore>,
+    incoming: Arc<Semaphore>,
 }
 #[cfg(windows)]
 fn evented_pipe(native: &NativeEndpoint) -> Result<NativeListener> {
@@ -57,6 +54,37 @@ impl IpcListener {
     /// Windows keeps an occupied, protected first instance while the supplied
     /// Tokio reactor owns all application instances; no host handle cast occurs.
     pub fn bind(record: EndpointRecord, runtime: Handle, blocking: Arc<Semaphore>) -> Result<Self> {
+        Self::bind_capacity(record, runtime, blocking, 32, 8)
+    }
+    /// Separate unauthenticated and authenticated capacities, supplied by the
+    /// host configuration. A half-open channel never consumes an active slot.
+    pub fn bind_with_limits(
+        record: EndpointRecord,
+        runtime: Handle,
+        blocking: Arc<Semaphore>,
+        limits: &crate::HostLimits,
+    ) -> Result<Self> {
+        Self::bind_capacity(
+            record,
+            runtime,
+            blocking,
+            limits.active_connections.get() as usize,
+            limits.preauth_connections.get() as usize,
+        )
+    }
+    fn bind_capacity(
+        record: EndpointRecord,
+        runtime: Handle,
+        blocking: Arc<Semaphore>,
+        active: usize,
+        preauth: usize,
+    ) -> Result<Self> {
+        if active == 0 || active > 256 || preauth == 0 || preauth > active || preauth > 64 {
+            return Err(SeError::invalid(
+                "IPC capacities",
+                "1..=256 active connections and 1..=min(active,64) pre-authentication connections",
+            ));
+        }
         codec::encode_endpoint(&record)?;
         if record.api != se_types::API_VERSION {
             return Err(SeError::invalid(
@@ -97,12 +125,23 @@ impl IpcListener {
             record,
             runtime,
             blocking,
-            connections: Arc::new(Semaphore::new(32)),
+            connections: Arc::new(Semaphore::new(active)),
+            preauth: Arc::new(Semaphore::new(preauth)),
+            // One additional incoming channel can deliver a typed capacity
+            // refusal while every pre-authentication slot is occupied.
+            incoming: Arc::new(Semaphore::new(preauth + 1)),
         })
     }
     /// The caller can cancel idle accept by dropping its future. No peer JSON
     /// or credential is read until bounded native peer proof has succeeded.
     pub async fn accept(&mut self, cancelled: Arc<AtomicBool>) -> Result<AcceptedIpcStream> {
+        // Bound tasks before OS accept. Once a channel is accepted no JSON,
+        // proof or refusal write holds up the next accept. Dropping this future
+        // cancels the admission wait just as it cancels an idle OS accept.
+        let incoming_slot = Arc::clone(&self.incoming)
+            .acquire_owned()
+            .await
+            .map_err(|_| capacity_error("IPC incoming admission is closed"))?;
         #[cfg(unix)]
         let stream = self
             .listener
@@ -126,13 +165,21 @@ impl IpcListener {
             timeout: HELLO_TIMEOUT,
             cancelled,
         })?;
-        let connection_slot=Arc::clone(&self.connections).try_acquire_owned().map_err(|_|SeError::new(se_types::Detail::StoreBusy(se_types::details::StoreBusy {waited_ms:0,reason:"IPC connection limit is occupied".into(),next_step:"Close an existing connection or retry after its bounded handshake deadline, preserving the original request key.".into()})))?;
+        let preauth_slot = match Arc::clone(&self.preauth).try_acquire_owned() {
+            Ok(slot) => Some(slot),
+            Err(tokio::sync::TryAcquireError::NoPermits) => None,
+            Err(tokio::sync::TryAcquireError::Closed) => {
+                return Err(capacity_error("IPC pre-authentication admission is closed"));
+            }
+        };
         Ok(AcceptedIpcStream {
             stream: Arc::new(stream),
             record: self.record.clone(),
             runtime: self.runtime.clone(),
             blocking: Arc::clone(&self.blocking),
-            connection_slot,
+            preauth_slot,
+            incoming_slot,
+            connections: Arc::clone(&self.connections),
             deadline,
         })
     }
@@ -159,15 +206,24 @@ pub struct AcceptedIpcStream {
     record: EndpointRecord,
     runtime: Handle,
     blocking: Arc<Semaphore>,
-    connection_slot: tokio::sync::OwnedSemaphorePermit,
+    preauth_slot: Option<tokio::sync::OwnedSemaphorePermit>,
+    incoming_slot: tokio::sync::OwnedSemaphorePermit,
+    connections: Arc<Semaphore>,
     deadline: Deadline,
 }
 impl AcceptedIpcStream {
     pub async fn handshake(self) -> Result<PendingIpcHandshake> {
         let deadline = self.deadline;
-        let connection_slot = self.connection_slot;
+        let incoming_slot = self.incoming_slot;
         deadline.remaining()?;
         let stream = self.stream;
+        let Some(preauth_slot) = self.preauth_slot else {
+            let error = capacity_error("IPC pre-authentication capacity is occupied");
+            let envelope =
+                se_types::ErrorEnvelope::new(error.body.clone(), &se_types::RenderCx::default())?;
+            send(&stream, &auth::encode_hello_refusal(&envelope)?, &deadline).await?;
+            return Err(error);
+        };
         let permit = bounded(&deadline, self.blocking.clone().acquire_owned())
             .await?
             .map_err(|_| {
@@ -219,7 +275,9 @@ impl AcceptedIpcStream {
             input,
             record: self.record.clone(),
             deadline,
-            connection_slot,
+            preauth_slot,
+            incoming_slot,
+            connections: self.connections,
         })
     }
 }
@@ -233,7 +291,9 @@ pub struct PendingIpcHandshake {
     input: HandshakeInput,
     record: EndpointRecord,
     deadline: Deadline,
-    connection_slot: tokio::sync::OwnedSemaphorePermit,
+    preauth_slot: tokio::sync::OwnedSemaphorePermit,
+    incoming_slot: tokio::sync::OwnedSemaphorePermit,
+    connections: Arc<Semaphore>,
 }
 impl PendingIpcHandshake {
     pub fn peer(&self) -> &PeerProof {
@@ -295,6 +355,23 @@ impl PendingIpcHandshake {
         let HandshakeInput::Call(hello) = self.input else {
             return Err(SeError::invalid("IPC handshake", "an operation hello"));
         };
+        let connection_slot = match self.connections.try_acquire_owned() {
+            Ok(slot) => slot,
+            Err(_) => {
+                let error = capacity_error("IPC authenticated connection capacity is occupied");
+                let envelope = se_types::ErrorEnvelope::new(
+                    error.body.clone(),
+                    &se_types::RenderCx::default(),
+                )?;
+                send(
+                    &self.stream,
+                    &auth::encode_hello_refusal(&envelope)?,
+                    &self.deadline,
+                )
+                .await?;
+                return Err(error);
+            }
+        };
         let ready = auth::negotiate_hello(&hello, &self.record, server_cap)?;
         send(
             &self.stream,
@@ -302,13 +379,14 @@ impl PendingIpcHandshake {
             &self.deadline,
         )
         .await?;
+        drop((self.preauth_slot, self.incoming_slot));
         Ok(IpcConnection {
             stream: Some(self.stream),
             peer: self.proof,
             hello: ready,
             authority: hello.authority,
             awaiting: None,
-            _connection_slot: self.connection_slot,
+            _connection_slot: connection_slot,
         })
     }
     pub async fn finish_stop(
@@ -401,64 +479,11 @@ impl IpcConnection {
         Ok(())
     }
 }
-async fn bounded<T>(
-    deadline: &Deadline,
-    future: impl std::future::Future<Output = T>,
-) -> Result<T> {
-    deadline.remaining()?;
-    let result = timeout_at(Instant::from_std(deadline.at()), future)
-        .await
-        .map_err(|_| wire::io_failure("IPC absolute deadline", io::ErrorKind::TimedOut.into()))?;
-    deadline.remaining()?;
-    Ok(result)
-}
-async fn exact(stream: &NativeStream, mut bytes: &mut [u8], deadline: &Deadline) -> Result<()> {
-    while !bytes.is_empty() {
-        bounded(deadline, stream.readable())
-            .await?
-            .map_err(|e| wire::io_failure("wait IPC read", e))?;
-        match stream.try_read(bytes) {
-            Ok(0) => {
-                return Err(wire::io_failure(
-                    "incomplete IPC frame",
-                    io::ErrorKind::UnexpectedEof.into(),
-                ));
-            }
-            Ok(count) => bytes = &mut bytes[count..],
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(e) => return Err(wire::io_failure("read IPC frame", e)),
-        }
-    }
-    Ok(())
-}
-async fn receive(
-    stream: &NativeStream,
-    deadline: &Deadline,
-    limit: usize,
-) -> Result<wire::WireBytes> {
-    let mut header = [0; 4];
-    exact(stream, &mut header, deadline).await?;
-    let mut bytes = Zeroizing::new(vec![0; wire::frame_length(header, limit)?]);
-    exact(stream, &mut bytes, deadline).await?;
-    Ok(wire::WireBytes::from_owned(bytes))
-}
-async fn send(stream: &NativeStream, frame: &wire::WireBytes, deadline: &Deadline) -> Result<()> {
-    let mut bytes = frame.as_bytes();
-    while !bytes.is_empty() {
-        bounded(deadline, stream.writable())
-            .await?
-            .map_err(|e| wire::io_failure("wait IPC write", e))?;
-        match stream.try_write(bytes) {
-            Ok(0) => {
-                return Err(wire::io_failure(
-                    "incomplete IPC write",
-                    io::ErrorKind::WriteZero.into(),
-                ));
-            }
-            Ok(count) => bytes = &bytes[count..],
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(e) => return Err(wire::io_failure("write IPC frame", e)),
-        }
-    }
-    Ok(())
+
+fn capacity_error(reason: &str) -> SeError {
+    SeError::new(se_types::Detail::StoreBusy(se_types::details::StoreBusy {
+        waited_ms: 0,
+        reason: reason.into(),
+        next_step: "Close an existing connection or wait for a bounded handshake to expire, then retry the original request key.".into(),
+    }))
 }

@@ -992,6 +992,19 @@ secret never crosses IPC. Session/Launch bytes travel only after server proof,
 never in logs. Exact API equality applies to operations/hooks, not minor-range
 negotiation; the stop-only control path below is independent of that API.
 
+OS accept returns before peer proof, challenge exchange or credential parsing;
+the supervisor drives each handshake in its own bounded connection task.
+`HostLimits.preauth_connections` (default 8, at most 64 and no greater than the
+active cap) bounds pending handshakes separately from authenticated connections.
+One additional incoming channel is reserved for a typed `store-busy` refusal;
+its framing runs in that connection task, never in the accept loop. All incoming
+tasks are bounded before OS accept, and each accepted channel retains its
+original five-second hello deadline. Pre-authentication frames are at most
+16 KiB. Successful admission moves to an active permit and releases the pending
+permit; fixed stop control does not require an ordinary operation slot. Both
+challenge and ready readers preserve typed capacity refusals and the original
+request key.
+
 Call envelope contains API, positive request_id, discovered G, optional per-call
 authority and Operation or Hook. Operation has registry name, closed arguments,
 a stable request key required for every public mutation; decode once to
@@ -1531,7 +1544,7 @@ with the FULL bound p95 ≤75 ms on Windows with Defender; cold direct/FULL tail
 not weaker authentication or durability. A failed budget blocks release.
 
 Resource defaults in HostLimits are admission/backpressure, not preallocation:
-16 sessions, 64 active connections and one separately budgeted parked mail wait
+16 sessions, 64 active connections, 8 pending handshakes and one separately budgeted parked mail wait
 per session; bounded aggregate payload/frame/notice permits retain overflow as
 durable debt. Higher negotiated embedded caps must fit section 80's reserve and
 keep aggregate byte caps fixed. Release request parsing buffers before parking;

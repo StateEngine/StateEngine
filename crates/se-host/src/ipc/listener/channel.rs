@@ -1,0 +1,70 @@
+//! Finite evented framing on the supplied runtime.
+use super::*;
+use std::io;
+use tokio::time::{Instant, timeout_at};
+use zeroize::Zeroizing;
+pub(super) async fn bounded<T>(
+    deadline: &Deadline,
+    future: impl std::future::Future<Output = T>,
+) -> Result<T> {
+    deadline.remaining()?;
+    let result = timeout_at(Instant::from_std(deadline.at()), future)
+        .await
+        .map_err(|_| wire::io_failure("IPC absolute deadline", io::ErrorKind::TimedOut.into()))?;
+    deadline.remaining()?;
+    Ok(result)
+}
+async fn exact(stream: &NativeStream, mut bytes: &mut [u8], deadline: &Deadline) -> Result<()> {
+    while !bytes.is_empty() {
+        bounded(deadline, stream.readable())
+            .await?
+            .map_err(|e| wire::io_failure("wait IPC read", e))?;
+        match stream.try_read(bytes) {
+            Ok(0) => {
+                return Err(wire::io_failure(
+                    "incomplete IPC frame",
+                    io::ErrorKind::UnexpectedEof.into(),
+                ));
+            }
+            Ok(count) => bytes = &mut bytes[count..],
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(e) => return Err(wire::io_failure("read IPC frame", e)),
+        }
+    }
+    Ok(())
+}
+pub(super) async fn receive(
+    stream: &NativeStream,
+    deadline: &Deadline,
+    limit: usize,
+) -> Result<wire::WireBytes> {
+    let mut header = [0; 4];
+    exact(stream, &mut header, deadline).await?;
+    let mut bytes = Zeroizing::new(vec![0; wire::frame_length(header, limit)?]);
+    exact(stream, &mut bytes, deadline).await?;
+    Ok(wire::WireBytes::from_owned(bytes))
+}
+pub(super) async fn send(
+    stream: &NativeStream,
+    frame: &wire::WireBytes,
+    deadline: &Deadline,
+) -> Result<()> {
+    let mut bytes = frame.as_bytes();
+    while !bytes.is_empty() {
+        bounded(deadline, stream.writable())
+            .await?
+            .map_err(|e| wire::io_failure("wait IPC write", e))?;
+        match stream.try_write(bytes) {
+            Ok(0) => {
+                return Err(wire::io_failure(
+                    "incomplete IPC write",
+                    io::ErrorKind::WriteZero.into(),
+                ));
+            }
+            Ok(count) => bytes = &bytes[count..],
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(e) => return Err(wire::io_failure("write IPC frame", e)),
+        }
+    }
+    Ok(())
+}

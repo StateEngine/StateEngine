@@ -19,6 +19,12 @@ struct ChallengeWire {
     nonce: [u8; 32],
     image_sha256: se_types::Sha256,
 }
+#[derive(Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+enum ChallengeReply {
+    Challenge(ChallengeWire),
+    Refused { error: se_types::ErrorEnvelope },
+}
 pub fn encode_challenge(challenge: &ServerChallenge) -> Result<super::wire::WireBytes> {
     encode_frame(
         &ChallengeWire {
@@ -33,7 +39,10 @@ pub fn encode_challenge(challenge: &ServerChallenge) -> Result<super::wire::Wire
 /// Called after native server proof. These fields must also match the protected
 /// routing record; their JSON cannot substitute for OS peer/start/image proof.
 pub fn decode_challenge(bytes: &[u8], expected: &EndpointRecord) -> Result<ServerChallenge> {
-    let wire: ChallengeWire = decode_json(bytes, MAX_ENDPOINT_BYTES)?;
+    let wire = match decode_json::<ChallengeReply>(bytes, MAX_ENDPOINT_BYTES)? {
+        ChallengeReply::Challenge(wire) => wire,
+        ChallengeReply::Refused { error } => return Err(error.body().clone().into()),
+    };
     let challenge = ServerChallenge {
         version: wire.version.into(),
         epoch: wire.epoch,

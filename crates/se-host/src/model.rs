@@ -32,6 +32,8 @@ pub struct HostConfig {
 pub struct HostLimits {
     pub sessions: NonZeroU32,
     pub active_connections: NonZeroU32,
+    /// Separate, smaller admission for channels not yet authenticated.
+    pub preauth_connections: NonZeroU32,
     pub parked_mail_waits: NonZeroU32,
     pub resident_queue_bytes: NonZeroU32,
     pub session_notice_ids: NonZeroU32,
