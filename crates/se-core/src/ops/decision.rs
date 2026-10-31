@@ -12,6 +12,8 @@ use se_store::{AtomicBatch, DecisionKind, EventBody, Expected, InputText, Revisi
 use se_types::{DecisionId, EventId, IdempotencyKey, Result, SeError};
 use std::num::NonZeroU64;
 
+mod supersede;
+
 /// Owned continuation facts only; receipt construction must read the actual
 /// immutable event and its proposal in a fresh admitted Snapshot.
 pub struct DecisionThen {
@@ -183,33 +185,7 @@ pub fn supersede<R: Snapshot>(
     cx: &mut Cx<'_, R>,
     terminal: &HumanTerminal,
 ) -> Result<(AtomicBatch, DecisionThen)> {
-    input.validate()?;
-    admitted(cx)?;
-    require_human_terminal("decision.supersede", cx.admission, terminal)?;
-    let normalized = intent(&input)?;
-    let prior_expected = expected(&input.decision_id, input.expect, cx)?.0;
-    let (replacement_expected, cause) =
-        expected(&input.replacement_id, input.replacement_expect, cx)?;
-    let body = EventBody::DecisionSuperseded {
-        prior: input.decision_id,
-        replacement: input.replacement_id,
-        prior_expected,
-        replacement_expected,
-        approval: kernel.facts()?.event.clone(),
-    };
-    let (mut batch, then) = batch(
-        kernel,
-        "decision.supersede",
-        "supersede",
-        input.idempotency_key,
-        normalized,
-        body,
-        cx,
-    )?;
-    // Retain the exact immutable replacement revision consulted by this commit.
-    // Replay can read it directly after later transitions without a history scan.
-    batch.events[0].header.cause = Some(cause);
-    Ok((batch, then))
+    supersede::plan(kernel, input, cx, terminal)
 }
 
 fn text(value: &se_store::StoredText, subject: &str) -> Result<String> {
@@ -346,6 +322,9 @@ pub fn committed<R: Snapshot>(
             "decision receipt",
             "original scope/actor differs",
         ));
+    }
+    if then.action == "supersede" && matches!(event.body, EventBody::DecisionRatified { .. }) {
+        return supersede::committed(&receipt, &event, cx);
     }
     let (action, id) = match &event.body {
         EventBody::DecisionProposed { decision, .. } => (DecisionAction::Propose, decision),

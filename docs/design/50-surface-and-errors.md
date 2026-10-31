@@ -1489,6 +1489,13 @@ receipt.
 | `$.writer.mode` | `"host"` \| `"direct"` | yes | A.0 Writer |
 | `$.writer.host_generation` | string | when mode is `host` | |
 
+When the replacement is pending, `decision supersede` approves it and retires
+its predecessor in one FULL transaction. The receipt's `event_id` is the
+replacement's actual ratification event; `replaced.event_id` identifies the
+predecessor's separate retirement event in the same atomic operation. A stale
+revision on either decision rolls back both transitions. Replaying the original
+request key returns those original events and rows even after later transitions.
+
 ```json
 {"schema":"se.decision-receipt/v1","authority":{"guard":null,"limit":"mistake/drift guard; not proof against a determined agent using the same OS account"},"action":"propose","state":"committed",
  "event_id":"ev_0192f3a8-0000-7000-8000-000000000049","recorded_at":"2026-10-30T12:08:00.000000Z",

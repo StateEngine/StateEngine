@@ -156,7 +156,7 @@ impl Validate for DecisionSupersede {
         if self.decision_id == self.replacement_id {
             return Err(SeError::invalid(
                 "replacement",
-                "a distinct ratified decision",
+                "a distinct replacement decision",
             ));
         }
         Ok(())
