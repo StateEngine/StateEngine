@@ -531,7 +531,7 @@ retain setup/shutdown writes and distinguish OS writes from physical device I/O.
 
 The coordinated W2 component rerun completed **16/16 behavior witnesses** on
 2026-10-31: twelve untraced mixed cases and four separate traced single-message
-cases. Every case started at load1 ≤10 (7.76–9.47). Each mixed case retained
+cases. Every case started at load1 ≤10 (7.76–9.43). Each mixed case retained
 4,944 operations and 56 policy-FULL decisions, original order/payload, the same
 native binary and builtin 256-page checkpoint policy. Exact table contents, counts,
 integrity/FKs and FULL promotion decisions passed outside readback. Independent
@@ -560,9 +560,9 @@ operation_events, aux_data, identities, legacy_ids, payloads, message_data,
 messages, marks, resume_heads and, when retained, list_versions. Exact affected
 index definitions and row deltas are in the audit; these are logical SQL/index
 touches, not a claim that every index rewrites one physical page. External
-single-transaction WAL extent and whole-run OS write bytes:
+single-transaction WAL extent and whole-run DB/journal/WAL syscall write bytes:
 
-| Page | list_versions | WAL frames | WAL bytes including header | OS write bytes including setup/shutdown |
+| Page | list_versions | WAL frames | WAL bytes including header | DB/journal/WAL write bytes including setup/shutdown |
 | --- | --- | ---: | ---: | ---: |
 | 4 KiB | yes | 39 | 160,712 | 329,180 |
 | 4 KiB | no | 32 | 131,872 | 271,668 |
@@ -571,7 +571,9 @@ single-transaction WAL extent and whole-run OS write bytes:
 
 Each trace observes six sync calls, including setup journal and clean shutdown;
 main-DB checkpoint/setup writes remain separate from WAL in the raw audit.
-These are syscall bytes, never device/NAND writes. Fixed 256 pages still
+The totals exclude sixteen bytes of .db-shm setup writes in each raw trace.
+These are the named-file syscall bytes, never total OS or device/NAND writes.
+Fixed 256 pages still
 confounds page size with 1 MiB/4 MiB checkpoint cadence. Removing list_versions
 also loses historical mail windows; no compatibility or product-policy change
 is inferred. The archived harness has 43 tables (42 without list_versions),
