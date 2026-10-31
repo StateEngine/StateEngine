@@ -8,10 +8,26 @@
 #include <stddef.h>
 #include <string.h>
 #include <sys/types.h>
+#include <unistd.h>
+static unsigned char *partial;
+extern void __libc_free(void *);
+void free(void *pointer) {
+    if (pointer && pointer == partial) {
+        for (size_t i = 0; i < 32; i++) {
+            if (partial[i] != 0) _exit(93);
+        }
+        partial = NULL;
+    }
+    __libc_free(pointer);
+}
+__attribute__((destructor)) static void observed_zeroization(void) {
+    if (partial) _exit(94);
+}
 ssize_t getrandom(void *buffer, size_t count, unsigned int flags) {
     static int phase;
     if (phase == 0 && count == 32) {
         memset(buffer, 0xa5, 8);
+        partial = buffer;
         phase = 1;
         return 8;
     }

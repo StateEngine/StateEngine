@@ -152,6 +152,36 @@ mod linux {
         Ok(())
     }
     pub fn run() -> Result {
+        match std::env::args().nth(1).as_deref() {
+            Some("--expect-extra-primary-member") => {
+                Fixture::new(0o775, None)?.refused("private primary group")?;
+                println!("1 passed; 0 failed; another NSS account sharing the primary GID refuses");
+                return Ok(());
+            }
+            Some("--expect-nss-failure") => {
+                let fixture = Fixture::new(0o775, None)?;
+                let error = match NativeStateFiles::create(&fixture.parent.join("state")) {
+                    Ok(_) => {
+                        return Err(
+                            "unreadable NSS enumeration was treated as a private group".into()
+                        );
+                    }
+                    Err(error) => error,
+                };
+                assert_eq!(error.path, fixture.parent);
+                assert!(
+                    error
+                        .to_string()
+                        .contains("enumerate private primary-group accounts"),
+                    "{error}"
+                );
+                assert_eq!(error.source.and_then(|e| e.raw_os_error()), Some(libc::EIO));
+                assert!(!fixture.parent.join("state").exists());
+                println!("1 passed; 0 failed; unreadable NSS enumeration refuses before creation");
+                return Ok(());
+            }
+            _ => (),
+        }
         let cases: &[Case] = &[
             (
                 "explicit 0755 ancestor and protected publication/reopen",
