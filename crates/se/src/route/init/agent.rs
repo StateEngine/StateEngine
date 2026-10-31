@@ -79,7 +79,7 @@ pub(super) fn initial_agent(
                 model: input.model.clone(),
                 idempotency_key: phase_key(&input.idempotency_key, "agent")?,
             });
-            match super::direct::execute(
+            match crate::route::direct::execute(
                 store,
                 lease,
                 admission,
@@ -91,7 +91,7 @@ pub(super) fn initial_agent(
                 op,
                 &CliSelections::default(),
             )? {
-                super::direct::Outcome::Complete(AnyOutput::AgentCreate(value)) => {
+                crate::route::direct::Outcome::Complete(AnyOutput::AgentCreate(value)) => {
                     value.value.agent.id
                 }
                 _ => {

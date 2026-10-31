@@ -132,7 +132,7 @@ pub(super) fn finish(
     }
     let (agent, agent_created) = agent_setup::initial_agent(cx, input, store, lease, &admission)?;
     let (port, config_changed) =
-        super::init_config::listener_port(cx, &lease.files, observed.os_owner())?;
+        crate::route::init_config::listener_port(cx, &lease.files, observed.os_owner())?;
     let mut snap = store
         .snapshot(read_scope(&admission))
         .map_err(|e| store_error(&e))?;
