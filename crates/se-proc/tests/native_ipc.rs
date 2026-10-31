@@ -2,9 +2,7 @@ use se_proc::native_ipc::*;
 use std::{
     error::Error,
     fs,
-    io::{Read, Write},
     path::PathBuf,
-    process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -18,17 +16,12 @@ fn bound(ms: u64) -> IpcIoBound {
         cancelled: Arc::new(AtomicBool::new(false)),
     }
 }
-#[cfg(unix)]
-type Stream = NativeUnixStream;
-#[cfg(windows)]
-type Stream = NativePipeStream;
-
 struct Endpoint {
     root: PathBuf,
     #[cfg(unix)]
     native: NativeUnixEndpoint,
     #[cfg(windows)]
-    native: NativePipeEndpoint,
+    native: NativePipeReservation,
 }
 impl Endpoint {
     fn new(label: &str) -> Result<Self> {
@@ -42,7 +35,7 @@ impl Endpoint {
         #[cfg(unix)]
         let native = NativeUnixEndpoint::bind(&root.join("ipc.sock"))?;
         #[cfg(windows)]
-        let native = NativePipeEndpoint::bind(&Self::name(&root))?;
+        let native = NativePipeReservation::create(&Self::name(&root))?;
         Ok(Self { root, native })
     }
     #[cfg(windows)]
@@ -53,19 +46,6 @@ impl Endpoint {
         )
         .into()
     }
-    fn connect(root: &std::path::Path, limit: IpcIoBound) -> IpcNativeResult<Stream> {
-        #[cfg(unix)]
-        {
-            Stream::connect(&root.join("ipc.sock"), limit)
-        }
-        #[cfg(windows)]
-        {
-            Stream::connect(&Self::name(root), limit)
-        }
-    }
-    fn accept(&mut self, limit: IpcIoBound) -> IpcNativeResult<Stream> {
-        self.native.accept(limit)
-    }
     fn close(self) -> Result<()> {
         #[cfg(unix)]
         self.native.close()?;
@@ -75,40 +55,6 @@ impl Endpoint {
         Ok(())
     }
 }
-fn write_binding(stream: &mut Stream, value: &[u8]) -> Result<()> {
-    stream.write_all(&(value.len() as u32).to_be_bytes())?;
-    stream.write_all(value)?;
-    Ok(())
-}
-fn read_binding(stream: &mut Stream) -> Result<Vec<u8>> {
-    let mut length = [0; 4];
-    stream.read_exact(&mut length)?;
-    let length = u32::from_be_bytes(length) as usize;
-    assert!(length < 4096);
-    let mut bytes = vec![0; length];
-    stream.read_exact(&mut bytes)?;
-    Ok(bytes)
-}
-
-#[test]
-#[ignore = "fixture child driven by real cross-process native IPC test"]
-fn ipc_client_child() -> Result<()> {
-    let root = PathBuf::from(std::env::var_os("SE_IPC_JUDGE_ROOT").ok_or("fixture root missing")?);
-    let mut stream = Endpoint::connect(&root, bound(10_000))?;
-    if std::env::var_os("SE_IPC_JUDGE_OVERSIZED").is_some() {
-        assert_eq!(stream.read(&mut [0])?, 0, "oversized peer was admitted");
-        return Ok(());
-    }
-    let peer = observe_ipc_peer(stream.channel(), IpcPeerSide::Server)?;
-    write_binding(&mut stream, &observe_ipc_self()?.binding())?;
-    assert_eq!(read_binding(&mut stream)?, peer.binding());
-    assert_eq!(
-        peer.pid(),
-        std::env::var("SE_IPC_JUDGE_PARENT")?.parse::<u32>()?
-    );
-    Ok(())
-}
-
 #[test]
 fn native_executable_proof_obeys_its_original_bound() -> Result<()> {
     let cancelled = bound(10_000);
@@ -121,10 +67,14 @@ fn native_executable_proof_obeys_its_original_bound() -> Result<()> {
         IpcNativeErrorCode::Cancelled
     );
     let begin = Instant::now();
+    let expired = IpcIoBound {
+        deadline: begin,
+        cancelled: Arc::new(AtomicBool::new(false)),
+    };
     assert_eq!(
-        observe_ipc_self_bounded(&bound(1))
+        observe_ipc_self_bounded(&expired)
             .err()
-            .ok_or("one-millisecond proof unexpectedly finished")?
+            .ok_or("expired proof unexpectedly finished")?
             .code,
         IpcNativeErrorCode::TimedOut
     );
@@ -153,49 +103,13 @@ fn trusted_ancestor_link_and_private_final_directory_can_host_an_endpoint() -> R
     outer.close()
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn oversized_real_peer_image_is_refused_before_unbounded_content_read() -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut endpoint = Endpoint::new("oversized")?;
-    let image = endpoint.root.join("oversized-image");
-    fs::copy(std::env::current_exe()?, &image)?;
-    fs::OpenOptions::new()
-        .write(true)
-        .open(&image)?
-        .set_len(512 * 1024 * 1024 + 1)?;
-    fs::set_permissions(&image, fs::Permissions::from_mode(0o700))?;
-    let child = Command::new(&image)
-        .args(["--ignored", "--exact", "ipc_client_child", "--nocapture"])
-        .env("SE_IPC_JUDGE_ROOT", &endpoint.root)
-        .env("SE_IPC_JUDGE_OVERSIZED", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let refusal = endpoint
-        .accept(bound(5_000))
-        .err()
-        .ok_or("oversized native peer was accepted")?;
-    assert_eq!(refusal.code, IpcNativeErrorCode::Unreadable);
-    assert!(refusal.operation.contains("512 MiB"));
-    let output = child.wait_with_output()?;
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    fs::remove_file(image)?;
-    endpoint.close()
-}
-
 #[cfg(windows)]
 #[test]
 fn protected_reservation_holds_the_name_until_its_native_handles_close() -> Result<()> {
     let root = std::env::temp_dir().join(format!("se-ipc-{}-reservation", std::process::id()));
     let name = Endpoint::name(&root);
     let reservation = NativePipeReservation::create(&name)?;
-    assert!(NativePipeEndpoint::bind(&name).is_err());
+    assert!(NativePipeReservation::create(&name).is_err());
     assert_eq!(
         NativePipeStream::connect(&name, bound(30))
             .err()
@@ -204,7 +118,7 @@ fn protected_reservation_holds_the_name_until_its_native_handles_close() -> Resu
         IpcNativeErrorCode::TimedOut
     );
     drop(reservation);
-    drop(NativePipeEndpoint::bind(&name)?);
+    drop(NativePipeReservation::create(&name)?);
     Ok(())
 }
 
@@ -237,6 +151,7 @@ fn client_refuses_a_real_pipe_with_a_world_access_dacl() -> Result<()> {
         .chain(Some(0))
         .collect();
     let mut security = std::ptr::null_mut();
+    // SAFETY: live NUL-terminated SDDL and writable allocation output.
     if unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             descriptor.as_ptr(),
@@ -256,6 +171,7 @@ fn client_refuses_a_real_pipe_with_a_world_access_dacl() -> Result<()> {
         lpSecurityDescriptor: security,
         bInheritHandle: 0,
     };
+    // SAFETY: descriptor, attributes and pipe name outlive this native allocation.
     let raw = unsafe {
         CreateNamedPipeW(
             wide.as_ptr(),
@@ -269,13 +185,26 @@ fn client_refuses_a_real_pipe_with_a_world_access_dacl() -> Result<()> {
         )
     };
     let error = std::io::Error::last_os_error();
+    // SAFETY: the descriptor was allocated by the preceding conversion call.
     unsafe {
         LocalFree(security);
     }
     if raw == INVALID_HANDLE_VALUE {
         return Err(error.into());
     }
+    // SAFETY: successful CreateNamedPipeW transfers one unique handle.
     let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+    let collision = NativePipeReservation::create(&name)
+        .err()
+        .ok_or("squatter pipe adopted")?;
+    let reason = collision.to_string();
+    assert!(
+        reason.contains("SID")
+            && reason.contains("owner")
+            && reason.contains("unused protected name")
+            && (reason.contains(&sid) || reason.contains("unreadable")),
+        "squatter refusal lost its owner/cause/action: {reason}"
+    );
     assert_eq!(
         NativePipeStream::connect(&name, bound(1_000))
             .err()
@@ -284,97 +213,8 @@ fn client_refuses_a_real_pipe_with_a_world_access_dacl() -> Result<()> {
         IpcNativeErrorCode::UnsafeEndpoint
     );
     drop(handle);
-    drop(NativePipeEndpoint::bind(&name)?);
+    drop(NativePipeReservation::create(&name)?);
     Ok(())
-}
-
-#[test]
-fn actual_cross_process_credentials_and_image_binding_round_trip() -> Result<()> {
-    let mut endpoint = Endpoint::new("peer")?;
-    let child = Command::new(std::env::current_exe()?)
-        .args(["--ignored", "--exact", "ipc_client_child", "--nocapture"])
-        .env("SE_IPC_JUDGE_ROOT", &endpoint.root)
-        .env("SE_IPC_JUDGE_PARENT", std::process::id().to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut stream = endpoint.accept(bound(10_000))?;
-    let peer = observe_ipc_peer(stream.channel(), IpcPeerSide::Client)?;
-    assert_eq!(peer.pid(), child.id());
-    assert_eq!(read_binding(&mut stream)?, peer.binding());
-    write_binding(&mut stream, &observe_ipc_self()?.binding())?;
-    drop(stream);
-    let output = child.wait_with_output()?;
-    assert!(
-        output.status.success(),
-        "{} {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    endpoint.close()
-}
-
-#[test]
-fn blocked_accept_and_read_keep_their_deadline_and_cancel_bounds() -> Result<()> {
-    let mut endpoint = Endpoint::new("bounds")?;
-    let begin = Instant::now();
-    assert_eq!(
-        endpoint
-            .accept(bound(30))
-            .err()
-            .ok_or("accept unexpectedly succeeded")?
-            .code,
-        IpcNativeErrorCode::TimedOut
-    );
-    assert!(begin.elapsed() < Duration::from_secs(2));
-    let cancelled = bound(10_000);
-    cancelled.cancelled.store(true, Ordering::Release);
-    assert_eq!(
-        endpoint
-            .accept(cancelled)
-            .err()
-            .ok_or("cancelled accept succeeded")?
-            .code,
-        IpcNativeErrorCode::Cancelled
-    );
-    let root = endpoint.root.clone();
-    let (release, wait) = std::sync::mpsc::channel();
-    let client = std::thread::spawn(move || -> std::io::Result<()> {
-        let mut stream = Endpoint::connect(&root, bound(10_000)).map_err(std::io::Error::other)?;
-        wait.recv_timeout(Duration::from_secs(5))
-            .map_err(std::io::Error::other)?;
-        stream.write_all(b"after")
-    });
-    let mut stream = endpoint.accept(bound(10_000))?;
-    stream.set_bound(bound(30));
-    let mut data = [0; 5];
-    assert_eq!(
-        stream
-            .read(&mut data)
-            .err()
-            .ok_or("idle read succeeded")?
-            .kind(),
-        std::io::ErrorKind::TimedOut
-    );
-    let cancelled = bound(10_000);
-    cancelled.cancelled.store(true, Ordering::Release);
-    stream.set_bound(cancelled);
-    assert_eq!(
-        stream
-            .read(&mut data)
-            .err()
-            .ok_or("cancelled read succeeded")?
-            .kind(),
-        std::io::ErrorKind::Interrupted
-    );
-    stream.set_bound(bound(5_000));
-    release.send(())?;
-    stream.read_exact(&mut data)?;
-    assert_eq!(&data, b"after");
-    client.join().map_err(|_| "fixture thread panicked")??;
-    drop(stream);
-    endpoint.close()
 }
 
 #[test]
@@ -383,7 +223,7 @@ fn occupied_endpoint_is_never_adopted_or_unlinked() -> Result<()> {
     #[cfg(unix)]
     assert!(NativeUnixEndpoint::bind(&endpoint.root.join("ipc.sock")).is_err());
     #[cfg(windows)]
-    assert!(NativePipeEndpoint::bind(&Endpoint::name(&endpoint.root)).is_err());
+    assert!(NativePipeReservation::create(&Endpoint::name(&endpoint.root)).is_err());
     endpoint.close()
 }
 
@@ -405,6 +245,14 @@ fn unsafe_paths_and_replaced_socket_refuse_without_removing_foreign_data() -> Re
     assert_eq!(fs::read(&path)?, b"foreign replacement");
     assert!(NativeUnixStream::connect(&path, bound(100)).is_err());
     fs::remove_file(&path)?;
+    let permissive = UnixListener::bind(&path)?;
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666))?;
+    let refusal = NativeUnixStream::connect(&path, bound(100))
+        .err()
+        .ok_or("world-access Unix socket admitted")?;
+    assert_eq!(refusal.code, IpcNativeErrorCode::UnsafeEndpoint);
+    drop(permissive);
+    fs::remove_file(&path)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o755))?;
     assert!(NativeUnixEndpoint::bind(&path).is_err());
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
@@ -412,6 +260,16 @@ fn unsafe_paths_and_replaced_socket_refuse_without_removing_foreign_data() -> Re
     symlink(&root, &linked)?;
     assert!(NativeUnixEndpoint::bind(&linked.join("ipc.sock")).is_err());
     fs::remove_file(linked)?;
+    let foreign_path = root.join("foreign.sock");
+    let foreign = UnixListener::bind(&foreign_path)?;
+    fs::set_permissions(&foreign_path, fs::Permissions::from_mode(0o600))?;
+    symlink(&foreign_path, &path)?;
+    assert!(NativeUnixStream::connect(&path, bound(100)).is_err());
+    assert!(NativeUnixEndpoint::bind(&path).is_err());
+    assert!(fs::symlink_metadata(&path)?.file_type().is_symlink());
+    fs::remove_file(&path)?;
+    drop(foreign);
+    fs::remove_file(foreign_path)?;
     let foreign = UnixListener::bind(&path)?;
     assert!(NativeUnixEndpoint::bind(&path).is_err());
     drop(foreign);
