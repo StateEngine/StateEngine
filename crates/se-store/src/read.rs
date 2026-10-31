@@ -255,6 +255,44 @@ impl Snapshot for SqliteSnapshot {
     fn info(&self) -> StoreInfo {
         self.info.clone()
     }
+    fn position_cursor(
+        &self,
+        position: &StorePosition,
+        purpose: PositionPurpose,
+    ) -> StoreResult<Cursor> {
+        let head = self
+            .info
+            .head
+            .as_ref()
+            .map(StorePosition::sequence)
+            .unwrap_or(0);
+        if !position.belongs(&self.info) || position.sequence() > head {
+            return Err(fail(
+                StoreErrorCode::CursorStale,
+                "position is outside this store/incarnation/snapshot",
+            ));
+        }
+        if position.sequence() > 0 {
+            let e = self.record(position.sequence() as i64)?;
+            if e.header.scope != self.scope.admission.scope {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "position is outside admitted scope",
+                ));
+            }
+        }
+        let binding = codec::encode(&(
+            "position",
+            &self.scope.admission.scope,
+            &self.scope.admission.actor,
+            match purpose {
+                PositionPurpose::Receipt => "receipt",
+                PositionPurpose::Checked => "checked",
+                PositionPurpose::History => "history",
+            },
+        ))?;
+        self.cursor(&binding, position.sequence(), position.sequence())
+    }
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>> {
         match self.event_seq(&id)? {
             Some(seq) => Ok(Read::Present {

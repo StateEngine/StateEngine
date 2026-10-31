@@ -33,6 +33,12 @@ pub struct StorePosition {
     _incarnation: u64,
     _sequence: Sequence,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PositionPurpose {
+    Receipt,
+    Checked,
+    History,
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Expected {
     Absent,
