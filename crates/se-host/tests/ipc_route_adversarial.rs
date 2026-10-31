@@ -12,54 +12,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(unix)]
-type Raw = std::os::unix::net::UnixStream;
-#[cfg(windows)]
-type Raw = se_proc::native_ipc::NativePipeStream;
-fn raw_connect(endpoint: &EndpointRecord) -> Result<Raw, Box<dyn std::error::Error>> {
-    #[cfg(unix)]
-    {
-        let IpcEndpoint::UnixSocket(path) = &endpoint.address else {
-            return Err("Unix endpoint required".into());
-        };
-        let stream = Raw::connect(path.to_local()?)?;
-        stream.set_read_timeout(Some(Duration::from_secs(8)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(8)))?;
-        Ok(stream)
-    }
-    #[cfg(windows)]
-    {
-        let IpcEndpoint::WindowsPipe(name) = &endpoint.address else {
-            return Err("Windows endpoint required".into());
-        };
-        Ok(Raw::connect(
-            std::ffi::OsStr::new(name),
-            bound(Duration::from_secs(8)),
-        )?)
-    }
-}
-fn listener(
-    home: &Home,
-) -> Result<(tokio::runtime::Runtime, IpcListener, EndpointRecord), Box<dyn std::error::Error>> {
-    let endpoint = home.record()?;
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-    let listener = IpcListener::bind(
-        endpoint.clone(),
-        rt.handle().clone(),
-        Arc::new(tokio::sync::Semaphore::new(2)),
-    )?;
-    Ok((rt, listener, endpoint))
-}
-fn challenge(
-    stream: &mut Raw,
-    endpoint: &EndpointRecord,
-) -> Result<ServerChallenge, Box<dyn std::error::Error>> {
-    let frame = wire::read_payload(stream, wire::MAX_ENDPOINT_BYTES)?;
-    Ok(auth::decode_challenge(frame.as_bytes(), endpoint)?)
-}
-
 /// Every proof crosses the actual Tokio listener and native protected endpoint.
 #[test]
 fn wire_mac_binding_domains_and_cross_connection_replay_are_enforced() -> Check {
@@ -129,7 +81,11 @@ fn wire_mac_binding_domains_and_cross_connection_replay_are_enforced() -> Check 
         });
         let accepted = rt.block_on(async {
             for round in 0..rounds {
-                let mut pending = server.accept(Arc::new(AtomicBool::new(false))).await?;
+                let mut pending = server
+                    .accept(Arc::new(AtomicBool::new(false)))
+                    .await?
+                    .handshake()
+                    .await?;
                 let expected =
                     matches!(mode, "valid" | "valid-stop") || (mode == "replay" && round == 0);
                 assert_eq!(
@@ -213,10 +169,13 @@ fn product_listener_refuses_closed_and_pre_auth_bounded_frames() -> Check {
             work().map_err(|e| e.to_string())
         });
         let outcome = rt.block_on(async {
-            tokio::time::timeout(
-                Duration::from_millis(500),
-                server.accept(Arc::new(AtomicBool::new(false))),
-            )
+            tokio::time::timeout(Duration::from_millis(500), async {
+                server
+                    .accept(Arc::new(AtomicBool::new(false)))
+                    .await?
+                    .handshake()
+                    .await
+            })
             .await
         });
         let _ = release.send(());

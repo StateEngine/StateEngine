@@ -144,3 +144,51 @@ pub fn secret(byte: u8) -> Result<Secret, Box<dyn Error>> {
 pub fn nonzero(value: u32) -> Result<NonZeroU32, Box<dyn Error>> {
     NonZeroU32::new(value).ok_or_else(|| "zero bound".into())
 }
+
+#[cfg(unix)]
+pub type Raw = std::os::unix::net::UnixStream;
+#[cfg(windows)]
+pub type Raw = se_proc::native_ipc::NativePipeStream;
+pub fn raw_connect(endpoint: &EndpointRecord) -> Result<Raw, Box<dyn std::error::Error>> {
+    #[cfg(unix)]
+    {
+        let IpcEndpoint::UnixSocket(path) = &endpoint.address else {
+            return Err("Unix endpoint required".into());
+        };
+        let stream = Raw::connect(path.to_local()?)?;
+        stream.set_read_timeout(Some(Duration::from_secs(8)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(8)))?;
+        Ok(stream)
+    }
+    #[cfg(windows)]
+    {
+        let IpcEndpoint::WindowsPipe(name) = &endpoint.address else {
+            return Err("Windows endpoint required".into());
+        };
+        Ok(Raw::connect(
+            std::ffi::OsStr::new(name),
+            bound(Duration::from_secs(8)),
+        )?)
+    }
+}
+pub fn listener(
+    home: &Home,
+) -> Result<(tokio::runtime::Runtime, IpcListener, EndpointRecord), Box<dyn std::error::Error>> {
+    let endpoint = home.record()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let listener = IpcListener::bind(
+        endpoint.clone(),
+        rt.handle().clone(),
+        Arc::new(tokio::sync::Semaphore::new(2)),
+    )?;
+    Ok((rt, listener, endpoint))
+}
+pub fn challenge(
+    stream: &mut Raw,
+    endpoint: &EndpointRecord,
+) -> Result<ServerChallenge, Box<dyn std::error::Error>> {
+    let frame = client::wire::read_payload(stream, client::wire::MAX_ENDPOINT_BYTES)?;
+    Ok(client::auth::decode_challenge(frame.as_bytes(), endpoint)?)
+}

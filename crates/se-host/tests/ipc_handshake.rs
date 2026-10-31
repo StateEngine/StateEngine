@@ -43,7 +43,9 @@ fn handshake(machine: bool, wrong_key: bool) -> Check {
             Duration::from_secs(10),
             listener.accept(Arc::new(AtomicBool::new(false))),
         )
-        .await??;
+        .await??
+        .handshake()
+        .await?;
         assert_eq!(pending.peer().native().pid(), std::process::id());
         match pending.input() {
             HandshakeInput::Call(hello) => {
