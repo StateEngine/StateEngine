@@ -12,3 +12,5 @@ pub mod config_policy;
 pub mod registry;
 
 pub mod ops;
+
+pub mod machine_identity;
