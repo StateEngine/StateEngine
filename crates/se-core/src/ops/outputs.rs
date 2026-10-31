@@ -1,0 +1,453 @@
+//! Wire values contain measured facts; family envelopes are supplied by the operation sum type.
+use crate::{
+    commit::MessageKind,
+    config_policy::{Provider, ResolvedProfile},
+};
+use schemars::JsonSchema;
+use se_types::{
+    AgentId, EventId, HumanId, IdempotencyKey, MessageId, Page, ProjectId, Read, SessionId,
+};
+use serde::Serialize;
+
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct Named<I> {
+    pub id: I,
+    pub name: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct NextStep {
+    pub text: String,
+    pub command: String,
+    pub argv: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct Build {
+    pub commit: Option<String>,
+    pub provenance: Provenance,
+}
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Provenance {
+    Observed,
+    Unknown,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct VersionOutput {
+    pub version: String,
+    pub build: Build,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct HelpOutput {
+    pub path: Vec<String>,
+    pub usage: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct OpSchema {
+    pub name: String,
+    pub metadata: serde_json::Value,
+    pub input: serde_json::Value,
+    pub output: serde_json::Value,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct SchemaCatalogue {
+    pub api: String,
+    pub build: Build,
+    pub ops: Vec<OpSchema>,
+    pub families: Vec<String>,
+    pub errors: Vec<serde_json::Value>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ProjectView {
+    pub id: ProjectId,
+    pub name: String,
+    pub root: String,
+    pub registered_at: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct OwnerView {
+    pub human_id: HumanId,
+    pub os_user: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct GitView {
+    pub head: Option<String>,
+    pub branch: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct RepositoryView {
+    pub root: String,
+    pub git: Option<GitView>,
+    pub files_touched: u32,
+}
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum InitOutcome {
+    Created,
+    Adopted,
+    AlreadyPresent,
+}
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum IdentityOutcome {
+    Created,
+    Existing,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct InitialAgent {
+    pub id: AgentId,
+    pub name: String,
+    pub outcome: IdentityOutcome,
+    pub provider: Provider,
+    pub model: Option<String>,
+    pub permission_profile: ResolvedProfile,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct InitProfile {
+    pub schema: String,
+    pub project: ProjectId,
+    pub repo_root: String,
+    pub registry_root: String,
+    pub keys_dir: String,
+    pub human_id: HumanId,
+    pub agent_id: AgentId,
+    pub native_server_port: u16,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct InitOutput {
+    pub idempotency_key: IdempotencyKey,
+    pub outcome: InitOutcome,
+    pub project: ProjectView,
+    pub repo: RepositoryView,
+    pub owner: OwnerView,
+    pub home: String,
+    pub agent: InitialAgent,
+    pub profile: InitProfile,
+    pub integrations: Vec<IntegrationEffect>,
+    pub changed: Vec<String>,
+    pub next: NextStep,
+    pub launch: Option<LaunchOutput>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ProcessView {
+    pub pid: u32,
+    pub started_at: String,
+    pub exe: String,
+    pub machine_id: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct Witness {
+    pub state: WitnessState,
+    pub method: String,
+    pub observed_at: String,
+    pub detail: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WitnessState {
+    Witnessed,
+    Unknown,
+    Failed,
+}
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileOutcome {
+    Written,
+    Removed,
+    Unchanged,
+    AlreadyAbsent,
+    ConflictKept,
+    Unreadable,
+    Pending,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct FileEffect {
+    pub path: String,
+    pub outcome: FileOutcome,
+    pub witness: Witness,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct IntegrationEffect {
+    pub path: String,
+    pub entry: String,
+    pub action: FileOutcome,
+    pub witness: Witness,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct SessionView {
+    pub state: String,
+    pub session_id: Option<SessionId>,
+    pub launch_id: Option<se_types::LaunchId>,
+    pub surface: String,
+    pub process: Option<ProcessView>,
+    pub since: Option<String>,
+    pub observed_at: Option<String>,
+    pub containment: Option<String>,
+    pub containment_cause: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ConversationView {
+    pub id: Option<String>,
+    pub state: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ResumeCommand {
+    pub ready: bool,
+    pub mode: String,
+    pub reason: Option<String>,
+    pub command: Option<String>,
+    pub argv: Option<Vec<String>>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct AgentRow {
+    pub id: AgentId,
+    pub name: String,
+    pub role: Option<String>,
+    pub provider: Provider,
+    pub model: Option<String>,
+    pub profile: String,
+    pub session: SessionView,
+    pub conversation: ConversationView,
+    pub resume: ResumeCommand,
+    pub unread: Option<u64>,
+    pub last_activity_at: Option<String>,
+}
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SetupState {
+    Configured,
+    NotSetUp,
+    Unreadable,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct SetupView {
+    pub state: SetupState,
+    pub home: String,
+    pub reason: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ResourceSample {
+    pub self_voluntary_switches: u64,
+    pub self_involuntary_switches: Option<u64>,
+    pub cpu_user_us: u64,
+    pub cpu_system_us: u64,
+    pub rss_bytes: u64,
+    pub sampled_at: String,
+    pub method: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct RuntimeView {
+    pub state: String,
+    pub host: Option<String>,
+    pub process: Option<ProcessView>,
+    pub generation: Option<u64>,
+    pub endpoint: Option<String>,
+    pub version: Option<String>,
+    pub observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<ResourceSample>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct RemovalView {
+    pub project: Named<ProjectId>,
+    pub root: String,
+    pub removed_at: String,
+    pub event_id: EventId,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct PrincipalView {
+    pub project: Named<ProjectId>,
+    pub agent: Named<AgentId>,
+    pub session_id: SessionId,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct InboxCounts {
+    pub owner_unread: Option<u64>,
+    pub self_unread: Option<u64>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct DecisionCounts {
+    pub pending: Option<u64>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct CaptureView {
+    pub state: String,
+    pub last_turn_at: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct AtlasView {
+    pub state: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct PendingFact {
+    pub what: String,
+    pub since: Option<String>,
+    pub detail: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ProjectSummary {
+    pub id: ProjectId,
+    pub name: String,
+    pub root: String,
+    pub agents_running: u64,
+    pub owner_unread: u64,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct StatusOutput {
+    pub scope: String,
+    pub generated_at: String,
+    pub version: String,
+    pub setup: SetupView,
+    pub runtime: RuntimeView,
+    pub project: Read<ProjectView>,
+    pub removal: Option<RemovalView>,
+    pub principal: Option<PrincipalView>,
+    pub agents: Option<Page<AgentRow>>,
+    pub inbox: InboxCounts,
+    pub decisions: DecisionCounts,
+    pub capture: CaptureView,
+    pub atlas: AtlasView,
+    pub pending: Vec<PendingFact>,
+    pub projects: Option<Page<ProjectSummary>>,
+    pub next: NextStep,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+#[serde(tag = "mode", rename_all = "lowercase")]
+pub enum Writer {
+    Direct,
+    Host { host_generation: String },
+}
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum CommitState {
+    Committed,
+    Replayed,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct ActorRef {
+    pub kind: String,
+    pub id: String,
+    pub name: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct BodyDigest {
+    pub bytes: u64,
+    pub sha256: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct Delivery {
+    pub state: String,
+    pub at: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct MessageOutput {
+    pub state: CommitState,
+    pub message_id: MessageId,
+    pub event_id: EventId,
+    pub recorded_at: String,
+    pub project: Named<ProjectId>,
+    pub from: ActorRef,
+    pub to: ActorRef,
+    pub kind: MessageKind,
+    pub reply_to: Option<MessageId>,
+    pub refs: Vec<EventId>,
+    pub idempotency_key: IdempotencyKey,
+    pub body: BodyDigest,
+    pub delivery: Delivery,
+    pub writer: Writer,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct WorkingStateValue {
+    pub text: String,
+    pub revision: u64,
+    pub recorded_at: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct WorkingStateOutput {
+    pub agent: Named<AgentId>,
+    pub value: Read<WorkingStateValue>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct WorkingStateReceipt {
+    pub agent: Named<AgentId>,
+    pub state: CommitState,
+    pub revision: u64,
+    pub current_revision: u64,
+    pub event_id: EventId,
+    pub idempotency_key: IdempotencyKey,
+    pub writer: Writer,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct MessageBody {
+    pub text: String,
+    pub complete: bool,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct MessageRow {
+    pub id: MessageId,
+    pub from: ActorRef,
+    pub to: ActorRef,
+    pub kind: MessageKind,
+    pub at: String,
+    pub disposition: String,
+    pub body: MessageBody,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct MessagePage {
+    #[serde(flatten)]
+    pub page: Page<MessageRow>,
+    pub unread_total: Option<u64>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct StopFact {
+    pub target: String,
+    pub complete: bool,
+    pub witness: Witness,
+    pub resume: ResumeCommand,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct RuntimeStart {
+    pub state: String,
+    pub process: ProcessView,
+    pub generation: u64,
+    pub endpoint: String,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct RuntimeStop {
+    pub complete: bool,
+    pub stops: Vec<StopFact>,
+    pub witness: Witness,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct PathEffect {
+    pub scope: String,
+    pub before_entries: Vec<String>,
+    pub after_entries: Vec<String>,
+    pub witness: Witness,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct RevocationEffect {
+    pub session: SessionId,
+    pub witness: Witness,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct UninstallOutput {
+    pub idempotency_key: IdempotencyKey,
+    pub complete: bool,
+    pub install_files: Vec<FileEffect>,
+    pub integrations: Vec<IntegrationEffect>,
+    pub stops: Vec<StopFact>,
+    pub revocations: Vec<RevocationEffect>,
+    pub path: PathEffect,
+    pub preserved: Vec<String>,
+}
+#[derive(Clone, Debug, Serialize, JsonSchema)]
+pub struct LaunchOutput {
+    pub schema: String,
+    pub agent: Named<AgentId>,
+    pub process: ProcessView,
+    pub session_id: SessionId,
+    pub provider: Provider,
+    pub model: Option<String>,
+    pub permission_profile: ResolvedProfile,
+    pub conversation_id: String,
+}
