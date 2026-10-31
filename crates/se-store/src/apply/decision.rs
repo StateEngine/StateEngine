@@ -1,3 +1,12 @@
+type DecisionRow = (
+    Vec<u8>,
+    Option<String>,
+    Option<u64>,
+    Option<Vec<u8>>,
+    Option<String>,
+    Option<Vec<u8>>,
+    Option<u64>,
+);
 use super::*;
 use crate::sql_value::{sql_params, value};
 pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
@@ -50,13 +59,19 @@ pub(super) fn apply(
         kind,
     } = b
     {
-        if label.is_empty() || label.len() > 256 {
+        if label.is_empty()
+            || label.len() > 128
+            || !label.as_bytes()[0].is_ascii_lowercase() && !label.as_bytes()[0].is_ascii_digit()
+            || !label
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+        {
             return Err(invalid("decision key bounds"));
         }
         let id = k(&decision)?;
-        let statement = payload(c, seq, "statement", &codec::text(statement, 32 * 1024)?)?;
+        let statement = payload(c, seq, "statement", &codec::text(statement, 8 * 1024)?)?;
         let rationale = rationale
-            .map(|v| codec::text(v, 32 * 1024).and_then(|v| payload(c, seq, "rationale", &v)))
+            .map(|v| codec::text(v, 2 * 1024).and_then(|v| payload(c, seq, "rationale", &v)))
             .transpose()?;
         let prior = prior.map(|v| k(&v)).transpose()?;
         c.execute("INSERT INTO decision_data(event_seq,decision_id,project_id,decision_key,state,statement_payload,rationale_payload,prior_proposal_id,decision_kind) VALUES(?,?,?,?,'proposed',?,?,?,?)",sql_params![seq,id,p,label,statement,rationale,prior,match kind{DecisionKind::Note=>"note",DecisionKind::Decision=>"decision"}]).map_err(sql)?;
@@ -141,7 +156,7 @@ pub(super) fn apply(
         })
         .transpose()?;
     let reason = reason
-        .map(|v| codec::text(v, 32 * 1024).and_then(|v| payload(c, seq, "reason", &v)))
+        .map(|v| codec::text(v, 2 * 1024).and_then(|v| payload(c, seq, "reason", &v)))
         .transpose()?;
     let want = match want {
         Expected::Absent => None,
@@ -182,7 +197,7 @@ pub(crate) fn decode(
 ) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
     let s = scope_key(c, scope, false)?;
-    let (id,label,expected,prior,tag,replacement,replacement_rev):(Vec<u8>,Option<String>,Option<u64>,Option<Vec<u8>>,Option<String>,Option<Vec<u8>>,Option<u64>)=c.query_row("SELECT decision_id,decision_key,expected_revision,prior_proposal_id,decision_kind,replacement_id,replacement_expected_revision FROM decision_data WHERE event_seq=?",sql_params![seq],|r|Ok((value(r,0)?,value(r,1)?,value(r,2)?,value(r,3)?,value(r,4)?,value(r,5)?,value(r,6)?))).map_err(sql)?;
+    let (id,label,expected,prior,tag,replacement,replacement_rev):DecisionRow=c.query_row("SELECT decision_id,decision_key,expected_revision,prior_proposal_id,decision_kind,replacement_id,replacement_expected_revision FROM decision_data WHERE event_seq=?",sql_params![seq],|r|Ok((value(r,0)?,value(r,1)?,value(r,2)?,value(r,3)?,value(r,4)?,value(r,5)?,value(r,6)?))).map_err(sql)?;
     let decode = |v: &[u8]| wire(c, "decision", v, &s).and_then(|s| s.parse().map_err(invalid));
     let decision = decode(&id)?;
     if kind == "decision.proposed" {

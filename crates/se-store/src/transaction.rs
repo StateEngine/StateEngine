@@ -1,5 +1,5 @@
 use crate::{apply, codec, connection, error::*, identity::*, *};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 pub(crate) struct Engine {
@@ -204,7 +204,10 @@ impl Engine {
                 })
                 .map_err(sql)?;
         }
-        if log < 0 {
+        if log == -1 && done == -1 {
+            return Ok(());
+        }
+        if log < 0 || done < 0 {
             return Err(fail(
                 StoreErrorCode::Unreadable,
                 "WAL checkpoint did not report its frame count",
@@ -250,13 +253,21 @@ impl Engine {
             }
         }
         if let Some(request) = &batch.request {
-            let found:Option<(Vec<u8>,Vec<u8>,u16,String)>=self.db.query_row("SELECT operation_id,fingerprint,fingerprint_codec,COALESCE((SELECT kind FROM events WHERE operation_id=operations.operation_id ORDER BY seq LIMIT 1),'') FROM operations WHERE scope_key=? AND actor_id=? AND request_key=? AND erased=0",crate::sql_value::sql_params![scope,actor,request.key.as_str()],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?))).optional().map_err(sql)?;
-            if let Some((op, digest, version, _)) = found {
+            let found:Option<(Vec<u8>,Vec<u8>,u16)>=self.db.query_row("SELECT operation_id,fingerprint,fingerprint_codec FROM operations WHERE scope_key=? AND actor_id=? AND request_key=? AND erased=0",crate::sql_value::sql_params![scope,actor,request.key.as_str()],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).optional().map_err(sql)?;
+            if let Some((op, digest, version)) = found {
                 if digest != request.intent.sha256 || version != request.intent.codec_version {
-                    return Err(fail(
+                    let original = receipt(&self.db, &op, info, Some(request.key.clone()))?;
+                    let mut error = fail(
                         StoreErrorCode::IdempotencyKeyReused,
                         "caller key already owns a different semantic intent",
-                    ));
+                    );
+                    error.detail = StoreDetail::Request {
+                        scope: batch.admission.scope.clone(),
+                        actor: batch.admission.actor.clone(),
+                        key: request.key.clone(),
+                        original_event: Some(original.primary_event),
+                    };
+                    return Err(error);
                 }
                 return receipt(&self.db, &op, info, Some(request.key.clone()));
             }

@@ -1,5 +1,5 @@
 use crate::{error::*, identity, *};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, functions::FunctionFlags, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, functions::FunctionFlags};
 use std::{path::Path, time::Duration};
 pub(crate) const APP: u32 = 0x53454e47;
 pub(crate) const SCHEMA: u32 = 1;

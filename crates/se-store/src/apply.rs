@@ -1,7 +1,7 @@
 //! Transaction-only projections. No native, network or provider calls.
 pub(crate) mod decision;
 use crate::{codec, connection::*, error::*, identity::*, *};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 pub(crate) fn expected(
     c: &Connection,
@@ -256,7 +256,6 @@ pub(crate) fn apply(
             project: p,
             roots,
             owner,
-            expected: _,
             ..
         } => {
             if header.actor != Actor::Human(owner.clone()) {
@@ -301,13 +300,14 @@ pub(crate) fn apply(
             name,
             ..
         } => {
-            if name.is_empty() || name.len() > 128 {
+            if name.is_empty() || name.len() > 64 {
                 return Err(invalid("principal name bounds"));
             }
             if matches!(principal, Actor::Agent(_))
-                && !name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+                && (!name.as_bytes()[0].is_ascii_alphanumeric()
+                    || !name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b" ._-".contains(&b)))
             {
                 return Err(invalid("agent name grammar"));
             }
@@ -315,6 +315,22 @@ pub(crate) fn apply(
                 return Err(invalid("principal kind differs from ID"));
             }
             let a = actor_key(&principal)?;
+            if matches!(principal, Actor::Agent(_)) {
+                let collision: bool = c
+                    .query_row(
+                        "SELECT EXISTS(SELECT 1 FROM owners WHERE human_id=?)",
+                        [&a],
+                        |r| crate::sql_value::value(r, 0),
+                    )
+                    .map_err(sql)?;
+                if collision {
+                    return Err(fail(
+                        StoreErrorCode::EventIdConflict,
+                        "agent identity bytes collide with an existing human; allocate a fresh agent ID",
+                    ));
+                }
+            }
+
             let own = key(c, "human", owner.as_str(), &[0], true)?;
             if pk.is_none() {
                 if principal != Actor::Human(owner)
@@ -355,7 +371,7 @@ pub(crate) fn apply(
                 return Err(invalid("bypass needs an explicit named profile"));
             }
             let a = key(c, "agent", agent.as_str(), &s, true)?;
-            c.execute("INSERT INTO profiles(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq",crate::sql_value::sql_params![project()?,a,revision,seq]).map_err(sql)?;
+            c.execute("INSERT INTO profiles(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq WHERE profiles.revision=excluded.revision-1",crate::sql_value::sql_params![project()?,a,revision,seq]).map_err(sql)?;
             codec::aux(c, seq, facts)?;
         }
         GrantRecorded {
@@ -370,7 +386,7 @@ pub(crate) fn apply(
                     "only owner may change grants",
                 ));
             }
-            c.execute("INSERT INTO grants(scope_key,principal_id,grant_key,revision,last_seq,active) VALUES(?,?,?,?,?,?) ON CONFLICT(scope_key,principal_id,grant_key) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,active=excluded.active",crate::sql_value::sql_params![s,actor_key(&principal)?,codec::encode(&grant)?,revision,seq,active]).map_err(sql)?;
+            c.execute("INSERT INTO grants(scope_key,principal_id,grant_key,revision,last_seq,active) VALUES(?,?,?,?,?,?) ON CONFLICT(scope_key,principal_id,grant_key) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq,active=excluded.active WHERE grants.revision=excluded.revision-1",crate::sql_value::sql_params![s,actor_key(&principal)?,codec::encode(&grant)?,revision,seq,active]).map_err(sql)?;
             codec::aux(c, seq, facts)?;
         }
         MessageSent {
@@ -381,7 +397,19 @@ pub(crate) fn apply(
             refs,
             reply_to,
         } => {
-            if refs.len() > 64 || kind.len() > 128 {
+            if refs.len() > 64
+                || !matches!(
+                    kind.as_str(),
+                    "note"
+                        | "task"
+                        | "question"
+                        | "answer"
+                        | "blocker"
+                        | "done"
+                        | "handoff"
+                        | "finding"
+                )
+            {
                 return Err(invalid("message refs/kind bounds"));
             }
             let m = key(c, "message", message.as_str(), &s, true)?;
@@ -433,7 +461,6 @@ pub(crate) fn apply(
             )
             .map_err(sql)?;
             count(c, project()?, &recipient, 1, seq)?;
-            mail_version(c, &s, project()?, &m, seq)?;
         }
         body @ (MessageRead { .. } | MessageDismissed { .. } | MessageDelivered { .. }) => {
             let (message, recipient, column, tag, evidence) = match body {
@@ -458,10 +485,7 @@ pub(crate) fn apply(
             };
             let m = key(c, "message", message.as_str(), &s, false)?;
             let a = actor_key(&recipient)?;
-            if header.actor != recipient
-                && !matches!(header.actor, Actor::Human(_))
-                && tag != "delivered"
-            {
+            if header.actor != recipient && tag != "delivered" {
                 return Err(fail(
                     StoreErrorCode::ScopeMismatch,
                     "recipient marker actor differs",
@@ -485,7 +509,6 @@ pub(crate) fn apply(
             if unread && tag != "delivered" {
                 count(c, project()?, &a, -1, seq)?
             }
-            mail_version(c, &s, project()?, &m, seq)?;
         }
         WorkingStateSet {
             agent,
@@ -504,7 +527,7 @@ pub(crate) fn apply(
                 Expected::Revision(r) => Some(r.value.get()),
             };
             c.execute("INSERT INTO working_state_data(event_seq,agent_id,text_payload,expected_revision) VALUES(?,?,?,?)",crate::sql_value::sql_params![seq,a,p,want]).map_err(sql)?;
-            c.execute("INSERT INTO working_state(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq",crate::sql_value::sql_params![project()?,a,revision,seq]).map_err(sql)?;
+            c.execute("INSERT INTO working_state(project_id,agent_id,revision,last_seq) VALUES(?,?,?,?) ON CONFLICT(project_id,agent_id) DO UPDATE SET revision=excluded.revision,last_seq=excluded.last_seq WHERE working_state.revision=excluded.revision-1",crate::sql_value::sql_params![project()?,a,revision,seq]).map_err(sql)?;
             let changed=c.execute("UPDATE resume_heads SET last_working_state_seq=?,last_seq=? WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![seq,seq,project()?,a]).map_err(sql)?;
             if changed != 1 {
                 return Err(fail(
@@ -562,10 +585,5 @@ fn count(c: &Connection, p: &[u8], a: &[u8], delta: i64, seq: i64) -> StoreResul
             "recipient resume head absent",
         ));
     }
-    Ok(())
-}
-fn mail_version(c: &Connection, scope: &[u8], p: &[u8], m: &[u8], seq: i64) -> StoreResult<()> {
-    c.execute("UPDATE list_versions SET valid_to=? WHERE scope_key=? AND family='message' AND entity_key=? AND valid_to IS NULL",crate::sql_value::sql_params![seq,scope,m]).map_err(sql)?;
-    c.execute("INSERT INTO list_versions(scope_key,family,entity_key,revision,valid_from,sort_seq,first_seq,last_seq,state,sender_id,recipient_id,message_kind,delivered_seq,read_seq,dismissed_seq) SELECT ?,'message',d.message_id,d.revision,?,d.sent_seq,d.sent_seq,?,CASE WHEN m.read_seq IS NULL AND m.dismissed_seq IS NULL THEN 'unread' ELSE 'marked' END,d.sender_id,d.recipient_id,d.message_kind,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",crate::sql_value::sql_params![scope,seq,seq,p,m]).map_err(sql)?;
     Ok(())
 }

@@ -33,7 +33,7 @@ pub struct ProtectedStaging {
     pub path: std::path::PathBuf,
     pub file: std::fs::File,
 }
-/// Constructors are declarations, not executable fallback/default implementations.
+/// Role-bound constructors; opening never initializes missing state.
 pub trait StoreFactory {
     type Reader: ReadStore;
     type Direct: DirectStore;
@@ -195,28 +195,6 @@ pub trait WriterClient: Clone + Send + Sync {
 }
 /// Await-only host completion. DirectStore::append returns CommitReceipt synchronously.
 pub trait CommitWait: Future<Output = StoreResult<CommitReceipt>> + Send {}
-/// Private implementation seam: both host group commit and direct append use
-/// this exact transaction engine. SQL handles never appear in the public API.
-#[allow(
-    dead_code,
-    reason = "Compile-only private transaction contract; implementation is not admitted."
-)]
-pub(crate) trait TransactionEngine {
-    fn commit_group(
-        &mut self,
-        batches: Vec<AtomicBatch>,
-    ) -> StoreResult<Vec<StoreResult<CommitReceipt>>>;
-    /// Private all-or-nothing maintenance wrapper over the same append/apply
-    /// machinery; neither scoped operation may commit without the other.
-    fn commit_first_binding(&mut self, binding: FirstBinding) -> StoreResult<FirstBindingReceipt>;
-    fn append_atomic(&mut self, batch: AtomicBatch) -> StoreResult<PreparedReceipt>;
-    fn apply(&mut self, event: &StoredEvent) -> StoreResult<()>;
-}
-/// Cannot be returned to a caller as a durable receipt before group COMMIT.
-pub(crate) struct PreparedReceipt {
-    _private: (),
-}
-
 #[derive(Clone, Debug)]
 pub struct MessageQuery {
     pub recipient: Option<Actor>,

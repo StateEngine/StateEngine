@@ -433,33 +433,6 @@ CREATE TABLE legacy_ids(
   imported_seq INTEGER NOT NULL REFERENCES events(seq),
   PRIMARY KEY(import_id,family,legacy_id)
 ) STRICT, WITHOUT ROWID;
-CREATE TABLE list_versions(
-  scope_key BLOB NOT NULL,
-  family TEXT NOT NULL CHECK(family IN ('message')),
-  entity_key BLOB NOT NULL,
-  revision INTEGER NOT NULL CHECK(revision>0),
-  valid_from INTEGER NOT NULL REFERENCES events(seq),
-  valid_to INTEGER REFERENCES events(seq),
-  sort_seq INTEGER NOT NULL REFERENCES events(seq),
-  first_seq INTEGER NOT NULL REFERENCES events(seq),
-  last_seq INTEGER NOT NULL REFERENCES events(seq),
-  state TEXT NOT NULL,
-  sender_id BLOB,
-  recipient_id BLOB,
-  message_kind TEXT,
-  delivered_seq INTEGER REFERENCES events(seq),
-  read_seq INTEGER REFERENCES events(seq),
-  dismissed_seq INTEGER REFERENCES events(seq),
-  CHECK(valid_to IS NULL OR valid_to>valid_from),
-  CHECK(sort_seq=first_seq),
-  PRIMARY KEY(scope_key,family,entity_key,valid_from)
-) STRICT, WITHOUT ROWID;
-CREATE UNIQUE INDEX list_versions_open ON list_versions(scope_key,family,entity_key) WHERE valid_to IS NULL;
-CREATE INDEX list_versions_order ON list_versions(scope_key,family,sort_seq ASC,entity_key,valid_from DESC,valid_to);
-CREATE INDEX list_versions_state ON list_versions(scope_key,family,state,sort_seq ASC,entity_key,valid_from DESC,valid_to);
-CREATE INDEX list_versions_sender ON list_versions(scope_key,family,sender_id,sort_seq ASC,entity_key,valid_from DESC,valid_to);
-CREATE INDEX list_versions_recipient ON list_versions(scope_key,family,recipient_id,sort_seq ASC,entity_key,valid_from DESC,valid_to);
-CREATE INDEX list_versions_recipient_state ON list_versions(scope_key,family,recipient_id,state,sort_seq ASC,entity_key,valid_from DESC,valid_to);
 -- Non-mail lists read current heads with live keysets, not temporal versions.
 CREATE INDEX projects_order ON projects(first_seq,project_id);
 CREATE INDEX principals_order ON principals(project_id,first_seq,principal_id);

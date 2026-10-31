@@ -1,5 +1,5 @@
 use crate::{error::*, *};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use uuid::{Builder, Uuid, Variant, Version};
 impl RecordIdentity for RecordId {
@@ -48,7 +48,13 @@ pub(crate) fn project(scope: &Scope) -> StoreResult<se_types::ProjectId> {
     }
 }
 pub(crate) fn canonical(wire: &str) -> Option<Vec<u8>> {
-    let (_, suffix) = wire.split_once('_')?;
+    let (prefix, suffix) = wire.split_once('_')?;
+    if !matches!(
+        prefix,
+        "prj" | "ag" | "hu" | "ses" | "msg" | "dec" | "ev" | "lch" | "obs" | "store" | "life"
+    ) {
+        return None;
+    }
     let id = Uuid::parse_str(suffix).ok()?;
     (id.get_version() == Some(Version::SortRand) && id.get_variant() == Variant::RFC4122)
         .then(|| id.as_bytes().to_vec())
@@ -125,6 +131,21 @@ pub(crate) fn wire(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> S
     .map_err(sql)
 }
 pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<Actor> {
+    if scope.len() == 17 && scope[0] == 1 {
+        let kind: Option<String> = db
+            .query_row(
+                "SELECT principal_kind FROM principals WHERE project_id=? AND principal_id=?",
+                crate::sql_value::sql_params![&scope[1..], bytes],
+                |r| crate::sql_value::value(r, 0),
+            )
+            .optional()
+            .map_err(sql)?;
+        if kind.as_deref() == Some("agent") {
+            return Ok(Actor::Agent(
+                wire(db, "agent", bytes, scope)?.parse().map_err(invalid)?,
+            ));
+        }
+    }
     let owner: bool = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM owners WHERE human_id=?)",

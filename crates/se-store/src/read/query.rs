@@ -1,5 +1,5 @@
 use super::*;
-use crate::sql_value::{sql_params, value};
+use crate::sql_value::value;
 impl SqliteSnapshot {
     pub(super) fn list_heads(
         &self,
@@ -30,15 +30,31 @@ impl SqliteSnapshot {
         let mut bytes = 0u64;
         let mut last = after;
         let mut stop = StopReason::Exhausted;
-        let mut more = false;
         for (revision, seq, sort) in rows {
             if items.len() == budget.page.limit.get() as usize {
-                more = true;
                 stop = StopReason::ItemLimit;
                 break;
             }
-            let current = self.record(seq)?;
-            let cost = event_size(&current)?;
+            let current = if table == "principals" {
+                self.principal_metadata(seq)?
+            } else {
+                self.record(seq)?
+            };
+            let original = if first == "first_seq" && sort != seq as u64 {
+                Some(Box::new(if table == "principals" {
+                    self.principal_metadata(sort as i64)?
+                } else {
+                    self.record(sort as i64)?
+                }))
+            } else {
+                None
+            };
+            let cost = event_size(&current)?
+                + original
+                    .as_ref()
+                    .map(|e| event_size(e))
+                    .transpose()?
+                    .unwrap_or(0);
             if bytes + cost > u64::from(budget.page.max_bytes.get()) {
                 if items.is_empty() {
                     return Err(fail(
@@ -46,7 +62,6 @@ impl SqliteSnapshot {
                         "first head exceeds page bytes",
                     ));
                 }
-                more = true;
                 stop = StopReason::ByteLimit;
                 break;
             }
@@ -54,15 +69,23 @@ impl SqliteSnapshot {
             last = sort;
             items.push(ProjectionRecord {
                 revision: codec::revision(revision)?,
-                original: if first == "first_seq" && sort != seq as u64 {
-                    Some(Box::new(self.record(sort as i64)?))
-                } else {
-                    None
-                },
+                original,
                 current,
             });
         }
-        self.page(items, &budget, &binding, h, after, last, more, bytes, stop)
+        self.page(
+            items,
+            &budget,
+            &binding,
+            page::PageFacts {
+                h,
+                after,
+                last,
+                bytes,
+                stop,
+                remaining: None,
+            },
+        )
     }
     fn query_seqs(
         &self,
@@ -179,11 +202,9 @@ impl SqliteSnapshot {
         let mut items = Vec::new();
         let mut bytes = 0;
         let mut last = after;
-        let mut more = false;
         let mut stop = StopReason::Exhausted;
         for (_, seq, _) in rows {
             if items.len() == budget.page.limit.get() as usize {
-                more = true;
                 stop = StopReason::ItemLimit;
                 break;
             }
@@ -196,7 +217,6 @@ impl SqliteSnapshot {
                         "first event exceeds history bytes",
                     ));
                 }
-                more = true;
                 stop = StopReason::ByteLimit;
                 break;
             }
@@ -204,7 +224,19 @@ impl SqliteSnapshot {
             last = seq as u64;
             items.push(e);
         }
-        self.page(items, &budget, &binding, h, after, last, more, bytes, stop)
+        self.page(
+            items,
+            &budget,
+            &binding,
+            page::PageFacts {
+                h,
+                after,
+                last,
+                bytes,
+                stop,
+                remaining: None,
+            },
+        )
     }
 }
 fn sql_error(e: rusqlite::Error) -> Box<StoreError> {
@@ -223,7 +255,19 @@ fn event_size(e: &StoredEvent) -> StoreResult<u64> {
         StoredText::Present(s) => Ok(s.clone()),
         StoredText::Erased { .. } => Err(fail(StoreErrorCode::ContentErased, "body was erased")),
     })?;
-    Ok(body.len() as u64 + 1024)
+    let h = &e.header;
+    let header = codec::encode(&(
+        &h.event,
+        &h.scope,
+        &h.actor,
+        &h.session,
+        &h.origin,
+        h.door,
+        h.occurred_at_us,
+        &h.cause,
+        &h.supersedes,
+    ))?;
+    Ok((body.len() + header.len()) as u64 + 512)
 }
 fn family_prefixes(f: HistoryFamily) -> Vec<&'static str> {
     match f {

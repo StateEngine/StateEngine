@@ -1,5 +1,5 @@
 use crate::{connection, error::*, read::SqliteSnapshot, transaction::Engine, *};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use se_types::{Page, Read};
 use std::{
     path::PathBuf,
@@ -62,6 +62,26 @@ impl SqliteFactory {
         connection::info(&c)?;
         Ok(Read::Present { value: reader })
     }
+    fn existing_protected(
+        o: &StoreOptions,
+        lease: &dyn RuntimeLease,
+    ) -> StoreResult<Read<SqliteReader>> {
+        let path = o.state_directory.join("state.db");
+        match lease.files().readback(&path)? {
+            Read::Present { .. } => Self::existing(o),
+            Read::Absent { checked } => Ok(Read::Absent { checked }),
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => Ok(Read::Unreadable {
+                source,
+                reason,
+                error,
+            }),
+            Read::Unknown { what } => Ok(Read::Unknown { what }),
+        }
+    }
     fn create_engine(
         o: &StoreOptions,
         lease: &dyn RuntimeLease,
@@ -102,6 +122,7 @@ impl SqliteFactory {
         }
         let staged = stage.path;
         drop(stage.file);
+        let created_at = connection::now()?;
         let result = (|| {
             let c = Connection::open_with_flags(
                 &staged,
@@ -110,13 +131,13 @@ impl SqliteFactory {
                     | OpenFlags::SQLITE_OPEN_NO_MUTEX,
             )
             .map_err(sql)?;
-            c.execute_batch("PRAGMA page_size=16384").map_err(sql)?;
+            c.execute_batch("PRAGMA page_size=4096").map_err(sql)?;
             connection::configure(&c, true, o.busy_timeout)?;
             c.execute_batch("PRAGMA synchronous=FULL; BEGIN EXCLUSIVE")
                 .map_err(sql)?;
             c.execute_batch(include_str!("../migrations/001.sql"))
                 .map_err(sql)?;
-            c.execute("INSERT INTO store_info(singleton,store_id,incarnation,created_at_us,state) VALUES(1,?,1,?,'ready')",crate::sql_value::sql_params![crate::identity::canonical(id.as_str()).ok_or_else(||invalid("canonical store identity required"))?,connection::now()?]).map_err(sql)?;
+            c.execute("INSERT INTO store_info(singleton,store_id,incarnation,created_at_us,state) VALUES(1,?,1,?,'ready')",crate::sql_value::sql_params![crate::identity::canonical(id.as_str()).ok_or_else(||invalid("canonical store identity required"))?,created_at]).map_err(sql)?;
             c.execute_batch("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)")
                 .map_err(sql)?;
             let info = connection::info(&c)?;
@@ -157,10 +178,20 @@ impl SqliteFactory {
                 },
             ))
         })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&staged);
+        match result {
+            Err(mut error) => {
+                if let Err(cleanup) = std::fs::remove_file(&staged)
+                    && cleanup.kind() != std::io::ErrorKind::NotFound
+                {
+                    error.cause.push_str(&format!(
+                        "; retained staging {}: {cleanup}",
+                        staged.display()
+                    ));
+                }
+                Err(error)
+            }
+            success => success,
         }
-        result
     }
 }
 impl StoreFactory for SqliteFactory {
@@ -171,7 +202,7 @@ impl StoreFactory for SqliteFactory {
         Self::existing(o)
     }
     fn open_direct(o: &StoreOptions, lease: &dyn RuntimeLease) -> StoreResult<Read<Self::Direct>> {
-        match Self::existing(o)? {
+        match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
                 let db = connection::connect(&reader.path, true, o.busy_timeout)?;
                 let info = connection::info(&db)?;
@@ -187,11 +218,21 @@ impl StoreFactory for SqliteFactory {
                     },
                 })
             }
-            other => Ok(other.map(|_| unreachable!())),
+            Read::Absent { checked } => Ok(Read::Absent { checked }),
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => Ok(Read::Unreadable {
+                source,
+                reason,
+                error,
+            }),
+            Read::Unknown { what } => Ok(Read::Unknown { what }),
         }
     }
     fn open_host(o: &StoreOptions, lease: &dyn RuntimeLease) -> StoreResult<Read<Self::Host>> {
-        match Self::existing(o)? {
+        match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
                 let db = connection::connect(&reader.path, true, o.busy_timeout)?;
                 let info = connection::info(&db)?;
@@ -208,7 +249,17 @@ impl StoreFactory for SqliteFactory {
                     },
                 })
             }
-            other => Ok(other.map(|_| unreachable!())),
+            Read::Absent { checked } => Ok(Read::Absent { checked }),
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => Ok(Read::Unreadable {
+                source,
+                reason,
+                error,
+            }),
+            Read::Unknown { what } => Ok(Read::Unknown { what }),
         }
     }
     fn create_direct(

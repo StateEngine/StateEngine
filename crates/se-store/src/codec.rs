@@ -1,7 +1,7 @@
 pub(crate) mod event;
 // Closed wave-1 metadata codec; text lives only in its typed payload column.
 use crate::{error::*, identity::*, *};
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 pub(crate) fn encode<T: Serialize>(v: &T) -> StoreResult<String> {
@@ -45,6 +45,25 @@ pub(crate) fn text(input: InputText, max: usize) -> StoreResult<String> {
     Ok(s)
 }
 pub(crate) fn stored_text(c: &Connection, seq: i64, field: &str) -> StoreResult<StoredText> {
+    let (length, encoding, hash): (u64, String, Vec<u8>) = c
+        .query_row(
+            "SELECT length(content),encoding,sha256 FROM payloads WHERE event_seq=? AND field=?",
+            crate::sql_value::sql_params![seq, field],
+            |r| {
+                Ok((
+                    crate::sql_value::value(r, 0)?,
+                    crate::sql_value::value(r, 1)?,
+                    crate::sql_value::value(r, 2)?,
+                ))
+            },
+        )
+        .map_err(sql)?;
+    if length > 1024 * 1024 || encoding != "utf8" || hash.len() != 32 {
+        return Err(fail(
+            StoreErrorCode::Unreadable,
+            "stored text length/encoding/hash is invalid",
+        ));
+    }
     let bytes: Vec<u8> = c
         .query_row(
             "SELECT content FROM payloads WHERE event_seq=? AND field=?",
@@ -52,9 +71,16 @@ pub(crate) fn stored_text(c: &Connection, seq: i64, field: &str) -> StoreResult<
             |r| crate::sql_value::value(r, 0),
         )
         .map_err(sql)?;
-    Ok(StoredText::Present(
-        String::from_utf8(bytes).map_err(invalid)?,
-    ))
+    use sha2::{Digest, Sha256};
+    if Sha256::digest(&bytes).as_slice() != hash {
+        return Err(fail(
+            StoreErrorCode::Unreadable,
+            "stored text hash differs from its immutable payload",
+        ));
+    }
+    Ok(StoredText::Present(String::from_utf8(bytes).map_err(
+        |e| fail(StoreErrorCode::Unreadable, e.to_string()),
+    )?))
 }
 pub(crate) fn body(
     c: &Connection,

@@ -425,6 +425,8 @@ pub enum StoreDetail {
         scope: Scope,
         actor: Actor,
         key: IdempotencyKey,
+        /// Present for a conflicting retained caller key; never a minted ID.
+        original_event: Option<EventId>,
     },
     Entity {
         family: HistoryFamily,

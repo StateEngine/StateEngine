@@ -1,9 +1,28 @@
-use crate::{connection, error::*, identity::*, *};
-use rusqlite::{Connection, OptionalExtension, params};
-use se_types::{ProjectId, StoreId};
+type EnvelopeRow = (
+    Vec<u8>,
+    Option<Vec<u8>>,
+    Vec<u8>,
+    Option<Vec<u8>>,
+    Vec<u8>,
+    String,
+    String,
+    u32,
+    u64,
+    u64,
+    String,
+    Option<u64>,
+    String,
+    i64,
+    i64,
+    Option<Vec<u8>>,
+    Option<Vec<u8>>,
+);
+use crate::{error::*, identity::*, *};
+use rusqlite::Connection;
+use se_types::StoreId;
 
 pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreResult<StoredEvent> {
-    let (id,p,actor_id,session,origin,door,kind,version,inc,rev,mode,generation,durability,occurred,recorded,cause,supersedes):(Vec<u8>,Option<Vec<u8>>,Vec<u8>,Option<Vec<u8>>,Vec<u8>,String,String,u32,u64,u64,String,Option<u64>,String,i64,i64,Option<Vec<u8>>,Option<Vec<u8>>)=c.query_row("SELECT event_id,project_id,actor_id,session_id,origin_id,door,kind,schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,durability,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id FROM events WHERE seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?,crate::sql_value::value(r,7)?,crate::sql_value::value(r,8)?,crate::sql_value::value(r,9)?,crate::sql_value::value(r,10)?,crate::sql_value::value(r,11)?,crate::sql_value::value(r,12)?,crate::sql_value::value(r,13)?,crate::sql_value::value(r,14)?,crate::sql_value::value(r,15)?,crate::sql_value::value(r,16)?))).map_err(sql)?;
+    let (id,p,actor_id,session,origin,door,kind,version,inc,rev,mode,generation,durability,occurred,recorded,cause,supersedes):EnvelopeRow=c.query_row("SELECT event_id,project_id,actor_id,session_id,origin_id,door,kind,schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,durability,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id FROM events WHERE seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?,crate::sql_value::value(r,7)?,crate::sql_value::value(r,8)?,crate::sql_value::value(r,9)?,crate::sql_value::value(r,10)?,crate::sql_value::value(r,11)?,crate::sql_value::value(r,12)?,crate::sql_value::value(r,13)?,crate::sql_value::value(r,14)?,crate::sql_value::value(r,15)?,crate::sql_value::value(r,16)?))).map_err(sql)?;
     if version != 1 {
         return Err(fail(
             StoreErrorCode::Unreadable,

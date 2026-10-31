@@ -1,7 +1,18 @@
+type ResumeRow = (
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+    u64,
+    u64,
+    u64,
+);
+mod cursor;
+mod message;
 mod page;
 mod query;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension};
 use se_types::{
     AgentId, Cursor, EventId, Omission, OmissionReason, Page, ProjectId, Read, Sequence, Source,
     StopReason, Window, WindowFields,
@@ -111,6 +122,21 @@ impl SqliteSnapshot {
         }
         Ok(e)
     }
+    fn principal_metadata(&self, seq: i64) -> StoreResult<StoredEvent> {
+        let event = load_event(&self.db, seq, &self.info)?;
+        if event.header.scope != self.scope.admission.scope
+            || !matches!(
+                event.body,
+                EventBody::PrincipalRegistered { .. } | EventBody::PrincipalRenamed { .. }
+            )
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "public principal metadata is outside the admitted project or kind",
+            ));
+        }
+        Ok(event)
+    }
     fn absent<T>(&self, what: &str) -> Read<T> {
         Read::Absent {
             checked: format!(
@@ -149,10 +175,20 @@ impl SqliteSnapshot {
             Some((revision, seq, first)) => Ok(Read::Present {
                 value: ProjectionRecord {
                     revision: codec::revision(revision)?,
-                    current: self.record(seq)?,
+                    current: if table == "principals" {
+                        self.principal_metadata(seq)?
+                    } else {
+                        self.record(seq)?
+                    },
                     original: first
                         .filter(|s| *s != seq)
-                        .map(|s| self.record(s).map(Box::new))
+                        .map(|s| {
+                            if table == "principals" {
+                                self.principal_metadata(s).map(Box::new)
+                            } else {
+                                self.record(s).map(Box::new)
+                            }
+                        })
                         .transpose()?,
                 },
             }),
@@ -162,13 +198,13 @@ impl SqliteSnapshot {
         connection::project_id(&self.db, &self.scope.admission.scope, false)
     }
     fn agent_bytes(&self, a: &AgentId) -> StoreResult<Vec<u8>> {
-        if let Visibility::SelfOnly(own) = &self.scope.visibility {
-            if own != a {
-                return Err(fail(
-                    StoreErrorCode::ScopeMismatch,
-                    "private agent read refused",
-                ));
-            }
+        if let Visibility::SelfOnly(own) = &self.scope.visibility
+            && own != a
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "private agent read refused",
+            ));
         }
         key(
             &self.db,
@@ -314,13 +350,16 @@ impl Snapshot for SqliteSnapshot {
         self.head("projects", "project_id=?", &[&p], Some("first_seq"))
     }
     fn principal(&mut self, id: Actor) -> StoreResult<Read<ProjectionRecord>> {
-        if let (Visibility::SelfOnly(a), Actor::Agent(other)) = (&self.scope.visibility, &id) {
-            if a != other {
+        if self.scope.admission.scope == Scope::Registry {
+            if !matches!(self.scope.visibility, Visibility::Owner) || !matches!(id, Actor::Human(_))
+            {
                 return Err(fail(
                     StoreErrorCode::ScopeMismatch,
-                    "principal private read refused",
+                    "registry principal read requires admitted owner",
                 ));
             }
+            let a = key(&self.db, "human", id.wire(), &[0], false)?;
+            return self.head("owners", "human_id=?", &[&a], Some("first_seq"));
         }
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
@@ -377,7 +416,7 @@ impl Snapshot for SqliteSnapshot {
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let m = key(&self.db, "message", id.as_str(), &scope, false)?;
-        let row:Option<(i64,u64,Option<u64>,Option<u64>,Option<u64>)>=self.db.query_row("SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",crate::sql_value::sql_params![p,m],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).optional().map_err(sql)?;
+        let row:Option<message::MarkRow>=self.db.query_row("SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",crate::sql_value::sql_params![p,m],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).optional().map_err(sql)?;
         match row {
             None => Ok(self.absent("message ID")),
             Some((s, v, d, r, x)) => Ok(Read::Present {
@@ -390,144 +429,7 @@ impl Snapshot for SqliteSnapshot {
         query: MessageQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>> {
-        let p = self.project_bytes()?;
-        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
-        let binding = codec::encode(&(
-            &scope,
-            &self.scope.admission.actor,
-            &query.recipient,
-            &query.sender,
-            &query.kind,
-            query.unread_only,
-            query.full_body,
-        ))?;
-        let (h, after) = self.window(&budget, &binding, false)?;
-        let to = query
-            .recipient
-            .as_ref()
-            .map(|a| {
-                key(
-                    &self.db,
-                    a.kind(),
-                    a.wire(),
-                    if a.kind() == "human" { &[0] } else { &scope },
-                    false,
-                )
-            })
-            .transpose()?;
-        let from = query
-            .sender
-            .as_ref()
-            .map(|a| {
-                key(
-                    &self.db,
-                    a.kind(),
-                    a.wire(),
-                    if a.kind() == "human" { &[0] } else { &scope },
-                    false,
-                )
-            })
-            .transpose()?;
-        let own = match &self.scope.visibility {
-            Visibility::SelfOnly(a) => Some(self.agent_bytes(a)?),
-            _ => None,
-        };
-        let start = Instant::now();
-        let deadline = start + budget.deadline;
-        self.db
-            .progress_handler(1000, Some(move || Instant::now() >= deadline))
-            .map_err(sql)?;
-        let rows = (|| {
-            let mut stmt=self.db.prepare("SELECT sort_seq,revision,delivered_seq,read_seq,dismissed_seq FROM list_versions WHERE scope_key=? AND family='message' AND sort_seq>? AND sort_seq<=? AND valid_from<=? AND (valid_to IS NULL OR ?<valid_to) AND (? IS NULL OR recipient_id=?) AND (? IS NULL OR sender_id=?) AND (? IS NULL OR message_kind=?) AND (?=0 OR state='unread') AND (? IS NULL OR sender_id=? OR recipient_id=?) ORDER BY sort_seq,entity_key LIMIT ?").map_err(sql)?;
-            stmt.query_map(
-                crate::sql_value::sql_params![
-                    scope,
-                    after,
-                    h,
-                    h,
-                    h,
-                    to,
-                    to,
-                    from,
-                    from,
-                    query.kind,
-                    query.kind,
-                    query.unread_only,
-                    own,
-                    own,
-                    own,
-                    u64::from(budget.page.limit.get()) + 1
-                ],
-                |r| {
-                    Ok((
-                        crate::sql_value::value::<i64>(r, 0)?,
-                        crate::sql_value::value::<u64>(r, 1)?,
-                        crate::sql_value::value::<Option<u64>>(r, 2)?,
-                        crate::sql_value::value::<Option<u64>>(r, 3)?,
-                        crate::sql_value::value::<Option<u64>>(r, 4)?,
-                    ))
-                },
-            )
-            .map_err(sql)?
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(sql)
-        })();
-        self.db
-            .progress_handler(0, None::<fn() -> bool>)
-            .map_err(sql)?;
-        let rows = rows?;
-        let mut items = Vec::new();
-        let mut bytes = 0;
-        let mut last = after;
-        let mut more = false;
-        let mut stop = StopReason::Exhausted;
-        for (sent, rev, d, r, x) in rows {
-            if items.len() == budget.page.limit.get() as usize {
-                more = true;
-                stop = StopReason::ItemLimit;
-                break;
-            }
-            if start.elapsed() >= budget.deadline {
-                return Err(fail(
-                    StoreErrorCode::ReadIncomplete,
-                    "mail read deadline exhausted",
-                ));
-            }
-            let mut m = self.message_at(sent, rev, d, r, x)?;
-            let body_bytes = match &m.body {
-                StoredText::Present(s) => s.len(),
-                StoredText::Erased { .. } => 0,
-            };
-            let cost = body_bytes as u64 + 1024;
-            if cost + bytes > u64::from(budget.page.max_bytes.get()) {
-                if items.is_empty() {
-                    return Err(fail(
-                        StoreErrorCode::ReadBudgetTooSmall,
-                        "first complete message exceeds page byte budget",
-                    ));
-                }
-                more = true;
-                stop = StopReason::ByteLimit;
-                break;
-            }
-            if !query.full_body {
-                if let StoredText::Present(s) = &mut m.body {
-                    if s.len() > 256 {
-                        let mut end = 256;
-                        while !s.is_char_boundary(end) {
-                            end -= 1
-                        }
-                        s.truncate(end);
-                        m.body_complete = false
-                    }
-                }
-            }
-            bytes += cost;
-            last = sent as u64;
-            items.push(m);
-        }
-        let _ = p;
-        self.page(items, &budget, &binding, h, after, last, more, bytes, stop)
+        self.read_messages(query, budget)
     }
     fn operation_receipt(
         &mut self,
@@ -584,7 +486,7 @@ impl Snapshot for SqliteSnapshot {
             false,
         )?;
         let p = self.project_bytes()?;
-        let row:Option<(Option<u64>,Option<u64>,Option<u64>,Option<u64>,u64,u64,u64)>=self.db.query_row("SELECT last_turn_seq,last_working_state_seq,last_cursor_seq,last_session_seq,unread_count,pending_effect_count,last_seq FROM resume_heads WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![p,a],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?))).optional().map_err(sql)?;
+        let row:Option<ResumeRow>=self.db.query_row("SELECT last_turn_seq,last_working_state_seq,last_cursor_seq,last_session_seq,unread_count,pending_effect_count,last_seq FROM resume_heads WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![p,a],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?,crate::sql_value::value(r,5)?,crate::sql_value::value(r,6)?))).optional().map_err(sql)?;
         let pos = |s| StorePosition::new_internal(self.info.id.clone(), self.info.incarnation, s);
         match row {
             None => Ok(self.absent("resume head")),
@@ -625,13 +527,16 @@ impl Snapshot for SqliteSnapshot {
         self.list_heads("projects", "first_seq", "state='active'", vec![], _budget)
     }
     fn principals(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        let p = self.project_bytes()?;
-        if matches!(self.scope.visibility, Visibility::SelfOnly(_)) {
-            return Err(fail(
-                StoreErrorCode::ScopeMismatch,
-                "principal list requires shared-project admission",
-            ));
+        if self.scope.admission.scope == Scope::Registry {
+            if !matches!(self.scope.visibility, Visibility::Owner) {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "owner registry enumeration refused",
+                ));
+            }
+            return self.list_heads("owners", "first_seq", "1=1", vec![], _budget);
         }
+        let p = self.project_bytes()?;
         self.list_heads(
             "principals",
             "first_seq",
