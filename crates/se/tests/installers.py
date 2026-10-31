@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import select
 import shutil
 import stat
 import subprocess
@@ -32,6 +33,8 @@ def contents(root):
                 result[relative] = ("link", os.readlink(path))
             elif path.is_file():
                 result[relative] = ("file", path.read_bytes(), stat.S_IMODE(path.stat().st_mode))
+            elif path.is_dir():
+                result[relative] = ("directory", stat.S_IMODE(path.stat().st_mode))
     return result
 
 
@@ -70,16 +73,20 @@ class LinuxInstaller(unittest.TestCase):
     def test_foreign_paths_and_profiles_are_preserved(self):
         # Existing commands, records, assets, links and unreadable profile encodings
         # must be refusals, rather than invitations to replace foreign ownership.
-        for case in ("command", "record", "assets", "profile-link", "bin-link", "utf8", "path-block"):
+        for case in ("command", "record", "assets", "profile-link", "bin-link", "path-block"):
             with self.subTest(case=case):
                 home = self.home(case)
                 outside = self.root / (case + " outside")
                 outside.mkdir()
                 (outside / "sentinel").write_bytes(b"foreign work\n")
-                if case in ("command", "record"):
-                    binary_dir = home / ".local/bin"
-                    binary_dir.mkdir(parents=True)
-                    (binary_dir / ("se" if case == "command" else "install.json")).write_bytes(b"foreign\n")
+                if case == "command":
+                    target = home / ".local/bin/se"
+                    target.parent.mkdir(parents=True)
+                    target.write_bytes(b"foreign\n")
+                elif case == "record":
+                    target = home / ".local/share/stateengine/standalone-install.json"
+                    target.parent.mkdir(parents=True)
+                    target.write_bytes(b"foreign\n")
                 elif case == "assets":
                     target = home / ".local/share/stateengine/installation"
                     target.mkdir(parents=True)
@@ -90,7 +97,7 @@ class LinuxInstaller(unittest.TestCase):
                     (home / ".local").mkdir()
                     (home / ".local/bin").symlink_to(outside, target_is_directory=True)
                 else:
-                    (home / ".profile").write_bytes(b"\xff\n" if case == "utf8" else b"# >>> StateEngine PATH >>>\n")
+                    (home / ".profile").write_bytes(b"# >>> StateEngine PATH >>>\n")
                 before, foreign = contents(home), contents(outside)
                 run = self.install(home)
                 self.assertNotEqual(run.returncode, 0, run.stdout.decode(errors="replace"))
@@ -121,40 +128,102 @@ class LinuxInstaller(unittest.TestCase):
                 self.assertIn(b"Install refused:", run.stderr)
                 self.assertEqual(contents(home), before)
 
+    def test_dotfiles_repository_and_non_utf8_profiles_are_supported(self):
+        for case in ("dotfiles", "non-utf8"):
+            with self.subTest(case=case):
+                home = self.home(case)
+                prior = b"# ordinary profile\n" if case == "dotfiles" else b"# foreign bytes: \xff\x01\n"
+                (home / ".profile").write_bytes(prior)
+                if case == "dotfiles":
+                    (home / ".git").mkdir()
+                    (home / ".git/config").write_bytes(b"[core]\n")
+                run = self.install(home)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertTrue((home / ".profile").read_bytes().startswith(prior))
+                record = json.loads((home / ".local/share/stateengine/standalone-install.json").read_bytes())
+                edit = next(edit for edit in record["path_edits"] if edit["target"] == str(home / ".profile"))
+                self.assertEqual(edit["before_sha256"], hashlib.sha256(prior).hexdigest())
+                self.assertEqual((home / ".profile").read_bytes(), prior + edit["block"].encode())
+                if case == "dotfiles":
+                    self.assertEqual((home / ".git/config").read_bytes(), b"[core]\n")
+
+    @unittest.skipUnless(shutil.which("fish"), "native fish is required to witness fresh-shell discovery")
+    def test_fish_uses_owned_configuration_and_fresh_shell_discovery(self):
+        home = self.home("fish")
+        argv, environment = self.command(home)
+        environment["SHELL"] = shutil.which("fish")
+        run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        configuration = home / ".config/fish/conf.d/stateengine.fish"
+        self.assertTrue(configuration.is_file())
+        record = json.loads((home / ".local/share/stateengine/standalone-install.json").read_bytes())
+        self.assertIn({"path": str(configuration), "sha256": digest(configuration)}, record["files"])
+        terminal = subprocess.run([environment["SHELL"], "-lc", "command -s se"],
+                                  env=environment, capture_output=True, timeout=10)
+        self.assertEqual(terminal.returncode, 0, terminal.stderr)
+        self.assertEqual(terminal.stdout.decode().strip(), str(home / ".local/bin/se"))
+
     def test_concurrent_install_has_one_owner_and_complete_readback(self):
         home = self.home("concurrent")
-        profile = "# café: preserve tabs\tand CRLF\r\n".encode()
+        profile = "# café: preserve tabs\tand CRLF\r\n# credential=not-a-real-key-judge-secret\n".encode()
         (home / ".profile").write_bytes(profile)
         (home / ".bash_profile").write_bytes(profile)
         argv, environment = self.command(home)
-        processes = [subprocess.Popen(argv, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+        tools = self.root / "claim-barrier"
+        tools.mkdir()
+        # Both installers must reach the exclusive claim after preflight. This
+        # prevents an up-front exists check from masquerading as a race witness.
+        shim = tools / "ln"
+        shim.write_text('#!/bin/sh\nfor destination do :; done\ncase "$destination" in */se) exec /usr/bin/ln "$@";; esac\nprintf "CLAIM-READY\\n"\nIFS= read -r release\nexec /usr/bin/ln "$@"\n')
+        shim.chmod(0o700)
+        environment["PATH"] = str(tools) + ":" + environment["PATH"]
+        processes = [subprocess.Popen(argv, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
         try:
+            for process in processes:
+                self.assertTrue(select.select([process.stdout], [], [], 10)[0], "installer never reached the atomic claim")
+                self.assertEqual(process.stdout.readline(), b"CLAIM-READY\n")
+            self.assertFalse(list(home.rglob("standalone-install.json")), "neither paused installer has claimed the record")
+            for process in processes:
+                process.stdin.write(b"go\n")
+                process.stdin.flush()
             outputs = [process.communicate(timeout=30) for process in processes]
         finally:
             for process in processes:
+                if process.stdin and not process.stdin.closed:
+                    process.stdin.close()
+                    process.stdin = None
                 if process.poll() is None:
-                    process.kill()
-                    process.wait()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
         self.assertEqual(sorted(process.returncode for process in processes), [0, 1], outputs)
         install_root = home / ".local"
-        record_path = install_root / "bin/install.json"
-        record = json.loads(record_path.read_bytes())
+        record_path = home / ".local/share/stateengine/standalone-install.json"
+        self.assertTrue(record_path.is_file(), "ownership record belongs in the StateEngine data home")
+        record_bytes = record_path.read_bytes()
+        record = json.loads(record_bytes)
         self.assertEqual(record["schema"], "stateengine-install/v1")
-        self.assertEqual(record["install_root"], str(install_root))
+        self.assertNotIn("install_root", record)
+        self.assertNotIn(b"not-a-real-key-judge-secret", record_bytes, "profiles must not acquire a second persistent secret copy")
         self.assertEqual(record["owner"], str(os.getuid()))
         self.assertEqual(stat.S_IMODE(record_path.stat().st_mode), 0o600)
-        actual = {str(p.relative_to(install_root)) for p in install_root.rglob("*") if p.is_file() and p != record_path}
+        actual = {str(p) for p in install_root.rglob("*") if p.is_file() and p != record_path}
         self.assertEqual({entry["path"] for entry in record["files"]}, actual)
         self.assertEqual(len(record["files"]), len(actual))
         for entry in record["files"]:
-            self.assertEqual(digest(install_root / entry["path"]), entry["sha256"])
+            self.assertTrue(Path(entry["path"]).is_absolute())
+            self.assertEqual(digest(Path(entry["path"])), entry["sha256"])
+        directories = {str(p) for p in home.rglob("*") if p.is_dir()}
+        self.assertEqual(set(record["created_directories"]), directories)
         self.assertEqual((install_root / "bin/se").read_bytes(), (self.bundle / "se").read_bytes())
         self.assertEqual(stat.S_IMODE((install_root / "bin/se").stat().st_mode), 0o755)
         self.assertEqual({Path(edit["target"]).name for edit in record["path_edits"]}, {".profile", ".bash_profile"})
         for edit in record["path_edits"]:
-            self.assertEqual(edit["before"].encode(), profile)
-            self.assertEqual(Path(edit["target"]).read_bytes(), edit["after"].encode())
-            self.assertTrue(edit["after"].encode().startswith(profile))
+            self.assertEqual(set(edit), {"target", "before_sha256", "block"})
+            self.assertEqual(edit["before_sha256"], hashlib.sha256(profile).hexdigest())
+            self.assertEqual(Path(edit["target"]).read_bytes(), profile + edit["block"].encode())
         self.assertFalse(list(home.rglob(".install-*")))
         self.assertFalse(list(home.glob(".se-profile-*")))
         for shell in ("/bin/sh", "/bin/bash"):
