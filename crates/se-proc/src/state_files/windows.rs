@@ -2,7 +2,7 @@ use super::*;
 use std::{
     mem::{size_of, zeroed},
     os::windows::{
-        ffi::OsStrExt,
+        ffi::{OsStrExt, OsStringExt},
         io::{AsRawHandle, FromRawHandle},
     },
     path::Component,
@@ -14,9 +14,9 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
 };
 
-mod security;
+pub(crate) mod security;
 use security::descriptor;
-fn wide(path: &Path) -> Result<Vec<u16>> {
+pub(crate) fn wide(path: &Path) -> Result<Vec<u16>> {
     use std::path::Prefix;
     let units: Vec<_> = path.as_os_str().encode_wide().collect();
     let prefix = path.components().next();
@@ -260,16 +260,42 @@ pub(super) fn create_directories(path: &Path) -> Result<()> {
 pub(super) struct Directory {
     file: File,
     identity: Identity,
+    resolved_root: PathBuf,
 }
 impl Directory {
     pub fn open(path: &Path) -> Result<Self> {
         let file = walk(path, false, None)?;
         let identity = metadata(&file, path, true, true)?;
-        Ok(Self { file, identity })
+        let mut buffer = vec![0u16; 32768];
+        // SAFETY: retained directory handle, writable UTF-16 buffer and explicit
+        // capacity. Resolve once from the pinned object, not a caller pathname.
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        };
+        if length == 0 {
+            return Err(last("resolve held state directory", path));
+        }
+        if length as usize >= buffer.len() {
+            return Err(unsafe_path(
+                "resolved state directory exceeds native path capacity",
+                path,
+            ));
+        }
+        let resolved_root = std::ffi::OsString::from_wide(&buffer[..length as usize]).into();
+        Ok(Self {
+            file,
+            identity,
+            resolved_root,
+        })
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
-        let found = Self::open(path)?;
-        if found.identity != self.identity {
+        let found = walk(path, false, None)?;
+        if metadata(&found, path, true, true)? != self.identity {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
                 "held state directory was replaced",
@@ -279,17 +305,30 @@ impl Directory {
         metadata(&self.file, path, true, true)?;
         Ok(())
     }
+    fn absolute(&self, path: &Path, root: &Path) -> Result<PathBuf> {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| unsafe_path("path outside held root", path))?;
+        if relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            return Err(unsafe_path("normalized relative state path required", path));
+        }
+        Ok(self.resolved_root.join(relative))
+    }
     fn parent(&self, path: &Path, root: &Path) -> Result<File> {
+        let path = self.absolute(path, root)?;
         walk(
             path.parent()
-                .ok_or_else(|| unsafe_path("file parent missing", path))?,
+                .ok_or_else(|| unsafe_path("file parent missing", &path))?,
             false,
-            Some(root),
+            Some(&self.resolved_root),
         )
     }
     pub fn create_staging_at(&self, path: &Path, root: &Path) -> Result<File> {
         let parent = self.parent(path, root)?;
-        let file = open(path, false, true, true)?;
+        let file = open(&self.absolute(path, root)?, false, true, true)?;
         metadata(&file, path, false, true)?;
         parent
             .sync_all()
@@ -298,7 +337,7 @@ impl Directory {
     }
     pub fn open_for_publication(&self, path: &Path, root: &Path) -> Result<File> {
         let _parent = self.parent(path, root)?;
-        let file = open(path, false, false, true)?;
+        let file = open(&self.absolute(path, root)?, false, false, true)?;
         metadata(&file, path, false, true)?;
         Ok(file)
     }
@@ -314,7 +353,7 @@ impl Directory {
             }
             Err(e) => return Err(e),
         };
-        let file = match open(path, false, false, false) {
+        let file = match open(&self.absolute(path, root)?, false, false, false) {
             Ok(file) => file,
             Err(e)
                 if e.source
@@ -342,8 +381,8 @@ impl Directory {
         // overwritten, and a different volume cannot turn rename into a copy.
         if unsafe {
             MoveFileExW(
-                wide(staged)?.as_ptr(),
-                wide(destination)?.as_ptr(),
+                wide(&self.absolute(staged, root)?)?.as_ptr(),
+                wide(&self.absolute(destination, root)?)?.as_ptr(),
                 MOVEFILE_WRITE_THROUGH,
             )
         } == 0

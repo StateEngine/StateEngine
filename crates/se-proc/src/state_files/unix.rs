@@ -328,11 +328,10 @@ impl Directory {
             )
         } as i64;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        return Err(failure(
-            StateFileErrorCode::Unsupported,
-            "atomic native no-replace rename unavailable",
-            destination,
-        ));
+        let renamed: i64 = {
+            compile_error!("se-proc native state files support Linux and macOS Unix targets only");
+            0
+        };
         if renamed < 0 {
             return Err(io_error(
                 "native no-replace publication",

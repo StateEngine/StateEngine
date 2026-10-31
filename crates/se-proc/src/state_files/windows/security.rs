@@ -172,7 +172,7 @@ pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn verify(
+pub(crate) fn verify(
     file: &File,
     path: &Path,
     inherited_from_protected_parent: bool,
