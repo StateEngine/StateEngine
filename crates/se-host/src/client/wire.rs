@@ -183,6 +183,8 @@ struct CallRef<'a> {
     request_id: NonZeroU64,
     generation: se_types::Generation,
     authority: Option<AuthorityRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cli_selections: &'a Option<Value>,
     request: RequestRef<'a>,
 }
 #[derive(Serialize)]
@@ -239,6 +241,7 @@ struct CallWire {
     request_id: NonZeroU64,
     generation: se_types::Generation,
     authority: Option<AuthorityWire>,
+    cli_selections: Option<Value>,
     request: RequestWire,
 }
 #[derive(Deserialize)]
@@ -270,6 +273,10 @@ struct HookWire {
 }
 
 pub fn encode_call(call: &crate::IpcEnvelope) -> Result<WireBytes> {
+    super::endpoint::validate_selections(
+        &call.cli_selections,
+        matches!(&call.request, crate::IpcRequest::Hook(_)),
+    )?;
     let request_id =
         NonZeroU64::new(call.request_id).ok_or_else(|| invalid("a positive request ID"))?;
     let request = match &call.request {
@@ -291,6 +298,7 @@ pub fn encode_call(call: &crate::IpcEnvelope) -> Result<WireBytes> {
             request_id,
             generation: call.generation,
             authority: call.authority.as_ref().map(AuthorityRef::from),
+            cli_selections: &call.cli_selections,
             request,
         },
         MAX_FRAME_BYTES,
@@ -299,6 +307,10 @@ pub fn encode_call(call: &crate::IpcEnvelope) -> Result<WireBytes> {
 
 pub fn decode_call(payload: &[u8]) -> Result<crate::IpcEnvelope> {
     let wire: CallWire = decode_json(payload, MAX_FRAME_BYTES)?;
+    super::endpoint::validate_selections(
+        &wire.cli_selections,
+        matches!(&wire.request, RequestWire::Hook(_)),
+    )?;
     let request = match wire.request {
         RequestWire::Operation(operation) => crate::IpcRequest::Operation(crate::RawOperation {
             name: operation.name,
@@ -317,6 +329,7 @@ pub fn decode_call(payload: &[u8]) -> Result<crate::IpcEnvelope> {
         request_id: wire.request_id.get(),
         generation: wire.generation,
         authority: wire.authority.map(Into::into),
+        cli_selections: wire.cli_selections,
         request,
     })
 }

@@ -327,3 +327,15 @@ pub(crate) fn has_stop_protocol(bytes: &[u8]) -> Result<bool> {
         .map(|p| p.protocol.is_some())
         .map_err(|_| SeError::invalid("IPC handshake", "one UTF-8 JSON object"))
 }
+
+/// Only the authenticated CLI core route decodes/applies this object; the
+/// transport neither invents a selection DTO nor accepts metadata for hooks.
+pub(crate) fn validate_selections(value: &Option<Value>, hook: bool) -> Result<()> {
+    if value.as_ref().is_some_and(|v| hook || !v.is_object()) {
+        return Err(SeError::invalid(
+            "CLI selections",
+            "an optional operation-only CLI routing object",
+        ));
+    }
+    Ok(())
+}

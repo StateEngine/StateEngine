@@ -118,6 +118,10 @@ pub struct IpcEnvelope {
     pub request_id: u64,
     pub generation: Generation,
     pub authority: Option<PresentedAuthority>,
+    /// Raw CLI route metadata, decoded by the core's sole CliSelections DTO
+    /// inside the admitted snapshot. Never merged into MCP operation inputs;
+    /// hooks carry None and a supplied filter never widens authority.
+    pub cli_selections: Option<serde_json::Value>,
     pub request: IpcRequest,
 }
 pub struct IpcResponse {
