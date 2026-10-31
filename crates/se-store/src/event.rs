@@ -634,6 +634,8 @@ pub enum EventBody<T> {
         loss: crate::RestoreLoss,
         schema_version: u32,
         witnesses: Vec<EventId>,
+        /// Complete original se.restore/v1 JSON, one immutable payload (max 1 MiB).
+        receipt: T,
     },
 }
 /// Closed effect intent: safe references, never shell code, secret environment or arbitrary SQL.

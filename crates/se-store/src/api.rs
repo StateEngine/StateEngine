@@ -34,6 +34,7 @@ pub trait StoreFactory {
         budget: ReadBudget,
     ) -> StoreResult<Page<Read<BackupGeneration>>>;
     /// Resolve the published key before selecting a backup or checking new heads.
+    /// Return its stored complete original receipt verbatim, with no fresh fields.
     fn recovery_receipt(
         options: &StoreOptions,
         request: &RequestIdentity,

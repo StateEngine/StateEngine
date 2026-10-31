@@ -275,8 +275,11 @@ pub struct BackupReport {
     pub removed: Vec<RecordId>,
 }
 /// Immutable outcome read from the published recovery fact, not current file state.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RestoreReceipt {
+    /// Exact complete original se.restore/v1 UTF-8 JSON (max 1 MiB); emit verbatim.
+    /// Includes the original plan, witnesses, state and completeness; never reconstructed.
+    pub original_receipt: String,
     pub request_key: IdempotencyKey,
     pub event: EventId,
     pub backup: RecordId,
