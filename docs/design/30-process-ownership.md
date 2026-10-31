@@ -1,9 +1,9 @@
 # 30. Native process ownership (`se-proc`)
 
 Design reconciliation, 2026-10-30. **Declarations only: no product backend or
-author tests.** Linux prefers delegated cgroups and automatically requests
-a fresh scope for each new agent process; absent delegation launches an explicitly
-uncontained process group. Optional Landlock/seccomp remains named policy.
+author tests.** Wave 1 Linux uses an explicitly uncontained process group.
+Wave 4 adds preferred delegated cgroups and a fresh scope per new agent
+process; absent delegation retains the explicit uncontained path. Optional Landlock/seccomp remains named policy.
 Unix windows and live handover are required before alpha. Mac implementation
 and native qualification run in the borrowed-Mac campaign after the earlier
 Windows/Linux milestone, with all three OSes required before shipment.
@@ -158,6 +158,13 @@ pub trait ProcessRuntime: Send + Sync {
     /// Natural exit, failed launch and graceful shutdown need no stop ticket.
     fn witness_exit(&self, process: &OwnedProcess) -> ProcResult<StopObservation>;
     fn release(&self, process: &OwnedProcess, witness: &StopWitness) -> ProcResult<()>;
+    /// Ordinary stop first; owner-human release CAS only from StopUnproved.
+    /// Tracked groups only, no signal; other origins are IllegalTransition.
+    fn release_uncontained(
+        &self,
+        process: &OwnedProcess,
+        release: &UnwitnessedRelease,
+    ) -> ProcResult<ReleasedOwnership>;
     fn plan_recovery(&self, source: RecoverySource) -> ProcResult<RecoveryPlan>;
     fn recover(&self, plan: RecoveryPlan, generation: GenerationId) -> ProcResult<RecoveryOutcome>;
 }
@@ -181,6 +188,17 @@ pub trait ProcessTransfer: ProcessRuntime {
     fn abort_transfer(&self, offer: &TransferOffer) -> ProcResult<()>;
 }
 ```
+
+`ProcessRecord.ownership_release` is `Option<UnwitnessedRelease>`. The marker
+contains the lifecycle, generation, resulting nonzero per-entity revision,
+exact scope, bounded `RemainingScope` diagnostics and release time. The host
+proves the committed owner-human CAS originated in StopUnproved after an
+ordinary stop could not be proved; native code checks lifecycle/generation/
+scope, never treats a caller-supplied revision as independent store evidence.
+`ReleasedOwnership` returns that marker without constructing `StopWitness`.
+`plan_recovery` selects ReleaseUncontainedOwnership for a marked record;
+`recover` returns RecoveryOutcome::ReleasedOwnership, never a live reference.
+A release marker mismatching its record's lifecycle/generation/scope refuses.
 
 ### 2.1 Input/read semantics
 
@@ -423,9 +441,9 @@ checks prove signatures only; no native behavior is claimed by this amendment.
 
 `ProcessRecord` (format version 1, `se.process/v1`) contains lifecycle, host,
 exact owner process, generation, root instance, scope, achieved guarantee,
-entry method, native phase, optional exit status, native observation timestamp
-and argv SHA-256. Store envelope supplies
-project/session/actor, event revision and commit timestamp. No secrets,
+entry method, native phase, optional exit status/ownership-release marker,
+native observation timestamp and argv SHA-256. Store envelope supplies
+project/session/actor, per-entity revision and commit timestamp. No secrets,
 environment values, executable-name filter or live native handle is serialized.
 Store import makes process records Historical and grants no native authority.
 
@@ -563,12 +581,18 @@ public operation still supplies Page/Window if it paginates the merged result.
 | Running/LeaderExited/Starting | authenticated stop CAS | StopRequested |
 | StopRequested | token expired/consumed, generation/identity recheck refuses, native dispatch fails or proof pending | StopUnproved with typed cause; CAS is never erased or mislabelled "nothing happened" |
 | StopRequested/StopUnproved | outside required-scope exit witness | Exited; preserve dispatch errors/status |
-| StopUnproved | explicit retry, fresh observation/CAS/token | StopRequested |
+| StopUnproved, ownership retained | explicit retry, fresh observation/CAS/token | StopRequested |
+| StopUnproved, uncontained tracked group | owner-human release CAS after an ordinary stop could not be proved; no signal | StopUnproved with ownership_release; no live ownership or recovery re-adoption, not Exited |
 | nonterminal | irrecoverable native custody, actual host/boot loss | Lost, never assumed stopped |
-| Lost | authorized native recovery + store CAS succeeds | actual Running, LeaderExited or StopUnproved |
+| Lost without ownership release | authorized native recovery + store CAS succeeds | actual Running, LeaderExited or StopUnproved |
 | Lost | old required scope/instances exit proved | Exited |
 | Exited | durable witness committed, native release succeeds, release acknowledgment committed | terminal released; history retained |
 | imported | import | Historical; cannot become live custody |
+
+A marked StopUnproved row is retained history, not an owned nonterminal row:
+ordinary stop retries, admission, transfer and re-adoption exclude it. Replaying
+the release returns its committed marker and finishes only non-signalling
+retirement. It never supplies a new ownership generation.
 
 Every other transition is IllegalTransition → shared `internal`, with report
 ID/location and retained slot. Repeating a completed action returns its prior
@@ -657,6 +681,29 @@ A process-instance mismatch and a scope stop are different operations:
   a numerically reused group. The native check/signal interval is a stated
   platform limit, not an atomic-handle claim.
 
+After an ordinary stop could not be proved and committed StopUnproved, the
+owner may use human-only `se stop AGENT --release` (no MCP/agent equivalent).
+Running, LeaderExited and Lost must first go through that ordinary stop attempt;
+release from those states is IllegalTransition. Print the best-effort
+remaining members and their unknown/partial reason before reporting
+"ownership released without an exit witness". No group signal, synthetic
+empty population, exit status or `StopWitness` is created.
+
+The host CAS-commits `UnwitnessedRelease` for the exact lifecycle/generation/
+revision, preserving StopUnproved and the last diagnostic facts. Host lifecycle
+serialization drains any admitted native dispatch before this CAS and prevents
+new dispatch after it. Then `release_uncontained` revokes all arena references and closes only tracking
+registrations/identity pins; it does not stop a provider or close its separate
+stdio/PTY port. Only LinuxTracked/MacOsTracked may use this path, never a
+Windows job or delegated cgroup. Native close failures remain explicit cleanup
+debt and cannot restore signal authority.
+
+Once committed, the marker excludes that ownership from live admission and
+Remove blockers. Recovery retries non-signalling native retirement after a
+crash but never re-adopts the released process/group. Remove also reports that
+processes may remain; release never implies exit or a new lifecycle. Ordinary
+unproved stop still blocks Remove without this explicit owner action.
+
 The native attempt returns StopTicket **plus** dispatch Result; a failed
 controller cannot suppress an independent complete witness. witness_stop and
 witness_exit never signal. Complete requires the appropriate scope emptiness
@@ -699,8 +746,13 @@ any observed root-handle signal each enqueue an immediate targeted read of
 that lifecycle (dispatch budget <=50 ms). If that read finds the root exited
 but members remain, arm a **single coalesced live-cleanup timer**, not one timer
 per child: at most one root/accounting read per second per orphaned scope until
-empty or a host cleanup deadline. A missed final child-exit message is then
-observed within 1 s plus scheduling/read latency. This timer exists only for
+empty or the orphan-observation deadline: **5 s from the first observed root
+exit with remaining members**. Nudges do not renew it. At expiry do one final
+read, retain LeaderExited/StopUnproved and its remaining/unknown facts, then
+remove that lifecycle from this timer; only a later explicit operation or the
+existing live-work catch-up rereads it. This window never authorizes a signal
+or establishes an exit witness. While this window is active, a missed final
+child-exit message is observed within 1 s plus scheduling/read latency. This timer exists only for
 LeaderExited/unproved cleanup work and stops on emptiness; idle hosts do not
 poll. With neither a nudge nor a provider/terminal/explicit-read trigger, the
 existing 15-minute live-work catch-up remains the worst-case discovery bound;
@@ -816,6 +868,11 @@ as a brokered path: window appearance is not proof of child membership.
 
 ### 5.2 Linux automatic delegation, native floor and entry
 
+**Wave 1 uses the uncontained tracked process-group path on Linux.** Delegated
+cgroups and their fresh-scope transport join in wave 4 before alpha; the E7
+mechanism proofs remain valid. The remainder of this subsection specifies that
+wave-4 path, not a wave-1 dependency.
+
 Preferred contained-mode floor: unified cgroup v2 with cgroup.kill (Linux >=5.14), pidfd_open /
 pidfd_send_signal, and close_range(CLOEXEC) support (>=5.11). clone3
 CLONE_INTO_CGROUP is preferred; runtime probes check actual capabilities,
@@ -853,24 +910,24 @@ correlated result=done permits one /proc/self/cgroup read proving actual
 placement in the requested scope; a wrong scope, other result, timeout or
 transport error remains a concrete preparation failure with retained custody.
 Then create/enter its private leaf. The host's cgroup is unchanged.
-The Linux-native D-Bus transport is private to se-proc's bootstrap adapter;
-there is no general D-Bus API, Tokio dependency, resident bus helper or
-additional StateEngine service. Use dbus 0.9.10 with default-features=false
-and only vendored enabled, through its blocking::Connection in this already
-short-lived bootstrap; libdbus is statically packaged by libdbus-sys 0.2.7.
-No dbus-tokio, futures feature, async executor, background bus thread or
-libdbus/libsystemd runtime-install prerequisite is introduced.
-During implementation, both dbus and libdbus-sys are declared only under
-[target.'cfg(target_os="linux")'.dependencies], never workspace-wide or on
-Windows/macOS. This design amendment adds no actual Cargo dependency yet. Open/register
-only the validated local user-bus address, not an untrusted inherited bus
-address; process(deadline_remaining) waits for incoming messages rather than
-periodically waking. P03-L includes ~250 adapter lines and section 80 records
-the transport's binary-size allowance/measurement. An absent manager or unavailable delegation
+The wave-4 Linux-native D-Bus transport is private to the short-lived bootstrap.
+Try pure-Rust/MIT zbus first; measure marginal release-binary size and actual
+scope readiness against the retained libdbus path before selecting it. Charge
+any executor/thread and its startup to this transient helper, never a resident
+host runtime or per-agent service. Section 80 owns the comparison and target.
+If zbus misses the agreed budget, libdbus is the fallback: dbus 0.9.10 with
+only vendored enabled, default features off, through blocking::Connection
+and libdbus-sys 0.2.7. Retain its AFL-2.1 notices/election.
+
+Declare the selected transport only under Linux target dependencies during
+wave 4; no dependency is added by this contract correction. Both paths open
+only the validated local user-bus endpoint and await correlated completion,
+with no sleep-placement polling or systemd-run process in the agent path.
+An absent manager or unavailable delegation
 still selects the existing explicit uncontained default, with its actual
 cause; a transport/malformed-reply/native error cannot fabricate delegation.
 The agent path launches no systemd-run process. The separately specified
-standalone runtime service-detachment path in §5.6 is unchanged.
+standalone runtime service-detachment path in §5.5 is unchanged.
 The transient helper reports its manager-assigned cgroup and transfers a pinned
 directory FD over authenticated same-user IPC; validate cgroup2, boot, exact
 path/device/inode and create permission. The host first commits a LinuxUserManager
@@ -1504,7 +1561,9 @@ global budget, rather than quietly allocating 256 entries eagerly. The cap count
 StopUnproved and Lost entries whose required scope is not proved empty,
 including quarantined unpublished children. Reservation admission is charged
 before any native effect; concurrent reservations cannot oversubscribe 16.
-Historical, witnessed empty Exited and released rows are not live admissions.
+Historical, witnessed empty Exited and owner-human released rows are not live
+admissions. An ownership_release marker retires only that tracked-group
+ownership; StopUnproved and remaining-process warnings stay in history.
 After exit evidence is committed, release closes registrations/process/job/FD
 pins and removes the full native slot even if deleting an **empty** cgroup
 directory fails. Persist cleanup-debt identity/path/last-error in the existing
@@ -1512,8 +1571,9 @@ store, retain no full arena slot or descriptor just to retry rmdir, and let the
 bounded exact-scope reaper reopen/revalidate it on startup, generation recovery,
 Remove or the next admission. Its scratch/page memory is the existing 64 KiB,
 not an unbounded second map. A replaced/unreadable directory is preserved and
-reported as debt; it cannot retroactively grant signal authority. If closing
-native ownership is itself unproved, the slot still counts and admission
+reported as debt; it cannot retroactively grant signal authority. Without an
+explicit owner-human release marker, if closing native ownership is itself
+unproved, the slot still counts and admission
 refuses with the concrete remaining obligation: a genuinely live/unproved
 resource cannot be evicted merely to make space. Thus failed empty-directory
 cleanup cannot wedge all 16 live slots, while uncertain live children remain
@@ -1533,19 +1593,10 @@ host dispatch, provider handshake separately. Every LinuxUserManager launch pays
 manager scope/temporary creator and handoff, not just the first launch. The
 section-80 scope-acquisition target therefore applies to warm launches
 too; no per-launch work is amortized behind an absent resident helper.
-Native scope timing measured 30 systemd-run/native and 30 direct-D-Bus/native
-samples per environment, with all 120 helpers exited, pinned scope closure
-witnessed and both hosts unchanged. Desktop load 25.18→26.03 gave acquisition
-p95 193.889 ms through systemd-run and 148.459 ms direct; real SSH load
-23.70→24.54 gave 203.221 ms and 145.384 ms respectively. The direct method
-reply preceded placement: SSH RPC p95 91.323 ms and post-reply placement p95
-59.225 ms are separately measured, not added p95s. Native startup baseline
-p95 was 2.623/2.670 ms desktop/SSH; Python/e7-import was 78.162/78.154 ms.
-These scope-only probes contain no vendor, C1/C2/C3 or full launch readiness;
-section 80 sets a scope-acquisition target, not a claimed complete-launch
-measurement. These loaded runs also overlapped system-wide tracing and cannot
-establish reliable latency conclusions; Prime requires a designated quiet
-window with starting load below 4 before any timing qualification.
+Section 80 retains the actual scope-only measurements, their environmental
+bounds and the wave-4 zbus/libdbus comparison. They do not qualify C1/C2/C3 or
+complete launch. Wave-1 E3 includes Linux's four-commit uncontained path;
+Windows and later headless delegated Linux retain the three-barrier path.
 No 5 ms-per-commit arithmetic or presumed batching proves those targets; the
 measured FULL path may exceed them. E2/E3 must report that miss before build
 qualification. Never weaken durability, drop a crash barrier, hold a transaction
@@ -1563,14 +1614,17 @@ backend is never native behavior or performance evidence.
 | J2 Adopt | safe literal provider launch in headless **and interactive window** modes on all three OSes; real PTY/console keyboard/screen; native creation and provider readiness distinct |
 | J3 Come back | natural exit releases its scope; service reopen retains native arena; live SE Code↔daemon handover preserves PID/birth/streams; actual Windows crash resumes conversation in a new lifecycle, Linux/macOS re-adopt at their declared bound |
 | J4 Two agents | independent scope/lease/native references; stop, callback panic, handover or read of one cannot consume another's children/input; no owner sidecar per agent |
-| J5 Remove | natural/graceful/forced and reused-root scope cleanup witnessed; unknown live scope blocks removal; terminal scope reaper closes crash gaps; state/credentials survive an unproved stop; user work/provider accounts stay untouched |
+| J5 Remove | natural/graceful/forced and reused-root cleanup witnessed; unproved ownership blocks removal unless human-only release records its explicit warning/marker; terminal reaper closes crash gaps; user work/provider accounts stay untouched |
 
 CLI/MCP custody uses the same host operation/backend; stateless CLI reads use
 the stateless NativeProcessApi reader without starting an owner. Window/headless share
 scope/instance checking, with explicit stream differences. Claude/Codex supply
 harness argv/streams/readiness but identical native ownership. Embedded and
 standalone share transfer/arena contracts and do not reap unrelated SE Code
-children. Windows live transfer is not confused with its crash relaunch;
+children. J2 requires a working viewable window for both providers on all three
+systems. An attended Windows Codex refusal is honest failure behaviour, not a
+supported substitute: an E5 Windows window failure blocks alpha.
+Windows live transfer is not confused with its crash relaunch;
 Linux and macOS limits are reported separately, not smuggled in as no-op modes.
 
 Reviewers own native checks for: (a) fake/reused-root instance refusal with
