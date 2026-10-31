@@ -59,6 +59,14 @@ fn concurrent_keyless_receipts_match_their_own_store_measurements() -> Check {
     same_timing(timed(&br)?, &sample[1]);
     assert_eq!(timed(&ar)?.request_key, None);
     assert_eq!(timed(&br)?.request_key, None);
+    assert!(
+        timed(&ar)?.checkpoint.is_none(),
+        "unrun checkpoint manufactured a zero timing"
+    );
+    assert!(
+        timed(&br)?.checkpoint.is_none(),
+        "unrun checkpoint manufactured a zero timing"
+    );
     assert_eq!(timed(&ar)?.durability, CommitDurability::Normal);
     assert_eq!(timed(&br)?.durability, CommitDurability::Normal);
     drop(wait(owner.drain(Duration::from_secs(2)))??);

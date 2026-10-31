@@ -351,3 +351,73 @@ fn direct_registration_and_foreign_session_refuse() -> Check {
     drop(wait(owner.drain(Duration::from_secs(2)))??);
     Ok(())
 }
+
+/// Protects: 20 process identity — preserving the saved native identity permits Lost and exact-identity recovery instead of forbidding loss altogether.
+#[test]
+fn saved_native_identity_survives_loss_and_recovery() -> Check {
+    let f = Fixture::new()?;
+    let (host, lease) = host(&f)?;
+    let owner = host.start_writer(options(256)?, lease.clone())?;
+    let client = owner.client();
+    let i = identity(&f, true)?;
+    let first = wait(client.submit(f.batch(
+        f.owner_project(),
+        None,
+        vec![registration(&i, ProcessState::Running)],
+    )?)?)??;
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        None,
+        vec![transition(
+            &i,
+            1,
+            ProcessState::Running,
+            ProcessState::Lost,
+            first.primary_event.clone(),
+        )?],
+    )?)?)??;
+    {
+        let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+        let inventory = reader.owner_guard(&lease.files, budget(20, 32768, None)?)?;
+        assert_eq!(inventory.processes.len(), 1);
+        let saved = &inventory.processes[0];
+        assert_eq!(saved.state, ProcessState::Lost);
+        assert_eq!(saved.revision.value.get(), 2);
+        let (RecordedIdentity::Present(saved), RecordedIdentity::Present(original)) =
+            (&saved.identity.instance, &i.instance)
+        else {
+            return Err("loss discarded the saved native identity".into());
+        };
+        assert_eq!(saved, original);
+    }
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        None,
+        vec![transition(
+            &i,
+            2,
+            ProcessState::Lost,
+            ProcessState::Running,
+            first.primary_event.clone(),
+        )?],
+    )?)?)??;
+    let current = head(&f, i.record.clone())?;
+    assert_eq!(current.revision.value.get(), 3);
+    let EventBody::ProcessTransition {
+        identity,
+        from: ProcessState::Lost,
+        to: ProcessState::Running,
+        ..
+    } = current.current.body
+    else {
+        return Err("recovery did not preserve its source/target state".into());
+    };
+    let (RecordedIdentity::Present(saved), RecordedIdentity::Present(original)) =
+        (&identity.instance, &i.instance)
+    else {
+        return Err("recovery discarded the saved native identity".into());
+    };
+    assert_eq!(saved, original);
+    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    Ok(())
+}
