@@ -51,7 +51,8 @@ Files: `Cargo.toml`, `src/lib.rs`, `src/{identity,launch,ownership,error,stdio}.
 
 Implement 30 §§1–2/7: shared IDs, opaque custody, phase-specific inputs, native
 causes and safe reactor/security/private-entry/stdio/transfer ports. Include
-the distinct human-release outcome; no StopWitness is fabricated. PROC alone
+the distinct human-release outcome from StopUnproved only, after an ordinary
+stop could not be proved; no StopWitness is fabricated. PROC alone
 wires modules; leaf work follows this agreement.
 
 Witness: actual host adapter compiles; T14/T23/T28 and J2/J3/J5 exercise the

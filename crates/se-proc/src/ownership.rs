@@ -160,7 +160,8 @@ pub struct RemainingScope {
     pub extent: EnumerationExtent,
     pub observed_at_unix_ns: u128,
 }
-/// Host supplies this only after owner-human admission and a committed CAS.
+/// Host supplies this only after an ordinary stop yielded durable StopUnproved
+/// and owner-human admission committed the release CAS from that state alone.
 /// Revision is the resulting nonzero per-lifecycle revision, not an event seq.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UnwitnessedRelease {
@@ -348,8 +349,10 @@ pub trait ProcessRuntime: Send + Sync {
     /// Natural exit, failed launch and graceful shutdown need no stop ticket.
     fn witness_exit(&self, process: &OwnedProcess) -> ProcResult<StopObservation>;
     fn release(&self, process: &OwnedProcess, witness: &StopWitness) -> ProcResult<()>;
-    /// LinuxTracked/MacOsTracked only: no signal, job close or invented exit.
-    /// The host first commits release.revision for this lifecycle/generation.
+    /// LinuxTracked/MacOsTracked only, after an ordinary stop could not be proved.
+    /// Host CAS must originate in StopUnproved; other origins are illegal.
+    /// No signal, job close or invented exit. The host first commits
+    /// release.revision for this lifecycle/generation.
     /// Revoke all arena references and close tracking pins, not provider ports.
     fn release_uncontained(
         &self,

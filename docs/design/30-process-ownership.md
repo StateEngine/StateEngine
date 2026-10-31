@@ -158,7 +158,8 @@ pub trait ProcessRuntime: Send + Sync {
     /// Natural exit, failed launch and graceful shutdown need no stop ticket.
     fn witness_exit(&self, process: &OwnedProcess) -> ProcResult<StopObservation>;
     fn release(&self, process: &OwnedProcess, witness: &StopWitness) -> ProcResult<()>;
-    /// Owner-human release CAS committed first; tracked groups only, no signal.
+    /// Ordinary stop first; owner-human release CAS only from StopUnproved.
+    /// Tracked groups only, no signal; other origins are IllegalTransition.
     fn release_uncontained(
         &self,
         process: &OwnedProcess,
@@ -191,7 +192,8 @@ pub trait ProcessTransfer: ProcessRuntime {
 `ProcessRecord.ownership_release` is `Option<UnwitnessedRelease>`. The marker
 contains the lifecycle, generation, resulting nonzero per-entity revision,
 exact scope, bounded `RemainingScope` diagnostics and release time. The host
-proves the committed owner-human CAS; native code checks lifecycle/generation/
+proves the committed owner-human CAS originated in StopUnproved after an
+ordinary stop could not be proved; native code checks lifecycle/generation/
 scope, never treats a caller-supplied revision as independent store evidence.
 `ReleasedOwnership` returns that marker without constructing `StopWitness`.
 `plan_recovery` selects ReleaseUncontainedOwnership for a marked record;
@@ -580,7 +582,7 @@ public operation still supplies Page/Window if it paginates the merged result.
 | StopRequested | token expired/consumed, generation/identity recheck refuses, native dispatch fails or proof pending | StopUnproved with typed cause; CAS is never erased or mislabelled "nothing happened" |
 | StopRequested/StopUnproved | outside required-scope exit witness | Exited; preserve dispatch errors/status |
 | StopUnproved, ownership retained | explicit retry, fresh observation/CAS/token | StopRequested |
-| Running/LeaderExited/StopUnproved/Lost, uncontained tracked group | owner-human release CAS; no signal | StopUnproved with ownership_release; no live ownership or recovery re-adoption, not Exited |
+| StopUnproved, uncontained tracked group | owner-human release CAS after an ordinary stop could not be proved; no signal | StopUnproved with ownership_release; no live ownership or recovery re-adoption, not Exited |
 | nonterminal | irrecoverable native custody, actual host/boot loss | Lost, never assumed stopped |
 | Lost | authorized native recovery + store CAS succeeds | actual Running, LeaderExited or StopUnproved |
 | Lost | old required scope/instances exit proved | Exited |
@@ -679,8 +681,10 @@ A process-instance mismatch and a scope stop are different operations:
   a numerically reused group. The native check/signal interval is a stated
   platform limit, not an atomic-handle claim.
 
-For this unproved-group case the owner may use human-only
-`se stop AGENT --release` (no MCP/agent equivalent). Print the best-effort
+After an ordinary stop could not be proved and committed StopUnproved, the
+owner may use human-only `se stop AGENT --release` (no MCP/agent equivalent).
+Running, LeaderExited and Lost must first go through that ordinary stop attempt;
+release from those states is IllegalTransition. Print the best-effort
 remaining members and their unknown/partial reason before reporting
 "ownership released without an exit witness". No group signal, synthetic
 empty population, exit status or `StopWitness` is created.
