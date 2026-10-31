@@ -142,15 +142,13 @@ fn walk_with_private_root(path: &Path, create: bool, private_root: bool) -> Resu
             path,
         )?;
         if created {
-            // mkdirat does not bind a later open to the object it created.
-            // Refuse an unsafe replacement before changing its permissions.
-            metadata(&next, path, true)?;
-            // SAFETY: the held descriptor passed owner/protection validation.
-            if unsafe { libc::fchmod(next.as_raw_fd(), 0o700) } < 0 {
-                return Err(io_error(
-                    "protect newly created directory",
+            // mkdirat's mode is already owner-only. Do not broaden a later
+            // opened incumbent, including restrictive owner permissions.
+            let meta = metadata(&next, path, true)?;
+            if meta.mode() & 0o700 != 0o700 {
+                return Err(unsafe_path(
+                    "new directory lacks owner read/write/search permission; preserve it unchanged",
                     path,
-                    io::Error::last_os_error(),
                 ));
             }
             parent
@@ -277,20 +275,15 @@ impl Directory {
             "pin protected child directory",
             path,
         )?;
-        // A successful mkdir does not identify the object opened afterward.
-        // Validate first so an unsafe replacement is never repaired in place.
-        metadata(&file, path, true)?;
-        if created {
-            // SAFETY: the held descriptor passed owner/protection validation.
-            if unsafe { libc::fchmod(file.as_raw_fd(), 0o700) } < 0 {
-                return Err(io_error(
-                    "protect new child directory",
-                    path,
-                    io::Error::last_os_error(),
-                ));
-            }
-        }
+        // The opened inode may be an incumbent substituted after mkdirat.
+        // Validate it without changing either privacy or owner permissions.
         let before = metadata(&file, path, true)?;
+        if created && before.mode() & 0o700 != 0o700 {
+            return Err(unsafe_path(
+                "new directory lacks owner read/write/search permission; preserve it unchanged",
+                path,
+            ));
+        }
         file.sync_all()
             .map_err(|e| io_error("sync protected child directory", path, e))?;
         parent

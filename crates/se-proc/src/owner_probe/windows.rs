@@ -220,6 +220,7 @@ pub(super) fn observe(
     let snapshot = parents()?;
     let mut pid = target;
     let mut ancestry: Vec<(ProcessStamp, OwnedHandle)> = Vec::new();
+    let mut exited_creator: Option<(ProcessStamp, OwnedHandle)> = None;
     while pid.0 != 0 {
         if ancestry.len() >= 4096 || ancestry.iter().any(|(p, _)| p.pid == pid) {
             return Err(refuse(
@@ -233,6 +234,35 @@ pub(super) fn observe(
         let Some(process) = open(pid)? else {
             break;
         };
+        // Toolhelp omits exited objects even while a handle still opens them,
+        // and a reused creator may have appeared after the snapshot. Check the
+        // actual retained object's birth/liveness before requiring a live row.
+        let observed = stamp(pid, ProcessId(0), &process)?;
+        if let Some((child, _)) = ancestry.last()
+            && let (
+                StartIdentity::Windows {
+                    creation_filetime: parent,
+                },
+                StartIdentity::Windows {
+                    creation_filetime: child,
+                },
+            ) = (&observed.start, &child.start)
+            && parent > child
+        {
+            break;
+        }
+        // SAFETY: retained SYNCHRONIZE process handle; zero timeout observes
+        // this exact object's liveness, including an exited retained creator.
+        match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
+            WAIT_OBJECT_0 => {
+                // Keep the immediate exited creator for exact-root admission
+                // checks, while ending the live ancestry walk at its exit.
+                exited_creator = Some((observed, process));
+                break;
+            }
+            WAIT_TIMEOUT => (),
+            _ => return Err(last("inspect native ancestor liveness")),
+        }
         let Some(parent) = snapshot.get(&pid.0).copied() else {
             return Err(refuse(
                 "read native ancestry",
@@ -273,6 +303,9 @@ pub(super) fn observe(
             .iter()
             .skip(1)
             .any(|(p, _)| p.instance_matches(&record.root))
+            || exited_creator
+                .as_ref()
+                .is_some_and(|(p, _)| p.instance_matches(&record.root))
         {
             Some(AgentTreeBasis::Ancestor)
         } else {
@@ -334,6 +367,18 @@ pub(super) fn observe(
             return Err(refuse(
                 "recheck native ancestry",
                 "ancestor identity changed",
+            ));
+        }
+    }
+    if let Some((expected, process)) = exited_creator {
+        // SAFETY: the retained creator handle identifies the same exited object;
+        // PID reuse cannot change either this handle or its native birth clock.
+        if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } != WAIT_OBJECT_0
+            || stamp(expected.pid, ProcessId(0), &process)?.start != expected.start
+        {
+            return Err(refuse(
+                "recheck native ancestry",
+                "exited creator identity changed",
             ));
         }
     }
