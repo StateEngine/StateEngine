@@ -351,6 +351,7 @@ fn unprotected_root_dacl_refuses_before_an_absence_read() -> Check {
 /// Protects: G8 — a foreign owner is not admitted by an otherwise private DACL.
 #[cfg(windows)]
 #[test]
+#[ignore = "requires an elevated Windows account with SeRestorePrivilege to provision a foreign owner"]
 fn foreign_owner_refuses_with_an_otherwise_private_dacl() -> Check {
     let home = Home::new()?;
     let files = home.existing()?;
