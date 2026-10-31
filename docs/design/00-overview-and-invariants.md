@@ -47,7 +47,7 @@ Everything StateEngine adds, not counting the agent CLIs.
 | Budget | Target | Measured so far |
 | --- | --- | --- |
 | Memory added inside SE Code | **≤ 30 MB** | 1.4 MB (embedding prototype) |
-| Startup added to SE Code | **≤ 100 ms**, including the first bound session | Revised FULL first binding pending quiet-window qualification; historical readiness-only 75/96 ms is not proof |
+| Delay added to SE Code (B2) | **p95 ≤ 100 ms**: one combined in-window first-bind check; late startup and late bind-to-first-assistant-response are two separate checks, each with this bound | Revised FULL first binding and both late checks require native qualification; historical readiness-only 75/96 ms is not proof |
 | Re-adopting agents after handover or restart | **≤ 500 ms**, no lost or doubled input | Proposed by Alpha; unmeasured, a build task |
 | Idle cost | **~0 wakeups, < 0.1% CPU** | 0 over 10 min embedded |
 | Idle wakeups, exact | **≤ 1/s** across all StateEngine processes with no session, **≤ 2/s** with one; < 0.1% of one core, over 60 s | — |
@@ -57,13 +57,21 @@ Everything StateEngine adds, not counting the agent CLIs.
 | CLI write command (B9) | **p95 ≤ 20 ms** (section 80 owns the number) | hooks through host 7.5 ms typical, 9 ms worst; 8 agents 11 ms worst. A later mixed-workload rehearsal measured 37 ms serial and 67 ms with 20 clients; E3 explains the gap before the build |
 
 New-store creation and FULL schema/header publication are now an explicit
-`se init --repo DIR` cost, including SE Code's per-workspace pre-TUI trust/consent
-invocation (40), separate from once-per-profile onboarding. Rust init writes
-nothing inside DIR; setup lives in the per-user state home outside it.
+managed `se init --repo DIR` cost, including SE Code's per-workspace pre-TUI
+repository trust hook (40), separate from once-per-profile onboarding. This
+managed setup writes nothing inside DIR; setup lives in the per-user state home
+outside it, so it needs no repository-write consent. In contrast, `se init --adopt`
+for user-started Claude/Codex sessions writes the integration files in 70 §3.2
+and reports them in `repo.files_touched` and `integrations[]`.
 B2's “new store” means a newly initialized store before the timed embedded
-first-bind interval. Existing/newly initialized samples still include actual
-FULL owner/session publication, writer start and complete binding/continuity;
-a missing-init refusal is never a successful sample (20/40/50/80).
+first-bind interval. The in-window combined check includes FULL owner/session
+publication, writer start and complete binding/continuity. On the late path,
+check startup and bind-request-to-first-visible-assistant-response separately,
+each against its paired run without StateEngine, with its own n and over-count;
+the latter includes session activation and any race with fallback owner COMMIT.
+The owner-only fallback at window expiry occurs during user idle and is outside
+both clocks on purpose; it remains recorded, never waived. A missing-init refusal
+is never a successful sample (20/40/50/80).
 
 Line counts come from the one size table in section 95; they are estimates and a review signal,
 never a reason to cut quality. No schedule is promised until the early proofs (section 95) settle.
@@ -499,9 +507,12 @@ Each open item is settled by an early proof in section 95, not by argument.
    Defender measured 3.9/10.5 ms p95 at the database layer. E3 keeps the failed baseline, decomposes commit time first, may compare an
    off-path checkpoint variant, and adopts a change only through one reviewed checkpoint policy
    reflected in 20, 40, 80 and 95. No B9 fix is claimed until native host measurements pass.
-2. **First-bind cost (B2 ≤ 100 ms embedded)** — several FULL commits now precede the first answer
-   (runtime owner, session activation, new-schema publication; embedded binds mint no credentials).
-   E2 measures it on Windows with Defender on a new and an existing store.
+2. **Embedded delay (B2 p95 ≤ 100 ms per check)** — E2 measures the in-window
+   combined FULL owner/session bind on Windows with Defender on newly initialized
+   and existing stores, with schema publication paid separately at managed init.
+   Late startup and late bind-to-first-visible-assistant-response are separate
+   checks; activation and any fallback-commit race remain inside the latter.
+   Embedded binds mint no credentials; idle fallback work is recorded separately.
 3. **Re-adoption ≤ 500 ms (B8)** — native pipe transfer and real-provider handover pass on Windows and
    Linux (spikes, 2026-10-30); store lease, capture, queue and timing are measured in the build.
 4. **Hook with no host — settled by E8 (2026-10-30).** Start the host through private bootstrap,

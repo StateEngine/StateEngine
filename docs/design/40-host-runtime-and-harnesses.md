@@ -247,11 +247,11 @@ required commit continuation, with no SQL transaction or native lock across awai
 
 Workspace initialization belongs to SE Code's per-repository trust decision
 (`profile_trust.rs`, SC-SEC-01), at first open of each workspace and before the
-TUI. Profile onboarding runs once per profile and is not this hook. After the
-workspace trust/consent answer permits it, the UI owner/human-presence path uses
-the bundled se already located by `stateengine_package.rs`, with literal
-selected-workspace --repo and resolved --home argv. A pending consent answer
-keeps init pending; it cannot write first and ask later. In the public GitHub
+TUI. Profile onboarding runs once per profile and is not this hook. The UI
+owner/human-presence path uses the bundled se already located by
+`stateengine_package.rs`, with literal selected-workspace --repo and resolved
+--home argv. Managed init writes nothing inside that workspace, so repository-write
+consent is unnecessary; the existing repository trust decision remains SE Code's. In the public GitHub
 build the stub host has no se: silently skip init, without an error or a message
 about a missing executable, and keep ordinary SE Code usable. This skip applies
 only to the known NotIncluded build; a declared included payload that is missing
@@ -264,14 +264,18 @@ workspace identity/Git metadata and registers it in the per-user state home;
 state.db, its SQLite sidecars and protected setup files remain outside the
 repository under that home (00 §5.4). This --repo invocation does not install
 repository integrations or launch an agent. An invalid home inside the workspace refuses.
-This is the Rust init contract, not the legacy Node initializer.
+This no-repository-write guarantee applies only to managed Rust `init --repo`.
+Rust `se init --adopt` for sessions the user starts in Claude/Codex still writes
+`.mcp.json`, `.claude/settings.local.json` and the `.codex/config.toml` marker
+block (70 §3.2), reporting actual changes in `repo.files_touched` and
+`integrations[]`. Neither Rust contract describes the legacy Node initializer.
 
 When setup is needed, first close failed-preparation handles/release any
 temporary lease, then run explicit init without inherited runtime/store handles.
 Await the actual result/readback, then re-prepare before registering/activating.
 If native proof cannot establish the UI owner path outside the agent tree,
 refuse with the init remedy instead of manufacturing owner presence. Never pass
-an agent credential as owner or recursively retry a failed init. Decline/failure
+an agent credential as owner or recursively retry a failed init. Setup failure
 keeps normal SE Code usable and presents the refusal/remedy plus the original
 setup failure. Workspace init cost is reported separately outside B2; it is not
 an embedded open side effect.
@@ -424,9 +428,9 @@ Factory preparation is read-only, returns absent/unreadable/version error
 truthfully, and starts no writer/callback/native effect. SE Code registers the
 Prepared Host/G and fresh immutable generation-fenced services before activate.
 Missing store returns structured `setup-required` to the first-workspace-open
-trust/consent hook above. Its UI owner/human-presence path runs bundled
-`se --home HOME init --repo DIR`, then re-prepares; the public GitHub stub skips
-init silently. Only declined/failed workspace setup shows
+repository trust hook above. Its UI owner/human-presence path runs bundled
+managed `se --home HOME init --repo DIR` without repository-write consent, then
+re-prepares; the public GitHub stub skips init silently. Only failed workspace setup shows
 “StateEngine has not been initialized for this state home; run se --home HOME
 init --repo DIR.” The preparation/refusal itself creates no store/schema, endpoint,
 writer or credential; unreadable/foreign/unsupported state keeps its diagnosis. Preparation reads the version and plans
@@ -1465,9 +1469,13 @@ precedence over the per-user file and defaults.
 Section 80 contains the single budget table and outside observer definitions;
 section 95 generates the single size table. This chapter keeps no competing
 startup, memory or LOC ledger. All helpers and native/worker resident stacks
-count; provider/model processes are reported separately. The first complete
-linked session/continuity response is inside B2, actual task memory is inside
-B1/B4, and B8 begins after independently reported quiescence. A declaration
+count; provider/model processes are reported separately. B2 uses one combined
+in-window check through complete linked session/continuity binding, plus two
+separate late checks: added startup and bind-request-to-first-visible-assistant-response,
+each p95 ≤100 ms against the unbound pair, with its own n and over-count.
+The late session check includes activation and any fallback-owner-COMMIT race;
+window-expiry fallback during user idle is deliberately outside both clocks.
+Actual task memory is inside B1/B4, and B8 begins after independently reported quiescence. A declaration
 compile or arithmetic allocation establishes none of those measurements.
 
 Embedded binds use in-process handles and mint no credentials. Explicit se init
@@ -1475,9 +1483,13 @@ creates and FULL-publishes the schema/header first; embedded open never does.
 Ordinary cold first bind records runtime.owner plus the witnessed first session
 in one FULL maintenance transaction before writer startup, with up to two SQLite file
 syncs and any directory sync reported separately. Both records and the complete
-binding/continuity response remain inside the first-bind measurement. E2 re-spends the unchanged B2 ceiling
-using the real FULL set on Windows with Defender, both new and existing store,
-and memory after a real task. Historical FULL commit tails require actual first-bind measurement, not an
+binding/continuity response remain inside the in-window combined measurement.
+E2 also measures standalone-style startup and late bind through the first visible
+assistant response to the user's first message separately, with actual FULL
+barriers charged where they occur. The idle window-expiry owner commit is
+recorded off both clocks, but a race with late binding remains inside check 2.
+E2 uses the unchanged per-check B2 ceiling and real FULL set on Windows with
+Defender, both newly initialized and existing stores, and memory after a real task. Historical FULL commit tails require actual first-bind measurement, not an
 optimistic allocation. Re-adoption, Codex reconnect, backup and optional Atlas run
 after the initial real response, with per-route Recovering status; this does not
 call every prior agent ready. One SQLite writer and at most two bounded blocking

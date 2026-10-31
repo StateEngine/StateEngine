@@ -25,7 +25,7 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | # | Budget | Threshold | Boundary | Runner probe |
 | --- | --- | --- | --- | --- |
 | B1 | Memory added inside SE Code | ≤ 30,000,000 bytes | A/B against a baseline SE Code server | `embedded A/B` |
-| B2 | Delay StateEngine adds to SE Code | In-window first bind: one combined check, p95 ≤ 100 ms including the first bound session; late path: two checks, each p95 ≤ 100 ms | Late check 1: added startup at server start; late check 2: delay before the user's first request in a session, against a run with no StateEngine bound, not the bind RPC alone; measure each check on its own with its own n and over-count, never subtract from a summed figure | `embedded A/B`, actual first-request consumer |
+| B2 | Delay StateEngine adds to SE Code | In-window first bind: one combined check, p95 ≤ 100 ms including the first bound session; late path: two checks, each p95 ≤ 100 ms | Late check 1: added startup at server start; late check 2: from late first-session open (bind request) through the first visible assistant response to the user's first message, including activation and any fallback-owner-COMMIT race, against the paired unbound run; each has its own n and over-count, never derived from a summed percentile | `embedded A/B`, actual first-request consumer |
 | B3 | Persistent processes added | 0 while embedded with no live agent; exactly 1 standalone or detached handback daemon; 0 persistent helpers per agent | Outside inventory by exact pid + birth; include the daemon after SE Code exits | `standalone persistent processes`, `persistent processes after 1/2 seat(s)` |
 | B4 | Standalone memory | ≤ 25,000,000 bytes with one live session, after one real agent task | Sum over every attributed StateEngine process | `standalone RSS one session` |
 | B5 | Idle CPU | < 0.1% of one core (< 60 ms CPU per 60 s) | All StateEngine processes, 60 s with no product queries | `idle no session`, `idle one session` |
@@ -172,8 +172,14 @@ the actual observer; no unverified existing-runner defect is assumed.
   inside the actual Rust SE Code server. Run real se init before the newly
   initialized-store sample and report its cost separately; never call lazy
   creation or setup-required a successful first bind. Include first bind, the
-  atomic FULL owner/first-session commit,
-  supported startup migration/backup when applicable, and after-task memory.
+  atomic FULL owner/first-session commit and complete continuity response in
+  the one in-window combined check. Separately measure both late checks, each
+  p95 ≤100 ms: added startup, and late first-session bind request through the
+  first visible assistant response to the user's first message against the
+  paired unbound run. The latter includes activation and any race with fallback
+  owner COMMIT; idle expiry fallback is recorded off both clocks deliberately.
+  Each check has its own n/over-count, never inferred from a summed percentile.
+  Retain supported startup migration/backup when applicable and after-task memory.
   Existing eight-pair readiness-only A/B measurements do not prove this boundary.
 - **E1 / B8:** both handover directions, source and destination loss around every
   durable phase, job-port reassociation/abort and 100 traffic loops. Interrupt
@@ -293,35 +299,43 @@ remedy; embedded open never creates it inside or outside a hidden startup clock.
 Newly initialized and existing compatible stores use the same normal B2 first-bind path:
 one FULL maintenance transaction for runtime.owner and the witnessed first
 session, then writer startup and the complete continuity/binding response. At
-first workspace open, the pre-TUI repository trust/consent hook invokes bundled
+first workspace open, the pre-TUI repository trust hook invokes bundled managed
 se init --repo DIR on the UI owner path before this interval; profile onboarding
-is separate and the public GitHub stub silently skips init. Rust init writes
-nothing in the repository; a new-store sample means newly initialized state.
+is separate and the public GitHub stub silently skips init. This managed setup
+writes nothing in the repository and needs no repository-write consent;
+init --adopt still installs the integrations in 70 §3.2. A new-store sample means
+newly initialized state.
 Neither ordinary work nor a bound handle is published before that commit.
 
 A late first bind is an ordinary path: sign-in can exceed FIRST_BIND_WINDOW.
 B2 retains one combined check for an in-window first bind. For the late path,
-judge two checks separately, each p95 ≤ 100 ms: StateEngine's added startup at
-server start, and the delay it adds before the user's first request in a session
-against a run with no StateEngine bound. For the session check, bind and then send the first real message, timing
-request-to-first-response in paired runs with and without StateEngine bound.
+judge two checks separately, each p95 ≤100 ms against the paired run without
+StateEngine bound: check 1 measures added startup at server start; check 2
+starts at late first-session open (the bind request), then includes binding and
+the user's first message through the first visible assistant tool/text response.
+Session activation and any race with the fallback owner COMMIT are inside check 2.
+The fallback owner commit at window expiry is deliberately off both clocks
+because the user is idle then; record its actual barriers and duration separately.
 Use SE Code's deterministic local-script provider for this pre-build consumer
-probe. Session creation or the bind RPC alone cannot close the check; preserve
-HTTP prompt acknowledgement and actual assistant response as distinct facts.
-Measure each check on its own, with its own n and over-count, never by
-subtracting from a summed figure. User sign-in/consent idle time separates the
-two moments and is retained alongside full elapsed-to-first-request time;
-combining those two separate costs is a diagnostic, not a third B2 check.
+probe. Neither bind RPC alone nor a clock starting only at the message request
+closes check 2; preserve HTTP prompt acknowledgement, first assistant response
+and first assistant text as distinct facts. Take the bind-to-response span
+from its own start/end timestamps before computing each bound/unbound paired
+difference, with its own n and over-count; never subtract summed percentiles.
+User sign-in idle time and full elapsed-to-first-response time are also retained,
+while a sum of the separate costs is diagnostic, not a third B2 check.
 
-The late-path host has its standalone-style runtime.owner FULL-committed and
-writer running before the first user request. Independently witness that owner
-and zero sessions before the late binding and the distinct FULL activation
-after it; retain every engine step/barrier in the check where it occurs.
-Linux startup comparisons use the same quiet-box load conditions as the
-in-window measurements, with the actual load named. If a check misses only
-when loaded, report both loaded and quiet cohorts; never swap one for the other
-or discard the loaded samples. A successful refusal or prompt-path joint-commit
-sample cannot stand in for this late first-request measurement.
+In the stable late-path sample, the host has its standalone-style runtime.owner
+FULL-committed and writer running before late binding. Independently witness
+that owner and zero sessions before binding and the distinct FULL activation
+after it. A binding that races expiry must wait for the known owner-commit
+outcome inside check 2, retaining every engine barrier where it occurs.
+Both late checks on Linux use the coordinated quiet-box criterion: load1 ≤10
+at each case start, Iris as the only heavy job, no system-wide tracing, and
+actual load recorded. Use that same criterion for in-window comparisons.
+Retain loaded and quiet cohorts separately; never swap one for the other or
+discard loaded failures. A successful refusal or prompt-path joint-commit sample
+cannot stand in for the late bind-to-first-response check.
 
 | Critical-path work | Current spend status |
 | --- | --- |
@@ -340,12 +354,12 @@ qualify this candidate. The loaded Linux runs overlapped a full preflight and a
 system-wide syscall trace; their raw samples remain archived but are excluded
 from qualification and from causal latency conclusions.
 
-Qualification remains pending a quiet-window measurement of the actual Rust
-SE Code first-bound response against its unchanged baseline, with newly
-initialized and existing stores and the same durability/inputs/build. Record load
-beside every result. For the coordinated Linux quiet window, use the exclusive
-heavy slot with no other heavy jobs or system-wide tracing, and require load1
-≤ 10 at each case start. This records Prime's revised criterion after observing
+Qualification requires the actual Rust SE Code in-window combined first-bound
+response and both late checks against the unchanged baseline, with newly
+initialized and existing stores and the same durability/inputs/build. Record
+load beside every result. Both late checks and the in-window comparison use the
+coordinated Linux quiet window: the exclusive heavy slot with Iris as the only
+heavy job, no system-wide tracing, and load1 ≤10 at each case start. This records Prime's revised criterion after observing
 the parked-runner/desktop idle floor of load1 6–8 on the 48-core box; it does not
 qualify the earlier contended measurements. Retain every paired sample, including
 signed negative differences and failures; file/directory/count traces are
@@ -363,7 +377,7 @@ expiry failure to SE Code. Record the actual
 fallback wait/extra barriers rather than pooling it with the normal atomic
 first-bind case. Explicit drain must fence/join a racing commit and retain both
 keys/known outcomes; it cannot force a duplicate owner or a synthetic successful
-binding. Reviewer witnesses include declined/failed workspace consent/setup, no side effect
+binding. Reviewer witnesses include failed managed workspace setup, no side effect
 on missing-state open, bare se/status not-set-up exit 0, whole-pair rollback and
 same-key replay, concurrent first binds, deadline fallback, and close before a
 bind/after refusal/racing COMMIT. Live-handover/recovery barriers stay unchanged.
