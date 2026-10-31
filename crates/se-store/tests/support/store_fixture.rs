@@ -391,3 +391,32 @@ pub fn same_receipt(a: &CommitReceipt, b: &CommitReceipt) {
         assert_eq!(a.through, b.through);
     }
 }
+
+#[cfg(windows)]
+pub fn dump_windows_acl(path: &Path) -> Check {
+    let literal = path.to_string_lossy().replace('\'', "''");
+    let script = format!(
+        r#"
+$ErrorActionPreference='Stop'
+$path='{literal}'
+$identity=[System.Security.Principal.WindowsIdentity]::GetCurrent()
+$acl=Get-Acl -LiteralPath $path
+$binary=$acl.GetSecurityDescriptorBinaryForm()
+$raw=New-Object System.Security.AccessControl.RawSecurityDescriptor($binary,0)
+Write-Output "ACL path=$path owner=$($raw.Owner.Value) token_user=$($identity.User.Value) token_owner=$($identity.Owner.Value) control=$($raw.ControlFlags)"
+foreach($ace in $raw.DiscretionaryAcl) {{ Write-Output "ACE type=$($ace.AceType) flags=$($ace.AceFlags) mask=$($ace.AccessMask) sid=$($ace.SecurityIdentifier.Value)" }}
+"#
+    );
+    let output = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()?;
+    eprint!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !output.status.success() {
+        return Err("outside native ACL readback failed".into());
+    }
+    Ok(())
+}

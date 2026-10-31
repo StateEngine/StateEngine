@@ -341,10 +341,21 @@ fn real_database_readback_and_missing_projection_refuse_honestly() -> Check {
     for suffix in ["state.db", "state.db-wal", "state.db-shm"] {
         let path = f.options.state_directory.join(suffix);
         assert!(path.try_exists()?, "missing actual SQLite file {suffix}");
-        assert!(
-            lease.files.0.readback(&path)?.is_some(),
-            "native file readback absent {suffix}"
-        );
+        let observed = lease.files.0.readback(&path);
+        #[cfg(windows)]
+        if let Err(error) = observed {
+            for name in ["", "state.db", "state.db-wal", "state.db-shm"] {
+                fixture::dump_windows_acl(&f.options.state_directory.join(name))?;
+            }
+            eprintln!("PRESERVED rejected SQLite fixture at {}", f.home.display());
+            // Keep the exact rejected files until process exit, which releases
+            // native handles without SQLite's normal last-connection unlink.
+            std::mem::forget(store);
+            std::mem::forget(lease);
+            std::mem::forget(f);
+            return Err(error.into());
+        }
+        assert!(observed?.is_some(), "native file readback absent {suffix}");
     }
     // Corrupt a maintained projection from outside its writer. Registered mail
     // must refuse rather than making an unread inbox disappear as a zero count.

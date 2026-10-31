@@ -1,3 +1,6 @@
+// Native runtime-owner observations in this fixture are implemented for Linux and Windows.
+#![cfg(any(target_os = "linux", windows))]
+
 use se_store::*;
 #[path = "support/store_fixture.rs"]
 mod fixture;
