@@ -202,6 +202,26 @@ fn input_command(name: &str, c: Command) -> Command {
                     .default_value("inbox"),
             ),
         "working_state.get" => c.arg(value("agent")),
+        "agent.create" => c
+            .arg(positional("name", 1, true))
+            .arg(value("provider").value_parser(["claude", "codex"]))
+            .arg(value("model")),
+        "decision.propose" => c
+            .arg(positional("decision_key", 1, true))
+            .arg(positional("statement", 2, true))
+            .arg(value("rationale"))
+            .arg(value("supersedes")),
+        "decision.ratify" => c
+            .arg(positional("decision_id", 1, true))
+            .arg(value("expect")),
+        "decision.reject" | "decision.retract" => c
+            .arg(positional("decision_id", 1, true))
+            .arg(value("reason").required(true))
+            .arg(value("expect")),
+        "decision.supersede" => c
+            .arg(positional("decision_id", 1, true))
+            .arg(positional("replacement_id", 2, true))
+            .arg(value("expect")),
         "working_state.set" => c
             .arg(positional("text", 1, true))
             .arg(value("expect").required(true))
@@ -379,6 +399,74 @@ pub fn from_matches_with_key(
                 owner_to: text(m, "to"),
             }),
             "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet { owner_agent: None }),
+            "agent.create" => AnyOp::AgentCreate(AgentCreate {
+                name: required(m, "name")?,
+                provider: text(m, "provider")
+                    .map(|value| {
+                        serde_json::from_value(serde_json::Value::String(value))
+                            .map_err(|_| SeError::invalid("provider", "claude or codex"))
+                    })
+                    .transpose()?,
+                model: text(m, "model"),
+                idempotency_key: key()?,
+            }),
+            "decision.propose" => AnyOp::DecisionPropose(DecisionPropose {
+                key: required(m, "decision_key")?,
+                statement: required(m, "statement")?,
+                rationale: text(m, "rationale"),
+                supersedes: text(m, "supersedes")
+                    .map(se_types::DecisionId::from_legacy)
+                    .transpose()?,
+                idempotency_key: key()?,
+            }),
+            "decision.ratify" => AnyOp::DecisionRatify(DecisionRatify {
+                decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
+                expect: text(m, "expect")
+                    .map(|value| {
+                        value
+                            .parse()
+                            .map_err(|_| SeError::invalid("expect", "positive entity revision"))
+                    })
+                    .transpose()?,
+                idempotency_key: key()?,
+            }),
+            "decision.reject" => AnyOp::DecisionReject(DecisionReject {
+                decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
+                reason: required(m, "reason")?,
+                expect: text(m, "expect")
+                    .map(|value| {
+                        value
+                            .parse()
+                            .map_err(|_| SeError::invalid("expect", "positive entity revision"))
+                    })
+                    .transpose()?,
+                idempotency_key: key()?,
+            }),
+            "decision.retract" => AnyOp::DecisionRetract(DecisionRetract {
+                decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
+                reason: required(m, "reason")?,
+                expect: text(m, "expect")
+                    .map(|value| {
+                        value
+                            .parse()
+                            .map_err(|_| SeError::invalid("expect", "positive entity revision"))
+                    })
+                    .transpose()?,
+                idempotency_key: key()?,
+            }),
+            "decision.supersede" => AnyOp::DecisionSupersede(DecisionSupersede {
+                decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
+                replacement_id: se_types::DecisionId::from_legacy(required(m, "replacement_id")?)?,
+                expect: text(m, "expect")
+                    .map(|value| {
+                        value
+                            .parse()
+                            .map_err(|_| SeError::invalid("expect", "positive entity revision"))
+                    })
+                    .transpose()?,
+                replacement_expect: None,
+                idempotency_key: key()?,
+            }),
             "working_state.set" => {
                 let expect = required(m, "expect")?;
                 AnyOp::WorkingStateSet(WorkingStateSet {

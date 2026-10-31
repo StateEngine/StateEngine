@@ -23,9 +23,12 @@ pub use meta::{
     McpTool, decode_operation, decode_tool, mcp_tools, metadata_output, schema_catalogue,
 };
 pub use outputs::*;
+mod output_sum;
+pub use administration::*;
+pub use output_sum::AnyOutput;
 use schemars::JsonSchema;
 use se_types::{API_VERSION, IdempotencyKey, Result};
-use serde::{Serialize, Serializer};
+use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize, serde::Deserialize, JsonSchema)]
 pub struct Envelope<T> {
@@ -51,9 +54,6 @@ macro_rules! ops {
         #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
         #[serde(tag="op",content="input",deny_unknown_fields)]
         pub enum AnyOp { $( #[serde(rename=$name)] $variant($input), )+ }
-        #[derive(Clone, Debug, JsonSchema)]
-        #[serde(untagged)]
-        pub enum AnyOutput { $( $variant(Box<Envelope<$output>>), )+ }
         $(impl $input { pub const META: OpMeta = OpMeta {
             name:$name, cli:$cli, mcp:$mcp, auth:Auth::$auth, anonymous:$anonymous,
             human_only:HumanPolicy::$human, effect:Effect::$effect, variants:&[],
@@ -67,36 +67,6 @@ macro_rules! ops {
             pub fn validate(&self) -> Result<()> { match self { $( Self::$variant(value)=>value.validate(), )+ } }
             pub fn input_schema(&self) -> serde_json::Value { match self { $( Self::$variant(_)=>schemars::schema_for!($input).to_value(), )+ } }
         }
-        impl AnyOutput {
-            pub fn family(&self) -> Family { match self { $( Self::$variant(_)=><$input>::META.family, )+ } }
-            pub fn human_kind(&self) -> HumanKind { match self { $( Self::$variant(_)=><$input>::META.human, )+ } }
-            /// Called by the host with this request's store measurements. Direct
-            /// output constructors leave diagnostics absent.
-            pub fn with_write_timings(mut self, timings: ReceiptWriteTimings) -> Self {
-                match &mut self { $( Self::$variant(value)=>value.diagnostics=Some(OutputDiagnostics { write_timings: timings }), )+ }
-                self
-            }
-        }
-        impl Serialize for AnyOutput {
-            fn serialize<S:Serializer>(&self,serializer:S)->std::result::Result<S::Ok,S::Error> { match self { $( Self::$variant(value)=>value.serialize(serializer), )+ } }
-        }
-        impl<'de> serde::Deserialize<'de> for AnyOutput {
-            fn deserialize<D:serde::Deserializer<'de>>(decoder:D)->std::result::Result<Self,D::Error> {
-                let value=<serde_json::Value as serde::Deserialize>::deserialize(decoder)?;
-                let family=value.get("schema").and_then(serde_json::Value::as_str).ok_or_else(||serde::de::Error::custom("missing output family schema"))?;
-                $(if family==<$input>::META.family.schema() {
-                    let envelope=serde_json::from_value::<Envelope<$output>>(value).map_err(serde::de::Error::custom)?;
-                    if let Some(diagnostics)=&envelope.diagnostics {
-                        diagnostics.write_timings.validate().map_err(serde::de::Error::custom)?;
-                    }
-                    return Ok(Self::$variant(Box::new(envelope)));
-                })+
-                Err(serde::de::Error::custom("unknown output family schema"))
-            }
-        }
-        $(impl From<$output> for AnyOutput {
-            fn from(value:$output)->Self { Self::$variant(Box::new(Envelope::new(<$input>::META.family,value))) }
-        })+
         $(impl $input { #[allow(non_snake_case)] fn META_REF() -> &'static OpMeta { &Self::META } })+
         pub(crate) fn schemas(name:&str) -> Option<(serde_json::Value,serde_json::Value)> {
             match name { $( $name=>{
@@ -140,6 +110,12 @@ ops! {
     RuntimeUp => RuntimeUp, RuntimeStart, ("runtime.up",leaf(&["up"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,HostAutoStart,"se.runtime-start",RuntimeStart,&["J3"]);
     RuntimeDown => RuntimeDown, RuntimeStop, ("runtime.down",leaf(&["down"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,None,"se.runtime-stop",RuntimeStop,&["J3"]);
     Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal requires the owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);
+    AgentCreate => AgentCreate, AgentReceipt, ("agent.create",leaf(&["agent","add"]),tool("stateengine_agent_create","Create an agent","Create a durable agent identity and safe saved profile without launching a process; sessions require their current create grant."),Either,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["E3","J2","J4"]);
+    DecisionPropose => DecisionPropose, DecisionReceipt, ("decision.propose",leaf(&["decide"]),tool("stateengine_decision_propose","Propose a decision","Save a proposal for the owner; a proposal does not ratify itself or become governing."),Either,false,Never,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J3","J4"]);
+    DecisionRatify => DecisionRatify, DecisionReceipt, ("decision.ratify",leaf(&["decision","ratify"]),no_mcp("Only an independently verified owner terminal can ratify a proposal."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
+    DecisionReject => DecisionReject, DecisionReceipt, ("decision.reject",leaf(&["decision","reject"]),no_mcp("Only an independently verified owner terminal can reject a proposal."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
+    DecisionRetract => DecisionRetract, DecisionReceipt, ("decision.retract",leaf(&["decision","retract"]),no_mcp("Only an independently verified owner terminal can retract a decision."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
+    DecisionSupersede => DecisionSupersede, DecisionReceipt, ("decision.supersede",leaf(&["decision","supersede"]),no_mcp("Only an independently verified owner terminal can supersede a decision."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
 }
 impl AnyOp {
     pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
@@ -150,6 +126,12 @@ impl AnyOp {
             Self::RuntimeUp(v) => Some(&v.idempotency_key),
             Self::RuntimeDown(v) => Some(&v.idempotency_key),
             Self::Uninstall(v) => Some(&v.idempotency_key),
+            Self::AgentCreate(v) => Some(&v.idempotency_key),
+            Self::DecisionPropose(v) => Some(&v.idempotency_key),
+            Self::DecisionRatify(v) => Some(&v.idempotency_key),
+            Self::DecisionReject(v) => Some(&v.idempotency_key),
+            Self::DecisionRetract(v) => Some(&v.idempotency_key),
+            Self::DecisionSupersede(v) => Some(&v.idempotency_key),
             _ => None,
         }
     }
@@ -164,6 +146,14 @@ impl AnyOp {
             Self::WorkingStateSet(v) => {
                 v.text = read(v.text.clone(), "text", se_types::WORKING_STATE_MAX_BYTES)?
             }
+            Self::DecisionPropose(v) => {
+                v.statement = read(v.statement.clone(), "statement", 8192)?;
+                if let Some(value) = &mut v.rationale {
+                    *value = read(value.clone(), "rationale", 2048)?;
+                }
+            }
+            Self::DecisionReject(v) => v.reason = read(v.reason.clone(), "reason", 2048)?,
+            Self::DecisionRetract(v) => v.reason = read(v.reason.clone(), "reason", 2048)?,
             _ => (),
         }
         self.validate()

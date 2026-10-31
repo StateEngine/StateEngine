@@ -4,6 +4,8 @@ use crate::{
     ops::{ProjectInit, ProjectStatus, RuntimeDown, RuntimeUp, Uninstall},
 };
 pub enum Then {
+    AgentCreate(crate::ops::agent::AgentCreateThen),
+    Decision(crate::ops::decision::DecisionThen),
     Capture(crate::ops::hook::CaptureThen),
     MessageSend(MessageSendThen),
     WorkingStateSet(WorkingStateSetThen),

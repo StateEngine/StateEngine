@@ -19,6 +19,7 @@ pub struct CallFacts {
 }
 pub struct Kernel {
     facts: Option<CallFacts>,
+    configuration: Option<crate::config_policy::ConfigFile>,
 }
 impl Kernel {
     pub fn new(facts: CallFacts) -> Result<Self> {
@@ -28,10 +29,26 @@ impl Kernel {
                 "nonnegative Unix microseconds",
             ));
         }
-        Ok(Self { facts: Some(facts) })
+        Ok(Self {
+            facts: Some(facts),
+            configuration: None,
+        })
     }
     pub const fn read_only() -> Self {
-        Self { facts: None }
+        Self {
+            facts: None,
+            configuration: None,
+        }
+    }
+    /// Already resolved file policy from the admitted native route. This is not
+    /// a model-facing operation argument or a fallback to ambient defaults.
+    pub fn with_configuration(
+        mut self,
+        configuration: crate::config_policy::ConfigFile,
+    ) -> Result<Self> {
+        configuration.validate()?;
+        self.configuration = Some(configuration);
+        Ok(self)
     }
     pub(crate) fn facts(&self) -> Result<&CallFacts> {
         self.facts.as_ref().ok_or_else(|| {
@@ -275,6 +292,54 @@ impl Kernel {
         op.validate()?;
         crate::admission::authorize(op.meta(), cx.admission, terminal)?;
         Ok(match op {
+            AnyOp::AgentCreate(input) => {
+                let configuration = self.configuration.as_ref().ok_or_else(|| {
+                    SeError::new(se_types::Detail::Internal(se_types::details::Internal {
+                        report_id: "agent-configuration-not-bound".into(),
+                        location: "Kernel::with_configuration".into(),
+                    }))
+                })?;
+                let (batch, then) = crate::ops::agent::create(self, input, configuration, cx)?;
+                OpStep::Commit {
+                    batch,
+                    then: Then::AgentCreate(then),
+                }
+            }
+            AnyOp::DecisionPropose(input) => {
+                let (batch, then) = crate::ops::decision::propose(self, input, cx)?;
+                OpStep::Commit {
+                    batch,
+                    then: Then::Decision(then),
+                }
+            }
+            AnyOp::DecisionRatify(input) => {
+                let (batch, then) = crate::ops::decision::ratify(self, input, cx, terminal)?;
+                OpStep::Commit {
+                    batch,
+                    then: Then::Decision(then),
+                }
+            }
+            AnyOp::DecisionReject(input) => {
+                let (batch, then) = crate::ops::decision::reject(self, input, cx, terminal)?;
+                OpStep::Commit {
+                    batch,
+                    then: Then::Decision(then),
+                }
+            }
+            AnyOp::DecisionRetract(input) => {
+                let (batch, then) = crate::ops::decision::retract(self, input, cx, terminal)?;
+                OpStep::Commit {
+                    batch,
+                    then: Then::Decision(then),
+                }
+            }
+            AnyOp::DecisionSupersede(input) => {
+                let (batch, then) = crate::ops::decision::supersede(self, input, cx, terminal)?;
+                OpStep::Commit {
+                    batch,
+                    then: Then::Decision(then),
+                }
+            }
             AnyOp::MessageSend(input) => match self.message_send(input, cx)? {
                 OpStep::Complete(raw) => {
                     OpStep::Complete(crate::ops::receipt::message(raw, cx)?.into())
@@ -331,6 +396,8 @@ impl Kernel {
     ) -> Result<crate::ops::AnyOutput> {
         use crate::ports::Then;
         match then {
+            Then::AgentCreate(then) => Ok(crate::ops::agent::committed(then, receipt, cx)?.into()),
+            Then::Decision(then) => Ok(crate::ops::decision::committed(then, receipt, cx)?.into()),
             Then::Capture(then) => Ok(crate::ops::hook::committed(then, receipt, cx)?.into()),
             Then::MessageSend(then) => {
                 let raw = self.message_committed(then, receipt, cx)?;
