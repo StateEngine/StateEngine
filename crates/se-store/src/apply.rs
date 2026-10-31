@@ -1,5 +1,8 @@
 //! Transaction-only projections. No native, network or provider calls.
+pub(crate) mod capture;
+pub(crate) mod credential;
 pub(crate) mod decision;
+pub(crate) mod session;
 use crate::{codec, connection::*, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
@@ -61,6 +64,14 @@ pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> 
             )
             .optional()
             .map_err(sql);
+    }
+    if matches!(
+        e.body,
+        EventBody::SessionTurn { .. }
+            | EventBody::CaptureSource { .. }
+            | EventBody::CaptureProgress { .. }
+    ) {
+        return codec::capture::natural(c, e);
     }
     let (message, recipient, col) = match &e.body {
         EventBody::MessageRead { message, recipient } => (message, recipient, "read_seq"),
@@ -215,6 +226,18 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         | EventBody::DecisionSuperseded { .. } => decision::revision(c, e),
         RuntimeOwnerEstablished { expected: want, .. } => {
             expected(c, "runtime_owner", "singleton=1", &[], *want)
+        }
+        SessionPrepared { .. }
+        | SessionActivated { .. }
+        | SessionEnded { .. }
+        | SessionRevoked { .. } => session::revision(c, e),
+        SessionTurn { .. }
+        | CaptureSource { .. }
+        | CaptureProgress { .. }
+        | CaptureFailed { .. }
+        | CaptureSuppressed { .. } => capture::revision(c, e),
+        CredentialIssued { .. } | CredentialActivated { .. } | CredentialRevoked { .. } => {
+            credential::revision(c, e)
         }
         _ => later("event revision"),
     }
@@ -573,6 +596,18 @@ pub(crate) fn apply(
         | DecisionRejected { .. }
         | DecisionRetracted { .. }
         | DecisionSuperseded { .. }) => decision::apply(c, header, b, seq, revision)?,
+        b @ (SessionPrepared { .. }
+        | SessionActivated { .. }
+        | SessionEnded { .. }
+        | SessionRevoked { .. }) => session::apply(c, header, b, seq, revision, lease)?,
+        b @ (SessionTurn { .. }
+        | CaptureSource { .. }
+        | CaptureProgress { .. }
+        | CaptureFailed { .. }
+        | CaptureSuppressed { .. }) => capture::apply(c, header, b, seq, revision, facts)?,
+        b @ (CredentialIssued { .. } | CredentialActivated { .. } | CredentialRevoked { .. }) => {
+            credential::apply(c, header, b, seq, revision, facts)?
+        }
         _ => return later("projection"),
     }
     Ok(())

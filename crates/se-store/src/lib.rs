@@ -2,9 +2,12 @@
 //! Normative behavior and formats: docs/design/20-data-model.md.
 mod api;
 mod apply;
+mod backup;
+mod backup_context;
 mod codec;
 mod completion;
 mod connection;
+mod credential;
 mod error;
 mod event;
 mod identity;

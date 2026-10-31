@@ -1,4 +1,6 @@
+pub(crate) mod capture;
 pub(crate) mod event;
+pub(crate) mod session;
 // Closed wave-1 metadata codec; text lives only in its typed payload column.
 use crate::{error::*, identity::*, *};
 use rusqlite::Connection;
@@ -156,6 +158,11 @@ pub(crate) fn body(
         | "decision.rejected"
         | "decision.retracted"
         | "decision.superseded" => crate::apply::decision::decode(c, seq, kind, scope)?,
+        "session.prepared" | "session.activated" | "session.ended" | "session.revoked" => {
+            session::decode(c, seq, kind, scope)?
+        }
+        "session.turn" | "capture.source" | "capture.progress" | "capture.failed"
+        | "capture.suppressed" => capture::decode(c, seq, kind, scope)?,
         _ => {
             let v = facts(c, seq)?;
             match kind {
@@ -191,6 +198,26 @@ pub(crate) fn body(
                     key: field(&v, "key")?,
                     active: field(&v, "active")?,
                     expected: field(&v, "expected")?,
+                },
+                "credential.issued" => CredentialIssued {
+                    credential: field(&v, "credential")?,
+                    session: field(&v, "session")?,
+                    purpose: field(&v, "purpose")?,
+                    secret_sha256: field(&v, "secret_sha256")?,
+                    expires_at_us: field(&v, "expires_at_us")?,
+                    activation_deadline_us: field(&v, "activation_deadline_us")?,
+                    expected: field(&v, "expected")?,
+                },
+                "credential.activated" => CredentialActivated {
+                    credential: field(&v, "credential")?,
+                    session: field(&v, "session")?,
+                    expected: field(&v, "expected")?,
+                    first_request: field(&v, "first_request")?,
+                },
+                "credential.revoked" => CredentialRevoked {
+                    credential: field(&v, "credential")?,
+                    expected: field(&v, "expected")?,
+                    reason: stored_text(c, seq, "reason")?,
                 },
                 "runtime.owner" => RuntimeOwnerEstablished {
                     epoch: field(&v, "epoch")?,
@@ -268,6 +295,86 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         } => (
             "grant.recorded",
             json!({"principal":principal,"key":key,"active":active,"expected":expected}),
+        ),
+        SessionPrepared { .. } => ("session.prepared", Value::Null),
+        SessionActivated { .. } => ("session.activated", Value::Null),
+        SessionEnded { .. } => ("session.ended", Value::Null),
+        SessionRevoked { .. } => ("session.revoked", Value::Null),
+        SessionTurn { .. } => ("session.turn", Value::Null),
+        CaptureSource {
+            source,
+            session,
+            consent,
+            native_ref,
+            incarnation,
+            expected,
+        } => (
+            "capture.source",
+            json!({"capture_kind":"source","source":source,"session":session,"consent":consent,"native_ref":native_ref,"incarnation":incarnation,"expected":expected}),
+        ),
+        CaptureProgress {
+            source,
+            expected,
+            incarnation,
+            old_offset,
+            new_offset,
+            last_turn,
+        } => (
+            "capture.progress",
+            json!({"capture_kind":"progress","source":source,"expected":expected,"incarnation":incarnation,"old_offset":old_offset,"new_offset":new_offset,"last_turn":last_turn}),
+        ),
+        CaptureFailed {
+            source,
+            session,
+            from_offset,
+            to_offset,
+            code,
+            cause,
+            retry,
+        } => (
+            "capture.failed",
+            json!({"source":source,"session":session,"from_offset":from_offset,"to_offset":to_offset,"code":code,"cause":cause,"retry":retry}),
+        ),
+        CaptureSuppressed {
+            source,
+            session,
+            expected,
+            reason,
+            from_offset,
+            to_offset,
+            count,
+        } => (
+            "capture.suppressed",
+            json!({"source":source,"session":session,"expected":expected,"reason":reason,"from_offset":from_offset,"to_offset":to_offset,"count":count}),
+        ),
+        CredentialIssued {
+            credential,
+            session,
+            purpose,
+            secret_sha256,
+            expires_at_us,
+            activation_deadline_us,
+            expected,
+        } => (
+            "credential.issued",
+            json!({"credential":credential,"session":session,"purpose":purpose,"secret_sha256":secret_sha256,"expires_at_us":expires_at_us,"activation_deadline_us":activation_deadline_us,"expected":expected}),
+        ),
+        CredentialActivated {
+            credential,
+            session,
+            expected,
+            first_request,
+        } => (
+            "credential.activated",
+            json!({"credential":credential,"session":session,"expected":expected,"first_request":first_request}),
+        ),
+        CredentialRevoked {
+            credential,
+            expected,
+            ..
+        } => (
+            "credential.revoked",
+            json!({"credential":credential,"expected":expected}),
         ),
         MessageSent { .. } => ("message.sent", Value::Null),
         MessageRead { .. } => ("message.read", Value::Null),

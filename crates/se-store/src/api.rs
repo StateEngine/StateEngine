@@ -14,6 +14,15 @@ pub trait RuntimeLease: Send + Sync {
 /// Native adapter owned by se-proc and wired by the CLI/host, never by request JSON.
 /// Every path stays in the held per-user state directory. No shell or ambient umask.
 pub trait StateFiles: Send + Sync {
+    /// Ensure a fixed descendant directory exists with native owner-only protection.
+    /// Validate existing custody without repairing permissions or following links.
+    fn prepare_directory(&self, path: &std::path::Path) -> StoreResult<()> {
+        let _ = path;
+        Err(crate::error::fail(
+            StoreErrorCode::BackupFailed,
+            "native protected backup directory preparation is not wired",
+        ))
+    }
     /// Reserve a unique, protected regular staging file in the owned directory.
     /// Read back owner-only mode/ACL and directory custody before returning.
     fn create_staging(&self, directory: &std::path::Path) -> StoreResult<ProtectedStaging>;
@@ -28,6 +37,29 @@ pub trait StateFiles: Send + Sync {
         staged: &std::path::Path,
         destination: &std::path::Path,
     ) -> StoreResult<()>;
+    /// Compare-and-replace one owned manifest under held no-follow custody.
+    /// Stage/sync new bytes, recheck old digest/identity, atomically publish and witness.
+    fn replace_owned(
+        &self,
+        path: &std::path::Path,
+        expected_sha256: Option<[u8; 32]>,
+        bytes: &[u8],
+    ) -> StoreResult<()> {
+        let _ = (path, expected_sha256, bytes);
+        Err(crate::error::fail(
+            StoreErrorCode::BackupFailed,
+            "native owned manifest replacement is not wired",
+        ))
+    }
+    /// Unlink only the held owned regular file matching the expected complete digest.
+    /// Success includes parent sync and independent absence readback.
+    fn remove_owned(&self, path: &std::path::Path, expected_sha256: [u8; 32]) -> StoreResult<()> {
+        let _ = (path, expected_sha256);
+        Err(crate::error::fail(
+            StoreErrorCode::BackupFailed,
+            "native owned generation retirement is not wired",
+        ))
+    }
 }
 pub struct ProtectedStaging {
     pub path: std::path::PathBuf,

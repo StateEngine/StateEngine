@@ -24,6 +24,23 @@ pub struct SqliteHost {
     // Declared after engine so SQLite closes before custody is released.
     pub(crate) lease: Option<Arc<dyn RuntimeLease>>,
 }
+impl SqliteHost {
+    fn maintenance(reader: SqliteReader, mut engine: Engine) -> StoreResult<Self> {
+        let context = BackupContext::bound(
+            &connection::info(&engine.db)?,
+            engine.identity.generation,
+            reader.path.clone(),
+            reader.slots.clone(),
+        );
+        engine.backup = Some(context.clone());
+        Ok(Self {
+            reader,
+            engine,
+            context,
+            lease: None,
+        })
+    }
+}
 impl SqliteReader {
     fn for_options(o: &StoreOptions) -> StoreResult<Self> {
         if !o.state_directory.is_absolute() {
@@ -177,6 +194,7 @@ impl SqliteFactory {
                     db,
                     identity,
                     poisoned: false,
+                    backup: None,
                 },
             ))
         })();
@@ -216,6 +234,7 @@ impl StoreFactory for SqliteFactory {
                             db,
                             identity,
                             poisoned: false,
+                            backup: None,
                         },
                     },
                 })
@@ -240,16 +259,15 @@ impl StoreFactory for SqliteFactory {
                 let info = connection::info(&db)?;
                 let identity = connection::validate_lease(&info, lease, LeaseMode::Host)?;
                 Ok(Read::Present {
-                    value: SqliteHost {
+                    value: SqliteHost::maintenance(
                         reader,
-                        engine: Engine {
+                        Engine {
                             db,
                             identity,
                             poisoned: false,
+                            backup: None,
                         },
-                        context: BackupContext::new_internal(),
-                        lease: None,
-                    },
+                    )?,
                 })
             }
             Read::Absent { checked } => Ok(Read::Absent { checked }),
@@ -275,20 +293,15 @@ impl StoreFactory for SqliteFactory {
     }
     fn create(o: &StoreOptions, lease: &dyn RuntimeLease, id: StoreId) -> StoreResult<Self::Host> {
         let (reader, engine) = Self::create_engine(o, lease, id, LeaseMode::Host)?;
-        Ok(SqliteHost {
-            reader,
-            engine,
-            context: BackupContext::new_internal(),
-            lease: None,
-        })
+        SqliteHost::maintenance(reader, engine)
     }
     fn backup(
-        _: &StoreOptions,
-        _: Arc<dyn RuntimeLease>,
-        _: BackupContext,
-        _: Duration,
+        options: &StoreOptions,
+        lease: Arc<dyn RuntimeLease>,
+        context: BackupContext,
+        deadline: Duration,
     ) -> StoreResult<BackupReport> {
-        later("automatic backup")
+        crate::backup::run(options, &*lease, context, deadline)
     }
     fn erasure_plan(
         _: &StoreOptions,
@@ -355,8 +368,8 @@ impl ReadStore for SqliteReader {
     ) -> StoreResult<OwnerGuardInventory> {
         crate::owner_guard::read(self, files, budget)
     }
-    fn credential(&self, _: [u8; 32]) -> StoreResult<Read<CredentialRecord>> {
-        later("capability credential lookup")
+    fn credential(&self, hash: [u8; 32]) -> StoreResult<Read<CredentialRecord>> {
+        crate::credential::read(self, hash)
     }
     fn inspect_backups(&self, b: ReadBudget) -> StoreResult<Page<Read<BackupGeneration>>> {
         SqliteFactory::inspect_backups(
@@ -530,7 +543,57 @@ impl HostStore for SqliteHost {
     ) -> StoreResult<ErasureReport> {
         later("body erasure")
     }
-    fn close_clean(self, _: &dyn RuntimeLease, _: Duration) -> StoreResult<BackupReport> {
-        later("shutdown backup")
+    fn close_clean(
+        mut self,
+        lease: &dyn RuntimeLease,
+        deadline: Duration,
+    ) -> StoreResult<BackupReport> {
+        let start = std::time::Instant::now();
+        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        if deadline.is_zero() {
+            return Err(fail(
+                StoreErrorCode::BackupFailed,
+                "clean-close deadline is zero",
+            ));
+        }
+        let report = crate::backup::run(
+            &StoreOptions {
+                state_directory: self
+                    .reader
+                    .path
+                    .parent()
+                    .ok_or_else(|| invalid("state path parent"))?
+                    .to_path_buf(),
+                busy_timeout: self.reader.timeout,
+            },
+            lease,
+            self.context.clone(),
+            deadline,
+        )?;
+        if start.elapsed() >= deadline {
+            return Err(fail(
+                StoreErrorCode::BackupFailed,
+                "clean-close deadline expired after backup publication",
+            ));
+        }
+        self.engine
+            .db
+            .busy_timeout(deadline.saturating_sub(start.elapsed()))
+            .map_err(sql)?;
+        let checkpoint = self.checkpoint(CheckpointMode::Truncate, lease)?;
+        if checkpoint.busy {
+            return Err(fail(
+                StoreErrorCode::Busy,
+                "clean-close checkpoint is pinned by another reader",
+            ));
+        }
+        self.engine.db.close().map_err(|(_, error)| sql(error))?;
+        if start.elapsed() >= deadline {
+            return Err(fail(
+                StoreErrorCode::BackupFailed,
+                "clean-close deadline expired during checkpoint/connection close",
+            ));
+        }
+        Ok(report)
     }
 }

@@ -277,7 +277,7 @@ pub struct CheckpointReport {
 /// Private implementation retains store/incarnation/generation and pin/cancel state.
 #[derive(Clone)]
 pub struct BackupContext {
-    _private: (),
+    pub(crate) state: std::sync::Arc<crate::backup_context::State>,
 }
 #[derive(Clone, Debug)]
 pub struct BackupGeneration {
@@ -552,10 +552,5 @@ impl WriterMode {
 impl WriterModeValue for WriterMode {
     fn kind(&self) -> WriterKind {
         self._kind
-    }
-}
-impl BackupContext {
-    pub(crate) fn new_internal() -> Self {
-        Self { _private: () }
     }
 }

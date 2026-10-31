@@ -6,6 +6,7 @@ pub(crate) struct Engine {
     pub db: Connection,
     pub identity: LeaseIdentity,
     pub poisoned: bool,
+    pub backup: Option<BackupContext>,
 }
 #[derive(Default, Clone, Debug)]
 pub(crate) struct Phases {
@@ -192,6 +193,13 @@ impl Engine {
                 ))
             })
             .map_err(sql)?;
+        if self
+            .backup
+            .as_ref()
+            .is_some_and(|context| context.suppress_checkpoint(log))
+        {
+            return Ok(());
+        }
         if log >= 256 && log > done {
             let _: (i64, i64, i64) = self
                 .db
@@ -217,7 +225,7 @@ impl Engine {
     }
     fn append(
         &self,
-        batch: AtomicBatch,
+        mut batch: AtomicBatch,
         info: &StoreInfo,
         recorded: i64,
         full: bool,
@@ -282,6 +290,7 @@ impl Engine {
                 "batch incarnation/generation differs",
             ));
         }
+        apply::capture::canonicalize(&self.db, &mut batch)?;
         let mut descriptors = Vec::new();
         let mut total = 0usize;
         for e in &batch.events {
@@ -344,6 +353,7 @@ impl Engine {
                 return Ok(retained);
             }
         }
+        apply::capture::validate_batch(&self.db, &batch)?;
         let mut op_hash = Sha256::new();
         op_hash.update(&scope);
         op_hash.update(&actor);
@@ -596,6 +606,78 @@ pub(crate) fn descriptor<T>(
         } => {
             json!({"prior":prior,"replacement":replacement,"prior_expected":prior_expected,"replacement_expected":replacement_expected,"approval":approval})
         }
+        SessionPrepared {
+            session,
+            agent,
+            provider,
+            native_ref,
+            consent,
+            generation,
+            expected,
+        } => {
+            json!({"session":session,"agent":agent,"provider":provider,"native_ref":native_ref,"consent":consent,"generation":generation,"expected":expected})
+        }
+        SessionActivated {
+            session,
+            expected,
+            incumbent,
+            process,
+            containment,
+            witnesses,
+        } => {
+            json!({"session":session,"expected":expected,"incumbent":incumbent,"process":process,"containment":containment,"witnesses":witnesses})
+        }
+        SessionEnded {
+            session,
+            expected,
+            reason,
+            final_turn,
+            final_cursor,
+        } => {
+            json!({"session":session,"expected":expected,"reason":text(reason)?,"final_turn":final_turn,"final_cursor":final_cursor})
+        }
+        SessionRevoked {
+            session,
+            expected,
+            reason,
+        } => json!({"session":session,"expected":expected,"reason":text(reason)?}),
+        SessionTurn {
+            agent,
+            session,
+            provider,
+            vendor_ref,
+            role,
+            text: body,
+            evidence,
+            ..
+        } => {
+            json!({"agent":agent,"session":session,"provider":provider,"vendor_ref":vendor_ref,"role":role,"text":text(body)?,"evidence":evidence})
+        }
+        CaptureSource {
+            source,
+            session,
+            consent,
+            native_ref,
+            incarnation,
+            ..
+        } => {
+            json!({"source":source,"session":session,"consent":consent,"native_ref":native_ref,"incarnation":incarnation})
+        }
+        CaptureProgress {
+            source,
+            incarnation,
+            old_offset,
+            new_offset,
+            last_turn,
+            ..
+        } => {
+            json!({"source":source,"incarnation":incarnation,"old_offset":old_offset,"new_offset":new_offset,"last_turn":last_turn})
+        }
+        CredentialRevoked {
+            credential,
+            expected,
+            reason,
+        } => json!({"credential":credential,"expected":expected,"reason":text(reason)?}),
         _ => facts,
     };
     codec::encode(&(kind, hot))

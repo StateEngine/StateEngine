@@ -100,7 +100,7 @@ pub enum IntegrationState {
 pub enum GrantKey {
     AgentCanCreate(AgentId),
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SourceEvidence {
     pub path: NativePath,
     pub incarnation: Vec<u8>,
@@ -139,7 +139,7 @@ pub struct NativeCustody {
     pub format_version: u16,
     pub record: Vec<u8>,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ContainmentFact {
     NotLaunched,
     Unknown {
@@ -155,13 +155,13 @@ pub enum ContainmentFact {
         probe: Option<EventId>,
     },
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ContainmentKind {
     Cgroup,
     Job,
     ProcessGroup,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum ContainmentCause {
     NoUserManager,
     NoDelegation,

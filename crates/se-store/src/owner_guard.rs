@@ -85,6 +85,12 @@ fn inventory(
             "owner-guard store is in maintenance",
         ));
     }
+    if budget.page.max_bytes.get() < 1024 {
+        return Err(fail(
+            StoreErrorCode::ReadIncomplete,
+            "owner-guard metadata exceeds the byte budget; no inventory returned",
+        ));
+    }
     let mut bytes = 1024usize;
     let mut count = 0usize;
     let mut charge = |size: usize| -> StoreResult<()> {

@@ -162,6 +162,9 @@ CREATE TABLE turn_data(
 ) STRICT;
 CREATE INDEX turn_data_agent_seq ON turn_data(project_id,agent_id,event_seq);
 CREATE INDEX turn_data_session_seq ON turn_data(project_id,session_id,event_seq);
+CREATE UNIQUE INDEX turn_data_id ON turn_data(project_id,turn_id);
+CREATE UNIQUE INDEX capture_source_natural ON aux_data(json_extract(facts,'$.project'),json_extract(facts,'$.source'),json_extract(facts,'$.incarnation'),json_extract(facts,'$.session'),json_extract(facts,'$.consent'),json_extract(facts,'$.native_ref')) WHERE json_extract(facts,'$.capture_kind')='source';
+CREATE UNIQUE INDEX capture_progress_natural ON aux_data(json_extract(facts,'$.project'),json_extract(facts,'$.source'),json_extract(facts,'$.incarnation'),json_extract(facts,'$.old_offset'),json_extract(facts,'$.new_offset'),json_extract(facts,'$.last_turn')) WHERE json_extract(facts,'$.capture_kind')='progress';
 CREATE TABLE process_data(
   event_seq INTEGER PRIMARY KEY REFERENCES events(seq),
   process_id BLOB NOT NULL CHECK(length(process_id)=16),
@@ -292,6 +295,7 @@ CREATE TABLE sessions(
   FOREIGN KEY(project_id,agent_id) REFERENCES principals(project_id,principal_id)
 ) STRICT, WITHOUT ROWID;
 CREATE UNIQUE INDEX sessions_one_active ON sessions(project_id,agent_id) WHERE state='active';
+CREATE INDEX sessions_agent_order ON sessions(project_id,agent_id,first_seq);
 CREATE TABLE credentials(
   credential_id BLOB PRIMARY KEY CHECK(length(credential_id)=16),
   project_id BLOB NOT NULL,

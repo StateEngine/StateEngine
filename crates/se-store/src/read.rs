@@ -7,6 +7,7 @@ type ResumeRow = (
     u64,
     u64,
 );
+mod capture;
 mod cursor;
 mod message;
 mod message_count;
@@ -89,8 +90,8 @@ impl SqliteSnapshot {
             .optional()
             .map_err(sql)
     }
-    fn visible(&self, e: &StoredEvent) -> bool {
-        match &self.scope.visibility {
+    fn visible(&self, e: &StoredEvent) -> StoreResult<bool> {
+        Ok(match &self.scope.visibility {
             Visibility::Owner | Visibility::SharedProject(_) => true,
             Visibility::SelfOnly(a) => {
                 let who = Actor::Agent(a.clone());
@@ -99,10 +100,23 @@ impl SqliteSnapshot {
                         EventBody::MessageSent { recipient, .. } => *recipient == who,
                         EventBody::WorkingStateSet { agent, .. } => agent == a,
                         EventBody::PrincipalRegistered { principal, .. } => *principal == who,
+                        EventBody::SessionPrepared { agent, .. }
+                        | EventBody::SessionTurn { agent, .. } => agent == a,
+                        EventBody::SessionActivated { session, .. }
+                        | EventBody::SessionEnded { session, .. }
+                        | EventBody::SessionRevoked { session, .. }
+                        | EventBody::CaptureSource { session, .. }
+                        | EventBody::CaptureFailed { session, .. }
+                        | EventBody::CaptureSuppressed { session, .. } => {
+                            self.session_visible(session, a)?
+                        }
+                        EventBody::CaptureProgress { source, .. } => {
+                            self.source_visible(source, a)?
+                        }
                         _ => false,
                     }
             }
-        }
+        })
     }
     fn record(&self, seq: i64) -> StoreResult<StoredEvent> {
         let e = load_event(&self.db, seq, &self.info)?;
@@ -115,7 +129,7 @@ impl SqliteSnapshot {
                 "runtime ownership facts are private maintenance data",
             ));
         }
-        if !self.visible(&e) {
+        if !self.visible(&e)? {
             return Err(fail(
                 StoreErrorCode::ScopeMismatch,
                 "event is outside admitted visibility",
@@ -550,10 +564,31 @@ impl Snapshot for SqliteSnapshot {
         )
     }
     fn session(&mut self, _id: SessionId) -> StoreResult<Read<ProjectionRecord>> {
-        later("session")
+        self.read_session(_id)
     }
     fn sessions(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        later("sessions")
+        let p = self.project_bytes()?;
+        if let Visibility::SelfOnly(agent) = &self.scope.visibility {
+            let a = self.agent_bytes(agent)?;
+            self.list_heads(
+                "sessions",
+                "first_seq",
+                "project_id=? AND agent_id=?",
+                vec![
+                    rusqlite::types::Value::Blob(p),
+                    rusqlite::types::Value::Blob(a),
+                ],
+                _budget,
+            )
+        } else {
+            self.list_heads(
+                "sessions",
+                "first_seq",
+                "project_id=?",
+                vec![rusqlite::types::Value::Blob(p)],
+                _budget,
+            )
+        }
     }
     fn decision(&mut self, _id: DecisionId) -> StoreResult<Read<ProjectionRecord>> {
         let p = self.project_bytes()?;
@@ -597,10 +632,10 @@ impl Snapshot for SqliteSnapshot {
         self.list_heads("decisions", "last_seq", &filter, keys, _budget)
     }
     fn turns(&mut self, _agent: AgentId, _budget: ReadBudget) -> StoreResult<Page<StoredEvent>> {
-        later("turns")
+        self.read_turns(_agent, _budget)
     }
     fn capture_source(&mut self, _source: RecordId) -> StoreResult<Read<ProjectionRecord>> {
-        later("capture_source")
+        self.read_capture_source(_source)
     }
     fn process(&mut self, _id: LifecycleId) -> StoreResult<Read<ProjectionRecord>> {
         later("process")

@@ -87,7 +87,7 @@ impl SqliteSnapshot {
             },
         )
     }
-    fn query_seqs(
+    pub(super) fn query_seqs(
         &self,
         sql: &str,
         params: Vec<rusqlite::types::Value>,
@@ -156,7 +156,9 @@ impl SqliteSnapshot {
         ];
         if let Some(agent) = query.agent {
             let a = self.agent_bytes(&agent)?;
-            sql.push_str(" AND actor_id=?");
+            sql.push_str(" AND (actor_id=? OR seq IN (SELECT event_seq FROM turn_data WHERE project_id=? AND agent_id=?))");
+            params.push(rusqlite::types::Value::Blob(a.clone()));
+            params.push(rusqlite::types::Value::Blob(self.project_bytes()?));
             params.push(rusqlite::types::Value::Blob(a));
         }
         if let Some(session) = query.session {
@@ -166,7 +168,9 @@ impl SqliteSnapshot {
         }
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
             let a = self.agent_bytes(agent)?;
-            sql.push_str(" AND (actor_id=? OR seq IN (SELECT sent_seq FROM messages WHERE project_id=? AND recipient_id=?))");
+            sql.push_str(" AND (actor_id=? OR seq IN (SELECT sent_seq FROM messages WHERE project_id=? AND recipient_id=?) OR seq IN (SELECT event_seq FROM turn_data WHERE project_id=? AND agent_id=?))");
+            params.push(rusqlite::types::Value::Blob(a.clone()));
+            params.push(rusqlite::types::Value::Blob(self.project_bytes()?));
             params.push(rusqlite::types::Value::Blob(a.clone()));
             params.push(rusqlite::types::Value::Blob(self.project_bytes()?));
             params.push(rusqlite::types::Value::Blob(a));
@@ -250,7 +254,7 @@ fn sql_error(e: rusqlite::Error) -> Box<StoreError> {
         sql(e)
     }
 }
-fn event_size(e: &StoredEvent) -> StoreResult<u64> {
+pub(super) fn event_size(e: &StoredEvent) -> StoreResult<u64> {
     let body = crate::transaction::descriptor(&e.body, |t| match t {
         StoredText::Present(s) => Ok(s.clone()),
         StoredText::Erased { .. } => Err(fail(StoreErrorCode::ContentErased, "body was erased")),
