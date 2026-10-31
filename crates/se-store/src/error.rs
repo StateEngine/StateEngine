@@ -1,9 +1,24 @@
 use crate::*;
 use se_types::{Remedy, Retry};
 pub(crate) fn fail(code: StoreErrorCode, cause: impl Into<String>) -> Box<StoreError> {
-    Box::new(StoreError { code, cause: cause.into(), detail: StoreDetail::None,
-        remedy: Remedy { text: "Preserve the original request key; reread the named state before retrying. For unreadable state, use diagnosis and a validated automatic backup.".into(), command: None },
-        retry: match code { StoreErrorCode::Busy | StoreErrorCode::Backpressure => Retry::AfterReread, _ => Retry::Never } })
+    let remedy = if code == StoreErrorCode::ReferenceMissing {
+        "Correct the named identifier or reread the referenced entity before retrying."
+    } else {
+        "Preserve the original request key; reread the named state before retrying. For unreadable state, use diagnosis and a validated automatic backup."
+    };
+    Box::new(StoreError {
+        code,
+        cause: cause.into(),
+        detail: StoreDetail::None,
+        remedy: Remedy {
+            text: remedy.into(),
+            command: None,
+        },
+        retry: match code {
+            StoreErrorCode::Busy | StoreErrorCode::Backpressure => Retry::AfterReread,
+            _ => Retry::Never,
+        },
+    })
 }
 pub(crate) fn sql(e: rusqlite::Error) -> Box<StoreError> {
     use rusqlite::ErrorCode;

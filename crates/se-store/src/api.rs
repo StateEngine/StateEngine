@@ -14,6 +14,19 @@ pub trait RuntimeLease: Send + Sync {
 /// Native adapter owned by se-proc and wired by the CLI/host, never by request JSON.
 /// Every path stays in the held per-user state directory. No shell or ambient umask.
 pub trait StateFiles: Send + Sync {
+    /// Return at most maximum immediate, owned regular files under retained
+    /// no-follow directory custody; over-budget and unreadable are errors.
+    fn list_owned(
+        &self,
+        directory: &std::path::Path,
+        maximum: usize,
+    ) -> StoreResult<Vec<std::path::PathBuf>> {
+        let _ = (directory, maximum);
+        Err(crate::error::fail(
+            StoreErrorCode::BackupFailed,
+            "native bounded backup listing is not wired",
+        ))
+    }
     /// Ensure a fixed descendant directory exists with native owner-only protection.
     /// Validate existing custody without repairing permissions or following links.
     fn prepare_directory(&self, path: &std::path::Path) -> StoreResult<()> {

@@ -22,7 +22,7 @@ pub struct WriteTimings {
     pub queue: Duration,
     pub transaction: Duration,
     pub commit_sync: Duration,
-    pub checkpoint: Duration,
+    pub checkpoint: Option<Duration>,
     pub group_requests: usize,
     /// The current outer transaction's measured synchronous setting, including
     /// promotion by another request. A replay receipt retains its original stamp.
@@ -38,6 +38,8 @@ struct AdmissionState {
     requests: usize,
     closed: bool,
     flush: bool,
+    recovering: bool,
+    recovery_queued: bool,
 }
 struct Shared {
     admission: Mutex<AdmissionState>,
@@ -53,12 +55,13 @@ struct Request {
 }
 #[allow(
     clippy::large_enum_variant,
-    reason = "Owned batches stay inline in the bounded channel; control messages are at most two reserved slots."
+    reason = "Owned batches stay inline in the bounded channel; flush, drain and recovery have three reserved slots."
 )]
 enum Command {
     Append(Request),
     Flush(Instant, Reply<FlushReport>),
     Drain(Instant),
+    Recover,
 }
 #[derive(Clone)]
 pub struct SqliteClient {
@@ -124,6 +127,15 @@ impl WriterClient for SqliteClient {
             return Err(fail(
                 StoreErrorCode::WriterClosed,
                 "writer is draining or closed",
+            ));
+        }
+        if s.recovering {
+            if !s.recovery_queued && self.sender.try_send(Command::Recover).is_ok() {
+                s.recovery_queued = true;
+            }
+            return Err(fail(
+                StoreErrorCode::Busy,
+                "writer reopen pending after an uncertain commit; retry the original identity",
             ));
         }
         let next = s
@@ -192,8 +204,8 @@ pub(crate) fn start(
         }
     }
     host.lease = Some(lease.clone());
-    // Two reserved control slots: at most one pending flush, and the unique
-    // owner's drain. Regular submissions remain bounded by queue_requests.
+    // Three reserved control slots: one flush, one coalesced recovery request,
+    // and the unique owner's drain. Regular submissions remain bounded by queue_requests.
     let request_limit = options.queue_requests.get() as usize;
     let shared = Arc::new(Shared {
         admission: Mutex::new(AdmissionState {
@@ -201,12 +213,14 @@ pub(crate) fn start(
             requests: 0,
             closed: false,
             flush: false,
+            recovering: false,
+            recovery_queued: false,
         }),
         byte_limit: options.resident_bytes.get() as usize,
         request_limit,
         timings: Mutex::new(TimingBuffer::default()),
     });
-    let (sender, receiver) = mpsc::sync_channel(request_limit + 2);
+    let (sender, receiver) = mpsc::sync_channel(request_limit + 3);
     let client = SqliteClient {
         sender,
         shared: shared.clone(),
@@ -324,11 +338,33 @@ fn flush(
     if Instant::now() > deadline {
         return Err(fail(StoreErrorCode::Busy, "flush deadline exceeded"));
     }
-    host.checkpoint(CheckpointMode::Passive, lease)?;
+    let recovery = host
+        .engine
+        .reopen(&host.reader.path, host.reader.timeout, lease);
+    if let Err(error) = recovery {
+        host.engine.maintenance = Some(error);
+    }
+    if !host.engine.poisoned
+        && let Err(error) = host.checkpoint(CheckpointMode::Passive, lease)
+    {
+        host.engine.maintenance = Some(error);
+    }
+    let through = host
+        .reader
+        .info()
+        .map_err(|mut error| {
+            error.cause.push_str(&format!(
+                "; indeterminate operations: {:?}",
+                host.engine.indeterminate()
+            ));
+            error
+        })?
+        .head;
     Ok(FlushReport {
-        through: connection::info(&host.engine.db)?.head,
+        maintenance_pending: host.engine.maintenance.is_some() || host.engine.poisoned,
+        through,
         pending_requests: 0,
-        indeterminate: Vec::new(),
+        indeterminate: host.engine.indeterminate(),
     })
 }
 fn run(
@@ -381,9 +417,17 @@ fn run(
                     ));
                     batches.push(r.batch)
                 }
-                let result = connection::info(&host.engine.db)
+                let result = host
+                    .engine
+                    .reopen(&host.reader.path, host.reader.timeout, &*lease)
+                    .and_then(|_| connection::info(&host.engine.db))
                     .and_then(|i| connection::validate_lease(&i, &*lease, LeaseMode::Host))
                     .and_then(|_| host.engine.group(batches, false));
+                shared
+                    .admission
+                    .lock()
+                    .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
+                    .recovering = host.engine.poisoned;
                 match result {
                     Ok((results, phases)) => {
                         if results.len() != replies.len() {
@@ -396,36 +440,35 @@ fn run(
                             replies.into_iter().zip(results)
                         {
                             shared.completed(bytes)?;
-                            let mut q = shared.timings.lock().map_err(|_| {
-                                fail(
-                                    StoreErrorCode::WriterClosed,
-                                    "writer timing buffer poisoned",
-                                )
-                            })?;
-                            let timings = WriteTimings {
-                                request_key: key,
-                                queue: start.saturating_duration_since(queued),
-                                transaction: phases.transaction,
-                                commit_sync: phases.sync,
-                                checkpoint: phases.checkpoint,
-                                group_requests: count,
-                                durability: if phases.full {
-                                    CommitDurability::Full
-                                } else {
-                                    CommitDurability::Normal
-                                },
-                            };
-                            if let Ok(receipt) = &mut result {
+                            if let (Ok(receipt), Some(commit_sync)) = (&mut result, phases.sync) {
+                                let timings = WriteTimings {
+                                    request_key: key,
+                                    queue: start.saturating_duration_since(queued),
+                                    transaction: phases.transaction,
+                                    commit_sync,
+                                    checkpoint: phases.checkpoint,
+                                    group_requests: count,
+                                    durability: if phases.full {
+                                        CommitDurability::Full
+                                    } else {
+                                        CommitDurability::Normal
+                                    },
+                                };
                                 receipt.write_timings = Some(timings.clone());
-                            }
-                            if q.records.len() == 1024 {
-                                q.records.pop_front();
-                                q.dropped = q.dropped.checked_add(1).ok_or_else(|| {
-                                    invalid("writer diagnostic drop count overflow")
+                                let mut q = shared.timings.lock().map_err(|_| {
+                                    fail(
+                                        StoreErrorCode::WriterClosed,
+                                        "writer timing buffer poisoned",
+                                    )
                                 })?;
+                                if q.records.len() == 1024 {
+                                    q.records.pop_front();
+                                    q.dropped = q.dropped.checked_add(1).ok_or_else(|| {
+                                        invalid("writer diagnostic drop count overflow")
+                                    })?;
+                                }
+                                q.records.push_back(timings);
                             }
-                            q.records.push_back(timings);
-                            drop(q);
                             reply.send(result);
                         }
                     }
@@ -436,6 +479,35 @@ fn run(
                         }
                     }
                 }
+                if host.engine.poisoned {
+                    let reopened = host
+                        .engine
+                        .reopen(&host.reader.path, host.reader.timeout, &*lease)
+                        .is_ok();
+                    shared
+                        .admission
+                        .lock()
+                        .map_err(|_| {
+                            fail(StoreErrorCode::WriterClosed, "writer admission poisoned")
+                        })?
+                        .recovering = !reopened;
+                }
+            }
+            Command::Recover => {
+                shared
+                    .admission
+                    .lock()
+                    .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
+                    .recovery_queued = false;
+                let reopened = host
+                    .engine
+                    .reopen(&host.reader.path, host.reader.timeout, &*lease)
+                    .is_ok();
+                shared
+                    .admission
+                    .lock()
+                    .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
+                    .recovering = !reopened;
             }
             Command::Flush(deadline, reply) => {
                 let result = flush(&mut host, deadline, &*lease);

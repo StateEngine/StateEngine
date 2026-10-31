@@ -177,7 +177,24 @@ fn source_binding(
     }
     let p = project_id(c, &batch.admission.scope, false)?;
     let scope = scope_key(c, &batch.admission.scope, false)?;
-    let (session,incarnation):(Vec<u8>,Vec<u8>)=c.query_row("SELECT session_id,source_incarnation FROM capture_sources WHERE project_id=? AND source_id=?",rusqlite::params![p,source.as_bytes().as_slice()],|r|Ok((r.get(0)?,r.get(1)?))).map_err(sql)?;
+    let (session, incarnation): (Vec<u8>, Vec<u8>) = c
+        .query_row(
+            "SELECT session_id,source_incarnation FROM capture_sources
+             WHERE project_id=? AND source_id=?",
+            rusqlite::params![p, source.as_bytes().as_slice()],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(sql)?
+        .ok_or_else(|| {
+            fail(
+                StoreErrorCode::ReferenceMissing,
+                format!(
+                    "capture source {} is absent",
+                    uuid::Uuid::from_bytes(*source.as_bytes())
+                ),
+            )
+        })?;
     Ok((
         wire(c, "session", &session, &scope)?
             .parse()
@@ -255,7 +272,8 @@ pub(super) fn apply(
             {
                 return Err(invalid("turn native reference/evidence bounds"));
             }
-            let sources:u64=c.query_row("SELECT count(*) FROM capture_sources WHERE project_id=? AND session_id=? AND source_incarnation=? AND consent='capture' AND byte_offset<=?",crate::sql_value::sql_params![p,session,evidence.incarnation,evidence.offset],|r|crate::sql_value::value(r,0)).map_err(sql)?;
+            let sources:u64=c.query_row("SELECT count(*) FROM capture_sources WHERE project_id=? AND session_id=? AND source_incarnation=?
+                    AND consent='capture' AND byte_offset<=?",crate::sql_value::sql_params![p,session,evidence.incarnation,evidence.offset],|r|crate::sql_value::value(r,0)).map_err(sql)?;
             if sources != 1 {
                 return Err(fail(
                     StoreErrorCode::SourceChanged,
@@ -265,7 +283,8 @@ pub(super) fn apply(
             let text = codec::text(text, 1024 * 1024)?;
             let payload = payload(c, seq, "body", &text)?;
             let path = symbol(c, codec::encode(&evidence.path)?.as_bytes())?;
-            c.execute("INSERT INTO turn_data(event_seq,turn_id,project_id,agent_id,session_id,provider,vendor_ref,role,text_payload,source_path,source_offset,source_length,source_sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,turn.as_bytes().as_slice(),p,a,session,provider(backend),vendor_ref,role(turn_role),payload,path,evidence.offset,evidence.length,evidence.sha256.map(|s|s.to_vec())]).map_err(sql)?;
+            c.execute("INSERT INTO turn_data(event_seq,turn_id,project_id,agent_id,session_id,provider,vendor_ref,role,text_payload,source_path,source_offset,source_length,source_sha256)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,turn.as_bytes().as_slice(),p,a,session,provider(backend),vendor_ref,role(turn_role),payload,path,evidence.offset,evidence.length,evidence.sha256.map(|s|s.to_vec())]).map_err(sql)?;
             codec::aux(
                 c,
                 seq,
@@ -299,9 +318,11 @@ pub(super) fn apply(
                 ));
             }
             if rev == 1 {
-                c.execute("INSERT INTO capture_sources(project_id,source_id,session_id,revision,last_seq,source_incarnation,byte_offset,consent,suppressed_count) VALUES(?,?,?,?,?,?,0,?,0)",crate::sql_value::sql_params![p,source.as_bytes().as_slice(),session,rev,seq,incarnation,consent(capture)]).map_err(sql)?;
+                c.execute("INSERT INTO capture_sources(project_id,source_id,session_id,revision,last_seq,source_incarnation,byte_offset,consent,suppressed_count)
+                    VALUES(?,?,?,?,?,?,0,?,0)",crate::sql_value::sql_params![p,source.as_bytes().as_slice(),session,rev,seq,incarnation,consent(capture)]).map_err(sql)?;
             } else {
-                let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,source_incarnation=?,byte_offset=0,consent=?,suppressed_count=0 WHERE project_id=? AND source_id=? AND session_id=? AND revision=? AND source_incarnation<>?",crate::sql_value::sql_params![rev,seq,incarnation,consent(capture),p,source.as_bytes().as_slice(),session,rev-1,incarnation]).map_err(sql)?;
+                let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,source_incarnation=?,byte_offset=0,consent=?,suppressed_count=0
+                    WHERE project_id=? AND source_id=? AND session_id=? AND revision=? AND source_incarnation<>?",crate::sql_value::sql_params![rev,seq,incarnation,consent(capture),p,source.as_bytes().as_slice(),session,rev-1,incarnation]).map_err(sql)?;
                 if changed != 1 {
                     return Err(fail(
                         StoreErrorCode::SourceChanged,
@@ -322,7 +343,8 @@ pub(super) fn apply(
             new_offset,
             ..
         } => {
-            let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,byte_offset=? WHERE project_id=? AND source_id=? AND revision=? AND source_incarnation=? AND byte_offset=? AND consent='capture'",crate::sql_value::sql_params![rev,seq,new_offset,p,source.as_bytes().as_slice(),rev-1,incarnation,old_offset]).map_err(sql)?;
+            let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,byte_offset=? WHERE project_id=? AND source_id=?
+                    AND revision=? AND source_incarnation=? AND byte_offset=? AND consent='capture'",crate::sql_value::sql_params![rev,seq,new_offset,p,source.as_bytes().as_slice(),rev-1,incarnation,old_offset]).map_err(sql)?;
             if changed != 1 {
                 return Err(fail(
                     StoreErrorCode::SourceChanged,
@@ -367,7 +389,9 @@ pub(super) fn apply(
             if to_offset < from_offset || to_offset > i64::MAX as u64 || reason.len() > 16384 {
                 return Err(invalid("capture suppression range/reason bounds"));
             }
-            let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,byte_offset=?,suppressed_count=suppressed_count+? WHERE project_id=? AND source_id=? AND session_id=? AND revision=? AND byte_offset=? AND consent='suppressed'",crate::sql_value::sql_params![rev,seq,to_offset,count,p,source.as_bytes().as_slice(),key(c,"session",session.as_str(),&scope,false)?,rev-1,from_offset]).map_err(sql)?;
+            let changed=c.execute("UPDATE capture_sources SET revision=?,last_seq=?,byte_offset=?,suppressed_count=suppressed_count+?
+                    WHERE project_id=? AND source_id=? AND session_id=? AND revision=? AND byte_offset=? AND
+                    consent='suppressed'",crate::sql_value::sql_params![rev,seq,to_offset,count,p,source.as_bytes().as_slice(),key(c,"session",session.as_str(),&scope,false)?,rev-1,from_offset]).map_err(sql)?;
             if changed != 1 {
                 return Err(fail(
                     StoreErrorCode::SourceChanged,

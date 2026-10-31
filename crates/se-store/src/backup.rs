@@ -175,19 +175,28 @@ fn read_index(
     }
     Ok((index, Some(Sha256::digest(&bytes).into())))
 }
-fn refuse_unindexed(root: &Path, index: &Index, deadline: Instant) -> StoreResult<()> {
-    let mut entries = 0usize;
-    for entry in std::fs::read_dir(root).map_err(invalid)? {
+fn refuse_unindexed(
+    files: &dyn StateFiles,
+    root: &Path,
+    index: &Index,
+    deadline: Instant,
+) -> StoreResult<()> {
+    let entries = files.list_owned(root, 4096)?;
+    if entries.len() > 4096 {
+        return Err(fail(
+            StoreErrorCode::BackupFailed,
+            "native backup listing exceeded its bound",
+        ));
+    }
+    for path in entries {
         check(deadline)?;
-        entries += 1;
-        if entries > 4096 {
+        if path.parent() != Some(root) {
             return Err(fail(
-                StoreErrorCode::BackupFailed,
-                "backup home inventory exceeds 4096 entries",
+                StoreErrorCode::LocationUnsafe,
+                "backup listing escaped the held directory",
             ));
         }
-        let name = entry.map_err(invalid)?.file_name();
-        if let Some(name) = name.to_str()
+        if let Some(name) = path.file_name().and_then(|s| s.to_str())
             && name.starts_with("state-backup-")
             && name.ends_with(".db")
             && !index.generations.iter().any(|e| e.file == name)
@@ -196,14 +205,18 @@ fn refuse_unindexed(root: &Path, index: &Index, deadline: Instant) -> StoreResul
                 StoreErrorCode::BackupFailed,
                 format!(
                     "unindexed pending generation retained at {}; resolve it before creating another",
-                    root.join(name).display()
+                    path.display()
                 ),
             ));
         }
     }
     Ok(())
 }
-fn remove_if_present(files: &dyn StateFiles, path: &Path, deadline: Instant) -> StoreResult<()> {
+pub(crate) fn remove_if_present(
+    files: &dyn StateFiles,
+    path: &Path,
+    deadline: Instant,
+) -> StoreResult<()> {
     match files.readback(path)? {
         se_types::Read::Absent { .. } => Ok(()),
         se_types::Read::Present { value } => {
@@ -386,7 +399,7 @@ pub(crate) fn run(
             files.prepare_directory(root)?;
             files.prepare_directory(staging)?;
             let (mut index, old_hash) = read_index(files, root, &pre.id, deadline)?;
-            refuse_unindexed(root, &index, deadline)?;
+            refuse_unindexed(files, root, &index, deadline)?;
             cleanup(files, staging, deadline)?;
             let stage = files.create_staging(staging)?;
             let stage_path = stage.path.clone();

@@ -1,6 +1,7 @@
 pub(crate) mod capture;
 pub(crate) mod event;
 pub(crate) mod process;
+pub(crate) mod semantic;
 pub(crate) mod session;
 // Closed wave-1 metadata codec; text lives only in its typed payload column.
 use crate::{error::*, identity::*, *};
@@ -109,7 +110,8 @@ pub(crate) fn body(
             }
         }
         "message.read" | "message.dismissed" | "message.delivered" => {
-            let (message,recipient,evidence):(Vec<u8>,Vec<u8>,Option<Vec<u8>>)=c.query_row("SELECT d.message_id,m.recipient_id,m.evidence_event FROM mark_data m JOIN message_data d ON d.event_seq=m.message_seq WHERE m.event_seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).map_err(sql)?;
+            let (message,recipient,evidence):(Vec<u8>,Vec<u8>,Option<Vec<u8>>)=c.query_row("SELECT d.message_id,m.recipient_id,m.evidence_event FROM mark_data m JOIN message_data d
+                    ON d.event_seq=m.message_seq WHERE m.event_seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).map_err(sql)?;
             let s = scope_key(c, scope, false)?;
             let message = wire(c, "message", &message, &s)?.parse().map_err(invalid)?;
             let recipient = actor(c, &recipient, &s)?;
@@ -298,13 +300,75 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "grant.recorded",
             json!({"principal":principal,"key":key,"active":active,"expected":expected}),
         ),
-        ProcessRegistered { .. } => ("process.registered", Value::Null),
-        ProcessTransition { .. } => ("process.transition", Value::Null),
-        SessionPrepared { .. } => ("session.prepared", Value::Null),
-        SessionActivated { .. } => ("session.activated", Value::Null),
-        SessionEnded { .. } => ("session.ended", Value::Null),
-        SessionRevoked { .. } => ("session.revoked", Value::Null),
-        SessionTurn { .. } => ("session.turn", Value::Null),
+        ProcessRegistered { identity, initial } => (
+            "process.registered",
+            json!({"identity":identity,"initial":initial}),
+        ),
+        ProcessTransition {
+            process,
+            identity,
+            expected,
+            from,
+            to,
+            observation,
+            outcome,
+            containment,
+        } => (
+            "process.transition",
+            json!({"process":process,"identity":identity,"expected":expected,"from":from,"to":to,"observation":observation,"outcome":outcome,"containment":containment}),
+        ),
+        SessionPrepared {
+            session,
+            agent,
+            provider,
+            native_ref,
+            consent,
+            generation,
+            expected,
+        } => (
+            "session.prepared",
+            json!({"session":session,"agent":agent,"provider":provider,"native_ref":native_ref,"consent":consent,"generation":generation,"expected":expected}),
+        ),
+        SessionActivated {
+            session,
+            expected,
+            incumbent,
+            process,
+            containment,
+            witnesses,
+        } => (
+            "session.activated",
+            json!({"session":session,"expected":expected,"incumbent":incumbent,"process":process,"containment":containment,"witnesses":witnesses}),
+        ),
+        SessionEnded {
+            session,
+            expected,
+            final_turn,
+            final_cursor,
+            ..
+        } => (
+            "session.ended",
+            json!({"session":session,"expected":expected,"final_turn":final_turn,"final_cursor":final_cursor}),
+        ),
+        SessionRevoked {
+            session, expected, ..
+        } => (
+            "session.revoked",
+            json!({"session":session,"expected":expected}),
+        ),
+        SessionTurn {
+            turn,
+            agent,
+            session,
+            provider,
+            vendor_ref,
+            role,
+            evidence,
+            ..
+        } => (
+            "session.turn",
+            json!({"turn":turn,"agent":agent,"session":session,"provider":provider,"vendor_ref":vendor_ref,"role":role,"evidence":evidence}),
+        ),
         CaptureSource {
             source,
             session,
@@ -380,11 +444,39 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "credential.revoked",
             json!({"credential":credential,"expected":expected}),
         ),
-        MessageSent { .. } => ("message.sent", Value::Null),
-        MessageRead { .. } => ("message.read", Value::Null),
-        MessageDismissed { .. } => ("message.dismissed", Value::Null),
-        MessageDelivered { .. } => ("message.delivered", Value::Null),
-        WorkingStateSet { .. } => ("working_state.set", Value::Null),
+        MessageSent {
+            message,
+            recipient,
+            kind,
+            refs,
+            reply_to,
+            ..
+        } => (
+            "message.sent",
+            json!({"message":message,"recipient":recipient,"kind":kind,"refs":refs,"reply_to":reply_to}),
+        ),
+        MessageRead { message, recipient } => (
+            "message.read",
+            json!({"message":message,"recipient":recipient}),
+        ),
+        MessageDismissed { message, recipient } => (
+            "message.dismissed",
+            json!({"message":message,"recipient":recipient}),
+        ),
+        MessageDelivered {
+            message,
+            recipient,
+            evidence,
+        } => (
+            "message.delivered",
+            json!({"message":message,"recipient":recipient,"evidence":evidence}),
+        ),
+        WorkingStateSet {
+            agent, expected, ..
+        } => (
+            "working_state.set",
+            json!({"agent":agent,"expected":expected}),
+        ),
         RuntimeOwnerEstablished {
             epoch,
             generation,
@@ -396,11 +488,46 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "runtime.owner",
             json!({"epoch":epoch,"generation":generation,"expected_owner_generation":expected_owner_generation,"expected":expected,"witnesses":witnesses}),
         ),
-        DecisionProposed { .. } => ("decision.proposed", Value::Null),
-        DecisionRatified { .. } => ("decision.ratified", Value::Null),
-        DecisionRejected { .. } => ("decision.rejected", Value::Null),
-        DecisionRetracted { .. } => ("decision.retracted", Value::Null),
-        DecisionSuperseded { .. } => ("decision.superseded", Value::Null),
+        DecisionProposed {
+            decision,
+            key,
+            prior,
+            kind,
+            ..
+        } => (
+            "decision.proposed",
+            json!({"decision":decision,"key":key,"prior":prior,"kind":kind}),
+        ),
+        DecisionRatified {
+            decision,
+            expected,
+            approval,
+        } => (
+            "decision.ratified",
+            json!({"decision":decision,"expected":expected,"approval":approval}),
+        ),
+        DecisionRejected {
+            decision, expected, ..
+        } => (
+            "decision.rejected",
+            json!({"decision":decision,"expected":expected}),
+        ),
+        DecisionRetracted {
+            decision, expected, ..
+        } => (
+            "decision.retracted",
+            json!({"decision":decision,"expected":expected}),
+        ),
+        DecisionSuperseded {
+            prior,
+            replacement,
+            prior_expected,
+            replacement_expected,
+            approval,
+        } => (
+            "decision.superseded",
+            json!({"prior":prior,"replacement":replacement,"prior_expected":prior_expected,"replacement_expected":replacement_expected,"approval":approval}),
+        ),
         _ => return later("this event kind"),
     })
 }

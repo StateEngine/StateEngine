@@ -146,7 +146,8 @@ impl SqliteSnapshot {
             _ => Some(self.project_bytes()?),
         };
         let mut sql = String::from(
-            "SELECT entity_revision,seq,seq FROM events WHERE project_id IS ? AND seq>? AND seq<=? AND kind NOT IN ('runtime.owner','runtime.handover')",
+            "SELECT entity_revision,seq,seq FROM events WHERE project_id IS ? AND seq>? AND seq<=? AND
+                    kind NOT IN ('runtime.owner','runtime.handover')",
         );
         let mut params = vec![
             p.map(rusqlite::types::Value::Blob)
@@ -156,11 +157,17 @@ impl SqliteSnapshot {
         ];
         if let Some(agent) = query.agent {
             let a = self.agent_bytes(&agent)?;
-            sql.push_str(" AND (actor_id=? OR seq IN (SELECT event_seq FROM turn_data WHERE project_id=? AND agent_id=?) OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=events.seq AND d.principal_id=?))");
-            params.push(rusqlite::types::Value::Blob(a.clone()));
-            params.push(rusqlite::types::Value::Blob(self.project_bytes()?));
-            params.push(rusqlite::types::Value::Blob(a.clone()));
-            params.push(rusqlite::types::Value::Blob(a));
+            sql.push_str(" AND (actor_id=?
+                OR EXISTS(SELECT 1 FROM turn_data d WHERE d.event_seq=events.seq AND d.project_id=? AND d.agent_id=? AND d.event_seq>? AND d.event_seq<=?)
+                OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=events.seq AND d.principal_id=?))");
+            params.extend([
+                rusqlite::types::Value::Blob(a.clone()),
+                rusqlite::types::Value::Blob(self.project_bytes()?),
+                rusqlite::types::Value::Blob(a.clone()),
+                rusqlite::types::Value::Integer(after as i64),
+                rusqlite::types::Value::Integer(h as i64),
+                rusqlite::types::Value::Blob(a),
+            ]);
         }
         if let Some(session) = query.session {
             let k = key(&self.db, "session", session.as_str(), &s, false)?;
@@ -169,13 +176,22 @@ impl SqliteSnapshot {
         }
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
             let a = self.agent_bytes(agent)?;
-            sql.push_str(" AND (actor_id=? OR seq IN (SELECT sent_seq FROM messages WHERE project_id=? AND recipient_id=?) OR seq IN (SELECT event_seq FROM turn_data WHERE project_id=? AND agent_id=?) OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=events.seq AND d.principal_id=?))");
-            params.push(rusqlite::types::Value::Blob(a.clone()));
-            params.push(rusqlite::types::Value::Blob(self.project_bytes()?));
-            params.push(rusqlite::types::Value::Blob(a.clone()));
-            params.push(rusqlite::types::Value::Blob(self.project_bytes()?));
-            params.push(rusqlite::types::Value::Blob(a.clone()));
-            params.push(rusqlite::types::Value::Blob(a));
+            sql.push_str(" AND (actor_id=?
+                OR EXISTS(SELECT 1 FROM messages d WHERE d.sent_seq=events.seq AND d.project_id=? AND d.recipient_id=? AND d.sent_seq>? AND d.sent_seq<=?)
+                OR EXISTS(SELECT 1 FROM turn_data d WHERE d.event_seq=events.seq AND d.project_id=? AND d.agent_id=? AND d.event_seq>? AND d.event_seq<=?)
+                OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=events.seq AND d.principal_id=?))");
+            params.extend([
+                rusqlite::types::Value::Blob(a.clone()),
+                rusqlite::types::Value::Blob(self.project_bytes()?),
+                rusqlite::types::Value::Blob(a.clone()),
+                rusqlite::types::Value::Integer(after as i64),
+                rusqlite::types::Value::Integer(h as i64),
+                rusqlite::types::Value::Blob(self.project_bytes()?),
+                rusqlite::types::Value::Blob(a.clone()),
+                rusqlite::types::Value::Integer(after as i64),
+                rusqlite::types::Value::Integer(h as i64),
+                rusqlite::types::Value::Blob(a),
+            ]);
         }
         if !query.kinds.is_empty() {
             if query.kinds.len() > 52 {

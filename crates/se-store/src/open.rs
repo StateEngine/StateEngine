@@ -194,19 +194,31 @@ impl SqliteFactory {
                     db,
                     identity,
                     poisoned: false,
+                    pending: Vec::new(),
+                    maintenance: None,
                     backup: None,
                 },
             ))
         })();
         match result {
             Err(mut error) => {
-                if let Err(cleanup) = std::fs::remove_file(&staged)
-                    && cleanup.kind() != std::io::ErrorKind::NotFound
-                {
-                    error.cause.push_str(&format!(
-                        "; retained staging {}: {cleanup}",
-                        staged.display()
-                    ));
+                for suffix in ["-journal", "-wal", "-shm", ""] {
+                    let name = staged
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .ok_or_else(|| invalid("native staging name"))?;
+                    let path = staged.with_file_name(format!("{name}{suffix}"));
+                    if let Err(cleanup) = crate::backup::remove_if_present(
+                        lease.files(),
+                        &path,
+                        std::time::Instant::now() + Duration::from_secs(1),
+                    ) {
+                        error.cause.push_str(&format!(
+                            "; retained staging {}: {}",
+                            path.display(),
+                            cleanup.cause
+                        ));
+                    }
                 }
                 Err(error)
             }
@@ -234,6 +246,8 @@ impl StoreFactory for SqliteFactory {
                             db,
                             identity,
                             poisoned: false,
+                            pending: Vec::new(),
+                            maintenance: None,
                             backup: None,
                         },
                     },
@@ -265,6 +279,8 @@ impl StoreFactory for SqliteFactory {
                             db,
                             identity,
                             poisoned: false,
+                            pending: Vec::new(),
+                            maintenance: None,
                             backup: None,
                         },
                     )?,
@@ -438,6 +454,8 @@ impl DirectStore for SqliteDirect {
         batch: AtomicBatch,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CommitReceipt> {
+        self.engine
+            .reopen(&self.reader.path, self.reader.timeout, lease)?;
         let identity = connection::validate_lease(
             &connection::info(&self.engine.db)?,
             lease,
@@ -455,6 +473,7 @@ impl DirectStore for SqliteDirect {
             .ok_or_else(|| invalid("direct commit returned no operation"))?
     }
     fn close(self) -> StoreResult<()> {
+        self.engine.require_resolved()?;
         self.engine.db.close().map_err(|(_, e)| sql(e))
     }
 }
@@ -492,6 +511,8 @@ impl HostStore for SqliteHost {
         b: AtomicBatch,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CommitReceipt> {
+        self.engine
+            .reopen(&self.reader.path, self.reader.timeout, lease)?;
         connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         if b.events.len() != 1
             || !matches!(b.events[0].body, EventBody::RuntimeOwnerEstablished { .. })
@@ -517,7 +538,8 @@ impl HostStore for SqliteHost {
         lease: &dyn RuntimeLease,
     ) -> StoreResult<CheckpointReport> {
         connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
-        self.engine
+        let report = self
+            .engine
             .db
             .query_row(
                 match mode {
@@ -533,7 +555,13 @@ impl HostStore for SqliteHost {
                     })
                 },
             )
-            .map_err(sql)
+            .map_err(sql);
+        self.engine.maintenance = match &report {
+            Ok(value) if !value.busy && value.checkpointed_frames >= value.wal_frames => None,
+            Ok(_) => Some(fail(StoreErrorCode::Busy, "checkpoint has pending frames")),
+            Err(error) => Some(error.clone()),
+        };
+        report
     }
     fn erase(
         &mut self,
@@ -549,6 +577,9 @@ impl HostStore for SqliteHost {
         deadline: Duration,
     ) -> StoreResult<BackupReport> {
         let start = std::time::Instant::now();
+        self.engine.require_resolved()?;
+        self.engine
+            .reopen(&self.reader.path, self.reader.timeout, lease)?;
         connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         if deadline.is_zero() {
             return Err(fail(
