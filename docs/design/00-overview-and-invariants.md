@@ -58,7 +58,8 @@ Everything StateEngine adds, not counting the agent CLIs.
 
 New-store creation and FULL schema/header publication are now an explicit
 managed `se init --repo DIR` cost, including SE Code's per-workspace pre-TUI
-repository trust hook (40), separate from once-per-profile onboarding. This
+repository trust hook (40), after the workspace is accepted and separate from
+once-per-profile onboarding. A declined workspace is never registered. This
 managed setup writes nothing inside DIR; setup lives in the per-user state home
 outside it, so it needs no repository-write consent. In contrast, `se init --adopt`
 for user-started Claude/Codex sessions writes the integration files in 70 §3.2

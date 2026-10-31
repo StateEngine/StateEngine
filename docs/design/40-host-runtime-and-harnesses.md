@@ -1,6 +1,6 @@
 # 40 — Host runtime and harnesses
 
-Design candidate, not runtime implementation or qualification. Owner: Vera.
+Design candidate, not runtime implementation or qualification. Owner: host-runtime maintainer.
 Round-2 reconciliation base: assembled rust-se `f25ca90`. Verification tier: kernel boundary design;
 compiling declarations here, journey/black-box checks owned by reviewers.
 
@@ -79,7 +79,7 @@ Canonical declarations are actual compiling Rust, with no method bodies, default
 panic placeholders, test code or executable backend. The exact linked public
 HostFactory/Host/HostServices signatures remain solely in
 [the section-10 API proposal](secode-stateengine-api.rs), compiled independently
-with [its commercial constructor signature](commercial-factory.rs). Alpha owns
+with [its commercial constructor signature](commercial-factory.rs). SE Code owns
 that permissive crate; replace the proposal with its published dependency at
 integration. No proprietary copy is promoted to a second public API.
 
@@ -250,8 +250,10 @@ Workspace initialization belongs to SE Code's per-repository trust decision
 TUI. Profile onboarding runs once per profile and is not this hook. The UI
 owner/human-presence path uses the bundled se already located by
 `stateengine_package.rs`, with literal selected-workspace --repo and resolved
---home argv. Managed init writes nothing inside that workspace, so repository-write
-consent is unnecessary; the existing repository trust decision remains SE Code's. In the public GitHub
+--home argv only after SE Code's trust decision accepts the workspace. Declined
+workspaces are never registered and init is not invoked. Managed init writes
+nothing inside that workspace, so separate repository-write consent is unnecessary;
+the workspace trust decision remains mandatory. In the public GitHub
 build the stub host has no se: silently skip init, without an error or a message
 about a missing executable, and keep ordinary SE Code usable. This skip applies
 only to the known NotIncluded build; a declared included payload that is missing
@@ -333,7 +335,7 @@ release_operation requires a terminal taken result; release_stdio requires a
 closed witness and no unreleased operations. stdio_state retrieves bounded current-
 generation port/ticket references after future drop/re-adoption. One operation per
 stream, global byte cap, no EOF from cancellation. This is the signature agreement
-with 5p, now declared in the section-30 amendment; it is not an implemented backend.
+with the section-30 process maintainer, now declared in the section-30 amendment; it is not an implemented backend.
 
 For same-process adoption or staged native import, register the wake then call
 attach_stdio with the actual recovered/imported OwnedProcess and successor-local
@@ -393,7 +395,7 @@ and migration failures after resources start poison the generation.** A lifecycl
 panic retains the partial resources and gates its known G even when the writer
 itself has not failed. These ownership/lifecycle faults use independent factory
 recovery; ordinary API/session panics return Internal/EnginePanicked and
-route-local failure rather than poisoning unrelated sessions. Iris's section-10
+route-local failure rather than poisoning unrelated sessions. The section-10
 amendment mirrors this reconciled policy at the linked boundary; existing restart
 generation fences remain. panic=unwind is required;
 abort/OOM/OS kill use cold recovery.
@@ -429,8 +431,8 @@ truthfully, and starts no writer/callback/native effect. SE Code registers the
 Prepared Host/G and fresh immutable generation-fenced services before activate.
 Missing store returns structured `setup-required` to the first-workspace-open
 repository trust hook above. Its UI owner/human-presence path runs bundled
-managed `se --home HOME init --repo DIR` without repository-write consent, then
-re-prepares; the public GitHub stub skips init silently. Only failed workspace setup shows
+managed `se --home HOME init --repo DIR` after workspace trust acceptance,
+without separate repository-write consent, then re-prepares; the public GitHub stub skips init silently. Only failed workspace setup shows
 “StateEngine has not been initialized for this state home; run se --home HOME
 init --repo DIR.” The preparation/refusal itself creates no store/schema, endpoint,
 writer or credential; unreadable/foreign/unsupported state keeps its diagnosis. Preparation reads the version and plans
@@ -592,7 +594,7 @@ command as supported by that observation, never claims live adoption.
 
 ## 6. Live handover: standalone ↔ SE Code
 
-Prime's alpha scope is SE Code restart/upgrade without killing its agents.
+The alpha scope is SE Code restart/upgrade without killing its agents.
 The daemon takes native custody and continues capture; SE Code-native user-input
 and pushed-mail routes become **NativeDormant**, with status saying “waiting for
 SE Code to reopen”. Its protected queue, original pending admissions and new
@@ -622,7 +624,7 @@ lease or delivery/input consumer while source owns runtime.lock.
 
 The linked trigger is HostFactory::handover(request, native, CallOptions), with
 source G in CallOptions and actual pinned successor resolved by the retained
-factory. It uses Iris's HandoverServices with native epoch/queue accessors
+factory. It uses the section-10 HandoverServices with native epoch/queue accessors
 independently of ordinary G callback fencing. The fence is keyed by the exact
 transfer and retained queue incarnation, not the lifetime of one SE Code epoch.
 The linked TransferId is the checked spelling of the same store transfer
@@ -845,7 +847,7 @@ proved within the original deadline, refuse before claim and preserve the source
 buffers/consumers for checked abort. Never discard a consumed partial JSON frame
 or start a receiver reader while a source native read may still complete.
 
-### 6.1 Store record agreement (Nell owns the amendment)
+### 6.1 Store record agreement (store-owned amendment)
 
 Reuse existing store/incarnation/actor/request-key envelope and record Revision;
 add no config key or JSON side-file authority. Host request fields are transfer RecordId, source/successor HostEpoch (full
@@ -886,7 +888,7 @@ while the durable head remains Claimed. A lost Finished reply is resolved from
 that same transition key and stored completion proof before any consumer starts.
 If native activation/source closure cannot be proved after peer loss, use checked
 cold recovery; never invent an abort or activate a second set of streams.
-The record's immutable peer/generation/nonce/digest binding and legal transition checks belong to Nell's
+The record's immutable peer/generation/nonce/digest binding and legal transition checks belong to the section-20
 store amendment; the host supplies real outside facts and holds the OS lease.
 
 ### 6.2 Closed recovery attestations
@@ -947,7 +949,7 @@ server checks GetNamedPipeClientProcessId and actual token SID. Linux uses
 SO_PEERCRED; macOS LOCAL_PEERCRED + LOCAL_PEERPID. ACL/peer/native unsafe code
 belongs to se-proc; IpcPlatform accepts BorrowedFd/BorrowedHandle, not ownership
 conversion of an async stream into std::fs::File. The process-platform owner is
-5p, the accepted section-30 maintainer; no unsafe code is added in se-host.
+the section-30 maintainer; no unsafe code is added in se-host.
 
 Wire v1: four-byte unsigned big-endian length, then that many UTF-8 JSON bytes,
 maximum 1 MiB request; reject zero/oversize, malformed UTF-8/JSON, duplicate or
@@ -1055,7 +1057,7 @@ headers as authority. HttpRequestHead carries **sec_fetch_site**: if present,
 only same-origin or none is legal. Missing Origin cannot erase a cross-site
 fetch signal. No Access-Control-* header is emitted. OPTIONS always 405.
 
-| Route | Alpha method / authority / result |
+| Route | SE Code method / authority / result |
 | --- | --- |
 | `/mcp` | **POST only**, Content-Type application/json; return application/json only, no SSE; GET/OPTIONS 405; bound session per call, never Owner |
 | `/stateengine/mail/next_change` | GET, session bearer, one parked ≤25 s Claude wait; bounded IDs/cursor only, no marker or body |
@@ -1610,7 +1612,7 @@ Integration obligations still requiring owner review/measurement:
    private runtime_ownership_fact maintenance read and non-secret runtime_owner
    head. The field/phase mapping in §6.1 consumes those declarations; native
    witness, FULL durability and crash behavior still need implementation proof.
-2. **5p, section-30 process maintainer**, owns native peer/ACL and the safe overlapped
+2. **Section-30 process maintainer**, owns native peer/ACL and the safe overlapped
    IOCP stream bridge. ProviderIoPlatform consumes its create/attach/read/write,
    scoped close/completion and manifest-accessor declarations described above;
    the pipe-transfer primitive has the bounded Linux/Windows spike evidence in
@@ -1618,11 +1620,11 @@ Integration obligations still requiring owner review/measurement:
    The same se-proc/section-60 owner supplies the shared file-watch service at
    implementation; capture does not add a separate native watch port.
    No host unsafe or second collector.
-3. **Alpha + host composition** publish the permissive linked API into the
+3. **SE Code + host composition** publish the permissive linked API into the
    confirmed Rust `secode-server`, unify the known caret-compatible
    Tokio/hyper-or-axum/SQLite packages, catch unwinds and apply the reconciled route-local
-   versus ownership/lifecycle poison policy at the existing boundary. Iris's
-   major-2 handover entry and queue fence are required, with Prime's quiescence,
+   versus ownership/lifecycle poison policy at the existing boundary. The
+   major-2 handover entry and queue fence are required, with the required quiescence,
    cutover timing and explicit native-route dormancy policy. Section 40 adds no
    proprietary copy of that permissive surface.
 4. **Provider/platform qualification** proves attended Claude mod prompt/hold
@@ -1633,4 +1635,4 @@ Integration obligations still requiring owner review/measurement:
 Private helper/layout/batching choices remain implementation freedom within these
 truth/authority/lifecycle/resource bounds. A public API/schema/ownership change
 belongs with its owner; no signature compilation substitutes for real outside
-witnesses. Prime alone integrates and lands the resulting complete candidate.
+witnesses. The project maintainer alone integrates and lands the resulting complete candidate.

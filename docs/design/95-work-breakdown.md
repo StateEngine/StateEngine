@@ -38,16 +38,16 @@ se-store, plus SE Code's side. `forget` stays in alpha (Jimmy), about 600 lines.
 | Proof | What it settles | Status |
 | --- | --- | --- |
 | E1 Windows handover primitives | named-pipe completion-port replacement across hosts; job re-association; abort; 100 loops | **PARTIAL**: pipe transfer PASS 3/3 on the PC and 3/3 on Linux; job re-association, abort and the 100-loop run open |
-| E1b Real-provider handover | Codex 0.166 and Claude 2.1.314 keep the same process and conversation across A→B→A and answer a follow-up | **PASS** Windows 2/2 (Prime, on the PC, 2026-10-30), Linux 2/2 |
+| E1b Real-provider handover | Codex 0.166 and Claude 2.1.314 keep the same process and conversation across A→B→A and answer a follow-up | **PASS** Windows 2/2 (native PC, 2026-10-30), Linux 2/2 |
 | E2 Embedded startup | B2 ≤ 100 ms with the real FULL commits, newly initialized and existing store, on Windows with Defender and Linux | **PASS (prototype)** with the store created at `se init` plus one FULL owner+first-session commit at first bind (20, 40). Windows with Defender: 38.7 / 46.6 ms p95, 0/100 over. Linux NVMe ext4 at load 7–8: 70.7 / 63.5 ms p95, 1/100 over (131.6 ms). Init itself is about 79 ms p95, outside B2. Memory after a real task is not yet measured |
-| E3 Write latency | B9 p95 ≤ 20 ms for `msg send`, `working-state set` and `hook claude stop` through a running host; FULL commands p95 ≤ 75 ms on Windows with Defender; the 37/67 ms rehearsal is in commit time. Keep the failed baseline, decompose commit time, optionally compare an off-path checkpoint variant, through a host on NTFS and ext4 | **PARTIAL**: database layer measured (Nell, 5p). Windows with Defender 3.9/10.5 ms p95, serial and 20 at once. Linux 35.9/69.9 ms, with the in-commit checkpoint a measured tail contributor, not proven the whole cause. A running host is not yet measured |
+| E3 Write latency | B9 p95 ≤ 20 ms for `msg send`, `working-state set` and `hook claude stop` through a running host; FULL commands p95 ≤ 75 ms on Windows with Defender; the 37/67 ms rehearsal is in commit time. Keep the failed baseline, decompose commit time, optionally compare an off-path checkpoint variant, through a host on NTFS and ext4 | **PARTIAL**: database layer measured independently. Windows with Defender 3.9/10.5 ms p95, serial and 20 at once. Linux 35.9/69.9 ms, with the in-commit checkpoint a measured tail contributor, not proven the whole cause. A running host is not yet measured |
 | E4 Attended Claude mail | 25 s renewal under Claude's 30 s fetch limit; mail held during a busy turn; 100 sends with zero missed wakes | **PARTIAL**: renewal and busy-turn hold PASS on Linux; the 100-send run is open; stop/revocation bound stated (Claude's fetch has no caller abort) |
 | E5 Windowed and headless Codex | stock Codex through the private-socket app-server with a viewable TUI; headless and `--listen` paths | **PASS (headless)**: Windows stdio 16/16 plus a real-turn outside-write denial 17/17, Windows local socket 26/26, Linux both transports 43/43 (0.163). The safe headless policy comes from the saved profile; Windows avoids Store PowerShell (40 §9.4). Linux windowed PASS. Attended Windows and macOS stay open |
 | E6 History import | real history imports; interrupted retries reproduce the same events; resumed conversation recalls | **PASS** for Codex on a factory slice; non-fleet history and Claude continuation pending |
 | E7 Linux containment | what ssh, Docker and WSL2 hosts actually get | **PARTIAL**: desktop, real SSH and rootless Podman each 4/4. SSH needs a short helper inside a fresh per-launch scope over direct D-Bus (30 §2.4), with scope acquisition p95 ≤ 200 ms to be re-measured in a quiet window. Docker and WSL2 are not installed yet |
 | E8 Cold hook start | host-start versus direct write on Windows with Defender | **PASS, settled**: 100 pairs with Defender on; host-start p95 82.5 ms, direct p95 88.1 ms. A hook with no host starts the host privately and never writes directly (40 §9.3). Routing is settled; production hook latency is measured in wave 2 |
 | Lost-ACK slice | one message after a dropped reply, through CLI, IPC, MCP and the linked API | Pending |
-| E9 SE Code real server | the integration target is SE Code's Rust server, not the frozen TypeScript one | **DONE** (Alpha): `E:\rust-secode` branch dev, `crates/secode-product`, caret pins, axum `=0.8.9` |
+| E9 SE Code real server | the integration target is SE Code's Rust server, not the frozen TypeScript one | **DONE** (SE Code): `E:\rust-secode` branch dev, `crates/secode-product`, caret pins, axum `=0.8.9` |
 | Runner | the journey runner judges Rust from a Rust-only map, launched outside agent trees | Section 90 revised; red-against-stub run pending |
 
 ## Build order
@@ -64,18 +64,14 @@ Each wave ends at an outside witness, not a green unit suite.
 | 4 | Embedded SE Code and live handover (both directions, every crash phase), `forget`, signing | B1, B2 and B8 on Windows and Linux; J1 from the signed download |
 | 5 | Atlas; macOS campaign; release | the five journeys pass from the real downloads on Windows, Linux and macOS |
 
-## Proposed owners
+## Work ownership
 
-| Owner | Work |
-| --- | --- |
-| 5p | se-proc |
-| Nell | se-store and import |
-| Vera | se-host and harnesses |
-| Iris | se-types, the SE Code API, SE Code integration with Gamma |
-| 5b, 5e | se-core and the `se` binary; 5e then Atlas |
-| Milo | release, packaging, install and uninstall |
-| 5d | journey runner and per-wave witnesses |
-| 5c, Otto, Opus (Prime) | reviews and the tests that judge each wave |
+The project maintainer assigns authors to the module work in the breakdown:
+process containment, store/import, host/harnesses, shared types and SE Code API,
+core/CLI, Atlas, release/packaging and journey witnesses. SE Code integration
+also requires the host project's interface review. Independent correctness and
+craft reviewers assess each complete candidate before integration. This plan
+contains no named-seat assignments or permission to start implementation.
 
 ## What "done" means
 

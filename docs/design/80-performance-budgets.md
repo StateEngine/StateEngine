@@ -35,7 +35,7 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | B9 | Ordinary CLI writes: `msg send`, `working-state set`, `hook claude stop` | p95 ≤ 20 ms through a running host | Spawn to exit, including IPC/queue/commit/receipt | E3 native CLI probe required; retained mixed writer spike fails (§3.6) |
 | FULL | `se decision ratify`, `se decision reject`, `se decision retract`, `se decision supersede`, `se agent add`, `se config set agent.<A>.profile`, `se config set agent.<A>.model`, `se config set agent.<A>.can-create`, `se init` | p95 ≤ 75 ms on Windows with Defender | Spawn to exit; fresh-state init includes hostless schema/publication/setup, other commands use the running host; each sampled separately | E3; not yet qualified |
 
-B1 and B2 are Alpha's requirements. The rest are plan decisions. Budget failures make the Rust run exit
+B1 and B2 are SE Code's requirements. The rest are plan decisions. Budget failures make the Rust run exit
 nonzero even when every behavior row passes. Measurements include embedded
 first binding and a sample after one real task, context, mail and tool use.
 
@@ -69,7 +69,7 @@ Long operations have their own targets, measured on StateEngine's share only:
   Direct SSH RPC p95 91.323 ms and post-reply placement p95 59.225 ms explain
   distinct stages; quantiles are not additive. No store/provider/full-launch
   integration was measured. Re-measure acquisition on a quiet box before
-  qualification, in Prime's designated window with starting load below 4.
+  qualification, in the coordinated measurement window with starting load below 4.
   The loaded runs overlapped a full preflight and system-wide syscall tracing;
   they remain raw diagnostics, not reliable latency conclusions or proof of
   the 200 ms target. The old first-launch-only 20–60 ms estimate is withdrawn.
@@ -300,7 +300,8 @@ Newly initialized and existing compatible stores use the same normal B2 first-bi
 one FULL maintenance transaction for runtime.owner and the witnessed first
 session, then writer startup and the complete continuity/binding response. At
 first workspace open, the pre-TUI repository trust hook invokes bundled managed
-se init --repo DIR on the UI owner path before this interval; profile onboarding
+se init --repo DIR on the UI owner path only after workspace trust acceptance
+and before this interval; declined workspaces are never registered. Profile onboarding
 is separate and the public GitHub stub silently skips init. This managed setup
 writes nothing in the repository and needs no repository-write consent;
 init --adopt still installs the integrations in 70 §3.2. A new-store sample means
@@ -331,8 +332,8 @@ that owner and zero sessions before binding and the distinct FULL activation
 after it. A binding that races expiry must wait for the known owner-commit
 outcome inside check 2, retaining every engine barrier where it occurs.
 Both late checks on Linux use the coordinated quiet-box criterion: load1 ≤10
-at each case start, Iris as the only heavy job, no system-wide tracing, and
-actual load recorded. Use that same criterion for in-window comparisons.
+at each case start, the measurement as the only heavy job, no system-wide
+tracing, and actual load recorded. Use that same criterion for in-window comparisons.
 Retain loaded and quiet cohorts separately; never swap one for the other or
 discard loaded failures. A successful refusal or prompt-path joint-commit sample
 cannot stand in for the late bind-to-first-response check.
@@ -358,9 +359,9 @@ Qualification requires the actual Rust SE Code in-window combined first-bound
 response and both late checks against the unchanged baseline, with newly
 initialized and existing stores and the same durability/inputs/build. Record
 load beside every result. Both late checks and the in-window comparison use the
-coordinated Linux quiet window: the exclusive heavy slot with Iris as the only
-heavy job, no system-wide tracing, and load1 ≤10 at each case start. This records Prime's revised criterion after observing
-the parked-runner/desktop idle floor of load1 6–8 on the 48-core box; it does not
+coordinated Linux quiet window: the exclusive heavy slot with the measurement
+as the only heavy job, no system-wide tracing, and load1 ≤10 at each case start.
+This criterion records the parked-runner/desktop idle floor of load1 6–8 on the 48-core box; it does not
 qualify the earlier contended measurements. Retain every paired sample, including
 signed negative differences and failures; file/directory/count traces are
 separate from latency samples. No loaded result or transaction-count arithmetic
@@ -482,7 +483,7 @@ handover spend is inferred from these mixed-workload quantiles.
 Keep **commit-driven autocheckpoint**, 16 KiB pages and 256 pages, as the
 section-20 baseline. The measured contribution does not justify moving
 checkpoints to a worker, hiding their latency, or weakening NORMAL/FULL.
-Nell owns writer/schema reruns; any supported policy change is reviewed once
+The store maintainer owns writer/schema reruns; any supported policy change is reviewed once
 and applied consistently across 20/40/80/95 with queue/WAL/memory costs. Complete
 E3 still requires the approved real host/command consumer and both sampling
 classes; it remains unqualified, with the Linux ordinary component over target.
@@ -541,8 +542,8 @@ do not label that interval settled idle or hide it in the baseline expectation.
    then move the work off the critical path (lazy or after ready); only then move allocation between
    components inside the total, as a doc change with one sentence of reason.
 5. **A missed budget blocks the landing batch,** exactly like a failed behavior row.
-6. **Totals don't move without their owner** (B1, B2 Alpha; the rest Jimmy). A structural miss reopens
-   the fallbacks: reconsider composition with Alpha if embedding misses B1/B2; optional Atlas remains off and its cold child is separately bounded.
+6. **Totals don't move without their owner** (B1, B2 SE Code; the rest the product owner). A structural miss reopens
+   the fallbacks: reconsider composition with SE Code if embedding misses B1/B2; optional Atlas remains off and its cold child is separately bounded.
 7. **Self-reports are not evidence.** `status` and `doctor --bundle` may show the host's own memory and
    session counts for support; budgets are judged only from outside (G8).
 
@@ -569,5 +570,5 @@ The release sequence is the assembled section 95: early proofs and runner;
 unsigned install/uninstall; Claude vertical journeys; both providers and
 Windows/Linux standalone; embedded/handover/forget/signing; optional Atlas and
 native Mac qualification. Size comes from section 95's generated total, not a
-second allocation or a promised calendar. Alpha is not complete at the earlier
+second allocation or a promised calendar. The alpha release is not complete at the earlier
 Windows/Linux milestone.

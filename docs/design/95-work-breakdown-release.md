@@ -11,7 +11,7 @@ remains deferred; this does not revive the historical Electron/Tauri experiment.
 This revision applies the single `RECONCILIATION-DECISIONS-2026-10-30.md` list
 beside the design handoff. Section **00** supplies product scope, **80** supplies
 the single budget table, and **95** supplies the generated size table and build
-order. Iris's `secode-integration.md` remains a source map in
+order. The `secode-integration.md` planning note remains a source map in
 `/mnt/nvme/stateengine/prime-handoff-20261030/`.
 Integration references below name its headings: **Payloads and entrypoints**,
 **Choice of Rust integration**, **Changes SE Code would make**, and **Desktop
@@ -21,7 +21,7 @@ section 10 exact statically linked API boundary is an integration dependency;
 JSON families keep their own schema versions, without N-1 encoders or schema-freeze
 tooling for this first release.
 
-Alpha's current integration target is the Rust SE Code server in `E:\rust-secode`,
+SE Code's current integration target is the Rust SE Code server in `E:\rust-secode`,
 branch `dev`, source `58e8a145f`: `secode-server` is the binary in
 `crates/secode-product`, `secode.exe` is `crates/secode-cli` (including
 `installation/`), and `secode-tui-r` is `crates/secode-tui-r`. The frozen TypeScript
@@ -312,7 +312,7 @@ real unsigned downloads; stage 3 qualifies all five standalone journeys on
 Windows/Linux with real Claude and Codex. These are intermediate results.
 Before alpha promotion, walk all five journeys from real standalone and embedded
 SE Code downloads on clean Windows, Linux and macOS with both providers, using
-final signed/package bytes. Embedded qualification uses Alpha's Rust server,
+final signed/package bytes. Embedded qualification uses SE Code's Rust server,
 exact linked API identity, first bind AND a real task with continuity/tools/mail,
 and section 80's B1/B2 memory/startup methods. Embedded sessions use in-process
 handles and mint no machine credentials. B3's zero persistent embedded-process

@@ -241,15 +241,20 @@ StateEngine 0.1.0 — no project here yet.
   Then:  se launch <name>   (opens your first agent)
 ```
 
-Initialization remains an explicit owner operation. `se init --repo DIR` creates
+Initialization remains an explicit owner operation. Plain `se init`, with no
+`--adopt`, is managed setup: it writes no repository files, and agents launched
+by StateEngine receive their integration wiring through launch flags.
+`se init --repo DIR` creates
 the per-user store, FULL-publishes/reads back its schema/header and completes
 owner/project/agent setup before an achieved `se.init/v1` receipt. A retry
 preserves valid state and completes missing setup. The low-level embedded
 prepare/open/activate never creates state implicitly. At each workspace's first
 open, SE Code's pre-TUI repository trust decision (profile_trust.rs, SC-SEC-01)
-is the hook where its UI owner/human-presence path invokes the bundled
+is the hook where, only after trust accepts the workspace, its UI
+owner/human-presence path invokes the bundled
 `se --home HOME init --repo DIR` located by stateengine_package.rs, then
-re-prepares. Profile onboarding remains once per profile. The public GitHub
+re-prepares. A declined workspace is never registered and init is not invoked.
+Profile onboarding remains once per profile. The public GitHub
 stub has no se and silently skips init, without a missing-executable message.
 Managed Rust `init --repo` writes nothing inside DIR: no repository files,
 settings, hooks or Git changes; store/setup files live only in the per-user state
@@ -319,7 +324,7 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 | meta.version | `se --version` | `stateengine 0.1.0 (commit a1b2c3d)` | `se.version/v1` |
 | meta.help | `se help [PATH...] [--all]`; `se PATH --help` | usage, args, examples | `se.help/v1` |
 | meta.schema | `se schema [OP]` | op table; with OP its schemas | `se.schema-catalogue/v1` |
-| project.init | `se init [--repo DIR] [--name NAME] [--agent NAME] [--provider PROVIDER] [--model MODEL] [--launch]` — `--repo` default cwd; `--name` default dir name; `--agent` default `main`; `--provider` default `[launch] provider` (`claude`) | `Adopted ~/src/app as "app" (existing Git repo, 214 commits kept).`<br>`Agent "main" (claude) is ready. Next: se launch main`<br>`Profile default: workspace-write, approval on-request, network off, bypass false. Enable network: se config set profiles.default.network true` | `se.init/v1` (`profile.schema = stateengine-init/v1`) |
+| project.init | `se init [--repo DIR] [--name NAME] [--agent NAME] [--provider PROVIDER] [--model MODEL] [--launch] [--adopt]` — `--repo` default cwd; `--name` default dir name; `--agent` default `main`; `--provider` default `[launch] provider` (`claude`); without `--adopt`, managed setup writes no repository files; `--adopt` installs unmanaged-session integrations | `Adopted ~/src/app as "app" (existing Git repo, 214 commits kept).`<br>`Agent "main" (claude) is ready. Next: se launch main`<br>`Profile default: workspace-write, approval on-request, network off, bypass false. Enable network: se config set profiles.default.network true`<br>Final line for plain init: To let Claude Code or Codex sessions you start yourself use StateEngine, run `se init --adopt` (writes .mcp.json, .claude/settings.local.json, .codex/config.toml).<br>`--adopt` output lists each file actually written. | `se.init/v1` (`profile.schema = stateengine-init/v1`) |
 | project.remove | `se remove [-p P \| --all] [--keep-integrations]` (human-only) | `Stopped 2 agents (witnessed). Removed integrations: .mcp.json entry. Kept: history, repo files. Reinstall later with se init.` | `se.remove/v1` |
 | project.status | `se status [-p P \| --all]`; bare `se` | `app — runtime up (daemon 0.1.0) · 2 agents: main running (claude), rev stopped · 3 unread for you · next: se msg inbox` | `se.status/v1` |
 | doctor.inspect | `se doctor [-p P]` | `✓ store  ✓ credential  ✗ claude hooks: entry edited by you  ! containment: uncontained (no systemd user manager)` + `fix:` lines | `se.diagnosis/v1` |

@@ -1,6 +1,6 @@
 # 95. Work breakdown — se-proc
 
-Reconciled planning input for Prime, 2026-10-30; base `99cd6c5`. **No code, tests or
+Reconciled planning input for the project maintainer, 2026-10-30; base `99cd6c5`. **No code, tests or
 build permission. Jimmy approves the full design before implementation.**
 
 Section 30, including its accepted stdio port, transfer_manifest and handover
@@ -21,7 +21,7 @@ and streams; **U** = packaged native image/private-entry and runtime-up owner;
 independent section 90 reviewers, journey scripts and release artifacts.
 Missing consumers block their behavior witness, not agreed independent work.
 
-Owner slots below are assigned by Prime, not permission to spawn seats. **PROC**
+Owner slots below are assigned by the project maintainer, not permission to spawn seats. **PROC**
 alone owns shared se-proc sources, Cargo.toml, module registration and target
 dependencies; Cargo.lock changes serialize with the workspace owner. **WIN**,
 **LINUX** and later-campaign **MAC** own their disjoint `src/platform/<os>/` trees.
@@ -78,7 +78,7 @@ After P00, PROC serializes P01/P02 then ready-platform P04/P05/P06/P08/P09;
 WIN and LINUX may progress on disjoint leaves, with their transfer tasks joining
 agreed host barriers. P03-S shares WIN's collector; it does not create a second
 runtime. Other workstreams retain authority, store, framing, public transport,
-binary dispatch, schemas, packaging and reviewer ownership. Prime alone assigns
+binary dispatch, schemas, packaging and reviewer ownership. The project maintainer alone assigns
 and lands; a declaration stub never completes a behavioral task.
 
 Production estimate: **~11,400 Windows/Linux + shared lines**, plus **~1,350

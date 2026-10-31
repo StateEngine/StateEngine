@@ -390,4 +390,4 @@ fallback, not an unapproved incremental child. A09/A11 require real host/custody
 private delivery transactions, so their witnesses cannot be replaced by standalone
 in-memory doubles. A14 supplies the final outside measurements and public-consumer
 proof. Neither this breakdown nor the accepted design claims those implementations
-or observations already exist, and implementation still waits for Prime's build go.
+or observations already exist, and implementation still waits for explicit implementation admission.

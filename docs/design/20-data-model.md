@@ -10,7 +10,7 @@ The store reads no environment and selects no repository. The caller supplies th
 
 ### Fixed decisions
 
-* WAL with `synchronous=NORMAL` for ordinary writes; the closed security-event set below commits under `FULL`, as Prime required in the review return. NORMAL acknowledgments survive writer-process crash but can lose several recent ordinary commits on OS failure or power loss, but not an application-process crash. FULL security acknowledgments require the successful sync. No caller/environment durability knob exists.
+* WAL with `synchronous=NORMAL` for ordinary writes; the closed security-event set below commits under `FULL`, as required by the durability contract. NORMAL acknowledgments survive writer-process crash but can lose several recent ordinary commits on OS failure or power loss, but not an application-process crash. FULL security acknowledgments require the successful sync. No caller/environment durability knob exists.
 * One host-owned batched writer when the runtime lease is held; a direct no-host writer calls the identical transaction function while holding a shared runtime lease in client mode; the host alone holds it exclusively. There is no host/direct split in apply or authorization semantics.
 * The only authority is the immutable operation envelope, event envelopes and their typed data/body/member rows, with only the narrow sanctioned body-erasure transition below. Projections update before the same COMMIT. The privacy operation is an explicitly audited exception for erasing content, specified below; an ordinary correction never rewrites history.
 * No all-event hash chain, PostgreSQL implementation, file watcher, polling loop, dual-written JSONL or repair command. There is no new decision hash chain either: immutable typed decision transitions, expected revisions and exact imported provenance retain user history. The Node factory keeps its existing engine and ledger privately; it is not a Rust CLI/MCP client or a fleet-migration target.
@@ -34,7 +34,7 @@ CommitReceipt to `then`. The consumer owns/clones its reader handle across jobs.
 On the hostless route, DirectStore::append uses the same transaction engine
 synchronously under the shared runtime lease and returns CommitReceipt directly
 to the same continuation. CommitWait has no blocking-wait method or caller.
-Iris's compile-only consumer binds message.send and working_state.set across
+The compile-only commit-bridge consumer binds message.send and working_state.set across
 both receipt routes.
 
 There are four access objects:
@@ -742,8 +742,10 @@ opens the initialized store: measured absence maps to `setup-required` with
 `se --home HOME init --repo DIR`, without creating a DB, runtime
 endpoint or empty replacement. Unreadable/foreign/newer files retain their own
 refusals. SE Code handles this at each workspace's first-open repository trust
-hook (40): its UI owner path runs bundled managed `se init --repo DIR` with the
-selected workspace and same state home, then re-prepares. The public GitHub stub
+hook (40): only after SE Code's trust decision accepts the workspace does its UI
+owner path run bundled managed `se init --repo DIR` with the selected workspace
+and same state home, then re-prepare. A declined workspace is never registered
+and init is not invoked. The public GitHub stub
 silently skips init. This managed setup writes nothing inside DIR; all
 schema/setup writes stay in the per-user state home outside it, so repository-write
 consent is unnecessary. `se init --adopt` for user-started Claude/Codex sessions
@@ -1045,7 +1047,7 @@ Human presence is a mistake/drift guard; it is not proof against a determined ag
 
 ## Forget and content erasure
 
-Prime's review decision adopts section 70 §6: owner-only, explicit captured-turn or message body event IDs with expected revisions; **in-place**, one content-erasure transaction, no whole-store rebuild. Decisions, reasons, configuration, identity and arbitrary legacy blobs are not public erase targets. EraseTarget contains only event/expected revision and implicitly selects Body; SourceDigest is internal dependent metadata, never a separate user-selectable arbitrary field. Keep event identity/actor/time/vendor ref and original byte length, remove plaintext and body-derived hashes. Source artifacts, automatic backups and raw-media remnants are named residuals rather than silently deleted. Version 1 has no FTS. Search is a bounded streamed scan; erase covers its actual buffers/caches, not a nonexistent index.
+The supported scope follows section 70 §6: owner-only, explicit captured-turn or message body event IDs with expected revisions; **in-place**, one content-erasure transaction, no whole-store rebuild. Decisions, reasons, configuration, identity and arbitrary legacy blobs are not public erase targets. EraseTarget contains only event/expected revision and implicitly selects Body; SourceDigest is internal dependent metadata, never a separate user-selectable arbitrary field. Keep event identity/actor/time/vendor ref and original byte length, remove plaintext and body-derived hashes. Source artifacts, automatic backups and raw-media remnants are named residuals rather than silently deleted. Version 1 has no FTS. Search is a bounded streamed scan; erase covers its actual buffers/caches, not a nonexistent index.
 
 Limit one request to 60 explicit targets so its audit batch stays within the 64-event bound; larger selections use separate explicit operations. Estimate extra WAL/dirty-page space from those targets, with bounded streaming buffers rather than whole-store replacement space. The factory erasure_plan uses an independent scoped reader while the writer is live, so inventory/owner confirmation does not freeze ordinary work; erase rechecks every target/revision after drain. Before mutation inventory the target owning payloads/source digests, affected operation fingerprints, host render/search buffers and owned staging, WAL and known backups/provider/import originals. Drain consumes/deletes accepted staging by exact custody identity; any remaining owned orphan that cannot be safely removed is explicitly named as a residual, never ignored. Approval binds owner, expected incarnation, exact target revisions and acceptance of named residuals; only an owner outside agent process trees can supply it through core. Drain/join the writer to obtain the maintenance HostStore. Block new writes through this maintenance phase; close owned readers and require bounded checkpoint access, while a foreign owner's direct SQLite reader can still make the checkpoint busy. That is an explicit erasure-incomplete outcome, never proof old pages disappeared.
 
@@ -1109,7 +1111,7 @@ The error type carries the stable code, typed offending entity/range/revision, c
 
 | Internal cause | Cause / typed detail | Remedy | Public code / class |
 | --- | --- | --- | --- |
-| `setup-required` | missing state on a non-init route that requires initialization; embedded preparation reports it to the per-workspace repository trust hook | run owner `se --home HOME init --repo DIR`; the UI workspace hook invokes this managed no-repository-write setup without repository-write consent, then re-prepares; public GitHub stub silently skips init, otherwise show setup failure; bare se/status return not-set-up and exit 0 | setup-required / Refused |
+| `setup-required` | missing state on a non-init route that requires initialization; embedded preparation reports it to the per-workspace repository trust hook | run owner `se --home HOME init --repo DIR`; only after workspace trust acceptance, the UI hook invokes this managed no-repository-write setup without separate repository-write consent, then re-prepares; a declined workspace is never registered; public GitHub stub silently skips init, otherwise show setup failure; bare se/status return not-set-up and exit 0 | setup-required / Refused |
 | `store-already-exists` | exclusive create/no-replace publication found existing state | reopen the validated existing store and reuse its identities; never overwrite | state-conflict / Conflict |
 | `store-unreadable` | permission, malformed/truncated header, undecodable row or IO error; source/range preserved | restore access or inspect with doctor; do not initialize over it | store-unreadable / Unreadable |
 | `store-application-mismatch` | application_id belongs to another database | select the correct home; never migrate the foreign file | configuration-invalid / Refused |
@@ -1183,14 +1185,14 @@ Reviewers additionally exercise crash boundaries unreachable from a happy journe
 ## Open questions and implementation admission
 
 1. Shared `se-types` and process declarations are consumed directly from the accepted rust-se main base, not copied into this crate. StoreId, all kernel IDs, Page/Window/PageRequest and native process/path types are reused, not recreated. Store-specific records/traits live here; wire DTO/auth ownership remains with their assigned crates.
-2. Prime resolved forget scope to section 70: live captured-turn/message bodies, in-place secure deletion and honest residual copies. Physical/third-party erasure is outside the supported claim; it does not block the approved narrow operation.
+2. Forget scope follows section 70: live captured-turn/message bodies, in-place secure deletion and honest residual copies. Physical/third-party erasure is outside the supported claim; it does not block the approved narrow operation.
 3. Section 80's p95 read/startup/burst budgets govern; B9's target in section 80 is fixed; a measured failure is reported with its cause rather than relaxing that target. NORMAL is ratified here; neither disabling durability entirely nor early acknowledgment is authorized. Native measurements may require scheduling/checkpoint changes, reviewed against this same commit/receipt contract.
 
 4. The section-50 global code catalogue supplies the exhaustive typed mapping for these store causes; do not implement a catch-all Internal conversion while that integration is pending.
 
 5. The strict shared ID namespaces reserve some names that Node accepted as projects or custom identifiers. Those collisions must remain visible import refusals with original provenance until an explicit identity-correspondence policy is approved; neither a broad arbitrary-string decoder nor a silent public-ID rename resolves the conflict.
 
-Store payload records have no Debug derivation; diagnostic code handles only redacted IDs/ranges. The critic, 5c, Otto and Alpha's Rust reviewer assess this complete design/craft candidate; Prime integrates it. Only a later explicit implementation admission activates the signatures and DDL as product code.
+Store payload records have no Debug derivation; diagnostic code handles only redacted IDs/ranges. Independent correctness and craft reviewers assess this complete candidate; the project maintainer integrates it. Only a later explicit implementation admission activates the signatures and DDL as product code.
 
 ## Method contract index
 

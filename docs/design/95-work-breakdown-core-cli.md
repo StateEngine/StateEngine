@@ -142,10 +142,15 @@ For non-init store-dependent routes requiring setup, preserve absence as
 setup-required with resolved-home `se init --repo DIR` remedy. Bare se and
 se status render not-set-up and exit 0 (T10/G4); metadata remains store-free.
 No CLI/embedded open silently creates schema. The per-workspace pre-TUI
-trust/consent hook invokes explicit bundled owner init and re-prepares; profile
-onboarding is separate and the public GitHub stub silently skips init. Rust
-se init --repo DIR writes nothing inside DIR; all setup stays in the per-user
-state home outside the repository.
+repository trust hook invokes explicit bundled owner init only after the
+workspace is accepted, then re-prepares; a declined workspace is never registered.
+Profile onboarding is separate and the public GitHub stub silently skips init.
+Plain se init and se init --repo DIR are managed setup: no repository writes,
+all setup in the per-user state home outside the repository, launch-flag wiring
+for managed agents and no separate repository-write consent. Only --adopt
+installs unmanaged Claude/Codex integration files, lists each file actually
+written and records files_touched/integrations[]; plain human output ends with
+the explicit se init --adopt invitation in section 50.
 
 **B02 — Generated grammar (250).** Own binary `src/grammar.rs`, `src/compat.rs`.
 Depends K01/B01. Consume the generated tree, map doctor/history selectors to the
@@ -216,4 +221,4 @@ Core K01–K10: **900 + 650 + 650 + 450 + 850 + 650 + 450 + 250 + 250 + 500
 Combined production estimate: **8,200 lines across 16 units**. A12 counts the
 optional 150-line Atlas bridge once within its own composition estimate. External
 host, store, native custody, foundation DTO/catalogue, packaging and reviewer tests
-are excluded. Per-unit estimates are the source for Prime's generated overview table.
+are excluded. Per-unit estimates are the source for the generated overview table.
