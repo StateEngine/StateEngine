@@ -507,9 +507,10 @@ running host, the three B9 commands or the named FULL commands. Windows worker
 p95 below a target does not establish product PASS. No B1/B2/B8 or first-bind/
 handover spend is inferred from these mixed-workload quantiles.
 
-Keep **commit-driven autocheckpoint**, 16 KiB pages and 256 pages, as the
-section-20 baseline. The measured contribution does not justify moving
-checkpoints to a worker, hiding their latency, or weakening NORMAL/FULL.
+The section-20 baseline is **4 KiB pages with commit-driven autocheckpoint at
+256 pages (1 MiB)**, selected by the maintainer on 2026-10-31 after W2. The
+checkpoint policy remains synchronous with the committing path; no worker hides
+its latency, and NORMAL/FULL durability is unchanged.
 Wave 1 now includes installed CLI→authenticated IPC→host→production writer,
 representative schema and mixed NORMAL/FULL traffic. J1 plus this hosted E3
 result is the wave exit. Split queue, transaction, sync/checkpoint and receipt;
@@ -574,9 +575,11 @@ These are syscall bytes, never device/NAND writes. Fixed 256 pages still
 confounds page size with 1 MiB/4 MiB checkpoint cadence. Removing list_versions
 also loses historical mail windows; no compatibility or product-policy change
 is inferred. The archived harness has 43 tables (42 without list_versions),
-not the final R4 DDL. The 16 KiB/256-page baseline and hosted B9 decision remain
-unchanged; in particular the component results do not invoke the eight-agent
-fallback or qualify CLI/IPC/auth/launch barriers.
+not the final R4 DDL. The maintainer subsequently selected the 4 KiB/256-page
+baseline above; list_versions remains pending its consumer inventory and a
+separate decision. These component results do not invoke the eight-agent
+fallback or qualify CLI/IPC/auth/launch barriers; final-schema hosted E3 binds
+acceptance.
 
 The first attempt is retained: all sixteen cases failed before samples because
 the immutable inputs were read-only and native fs::copy preserved that mode;
