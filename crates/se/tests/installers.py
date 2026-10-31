@@ -84,7 +84,7 @@ class LinuxInstaller(unittest.TestCase):
                     target.parent.mkdir(parents=True)
                     target.write_bytes(b"foreign\n")
                 elif case == "record":
-                    target = home / ".local/share/stateengine/standalone-install.json"
+                    target = home / ".local/state/stateengine/standalone-install.json"
                     target.parent.mkdir(parents=True)
                     target.write_bytes(b"foreign\n")
                 elif case == "assets":
@@ -140,7 +140,7 @@ class LinuxInstaller(unittest.TestCase):
                 run = self.install(home)
                 self.assertEqual(run.returncode, 0, run.stderr)
                 self.assertTrue((home / ".profile").read_bytes().startswith(prior))
-                record = json.loads((home / ".local/share/stateengine/standalone-install.json").read_bytes())
+                record = json.loads((home / ".local/state/stateengine/standalone-install.json").read_bytes())
                 edit = next(edit for edit in record["path_edits"] if edit["target"] == str(home / ".profile"))
                 self.assertEqual(edit["before_sha256"], hashlib.sha256(prior).hexdigest())
                 self.assertEqual((home / ".profile").read_bytes(), prior + edit["block"].encode())
@@ -156,7 +156,7 @@ class LinuxInstaller(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         configuration = home / ".config/fish/conf.d/stateengine.fish"
         self.assertTrue(configuration.is_file())
-        record = json.loads((home / ".local/share/stateengine/standalone-install.json").read_bytes())
+        record = json.loads((home / ".local/state/stateengine/standalone-install.json").read_bytes())
         self.assertIn({"path": str(configuration), "sha256": digest(configuration)}, record["files"])
         terminal = subprocess.run([environment["SHELL"], "-lc", "command -s se"],
                                   env=environment, capture_output=True, timeout=10)
@@ -200,7 +200,7 @@ class LinuxInstaller(unittest.TestCase):
                         process.wait()
         self.assertEqual(sorted(process.returncode for process in processes), [0, 1], outputs)
         install_root = home / ".local"
-        record_path = home / ".local/share/stateengine/standalone-install.json"
+        record_path = home / ".local/state/stateengine/standalone-install.json"
         self.assertTrue(record_path.is_file(), "ownership record belongs in the StateEngine data home")
         record_bytes = record_path.read_bytes()
         record = json.loads(record_bytes)
