@@ -44,6 +44,8 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
         })
     };
     let slots = runtime.blocking_pool().foreground_admission();
+    let idle_capacity = slots.available_permits();
+    assert!(idle_capacity > 0, "capture an idle foreground pool");
     let mut completed = 0;
     let mut refusals = Vec::new();
     'requests: for index in 0..17 {
@@ -69,7 +71,7 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
                 competing.execute_batch("ROLLBACK")?;
                 continue 'requests;
             }
-            if slots.available_permits() == 1 {
+            if slots.available_permits() == idle_capacity {
                 idle_polls += 1;
             } else {
                 idle_polls = 0;

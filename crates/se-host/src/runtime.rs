@@ -159,3 +159,9 @@ mod failure;
 mod shutdown;
 #[cfg(feature = "listener")]
 pub use shutdown::HostShutdown;
+
+#[cfg(test)]
+mod failure_tests;
+
+#[cfg(test)]
+mod pool_tests;

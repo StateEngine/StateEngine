@@ -62,6 +62,8 @@ fn run(serial: bool) -> Check {
         let generation = runtime.generation();
         let router = runtime.router()?;
         let slots = runtime.blocking_pool().foreground_admission();
+        let idle_capacity = u32::try_from(slots.available_permits())?;
+        assert!(idle_capacity > 0, "capture an idle foreground pool");
         let server = tokio::spawn(runtime.serve(listener));
         let (idle_ready, idle_connected) = tokio::sync::oneshot::channel();
         let (close_idle, idle_closed) = std::sync::mpsc::sync_channel(1);
@@ -123,7 +125,7 @@ fn run(serial: bool) -> Check {
             let _ = replied.send(result);
         });
         tokio::time::timeout(Duration::from_secs(10), connected).await??;
-        let mut held = slots.clone().acquire_owned().await?;
+        let mut held = slots.clone().acquire_many_owned(idle_capacity).await?;
         let idle_count = Arc::strong_count(&slots);
         println!("shutdown_write idle foreground refs={idle_count}");
         send.send(())?;
@@ -340,7 +342,10 @@ async fn pass(
     slots: &Arc<Semaphore>,
     held: OwnedSemaphorePermit,
 ) -> Result<OwnedSemaphorePermit, Box<dyn std::error::Error>> {
-    let mut next = std::pin::pin!(slots.clone().acquire_owned());
+    // Queue the complete held capacity behind the next real FIFO job, so a
+    // second available slot cannot let a later stage bypass this control.
+    let capacity = u32::try_from(held.num_permits())?;
+    let mut next = std::pin::pin!(slots.clone().acquire_many_owned(capacity));
     assert!(
         std::future::poll_fn(|cx| Poll::Ready(next.as_mut().poll(cx)))
             .await

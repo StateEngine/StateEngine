@@ -1,5 +1,5 @@
-//! Finite synchronous work on the supplied executor. A reserved foreground slot
-//! cannot be occupied by background work; neither slot creates another runtime.
+//! Two shared finite-work slots on the supplied executor. At most one can
+//! contain maintenance, leaving foreground capacity without another runtime.
 use crate::client::lease::Deadline;
 use se_types::{Result, SeError};
 use std::{future::Future, sync::Arc, time::Duration};
@@ -12,7 +12,7 @@ use tokio::{
 #[derive(Clone)]
 pub struct BlockingPool {
     runtime: Handle,
-    foreground: Arc<Semaphore>,
+    total: Arc<Semaphore>,
     background: Arc<Semaphore>,
 }
 #[derive(Clone, Copy)]
@@ -27,14 +27,14 @@ impl BlockingPool {
     pub fn new(runtime: Handle) -> Self {
         Self {
             runtime,
-            foreground: Arc::new(Semaphore::new(1)),
+            total: Arc::new(Semaphore::new(2)),
             background: Arc::new(Semaphore::new(1)),
         }
     }
     /// Listener native checks share the foreground admission with planning and
     /// continuation jobs. A timed-out job retains its slot until it really exits.
     pub fn foreground_admission(&self) -> Arc<Semaphore> {
-        Arc::clone(&self.foreground)
+        Arc::clone(&self.total)
     }
     pub async fn run<T, F>(&self, class: BlockingClass, deadline: &Deadline, work: F) -> Result<T>
     where
@@ -42,16 +42,22 @@ impl BlockingPool {
         F: FnOnce() -> Result<T> + Send + 'static,
     {
         deadline.remaining()?;
-        let slots = match class {
-            BlockingClass::Foreground => &self.foreground,
-            BlockingClass::Background => &self.background,
+        // A maintenance job holds its gate before shared admission. At most
+        // one such job can occupy either of the two finite-work slots.
+        let maintenance = match class {
+            BlockingClass::Foreground => None,
+            BlockingClass::Background => Some(
+                within(deadline, Arc::clone(&self.background).acquire_owned())
+                    .await?
+                    .map_err(|_| pool_error("maintenance admission closed"))?,
+            ),
         };
-        let permit = within(deadline, Arc::clone(slots).acquire_owned())
+        let permit = within(deadline, Arc::clone(&self.total).acquire_owned())
             .await?
             .map_err(|_| pool_error("bounded blocking admission closed"))?;
         deadline.remaining()?;
         let job = self.runtime.spawn_blocking(move || {
-            let _permit = permit;
+            let _permits = (permit, maintenance);
             work()
         });
         let result = within(deadline, job)
@@ -75,7 +81,7 @@ impl BlockingPool {
         &self,
         deadline: &Deadline,
     ) -> Result<tokio::sync::OwnedSemaphorePermit> {
-        let permit = within(deadline, Arc::clone(&self.foreground).acquire_owned())
+        let permit = within(deadline, Arc::clone(&self.total).acquire_owned())
             .await?
             .map_err(|_| pool_error("owned-work admission closed"))?;
         deadline.remaining()?;
@@ -98,17 +104,17 @@ impl BlockingPool {
             .await
             .map_err(|error| pool_error(&format!("owned blocking work failed: {error}")))?
     }
-    /// Called after fencing new admission and joining connection tasks. Holding
-    /// both permits proves every accepted native/plan/continuation job exited,
-    /// including jobs whose caller's deadline expired first.
+    /// Called after fencing admission and joining connection tasks. Acquire in
+    /// maintenance's gate-then-shared order, so queued maintenance cannot deadlock
+    /// against shutdown. Holding both shared permits also joins timed-out jobs.
     pub async fn quiesce(&self, deadline: &Deadline) -> Result<()> {
-        let foreground = within(deadline, Arc::clone(&self.foreground).acquire_owned())
+        let maintenance = within(deadline, Arc::clone(&self.background).acquire_owned())
             .await?
-            .map_err(|_| pool_error("foreground admission closed"))?;
-        let background = within(deadline, Arc::clone(&self.background).acquire_owned())
+            .map_err(|_| pool_error("maintenance admission closed"))?;
+        let total = within(deadline, Arc::clone(&self.total).acquire_many_owned(2))
             .await?
-            .map_err(|_| pool_error("background admission closed"))?;
-        drop((foreground, background));
+            .map_err(|_| pool_error("shared blocking admission closed"))?;
+        drop((total, maintenance));
         Ok(())
     }
 }

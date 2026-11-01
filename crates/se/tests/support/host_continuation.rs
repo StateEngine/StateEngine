@@ -8,6 +8,9 @@ pub async fn check(
 ) -> Check {
     let router = runtime.router()?;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let slots = runtime.blocking_pool().foreground_admission();
+    let idle_capacity = u32::try_from(slots.available_permits())?;
+    assert!(idle_capacity > 0, "capture an idle foreground pool");
     let mut controls = options();
     controls.timeout = Duration::from_secs(10);
     let cancel = controls.cancelled.clone();
@@ -35,9 +38,11 @@ pub async fn check(
     // checks, not a mocked executor or a production test pause hook. Once the
     // accepted submission releases it, hold it while the real continuation
     // queues for foreground admission.
-    let slots = runtime.blocking_pool().foreground_admission();
-    let held =
-        tokio::time::timeout(Duration::from_secs(2), slots.clone().acquire_owned()).await??;
+    let held = tokio::time::timeout(
+        Duration::from_secs(2),
+        slots.clone().acquire_many_owned(idle_capacity),
+    )
+    .await??;
     let held_count = Arc::strong_count(&slots);
     loop {
         if let std::task::Poll::Ready(result) = poll(completion.as_mut()).await {
