@@ -380,3 +380,39 @@ fn pending_detail_has_no_fabricated_owner_transition() -> Check {
     store.close()?;
     Ok(())
 }
+
+/// Protects: a requested decision whose retained statement bytes are damaged returns the declared unreadable detail with exit 3, never a fabricated statement, absence or successful empty history.
+#[test]
+fn damaged_decision_statement_is_unreadable_exit_three() -> Check {
+    let (f, mut store, lease) = setup()?;
+    let id = decision()?;
+    let proposed = propose(
+        &f,
+        &mut store,
+        &lease,
+        &id,
+        "original retained statement",
+        None,
+    )?;
+    let native = proposed
+        .canonical_bytes()?
+        .ok_or("canonical fixture event")?;
+    let database = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    // Deliberate corruption of this disposable fixture, bypassing only its
+    // immutability trigger; production writes cannot take this path.
+    database.execute_batch("DROP TRIGGER payloads_no_update")?;
+    assert_eq!(database.execute("UPDATE payloads SET content=CAST('damaged statement' AS BLOB) WHERE event_seq=(SELECT seq FROM events WHERE event_id=?) AND field='statement'", [native.as_slice()])?, 1);
+    let head = store.info()?.head;
+    let (output, value) = read(&f, &id, true)?;
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "wrong damaged-detail exit: {value}"
+    );
+    assert_eq!(value["schema"], "se.decision/v1");
+    assert_eq!(value["decision"]["state"], "unreadable");
+    assert!(value["decision"].get("value").is_none());
+    assert_eq!(store.info()?.head, head);
+    store.close()?;
+    Ok(())
+}
