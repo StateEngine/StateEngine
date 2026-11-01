@@ -4,6 +4,8 @@
 use super::*;
 use se_proc::{NativeProcessApi, NativeProcessRuntime, RuntimeChild};
 use se_types::{HostGeneration, MachineId};
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::{fs::File, io::Read as ByteRead, path::Path};
 pub struct StartedHost {
     pub ready: se_proc::RuntimeReady,
@@ -58,24 +60,41 @@ pub fn start(
         }
         let instance = se_proc::HostInstanceId(instance);
         let generation = HostGeneration::new((u64::from_le_bytes(epoch) & i64::MAX as u64).max(1))?;
+        let arguments = vec![
+            "host".into(),
+            home.as_os_str().into(),
+            instance
+                .0
+                .iter()
+                .map(|v| format!("{v:02x}"))
+                .collect::<String>()
+                .into(),
+            generation.get().to_string().into(),
+            configuration.as_os_str().into(),
+        ];
+        #[cfg(unix)]
+        let arguments = {
+            let mut arguments = arguments;
+            let paths = crate::config::unix_socket_paths()?;
+            arguments.push(
+                paths
+                    .runtime_directory
+                    .map_or_else(OsString::new, PathBuf::into_os_string),
+            );
+            arguments.push(
+                paths
+                    .temporary_directory
+                    .map_or_else(OsString::new, PathBuf::into_os_string),
+            );
+            arguments
+        };
         let spec = se_proc::RuntimeLaunchSpec {
             machine,
             startup_nonce: nonce,
             executable: std::env::current_exe().map_err(|e| {
                 se_core::scope::unreadable("installed host image", &e.to_string()).with_cause(e)
             })?,
-            arguments: vec![
-                "host".into(),
-                home.as_os_str().into(),
-                instance
-                    .0
-                    .iter()
-                    .map(|v| format!("{v:02x}"))
-                    .collect::<String>()
-                    .into(),
-                generation.get().to_string().into(),
-                configuration.as_os_str().into(),
-            ],
+            arguments,
             // Native bootstrap passes only this fixed block. SQLite retains
             // file-backed temporary storage within the protected state home.
             environment: super::environment::prepare(&files)?,

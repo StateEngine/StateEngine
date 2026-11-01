@@ -24,6 +24,22 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         .as_ref()
         .ok_or_else(|| invalid("the retained authenticated bootstrap"))?;
     let args: Vec<_> = bootstrap.arguments().map(OsString::from).collect();
+    #[cfg(unix)]
+    let [
+        tag,
+        home,
+        instance,
+        generation,
+        configuration,
+        runtime_directory,
+        temporary_directory,
+    ] = args.as_slice()
+    else {
+        return Err(invalid(
+            "the closed host/home/instance/generation/configuration/socket-paths frame",
+        ));
+    };
+    #[cfg(windows)]
     let [tag, home, instance, generation, configuration] = args.as_slice() else {
         return Err(invalid(
             "the closed host/home/instance/generation/configuration frame",
@@ -124,6 +140,13 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         let restored=host.restore_transcripts(&bound).await?;
         if !restored.unavailable.is_empty() {eprintln!("capture recovery: {} binding(s) unavailable; their original cursors remain protected",restored.unavailable.len());}
         host.configure(config.value)?;
+        #[cfg(unix)]
+        host.configure_unix_socket_paths(se_proc::native_ipc::UnixSocketPaths {
+            runtime_directory: (!runtime_directory.is_empty())
+                .then(|| PathBuf::from(runtime_directory)),
+            temporary_directory: (!temporary_directory.is_empty())
+                .then(|| PathBuf::from(temporary_directory)),
+        })?;
         let bootstrap = guard
             .take()
             .ok_or_else(|| invalid("the retained bootstrap before listener admission"))?;

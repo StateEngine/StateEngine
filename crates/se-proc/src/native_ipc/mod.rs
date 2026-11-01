@@ -26,7 +26,7 @@ mod windows_peer;
 #[cfg(windows)]
 mod windows_security;
 #[cfg(unix)]
-pub use unix::{NativeUnixEndpoint, NativeUnixSocketCleanup, NativeUnixStream};
+pub use unix::{NativeUnixEndpoint, NativeUnixSocketCleanup, NativeUnixStream, UnixSocketPaths};
 #[cfg(windows)]
 pub use windows::{NativePipeReservation, NativePipeStream};
 #[cfg(unix)]
