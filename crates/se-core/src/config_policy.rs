@@ -7,8 +7,7 @@ use std::{
     num::{NonZeroU32, NonZeroUsize},
 };
 
-pub const MIN_BLOCKING_JOBS: u32 = 2;
-pub const MAX_BLOCKING_JOBS: u32 = 8;
+pub use se_types::{MAX_BLOCKING_JOBS, MIN_BLOCKING_JOBS};
 
 pub use se_types::Provider;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

@@ -1,5 +1,6 @@
 //! One immutable reader budget shared by snapshots, private lookups and backups.
 use crate::{StoreErrorCode, StoreResult, error::*};
+use se_types::{MAX_BLOCKING_JOBS, MIN_BLOCKING_JOBS};
 use std::{
     num::NonZeroU32,
     sync::{
@@ -18,12 +19,12 @@ pub(crate) struct ReadSlot(Arc<State>);
 
 impl Default for ReadSlots {
     fn default() -> Self {
-        Self::with_limit(2)
+        Self::with_limit(MIN_BLOCKING_JOBS as usize)
     }
 }
 impl ReadSlots {
     pub(crate) fn new(capacity: NonZeroU32) -> StoreResult<Self> {
-        if !(2..=8).contains(&capacity.get()) {
+        if !(MIN_BLOCKING_JOBS..=MAX_BLOCKING_JOBS).contains(&capacity.get()) {
             return Err(invalid("reader capacity must be between 2 and 8 inclusive"));
         }
         Ok(Self::with_limit(capacity.get() as usize))

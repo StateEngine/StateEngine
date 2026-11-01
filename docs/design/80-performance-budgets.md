@@ -247,8 +247,8 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Component | Allocation | Baseline / basis |
 | --- | ---: | --- |
 | Code pages touched (se-host, se-core, se-store, se-proc in secode-server) | 4.0 MB | Minimal core added 114 KB of binary; full product estimated at 3–5 MB of text |
-| SQLite page cache: writer + 2 readers × 2 MB cap | 6.0 MB | `cache_size=-2000` per connection |
-| SQLite connections, schema, statement caches | 1.5 MB | 3 connections, 32 statements each |
+| SQLite page cache: writer + 2–8 readers × 2 MB cap | 6.0 MB default; 18.0 MB maximum | `cache_size=-2000` per connection |
+| SQLite connections, schema, statement caches | 1.5 MB | 3 connections at the default reader capacity, 32 statements each; additional connection overhead unmeasured |
 | Session tasks, 16 live × ~50 KB | 0.8 MB | 00 §2.2 |
 | Mail watches and bounded subscriptions | 1.0 MB | Bounded channels |
 | Listener and MCP buffers (1 MiB body cap, ≤ 2 large bodies at once) | 2.5 MB | §4 |
@@ -257,23 +257,30 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Process custody state | 0.2 MB | Handles, job/cgroup records and one Windows IOCP collector's state per host; stack charged once below, no registered-wait pool |
 | Resume assembly: up to four packets; one may exceed 32 KiB, max 1 MiB | 1.5 MB | One shared above-default permit, bounded metadata and no duplicate encoded packet |
 | Fixed native/writer thread stack pages and allocator slack | 2.0 MB | Count every added committed stack page in E2; SE Code's existing reactor is not a second runtime |
-| **Spend** | **21.0 MB** | Measured minimal core: 1.4 MB; revised packet allowance is unmeasured |
-| Reserve | 9.0 MB | Atlas is off in embedded |
-| **Total** | **30.0 MB** | |
+| **Spend at two readers** | **21.0 MB** | Maximum reader caches alone increase this estimate to 33.0 MB; other added overhead is unmeasured |
+| Reserve at two readers | 9.0 MB | Atlas is off in embedded; the maximum cache estimate exceeds the budget by 3.0 MB before added overhead |
+| **Hard total budget** | **30.0 MB** | Unchanged |
 
 ### 3.2 Standalone memory (B4: 25 MB)
 | Component | Allocation | Baseline / basis |
 | --- | ---: | --- |
 | `se` code pages and system libraries | 5.0 MB | Prototype owners 2.7–3.8 MB in total; Rust MCP server 5 MB |
 | tokio `current_thread`, blocking pool (thread cap 2–8), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
-| SQLite page cache: writer + 1 reader × 2 MB | 4.0 MB | CLI reads go straight to the file and don't need host readers |
-| SQLite connections, schema, statements | 1.0 MB | |
+| SQLite page cache: writer + 2–8 host readers × 2 MB | 6.0 MB default; 18.0 MB maximum | Hosted planning and continuations use readers even though independent CLI reads also access the file directly |
+| SQLite connections, schema, statements | 1.0 MB | Default reader allocation; additional connection overhead unmeasured |
 | Sessions, mail, listener/MCP, capture + watcher, custody, resume | 7.5 MB | Includes the same single-large-packet resume allowance as 3.1 |
 | Optional Atlas in-host: queries and single-file updates after config opt-in | 2.0 MB | One closed-when-idle connection plus one parser |
 | Allocator slack | 1.0 MB | |
-| **Spend** | **21.5 MB** | Prototypes measured 4–12 MB; revised packet allowance is unmeasured |
-| Reserve | 3.5 MB | |
-| **Total** | **25.0 MB** | |
+| **Spend at two readers** | **23.5 MB** | Maximum reader caches alone increase this estimate to 35.5 MB; other added overhead is unmeasured |
+| Reserve at two readers | 1.5 MB | The maximum cache estimate exceeds the budget by 10.5 MB before added overhead |
+| **Hard total budget** | **25.0 MB** | Unchanged |
+
+Eight concurrent runtime readers can use about 16 MB of page cache, plus about
+2 MB for the writer. The two-reader estimates above therefore do not cover the
+maximum configured concurrency. These cache caps are upper estimates, not
+reserved memory or measured RSS. E2 must establish actual committed stacks,
+connection overhead and post-task memory within the unchanged B1/B4 limits;
+neither the larger reader setting nor these tables grants memory qualification.
 
 Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
 It is built after the journeys and live handover pass and never holds a
