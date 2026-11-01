@@ -40,6 +40,7 @@ fn expected<R: Snapshot>(
     let record = scope::require_present(
         cx.read.decision(id.clone()).map_err(|e| store_error(&e))?,
         &id.to_string(),
+        "Verify the decision's exact ID and recorded revision in this project before retrying the original request unchanged.",
     )?;
     if record.current.header.scope != cx.admission.scope {
         return Err(scope::unreadable(
@@ -208,6 +209,7 @@ pub(super) fn row<R: Snapshot>(
             .decision(id.clone())
             .map_err(|error| store_error(&error))?,
         "receipt proposal",
+        "Read the original proposal event in this project; when recovering a write response, preserve its original --key and committed event IDs.",
     )?;
     let proposal = record.original.as_deref().unwrap_or(&record.current);
     if proposal.header.scope != cx.admission.scope || latest.header.scope != cx.admission.scope {
@@ -375,6 +377,7 @@ pub fn committed<R: Snapshot>(
         let replacement_event = scope::require_present(
             cx.read.event(cause).map_err(|error| store_error(&error))?,
             "superseding replacement revision",
+            scope::COMMITTED_READ_RECOVERY,
         )?;
         if replacement_event.revision.value != replacement_expected.value
             || !matches!(&replacement_event.body, EventBody::DecisionRatified { decision, .. } if decision == replacement)

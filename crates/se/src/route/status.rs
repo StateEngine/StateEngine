@@ -46,6 +46,7 @@ pub fn observe<R: ReadStore>(
             let record = scope::require_present(
                 snap.project(project.clone()).map_err(|e| store_error(&e))?,
                 "selected project",
+                "Select an existing project in this data home with --project, or restore its original project metadata.",
             )?;
             let (name, roots) = match &record.current.body {
                 EventBody::ProjectRegistered { name, roots, .. }
@@ -119,6 +120,7 @@ pub fn observe<R: ReadStore>(
             let owner = scope::require_present(
                 reader.runtime_owner().map_err(|e| store_error(&e))?,
                 "recorded runtime owner",
+                "Restore access to the recorded runtime owner in this data home; do not treat an unreadable owner as a stopped host.",
             )?;
             if owner.epoch != endpoint.epoch || owner.generation != endpoint.generation {
                 return Err(scope::unreadable(

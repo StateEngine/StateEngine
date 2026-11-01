@@ -137,6 +137,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
                 .event(record.event.clone())
                 .map_err(|e| store_error(&e))?,
             "mail sent event",
+            "Read the original message event in the same project, then retry this inbox/list cursor; do not send another message.",
         )?;
         let StoredText::Present(body) = record.body else {
             return Err(scope::unreadable(

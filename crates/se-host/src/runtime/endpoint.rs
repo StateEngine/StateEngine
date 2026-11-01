@@ -11,6 +11,24 @@ use std::{
     sync::Arc,
 };
 
+/// Shared by listener preparation and a CLI that cannot authenticate a
+/// protected endpoint. This diagnostic neither connects nor retires any address;
+/// manual recovery remains conditional on stopping the host and holding its lease.
+pub fn endpoint_recovery_error(directory: &std::path::Path, reason: &str) -> SeError {
+    SeError::new(se_types::Detail::StateConflict(
+        se_types::details::StateConflict {
+            subject: directory.join("endpoint.json").display().to_string(),
+            reason: reason.into(),
+            next_step: format!(
+                "Stop any runtime using this data home ({}). Acquire and hold an exclusive lock on {} while you move only {} aside; then release the lock and retry se up for this same home. Preserve the store, credentials and machine identity; do not remove or connect to the mismatched address.",
+                directory.display(),
+                directory.join("runtime.lock").display(),
+                directory.join("endpoint.json").display()
+            ),
+        },
+    ))
+}
+
 pub struct HostedListener {
     pub(crate) listener: IpcListener,
     pub(crate) publication: EndpointPublication,
@@ -56,6 +74,9 @@ impl HostedListener {
     pub fn endpoint(&self) -> &EndpointRecord {
         &self.publication.record
     }
+    pub fn endpoint_recovery(&self) -> Option<&se_core::ops::EndpointRecovery> {
+        self.publication.recovery.as_ref()
+    }
     /// The supervisor first joins its connections. Native listener closure
     /// returns a retained endpoint for the separate owned-file retirement port.
     pub async fn close_transport(
@@ -84,9 +105,15 @@ pub(crate) struct EndpointPublication {
     lease: Arc<HostLease>,
     path: PathBuf,
     record: EndpointRecord,
+    recovery: Option<se_core::ops::EndpointRecovery>,
 }
 impl EndpointPublication {
-    fn publish(lease: Arc<HostLease>, directory: PathBuf, record: EndpointRecord) -> Result<Self> {
+    fn publish(
+        lease: Arc<HostLease>,
+        directory: PathBuf,
+        record: EndpointRecord,
+        recovery: Option<se_core::ops::EndpointRecovery>,
+    ) -> Result<Self> {
         let bytes = codec::encode_endpoint(&record)?;
         let path = directory.join("endpoint.json");
         let staged = lease
@@ -107,6 +134,7 @@ impl EndpointPublication {
             lease,
             path,
             record,
+            recovery,
         };
         published.verify()?;
         Ok(published)
@@ -116,8 +144,9 @@ impl EndpointPublication {
         directory: &std::path::Path,
         expected_address: &crate::IpcEndpoint,
         deadline: &crate::client::lease::Deadline,
-    ) -> Result<()> {
+    ) -> Result<Option<se_core::ops::EndpointRecovery>> {
         let path = directory.join("endpoint.json");
+        let mut recovery = None;
         let previous = match lease.files().readback(&path).map_err(|e| store_error(&e))? {
             Read::Absent { .. } => None,
             Read::Present { value: mut prior } => {
@@ -126,14 +155,14 @@ impl EndpointPublication {
                     .take(crate::client::wire::MAX_ENDPOINT_BYTES as u64 + 1)
                     .read_to_end(&mut bytes)
                     .map_err(|e| io_error("read stale endpoint", e))?;
+                drop(prior);
                 let record = codec::decode_endpoint(&bytes)?;
                 if &record.address != expected_address {
-                    return Err(SeError::invalid(
-                        "stale endpoint",
-                        "the exact native address for this exclusively leased state directory; restore the original state directory or select a separately initialized state directory",
-                    ));
+                    recovery = Some(super::recovery::retain(&lease.files.0, &bytes)?);
+                    None
+                } else {
+                    Some(bytes)
                 }
-                Some(bytes)
             }
             Read::Unreadable { reason, .. } => {
                 return Err(se_core::scope::unreadable("stale endpoint", &reason));
@@ -142,33 +171,41 @@ impl EndpointPublication {
                 return Err(se_core::scope::unreadable("stale endpoint", &what));
             }
         };
-        deadline.remaining()?;
-        #[cfg(unix)]
-        {
-            let crate::IpcEndpoint::UnixSocket(socket) = expected_address else {
-                return Err(SeError::invalid(
-                    "stale endpoint",
-                    "the native Unix socket address",
-                ));
-            };
-            let bound = deadline.native_bound();
-            if let Some(stale) =
-                se_proc::native_ipc::NativeUnixSocketCleanup::observe(&socket.to_local()?, &bound)
-                    .map_err(crate::client::lease::native_error)?
+        let cleanup = (|| -> Result<()> {
+            deadline.remaining()?;
+            #[cfg(unix)]
             {
-                stale
-                    .compare_remove(&bound)
-                    .map_err(crate::client::lease::native_error)?;
+                let crate::IpcEndpoint::UnixSocket(socket) = expected_address else {
+                    return Err(SeError::invalid(
+                        "stale endpoint",
+                        "the native Unix socket address",
+                    ));
+                };
+                let bound = deadline.native_bound();
+                if let Some(stale) = se_proc::native_ipc::NativeUnixSocketCleanup::observe(
+                    &socket.to_local()?,
+                    &bound,
+                )
+                .map_err(crate::client::lease::native_error)?
+                {
+                    stale
+                        .compare_remove(&bound)
+                        .map_err(crate::client::lease::native_error)?;
+                }
             }
-        }
-        if let Some(previous) = previous {
-            use sha2::Digest;
-            lease
-                .files()
-                .remove_owned(&path, sha2::Sha256::digest(&previous).into())
-                .map_err(|e| store_error(&e))?;
-        }
-        Ok(())
+            if let Some(previous) = previous {
+                use sha2::Digest;
+                lease
+                    .files()
+                    .remove_owned(&path, sha2::Sha256::digest(&previous).into())
+                    .map_err(|e| store_error(&e))?;
+            }
+            Ok(())
+        })();
+        cleanup.map_err(|error| {
+            super::recovery::after_retention(directory, recovery.as_ref(), error)
+        })?;
+        Ok(recovery)
     }
     fn verify(&self) -> Result<()> {
         let mut file = match self
@@ -396,19 +433,41 @@ impl HostedRuntime {
                     package_version: env!("CARGO_PKG_VERSION").into(),
                     image_sha256,
                 };
-                EndpointPublication::retire_stale(
+                let recovery = EndpointPublication::retire_stale(
                     &lease,
                     &directory,
                     &record.address,
                     &bind_deadline,
                 )?;
                 let listener =
-                    IpcListener::bind_with_limits(record.clone(), runtime, slots, &limits)?;
-                let publication = match EndpointPublication::publish(lease, directory, record) {
+                    IpcListener::bind_with_limits(record.clone(), runtime, slots, &limits)
+                        .map_err(|error| {
+                            super::recovery::after_retention(&directory, recovery.as_ref(), error)
+                        })?;
+                let retained = recovery.clone();
+                let publication = match EndpointPublication::publish(
+                    lease,
+                    directory.clone(),
+                    record,
+                    recovery,
+                ) {
                     Ok(publication) => publication,
                     Err(error) => {
-                        listener.close()?;
-                        return Err(error);
+                        let error = match listener.close() {
+                            Ok(crate::IpcClose::Closed) => error,
+                            Ok(crate::IpcClose::PendingRelease { error: close }) | Err(close) => se_core::scope::unreadable(
+                                "listener publication cleanup",
+                                &format!(
+                                    "publication failed: {error}; listener close failed: {close}"
+                                ),
+                            )
+                            .with_cause(error.with_cause(close)),
+                        };
+                        return Err(super::recovery::after_retention(
+                            &directory,
+                            retained.as_ref(),
+                            error,
+                        ));
                     }
                 };
                 Ok(HostedListener {
@@ -419,6 +478,11 @@ impl HostedRuntime {
             .await?;
         Ok(listener)
     }
+}
+/// The CLI compares a busy home's record before opening any channel to it.
+/// Unix platform-path inputs are supplied explicitly by the executable.
+pub fn runtime_endpoint_address(directory: &std::path::Path) -> Result<IpcEndpoint> {
+    address(directory)
 }
 fn address(directory: &std::path::Path) -> Result<IpcEndpoint> {
     #[cfg(unix)]

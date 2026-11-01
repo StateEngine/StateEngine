@@ -537,11 +537,18 @@ pub struct StopFact {
     pub resume: ResumeCommand,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct EndpointRecovery {
+    pub original: se_types::NativePath,
+    pub retained: se_types::NativePath,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeStart {
     pub state: String,
     pub process: ProcessView,
     pub generation: u64,
     pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_recovery: Option<EndpointRecovery>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeStop {

@@ -140,6 +140,7 @@ pub fn plan<R: Snapshot>(
             .session(session.clone())
             .map_err(|e| store_error(&e))?,
         "capture session",
+        "Restore access to the original active session binding before repeating capture with the same session/provider/turn identities; preserve the saved cursor.",
     )?;
     if !matches!(bound.current.body, EventBody::SessionActivated { .. }) {
         return Err(scope::unreadable(
@@ -182,6 +183,7 @@ pub fn plan<R: Snapshot>(
             .capture_source(input.source)
             .map_err(|e| store_error(&e))?,
         "capture source",
+        "Restore access to the original trusted capture source binding before repeating capture with the same session/provider/turn identities; preserve the saved cursor.",
     )?;
     let original = source.original.as_deref().unwrap_or(&source.current);
     match &original.body {
@@ -293,6 +295,7 @@ pub fn committed<R: Snapshot>(
             .event(receipt.primary_event.clone())
             .map_err(|e| store_error(&e))?,
         "captured turn",
+        scope::COMMITTED_READ_RECOVERY,
     )?;
     if event.header.scope != cx.admission.scope
         || event.header.actor != cx.admission.actor
@@ -334,6 +337,7 @@ pub fn committed<R: Snapshot>(
             .event(progress_id.clone())
             .map_err(|e| store_error(&e))?,
         "captured source cursor",
+        scope::COMMITTED_READ_RECOVERY,
     )?;
     if progress.header.scope != cx.admission.scope
         || progress.header.actor != cx.admission.actor

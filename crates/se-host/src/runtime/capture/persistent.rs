@@ -83,7 +83,7 @@ fn read(lease: &HostLease, path: &Path) -> Result<Option<Vec<u8>>> {
         Read::Present { value } => value,
         Read::Absent { .. } => return Ok(None),
         other => {
-            return se_core::scope::require_present(other, "protected transcript binding")
+            return se_core::scope::require_present(other, "protected transcript binding", "Restore access to the original protected transcript binding in this data home; preserve the trusted file identity and committed capture cursor.")
                 .map(|_: std::fs::File| None);
         }
     };

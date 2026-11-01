@@ -4,6 +4,8 @@ use se_store::{Actor, Admission, EventBody, ReadBudget, Scope, Snapshot};
 use se_types::{AgentId, Detail, PageRequest, ProjectId, Read, Result, SeError, details};
 use std::{num::NonZeroU32, time::Duration};
 
+pub const COMMITTED_READ_RECOVERY: &str = "The write is committed. Read its committed event IDs, or replay the original request with the same --key or natural session/provider/turn identities; do not submit a new write.";
+
 pub fn project(admission: &Admission) -> Result<ProjectId> {
     match &admission.scope {
         Scope::Project(project) => Ok(project.clone()),
@@ -41,6 +43,7 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
         require_present(
             read.principal(actor.clone()).map_err(|e| store_error(&e))?,
             selector,
+            "Select an existing principal in this project, using its exact agent ID or registered name.",
         )?;
         return Ok(actor);
     }
@@ -87,7 +90,10 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
         }
         return match matches.as_slice() {
             [actor] => Ok(actor.clone()),
-            [] => Err(unknown(selector)),
+            [] => Err(unknown(
+                selector,
+                "Select an existing principal in this project, using its exact agent ID or registered name.",
+            )),
             actors => Err(SeError::new(Detail::SelectorAmbiguous(
                 details::SelectorAmbiguous {
                     kind: "principal".into(),
@@ -108,27 +114,39 @@ pub fn actor_id(actor: &Actor) -> String {
         Actor::Agent(id) => id.to_string(),
     }
 }
-pub fn require_present<T>(read: Read<T>, subject: &str) -> Result<T> {
+/// The reader supplies recovery for its own source. This helper can run after
+/// a commit, so no read failure implies that the preceding write was undone.
+pub fn require_present<T>(read: Read<T>, subject: &str, next_step: &str) -> Result<T> {
     match read {
         Read::Present { value } => Ok(value),
-        Read::Absent { .. } => Err(unknown(subject)),
-        Read::Unreadable { source, reason, .. } => Err(unreadable(&source, &reason)),
+        Read::Absent { checked } => Err(SeError::new(Detail::TargetUnknown(
+            details::TargetUnknown {
+                subject: subject.into(),
+                reason: format!("not present; checked {checked}"),
+                next_step: next_step.into(),
+            },
+        ))),
+        Read::Unreadable { source, reason, .. } => Err(SeError::new(Detail::SourceUnreadable(
+            details::SourceUnreadable {
+                subject: source,
+                reason,
+                next_step: next_step.into(),
+            },
+        ))),
         Read::Unknown { what } => Err(SeError::new(Detail::TargetUnknown(
             details::TargetUnknown {
                 subject: subject.into(),
                 reason: what,
-                next_step:
-                    "Read the named source before retrying; preserve the original request identity."
-                        .into(),
+                next_step: next_step.into(),
             },
         ))),
     }
 }
-pub fn unknown(subject: &str) -> SeError {
+pub fn unknown(subject: &str, next_step: &str) -> SeError {
     SeError::new(Detail::TargetUnknown(details::TargetUnknown {
         subject: subject.into(),
         reason: "not present in the admitted project snapshot".into(),
-        next_step: "Select an existing project principal or exact record ID.".into(),
+        next_step: next_step.into(),
     }))
 }
 pub fn unreadable(subject: &str, reason: &str) -> SeError {

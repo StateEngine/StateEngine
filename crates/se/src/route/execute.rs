@@ -124,7 +124,11 @@ pub fn dispatch(
         return super::status::observe(cx, &reader, &files, &caller.admission);
     }
     if let AnyOp::HookClaude(hook) = &op {
-        let target = scope::require_present(endpoint(&files)?, "live runtime endpoint")?;
+        let target = scope::require_present(
+            endpoint(&files)?,
+            "live runtime endpoint",
+            "Run se up for this same data home before repeating the hook with its original session/provider/turn identities.",
+        )?;
         let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
         return crate::ipc::forward_hook(&target, credential(cx, &files)?, input, &options());
     }
@@ -169,6 +173,7 @@ pub fn dispatch(
         let target = scope::require_present(
             endpoint(&files)?,
             "live runtime endpoint while the writer lease is busy",
+            "Wait for the current runtime to publish its endpoint, then retry with the original --key; do not remove runtime.lock or bypass its holder.",
         )?;
         return crate::ipc::forward(
             &target,
@@ -189,6 +194,7 @@ pub fn dispatch(
     let mut store = scope::require_present(
         SqliteFactory::open_direct(&store_options, &lease).map_err(|e| store_error(&e))?,
         "initialized direct store",
+        "Restore access to the initialized store in this same data home before retrying with the original --key; do not recreate or replace the store.",
     )?;
     let kernel = Kernel::new(facts()?)?.with_configuration(cx.config.value.clone())?;
     let operation_name = op.meta().name;

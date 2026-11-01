@@ -19,24 +19,43 @@ pub fn up(
     }
     let options = execute::options();
     let bound = Deadline::from_options(&options)?;
-    let (endpoint, process) = match execute::endpoint(files)? {
-        Read::Present { value } => {
+    let expected = se_host::runtime_endpoint_address(&cx.home)?;
+    let (endpoint, process, endpoint_recovery) = match se_host::route_endpoint(&cx.home, &expected)?
+    {
+        se_host::EndpointRoute::Live(value) => {
             BlockingIpcClient::connect_authenticated(
                 &value,
                 execute::credential(cx, files)?,
                 NonZeroU32::new(se_host::client::wire::DEFAULT_REPLY_BYTES)
                     .ok_or_else(|| SeError::invalid("runtime reply budget", "positive"))?,
                 &options,
-            )?;
+            ).map_err(|error| {
+                if error.code() == se_types::Code::IpcUnavailable {
+                    SeError::new(se_types::Detail::StateConflict(se_types::details::StateConflict {
+                        subject: cx.home.join("runtime.lock").display().to_string(),
+                        reason: format!("the runtime lease is held but its endpoint could not be authenticated: {error}"),
+                        next_step: "Run se down for this same data home before retrying se up; the endpoint and live host were preserved.".into(),
+                    })).with_cause(error)
+                } else { error }
+            })?;
             let process = process::observe(&value, &bound)?;
-            (value, process)
+            (value, process, None)
         }
-        Read::Absent { .. } => start(cx, files, &bound, diagnostic)?,
-        _ => {
-            return Err(scope::unreadable(
-                "runtime endpoint",
-                "a complete protected endpoint observation is required",
-            ));
+        se_host::EndpointRoute::Start { recovery } => {
+            let (endpoint, process) = start(cx, files, &bound, diagnostic).map_err(|error| {
+                if let Some(retained) = &recovery {
+                    let retained_path = match retained.retained.to_local() {
+                        Ok(path) => path.display().to_string(),
+                        Err(path_error) => format!("{:?} (path decoding failed: {path_error})", retained.retained),
+                    };
+                    SeError::new(se_types::Detail::StateConflict(se_types::details::StateConflict {
+                        subject: cx.home.display().to_string(),
+                        reason: format!("Retained stale endpoint {} as {retained_path}, but the runtime startup response could not be completed: {error}", cx.home.join("endpoint.json").display()),
+                        next_step: "Keep the retained endpoint record and run se status for this same home before retrying se up; use se down first if another host is running.".into(),
+                    })).with_cause(error)
+                } else { error }
+            })?;
+            (endpoint, process, recovery)
         }
     };
     Ok(RuntimeStart {
@@ -44,6 +63,7 @@ pub fn up(
         process,
         generation: endpoint.generation.get(),
         endpoint: status::endpoint_name(&endpoint)?,
+        endpoint_recovery,
     }
     .into())
 }
@@ -117,6 +137,7 @@ pub fn down(files: &Files, input: RuntimeDown) -> Result<AnyOutput> {
     let endpoint = scope::require_present(
         execute::endpoint(files)?,
         "a live authenticated runtime endpoint for graceful down",
+        "Run se status for this same data home and verify its recorded host; endpoint absence alone does not prove the host stopped.",
     )?;
     let now = execute::now_us()?;
     let deadline = now

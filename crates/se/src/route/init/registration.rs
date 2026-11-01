@@ -175,6 +175,7 @@ pub(super) fn finish(
     let metadata = scope::require_present(
         snap.project(id.clone()).map_err(|e| store_error(&e))?,
         "initialized project",
+        "Read the original project metadata in this data home, then retry se init with its original --key; preserve existing project and machine identities.",
     )?;
     snap.close().map_err(|e| store_error(&e))?;
     let project_name = match &metadata.current.body {

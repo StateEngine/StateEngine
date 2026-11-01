@@ -74,7 +74,13 @@ pub fn ensure_machine_identity(
     match read_machine_identity(home, port)? {
         Read::Present { value } => return Ok(value),
         Read::Absent { .. } => (),
-        other => return scope::require_present(other, "protected machine identity"),
+        other => {
+            return scope::require_present(
+                other,
+                "protected machine identity",
+                "Restore access to the original machine.json in this data home; do not replace or regenerate the machine identity.",
+            );
+        }
     }
     let id = allocate()?;
     let bytes = serde_json::to_vec(&Record {
@@ -99,6 +105,10 @@ pub fn require_machine_identity(home: &Path, port: &dyn MachineIdentityPort) -> 
             "protected machine identity",
             "machine identity missing; run se init",
         )),
-        other => scope::require_present(other, "protected machine identity"),
+        other => scope::require_present(
+            other,
+            "protected machine identity",
+            "Restore access to the original machine.json in this data home; do not replace or regenerate the machine identity.",
+        ),
     }
 }

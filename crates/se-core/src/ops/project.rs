@@ -120,6 +120,7 @@ pub fn committed_registration<R: Snapshot>(
             .project(project.clone())
             .map_err(|e| crate::store_error::store_error(&e))?,
         "retained initialized project",
+        scope::COMMITTED_READ_RECOVERY,
     )?;
     if !matches!(
         current.current.body,

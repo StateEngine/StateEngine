@@ -147,7 +147,11 @@ fn replay_target<R: Snapshot>(key: &IdempotencyKey, cx: &mut Cx<'_, R>) -> Resul
         }
         Read::Absent { .. } => Ok(None),
         other => {
-            scope::require_present(other, "agent setting request identity")?;
+            scope::require_present(
+                other,
+                "agent setting request identity",
+                "Read the original agent setting request in this project and retry with the same --key; do not allocate a new key.",
+            )?;
             Ok(None)
         }
     }
@@ -185,7 +189,11 @@ pub fn set<R: Snapshot>(
         ),
         Read::Absent { .. } => (Expected::Absent, None),
         _ => {
-            scope::require_present(record.clone(), "saved agent setting")?;
+            scope::require_present(
+                record.clone(),
+                "saved agent setting",
+                "Read this agent setting in the same project before retrying with the original --key.",
+            )?;
             return Err(scope::unreadable(
                 "saved agent setting",
                 "unavailable record",
@@ -204,7 +212,11 @@ pub fn set<R: Snapshot>(
             expected,
         },
         Field::Model | Field::Profile => {
-            let saved = scope::require_present(record, "saved agent profile")?;
+            let saved = scope::require_present(
+                record,
+                "saved agent profile",
+                "Read the saved profile of this exact agent in the same project before retrying with the original --key.",
+            )?;
             let EventBody::ProfileSaved { mut profile, .. } = saved.current.body else {
                 return Err(scope::unreadable(
                     "saved agent profile",

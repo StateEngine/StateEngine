@@ -124,7 +124,24 @@ pub fn runtime_start(value: &RuntimeStart, out: &mut impl Write) -> io::Result<(
         "Runtime {} (PID {}, generation {})",
         value.state, value.process.pid, value.generation
     )?;
-    writeln!(out, "Endpoint: {}", value.endpoint)
+    writeln!(out, "Endpoint: {}", value.endpoint)?;
+    if let Some(recovery) = &value.endpoint_recovery {
+        writeln!(
+            out,
+            "Retained stale endpoint {} as {}",
+            recovery
+                .original
+                .to_local()
+                .map_err(io::Error::other)?
+                .display(),
+            recovery
+                .retained
+                .to_local()
+                .map_err(io::Error::other)?
+                .display()
+        )?;
+    }
+    Ok(())
 }
 
 pub fn runtime_stop(value: &RuntimeStop, out: &mut impl Write) -> io::Result<()> {

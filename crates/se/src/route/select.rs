@@ -72,7 +72,11 @@ pub fn apply<R: ReadStore>(
                 .map_err(|e| store_error(&e))?;
             let record = snap.project(bound.clone()).map_err(|e| store_error(&e));
             let closed = snap.close().map_err(|e| store_error(&e));
-            let record = scope::require_present(record?, "bound project")?;
+            let record = scope::require_present(
+                record?,
+                "bound project",
+                "Select an existing project in this data home with --project, or restore its original project binding.",
+            )?;
             closed?;
             let name = match &record.current.body {
                 EventBody::ProjectRegistered { name, .. }
