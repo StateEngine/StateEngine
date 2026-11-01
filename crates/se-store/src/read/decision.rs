@@ -13,9 +13,7 @@ fn read_error(error: rusqlite::Error) -> Box<StoreError> {
 }
 fn relates(event: &StoredEvent, id: &DecisionId) -> bool {
     match &event.body {
-        EventBody::DecisionProposed {
-            decision, prior, ..
-        } => decision == id || prior.as_ref() == Some(id),
+        EventBody::DecisionProposed { decision, .. } => decision == id,
         EventBody::DecisionRatified { decision, .. }
         | EventBody::DecisionRejected { decision, .. }
         | EventBody::DecisionRetracted { decision, .. } => decision == id,
@@ -87,13 +85,12 @@ impl SqliteSnapshot {
             }
             let rows = {
                 let mut statement = self.db.prepare(
-                    "SELECT event_seq FROM decision_data WHERE project_id=? AND (decision_id=? OR prior_proposal_id=? OR replacement_id=?) AND event_seq>? AND event_seq<=? ORDER BY event_seq LIMIT ?",
+                    "SELECT event_seq FROM decision_data WHERE project_id=? AND (decision_id=? OR replacement_id=?) AND event_seq>? AND event_seq<=? ORDER BY event_seq LIMIT ?",
                 ).map_err(read_error)?;
                 statement
                     .query_map(
                         crate::sql_value::sql_params![
                             project,
-                            decision,
                             decision,
                             decision,
                             after,
