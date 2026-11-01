@@ -3,6 +3,8 @@ use super::linux as process;
 #[cfg(target_os = "macos")]
 use super::macos as process;
 use super::*;
+mod cleanup;
+pub use cleanup::NativeUnixSocketCleanup;
 use std::{
     fs::{self, File},
     io::{Read, Write},

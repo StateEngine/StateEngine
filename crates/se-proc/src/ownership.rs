@@ -1,7 +1,9 @@
 use crate::*;
+use serde::{Deserialize, Serialize};
 use std::{num::NonZeroU64, path::PathBuf, sync::Arc, time::Instant};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ScopeIdentity {
     LinuxPrepared {
         nonce: [u8; 16],
@@ -18,8 +20,11 @@ pub enum ScopeIdentity {
         name: String,
     },
     LinuxCgroup {
+        #[serde(with = "crate::checkpoint::native_path")]
         path: PathBuf,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
         device: u64,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
         inode: u64,
         boot_id: [u8; 16],
     },
@@ -28,7 +33,8 @@ pub enum ScopeIdentity {
         root: ProcessIdentity,
     },
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum LifecycleState {
     Reserved,
     Starting,
@@ -42,7 +48,8 @@ pub enum LifecycleState {
 }
 /// Store owns durable revision/state. This is the arena's last observed native
 /// state, never a claim that its transition was committed to the store.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcessRecord {
     pub format_version: u16,
     pub lifecycle: LifecycleId,
@@ -58,12 +65,14 @@ pub struct ProcessRecord {
     /// The host excludes this durable marker from live admission and recovery.
     pub ownership_release: Option<UnwitnessedRelease>,
     pub exit_status: Option<ExitStatus>,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub observed_at_unix_ns: u128,
     pub argv_sha256: [u8; 32],
 }
 /// Host commits this before native scope creation, including its exact random
 /// suffix, so a cold owner can account for pre-publication reservations.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LaunchReservation {
     pub format_version: u16,
     pub lifecycle: LifecycleId,
@@ -72,14 +81,19 @@ pub struct LaunchReservation {
     pub generation: GenerationId,
     pub scope_nonce: [u8; 16],
     pub parent: ReservationParent,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub created_at_unix_ns: u128,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ReservationParent {
     Windows,
     Linux {
+        #[serde(with = "crate::checkpoint::native_path")]
         path: PathBuf,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
         device: u64,
+        #[serde(with = "crate::checkpoint::decimal::u64")]
         inode: u64,
         boot_id: [u8; 16],
     },
@@ -92,24 +106,51 @@ pub enum ReservationParent {
 /// Runtime owns all resources. This is a revocable reference, not a second
 /// native owner; multiple same-generation references are legal.
 pub struct OwnedProcess {
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) key: crate::runtime::Reference,
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub(crate) _private: (),
 }
 pub struct NativeProcessRuntime {
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) inner: Arc<crate::runtime::Arena>,
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub(crate) _private: (),
 }
 pub struct PreparedStop {
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) key: crate::runtime::Reference,
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) deadline: Instant,
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) nonce: u64,
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub(crate) _private: (),
 }
 pub struct StopTicket {
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) key: crate::runtime::Reference,
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) attempt: u64,
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub(crate) _private: (),
 }
 pub struct PreparedLaunch {
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) key: crate::runtime::Reference,
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub(crate) _private: (),
 }
 pub struct LaunchTicket {
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) key: crate::runtime::Reference,
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub(crate) _private: (),
 }
 pub struct ExitWatch {
+    #[cfg(any(target_os = "linux", windows))]
+    pub(crate) _watch: Arc<crate::runtime::notify::Watch>,
+    #[cfg(not(any(target_os = "linux", windows)))]
     pub(crate) _private: (),
 }
 
@@ -136,13 +177,15 @@ pub enum LaunchProgress {
     Started(Box<LaunchSuccess>),
     Failed(Box<LaunchFailure>),
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum Population {
     Empty,
     Populated,
     Unknown,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum EnumerationExtent {
     Complete,
     Partial {
@@ -153,23 +196,27 @@ pub enum EnumerationExtent {
 }
 /// Labelled, best-effort diagnostic enumeration; never the authority to signal
 /// a kernel scope. Empty known_live with Partial is not an empty scope.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemainingScope {
     pub population: Population,
     pub known_live: Vec<ProcessIdentity>,
     pub extent: EnumerationExtent,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub observed_at_unix_ns: u128,
 }
 /// Host supplies this only after an ordinary stop yielded durable StopUnproved
 /// and owner-human admission committed the release CAS from that state alone.
 /// Revision is the resulting nonzero per-lifecycle revision, not an event seq.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UnwitnessedRelease {
     pub lifecycle: LifecycleId,
     pub generation: GenerationId,
     pub revision: NonZeroU64,
     pub scope: ScopeIdentity,
     pub remaining: RemainingScope,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub released_at_unix_ns: u128,
 }
 /// Native tracking was relinquished; this is deliberately not a StopWitness.
@@ -178,13 +225,15 @@ pub struct ReleasedOwnership {
     pub release: UnwitnessedRelease,
 }
 /// Native basis for an empty scope; absence alone cannot construct a witness.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ScopeExitBasis {
     ObservedEmpty,
     /// Linux only: the still-pinned original cgroup object was removed.
     RemovedPinnedLinuxCgroup,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScopeObservation {
     pub scope: ScopeIdentity,
     pub remaining: RemainingScope,
@@ -201,7 +250,8 @@ pub struct StopAttempt {
     pub ticket: StopTicket,
     pub dispatch: ProcResult<()>,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum RootWitness {
     NoChildCreated,
     /// Empty exact scope after a crash between exec and root publication.
@@ -212,16 +262,18 @@ pub enum RootWitness {
     },
     Identified {
         expected: ProcessIdentity,
-        evidence: ExitEvidence,
+        evidence: Box<ExitEvidence>,
         status: ExitStatus,
     },
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StopWitness {
     pub lifecycle: LifecycleId,
     pub root: RootWitness,
     pub scope: ScopeIdentity,
     pub scope_exit: ScopeObservation,
+    #[serde(with = "crate::checkpoint::decimal::u128")]
     pub observed_at_unix_ns: u128,
     pub guarantee: ContainmentGuarantee,
 }
@@ -231,7 +283,7 @@ pub enum StopObservation {
     Bounded(Box<StopWitness>),
     Pending {
         root: Option<Box<ProcessObservation>>,
-        scope: ScopeObservation,
+        scope: Box<ScopeObservation>,
     },
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -241,7 +293,7 @@ pub enum ExitNoticeKind {
     ScopeChanged,
     MonitorFailed,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExitNotice {
     pub lifecycle: LifecycleId,
     pub generation: GenerationId,
@@ -383,7 +435,8 @@ pub trait ProcessTransfer: ProcessRuntime {
     fn abort_transfer(&self, offer: &TransferOffer) -> ProcResult<()>;
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ScopeCheckpoint {
     pub reservation: LaunchReservation,
     /// Resolved physical parent, or the explicitly selected tracked-group parent.
@@ -465,10 +518,12 @@ pub struct TransferReceipt {
 /// Before-exec root publication for macOS and terminal attach. The only
 /// authorized pre-publication exec intent; final native image is independently
 /// read (a script may execute an interpreter). Published records pin that image.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RootCheckpoint {
     pub scope: ScopeCheckpoint,
     pub pre_exec: ProcessIdentity,
+    #[serde(with = "crate::checkpoint::native_path")]
     pub intended_executable: PathBuf,
 }
 

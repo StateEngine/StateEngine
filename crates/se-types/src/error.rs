@@ -97,6 +97,7 @@ macro_rules! display_values {
     ($($ty:ty),+ $(,)?) => {$(impl HumanValue for $ty {fn human(&self)->String {self.to_string()}})+};
 }
 display_values!(
+    str,
     String,
     Cursor,
     u16,
@@ -125,12 +126,20 @@ impl<T: HumanValue> HumanValue for Option<T> {
             .unwrap_or_else(|| "unknown".into())
     }
 }
-impl<T: HumanValue> HumanValue for Vec<T> {
+impl<T: HumanValue> HumanValue for [T] {
     fn human(&self) -> String {
         self.iter()
             .map(HumanValue::human)
             .collect::<Vec<_>>()
             .join(", ")
+    }
+    fn count(&self) -> Option<usize> {
+        Some(self.len())
+    }
+}
+impl<T: HumanValue> HumanValue for Vec<T> {
+    fn human(&self) -> String {
+        self.as_slice().human()
     }
     fn count(&self) -> Option<usize> {
         Some(self.len())

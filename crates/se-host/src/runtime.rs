@@ -95,3 +95,61 @@ pub struct HandoverState {
     pub recovery_owner: Option<se_types::EventId>,
     pub unresolved: Vec<se_types::ErrorBody>,
 }
+
+#[cfg(feature = "listener")]
+mod pool;
+#[cfg(feature = "listener")]
+pub use pool::*;
+#[cfg(feature = "listener")]
+mod call;
+#[cfg(feature = "listener")]
+pub use call::*;
+#[cfg(feature = "listener")]
+mod files;
+#[cfg(feature = "listener")]
+mod start;
+#[cfg(feature = "listener")]
+pub use start::*;
+
+#[cfg(feature = "listener")]
+mod endpoint;
+#[cfg(feature = "listener")]
+pub use endpoint::{HostedListener, RetainedEndpoint};
+#[cfg(feature = "listener")]
+mod admission;
+
+#[cfg(feature = "listener")]
+mod drain;
+#[cfg(feature = "listener")]
+pub use drain::StorageDrainReport;
+#[cfg(feature = "listener")]
+mod route;
+#[cfg(feature = "listener")]
+pub use route::{
+    AcceptedPeer, AdmittedExchange, AuthorizedStop, HostedConnection, HostedRouter, RoutedCall,
+};
+
+mod inventory;
+pub use inventory::decode_owner_inventory;
+
+#[cfg(feature = "listener")]
+mod executor;
+#[cfg(feature = "listener")]
+pub use executor::execute;
+
+#[cfg(feature = "listener")]
+mod serve;
+#[cfg(feature = "listener")]
+pub use serve::HostServeExit;
+
+#[cfg(feature = "listener")]
+mod capture;
+#[cfg(feature = "listener")]
+pub use capture::{CaptureRestoreReport, CaptureUnavailable, TranscriptBindings};
+
+#[cfg(feature = "listener")]
+mod failure;
+#[cfg(feature = "listener")]
+mod shutdown;
+#[cfg(feature = "listener")]
+pub use shutdown::HostShutdown;

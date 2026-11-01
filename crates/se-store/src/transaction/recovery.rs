@@ -90,18 +90,17 @@ impl Engine {
                 "writer reopen has no protected state-file readback",
             ));
         }
-        let next = Connection::open_with_flags(
+        let next = connection::open(
             path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
                 | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW
                 | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(sql)?;
+        )?;
         // Opening a handle does not acquire a write lock. Close the failed
         // connection before setting pragmas or attempting journal recovery.
         let old = std::mem::replace(&mut self.db, next);
         drop(old);
-        connection::configure(&self.db, true, timeout)?;
+        connection::configure(&self.db, path, true, timeout)?;
         let start = Instant::now();
         let limit = timeout
             .max(Duration::from_millis(100))
@@ -110,8 +109,8 @@ impl Engine {
             .progress_handler(1000, Some(move || start.elapsed() >= limit))
             .map_err(sql)?;
         let checked = (|| {
-            self.db.execute_batch("BEGIN").map_err(sql)?;
-            let info = connection::info(&self.db)?;
+            connection::begin_snapshot(&self.db, path)?;
+            let info = connection::info_at(&self.db, path)?;
             let identity = connection::validate_lease(&info, lease, self.identity.mode)?;
             if identity.store != self.identity.store
                 || identity.generation != self.identity.generation

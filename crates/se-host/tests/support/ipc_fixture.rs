@@ -100,6 +100,7 @@ pub fn call() -> Result<IpcEnvelope, Box<dyn Error>> {
         request_id: 9,
         generation: Generation::new(11)?,
         authority: None,
+        presence: None,
         cli_selections: None,
         request: IpcRequest::Operation(RawOperation {
             name: "working-state.set".into(),

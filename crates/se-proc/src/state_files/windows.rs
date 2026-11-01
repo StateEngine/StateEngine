@@ -1,8 +1,10 @@
 use super::*;
+#[path = "effects/windows.rs"]
+pub(super) mod effects;
 use std::{
     mem::{size_of, zeroed},
     os::windows::{
-        ffi::OsStrExt,
+        ffi::{OsStrExt, OsStringExt},
         io::{AsRawHandle, FromRawHandle},
     },
     path::Component,
@@ -14,10 +16,28 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
 };
 
-mod security;
+pub(crate) mod security;
 use security::descriptor;
-fn wide(path: &Path) -> Result<Vec<u16>> {
+fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
+    let units: Vec<_> = value.encode_wide().collect();
+    if units.contains(&(b':' as u16))
+        || units
+            .last()
+            .is_some_and(|unit| *unit == b'.' as u16 || *unit == b' ' as u16)
+    {
+        return Err(unsafe_path("ambiguous native path component", path));
+    }
+    Ok(())
+}
+pub(crate) fn wide(path: &Path) -> Result<Vec<u16>> {
     use std::path::Prefix;
+    for component in path.components() {
+        match component {
+            Component::Normal(value) => validate_component(value, path)?,
+            Component::Prefix(_) | Component::RootDir => (),
+            _ => return Err(unsafe_path("normalized native path required", path)),
+        }
+    }
     let units: Vec<_> = path.as_os_str().encode_wide().collect();
     let prefix = path.components().next();
     let mut value: Vec<u16> = match prefix {
@@ -123,7 +143,13 @@ fn open(path: &Path, directory: bool, create: bool, write: bool) -> Result<File>
         };
     // Directory pins deny delete sharing for their entire lifetime. File pins
     // permit our own no-replace rename while retaining the original object.
-    let share = FILE_SHARE_READ | FILE_SHARE_WRITE | if directory { 0 } else { FILE_SHARE_DELETE };
+    let share = FILE_SHARE_READ
+        | if directory || !create {
+            FILE_SHARE_WRITE
+        } else {
+            0
+        }
+        | if directory { 0 } else { FILE_SHARE_DELETE };
     // SAFETY: retained UTF-16 path and optional descriptor outlive this native open.
     let raw = unsafe {
         CreateFileW(
@@ -156,14 +182,6 @@ fn walk(path: &Path, create: bool, private_from: Option<&Path>) -> Result<File> 
             }
             Component::RootDir => prefix.push(component.as_os_str()),
             Component::Normal(n) => {
-                let units: Vec<_> = n.encode_wide().collect();
-                if units.contains(&(b':' as u16))
-                    || units
-                        .last()
-                        .is_some_and(|u| *u == b'.' as u16 || *u == b' ' as u16)
-                {
-                    return Err(unsafe_path("ambiguous native directory component", path));
-                }
                 prefix.push(n);
                 if create {
                     let parent_path = prefix
@@ -260,16 +278,42 @@ pub(super) fn create_directories(path: &Path) -> Result<()> {
 pub(super) struct Directory {
     file: File,
     identity: Identity,
+    resolved_root: PathBuf,
 }
 impl Directory {
     pub fn open(path: &Path) -> Result<Self> {
         let file = walk(path, false, None)?;
         let identity = metadata(&file, path, true, true)?;
-        Ok(Self { file, identity })
+        let mut buffer = vec![0u16; 32768];
+        // SAFETY: retained directory handle, writable UTF-16 buffer and explicit
+        // capacity. Resolve once from the pinned object, not a caller pathname.
+        let length = unsafe {
+            GetFinalPathNameByHandleW(
+                file.as_raw_handle(),
+                buffer.as_mut_ptr(),
+                buffer.len() as u32,
+                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+            )
+        };
+        if length == 0 {
+            return Err(last("resolve held state directory", path));
+        }
+        if length as usize >= buffer.len() {
+            return Err(unsafe_path(
+                "resolved state directory exceeds native path capacity",
+                path,
+            ));
+        }
+        let resolved_root = std::ffi::OsString::from_wide(&buffer[..length as usize]).into();
+        Ok(Self {
+            file,
+            identity,
+            resolved_root,
+        })
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
-        let found = Self::open(path)?;
-        if found.identity != self.identity {
+        let found = walk(path, false, None)?;
+        if metadata(&found, path, true, true)? != self.identity {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
                 "held state directory was replaced",
@@ -279,17 +323,63 @@ impl Directory {
         metadata(&self.file, path, true, true)?;
         Ok(())
     }
+    fn absolute(&self, path: &Path, root: &Path) -> Result<PathBuf> {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| unsafe_path("path outside held root", path))?;
+        if relative
+            .components()
+            .any(|c| !matches!(c, Component::Normal(_)))
+        {
+            return Err(unsafe_path("normalized relative state path required", path));
+        }
+        Ok(self.resolved_root.join(relative))
+    }
     fn parent(&self, path: &Path, root: &Path) -> Result<File> {
+        let path = self.absolute(path, root)?;
         walk(
             path.parent()
-                .ok_or_else(|| unsafe_path("file parent missing", path))?,
+                .ok_or_else(|| unsafe_path("file parent missing", &path))?,
             false,
-            Some(root),
+            Some(&self.resolved_root),
         )
+    }
+    pub fn prepare_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        let parent = self.parent(path, root)?;
+        let absolute = self.absolute(path, root)?;
+        let descriptor = descriptor(path, true)?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 0,
+        };
+        // SAFETY: resolved held-root descendant, retained parent and descriptor;
+        // this creates one leaf only and never changes an existing directory.
+        if unsafe { CreateDirectoryW(wide(&absolute)?.as_ptr(), &attributes) } == 0
+            && io::Error::last_os_error().raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32)
+        {
+            return Err(last("create protected child directory", path));
+        }
+        let file = open(&absolute, true, false, true)?;
+        let before = metadata(&file, path, true, true)?;
+        file.sync_all()
+            .map_err(|e| io_error("flush protected child directory", path, e))?;
+        parent
+            .sync_all()
+            .map_err(|e| io_error("flush protected child parent", path, e))?;
+        let outside = open(&absolute, true, false, true)?;
+        if metadata(&outside, path, true, true)? != before {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "prepared directory changed on readback",
+                path,
+            ));
+        }
+        Ok(())
     }
     pub fn create_staging_at(&self, path: &Path, root: &Path) -> Result<File> {
         let parent = self.parent(path, root)?;
-        let file = open(path, false, true, true)?;
+        let file = open(&self.absolute(path, root)?, false, true, true)?;
         metadata(&file, path, false, true)?;
         parent
             .sync_all()
@@ -298,7 +388,7 @@ impl Directory {
     }
     pub fn open_for_publication(&self, path: &Path, root: &Path) -> Result<File> {
         let _parent = self.parent(path, root)?;
-        let file = open(path, false, false, true)?;
+        let file = open(&self.absolute(path, root)?, false, false, true)?;
         metadata(&file, path, false, true)?;
         Ok(file)
     }
@@ -314,7 +404,7 @@ impl Directory {
             }
             Err(e) => return Err(e),
         };
-        let file = match open(path, false, false, false) {
+        let file = match open(&self.absolute(path, root)?, false, false, false) {
             Ok(file) => file,
             Err(e)
                 if e.source
@@ -342,8 +432,8 @@ impl Directory {
         // overwritten, and a different volume cannot turn rename into a copy.
         if unsafe {
             MoveFileExW(
-                wide(staged)?.as_ptr(),
-                wide(destination)?.as_ptr(),
+                wide(&self.absolute(staged, root)?)?.as_ptr(),
+                wide(&self.absolute(destination, root)?)?.as_ptr(),
                 MOVEFILE_WRITE_THROUGH,
             )
         } == 0

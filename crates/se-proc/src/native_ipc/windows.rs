@@ -6,7 +6,7 @@ use std::{
     mem::{size_of, zeroed},
     os::windows::{
         ffi::OsStrExt,
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        io::{AsRawHandle, OwnedHandle},
     },
     ptr,
 };
@@ -17,11 +17,7 @@ use windows_sys::Win32::{
     System::{IO::*, Pipes::*, Threading::*},
 };
 pub(super) fn owned(raw: HANDLE, operation: &'static str) -> IpcNativeResult<OwnedHandle> {
-    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
-        return Err(last(operation));
-    }
-    // SAFETY: the successful native allocation transfers one unique handle.
-    Ok(unsafe { OwnedHandle::from_raw_handle(raw) })
+    crate::windows_native::handle(raw, operation).map_err(|e| error(e.operation, e.source))
 }
 fn wide(name: &OsStr) -> IpcNativeResult<Vec<u16>> {
     let value: Vec<_> = name.encode_wide().collect();
@@ -341,6 +337,65 @@ impl NativePipeReservation {
     }
     pub fn name(&self) -> &OsStr {
         &self.name
+    }
+    /// Observes the current server-instance count through this retained first
+    /// instance. One means only the reservation remains at this observation;
+    /// greater counts are pending retirement, never permission to adopt or remove.
+    /// The caller must stop creating instances and keep driving its reactor
+    /// while cancelled overlapped operations release their retained handles.
+    pub fn current_instances(&self, bound: &IpcIoBound) -> IpcNativeResult<u32> {
+        bound
+            .remaining()
+            .map_err(|e| error("observe IPC reservation deadline", e))?;
+        let mut instances = 0;
+        // SAFETY: retained query-capable server handle and one writable DWORD;
+        // every unused output is null. This neither connects nor adopts a name.
+        if unsafe {
+            GetNamedPipeHandleStateW(
+                self._server.as_raw_handle(),
+                ptr::null_mut(),
+                &mut instances,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                0,
+            )
+        } == 0
+        {
+            return Err(last("read owned IPC pipe instance count"));
+        }
+        bound
+            .remaining()
+            .map_err(|e| error("observe IPC reservation deadline", e))?;
+        if instances == 0 {
+            return Err(error(
+                "read owned IPC pipe instance count",
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "retained reservation returned zero instances",
+                ),
+            ));
+        }
+        Ok(instances)
+    }
+    /// Waits on the caller's blocking pool until only this reservation remains.
+    /// Keep the reactor running and stop creating instances before this call.
+    /// Success permits the owner to drop its reservation last. On failure the
+    /// borrowed reservation is still owned by the caller: report pending release
+    /// and retain it for reconciliation rather than claiming transport closure.
+    /// Poll delays back off from 1 to 32 ms, clipped to the original deadline.
+    pub fn wait_until_exclusive(&self, bound: &IpcIoBound) -> IpcNativeResult<()> {
+        let mut delay = std::time::Duration::from_millis(1);
+        loop {
+            if self.current_instances(bound)? == 1 {
+                return Ok(());
+            }
+            let remaining = bound
+                .remaining()
+                .map_err(|e| error("wait for owned IPC pipe retirement", e))?;
+            std::thread::sleep(remaining.min(delay));
+            delay = (delay * 2).min(std::time::Duration::from_millis(32));
+        }
     }
     /// Read the actual evented instance back before it accepts any credential.
     /// If the platform ever creates a permissive descriptor instead of sharing

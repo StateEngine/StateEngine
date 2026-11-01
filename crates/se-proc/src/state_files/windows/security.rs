@@ -18,7 +18,10 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
-    System::{SystemServices::ACCESS_ALLOWED_ACE_TYPE, Threading::*},
+    System::{
+        SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE},
+        Threading::*,
+    },
 };
 pub(super) struct Allocation(pub(super) *mut std::ffi::c_void);
 impl Drop for Allocation {
@@ -81,22 +84,8 @@ impl User {
         unsafe { (&*self.storage.as_ptr().cast::<TOKEN_USER>()).User.Sid }
     }
     fn text(&self, path: &Path) -> Result<String> {
-        let mut raw = ptr::null_mut();
-        // SAFETY: retained valid token SID and writable LocalFree-owned text output.
-        if unsafe { ConvertSidToStringSidW(self.sid(), &mut raw) } == 0 {
-            return Err(last("encode user SID", path));
-        }
-        let allocation = Allocation(raw.cast());
-        let mut len = 0;
-        // SAFETY: native SID conversion returns a terminated UTF-16 allocation.
-        while unsafe { *raw.add(len) } != 0 {
-            len += 1;
-        }
-        // SAFETY: length was measured within that retained native terminated string.
-        let text = String::from_utf16(unsafe { std::slice::from_raw_parts(raw, len) })
-            .map_err(|_| unsafe_path("malformed native SID text", path))?;
-        drop(allocation);
-        Ok(text)
+        crate::windows_native::sid_text(self.sid())
+            .map_err(|e| io_error(e.operation, path, e.source))
     }
 }
 pub(super) fn descriptor(path: &Path, directory: bool) -> Result<Allocation> {
@@ -172,7 +161,15 @@ pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
     }
     Ok(())
 }
-pub(super) fn verify(
+pub(in crate::state_files) fn verify_owner(file: &File, path: &Path) -> Result<()> {
+    let user = User::current(path)?;
+    let (_descriptor, owner, _) = security(file, path, false)?;
+    if !equal(owner, user.sid()) {
+        return Err(unsafe_path("file owner differs from current OS user", path));
+    }
+    Ok(())
+}
+pub(crate) fn verify(
     file: &File,
     path: &Path,
     inherited_from_protected_parent: bool,
@@ -250,6 +247,66 @@ pub(super) fn verify(
             "user and SYSTEM full-control ACEs required",
             path,
         ));
+    }
+    Ok(())
+}
+
+/// Installation records and the permanent claim must not grant another native
+/// user write/delete/security authority. Read-only grants do not confer control.
+pub(in crate::state_files) fn verify_no_foreign_writer(file: &File, path: &Path) -> Result<()> {
+    let user = User::current(path)?;
+    let (_descriptor, owner, dacl) = security(file, path, true)?;
+    // SAFETY: the ACL, when non-null, belongs to the retained native descriptor.
+    if !equal(owner, user.sid()) || dacl.is_null() || unsafe { IsValidAcl(dacl) } == 0 {
+        return Err(unsafe_path(
+            "current-user owned valid installation DACL required",
+            path,
+        ));
+    }
+    let system = sid("S-1-5-18", path)?;
+    // SAFETY: validated ACL retained by its security descriptor above.
+    for index in 0..unsafe { (*dacl).AceCount } {
+        let mut raw = ptr::null_mut();
+        // SAFETY: valid ACL/index and initialized native pointer output.
+        if unsafe { GetAce(dacl, index as u32, &mut raw) } == 0 {
+            return Err(last("read installation protection ACE", path));
+        }
+        // SAFETY: successful GetAce returns a native header in the retained ACL.
+        let header = unsafe { &*raw.cast::<ACE_HEADER>() };
+        if header.AceType == ACCESS_DENIED_ACE_TYPE as u8 {
+            continue;
+        }
+        if header.AceType != ACCESS_ALLOWED_ACE_TYPE as u8
+            || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
+        {
+            return Err(unsafe_path(
+                "uninterpretable installation protection ACE",
+                path,
+            ));
+        }
+        // SAFETY: verified allowed ACE type and size before fields are accessed.
+        let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+        let principal = (&ace.SidStart as *const u32).cast_mut().cast();
+        // SAFETY: native SID is embedded in the retained validated ACE.
+        if unsafe { IsValidSid(principal) } == 0 {
+            return Err(unsafe_path("invalid installation protection SID", path));
+        }
+        const MUTATE: u32 = 0x10000000
+            | 0x40000000
+            | windows_sys::Win32::Storage::FileSystem::DELETE
+            | windows_sys::Win32::Storage::FileSystem::WRITE_DAC
+            | windows_sys::Win32::Storage::FileSystem::WRITE_OWNER
+            | windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA
+            | windows_sys::Win32::Storage::FileSystem::FILE_APPEND_DATA
+            | windows_sys::Win32::Storage::FileSystem::FILE_WRITE_EA
+            | windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES
+            | windows_sys::Win32::Storage::FileSystem::FILE_DELETE_CHILD;
+        if !equal(principal, user.sid()) && !equal(principal, system.0) && ace.Mask & MUTATE != 0 {
+            return Err(unsafe_path(
+                "installation DACL permits another native writer",
+                path,
+            ));
+        }
     }
     Ok(())
 }

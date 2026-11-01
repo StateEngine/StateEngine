@@ -5,7 +5,7 @@ use crate::{
 };
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StdioIdentity {
     pub lifecycle: LifecycleId,
     pub host: HostInstanceId,
@@ -104,7 +104,7 @@ pub enum StdioCloseScope {
 pub struct StdioClosed {
     pub(crate) _private: (),
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StdioNotice {
     pub identity: StdioIdentity,
     pub kind: StdioNoticeKind,

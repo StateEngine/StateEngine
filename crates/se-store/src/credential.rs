@@ -15,8 +15,8 @@ pub(crate) fn read(reader: &SqliteReader, hash: [u8; 32]) -> StoreResult<Read<Cr
         })?;
     let result = (|| {
         let c = reader.connect()?;
-        c.execute_batch("BEGIN").map_err(sql)?;
-        if connection::info(&c)?.state != StoreState::Ready {
+        connection::begin_snapshot(&c, &reader.path)?;
+        if connection::info_at(&c, &reader.path)?.state != StoreState::Ready {
             return Err(fail(
                 StoreErrorCode::NotReady,
                 "credential lookup store is in maintenance",

@@ -2,11 +2,13 @@ use crate::{
     GenerationId, HostInstanceId, LifecycleId, LifecycleState, ProcessId, ProcessIdentity,
     RemainingScope, StartIdentity,
 };
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Internal causes, NOT another public wire-code catalogue. Section 50 owns
 /// wire codes, classes, messages and remedies; section 30 specifies the mapping.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ProcErrorCode {
     InvalidInput,
     ExecutableMissing,
@@ -37,24 +39,29 @@ pub enum ProcErrorCode {
     CallbackPanicked,
     RecoveryUnproved,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NativeFailure {
     pub api: String,
     pub code: Option<i64>,
     /// Sanitized native cause, never parsed to determine a code or detail.
     pub reason: String,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum ProcErrorDetail {
     Input {
         field: String,
         reason: String,
     },
     Executable {
+        #[serde(with = "crate::checkpoint::native_path")]
         program: PathBuf,
     },
     Workspace {
+        #[serde(with = "crate::checkpoint::native_path")]
         cwd: PathBuf,
+        #[serde(with = "crate::checkpoint::native_path")]
         workspace: PathBuf,
     },
     Environment {
@@ -69,6 +76,7 @@ pub enum ProcErrorDetail {
     },
     Scope {
         lifecycle: Option<LifecycleId>,
+        #[serde(with = "crate::checkpoint::optional_native_path")]
         path: Option<PathBuf>,
         reason: String,
     },
@@ -104,7 +112,8 @@ pub enum ProcErrorDetail {
         report_id: [u8; 16],
     },
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ProcError {
     pub code: ProcErrorCode,
     pub detail: Box<ProcErrorDetail>,

@@ -12,9 +12,14 @@ use std::collections::BTreeSet;
 use std::num::NonZeroU64;
 use std::{
     fmt,
-    io::{self, Read, Write},
+    io::{self, Write},
 };
 use zeroize::Zeroizing;
+
+#[path = "wire/framing.rs"]
+mod framing;
+pub use framing::{frame_length, read_payload, write_frame};
+pub(crate) use framing::{read_payload_bounded, write_frame_bounded};
 
 pub const MAX_FRAME_BYTES: usize = 1024 * 1024;
 pub const DEFAULT_REPLY_BYTES: u32 = 262_144;
@@ -104,55 +109,12 @@ pub fn encode_frame<T: Serialize>(value: &T, limit: usize) -> Result<WireBytes> 
     Ok(WireBytes(frame))
 }
 
-pub fn frame_length(header: [u8; 4], limit: usize) -> Result<usize> {
-    let length = u32::from_be_bytes(header) as usize;
-    if length == 0 || length > limit || limit > MAX_FRAME_BYTES {
-        return Err(invalid("a positive frame length within the byte budget"));
-    }
-    Ok(length)
-}
-
-/// Read an exact frame. EOF (including mid-header/body) remains an error, never
-/// an empty operation/result. The native channel applies the absolute deadline.
-pub fn read_payload<R: Read>(reader: &mut R, limit: usize) -> Result<WireBytes> {
-    let mut header = [0; 4];
-    reader
-        .read_exact(&mut header)
-        .map_err(|error| io_failure("read header", error))?;
-    let mut payload = Zeroizing::new(vec![0; frame_length(header, limit)?]);
-    reader
-        .read_exact(&mut payload)
-        .map_err(|error| io_failure("read body", error))?;
-    Ok(WireBytes(payload))
-}
-
-/// Write a complete already-budgeted frame. Refuse a routing record/payload
-/// passed in place of a frame before exposing any of its bytes to the channel.
-pub fn write_frame<W: Write>(writer: &mut W, frame: &WireBytes) -> Result<()> {
-    let bytes = frame.as_bytes();
-    let header: [u8; 4] = bytes
-        .get(..4)
-        .ok_or_else(|| invalid("a complete frame"))?
-        .try_into()
-        .map_err(|_| invalid("a complete frame header"))?;
-    if frame_length(header, MAX_FRAME_BYTES)? != bytes.len() - 4 {
-        return Err(invalid("a frame with its exact complete body"));
-    }
-    writer
-        .write_all(bytes)
-        .map_err(|error| io_failure("write frame", error))?;
-    writer
-        .flush()
-        .map_err(|error| io_failure("flush frame", error))
-}
-
 pub(crate) fn io_failure(stage: &str, error: io::Error) -> SeError {
-    SeError::new(se_types::Detail::IpcUnavailable(
-        se_types::details::IpcUnavailable {
-            endpoint: "verified local IPC channel".into(),
-            reason: format!("{stage}: {error}"),
-        },
-    ))
+    let detail = se_types::Detail::IpcUnavailable(se_types::details::IpcUnavailable {
+        endpoint: "verified local IPC channel".into(),
+        reason: format!("{stage}: {error}"),
+    });
+    SeError::new(detail).with_cause(error)
 }
 
 #[derive(Serialize)]
@@ -161,6 +123,8 @@ struct CallRef<'a> {
     request_id: NonZeroU64,
     generation: se_types::Generation,
     authority: Option<AuthorityRef<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    presence: &'a Option<super::presence::OwnerPresence>,
     #[serde(skip_serializing_if = "Option::is_none")]
     cli_selections: &'a Option<Value>,
     request: RequestRef<'a>,
@@ -219,6 +183,7 @@ struct CallWire {
     request_id: NonZeroU64,
     generation: se_types::Generation,
     authority: Option<AuthorityWire>,
+    presence: Option<super::presence::OwnerPresence>,
     cli_selections: Option<Value>,
     request: RequestWire,
 }
@@ -276,6 +241,7 @@ pub fn encode_call(call: &crate::IpcEnvelope) -> Result<WireBytes> {
             request_id,
             generation: call.generation,
             authority: call.authority.as_ref().map(AuthorityRef::from),
+            presence: &call.presence,
             cli_selections: &call.cli_selections,
             request,
         },
@@ -307,6 +273,7 @@ pub fn decode_call(payload: &[u8]) -> Result<crate::IpcEnvelope> {
         request_id: wire.request_id.get(),
         generation: wire.generation,
         authority: wire.authority.map(Into::into),
+        presence: wire.presence,
         cli_selections: wire.cli_selections,
         request,
     })

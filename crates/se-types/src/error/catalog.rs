@@ -7,7 +7,7 @@ codes! {
     InputTooLarge => ("input-too-large", Usage) { field: String, limit_bytes: u64, got_bytes: u64 } => "{field} is {got_bytes} bytes; limit {limit_bytes}", "shorten or split it";
     InputUnknownField => ("input-unknown-field", Usage) { op: String, field: String, next_step: String } => "`{field}` is not accepted by {op}", "{next_step}";
     ProjectConflictsSession => ("project-conflicts-session", Usage) { flag_project: String, session_project: String } => "`-p {flag_project}` conflicts with this session's project {session_project}", "drop `-p`";
-    ProjectRequired => ("project-required", Usage) { choices: Vec<ProjectChoice> } => "which project? none registered here", "Use `se init` (none) or `se … -p NAME`";
+    ProjectRequired => ("project-required", Usage) { choices: Vec<ProjectChoice> } => "which project? {choices.len} registered: {choices}", "Select one with `se --project NAME …`, or use `se init` to register a project";
     Renamed => ("renamed", Usage) { old: String, replacement: String } => "`{old}` was renamed", "Use `{replacement}` (template; fill placeholders)";
     SelectorAmbiguous => ("selector-ambiguous", Usage) { kind: String, selector: String, matches: Vec<String> } => "{selector} matches {matches.len} {kind} entries: {matches}", "Select an exact ID from {matches}";
     UsageConflictingFlags => ("usage-conflicting-flags", Usage) { flags: Vec<String> } => "{flags} cannot be used together", "pick one";
@@ -40,7 +40,7 @@ codes! {
     ImportFormatUnsupported => ("import-format-unsupported", Refused) { path: String, found: String, supported: Vec<String> } => "{path} is format {found}; supported: {supported}", "upgrade Node StateEngine first, then import";
     ImportSourceActive => ("import-source-active", Refused) { path: String, pid: Option<u32> } => "the old StateEngine is still running on {path}", "stop it with the old `se down`, then retry";
     IntegrationFailed => ("integration-failed", Refused) { subject: String, reason: String, next_step: String } => "Integration {subject}: {reason}", "{next_step}";
-    JobBreakawayRefused => ("job-breakaway-refused", Refused) { parent: String } => "Windows won't let the agent outlive {parent}", "Launch from a terminal outside {parent}'s job, or have that job permit explicit JOB_OBJECT_LIMIT_BREAKAWAY_OK; `se up` inside the same strict job does not help";
+    JobBreakawayRefused => ("job-breakaway-refused", Refused) { parent: String } => "Windows refused job breakaway for a detached process launched by {parent}", "Launch from a terminal outside {parent}'s job, or have that job permit explicit JOB_OBJECT_LIMIT_BREAKAWAY_OK; `se up` inside the same strict job does not help";
     LaunchFailed => ("launch-failed", Refused) { subject: String, reason: String, next_step: String } => "Launch {subject}: {reason}", "{next_step}";
     ListenerUnavailable => ("listener-unavailable", Refused) { subject: String, reason: String, next_step: String } => "Listener {subject}: {reason}", "{next_step}";
     ProjectRemoved => ("project-removed", Refused) { project: ProjectId, at: UnixMicros } => "project {project} was removed at {at}", "re-adopt: → `se init --repo {root}`";
@@ -63,6 +63,8 @@ codes! {
     AgentUnknown => ("agent-unknown", Unknown) { selector: String, suggestion: Option<String> } => "no agent `{selector}` in {project}", "Use `se agent list`";
     AtlasPathUnknown => ("atlas-path-unknown", Unknown) { path: String } => "{path} isn't indexed", "Use `se atlas find PATH --kind path`";
     AtlasSymbolUnknown => ("atlas-symbol-unknown", Unknown) { symbol: String } => "no symbol `{symbol}`", "Use `se atlas find {symbol}`";
+    CommittedResponseUnavailable => ("committed-response-unavailable", Incomplete) { operation: Box<str>, key: Option<String>, natural_events: Box<[EventId]>, committed_events: Box<[EventId]>, reason: Box<str> } => "Commit confirmed for {operation}; continuation failed: {reason}; original key {key}, natural events {natural_events}", "Rerun the same command with --key K (CLI), substituting the original detail.key, or repeat the call with the same idempotency_key (MCP) to read the confirmed receipt; natural capture/markers replay the original natural_events unchanged";
+    CaptureIncomplete => ("capture-incomplete", Incomplete) { committed_events: Vec<EventId>, natural_keys: Vec<String>, reason: String } => "Capture stopped after committed events {committed_events}, natural keys {natural_keys}: {reason}", "Repeat the same hook with its original session/provider/turn identities; already committed turns replay";
     CommitOutcomeUnknown => ("commit-outcome-unknown", Unknown) { operation: String, key: Option<String>, natural_events: Vec<EventId> } => "Commit outcome unknown for {operation}; original key {key}, natural events {natural_events}", "Rerun the same command with --key K (CLI), substituting the original detail.key, or repeat the call with the same idempotency_key (MCP); natural capture/markers replay the original natural_events unchanged";
     TargetUnknown => ("target-unknown", Unknown) { subject: String, reason: String, next_step: String } => "Unknown target {subject}: {reason}", "{next_step}";
     AtlasSourceUnreadable => ("atlas-source-unreadable", Unreadable) { path: String, reason: String } => "Atlas can't read {path}: {reason}", "restore read access to the file";

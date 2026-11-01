@@ -41,7 +41,7 @@ impl SqliteSnapshot {
         let deadline = start + budget.deadline;
         self.db
             .progress_handler(1000, Some(move || Instant::now() >= deadline))
-            .map_err(sql)?;
+            .map_err(|error| self.read_sql(error))?;
         let result: StoreResult<Vec<MarkRow>> = (|| {
             let mut rows = if let Some(own) = own {
                 // A sent-or-received view is two index streams, not a broad page
@@ -76,7 +76,7 @@ impl SqliteSnapshot {
         })();
         self.db
             .progress_handler(0, None::<fn() -> bool>)
-            .map_err(sql)?;
+            .map_err(|error| self.read_sql(error))?;
         let rows: Vec<MarkRow> = result?;
         let mut items = Vec::new();
         let mut bytes = 0;
@@ -209,7 +209,10 @@ impl SqliteSnapshot {
             " ORDER BY d.sent_seq LIMIT ?"
         });
         args.push(Value::Integer(i64::from(budget.page.limit.get()) + 1));
-        let mut q = self.db.prepare(&statement).map_err(sql)?;
+        let mut q = self
+            .db
+            .prepare(&statement)
+            .map_err(|error| self.read_sql(error))?;
         q.query_map(rusqlite::params_from_iter(args), |r| {
             Ok((
                 value(r, 0)?,
@@ -219,7 +222,7 @@ impl SqliteSnapshot {
                 value(r, 4)?,
             ))
         })
-        .map_err(sql)?
+        .map_err(|error| self.read_sql(error))?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| match e {
             rusqlite::Error::SqliteFailure(code, _)

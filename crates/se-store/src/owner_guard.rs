@@ -34,7 +34,10 @@ pub(crate) fn read(
     }
     let start = Instant::now();
     // A reader path alone proves no native custody. Require the actual native port.
-    let _file = match files.readback(&reader.path)? {
+    let _file = match files
+        .readback(&reader.path)
+        .map_err(|error| context(error, &reader.path, StoreIoStage::Open))?
+    {
         Read::Present { value } => value,
         _ => {
             return Err(fail(
@@ -59,7 +62,7 @@ pub(crate) fn read(
     let deadline = start + budget.deadline;
     db.progress_handler(1000, Some(move || Instant::now() >= deadline))
         .map_err(sql)?;
-    db.execute_batch("BEGIN").map_err(sql)?;
+    connection::begin_snapshot(&db, &reader.path)?;
     let result = inventory(&db, &budget, deadline);
     let result = result.map_err(|mut error| {
         if Instant::now() >= deadline {
@@ -71,7 +74,7 @@ pub(crate) fn read(
     // Always close the finite transaction before releasing its shared read slot.
     db.progress_handler(0, None::<fn() -> bool>).map_err(sql)?;
     db.execute_batch("ROLLBACK").map_err(sql)?;
-    result
+    result.map_err(|error| context(error, &reader.path, StoreIoStage::ReadSnapshot))
 }
 fn inventory(
     db: &Connection,

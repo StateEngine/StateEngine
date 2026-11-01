@@ -522,7 +522,7 @@ The statically linked SE Code API requires exact version identity as declared in
 | 4 | unknown target or commit outcome | `Unknown`; `Read::Unknown`; transient `commit-outcome-unknown` retains original request identity |
 | 64 | usage | `Usage` (also `renamed`, `command-retired`) |
 
-Rules: `ExitStatus::exit(&self)` on each output computes the code from payload facts, so a nonzero exit always comes with the full payload on stdout. Doctor: 0 all healthy, 1 any check failed, 2 none failed but some unmeasured. `se hook claude` always exits 0 (Claude treats exit 2 as blocking; a failed capture is a recorded fact and a stderr line). `se mcp` exits 0 on EOF and 1 on a transport failure. Human errors go to stderr; with `--json` the `se.error/v1` object goes to stdout and the human text still goes to stderr.
+Rules: `ExitStatus::exit(&self)` on each output computes the code from payload facts, so a nonzero exit always comes with the full payload on stdout. Doctor: 0 all healthy, 1 any check failed, 2 none failed but some unmeasured. Native `se hook claude` exits 0 (Claude treats exit 2 as blocking; a failed capture is a recorded fact and a stderr line). Explicit `se hook claude stop --json` is the receipt mode for an outside caller: it performs the same authenticated natural-identity capture, emits the complete `se.hook-result/v1` envelope with any measured diagnostics, and uses the ordinary payload/error exit policy. Native stop and stop-failure keep empty stdout; session-start keeps provider framing. Neither mode permits `--project` or `--key` to replace the bound session or natural identity. `se mcp` exits 0 on EOF and 1 on a transport failure. Human errors go to stderr; with `--json` the `se.error/v1` object goes to stdout and the human text still goes to stderr.
 
 ---
 
@@ -902,6 +902,18 @@ Exact field paths for the families the journey runner judges. `$` is the payload
 | Witness | object | `{"state":"witnessed"\|"unwitnessed"\|"not-applicable","method":string\|null,"observed_at":Time\|null,"detail":string\|null}`. A result is `witnessed` only after a re-read from outside the writer (00 G8). `method` is one of `job-empty` (Windows), `pidfd-exit+cgroup-empty` (Linux), `pidfd-exit+cgroup-removed` (Linux original pinned object removed plus root exit), `start-identity-exit+cgroup-empty` and `start-identity-exit+cgroup-removed` (Linux without pidfds, preserving the native identity-recheck bound), `pidfd-exit+pgid-empty` (Linux, `uncontained`), `start-identity-exit+pgid-empty` (Linux without pidfd support: exit confirmed by re-reading the recorded start identity as gone or changed, at the bound section 30 states), `kqueue-exit+pgid-empty` (macOS), `readback` (files and config), `registry-reread`. |
 | ProcessId | object | `{"pid":int,"started_at":Time,"exe":string,"machine_id":string}`. `started_at` is the OS birth time (00 G6). A pid alone never identifies a process. |
 
+When measured for a request, `$.diagnostics.write_timings` carries required
+finite non-negative `queue_ms`, `transaction_ms` and `commit_call_ms`, and
+`durability: "normal" | "full"`. `checkpoint_ms` is optional: it is included
+only when the writer actually ran a checkpoint and measured that call. No
+checkpoint means the key is omitted, never a substituted zero. These transient
+measurements do not change the immutable original receipt or writer on replay.
+
+A completed write may carry optional `$.maintenance_pending: true` when its
+known successful commit still needs checkpoint maintenance. The original
+committed/replayed receipt and writer remain intact; this transient obligation
+is not `commit-outcome-unknown`. Absence makes no claim about maintenance.
+
 Public Page/Window encoders omit internal `Window.snapshot`/`WindowFields`
 accounting. Only opaque cursors cross the CLI, MCP, IPC and linked boundaries;
 store sequence numbers are neither public ordering fields nor revisions.
@@ -1043,6 +1055,7 @@ Codex approval never with bypass false is an ordinary sandboxed policy.
 | `$.runtime.state` | `"running"` \| `"starting"` \| `"draining"` \| `"stopped"` \| `"unknown"` | yes | from `runtime.lock`, the endpoint file and a re-read from outside |
 | `$.runtime.host` | `"daemon"` \| `"secode"` \| null | yes | who owns the runtime |
 | `$.runtime.process` | ProcessId \| null | yes | host process identity (pid + birth) while running, starting or draining |
+| `$.runtime.detachment` | `"session-only"` \| `"windows-breakaway"` \| `"user-manager-unit"` | only when natively measured | Actual startup/recovery detachment, omitted when unobserved. For `session-only`, plain status says "Host: runs as a session process and stops when this login session ends". This does not claim a background service. |
 | `$.runtime.generation` | int \| null | yes | current generation |
 | `$.runtime.endpoint` | string \| null | yes | `127.0.0.1:PORT` |
 | `$.runtime.version` | string \| null | yes | the host's se version |
@@ -1426,6 +1439,17 @@ This example exits 1. One check failed, and a failure outranks a warning.
 
 `DecisionRow` is shared by the receipt, the page (A.12) and `se decision show`.
 
+The canonical declaration is `se_types::{DecisionRow, DecisionReceipt}` in
+`crates/se-types/src/surface/decision.rs`. The actual family serializer is
+`se_core::ops::decision_receipt(DecisionReceipt)`, returning the existing core
+`Envelope<DecisionReceipt>`; its `schema` is `se.decision-receipt/v1`. The
+shared `WriteReceipt` is flattened into the top level, never a nested `commit`
+object. The five `DecisionAction` spellings and five `DecisionState` spellings
+are closed enums matching the tables below. These output declarations do not
+register the unfinished FULL operations in `AnyOp`/`AnyOutput` or make them
+executable; future operations consume these types rather than define another
+receipt.
+
 | Path (row = a `DecisionRow`) | Type | Always | Meaning |
 | --- | --- | --- | --- |
 | row`.id` | Id | yes | decision id (`dec_…`) |
@@ -1464,6 +1488,13 @@ This example exits 1. One check failed, and a failure outranks a warning.
 | `$.replaced` | DecisionRow \| null | yes | `supersede` only: the prior decision, now `superseded`; null otherwise |
 | `$.writer.mode` | `"host"` \| `"direct"` | yes | A.0 Writer |
 | `$.writer.host_generation` | string | when mode is `host` | |
+
+When the replacement is pending, `decision supersede` approves it and retires
+its predecessor in one FULL transaction. The receipt's `event_id` is the
+replacement's actual ratification event; `replaced.event_id` identifies the
+predecessor's separate retirement event in the same atomic operation. A stale
+revision on either decision rolls back both transitions. Replaying the original
+request key returns those original events and rows even after later transitions.
 
 ```json
 {"schema":"se.decision-receipt/v1","authority":{"guard":null,"limit":"mistake/drift guard; not proof against a determined agent using the same OS account"},"action":"propose","state":"committed",
@@ -1509,7 +1540,7 @@ The same decision after `se decision ratify dec_…` run in the owner's terminal
 | `$.items[].unreadable` | null \| `{reason}` | yes | set for a row that exists but could not be decoded (its other fields are then null); also counted in `window.omitted` |
 | `$.window`, `$.next` | Window, Cursor \| null | yes | A.0. An omission with reason `unreadable` exits 2. |
 
-`se.decision/v1` (`se decision show ID`) is `{"schema":"se.decision/v1","decision":Read<DecisionDetail>}`. `DecisionDetail` is a `DecisionRow` whose `statement.complete` is always true, plus `transitions[]`: `{action, by: Ref + kind, at, event_id, reason}`, oldest first. An unknown id gives `{"state":"absent","checked":"decisions in project app"}`, exit 0. An undecodable row gives `unreadable`, exit 3.
+`se.decision/v1` (`se decision show ID`) is `{"schema":"se.decision/v1","decision":Read<DecisionDetail>}`. `DecisionDetail` is a `DecisionRow` whose `statement.complete` is always true, plus `transitions[]`: `{action, by: Ref + kind, at, event_id, reason}`, oldest first. An unknown id gives `{"state":"absent","checked":"decisions in project app"}`, exit 0. An undecodable row gives `unreadable`, exit 3. Detail uses only the exact-ID transition reader at one snapshot: up to 32 pages of 128 events and 1 MiB each, with a 250 ms deadline per page. Exhausting these bounds gives `unreadable`, never a partial success. Incoming committed supersede transitions appear in the replacement’s history without incrementing its own revision; a proposal’s intended predecessor alone is not an effective supersede transition.
 
 ```json
 {"schema":"se.decision-page/v1","project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app"},
@@ -1522,6 +1553,30 @@ The same decision after `se decision ratify dec_…` run in the owner's terminal
    "event_id":"ev_0192f3aa-0000-7000-8000-000000000051","unreadable":null}],
  "consistency":"live-keyset","window":{"from":null,"to":"c1.ZDE","limit":20,"complete":true,"omitted":{"count":0,"reason":null}},"next":null}
 ```
+
+### A.12.1 `se.config-value/v1` and `se.agent-status/v1` — independent readback
+
+The published DTOs are `se_core::ops::{ConfigValueOutput, AgentStatusOutput}`
+in `crates/se-core/src/ops/outputs.rs`. Their `into_envelope` methods add the
+literal family `schema` first. These declarations do not add operations to the
+executable catalogue: a runner must still refuse an unsupported command rather
+than substitute fixture data for installed readback.
+
+| Path | Type | Always | Meaning |
+| --- | --- | --- | --- |
+| `$.schema` | `"se.config-value/v1"` | config value | family |
+| `$.key` | string | config value | exact canonical setting key, including `agent.<A>.*` for saved agent metadata |
+| `$.value` | `Read<JSON value>` | config value | present retains the setting's boolean, number, string, array or object type; a present JSON null is distinct from absent, unreadable and unknown |
+| `$.origin` | string | when origin was requested and established | selected file, environment/flag override, built-in default or saved agent field; omitted otherwise |
+| `$.schema` | `"se.agent-status/v1"` | agent status | family |
+| `$.agent` | `Read<AgentRow>` | agent status | present value is exactly A.2's row, including nested session, conversation and resume objects |
+
+Configuration values follow the existing redaction policy; no credential or
+secret becomes a readback value. A judge accepts a value or agent fact only from
+`state: "present"`, compares the native JSON type and exact value, and fails
+closed on the other three Read states. Neither family carries an event or
+writer stamp because these are reads. Optional timing diagnostics use the same
+outer envelope as other outputs and are absent when there is no measured write.
 
 ### A.13 Other write receipts carrying `writer`
 
@@ -1540,6 +1595,73 @@ Every keyed write result also carries its original `$.idempotency_key`; natural 
  "recorded_at":"2026-10-30T12:20:11.000000Z","agent":{"id":"ag_0192f3a0-1111-7aaa-8bbb-000000000004","name":"rev"},
  "revision":4,"current_revision":4,"bytes":52,"writer":{"mode":"host","host_generation":"7"}}
 ```
+
+### A.13.1 Canonical `se.agent-receipt/v1` declaration
+
+`se_types::AgentReceipt` in `crates/se-types/src/surface/agent.rs` is serialized
+by `se_core::ops::agent_receipt` using the existing family Envelope. Agent add
+uses `action: "create"`; rename reuses this same family. The shared declarations
+of `Named`, `ActorRef`, `Writer`, `CommitState` and the saved Claude/Codex
+`Provider` now live in `se-types`; their existing core names re-export the same
+types and preserve their wire layouts.
+
+| Path | Type | Always | Meaning |
+| --- | --- | --- | --- |
+| `$.schema` | `"se.agent-receipt/v1"` | yes | family |
+| `$.state` | `"committed"` \| `"replayed"` | yes | actual original write outcome |
+| `$.event_id`, `$.recorded_at`, `$.idempotency_key`, `$.writer` | Id, Time, string, Writer | yes | flattened immutable write fields from A.0; replay retains the original event and writer |
+| `$.action` | `"create"` \| `"rename"` | yes | selected operation |
+| `$.outcome` | `"created"` \| `"existing"` \| `"renamed"` \| `"unchanged"` | yes | actual identity effect; not a launch result |
+| `$.agent.id`, `$.agent.name` | Id, string | yes | saved agent identity |
+| `$.agent.provider` | `"claude"` \| `"codex"` | yes | saved provider |
+| `$.agent.model` | string \| null | yes | null selects the provider default |
+| `$.agent.profile` | string | yes | saved named permission profile |
+| `$.previous_name` | string \| null | yes | previous name for rename; null for create |
+| `$.process_started` | false | yes | add/rename never launches a process |
+
+Creation is a FULL store mutation. A judge requires the returned agent id and
+saved metadata to agree with independent `se.agent-status/v1` readback. It
+checks `process_started` is false; a creation receipt cannot substitute for a
+process launch witness. These declarations alone add no executable operation.
+
+### A.13.2 `se.config-receipt/v1` — store-backed agent metadata
+
+`se_types::AgentConfigReceipt` in the same module is the store-backed branch
+for `config set agent.<A>.model`, `.profile` and `.can-create`. Its actual family
+serializer is `se_core::ops::agent_config_receipt`, returning the existing
+`Envelope<AgentConfigReceipt>`. The general `config.toml` file-custody branch
+has no store event or writer and cannot use this payload; section 40 §9.5 still
+governs that separate branch.
+
+| Path | Type | Always | Meaning |
+| --- | --- | --- | --- |
+| `$.schema` | `"se.config-receipt/v1"` | yes | family |
+| `$.storage` | `"agent-record"` | yes | closed discriminator for the store-backed branch |
+| `$.state` | `"committed"` \| `"replayed"` | yes | original write outcome |
+| `$.event_id`, `$.recorded_at`, `$.idempotency_key`, `$.writer` | Id, Time, string, Writer | yes | flattened immutable write fields; no nested `commit` object |
+| `$.project`, `$.agent` | Ref, Ref | yes | exact admitted project and saved agent |
+| `$.key` | string | yes | canonical `agent.<A>.model`, `.profile` or `.can-create` key |
+| `$.previous` | `{value: JSON, source: "stored" \| "default"}` | yes | effective prior value and its measured source; the first can-create write has `{value:false,source:"default"}`, while a stored false or JSON null retains source stored |
+| `$.value` | JSON value | yes | committed setting read back with its native type; `.can-create` is boolean, `.profile` is a string and `.model` is string or null |
+| `$.revision` | int | yes | entity revision committed by this request |
+| `$.current_revision` | int | yes | fresh readback revision; may be later on replay and never replaces the original committed revision |
+| `$.authority.guard` | `"owner-terminal-outside-agent-tree"` \| null | yes | established human-presence guard for `.profile` permission selection and `.can-create`; null for the ordinary `.model` update |
+| `$.authority.limit` | string | yes | the same mistake/drift-bound disclosure as A.11 |
+
+Agent metadata changes are FULL store mutations. A judge requires the exact
+key/value type and entity to agree with independent `se.config-value/v1`
+readback and checks the committed/replayed event and writer. A failed or
+unreadable resulting readback refuses rather than publishing a guessed success;
+it does not become a null setting. An unknown or unreadable prior value refuses
+rather than supplying a guessed receipt. The first can-create write reports
+`previous: {value:false, source:"default"}`, matching the effective false from
+`config get`. The source is established by the original committed first-write
+facts (`Expected::Absent` and no cause); the store's absent grant remains an
+absent storage fact. A later stored false or present JSON null has
+`source:"stored"`. Replay reconstructs the effective prior value and source
+from the original commit without substituting the current grant head.
+Transient timings, when measured, use the existing optional outer diagnostics;
+these DTO declarations add no timer, store write or executable command.
 
 ### A.14 `se.event/v1` and `se.history-page/v1` — `se history`, `stateengine_event_read`
 

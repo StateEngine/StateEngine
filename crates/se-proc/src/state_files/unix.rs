@@ -1,5 +1,7 @@
 use super::*;
 mod ancestors;
+#[path = "effects/unix.rs"]
+pub(super) mod effects;
 use std::{
     ffi::{CString, OsStr},
     io::Read,
@@ -58,6 +60,20 @@ fn components(path: &Path) -> Result<Vec<&OsStr>> {
         .collect()
 }
 fn walk(path: &Path, create: bool) -> Result<File> {
+    walk_with_private_root(path, create, true, false)
+}
+pub(super) fn walk_effect_parent(path: &Path) -> Result<File> {
+    walk_with_private_root(path, false, false, false)
+}
+pub(super) fn walk_effect_parent_for_creation(path: &Path) -> Result<File> {
+    walk_with_private_root(path, false, false, true)
+}
+fn walk_with_private_root(
+    path: &Path,
+    create: bool,
+    private_root: bool,
+    sticky_final: bool,
+) -> Result<File> {
     let root = CString::new("/").map_err(|_| unsafe_path("native root", path))?;
     // SAFETY: constant path, successful open supplies an independently owned FD.
     let mut parent = owned(
@@ -71,6 +87,9 @@ fn walk(path: &Path, create: bool) -> Result<File> {
         path,
     )?;
     let parts = components(path)?;
+    if !private_root {
+        effects::trusted_directory(&parent, path, parts.is_empty() && !sticky_final)?;
+    }
     let mut private = false;
     let mut traversed = PathBuf::from("/");
     for (index, value) in parts.iter().enumerate() {
@@ -89,7 +108,7 @@ fn walk(path: &Path, create: bool) -> Result<File> {
                 ));
             }
         }
-        private |= created || index + 1 == parts.len();
+        private |= created || (private_root && index + 1 == parts.len());
         // SAFETY: initialized writable stat output and held parent/component.
         let mut link: libc::stat = unsafe { std::mem::zeroed() };
         // SAFETY: no-follow stat inspects the actual named directory entry.
@@ -131,12 +150,13 @@ fn walk(path: &Path, create: bool) -> Result<File> {
             path,
         )?;
         if created {
-            // SAFETY: chmod the just-opened owned directory, never its pathname.
-            if unsafe { libc::fchmod(next.as_raw_fd(), 0o700) } < 0 {
-                return Err(io_error(
-                    "protect newly created directory",
+            // mkdirat's mode is already owner-only. Do not broaden a later
+            // opened incumbent, including restrictive owner permissions.
+            let meta = metadata(&next, path, true)?;
+            if meta.mode() & 0o700 != 0o700 {
+                return Err(unsafe_path(
+                    "new directory lacks owner read/write/search permission; preserve it unchanged",
                     path,
-                    io::Error::last_os_error(),
                 ));
             }
             parent
@@ -147,6 +167,9 @@ fn walk(path: &Path, create: bool) -> Result<File> {
             metadata(&next, &traversed, true)?;
         } else {
             super::validate_existing_ancestor(&next, &traversed)?;
+        }
+        if !private_root {
+            effects::trusted_directory(&next, path, index + 1 == parts.len() && !sticky_final)?;
         }
         parent = next;
     }
@@ -236,6 +259,53 @@ impl Directory {
             path,
         )?;
         Ok((self.directory(parent, root)?, name))
+    }
+    pub fn prepare_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        let (parent, name) = self.parent(path, root)?;
+        // SAFETY: one normal component relative to the retained private parent.
+        let created = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } == 0;
+        if !created && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+            return Err(io_error(
+                "create protected child directory",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        // SAFETY: retained parent and literal child; never follow a final link.
+        let file = owned(
+            unsafe {
+                libc::openat(
+                    parent.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            },
+            "pin protected child directory",
+            path,
+        )?;
+        // The opened inode may be an incumbent substituted after mkdirat.
+        // Validate it without changing either privacy or owner permissions.
+        let before = metadata(&file, path, true)?;
+        if created && before.mode() & 0o700 != 0o700 {
+            return Err(unsafe_path(
+                "new directory lacks owner read/write/search permission; preserve it unchanged",
+                path,
+            ));
+        }
+        file.sync_all()
+            .map_err(|e| io_error("sync protected child directory", path, e))?;
+        parent
+            .sync_all()
+            .map_err(|e| io_error("sync protected child parent", path, e))?;
+        let observed = metadata(&self.directory(path, root)?, path, true)?;
+        if (observed.dev(), observed.ino()) != (before.dev(), before.ino()) {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "prepared directory changed on readback",
+                path,
+            ));
+        }
+        Ok(())
     }
     pub fn create_staging_at(&self, path: &Path, root: &Path) -> Result<File> {
         let (parent, name) = self.parent(path, root)?;
@@ -328,11 +398,10 @@ impl Directory {
             )
         } as i64;
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        return Err(failure(
-            StateFileErrorCode::Unsupported,
-            "atomic native no-replace rename unavailable",
-            destination,
-        ));
+        let renamed: i64 = {
+            compile_error!("se-proc native state files support Linux and macOS Unix targets only");
+            0
+        };
         if renamed < 0 {
             return Err(io_error(
                 "native no-replace publication",

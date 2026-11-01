@@ -10,12 +10,14 @@ publish.workspace = true
 se-types = { path = "../se-types" }
 sha2.workspace = true
 zeroize.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_IO", "Win32_System_Pipes", "Win32_System_SystemServices"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_LibraryLoader", "Win32_System_IO", "Win32_System_SystemInformation", "Win32_System_Registry", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging", "Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Globalization"] }
 
 [lints.rust]
 unsafe_code = "allow"
@@ -25,9 +27,9 @@ unwrap_used = "deny"
 expect_used = "deny"
 
 [[test]]
-name = "ancestor_policy"
+name = "process_birth"
 harness = false
 
 [[test]]
-name = "native_entropy"
+name = "bootstrap_stderr"
 harness = false

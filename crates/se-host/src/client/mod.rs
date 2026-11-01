@@ -15,7 +15,7 @@ pub struct ClientOptions {
 pub struct BlockingIpcClient {
     pub(crate) _private: (),
 }
-pub use lease::BlockingConnection;
+pub use lease::{BlockingConnection, ExchangeProgress};
 /// Genuine OS backends: Unix sockets and Windows named pipes. Framing, MAC,
 /// authority selection and result decoding remain one common blocking client.
 pub trait BlockingTransport: Send + Sync {
@@ -55,6 +55,7 @@ pub trait RuntimeFilesystem: Send + Sync {
 pub mod auth;
 pub mod endpoint;
 pub mod lease;
+pub mod presence;
 pub mod wire;
 
 pub mod hello;

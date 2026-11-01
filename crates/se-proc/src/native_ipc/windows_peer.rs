@@ -89,42 +89,14 @@ fn process_identity(pid: u32) -> IpcNativeResult<(OwnedHandle, String, NonZeroU6
             "IPC peer process SID differs from current user",
         ));
     }
-    let mut creation = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    let mut exit = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    let mut kernel = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    let mut user = FILETIME {
-        dwLowDateTime: 0,
-        dwHighDateTime: 0,
-    };
-    // SAFETY: one pinned process and four aligned stack FILETIME outputs.
-    if unsafe {
-        GetProcessTimes(
-            process.as_raw_handle(),
-            &mut creation,
-            &mut exit,
-            &mut kernel,
-            &mut user,
-        )
-    } == 0
-    {
-        return Err(last("read peer process creation clock"));
-    }
     let creation_filetime = NonZeroU64::new(
-        (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime),
+        crate::windows_native::process_start(process.as_raw_handle())
+            .map_err(|e| error(e.operation, e.source))?,
     )
     .ok_or_else(|| {
         refuse(
             IpcNativeErrorCode::Unreadable,
-            "invalid native process birth",
+            "native process creation clock is zero",
         )
     })?;
     Ok((process, sid, creation_filetime))

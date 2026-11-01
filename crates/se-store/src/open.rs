@@ -69,16 +69,30 @@ impl SqliteFactory {
                     checked: format!("{} is absent", reader.path.display()),
                 });
             }
-            Err(e) => return Err(fail(StoreErrorCode::Unreadable, e.to_string())),
+            Err(e) => return Err(io(e, &reader.path, StoreIoStage::Open)),
         };
-        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() < 100 {
-            return Err(fail(
-                StoreErrorCode::Unreadable,
-                "state.db is not a complete regular SQLite file",
+        if !metadata.is_file() || metadata.file_type().is_symlink() {
+            return Err(context(
+                fail(
+                    StoreErrorCode::Unreadable,
+                    "state.db must be a regular file without symbolic links",
+                ),
+                &reader.path,
+                StoreIoStage::Open,
+            ));
+        }
+        if metadata.len() < 100 {
+            return Err(context(
+                fail(
+                    StoreErrorCode::Corrupt,
+                    "state.db is shorter than the SQLite header",
+                ),
+                &reader.path,
+                StoreIoStage::Open,
             ));
         }
         let c = reader.connect()?;
-        connection::info(&c)?;
+        connection::info_at(&c, &reader.path)?;
         Ok(Read::Present { value: reader })
     }
     fn existing_protected(
@@ -86,7 +100,11 @@ impl SqliteFactory {
         lease: &dyn RuntimeLease,
     ) -> StoreResult<Read<SqliteReader>> {
         let path = o.state_directory.join("state.db");
-        match lease.files().readback(&path)? {
+        match lease
+            .files()
+            .readback(&path)
+            .map_err(|error| context(error, &path, StoreIoStage::Open))?
+        {
             Read::Present { .. } => Self::existing(o),
             Read::Absent { checked } => Ok(Read::Absent { checked }),
             Read::Unreadable {
@@ -143,15 +161,15 @@ impl SqliteFactory {
         drop(stage.file);
         let created_at = connection::now()?;
         let result = (|| {
-            let c = Connection::open_with_flags(
+            let c = connection::open(
                 &staged,
                 OpenFlags::SQLITE_OPEN_READ_WRITE
                     | OpenFlags::SQLITE_OPEN_NOFOLLOW
                     | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-            )
-            .map_err(sql)?;
-            c.execute_batch("PRAGMA page_size=4096").map_err(sql)?;
-            connection::configure(&c, true, o.busy_timeout)?;
+            )?;
+            c.execute_batch("PRAGMA page_size=4096")
+                .map_err(|error| sqlite_context(error, &staged, StoreIoStage::PragmaReadback))?;
+            connection::configure(&c, &staged, true, o.busy_timeout)?;
             c.execute_batch("PRAGMA synchronous=FULL; BEGIN EXCLUSIVE")
                 .map_err(sql)?;
             c.execute_batch(include_str!("../migrations/001.sql"))
@@ -237,7 +255,7 @@ impl StoreFactory for SqliteFactory {
         match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
                 let db = connection::connect(&reader.path, true, o.busy_timeout)?;
-                let info = connection::info(&db)?;
+                let info = connection::info_at(&db, &reader.path)?;
                 let identity = connection::validate_lease(&info, lease, LeaseMode::DirectClient)?;
                 Ok(Read::Present {
                     value: SqliteDirect {
@@ -270,7 +288,7 @@ impl StoreFactory for SqliteFactory {
         match Self::existing_protected(o, lease)? {
             Read::Present { value: reader } => {
                 let db = connection::connect(&reader.path, true, o.busy_timeout)?;
-                let info = connection::info(&db)?;
+                let info = connection::info_at(&db, &reader.path)?;
                 let identity = connection::validate_lease(&info, lease, LeaseMode::Host)?;
                 Ok(Read::Present {
                     value: SqliteHost::maintenance(
@@ -353,14 +371,14 @@ impl StoreFactory for SqliteFactory {
 impl ReadStore for SqliteReader {
     type Snapshot = SqliteSnapshot;
     fn info(&self) -> StoreResult<StoreInfo> {
-        connection::info(&self.connect()?)
+        connection::info_at(&self.connect()?, &self.path)
     }
     fn snapshot(&self, scope: ReadScope) -> StoreResult<Self::Snapshot> {
         SqliteSnapshot::open(self, scope)
     }
     fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>> {
         let c = self.connect()?;
-        let info = connection::info(&c)?;
+        let info = connection::info_at(&c, &self.path)?;
         let row:Option<(String,u64,u64,i64)>=c.query_row("SELECT owner_epoch,owner_generation,revision,last_seq FROM runtime_owner WHERE singleton=1",[],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?))).optional().map_err(sql)?;
         match row {
             None => Ok(Read::Absent {
