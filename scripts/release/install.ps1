@@ -59,12 +59,34 @@ function New-OwnedDirectory([string]$Path, [Security.Principal.SecurityIdentifie
         $parent = [IO.Path]::GetDirectoryName($Path)
         if ($parent) { New-OwnedDirectory $parent $Owner }
         Initialize-NativeTypes
-        if ([StateEngineInstall.Native]::MakeDirectory($Path)) {
+        if ([StateEngineInstall.Native]::MakeDirectory($Path, $Owner.Value)) {
             $created.Add($Path)
             Set-NativeOwner $Path $Owner
         }
         Assert-PlainPath $Path
     }
+}
+function Assert-ProtectedDataHome([string]$Path, [Security.Principal.SecurityIdentifier]$Owner) {
+    Assert-PlainPath $Path
+    $security = Get-Acl -LiteralPath $Path
+    if (-not $security.AreAccessRulesProtected -or
+        $security.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $Owner.Value) {
+        throw "data home requires a protected current-user DACL; existing permissions were preserved: $Path"
+    }
+    $principals = @($Owner.Value, 'S-1-5-18')
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]'
+    $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+    foreach ($rule in $security.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IsInherited -or $rule.IdentityReference.Value -notin $principals -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl -or
+            $rule.InheritanceFlags -ne $inheritance -or
+            $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None) {
+            throw "data home requires inheritable full control only for its user and SYSTEM; existing permissions were preserved: $Path"
+        }
+        [void]$seen.Add($rule.IdentityReference.Value)
+    }
+    if ($seen.Count -ne 2) { throw "data home requires user and SYSTEM protection: $Path" }
 }
 function Initialize-NativeTypes {
     if (-not ('StateEngineInstall.Native' -as [type])) {
@@ -78,6 +100,12 @@ namespace StateEngineInstall {
     public static class Native {
         [StructLayout(LayoutKind.Sequential)]
         private struct AttributeTag { public uint Attributes; public uint Tag; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SecurityAttributes {
+            public int Length;
+            public IntPtr Descriptor;
+            public int InheritHandle;
+        }
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern SafeFileHandle CreateFile(string name, uint access, uint sharing,
             IntPtr security, uint disposition, uint flags, IntPtr template);
@@ -85,12 +113,22 @@ namespace StateEngineInstall {
         private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int kind,
             out AttributeTag info, uint size);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern bool CreateDirectory(string name, IntPtr security);
-        public static bool MakeDirectory(string path) {
-            if (CreateDirectory(path, IntPtr.Zero)) return true;
-            int error = Marshal.GetLastWin32Error();
-            if (error == 183 && Directory.Exists(path)) return false;
-            throw new Win32Exception(error);
+        private static extern bool CreateDirectory(string name, ref SecurityAttributes security);
+        public static bool MakeDirectory(string path, string owner) {
+            var security = new System.Security.AccessControl.DirectorySecurity();
+            security.SetSecurityDescriptorSddlForm(
+                "O:" + owner + "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;" + owner + ")");
+            var descriptor = GCHandle.Alloc(security.GetSecurityDescriptorBinaryForm(), GCHandleType.Pinned);
+            try {
+                var attributes = new SecurityAttributes {
+                    Length = Marshal.SizeOf(typeof(SecurityAttributes)),
+                    Descriptor = descriptor.AddrOfPinnedObject(), InheritHandle = 0
+                };
+                if (CreateDirectory(path, ref attributes)) return true;
+                int error = Marshal.GetLastWin32Error();
+                if (error == 183 && Directory.Exists(path)) return false;
+                throw new Win32Exception(error);
+            } finally { descriptor.Free(); }
         }
         // Cloud placeholders are not name-surrogate links. Only source reads admit them.
         // https://learn.microsoft.com/en-us/windows/win32/fileio/reparse-point-tags
@@ -171,6 +209,7 @@ try {
     }
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
     $owner = $ownerSid.Value
+    if ([IO.Directory]::Exists($data)) { Assert-ProtectedDataHome $data $ownerSid }
     $priorDigest = if ($hadPath) { Get-TextDigest ([string]$before) } else { $null }
     $edits = @()
     if (-not $alreadyPresent) {
@@ -179,6 +218,7 @@ try {
     # All checks above are read-only. Record only directories this install creates.
     New-OwnedDirectory $bin $ownerSid
     New-OwnedDirectory $data $ownerSid
+    Assert-ProtectedDataHome $data $ownerSid
     foreach ($copy in $copies) { New-OwnedDirectory ([IO.Path]::GetDirectoryName($copy.to)) $ownerSid }
     $owned = [ordered]@{schema = 'stateengine-install/v1'; owner = $owner;
         files = $files; created_directories = $created.ToArray(); path_edits = @($edits)}

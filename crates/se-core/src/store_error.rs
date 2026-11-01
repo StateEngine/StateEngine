@@ -32,9 +32,10 @@ pub fn store_error(error: &StoreError) -> SeError {
         C::CursorInvalid | C::CursorStale => {
             Detail::CursorInvalid(details::CursorInvalid { reason })
         }
-        C::LocationUnsafe => Detail::HomeUnsupportedLocation(details::HomeUnsupportedLocation {
-            home: subject,
-            kind: reason,
+        C::LocationUnsafe => Detail::StateConflict(details::StateConflict {
+            subject,
+            reason,
+            next_step,
         }),
         C::DiskFull => Detail::StoreDiskFull(details::StoreDiskFull {
             path: reason,
