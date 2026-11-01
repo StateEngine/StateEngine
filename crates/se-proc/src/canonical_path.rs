@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 /// Resolves an existing path. On Windows, prefers a plain drive or UNC path
 /// only when independently resolving it gives the same canonical destination.
 /// Names that require verbatim semantics keep their original representation.
+/// For ancestry comparisons, resolve both sides with `std::fs::canonicalize`
+/// so a verbatim-only child and its ordinary parent use the same prefix form.
 pub fn canonicalize_path(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     let canonical = std::fs::canonicalize(path)?;
     #[cfg(windows)]

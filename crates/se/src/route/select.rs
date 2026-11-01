@@ -100,7 +100,7 @@ pub fn apply<R: ReadStore>(
     {
         return Ok(());
     }
-    let cwd = se_proc::canonicalize_path(&cx.cwd)
+    let cwd = std::fs::canonicalize(&cx.cwd)
         .map_err(|e| scope::unreadable("current directory", &e.to_string()))?;
     let mut candidates = Vec::new();
     let mut choices = Vec::new();
@@ -143,7 +143,8 @@ pub fn apply<R: ReadStore>(
         } else {
             let mut nearest = None;
             for root in roots {
-                let root = root.path.to_local()?;
+                let root = std::fs::canonicalize(root.path.to_local()?)
+                    .map_err(|e| scope::unreadable("registered project root", &e.to_string()))?;
                 if cwd.starts_with(&root) {
                     nearest = Some(nearest.unwrap_or(0).max(root.components().count()));
                 }

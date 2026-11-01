@@ -123,27 +123,45 @@ fn init_and_status_keep_plain_roots_and_match_each_cwd() -> Check {
                 .ok_or("stored root encoding")?,
             root,
         )?;
-        let nested = root.join("nested working directory");
-        std::fs::create_dir(&nested)?;
-        let status = json(command(home, &nested, true).arg("status").output()?)?;
-        assert_eq!(status["project"]["state"], "present");
-        assert_eq!(
-            status["project"]["value"]["id"], id,
-            "cwd selection did not match the persisted root"
-        );
-        let selected = status["project"]["value"]["root"]
-            .as_str()
-            .ok_or("status project root")?;
-        plain_root(selected, root)?;
-        let human = command(home, &nested, false).arg("status").output()?;
-        assert!(human.status.success());
-        let printed = String::from_utf8_lossy(&human.stdout);
-        let project_line = printed
-            .lines()
-            .find(|line| line.starts_with("Project:"))
-            .ok_or("human project status line")?;
-        assert!(project_line.contains(selected));
-        assert!(!project_line.contains(r"\\?\") && !project_line.contains(r"\??\"));
+        let working_directories = vec![root.join("nested working directory")];
+        #[cfg(windows)]
+        let working_directories = {
+            let mut working_directories = working_directories;
+            let special = std::fs::canonicalize(root)?.join("literal.");
+            // The ordinary alias exists with different native identity, so
+            // display conversion must retain the child's verbatim prefix.
+            std::fs::create_dir(root.join("literal"))?;
+            std::fs::create_dir(&special)?;
+            assert!(
+                se_proc::canonicalize_path(&special)?
+                    .to_string_lossy()
+                    .starts_with(r"\\?\")
+            );
+            working_directories.push(special);
+            working_directories
+        };
+        for nested in working_directories {
+            std::fs::create_dir_all(&nested)?;
+            let status = json(command(home, &nested, true).arg("status").output()?)?;
+            assert_eq!(status["project"]["state"], "present");
+            assert_eq!(
+                status["project"]["value"]["id"], id,
+                "cwd selection did not match the persisted root"
+            );
+            let selected = status["project"]["value"]["root"]
+                .as_str()
+                .ok_or("status project root")?;
+            plain_root(selected, root)?;
+            let human = command(home, &nested, false).arg("status").output()?;
+            assert!(human.status.success());
+            let printed = String::from_utf8_lossy(&human.stdout);
+            let project_line = printed
+                .lines()
+                .find(|line| line.starts_with("Project:"))
+                .ok_or("human project status line")?;
+            assert!(project_line.contains(selected));
+            assert!(!project_line.contains(r"\\?\") && !project_line.contains(r"\??\"));
+        }
     }
     snapshot.close()?;
     Ok(())

@@ -3,6 +3,9 @@ use crate::*;
 use sha2::{Digest, Sha256};
 use std::{collections::HashSet, ffi::OsStr};
 
+#[cfg(all(test, windows))]
+mod tests;
+
 fn units(value: &OsStr) -> Vec<u8> {
     #[cfg(unix)]
     {
@@ -67,7 +70,7 @@ pub(super) fn spec(
             "window launch requires its platform window specification",
         ));
     }
-    let cwd = crate::canonicalize_path(&spec.cwd)
+    let cwd = std::fs::canonicalize(&spec.cwd)
         .map_err(|e| native(ProcErrorCode::LaunchFailed, "resolve cwd", e))?;
     if !cwd.is_dir() {
         return Err(input("cwd", "must name a directory"));
@@ -78,7 +81,7 @@ pub(super) fn spec(
             if !root.is_absolute() {
                 return Err(input("workspace", "absolute roots required"));
             }
-            let root = crate::canonicalize_path(root)
+            let root = std::fs::canonicalize(root)
                 .map_err(|e| native(ProcErrorCode::CwdOutsideWorkspace, "resolve workspace", e))?;
             allowed |= cwd.starts_with(root);
         }
