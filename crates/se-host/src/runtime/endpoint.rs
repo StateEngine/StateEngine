@@ -74,6 +74,9 @@ impl HostedListener {
     pub fn endpoint(&self) -> &EndpointRecord {
         &self.publication.record
     }
+    pub fn endpoint_recovery(&self) -> Option<&se_core::ops::EndpointRecovery> {
+        self.publication.recovery.as_ref()
+    }
     /// The supervisor first joins its connections. Native listener closure
     /// returns a retained endpoint for the separate owned-file retirement port.
     pub async fn close_transport(
@@ -102,9 +105,15 @@ pub(crate) struct EndpointPublication {
     lease: Arc<HostLease>,
     path: PathBuf,
     record: EndpointRecord,
+    recovery: Option<se_core::ops::EndpointRecovery>,
 }
 impl EndpointPublication {
-    fn publish(lease: Arc<HostLease>, directory: PathBuf, record: EndpointRecord) -> Result<Self> {
+    fn publish(
+        lease: Arc<HostLease>,
+        directory: PathBuf,
+        record: EndpointRecord,
+        recovery: Option<se_core::ops::EndpointRecovery>,
+    ) -> Result<Self> {
         let bytes = codec::encode_endpoint(&record)?;
         let path = directory.join("endpoint.json");
         let staged = lease
@@ -125,6 +134,7 @@ impl EndpointPublication {
             lease,
             path,
             record,
+            recovery,
         };
         published.verify()?;
         Ok(published)
@@ -134,8 +144,9 @@ impl EndpointPublication {
         directory: &std::path::Path,
         expected_address: &crate::IpcEndpoint,
         deadline: &crate::client::lease::Deadline,
-    ) -> Result<()> {
+    ) -> Result<Option<se_core::ops::EndpointRecovery>> {
         let path = directory.join("endpoint.json");
+        let mut recovery = None;
         let previous = match lease.files().readback(&path).map_err(|e| store_error(&e))? {
             Read::Absent { .. } => None,
             Read::Present { value: mut prior } => {
@@ -144,14 +155,14 @@ impl EndpointPublication {
                     .take(crate::client::wire::MAX_ENDPOINT_BYTES as u64 + 1)
                     .read_to_end(&mut bytes)
                     .map_err(|e| io_error("read stale endpoint", e))?;
+                drop(prior);
                 let record = codec::decode_endpoint(&bytes)?;
                 if &record.address != expected_address {
-                    return Err(endpoint_recovery_error(
-                        directory,
-                        "protected stale endpoint names a different native address from the one selected for this data home",
-                    ));
+                    recovery = Some(super::recovery::retain(&lease.files.0, &bytes)?);
+                    None
+                } else {
+                    Some(bytes)
                 }
-                Some(bytes)
             }
             Read::Unreadable { reason, .. } => {
                 return Err(se_core::scope::unreadable("stale endpoint", &reason));
@@ -186,7 +197,7 @@ impl EndpointPublication {
                 .remove_owned(&path, sha2::Sha256::digest(&previous).into())
                 .map_err(|e| store_error(&e))?;
         }
-        Ok(())
+        Ok(recovery)
     }
     fn verify(&self) -> Result<()> {
         let mut file = match self
@@ -414,7 +425,7 @@ impl HostedRuntime {
                     package_version: env!("CARGO_PKG_VERSION").into(),
                     image_sha256,
                 };
-                EndpointPublication::retire_stale(
+                let recovery = EndpointPublication::retire_stale(
                     &lease,
                     &directory,
                     &record.address,
@@ -422,13 +433,14 @@ impl HostedRuntime {
                 )?;
                 let listener =
                     IpcListener::bind_with_limits(record.clone(), runtime, slots, &limits)?;
-                let publication = match EndpointPublication::publish(lease, directory, record) {
-                    Ok(publication) => publication,
-                    Err(error) => {
-                        listener.close()?;
-                        return Err(error);
-                    }
-                };
+                let publication =
+                    match EndpointPublication::publish(lease, directory, record, recovery) {
+                        Ok(publication) => publication,
+                        Err(error) => {
+                            listener.close()?;
+                            return Err(error);
+                        }
+                    };
                 Ok(HostedListener {
                     listener,
                     publication,
@@ -437,6 +449,11 @@ impl HostedRuntime {
             .await?;
         Ok(listener)
     }
+}
+/// The CLI compares a busy home's record before opening any channel to it.
+/// Unix platform-path inputs are supplied explicitly by the executable.
+pub fn runtime_endpoint_address(directory: &std::path::Path) -> Result<IpcEndpoint> {
+    address(directory)
 }
 fn address(directory: &std::path::Path) -> Result<IpcEndpoint> {
     #[cfg(unix)]
