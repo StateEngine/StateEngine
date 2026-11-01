@@ -407,7 +407,10 @@ thread cap and job permits use that same effective capacity. On a one-core
 host or unavailable native core observation, preserve the original single
 foreground slot and independent maintenance slot, on at most two blocking
 threads; core discovery never prevents startup. Embedded hosts supply their
-own matching runtime and HostLimits cap. Only one
+own matching runtime and HostLimits cap. Before listener publication, the host
+opens its shared store reader with capacity `max(2, effective blocking_jobs)`;
+snapshots, owner guards and credential reads share that immutable budget across
+reader clones. Other store readers keep their default capacity of two. Only one
 backup/maintenance job may run, including
 across generations; cancellation does not free its permit until it actually ends.
 Drain cancels and joins backup before queueing close_clean on that background

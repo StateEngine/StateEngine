@@ -5,7 +5,7 @@ use crate::client::lease::Deadline;
 use se_core::store_error::store_error;
 use se_store::{HostStore, ReadStore, RuntimeLease, StateFiles, StoreFactory, WriterOwner};
 use se_types::{Generation, HostEpoch, Read, Result, SeError};
-use std::{fs::File, path::PathBuf, sync::Arc, time::Duration};
+use std::{fs::File, num::NonZeroU32, path::PathBuf, sync::Arc, time::Duration};
 use tokio::runtime::Handle;
 
 /// Receipt of the required startup-only native initialization. Construct this
@@ -165,8 +165,15 @@ fn prepare(
         state_directory: options.state_directory.clone(),
         busy_timeout: Duration::from_millis(250),
     };
+    // The legacy one-core split can run foreground and maintenance together.
+    // Every other configuration shares its finite-work budget with these reads.
+    let reader_capacity = options
+        .limits
+        .blocking_jobs
+        .max(NonZeroU32::MIN.saturating_add(1));
     let reader = present(
-        se_store::SqliteFactory::open_reader(&store_options).map_err(|e| store_error(&e))?,
+        se_store::SqliteFactory::open_reader_with_capacity(&store_options, reader_capacity)
+            .map_err(|e| store_error(&e))?,
         "state store",
     )?;
     let inventory = reader
