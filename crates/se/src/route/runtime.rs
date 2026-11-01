@@ -1,12 +1,22 @@
 //! Explicit host control through the native bootstrap and authenticated fixed
 //! stop protocol. No connection failure permits a direct-write fallback.
-use super::{admit::Caller, execute, files::Files, process, status};
-use crate::{bootstrap::Bootstrap, config::Origin};
+use super::{admit::Caller, execute, files::Files};
+#[cfg(any(target_os = "linux", windows))]
+use super::{process, status};
+use crate::bootstrap::Bootstrap;
+#[cfg(any(target_os = "linux", windows))]
+use crate::config::Origin;
 use se_core::{ops::*, scope};
-use se_host::client::{BlockingIpcClient, lease::Deadline};
-use se_types::{Read, Result, SeError};
+use se_host::client::BlockingIpcClient;
+#[cfg(any(target_os = "linux", windows))]
+use se_host::client::lease::Deadline;
+#[cfg(any(target_os = "linux", windows))]
+use se_types::Read;
+use se_types::{Result, SeError};
+#[cfg(any(target_os = "linux", windows))]
 use std::num::NonZeroU32;
 
+#[cfg(any(target_os = "linux", windows))]
 pub fn up(
     cx: &Bootstrap,
     files: &Files,
@@ -114,17 +124,22 @@ fn start(
     }
 }
 #[cfg(not(any(target_os = "linux", windows)))]
-fn start(
+pub fn up(
     _cx: &Bootstrap,
     _files: &Files,
-    _bound: &Deadline,
+    _caller: &Caller,
+    _input: RuntimeUp,
     _diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
-) -> Result<(se_host::EndpointRecord, ProcessView)> {
-    Err(scope::unreadable(
-        "runtime startup",
-        "detached host startup is unavailable on this platform",
-    ))
+) -> Result<AnyOutput> {
+    Err(SeError::new(se_types::Detail::FeatureUnavailable(
+        se_types::details::FeatureUnavailable {
+            subject: "detached runtime startup on macOS".into(),
+            reason: "this build implements detached host and process supervision only on Linux and Windows".into(),
+            next_step: "Use se init, se status and direct saved-state operations on macOS; use a Linux or Windows installation for se up and hosted agent work".into(),
+        },
+    )))
 }
+
 #[cfg(any(target_os = "linux", windows))]
 #[derive(Debug)]
 struct RetainedStartup(Box<crate::runtime::host::StartupFailure>);

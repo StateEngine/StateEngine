@@ -235,6 +235,13 @@ mod install_hold;
 mod install_hold;
 
 impl NativeInstallationClaim {
+    /// Recover the native creator's handoff only from an inherited, still-held
+    /// account-wide claim; environment text alone never becomes directory custody.
+    #[cfg(unix)]
+    pub fn inherited_created_directories() -> Result<Vec<std::path::PathBuf>> {
+        install_hold::inherited_created_directories()
+    }
+
     /// Run an explicitly named installer command with inherited standard I/O.
     /// The child also retains the kernel claim, so killing its holder never
     /// permits another installer while that child can still change files.

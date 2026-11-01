@@ -76,6 +76,11 @@ fn lock(file: &File, path: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+#[path = "install_claim_unix.rs"]
+mod inherited_claim;
+pub(in crate::state_files) use inherited_claim::inherited_installation_claim;
+
 fn leaf(parent: &File, name: &CString, path: &Path, directory: bool) -> Result<File> {
     // SAFETY: native stat output, retained parent and a terminated literal leaf.
     let mut entry: libc::stat = unsafe { std::mem::zeroed() };

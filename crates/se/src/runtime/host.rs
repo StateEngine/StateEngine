@@ -18,8 +18,9 @@ mod launch;
 pub use launch::{StartedHost, StartupFailure, start};
 
 use se_types::{Result, SeError};
+use std::ffi::OsString;
+#[cfg(any(target_os = "linux", windows))]
 use std::{
-    ffi::OsString,
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -85,6 +86,7 @@ fn native_error(error: se_proc::ProcError) -> SeError {
     }
     se_core::scope::unreadable("native runtime bootstrap", &format!("{error:?}"))
 }
+#[cfg(any(target_os = "linux", windows))]
 fn deadline(timeout: Duration) -> Result<se_host::client::lease::Deadline> {
     se_host::client::lease::Deadline::from_options(&se_host::client::ClientOptions {
         expected_generation: None,

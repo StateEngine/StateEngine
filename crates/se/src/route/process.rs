@@ -1,11 +1,12 @@
 //! Display birth time never becomes process authority. The endpoint has already
 //! passed native IPC authentication; this read binds its native start again.
-use se_core::{
-    ops::{ProcessView, receipt},
-    scope,
-};
+#[cfg(any(target_os = "linux", windows))]
+use se_core::ops::receipt;
+use se_core::{ops::ProcessView, scope};
 use se_host::{EndpointRecord, client::lease::Deadline};
-use se_types::{Result, SeError};
+use se_types::Result;
+#[cfg(any(target_os = "linux", windows))]
+use se_types::SeError;
 
 #[cfg(any(target_os = "linux", windows))]
 pub fn observe(endpoint: &EndpointRecord, bound: &Deadline) -> Result<ProcessView> {
