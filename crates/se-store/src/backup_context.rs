@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
 };
 pub(crate) struct State {
@@ -11,7 +11,7 @@ pub(crate) struct State {
     pub incarnation: u64,
     pub generation: u64,
     pub path: PathBuf,
-    pub slots: Arc<AtomicUsize>,
+    pub slots: crate::read_slots::ReadSlots,
     pub pending: AtomicBool,
     pub pinned: AtomicBool,
     pub abort: AtomicBool,
@@ -29,7 +29,7 @@ impl BackupContext {
         info: &StoreInfo,
         generation: u64,
         path: PathBuf,
-        slots: Arc<AtomicUsize>,
+        slots: crate::read_slots::ReadSlots,
     ) -> Self {
         Self {
             state: Arc::new(State {

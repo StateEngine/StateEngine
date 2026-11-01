@@ -10,6 +10,8 @@ mod cold_capture;
 mod config;
 #[path = "support/host_continuation.rs"]
 mod continuation_judge;
+#[path = "support/host_eight_clients.rs"]
+mod eight_clients_judge;
 #[path = "support/host_executor.rs"]
 mod executor_judge;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
@@ -328,6 +330,12 @@ fn main() -> Check {
     {
         return recovery_judge::restart_after_crash();
     }
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--judge-eight-clients")
+    {
+        return eight_clients_judge::check();
+    }
     startup_judge::private_startup_refuses_missing_and_mismatched_machine()?;
     startup_judge::private_startup_serves_and_retires()?;
     listener_message_working_and_hook()?;
@@ -336,8 +344,9 @@ fn main() -> Check {
     shutdown_judge::cancelled_stop()?;
     shutdown_write_judge::check()?;
     recovery_judge::restart_after_crash()?;
+    eight_clients_judge::check()?;
     println!(
-        "host_e3: 11 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
+        "host_e3: 12 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
     );
     Ok(())
 }

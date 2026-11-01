@@ -39,6 +39,9 @@ pub struct HostLimits {
     pub session_notice_ids: NonZeroU32,
     pub aggregate_notice_ids: NonZeroU32,
     pub response_bytes: NonZeroU32,
+    /// Effective finite-work cap: 2..=8 shares jobs, while one keeps the legacy
+    /// one-foreground/one-maintenance split. The supplied runtime's thread cap
+    /// must be max(2, blocking_jobs); maintenance always has at most one job.
     pub blocking_jobs: NonZeroU32,
 }
 #[derive(Clone, Debug)]

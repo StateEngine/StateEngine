@@ -10,18 +10,9 @@ use std::{
     fs::File,
     io::Read as _,
     path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::atomic::Ordering,
     time::{Duration, Instant},
 };
-struct Slot(Arc<AtomicUsize>);
-impl Drop for Slot {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
 const INDEX: &str = "backup-index.json";
 const PENDING: &str = ".se-stage-backup-pending";
 #[derive(Clone, Serialize, Deserialize)]
@@ -377,18 +368,7 @@ pub(crate) fn run(
         timeout: options.busy_timeout.min(duration),
         slots: context.state.slots.clone(),
     };
-    reader
-        .slots
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-            (n < 2).then_some(n + 1)
-        })
-        .map_err(|_| {
-            fail(
-                StoreErrorCode::Backpressure,
-                "two finite read snapshots are already in use",
-            )
-        })?;
-    let _slot = Slot(reader.slots.clone());
+    let _slot = reader.slots.acquire()?;
     (|| {
         let source = reader.connect()?;
         let pre = connection::info_at(&source, &reader.path)?;
