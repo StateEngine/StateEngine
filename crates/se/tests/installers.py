@@ -20,6 +20,11 @@ import tempfile
 import unittest
 
 
+# Native archive verification and per-file durable publication also run with
+# unoptimized candidate executables. This is a watchdog, not a latency budget.
+INSTALL_TIMEOUT = 90
+
+
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -91,7 +96,7 @@ class LinuxInstaller(unittest.TestCase):
 
     def install(self, home, bundle=None):
         argv, environment = self.command(home, bundle)
-        return subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+        return subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
 
     def test_foreign_paths_and_profiles_are_preserved(self):
         # Existing commands, records, assets, links and unreadable profile encodings
@@ -158,7 +163,7 @@ class LinuxInstaller(unittest.TestCase):
                 state = self.root / (variable + " separate state")
                 argv, environment = self.command(home)
                 environment[variable] = str(state)
-                run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+                run = subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
                 self.assertEqual(run.returncode, 0, run.stderr)
                 data = state if variable == "SE_HOME" else state / "stateengine"
                 record = data / "standalone-install.json"
@@ -173,7 +178,7 @@ class LinuxInstaller(unittest.TestCase):
                 argv, environment = self.command(home)
                 environment[variable] = "relative-state"
                 before = contents(home)
-                run = subprocess.run(argv, env=environment, cwd=home, capture_output=True, timeout=30)
+                run = subprocess.run(argv, env=environment, cwd=home, capture_output=True, timeout=INSTALL_TIMEOUT)
                 self.assertNotEqual(run.returncode, 0)
                 self.assertIn(b"Install refused:", run.stderr)
                 self.assertEqual(contents(home), before)
@@ -205,7 +210,7 @@ class LinuxInstaller(unittest.TestCase):
         home = self.home("fish")
         argv, environment = self.command(home)
         environment["SHELL"] = shutil.which("fish")
-        run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+        run = subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
         self.assertEqual(run.returncode, 0, run.stderr)
         configuration = home / ".config/fish/conf.d/stateengine.fish"
         self.assertTrue(configuration.is_file())
@@ -240,7 +245,7 @@ class LinuxInstaller(unittest.TestCase):
         environment["SE_INSTALL_CREATED_DIRECTORIES"] = str(foreign)
         process = subprocess.Popen(argv, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            self.assertTrue(select.select([process.stdout], [], [], 15)[0], "installer never reached the atomic claim")
+            self.assertTrue(select.select([process.stdout], [], [], 60)[0], "installer never reached the atomic claim")
             ready = process.stdout.readline().decode().strip()
             self.assertTrue(ready.startswith("CLAIM-READY:"), ready)
             plan = json.loads(Path(ready.removeprefix("CLAIM-READY:")).read_bytes())
@@ -273,11 +278,11 @@ class LinuxInstaller(unittest.TestCase):
             self.assertEqual(contents(home), before)
             process.stdin.write(b"publish\n")
             process.stdin.flush()
-            output = process.communicate(timeout=30)
+            output = process.communicate(timeout=INSTALL_TIMEOUT)
             self.assertEqual(process.returncode, 0, output)
         finally:
             if process.poll() is None:
-                process.communicate(b"publish\n", timeout=30)
+                process.communicate(b"publish\n", timeout=INSTALL_TIMEOUT)
         install_root = home / ".local"
         record_path = home / ".local/state/stateengine/standalone-install.json"
         self.assertTrue(record_path.is_file(), "ownership record belongs in the StateEngine data home")
@@ -343,17 +348,17 @@ class LinuxInstaller(unittest.TestCase):
         argv, environment = self.command(home)
         environment["JUDGE_INSTALL_SCRIPT"] = str(self.bundle / "install.sh")
         environment["PATH"] = str(tools) + ":" + environment["PATH"]
-        run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+        run = subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
         self.assertIn(b"JUDGE-AFTER-CLAIM", run.stderr, "fault must occur after the real exclusive claim")
         return run, record
 
     def test_failure_after_claim_rolls_back_only_its_effects(self):
         home = self.home("rollback")
         (home / ".profile").write_bytes(b"# original profile\n")
+        self.prepare_state(home)
         history = home / ".local/state/stateengine/history"
         history.mkdir(parents=True)
         (history / "sentinel").write_bytes(b"unrelated durable history\n")
-        self.prepare_state(home)
         before = contents(home)
         run, record = self.publication_fault(home, abrupt=False)
         self.assertNotEqual(run.returncode, 0)
@@ -391,7 +396,7 @@ class LinuxInstaller(unittest.TestCase):
                 argv, environment = self.command(home)
                 environment["JUDGE_PROFILE_FAULT"] = str(tools / "fired")
                 environment["PATH"] = str(tools) + ":" + environment["PATH"]
-                run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+                run = subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
                 self.assertNotEqual(run.returncode, 0)
                 self.assertIn(b"JUDGE-AFTER-PROFILE-PUBLICATION", run.stderr)
                 self.assertEqual(os.getxattr(profile, b"user.se-install-judge"), b"preserve-profile-metadata")
@@ -442,7 +447,7 @@ class LinuxInstaller(unittest.TestCase):
                 before = contents(home)
                 argv, environment = self.command(home)
                 environment["SHELL"] = shell
-                run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+                run = subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
                 self.assertNotEqual(run.returncode, 0, "unsupported login shell was told installation succeeded")
                 self.assertIn(b"Install refused:", run.stderr)
                 self.assertRegex(run.stderr.decode(), r"sh|bash|zsh|fish")
@@ -455,7 +460,7 @@ class LinuxInstaller(unittest.TestCase):
             home = self.home("cross-filesystem")
             argv, environment = self.command(home)
             environment["SE_HOME"] = state
-            run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
+            run = subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
             self.assertEqual(run.returncode, 0, run.stderr.decode(errors="replace"))
             record = Path(state) / "standalone-install.json"
             self.assertTrue(record.is_file())

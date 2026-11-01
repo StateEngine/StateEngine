@@ -246,6 +246,7 @@ pub(super) fn check_directory_acl(file: &File, path: &Path) -> Result<()> {
         let mut mask = 0;
         // SAFETY: entry belongs to the retained ACL; outputs have native widths.
         if unsafe { acl_get_tag_type(entry, &mut tag) } < 0
+            // SAFETY: the same retained ACL entry and an initialized native-width mask.
             || unsafe { acl_get_permset_mask_np(entry, &mut mask) } < 0
         {
             return Err(io_error(

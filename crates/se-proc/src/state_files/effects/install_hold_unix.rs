@@ -176,10 +176,10 @@ pub(super) fn run(
             if libc::fcntl(raw, libc::F_SETFD, 0) < 0 {
                 return Err(io::Error::last_os_error());
             }
-            if let Some(channel) = custody_raw {
-                if libc::fcntl(channel, libc::F_SETFD, 0) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
+            if let Some(channel) = custody_raw
+                && libc::fcntl(channel, libc::F_SETFD, 0) < 0
+            {
+                return Err(io::Error::last_os_error());
             }
             Ok(())
         });
