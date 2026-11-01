@@ -286,6 +286,9 @@ fn native_error(error: se_proc::StateFileError) -> SeError {
 fn busy() -> SeError {
     SeError::new(se_types::Detail::StoreBusy(se_types::details::StoreBusy {
         waited_ms: 0,
+        operation: None,
+        key: None,
+        natural_events: None,
         reason: "transcript binding or bounded source capacity is occupied".into(),
         next_step:
             "Wait for the current bounded capture to finish and retry the original hook identity."

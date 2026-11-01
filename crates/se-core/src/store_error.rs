@@ -20,6 +20,9 @@ pub fn store_error(error: &StoreError) -> SeError {
         }),
         C::Busy | C::Backpressure => Detail::StoreBusy(details::StoreBusy {
             waited_ms: 0,
+            operation: None,
+            key: None,
+            natural_events: None,
             reason,
             next_step,
         }),
@@ -169,5 +172,38 @@ pub fn write_error(
         ))
         .with_cause(error.clone());
     }
-    store_error(error)
+    retain_write_identity(store_error(error), operation, key, natural_events)
+}
+
+/// A refused write retains the caller's original replay identity. Reads and
+/// pre-authentication capacity errors have no admitted write identity to attach.
+pub fn retain_write_identity(
+    mut error: SeError,
+    operation: &str,
+    key: Option<&se_types::IdempotencyKey>,
+    natural_events: &[se_types::EventId],
+) -> SeError {
+    if let Detail::StoreBusy(detail) = error.body.detail() {
+        let mut detail = detail.clone();
+        detail.operation = Some(operation.into());
+        detail.key = key.map(ToString::to_string);
+        detail.natural_events = Some(natural_events.to_vec());
+        let replay = match key {
+            Some(key) => format!(
+                "Original operation {operation}; repeat the same command with --key {key} (CLI) or idempotency_key {key} (MCP)."
+            ),
+            None => format!(
+                "Repeat the same natural operation {operation}, retaining original event IDs: {}.",
+                natural_events
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        detail.next_step = format!("{} {replay}", detail.next_step);
+        error.body = se_types::ErrorBody::new(Detail::StoreBusy(detail))
+            .with_retry(se_types::Retry::AfterReread);
+    }
+    error
 }

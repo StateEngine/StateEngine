@@ -95,7 +95,7 @@ codes! {
     RuntimeHandoverInProgress => ("runtime-handover-in-progress", Unavailable) { generation: String } => "the runtime is changing hosts", "retry (`WhenRuntimeReady`)";
     RuntimeNotRunning => ("runtime-not-running", Unavailable) { op: String, reason: String } => "`{op}` needs a ready runtime writer: {reason}", "Reopen the current runtime generation and retry with the original request identity; use `se up` if no runtime is running";
     RuntimeStartFailed => ("runtime-start-failed", Unavailable) { reason: String, log: String } => "the runtime didn't start: {reason}", "see {log}; → `se doctor`";
-    StoreBusy => ("store-busy", Unavailable) { waited_ms: u64, reason: String, next_step: String } => "Store unavailable after {waited_ms} ms: {reason}", "{next_step}; retry the same request identity";
+    StoreBusy => ("store-busy", Unavailable) { waited_ms: u64, reason: String, next_step: String, operation: Option<String>, key: Option<String>, natural_events: Option<Vec<EventId>> } => "Store unavailable after {waited_ms} ms: {reason}", "{next_step}; retry the same request identity";
     StoreDiskFull => ("store-disk-full", Unavailable) { path: String, free_bytes: Option<u64> } => "not enough disk space at {path}", "free space and retry";
     StoreMigrationRequired => ("store-migration-required", Unavailable) { from: u64, to: u64 } => "Store {from} needs supported additive migration to {to}", "Start `se up`: the sole owning host verifies a pre-migration backup and migrates automatically; an old running host requires `se down` first";
     Internal => ("internal", Internal) { report_id: String, location: String } => "StateEngine hit a bug ({report_id})", "Use `se doctor --bundle` and send it";

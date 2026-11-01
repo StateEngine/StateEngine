@@ -98,13 +98,22 @@ impl PendingWrites {
             })?;
         } else {
             if values.len() >= self.maximum {
-                return Err(SeError::new(se_types::Detail::StoreBusy(
+                let error = SeError::new(se_types::Detail::StoreBusy(
                     se_types::details::StoreBusy {
                         waited_ms: 0,
+                        operation: None,
+                        key: None,
+                        natural_events: None,
                         reason: "Bounded unresolved write capacity is occupied.".into(),
                         next_step: "Wait for accepted writes to complete, then reread or retry the original operation key; unresolved store outcomes require reconciliation before new submissions.".into(),
                     },
-                )));
+                ));
+                return Err(se_core::store_error::retain_write_identity(
+                    error,
+                    identity.operation,
+                    identity.key.as_ref(),
+                    &identity.natural_events,
+                ));
             }
             values.push((identity.clone(), 1));
         }

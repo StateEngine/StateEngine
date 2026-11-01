@@ -260,8 +260,9 @@ fn prepare(
     .map_err(|e| store_error(&e))?;
     // Ownership is committed. Return its writer/lease custody even if the
     // native commit consumed the final part of the admission budget.
+    // A commit group's limit is smaller than total admitted outstanding work.
     let pending_writes =
-        super::failure::PendingWrites::new(options.writer.maximum_requests.get() as usize);
+        super::failure::PendingWrites::new(options.writer.queue_requests.get() as usize);
     let writer = host
         .start_writer(options.writer, lease.clone())
         .map_err(|e| store_error(&e))?;
