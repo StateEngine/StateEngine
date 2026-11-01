@@ -161,7 +161,9 @@ pub fn check() -> Check {
                 assert_eq!(recipient, Actor::Agent(proof.agent.clone()));
                 assert_eq!(text, proof.body);
             }
-            other => return Err(format!("unexpected concurrent event: {other:?}").into()),
+            _ => {
+                return Err("concurrent event kind or body differs from the expected write".into());
+            }
         }
         if proof.working && proof.revision == ROUNDS {
             let state = present(snapshot.working_state(proof.agent.clone())?)?;
