@@ -156,6 +156,29 @@ pub(super) fn retain(files: &NativeStateFiles, bytes: &[u8]) -> Result<EndpointR
         retained: NativePath::from_local(retained)?,
     })
 }
+/// A later bind/publication/cleanup failure cannot erase an already verified
+/// retained record. Keep both the achieved path and original error visible.
+pub(super) fn after_retention(
+    directory: &Path,
+    recovery: Option<&EndpointRecovery>,
+    error: SeError,
+) -> SeError {
+    let Some(recovery) = recovery else {
+        return error;
+    };
+    let retained = match recovery.retained.to_local() {
+        Ok(path) => path.display().to_string(),
+        Err(path_error) => format!(
+            "{:?} (path decoding failed: {path_error})",
+            recovery.retained
+        ),
+    };
+    SeError::new(Detail::StateConflict(details::StateConflict {
+        subject: directory.display().to_string(),
+        reason: format!("Retained stale endpoint {} as {retained}; runtime preparation did not complete: {error}", directory.join("endpoint.json").display()),
+        next_step: "Keep the retained endpoint record and retry se up for this same home; if another runtime is running, use se down first.".into(),
+    })).with_cause(error)
+}
 fn busy(directory: &Path, reason: &str) -> SeError {
     SeError::new(Detail::StateConflict(details::StateConflict {
         subject: directory.join("runtime.lock").display().to_string(),
