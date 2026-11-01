@@ -1,19 +1,8 @@
 use crate::{connection, error::*, identity, open::SqliteReader, *};
 use se_types::Read;
-use std::sync::atomic::Ordering;
 pub(crate) fn read(reader: &SqliteReader, hash: [u8; 32]) -> StoreResult<Read<CredentialRecord>> {
-    reader
-        .slots
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-            (n < 2).then_some(n + 1)
-        })
-        .map_err(|_| {
-            fail(
-                StoreErrorCode::Backpressure,
-                "two finite read snapshots already in use",
-            )
-        })?;
-    let result = (|| {
+    let _slot = reader.slots.acquire()?;
+    (|| {
         let c = reader.connect()?;
         connection::begin_snapshot(&c, &reader.path)?;
         if connection::info_at(&c, &reader.path)?.state != StoreState::Ready {
@@ -75,7 +64,5 @@ pub(crate) fn read(reader: &SqliteReader, hash: [u8; 32]) -> StoreResult<Read<Cr
         drop(q);
         c.execute_batch("ROLLBACK").map_err(sql)?;
         Ok(value)
-    })();
-    reader.slots.fetch_sub(1, Ordering::AcqRel);
-    result
+    })()
 }

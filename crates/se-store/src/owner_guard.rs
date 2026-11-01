@@ -3,19 +3,7 @@ use crate::codec::process;
 use crate::{connection, error::*, identity, open::SqliteReader, *};
 use rusqlite::Connection;
 use se_types::Read;
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::{Duration, Instant},
-};
-struct Slot(Arc<AtomicUsize>);
-impl Drop for Slot {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
-    }
-}
+use std::time::{Duration, Instant};
 pub(crate) fn read(
     reader: &SqliteReader,
     files: &dyn StateFiles,
@@ -46,18 +34,7 @@ pub(crate) fn read(
             ));
         }
     };
-    reader
-        .slots
-        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-            (n < 2).then_some(n + 1)
-        })
-        .map_err(|_| {
-            fail(
-                StoreErrorCode::Backpressure,
-                "two finite store read snapshots are already in use",
-            )
-        })?;
-    let _slot = Slot(reader.slots.clone());
+    let _slot = reader.slots.acquire()?;
     let db = reader.connect()?;
     let deadline = start + budget.deadline;
     db.progress_handler(1000, Some(move || Instant::now() >= deadline))

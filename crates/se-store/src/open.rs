@@ -1,17 +1,13 @@
 use crate::{connection, error::*, read::SqliteSnapshot, transaction::Engine, *};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use se_types::{Page, Read};
-use std::{
-    path::PathBuf,
-    sync::{Arc, atomic::AtomicUsize},
-    time::Duration,
-};
+use std::{num::NonZeroU32, path::PathBuf, sync::Arc, time::Duration};
 pub struct SqliteFactory;
 #[derive(Clone)]
 pub struct SqliteReader {
     pub(crate) path: PathBuf,
     pub(crate) timeout: Duration,
-    pub(crate) slots: Arc<AtomicUsize>,
+    pub(crate) slots: crate::read_slots::ReadSlots,
 }
 pub struct SqliteDirect {
     pub(crate) reader: SqliteReader,
@@ -43,6 +39,9 @@ impl SqliteHost {
 }
 impl SqliteReader {
     fn for_options(o: &StoreOptions) -> StoreResult<Self> {
+        Self::with_slots(o, crate::read_slots::ReadSlots::default())
+    }
+    fn with_slots(o: &StoreOptions, slots: crate::read_slots::ReadSlots) -> StoreResult<Self> {
         if !o.state_directory.is_absolute() {
             return Err(fail(
                 StoreErrorCode::LocationUnsafe,
@@ -52,7 +51,7 @@ impl SqliteReader {
         Ok(Self {
             path: o.state_directory.join("state.db"),
             timeout: o.busy_timeout,
-            slots: Arc::new(AtomicUsize::new(0)),
+            slots,
         })
     }
     pub(crate) fn connect(&self) -> StoreResult<Connection> {
@@ -60,8 +59,24 @@ impl SqliteReader {
     }
 }
 impl SqliteFactory {
+    /// Open an existing read-only store with an immutable capacity of 2–8.
+    /// All clones share this budget, including snapshots and private lookups.
+    /// Opening a separate reader creates a separate budget; the ordinary
+    /// StoreFactory::open_reader constructor continues to use two slots.
+    pub fn open_reader_with_capacity(
+        options: &StoreOptions,
+        capacity: NonZeroU32,
+    ) -> StoreResult<Read<SqliteReader>> {
+        Self::existing_with_slots(options, crate::read_slots::ReadSlots::new(capacity)?)
+    }
     fn existing(o: &StoreOptions) -> StoreResult<Read<SqliteReader>> {
-        let reader = SqliteReader::for_options(o)?;
+        Self::existing_with_slots(o, crate::read_slots::ReadSlots::default())
+    }
+    fn existing_with_slots(
+        o: &StoreOptions,
+        slots: crate::read_slots::ReadSlots,
+    ) -> StoreResult<Read<SqliteReader>> {
+        let reader = SqliteReader::with_slots(o, slots)?;
         let metadata = match std::fs::symlink_metadata(&reader.path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {

@@ -21,57 +21,32 @@ use se_types::{
     StopReason, Window, WindowFields,
 };
 use se_types::{DecisionId, LifecycleId, SessionId};
-use std::{
-    marker::PhantomData,
-    rc::Rc,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Instant,
-};
+use std::{marker::PhantomData, rc::Rc, time::Instant};
 pub struct SqliteSnapshot {
     pub(crate) db: Connection,
     info: StoreInfo,
     scope: ReadScope,
     path: std::path::PathBuf,
-    slots: Arc<AtomicUsize>,
+    _slot: crate::read_slots::ReadSlot,
     _local: PhantomData<Rc<()>>,
 }
 impl SqliteSnapshot {
     pub(crate) fn open(reader: &SqliteReader, scope: ReadScope) -> StoreResult<Self> {
-        if reader
-            .slots
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < 2).then_some(n + 1)
-            })
-            .is_err()
-        {
-            return Err(fail(
-                StoreErrorCode::Backpressure,
-                "two finite store read snapshots are already in use",
-            ));
+        let slot = reader.slots.acquire()?;
+        let db = connection::connect(&reader.path, false, reader.timeout)?;
+        connection::begin_snapshot(&db, &reader.path)?;
+        let info = connection::info_at(&db, &reader.path)?;
+        if info.state != StoreState::Ready {
+            return Err(fail(StoreErrorCode::NotReady, "store is in maintenance"));
         }
-        let result = (|| {
-            let db = connection::connect(&reader.path, false, reader.timeout)?;
-            connection::begin_snapshot(&db, &reader.path)?;
-            let info = connection::info_at(&db, &reader.path)?;
-            if info.state != StoreState::Ready {
-                return Err(fail(StoreErrorCode::NotReady, "store is in maintenance"));
-            }
-            Ok(Self {
-                db,
-                info,
-                scope,
-                path: reader.path.clone(),
-                slots: reader.slots.clone(),
-                _local: PhantomData,
-            })
-        })();
-        if result.is_err() {
-            reader.slots.fetch_sub(1, Ordering::AcqRel);
-        }
-        result
+        Ok(Self {
+            db,
+            info,
+            scope,
+            path: reader.path.clone(),
+            _slot: slot,
+            _local: PhantomData,
+        })
     }
     fn read_sql(&self, error: rusqlite::Error) -> Box<StoreError> {
         let interrupted =
@@ -349,7 +324,6 @@ impl SqliteSnapshot {
 impl Drop for SqliteSnapshot {
     fn drop(&mut self) {
         let _ = self.db.execute_batch("ROLLBACK");
-        self.slots.fetch_sub(1, Ordering::AcqRel);
     }
 }
 pub struct LegacyRegistry<'a> {
