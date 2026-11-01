@@ -33,14 +33,19 @@ pub fn dispatch(args: &[OsString]) -> Option<Result<u8>> {
     }
     #[cfg(any(target_os = "linux", windows))]
     {
-        Some(
-            se_proc::RuntimeBootstrap::from_process_entry()
-                .map_err(native_error)
-                .and_then(|guard| {
-                    guard.ok_or_else(|| invalid("authenticated inherited native channels"))
-                })
-                .and_then(child::receive),
-        )
+        let result = se_proc::RuntimeBootstrap::from_process_entry()
+            .map_err(native_error)
+            .and_then(|guard| {
+                guard.ok_or_else(|| invalid("authenticated inherited native channels"))
+            })
+            .and_then(child::receive);
+        #[cfg(windows)]
+        eprintln!(
+            "host shutdown pid={} stage=private-entry-return exit_code={}",
+            std::process::id(),
+            result.as_ref().copied().unwrap_or(1)
+        );
+        Some(result)
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {

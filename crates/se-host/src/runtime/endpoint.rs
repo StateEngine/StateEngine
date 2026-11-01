@@ -31,10 +31,14 @@ impl HostedListener {
             listener,
             publication,
         } = self;
+        #[cfg(windows)]
+        let started = std::time::Instant::now();
         let closed = match super::shutdown::cleanup_deadline() {
             Ok(bound) => listener.close_joined(blocking, &bound).await,
             Err(error) => Err(error),
         };
+        #[cfg(windows)]
+        super::shutdown::trace("transport-close-return", started, closed.is_ok());
         // Admission is fenced and tasks joined. Even failed native close must
         // attempt compare-and-remove; its error retains any pending reservation.
         let retired = match super::shutdown::cleanup_deadline() {
@@ -45,6 +49,8 @@ impl HostedListener {
             }
             Err(error) => Err(error),
         };
+        #[cfg(windows)]
+        super::shutdown::trace("endpoint-retirement-return", started, retired.is_ok());
         (closed, retired)
     }
     pub fn endpoint(&self) -> &EndpointRecord {
@@ -124,7 +130,7 @@ impl EndpointPublication {
                 if &record.address != expected_address {
                     return Err(SeError::invalid(
                         "stale endpoint",
-                        "the exact native address for this exclusively leased state directory",
+                        "the exact native address for this exclusively leased state directory; restore the original state directory or select a separately initialized state directory",
                     ));
                 }
                 Some(bytes)

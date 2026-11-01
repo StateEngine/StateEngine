@@ -55,6 +55,14 @@ pub(super) fn wait_native_exit(identity: &se_proc::ProcessIdentity) -> Check {
             .map_err(|error| format!("native child readback {error:?}"))?
         {
             se_proc::ProcessRead::Absent { .. } => return Ok(()),
+            se_proc::ProcessRead::ExitedRecord {
+                pid, boot, start, ..
+            } if pid == identity.pid && boot == identity.boot && start == identity.start => {
+                return Ok(());
+            }
+            se_proc::ProcessRead::ExitedRecord { .. } => {
+                return Err("native host PID was reused before its exit witness".into());
+            }
             se_proc::ProcessRead::Present(observed)
                 if observed.identity == *identity
                     && observed.state == se_proc::NativeState::ExitedAwaitingReap =>

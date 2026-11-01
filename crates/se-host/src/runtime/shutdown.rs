@@ -22,6 +22,10 @@ impl HostServeExit {
     /// a disconnected stop client cannot skip transport or publication cleanup.
     /// Replies precede transport join because their channel is itself an instance.
     pub async fn finish(mut self, drain_deadline: &Deadline) -> HostShutdown {
+        #[cfg(windows)]
+        let started = std::time::Instant::now();
+        #[cfg(windows)]
+        trace("storage-drain-start", started, true);
         let mut errors: Vec<_> = self.failure.take().into_iter().collect();
         let mut pending: Vec<_> = errors.iter().map(ToString::to_string).collect();
         let storage = match self.runtime.drain_storage(drain_deadline).await {
@@ -43,6 +47,12 @@ impl HostServeExit {
                 failure
             }
         };
+        #[cfg(windows)]
+        trace(
+            "storage-drain-return",
+            started,
+            matches!(&storage, Read::Present { .. }),
+        );
         match self.runtime.execution.pending_writes.describe() {
             Ok(identities) => pending.extend(identities),
             Err(error) => {
@@ -82,6 +92,8 @@ impl HostServeExit {
                 Ok(bound) => stop.reply(&reply, &bound).await,
                 Err(error) => Err(error),
             };
+            #[cfg(windows)]
+            trace("stop-reply-return", started, result.is_ok());
             if let Err(error) = result {
                 pending.push(format!("Stop reply delivery remains unconfirmed: {error}"));
                 errors.push(error);
@@ -91,6 +103,12 @@ impl HostServeExit {
         let (closed, retired) = self.listener.finish_transport(&pool).await;
         let transport_closed = closed.is_ok();
         let endpoint_retired = retired.is_ok();
+        #[cfg(windows)]
+        trace(
+            "shutdown-return",
+            started,
+            transport_closed && endpoint_retired,
+        );
         for (stage, result) in [
             ("Native transport release", closed),
             ("Endpoint retirement", retired),
@@ -109,6 +127,15 @@ impl HostServeExit {
             errors,
         }
     }
+}
+/// Private Windows host diagnostics contain only fixed stages and measured time.
+#[cfg(windows)]
+pub(crate) fn trace(stage: &str, started: std::time::Instant, succeeded: bool) {
+    eprintln!(
+        "host shutdown pid={} stage={stage} elapsed_ms={} succeeded={succeeded}",
+        std::process::id(),
+        started.elapsed().as_millis()
+    );
 }
 /// Cleanup gets its own finite budget after a possibly exhausted drain bound.
 /// Stop-client cancellation never cancels ownership cleanup.

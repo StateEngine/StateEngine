@@ -238,7 +238,8 @@ fn prepare(
         lease.as_ref(),
     )
     .map_err(|e| store_error(&e))?;
-    deadline.remaining()?;
+    // Ownership is committed. Return its writer/lease custody even if the
+    // native commit consumed the final part of the admission budget.
     let pending_writes =
         super::failure::PendingWrites::new(options.writer.maximum_requests.get() as usize);
     let writer = host

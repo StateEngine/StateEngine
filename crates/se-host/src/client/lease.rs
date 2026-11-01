@@ -44,9 +44,11 @@ impl Deadline {
         deadline.remaining()?;
         Ok(deadline)
     }
+    #[cfg(feature = "listener")]
     pub(crate) fn idle() -> Result<Self> {
         Self::new(IDLE_TIMEOUT, Arc::new(AtomicBool::new(false)))
     }
+    #[cfg(feature = "listener")]
     pub(crate) fn next_call(&self) -> Result<Self> {
         Self::new(CALL_TIMEOUT, Arc::clone(&self.cancelled))
     }
@@ -186,7 +188,7 @@ impl crate::client::BlockingIpcClient {
         use super::{auth, wire};
         let deadline = Deadline::from_options(options)?.stage(HELLO_TIMEOUT)?;
         let mut stream = native_connect(endpoint, &deadline, false)?;
-        let bytes = wire::read_payload(&mut stream, wire::MAX_ENDPOINT_BYTES)?;
+        let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
         let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
         if challenge.version != se_types::API_VERSION {
             return Err(SeError::new(se_types::Detail::ApiVersionUnsupported(
@@ -224,8 +226,8 @@ impl crate::client::BlockingIpcClient {
             authority,
         };
         deadline.remaining()?;
-        wire::write_frame(&mut stream, &auth::encode_client_hello(&sent)?)?;
-        let bytes = wire::read_payload(&mut stream, wire::MAX_ENDPOINT_BYTES)?;
+        wire::write_frame_bounded(&mut stream, &auth::encode_client_hello(&sent)?, &deadline)?;
+        let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
         let hello = auth::decode_server_hello(bytes.as_bytes(), &sent, &challenge)?;
         deadline.remaining()?;
         Ok(BlockingConnection {
@@ -255,7 +257,7 @@ impl crate::client::BlockingIpcClient {
         let deadline = Deadline::from_options(options)?;
         let hello = deadline.stage(HELLO_TIMEOUT)?;
         let mut stream = native_connect(endpoint, &hello, true)?;
-        let bytes = wire::read_payload(&mut stream, wire::MAX_ENDPOINT_BYTES)?;
+        let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &hello)?;
         let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
         let peer = se_proc::native_ipc::observe_ipc_self_bounded(&hello.native_bound())
             .map_err(native_error)?;
@@ -275,10 +277,12 @@ impl crate::client::BlockingIpcClient {
             nonce,
             mac,
         };
-        stream.set_bound(deadline.stage(WRITE_TIMEOUT)?.native_bound());
-        wire::write_frame(&mut stream, &codec::encode_stop(&request)?)?;
+        let writing = deadline.stage(WRITE_TIMEOUT)?;
+        stream.set_bound(writing.native_bound());
+        wire::write_frame_bounded(&mut stream, &codec::encode_stop(&request)?, &writing)?;
         stream.set_bound(deadline.native_bound());
-        let bytes = wire::read_payload(&mut stream, wire::DEFAULT_REPLY_BYTES as usize)?;
+        let bytes =
+            wire::read_payload_bounded(&mut stream, wire::DEFAULT_REPLY_BYTES as usize, &deadline)?;
         // A complete authenticated stop reply carries achieved facts even if
         // decoding finishes after the clock or a concurrent cancellation.
         codec::decode_stop_reply(
@@ -327,12 +331,13 @@ impl BlockingConnection {
                 "rediscovery after an incomplete exchange, keeping the original operation key",
             )
         })?;
-        stream.set_bound(deadline.stage(WRITE_TIMEOUT)?.native_bound());
+        let writing = deadline.stage(WRITE_TIMEOUT)?;
+        stream.set_bound(writing.native_bound());
         *progress = ExchangeProgress::SendAttempted;
-        wire::write_frame(&mut stream, &frame)?;
+        wire::write_frame_bounded(&mut stream, &frame, &writing)?;
         stream.set_bound(deadline.native_bound());
         let limit = self.hello.maximum_reply_bytes.get() as usize;
-        let bytes = wire::read_payload(&mut stream, limit)?;
+        let bytes = wire::read_payload_bounded(&mut stream, limit, &deadline)?;
         let response = wire::decode_response(
             bytes.as_bytes(),
             call.version,

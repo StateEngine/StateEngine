@@ -88,7 +88,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
             se_core::scope::unreadable("standalone host runtime", &error.to_string())
                 .with_cause(error)
         })?;
-    engine.block_on(async {
+    let result = engine.block_on(async {
         let bound = deadline(Duration::from_secs(30))?;
         let mut host = se_host::HostedRuntime::prepare(
             initialized,
@@ -132,7 +132,22 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
             .await?;
         let exit = host.serve(listener).await;
         finish(exit).await
-    })
+    });
+    #[cfg(windows)]
+    let started = std::time::Instant::now();
+    #[cfg(windows)]
+    eprintln!(
+        "host shutdown pid={} stage=runtime-drop-start elapsed_ms=0",
+        std::process::id()
+    );
+    drop(engine);
+    #[cfg(windows)]
+    eprintln!(
+        "host shutdown pid={} stage=runtime-drop-return elapsed_ms={}",
+        std::process::id(),
+        started.elapsed().as_millis()
+    );
+    result
 }
 fn positive(value: u32) -> Result<NonZeroU32> {
     NonZeroU32::new(value).ok_or_else(|| invalid("a positive native limit"))

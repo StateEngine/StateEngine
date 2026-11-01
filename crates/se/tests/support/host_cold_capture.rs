@@ -9,7 +9,7 @@ pub struct Capture<'a> {
     pub source: RecordId,
 }
 
-/// Protects: cold native capture — a new authenticated host reopens only the prior trusted pin, captures appended bytes, replays its immutable receipt and refuses a changed committed range without stopping unrelated session writes.
+/// Protects: cold native capture — a new authenticated host reopens the prior trusted pin, preserves every multi-record commit timing and confirmed partial key, and refuses changes to the last cursor-anchored raw range without blocking unrelated writes.
 pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
     let machine =
         route::identity::require_machine(&route::files::Files::open(&f.options.state_directory)?)?;
@@ -52,29 +52,61 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
             .open(case.transcript)?;
         append.write_all(&second)?;
         append.write_all(b"\n")?;
+        next["uuid"] = serde_json::json!("otto-record-3");
+        let third = serde_json::to_vec(&next)?;
+        append.write_all(&third)?;
+        append.write_all(b"\n")?;
         append.sync_all()?;
-        ipc::forward_hook(&ready.endpoint, credential()?, hook()?, &options())?;
-        let committed = (case.first_line.len() + second.len() + 2) as u64;
-        verify_capture(f, case.source, 2, committed)?;
+        let before = turn_events(f)?;
+        let captured = ipc::forward_hook(&ready.endpoint, credential()?, hook()?, &options())?;
+        let se_core::ops::AnyOutput::HookClaude(output) = captured else {
+            return Err("multi-record capture returned another family".into());
+        };
+        assert!(
+            output.value.stdout.is_empty(),
+            "native provider stdout changed"
+        );
+        let diagnostics = output
+            .diagnostics
+            .as_ref()
+            .ok_or("multi-record capture omitted diagnostics")?;
+        assert_eq!(
+            diagnostics.capture_commits.len(),
+            2,
+            "capture lost an earlier record's measured timing"
+        );
+        let measured = diagnostics
+            .capture_commits
+            .iter()
+            .map(|value| {
+                value.write_timings.validate()?;
+                Ok(value.event_id.to_string())
+            })
+            .collect::<se_types::Result<std::collections::BTreeSet<_>>>()?;
+        let after = turn_events(f)?;
+        assert_eq!(measured, after.difference(&before).cloned().collect());
+        let committed = (case.first_line.len() + second.len() + third.len() + 3) as u64;
+        verify_capture(f, case.source, 3, committed)?;
         // An ordinary native read/write handle supplies FILE_WRITE_DATA on
         // Windows; append-only access cannot demonstrate arbitrary rewrites.
         let mut writer = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(case.transcript)?;
-        let start = second
+        let start = third
             .windows(b"outside provider text".len())
             .position(|bytes| bytes == b"outside provider text")
             .ok_or("provider text fixture drifted")?;
         std::io::Seek::seek(
             &mut writer,
-            std::io::SeekFrom::Start((case.first_line.len() + 1 + start) as u64),
+            std::io::SeekFrom::Start((case.first_line.len() + second.len() + 2 + start) as u64),
         )?;
         writer.write_all(b"X")?;
         writer.sync_all()?;
         drop(writer);
-        next["uuid"] = serde_json::json!("otto-record-3");
-        append.write_all(&serde_json::to_vec(&next)?)?;
+        next["uuid"] = serde_json::json!("otto-record-4");
+        let fourth = serde_json::to_vec(&next)?;
+        append.write_all(&fourth)?;
         append.write_all(b"\n")?;
         append.sync_all()?;
         let error = ipc::forward_hook(&ready.endpoint, credential()?, hook()?, &options())
@@ -84,7 +116,55 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
             matches!(error.body.detail(), se_types::Detail::SourceUnreadable(_)),
             "wrong source-change refusal: {error}"
         );
-        verify_capture(f, case.source, 2, committed)?;
+        verify_capture(f, case.source, 3, committed)?;
+        // Restore exactly this fixture's changed byte. The next complete turn
+        // then commits before a following malformed provider line is refused.
+        let mut restore = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(case.transcript)?;
+        std::io::Seek::seek(
+            &mut restore,
+            std::io::SeekFrom::Start((case.first_line.len() + second.len() + 2 + start) as u64),
+        )?;
+        restore.write_all(&third[start..start + 1])?;
+        restore.sync_all()?;
+        drop(restore);
+        append.write_all(b"{malformed-provider-record}\n")?;
+        append.sync_all()?;
+        let before_partial = turn_events(f)?;
+        let partial = ipc::forward_hook(&ready.endpoint, credential()?, hook()?, &options())
+            .err()
+            .ok_or("malformed trailing provider record returned success")?;
+        let wire = serde_json::to_value(partial.body.detail())?;
+        assert_eq!(
+            wire["code"], "capture-incomplete",
+            "partial capture lost confirmed work: {partial}"
+        );
+        let confirmed = wire["detail"]["committed_events"]
+            .as_array()
+            .ok_or("confirmed capture events")?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or("confirmed event string")
+            })
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+        let after_partial = turn_events(f)?;
+        assert_eq!(
+            confirmed,
+            after_partial.difference(&before_partial).cloned().collect()
+        );
+        assert_eq!(confirmed.len(), 1);
+        let keys = wire["detail"]["natural_keys"]
+            .as_array()
+            .ok_or("confirmed capture natural keys")?;
+        assert_eq!(keys.len(), 1);
+        let natural = keys[0].as_str().ok_or("confirmed natural key string")?;
+        assert!(natural.contains(case.conversation.as_str()) && natural.contains("otto-record-4"));
+        verify_capture(f, case.source, 4, committed + fourth.len() as u64 + 1)?;
         let independent = ipc::forward(
             &ready.endpoint,
             credential()?,
@@ -107,7 +187,22 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
     wait_native_exit(&ready.ready.identity)?;
     outcome?;
     println!(
-        "PASS cold_capture: trusted prior pin, native restart, replay/append, exact durable cursor, changed-range refusal and independent message"
+        "PASS cold_capture: trusted prior pin, native restart, replay/append, every committed timing, exact durable cursor, keyed partial capture, changed-range refusal and independent message"
     );
     Ok(())
+}
+
+fn turn_events(
+    f: &Fixture,
+) -> Result<std::collections::BTreeSet<String>, Box<dyn std::error::Error>> {
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
+    let turns = snapshot.turns(f.a.clone(), budget(10, 65536, None)?)?;
+    let events = turns
+        .items()
+        .iter()
+        .map(|value| value.header.event.to_string())
+        .collect();
+    snapshot.close()?;
+    Ok(events)
 }

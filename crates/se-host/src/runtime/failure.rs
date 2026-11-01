@@ -62,7 +62,8 @@ impl CommittedWrite {
     }
 }
 /// Bounded by the configured writer admission capacity. An abandoned waiter
-/// leaves its original identity until a known completion or a successful drain.
+/// leaves its original identity until the independent completion observer or a
+/// successful drain resolves it. Uncertain store results retain their identity.
 #[derive(Clone)]
 pub(crate) struct PendingWrites {
     maximum: usize,
@@ -97,10 +98,13 @@ impl PendingWrites {
             })?;
         } else {
             if values.len() >= self.maximum {
-                return Err(se_core::scope::unreadable(
-                    "pending write identities",
-                    "bounded unresolved identity capacity occupied; resolve original keys before new submissions",
-                ));
+                return Err(SeError::new(se_types::Detail::StoreBusy(
+                    se_types::details::StoreBusy {
+                        waited_ms: 0,
+                        reason: "Bounded unresolved write capacity is occupied.".into(),
+                        next_step: "Wait for accepted writes to complete, then reread or retry the original operation key; unresolved store outcomes require reconciliation before new submissions.".into(),
+                    },
+                )));
             }
             values.push((identity.clone(), 1));
         }

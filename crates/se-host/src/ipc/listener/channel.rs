@@ -27,7 +27,14 @@ async fn exact(stream: &NativeStream, mut bytes: &mut [u8], deadline: &Deadline)
                 ));
             }
             Ok(count) => bytes = &mut bytes[count..],
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
             Err(e) => return Err(wire::io_failure("read IPC frame", e)),
         }
     }
@@ -76,7 +83,14 @@ pub(super) async fn send(
                 ));
             }
             Ok(count) => bytes = &bytes[count..],
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
             Err(e) => return Err(wire::io_failure("write IPC frame", e)),
         }
     }
@@ -108,7 +122,14 @@ async fn first_header(stream: &NativeStream, idle: &Deadline) -> Result<Option<(
         match stream.try_read(&mut header) {
             Ok(0) => return Ok(None),
             Ok(count) => return Ok(Some((header, count))),
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
+            }
             // Windows signals orderly pipe disconnect through BrokenPipe;
             // before a frame begins it has the same meaning as Unix EOF.
             Err(error)

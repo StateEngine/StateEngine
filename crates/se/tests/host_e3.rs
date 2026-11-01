@@ -2,6 +2,8 @@
     dead_code,
     reason = "The native consumer compiles unchanged production adapters, including their private runtime entry."
 )]
+#[path = "support/host_abandoned.rs"]
+mod abandoned_judge;
 #[path = "support/host_cold_capture.rs"]
 mod cold_capture;
 #[path = "../src/config.rs"]
@@ -86,9 +88,11 @@ fn listener_message_working_and_hook() -> Check {
         .max_blocking_threads(2)
         .build()?;
     engine.block_on(async {
+        let mut start = start_options(&f, epoch(machine)?)?;
+        start.writer.maximum_requests = NonZeroU16::new(16).ok_or("request capacity")?;
         let mut runtime = se_host::HostedRuntime::prepare(
             initialized,
-            start_options(&f, epoch(machine)?)?,
+            start,
             engine.handle().clone(),
             &bound()?,
         )
@@ -115,6 +119,7 @@ fn listener_message_working_and_hook() -> Check {
         let listener = runtime.listen(engine.handle().clone(), &bound()?).await?;
         let endpoint = listener.endpoint().clone();
         executor_judge::uncertain_write(&f, &session, &runtime).await?;
+        abandoned_judge::check(&f, &session, &runtime).await?;
 
         let client_conversation = conversation.clone();
         let b = f.b.clone();
@@ -317,7 +322,7 @@ fn main() -> Check {
     shutdown_judge::cancelled_stop()?;
     recovery_judge::restart_after_crash()?;
     println!(
-        "host_e3: 9 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
+        "host_e3: 10 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
     );
     Ok(())
 }
