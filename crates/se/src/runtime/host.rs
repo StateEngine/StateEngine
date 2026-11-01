@@ -59,6 +59,15 @@ fn invalid(expected: &str) -> SeError {
 }
 #[cfg(any(target_os = "linux", windows))]
 fn native_error(error: se_proc::ProcError) -> SeError {
+    if error.code == se_proc::ProcErrorCode::BreakawayDenied {
+        // The runtime must outlive its caller. Keep the native refusal instead
+        // of retrying inside the job or misreporting a state-directory problem.
+        return SeError::new(se_types::Detail::JobBreakawayRefused(
+            se_types::details::JobBreakawayRefused {
+                parent: format!("caller process PID {}", std::process::id()),
+            },
+        ));
+    }
     se_core::scope::unreadable("native runtime bootstrap", &format!("{error:?}"))
 }
 fn deadline(timeout: Duration) -> Result<se_host::client::lease::Deadline> {
