@@ -31,12 +31,13 @@ pub struct RuntimeConfig {
     #[serde(default)]
     pub listen_port: Option<u16>,
     /// Requested finite-work cap. Absence selects the native core count,
-    /// bounded to 2..=8; an explicit cap cannot exceed that native bound.
+    /// bounded to 2..=8. Unknown or one-core hosts keep one foreground slot
+    /// and the original independent maintenance slot.
     #[serde(default)]
     pub blocking_jobs: Option<u32>,
 }
 impl RuntimeConfig {
-    pub fn resolve_blocking_jobs(&self, cores: NonZeroUsize) -> Result<NonZeroU32> {
+    pub fn resolve_blocking_jobs(&self, cores: Option<NonZeroUsize>) -> Result<NonZeroU32> {
         if self
             .blocking_jobs
             .is_some_and(|jobs| !(MIN_BLOCKING_JOBS..=MAX_BLOCKING_JOBS).contains(&jobs))
@@ -46,14 +47,9 @@ impl RuntimeConfig {
                 "expected an integer in 2..=8",
             ));
         }
-        if cores.get() < MIN_BLOCKING_JOBS as usize {
-            return Err(SeError::new(Detail::FeatureUnavailable(details::FeatureUnavailable {
-                subject: "host work capacity".into(),
-                reason: "Only one native core is available; no 2–8 job cap fits that CPU budget.".into(),
-                next_step: "Make at least two native cores available to this process, then retry se up.".into(),
-            })));
-        }
-        let native = cores.get().min(MAX_BLOCKING_JOBS as usize) as u32;
+        let native = cores.map_or(1, |cores| {
+            cores.get().min(MAX_BLOCKING_JOBS as usize) as u32
+        });
         NonZeroU32::new(self.blocking_jobs.unwrap_or(native).min(native)).ok_or_else(|| {
             invalid(
                 "runtime.blocking_jobs",
@@ -387,7 +383,7 @@ mod runtime_budget_tests {
                 blocking_jobs: requested,
                 ..Default::default()
             };
-            assert_eq!(config.resolve_blocking_jobs(cores)?.get(), expected);
+            assert_eq!(config.resolve_blocking_jobs(Some(cores))?.get(), expected);
         }
         assert!(key_metadata("runtime.blocking_jobs")?.human_only);
         Ok(())
@@ -396,16 +392,24 @@ mod runtime_budget_tests {
     fn invalid_work_caps_are_refused_before_startup() -> Result<()> {
         let cores = NonZeroUsize::new(8).ok_or_else(|| invalid("test cores", "positive"))?;
         let one_core = NonZeroUsize::new(1).ok_or_else(|| invalid("test cores", "positive"))?;
-        assert!(
-            RuntimeConfig::default()
-                .resolve_blocking_jobs(one_core)
-                .is_err()
-        );
+        for observed in [None, Some(one_core)] {
+            let configured = RuntimeConfig {
+                blocking_jobs: Some(8),
+                ..Default::default()
+            };
+            assert_eq!(configured.resolve_blocking_jobs(observed)?.get(), 1);
+            assert_eq!(
+                RuntimeConfig::default()
+                    .resolve_blocking_jobs(observed)?
+                    .get(),
+                1
+            );
+        }
         for requested in [0, 1, 9, u32::MAX] {
             let mut config = ConfigFile::default();
             config.runtime.blocking_jobs = Some(requested);
             assert!(config.validate().is_err());
-            assert!(config.runtime.resolve_blocking_jobs(cores).is_err());
+            assert!(config.runtime.resolve_blocking_jobs(Some(cores)).is_err());
         }
         Ok(())
     }

@@ -1,5 +1,6 @@
-//! Bounded shared finite-work slots on the supplied executor. At most one can
-//! contain maintenance, leaving foreground capacity without another runtime.
+//! Bounded finite work on the supplied executor. Normal capacities share work;
+//! capacity one keeps the original foreground/maintenance split. Both keep
+//! maintenance at one actual job and preserve foreground progress.
 use crate::client::lease::Deadline;
 use se_types::{Result, SeError};
 use std::{future::Future, sync::Arc, time::Duration};
@@ -12,7 +13,7 @@ use tokio::{
 #[derive(Clone)]
 pub struct BlockingPool {
     runtime: Handle,
-    total: Arc<Semaphore>,
+    slots: Arc<Semaphore>,
     background: Arc<Semaphore>,
     capacity: u32,
 }
@@ -29,12 +30,10 @@ impl BlockingPool {
         Self::configured(runtime, se_core::config_policy::MIN_BLOCKING_JOBS)
     }
     pub fn with_jobs(runtime: Handle, jobs: std::num::NonZeroU32) -> Result<Self> {
-        if !(se_core::config_policy::MIN_BLOCKING_JOBS..=se_core::config_policy::MAX_BLOCKING_JOBS)
-            .contains(&jobs.get())
-        {
+        if jobs.get() > se_core::config_policy::MAX_BLOCKING_JOBS {
             return Err(SeError::invalid(
                 "host blocking jobs",
-                "a finite cap in 2..=8",
+                "an effective cap in 1..=8; one selects the legacy foreground/maintenance split",
             ));
         }
         Ok(Self::configured(runtime, jobs.get()))
@@ -42,7 +41,7 @@ impl BlockingPool {
     fn configured(runtime: Handle, capacity: u32) -> Self {
         Self {
             runtime,
-            total: Arc::new(Semaphore::new(capacity as usize)),
+            slots: Arc::new(Semaphore::new(capacity as usize)),
             background: Arc::new(Semaphore::new(1)),
             capacity,
         }
@@ -50,7 +49,7 @@ impl BlockingPool {
     /// Listener native checks share the foreground admission with planning and
     /// continuation jobs. A timed-out job retains its slot until it really exits.
     pub fn foreground_admission(&self) -> Arc<Semaphore> {
-        Arc::clone(&self.total)
+        Arc::clone(&self.slots)
     }
     pub async fn run<T, F>(&self, class: BlockingClass, deadline: &Deadline, work: F) -> Result<T>
     where
@@ -68,9 +67,18 @@ impl BlockingPool {
                     .map_err(|_| pool_error("maintenance admission closed"))?,
             ),
         };
-        let permit = within(deadline, Arc::clone(&self.total).acquire_owned())
-            .await?
-            .map_err(|_| pool_error("bounded blocking admission closed"))?;
+        // On an unknown/one-core host, keep the original independent
+        // foreground and maintenance slots. Otherwise maintenance shares one
+        // job from the configured total, retaining the rest for foreground.
+        let permit = if self.capacity == 1 && matches!(class, BlockingClass::Background) {
+            None
+        } else {
+            Some(
+                within(deadline, Arc::clone(&self.slots).acquire_owned())
+                    .await?
+                    .map_err(|_| pool_error("bounded blocking admission closed"))?,
+            )
+        };
         deadline.remaining()?;
         let job = self.runtime.spawn_blocking(move || {
             let _permits = (permit, maintenance);
@@ -97,7 +105,7 @@ impl BlockingPool {
         &self,
         deadline: &Deadline,
     ) -> Result<tokio::sync::OwnedSemaphorePermit> {
-        let permit = within(deadline, Arc::clone(&self.total).acquire_owned())
+        let permit = within(deadline, Arc::clone(&self.slots).acquire_owned())
             .await?
             .map_err(|_| pool_error("owned-work admission closed"))?;
         deadline.remaining()?;
@@ -129,7 +137,7 @@ impl BlockingPool {
             .map_err(|_| pool_error("maintenance admission closed"))?;
         let total = within(
             deadline,
-            Arc::clone(&self.total).acquire_many_owned(self.capacity),
+            Arc::clone(&self.slots).acquire_many_owned(self.capacity),
         )
         .await?
         .map_err(|_| pool_error("shared blocking admission closed"))?;
