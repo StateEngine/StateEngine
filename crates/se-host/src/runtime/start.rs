@@ -94,7 +94,7 @@ impl HostedRuntime {
         runtime: Handle,
         deadline: &crate::client::lease::Deadline,
     ) -> Result<Self> {
-        let blocking = BlockingPool::new(runtime);
+        let blocking = BlockingPool::with_jobs(runtime, options.limits.blocking_jobs)?;
         let work_pool = blocking.clone();
         let work_deadline = deadline.clone();
         blocking

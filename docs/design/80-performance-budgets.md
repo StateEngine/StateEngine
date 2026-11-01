@@ -265,7 +265,7 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Component | Allocation | Baseline / basis |
 | --- | ---: | --- |
 | `se` code pages and system libraries | 5.0 MB | Prototype owners 2.7–3.8 MB in total; Rust MCP server 5 MB |
-| tokio `current_thread`, blocking pool (max 2), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
+| tokio `current_thread`, blocking pool (core-sized cap 2–8), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
 | SQLite page cache: writer + 1 reader × 2 MB | 4.0 MB | CLI reads go straight to the file and don't need host readers |
 | SQLite connections, schema, statements | 1.0 MB | |
 | Sessions, mail, listener/MCP, capture + watcher, custody, resume | 7.5 MB | Includes the same single-large-packet resume allowance as 3.1 |
@@ -618,7 +618,7 @@ The failed setup attempt is retained separately in `quiet-run-1`.
 | Attended Claude long-poll re-armed every 25 s (Claude's HTTP fetch ends at 30 s), per attended Claude session | — | 0.04/s |
 | Safety catch-up sweep every 15 min, only with ≥ 1 live session | — | 0.0011/s |
 | Auto-started/handback daemon exit timer (10 min after last live agent) | one wake | — |
-| Blocking-pool threads exiting after keep-alive | ≤ 2, once | ≤ 2, once |
+| Blocking-pool threads exiting after keep-alive | ≤ configured cap (2–8), once | ≤ configured cap (2–8), once |
 | **Expected** | **≈ 0.002/s** | **≈ 0.003/s, plus 0.04/s per attended Claude session** |
 | Ceiling | 1/s | 2/s |
 
@@ -635,7 +635,7 @@ do not label that interval settled idle or hide it in the baseline expectation.
 | --- | --- |
 | **No idle polling.** Every replaced loop stays gone: 250 ms mail door, 1.5 s watcher, 15 s supervisor tick, 60 s projection drain, 10 min Atlas renew, 1 h capture canary. Process exits arrive as OS events, mail as `watch` bumps after commit, files as OS file events. The live-session safety catch-up and attended renewal in §3.7 remain explicit measured costs. `notify`'s poll watcher is never used: on a filesystem without events, capture relies on the harness signal and reports the watcher as unavailable. | B5, B6 |
 | **No timer without a live session,** except the auto-start/handback exit timer. Log rotation happens on write, never on a clock. | B6 |
-| **Fixed thread set at idle.** The writer is a named `std::thread`, not a pool thread. Standalone blocking pool capped at 2. No per-session threads. Windows process exits for all jobs arrive on one shared IOCP collector per host; no registered-wait thread pool. | B6, Windows bound |
+| **Fixed thread set at idle.** The writer is a named `std::thread`, not a pool thread. Standalone blocking pool is capped at 2–8 and by native available cores; finite threads remain shared across sessions. No per-session threads. Windows process exits for all jobs arrive on one shared IOCP collector per host; no registered-wait thread pool. | B6, Windows bound |
 | **Bounded SQLite:** `cache_size=-2000` per connection, `mmap_size=0` (mapped pages would inflate RSS without a ceiling), statement cache 32, `temp_store=FILE`, `journal_size_limit` 4 MiB, `TRUNCATE` checkpoint at clean shutdown. | B1, B4 |
 | **Batched writer, explicit durability:** block on receive, drain whatever is queued (up to 256), one `BEGIN IMMEDIATE … COMMIT`. No gather window, so no latency or timer is added. Autocheckpoint is commit-driven. Ordinary batches use NORMAL; credential/session/runtime/security transitions and decision ratify/reject/retract/supersede require FULL. NORMAL can lose several recent commits on power/OS loss, not an application crash. | B9, burst, B2 |
 | **Bounded everything else:** channels bounded with `Lagged{resume_from}` on overflow; one closed DTO per operation for CLI/MCP; lists default 20 and max 100 rows, search max 50, message preview 400 characters, resume default 32 KiB/max 1 MiB; message body 32 KiB and working state 16 KiB; page/encoded budgets expose incompleteness and never truncate a full body. | B1, B4 |

@@ -1,4 +1,4 @@
-//! Two shared finite-work slots on the supplied executor. At most one can
+//! Bounded shared finite-work slots on the supplied executor. At most one can
 //! contain maintenance, leaving foreground capacity without another runtime.
 use crate::client::lease::Deadline;
 use se_types::{Result, SeError};
@@ -14,6 +14,7 @@ pub struct BlockingPool {
     runtime: Handle,
     total: Arc<Semaphore>,
     background: Arc<Semaphore>,
+    capacity: u32,
 }
 #[derive(Clone, Copy)]
 pub enum BlockingClass {
@@ -25,10 +26,25 @@ impl BlockingPool {
         self.runtime.clone()
     }
     pub fn new(runtime: Handle) -> Self {
+        Self::configured(runtime, se_core::config_policy::MIN_BLOCKING_JOBS)
+    }
+    pub fn with_jobs(runtime: Handle, jobs: std::num::NonZeroU32) -> Result<Self> {
+        if !(se_core::config_policy::MIN_BLOCKING_JOBS..=se_core::config_policy::MAX_BLOCKING_JOBS)
+            .contains(&jobs.get())
+        {
+            return Err(SeError::invalid(
+                "host blocking jobs",
+                "a finite cap in 2..=8",
+            ));
+        }
+        Ok(Self::configured(runtime, jobs.get()))
+    }
+    fn configured(runtime: Handle, capacity: u32) -> Self {
         Self {
             runtime,
-            total: Arc::new(Semaphore::new(2)),
+            total: Arc::new(Semaphore::new(capacity as usize)),
             background: Arc::new(Semaphore::new(1)),
+            capacity,
         }
     }
     /// Listener native checks share the foreground admission with planning and
@@ -43,7 +59,7 @@ impl BlockingPool {
     {
         deadline.remaining()?;
         // A maintenance job holds its gate before shared admission. At most
-        // one such job can occupy either of the two finite-work slots.
+        // one such job can occupy a finite-work slot.
         let maintenance = match class {
             BlockingClass::Foreground => None,
             BlockingClass::Background => Some(
@@ -106,14 +122,17 @@ impl BlockingPool {
     }
     /// Called after fencing admission and joining connection tasks. Acquire in
     /// maintenance's gate-then-shared order, so queued maintenance cannot deadlock
-    /// against shutdown. Holding both shared permits also joins timed-out jobs.
+    /// against shutdown. Holding every shared permit also joins timed-out jobs.
     pub async fn quiesce(&self, deadline: &Deadline) -> Result<()> {
         let maintenance = within(deadline, Arc::clone(&self.background).acquire_owned())
             .await?
             .map_err(|_| pool_error("maintenance admission closed"))?;
-        let total = within(deadline, Arc::clone(&self.total).acquire_many_owned(2))
-            .await?
-            .map_err(|_| pool_error("shared blocking admission closed"))?;
+        let total = within(
+            deadline,
+            Arc::clone(&self.total).acquire_many_owned(self.capacity),
+        )
+        .await?
+        .map_err(|_| pool_error("shared blocking admission closed"))?;
         drop((total, maintenance));
         Ok(())
     }
