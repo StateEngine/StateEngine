@@ -314,7 +314,7 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
         ["runtime", "listen_port"] | ["capture", "enabled"] => (true, false),
         ["providers", "claude" | "codex", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
         ["profiles", name, "sandbox" | "network" | "approval" | "bypass"] if !name.is_empty() => (true, false),
-        _ => return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField { op: "config".into(), field: key.into(), next_step: "Use se config list for supported file keys; agent fields are profile, model and can-create.".into() }))),
+        _ => return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField { op: "config".into(), field: key.into(), next_step: "Use se help config for available commands; saved agent fields are model, profile and can-create.".into() }))),
     };
     Ok(ConfigKeyMeta {
         human_only,

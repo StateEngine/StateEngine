@@ -137,10 +137,12 @@ fn replay_target<R: Snapshot>(key: &IdempotencyKey, cx: &mut Cx<'_, R>) -> Resul
                     principal: Actor::Agent(agent),
                     ..
                 } => Ok(Some(agent)),
-                _ => Err(SeError::invalid(
-                    "idempotency key",
-                    "a key not already used by another operation",
-                )),
+                _ => Err(SeError::new(se_types::Detail::IdempotencyKeyReused(
+                    se_types::details::IdempotencyKeyReused {
+                        key: key.to_string(),
+                        original_event: value.primary_event,
+                    },
+                ))),
             }
         }
         Read::Absent { .. } => Ok(None),

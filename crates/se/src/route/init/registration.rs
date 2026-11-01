@@ -188,7 +188,16 @@ pub(super) fn finish(
             ));
         }
     };
-    let command = vec!["se".into(), "launch".into(), agent.name.clone()];
+    let command = vec![
+        "se".into(),
+        "--home".into(),
+        cx.home.display().to_string(),
+        "--project".into(),
+        id.to_string(),
+        "agent".into(),
+        "show".into(),
+        agent.id.to_string(),
+    ];
     Ok(InitOutput {
         idempotency_key: input.idempotency_key.clone(),
         outcome: if created {
@@ -236,19 +245,31 @@ pub(super) fn finish(
         },
         profile: InitProfile {
             schema: "stateengine-init/v1".into(),
-            project: id,
+            project: id.clone(),
             repo_root: repository.path.display().to_string(),
             registry_root: cx.home.display().to_string(),
             keys_dir: cx.home.display().to_string(),
             human_id: human,
-            agent_id: agent.id,
+            agent_id: agent.id.clone(),
             native_server_port: port,
         },
         integrations: vec![],
         changed,
         next: NextStep {
-            text: "Launch your first agent.".into(),
-            command: format!("se launch {}", agent.name),
+            text: "Inspect your saved agent".into(),
+            command: format!(
+                "se --home {} --project {} agent show {}",
+                if cfg!(windows) {
+                    format!("'{}'", cx.home.display().to_string().replace('\'', "''"))
+                } else {
+                    format!(
+                        "'{}'",
+                        cx.home.display().to_string().replace('\'', "'\"'\"'")
+                    )
+                },
+                id,
+                agent.id,
+            ),
             argv: command,
         },
         launch: None,

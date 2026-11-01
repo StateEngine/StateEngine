@@ -13,7 +13,10 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             out,
             "  Start: se init            (registers this folder; your files and Git history stay as they are)"
         )?;
-        writeln!(out, "  Then:  se launch <name>   (opens your first agent)")?;
+        writeln!(
+            out,
+            "  Then:  se status          (inspect the saved project and agent)"
+        )?;
         return Ok(());
     }
     writeln!(out, "StateEngine {}", value.version)?;

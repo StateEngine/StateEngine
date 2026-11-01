@@ -3,7 +3,7 @@
 use crate::bootstrap::Bootstrap;
 use se_core::{admission::read_scope, registry, scope, store_error::store_error};
 use se_store::{Admission, EventBody, ProjectionRecord, ReadBudget, ReadStore, Scope, Snapshot};
-use se_types::{Detail, PageRequest, Result, SeError, details};
+use se_types::{Detail, PageRequest, PathEncoding, ProjectChoice, Result, SeError, details};
 use std::{num::NonZeroU32, time::Duration};
 
 pub fn budget(after: Option<se_types::Cursor>) -> Result<ReadBudget> {
@@ -103,6 +103,7 @@ pub fn apply<R: ReadStore>(
     let cwd = se_proc::canonicalize_path(&cx.cwd)
         .map_err(|e| scope::unreadable("current directory", &e.to_string()))?;
     let mut candidates = Vec::new();
+    let mut choices = Vec::new();
     for record in projects(reader, admission)? {
         let (id, name, roots) = match record.current.body {
             EventBody::ProjectRegistered {
@@ -124,6 +125,15 @@ pub fn apply<R: ReadStore>(
                 ));
             }
         };
+        choices.push(ProjectChoice {
+            id: id.clone(),
+            name: name.clone(),
+            root: match roots.first().map(|root| root.path.encoded()) {
+                Some(PathEncoding::UnixBytes(bytes)) => String::from_utf8_lossy(bytes).into_owned(),
+                Some(PathEncoding::WindowsUtf16(units)) => String::from_utf16_lossy(units),
+                None => "no registered root".into(),
+            },
+        });
         let depth = if let Some(selector) = requested {
             if selector == name || selector == id.to_string() {
                 Some(0)
@@ -153,7 +163,7 @@ pub fn apply<R: ReadStore>(
         }
         [] if requested.is_none() && matches!(op, se_core::ops::AnyOp::ProjectStatus(_)) => Ok(()),
         [] => Err(SeError::new(Detail::ProjectRequired(
-            details::ProjectRequired { choices: vec![] },
+            details::ProjectRequired { choices },
         ))),
         rows => Err(SeError::new(Detail::SelectorAmbiguous(
             details::SelectorAmbiguous {

@@ -8,64 +8,85 @@ pub fn refusal(args: &[OsString]) -> Option<SeError> {
     let rest = &args[command..];
     let first = rest.first()?.to_str()?;
     let second = rest.get(1).and_then(|arg| arg.to_str());
-    if first == "launch" {
+    let unavailable = match (first, second) {
+        ("launch", _) | ("seat", Some("launch")) => Some((
+            "agent launch",
+            "Use se init to save a project and se status to inspect it.",
+        )),
+        ("seat", Some("stop")) => Some(("agent stop", "Use se status to inspect running work.")),
+        ("wake", _) | ("seat", Some("wake")) => Some((
+            "agent wake",
+            "Use se agent show AGENT to inspect a saved agent.",
+        )),
+        ("agents", _) => Some((
+            "agent listing",
+            "Use se status to inspect the project's saved agents.",
+        )),
+        ("decision", _) if only_presentation_flags(&rest[1..]) => Some((
+            "decision listing",
+            "Use se decision show ID for a known decision, or se status for its pending count.",
+        )),
+        ("decisions" | "pending", _) => Some((
+            "decision listing",
+            "Use se decision show ID for a known decision, or se status for its pending count.",
+        )),
+        ("agent-rename", _) => Some((
+            "agent rename",
+            "Use se agent show AGENT to inspect saved metadata.",
+        )),
+        ("rawlog-search", _) => Some((
+            "history search",
+            "Use se history --event ID to inspect a known event.",
+        )),
+        ("packet", _) => Some((
+            "agent resume",
+            "Use se agent show AGENT to inspect a saved agent.",
+        )),
+        ("decommission", _) | ("init", Some("--remove")) => Some((
+            "project removal",
+            "Use se status --all to inspect registered projects.",
+        )),
+        ("plugin" | "hook-install" | "hook-uninstall", _) => {
+            Some(("integration repair", "Use se status to inspect setup."))
+        }
+        ("verify-chain", _) => Some(("integrity verification", "Use se status to inspect setup.")),
+        ("hook-emit" | "capture-turn", _) => {
+            Some(("legacy hook emission", "Use se status to inspect capture."))
+        }
+        _ => None,
+    };
+    if let Some((subject, next_step)) = unavailable {
         return Some(SeError::new(Detail::FeatureUnavailable(
             details::FeatureUnavailable {
-                subject: "agent launch".into(),
-                reason: "launching agents isn't available in this build yet".into(),
-                next_step: "Use se init to save a project and se status to inspect it.".into(),
+                subject: subject.into(),
+                reason: "not available in this build".into(),
+                next_step: next_step.into(),
             },
         )));
     }
     let pair = match (first, second) {
         ("seat", Some("create")) => Some("se agent add NAME"),
-        ("seat", Some("launch")) => Some("se launch AGENT"),
-        ("seat", Some("stop")) => Some("se stop AGENT"),
-        ("seat", Some("wake")) => Some("se wake AGENT"),
         ("ratify", Some("all")) => {
             Some("se decision ratify ID (once per decision; no bulk approval)")
         }
         ("init", Some("--status")) => Some("se status"),
-        ("init", Some("--remove")) => Some("se remove --project P"),
-        (
-            "msg",
-            Some(
-                "deliver" | "retry-delivery" | "recover-delivery" | "handoff" | "unread-ids"
-                | "wake-backlog" | "turn-outcome" | "index-build",
-            ),
-        ) => Some("se doctor --fix"),
         _ => None,
     };
     if let Some(replacement) = pair {
         return Some(renamed(&format!("{first} {}", second?), replacement));
     }
     let replacement = match first {
-        "agents" => "se agent list",
         "projects" => "se status --all",
-        "decision" if only_presentation_flags(&rest[1..]) => "se decision list",
-        "decisions" => "se decision list",
-        "pending" => "se decision list --pending",
-        "agent-rename" => "se agent rename AGENT NAME",
-        "launch" if only_presentation_flags(&rest[1..]) => "se up",
         "stop" if only_presentation_flags(&rest[1..]) => "se down",
-        "wake" if only_presentation_flags(&rest[1..]) => "se wake AGENT",
         "ratify" => "se decision ratify ID",
         "ratifyall" => "se decision ratify ID (once per decision; no bulk approval)",
         "reject" => "se decision reject ID",
         "retract" => "se decision retract ID",
         "reverse" => "se decision supersede ID WITH_ID",
-        "rawlog-search" => "se search QUERY",
         "floor-event" => "se history --event ID",
         "capture-status" | "context" => "se status",
         "working-state-show" => "se working-state",
         "working-state-set" | "seat-continuity-write" => "se working-state set TEXT --expect REV",
-        "packet" => "se resume --preview AGENT",
-        "decommission" => "se remove --project P",
-        "plugin" | "hook-install" | "hook-uninstall" => {
-            "se doctor --fix (repair setup); se status (inspect); se remove (remove with project)"
-        }
-        "verify-chain" => "se doctor",
-        "hook-emit" | "capture-turn" => "se doctor --fix",
         _ => return retired(first, second),
     };
     Some(renamed(first, replacement))
@@ -89,52 +110,59 @@ fn retired(first: &str, second: Option<&str>) -> Option<SeError> {
             _,
         ) => (
             "the arbitrary process service was removed",
-            "Use se launch AGENT and se stop AGENT for managed agents",
+            "Use se status to inspect running work; arbitrary process control is unavailable.",
             first == "process",
         ),
         ("backup", _) => (
             "backups are automatic",
-            "Use se restore for owner recovery",
+            "Use se status to inspect the store; owner recovery is unavailable in this build.",
             false,
         ),
         ("rebuild-index", _) => (
             "alpha has no projection replay command",
-            "Use owner-human se restore on projection disagreement",
+            "Use se status to inspect setup; projection repair is unavailable in this build.",
             false,
         ),
         ("agent", Some("alias")) | ("agent-alias" | "stateengine_agent_alias", _) => (
             "new aliases are no longer supported",
-            "Use stable IDs or se agent rename AGENT NAME",
+            "Use stable IDs with se agent show AGENT.",
             first == "agent",
         ),
-        ("msg", Some("complete" | "reconcile" | "treat")) => (
-            "mail uses recipient read and dismiss markers",
-            "Use se msg read ID or se msg dismiss ID as the recipient",
+        (
+            "msg",
+            Some(
+                "complete" | "reconcile" | "treat" | "deliver" | "retry-delivery"
+                | "recover-delivery" | "handoff" | "unread-ids" | "wake-backlog" | "turn-outcome"
+                | "index-build",
+            ),
+        ) => (
+            "legacy message maintenance commands were removed",
+            "Use se msg list --full to inspect messages",
             true,
         ),
         ("seat", Some("cut" | "move" | "prompt")) => (
             "seat plumbing is no longer a product operation",
-            "Use se launch AGENT, se stop AGENT or se resume",
+            "Use se status or se agent show AGENT to inspect saved work.",
             true,
         ),
         ("doctor", Some("contradictions")) => (
             "contradiction machinery was removed",
-            "Use se doctor to inspect setup",
+            "Use se status to inspect setup",
             true,
         ),
         ("mail-tunnel" | "stateengine_mail_tunnel", _) => (
             "native notifications replaced mail tunnels",
-            "Use se doctor --fix to repair integration",
+            "Use se status to inspect integration.",
             false,
         ),
         ("memories" | "stateengine_memory_suggest", _) => (
             "memories are no longer a separate store",
-            "Use se decision list; imported memories are decisions",
+            "Use se decision show ID; imported memories are decisions",
             false,
         ),
         (name, _) if name.starts_with("memory-") => (
             "memories are no longer a separate store",
-            "Use se decision list; imported memories are decisions",
+            "Use se decision show ID; imported memories are decisions",
             false,
         ),
         (
@@ -156,12 +184,12 @@ fn retired(first: &str, second: Option<&str>) -> Option<SeError> {
             _,
         ) => (
             "internal engine plumbing is not a public operation",
-            "Use se status, se history or se doctor; use se up to start the runtime",
+            "Use se status, se history --event ID for a known event, or se up to start the runtime.",
             false,
         ),
         (name, _) if name.starts_with("substrate-") || name.starts_with("brick") => (
             "legacy substrate plumbing was removed",
-            "Use se status or se doctor",
+            "Use se status to inspect setup.",
             false,
         ),
         (

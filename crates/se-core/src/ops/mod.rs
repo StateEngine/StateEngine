@@ -237,7 +237,7 @@ impl AnyOutput {
                     .count() as u64;
                 if page.items().iter().any(|row| {
                     row.unreadable.is_some() || (v.value.view.full && !row.body.complete)
-                }) || (v.value.view.op == "inbox"
+                }) || (v.value.view.r#box == "inbox"
                     && v.value.unread_total.is_none_or(|total| total > unread))
                 {
                     2

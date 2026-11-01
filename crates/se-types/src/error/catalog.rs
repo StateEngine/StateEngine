@@ -7,7 +7,7 @@ codes! {
     InputTooLarge => ("input-too-large", Usage) { field: String, limit_bytes: u64, got_bytes: u64 } => "{field} is {got_bytes} bytes; limit {limit_bytes}", "shorten or split it";
     InputUnknownField => ("input-unknown-field", Usage) { op: String, field: String, next_step: String } => "`{field}` is not accepted by {op}", "{next_step}";
     ProjectConflictsSession => ("project-conflicts-session", Usage) { flag_project: String, session_project: String } => "`-p {flag_project}` conflicts with this session's project {session_project}", "drop `-p`";
-    ProjectRequired => ("project-required", Usage) { choices: Vec<ProjectChoice> } => "which project? none registered here", "Use `se init` (none) or `se … -p NAME`";
+    ProjectRequired => ("project-required", Usage) { choices: Vec<ProjectChoice> } => "which project? {choices.len} registered: {choices}", "Select one with `se --project NAME …`, or use `se init` to register a project";
     Renamed => ("renamed", Usage) { old: String, replacement: String } => "`{old}` was renamed", "Use `{replacement}` (template; fill placeholders)";
     SelectorAmbiguous => ("selector-ambiguous", Usage) { kind: String, selector: String, matches: Vec<String> } => "{selector} matches {matches.len} {kind} entries: {matches}", "Select an exact ID from {matches}";
     UsageConflictingFlags => ("usage-conflicting-flags", Usage) { flags: Vec<String> } => "{flags} cannot be used together", "pick one";

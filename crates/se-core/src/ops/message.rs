@@ -65,6 +65,38 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
                 })
         })
         .transpose()?;
+    let mut full_command = vec![
+        "se".into(),
+        "--project".into(),
+        scope::project(cx.admission)?.to_string(),
+        "msg".into(),
+        "list".into(),
+        "--full".into(),
+        "--limit".into(),
+        input.limit.to_string(),
+    ];
+    let to_selector = input.owner_to.as_deref().filter(|_| input.cli_list);
+    for (flag, actor, original) in [
+        ("--to", &to, to_selector),
+        ("--from", &from, input.from.as_deref()),
+    ] {
+        if let Some(actor) = actor {
+            let selector = match actor {
+                Actor::Human(_) => original.unwrap_or("owner").to_owned(),
+                Actor::Agent(_) => scope::actor_id(actor),
+            };
+            full_command.extend([flag.into(), selector]);
+        }
+    }
+    if let Some(kind) = &kind {
+        full_command.extend(["--kind".into(), kind.clone()]);
+    }
+    if matches!(input.view, MessageView::All) {
+        full_command.push("--all".into());
+    }
+    if let Some(cursor) = &input.cursor {
+        full_command.extend(["--cursor".into(), cursor.to_string()]);
+    }
     let query = MessageQuery {
         recipient: to.clone(),
         sender: from.clone(),
@@ -130,21 +162,8 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
         let complete = preview_end == body.len();
         let kind = serde_json::from_value(serde_json::Value::String(record.kind))
             .map_err(|e| scope::unreadable("stored message kind", &e.to_string()))?;
-        let body_command = if complete {
-            None
-        } else {
-            Some(format!("se msg read {}", record.message))
-        };
-        let body_argv = if complete {
-            None
-        } else {
-            Some(vec![
-                "se".into(),
-                "msg".into(),
-                "read".into(),
-                record.message.to_string(),
-            ])
-        };
+        let body_command = (!complete).then(|| command_text(&full_command));
+        let body_argv = (!complete).then(|| full_command.clone());
         let delivery = Delivery {
             state: if matches!(record.recipient, Actor::Human(_)) {
                 "not-applicable"
@@ -246,4 +265,23 @@ fn scope_denied<R: Snapshot>(cx: &Cx<'_, R>, filter: &str) -> SeError {
         }
         Actor::Human(_) => SeError::invalid("mail filters", filter),
     }
+}
+
+fn command_text(argv: &[String]) -> String {
+    argv.iter()
+        .map(|arg| {
+            if !arg.is_empty()
+                && arg
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-.:/".contains(&byte))
+            {
+                arg.clone()
+            } else if cfg!(windows) {
+                format!("'{}'", arg.replace('\'', "''"))
+            } else {
+                format!("'{}'", arg.replace('\'', "'\"'\"'"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
