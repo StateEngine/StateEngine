@@ -264,7 +264,8 @@ fn run(serial: bool) -> Check {
         if serial {
             assert!(
                 write_reply.is_ok(),
-                "serial control lost its normal receipt"
+                "serial control lost its normal receipt: {:?}",
+                write_reply.as_ref().err()
             );
         }
         match write_reply {
