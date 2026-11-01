@@ -2,21 +2,26 @@
     dead_code,
     reason = "The real native fixture is shared with store consumers."
 )]
-#[cfg(target_os = "linux")]
-use se_types::{Read, Secret};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
+use se_types::Read;
+#[cfg(any(target_os = "linux", windows))]
 use sha2::{Digest, Sha256};
 use std::{
     path::Path,
     process::{Command, Output},
-    sync::{Arc, atomic::AtomicBool},
-    time::Duration,
 };
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 use std::io::Write;
+#[cfg(any(target_os = "linux", windows))]
+#[path = "support/runtime_host.rs"]
+mod runtime_host;
+#[cfg(any(target_os = "linux", windows))]
+use runtime_host::RunningHost;
+#[cfg(any(target_os = "linux", windows))]
+static RUNTIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn command(image: &Path, home: &Path, json: bool) -> Command {
     let mut command = Command::new(image);
@@ -56,14 +61,6 @@ fn checked(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Erro
     );
     value(&output)
 }
-fn options() -> se_host::client::ClientOptions {
-    se_host::client::ClientOptions {
-        expected_generation: None,
-        timeout: Duration::from_secs(5),
-        cancelled: Arc::new(AtomicBool::new(false)),
-    }
-}
-
 /// Protects: before initialization, a real ordinary command names setup-required and a se init remedy for the resolved home; absence does not become source-unreadable or create state implicitly.
 #[test]
 fn pre_init_command_names_setup_and_resolved_home() -> Check {
@@ -109,74 +106,25 @@ fn pre_init_command_names_setup_and_resolved_home() -> Check {
     }
     Ok(())
 }
-#[cfg(target_os = "linux")]
-struct RunningHost {
-    endpoint: se_host::EndpointRecord,
-    key: Secret,
-    identity: se_proc::ProcessIdentity,
-}
-#[cfg(target_os = "linux")]
-impl RunningHost {
-    fn stop(&self) -> Check {
-        let until = se_types::UnixMicros::new(
-            (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_micros()
-                + 5_000_000) as u64,
-        )?;
-        se_host::client::BlockingIpcClient::stop(
-            &self.endpoint,
-            &self.key,
-            se_types::IdempotencyKey::new("runtime-refusal-cleanup")?,
-            until,
-            &options(),
-        )?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while self.live()? {
-            if std::time::Instant::now() >= deadline {
-                return Err("exact fixture host did not exit after graceful stop".into());
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        Ok(())
-    }
-    fn live(&self) -> Result<bool, Box<dyn std::error::Error>> {
-        match se_proc::NativeProcessRuntime::read_process(
-            self.identity.machine.clone(),
-            self.identity.pid,
-        )
-        .map_err(|error| format!("outside native host observation: {error:?}"))?
-        {
-            se_proc::ProcessRead::Present(value) => Ok(value.identity == self.identity
-                && !matches!(
-                    value.state,
-                    se_proc::NativeState::Exited | se_proc::NativeState::ExitedAwaitingReap
-                )),
-            se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. } => {
-                Ok(false)
-            }
-        }
-    }
-}
-#[cfg(target_os = "linux")]
-impl Drop for RunningHost {
-    fn drop(&mut self) {
-        if matches!(self.live(), Ok(true)) {
-            let _ = self.stop();
-        }
-    }
-}
-
-/// Protects: uninstall checks a real live host even when the protected process inventory is empty; it either proves graceful host exit first or preserves the installation and names se down.
-#[cfg(target_os = "linux")]
+/// Protects: uninstall refuses an actual live host even when the protected process inventory is empty; it preserves the installation and retained history and names se down.
+#[cfg(any(target_os = "linux", windows))]
 #[test]
-fn uninstall_stops_or_refuses_the_actual_live_host() -> Check {
+fn uninstall_refuses_the_actual_live_host_before_effects() -> Check {
+    let _serial = RUNTIME
+        .lock()
+        .map_err(|_| "runtime fixture mutex poisoned")?;
     se_proc::initialize_file_creation_owner()?;
     let f = Fixture::new()?;
     let home = &f.options.state_directory;
     let repo = f.home.join("repository");
     std::fs::create_dir(&repo)?;
-    let binary = Path::new(env!("CARGO_BIN_EXE_se"));
+    let host_image = f.home.join(if cfg!(windows) {
+        "host-se.exe"
+    } else {
+        "host-se"
+    });
+    std::fs::copy(env!("CARGO_BIN_EXE_se"), &host_image)?;
+    let binary = host_image.as_path();
     checked(
         command(binary, home, true)
             .arg("init")
@@ -214,23 +162,7 @@ fn uninstall_stops_or_refuses_the_actual_live_host() -> Check {
     files.publish_no_replace(&stage.path, &record)?;
     // Keep the host's real executable available for graceful cleanup even if
     // the faulty uninstall deletes the separate, byte-identical installed copy.
-    checked(command(binary, home, true).arg("up").output()?)?;
-    let endpoint =
-        se_host::client::endpoint::decode_endpoint(&std::fs::read(home.join("endpoint.json"))?)?;
-    let identity = match se_proc::NativeProcessRuntime::read_process(
-        endpoint.epoch.owner.fields().machine.clone(),
-        se_proc::ProcessId(endpoint.epoch.owner.fields().pid.get()),
-    )
-    .map_err(|error| format!("read native host: {error:?}"))?
-    {
-        se_proc::ProcessRead::Present(value) => value.identity,
-        other => return Err(format!("fixture host is not live: {other:?}").into()),
-    };
-    let host = RunningHost {
-        endpoint,
-        key: Secret::new(std::fs::read(home.join("credential"))?)?,
-        identity,
-    };
+    let host = RunningHost::start(binary, home)?;
     assert!(host.live()?);
     let store = match se_store::SqliteFactory::open_reader(&f.options)? {
         Read::Present { value } => value,
@@ -245,45 +177,63 @@ fn uninstall_stops_or_refuses_the_actual_live_host() -> Check {
         !inventory.has_process_records,
         "test must exercise the real empty-inventory gap"
     );
+    let retained_head = store.info()?.head;
     drop(store);
-    let output = terminal_uninstall(&installed, home)?;
-    let printed = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let outcome: serde_json::Value = printed
-        .lines()
-        .rev()
-        .find_map(|line| serde_json::from_str(line).ok())
-        .ok_or_else(|| format!("missing actual uninstall JSON: {printed}"))?;
-    let remained_live = host.live()?;
-    if remained_live {
-        host.stop()?;
-        assert!(
-            !output.status.success(),
-            "uninstall claimed success while its native host remained live: {outcome}"
+    for json in [true, false] {
+        let output = terminal_uninstall(&installed, home, json)?;
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(host.live()?, "uninstall displaced the exact live host");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "wrong live-host refusal: {printed}"
         );
         assert!(
-            (printed.contains("se down")
-                || (printed.contains("se --home") && printed.contains(" down"))),
-            "live-host refusal omitted graceful down alternative: {outcome}"
+            printed.contains("error[state-conflict]"),
+            "lost runtime custody diagnosis: {printed}"
         );
+        assert!(
+            printed.contains("se down")
+                || (printed.contains("se --home") && printed.contains(" down")),
+            "live-host refusal omitted graceful down alternative: {printed}"
+        );
+        // On Windows stdout stays attached to the real console for native
+        // human admission; stderr independently retains the typed diagnosis.
+        #[cfg(target_os = "linux")]
+        if json {
+            let outcome: serde_json::Value = printed
+                .lines()
+                .rev()
+                .find_map(|line| serde_json::from_str(line).ok())
+                .ok_or_else(|| format!("missing actual uninstall JSON: {printed}"))?;
+            assert_eq!(outcome["code"], "state-conflict");
+        }
         assert!(
             installed.try_exists()?,
             "uninstall removed its image with a live host"
+        );
+        assert_eq!(
+            std::fs::read(&installed)?,
+            std::fs::read(binary)?,
+            "uninstall changed its image with a live host"
         );
         assert_eq!(
             std::fs::read(&record)?,
             manifest,
             "uninstall changed its installation record while the host stayed live"
         );
-    } else {
-        assert!(
-            !home.join("endpoint.json").try_exists()?,
-            "graceful uninstall left its endpoint published"
+        let outside = present(se_store::SqliteFactory::open_reader(&f.options)?)?;
+        assert_eq!(
+            outside.info()?.head,
+            retained_head,
+            "refused uninstall changed retained history"
         );
     }
+    host.stop()?;
     assert!(
         home.join("state.db").try_exists()?,
         "uninstall removed retained user history"
@@ -292,14 +242,18 @@ fn uninstall_stops_or_refuses_the_actual_live_host() -> Check {
 }
 
 #[cfg(target_os = "linux")]
-fn terminal_uninstall(image: &Path, home: &Path) -> Result<Output, Box<dyn std::error::Error>> {
+fn terminal_uninstall(
+    image: &Path,
+    home: &Path,
+    json: bool,
+) -> Result<Output, Box<dyn std::error::Error>> {
     Ok(Command::new("python3").arg("-c").arg(r#"
 import os,pty,select,signal,subprocess,sys,time
-image,home=sys.argv[1:]
+image,home,json=sys.argv[1:]
 env=os.environ.copy()
 for key in ['SE_SESSION','SE_CONFIG','SE_PROJECT','SE_LOG','SE_HOME','CLAUDECODE','CODEX_THREAD_ID','CODEX_CI']:env.pop(key,None)
 master,slave=pty.openpty()
-args=[image,'--json','--home',home,'uninstall']
+args=[image]+(['--json'] if json=='true' else [])+['--home',home,'uninstall']
 child=subprocess.Popen(args,stdin=slave,stdout=slave,stderr=slave,env=env,start_new_session=True)
 os.close(slave)
 deadline=time.monotonic()+30
@@ -320,5 +274,145 @@ else:
 os.close(master)
 sys.stdout.buffer.write(data)
 sys.exit(child.wait(timeout=3))
-"#).arg(image).arg(home).output()?)
+"#).arg(image).arg(home).arg(json.to_string()).output()?)
+}
+
+#[cfg(windows)]
+fn terminal_uninstall(
+    image: &Path,
+    home: &Path,
+    json: bool,
+) -> Result<Output, Box<dyn std::error::Error>> {
+    let root = home.parent().ok_or("fixture root missing")?;
+    let script = root.join("runtime-console.ps1");
+    std::fs::write(&script, include_str!("support/runtime_console.ps1"))?;
+    let powershell = se_proc::windows_directory()
+        .map_err(|error| format!("native Windows directory: {error:?}"))?
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let mut run = Command::new(powershell);
+    for name in [
+        "SE_SESSION",
+        "SE_CONFIG",
+        "SE_PROJECT",
+        "SE_LOG",
+        "SE_HOME",
+        "CLAUDECODE",
+        "CODEX_THREAD_ID",
+        "CODEX_CI",
+    ] {
+        run.env_remove(name);
+    }
+    let literal = |path: &Path| -> Result<String, Box<dyn std::error::Error>> {
+        Ok(format!(
+            "'{}'",
+            path.to_str()
+                .ok_or("console path encoding")?
+                .replace('\'', "''")
+        ))
+    };
+    let invocation = format!(
+        "& ([ScriptBlock]::Create([IO.File]::ReadAllText({script}))) -Image {image} -HomePath {home} -Mode {mode} -ScriptPath {script}",
+        script = literal(&script)?,
+        image = literal(image)?,
+        home = literal(home)?,
+        mode = if json { "json" } else { "human" },
+    );
+    Ok(run
+        .args(["-NoProfile", "-NonInteractive", "-Command", &invocation])
+        .output()?)
+}
+
+/// Protects: F3 on both native platforms — init while a real host holds the writer lease names down/init, preserves identities and history, then the same requested project initializes after graceful down.
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
+    use se_store::{ReadStore, StoreFactory};
+    let _serial = RUNTIME
+        .lock()
+        .map_err(|_| "runtime fixture mutex poisoned")?;
+    se_proc::initialize_file_creation_owner()?;
+    let f = Fixture::new()?;
+    let home = &f.options.state_directory;
+    let image = f
+        .home
+        .join(if cfg!(windows) { "f3-se.exe" } else { "f3-se" });
+    std::fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
+    let first = f.home.join("original project");
+    let second = f.home.join("requested project");
+    std::fs::create_dir(&first)?;
+    std::fs::create_dir(&second)?;
+    let initialized = checked(
+        command(&image, home, true)
+            .arg("init")
+            .arg("--repo")
+            .arg(&first)
+            .args(["--name", "before-host"])
+            .output()?,
+    )?;
+    let host = RunningHost::start(&image, home)?;
+    let retained = ["machine.json", "credential", "endpoint.json"]
+        .map(|name| std::fs::read(home.join(name)).map(|bytes| (name, bytes)))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    let reader = present(se_store::SqliteFactory::open_reader(&f.options)?)?;
+    let before = reader.info()?;
+    for json in [true, false] {
+        let output = command(&image, home, json)
+            .arg("init")
+            .arg("--repo")
+            .arg(&second)
+            .args(["--name", "after-host"])
+            .output()?;
+        assert_eq!(output.status.code(), Some(1));
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.contains("error[state-conflict]"),
+            "wrong F3 refusal: {diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("se down") && diagnostic.contains("se init"),
+            "missing F3 down/init alternative: {diagnostic}"
+        );
+        if json {
+            assert_eq!(value(&output)?["code"], "state-conflict");
+        } else {
+            assert!(output.stdout.is_empty());
+        }
+        assert!(host.live()?, "refused init displaced the exact live host");
+        assert_eq!(
+            reader.info()?.head,
+            before.head,
+            "refused init wrote durable events"
+        );
+        for (name, bytes) in &retained {
+            assert_eq!(
+                std::fs::read(home.join(name))?,
+                *bytes,
+                "refused init changed {name}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&second)?.count(),
+            0,
+            "refused init changed the repository"
+        );
+    }
+    host.stop()?;
+    let retried = checked(
+        command(&image, home, true)
+            .arg("init")
+            .arg("--repo")
+            .arg(&second)
+            .args(["--name", "after-host"])
+            .output()?,
+    )?;
+    assert_ne!(retried["project"]["id"], initialized["project"]["id"]);
+    assert_eq!(retried["project"]["name"], "after-host");
+    assert_ne!(
+        reader.info()?.head,
+        before.head,
+        "legal init retry did not write the new project"
+    );
+    assert!(home.join("state.db").try_exists()?);
+    Ok(())
 }
