@@ -341,16 +341,22 @@ class LinuxInstaller(unittest.TestCase):
                 before = contents(home)
                 tools = self.root / ("profile-fault-tools-" + str(concurrent_edit))
                 tools.mkdir()
-                shim = tools / "mv"
+                # Profiles are appended in place, preserving their inode and
+                # metadata. Fail at the ensuing flush after both real appends.
+                shim = tools / "sync"
                 shim.write_text(
-                    '#!/bin/sh\nfor destination do :; done\ncase "$destination" in */.bash_profile)\n'
+                    '#!/bin/sh\ncase "$1" in */.bash_profile)\n'
+                    '  if [ -e "$JUDGE_PROFILE_FAULT" ]; then exec /usr/bin/sync "$@"; fi\n'
                     '  grep -q -F "# >>> StateEngine PATH >>>" "$HOME/.profile" || exit 75\n'
+                    '  grep -q -F "# >>> StateEngine PATH >>>" "$HOME/.bash_profile" || exit 75\n'
                     '  test -f "$HOME/.local/state/stateengine/standalone-install.json" || exit 76\n'
+                    '  : > "$JUDGE_PROFILE_FAULT"\n'
                     '  printf "JUDGE-AFTER-PROFILE-PUBLICATION\\n" >&2\n'
                     + ('  printf "# concurrent foreign edit\\n" >> "$HOME/.profile"\n' if concurrent_edit else '')
-                    + '  exit 78;;\nesac\nexec /usr/bin/mv "$@"\n')
+                    + '  exit 78;;\nesac\nexec /usr/bin/sync "$@"\n')
                 shim.chmod(0o700)
                 argv, environment = self.command(home)
+                environment["JUDGE_PROFILE_FAULT"] = str(tools / "fired")
                 environment["PATH"] = str(tools) + ":" + environment["PATH"]
                 run = subprocess.run(argv, env=environment, capture_output=True, timeout=30)
                 self.assertNotEqual(run.returncode, 0)
