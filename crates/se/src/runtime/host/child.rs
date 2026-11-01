@@ -72,6 +72,16 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         configuration != home.join("config.toml"),
     )?;
     config.value.validate()?;
+    let cores = match std::thread::available_parallelism() {
+        Ok(cores) => Some(cores),
+        Err(error) => {
+            eprintln!(
+                "host core count unavailable: {error}; using one foreground and one maintenance slot"
+            );
+            None
+        }
+    };
+    let blocking_jobs = config.value.runtime.resolve_blocking_jobs(cores)?;
     let identity = se_proc::current_runtime_identity(bootstrap.identity().machine.clone())
         .map_err(native_error)?;
     if identity.process != *bootstrap.identity() {
@@ -98,7 +108,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
     // Standalone owns one runtime; all library methods below use this Handle.
     let engine = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .max_blocking_threads(2)
+        .max_blocking_threads(blocking_jobs.get().max(2) as usize)
         .build()
         .map_err(|error| {
             se_core::scope::unreadable("standalone host runtime", &error.to_string())
@@ -130,7 +140,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
                     session_notice_ids: positive(128)?,
                     aggregate_notice_ids: positive(4096)?,
                     response_bytes: positive(1024 * 1024)?,
-                    blocking_jobs: positive(2)?,
+                    blocking_jobs,
                 },
             },
             engine.handle().clone(),

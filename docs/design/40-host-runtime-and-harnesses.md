@@ -322,8 +322,8 @@ per file, including SQLite WAL/SHM, under section 70.
 | --- | --- | --- |
 | Session state/mail/control, IPC/HTTP, vendor JSON framing | Supplied executor tasks, one coordinator/session | Section-80 session/mail rows, no thread/session |
 | SQLite writes | One named se-writer OS thread, se-store owns it | Blocks on bounded receive; store lines, no shared-pool occupation |
-| Core planning and typed continuations, foreground DB reads, transcript chunks, config filesystem, CreateProcess/native finite steps | Shared blocking pool, at most two admitted jobs; planning and continuation each release their permit before any async wait | Never run sync file reads/CreateProcess on standalone executor; finite work only |
-| Whole-copy backup / close_clean | One background/maintenance blocking slot for its entire synchronous call | At most one; reserve the other slot for foreground work; not a per-step fake async call |
+| Core planning and typed continuations, foreground DB reads, transcript chunks, config filesystem, CreateProcess/native finite steps | Shared blocking pool, configured 2–8 admitted jobs and capped by available native cores, or the legacy one-foreground/one-maintenance split for one/unknown cores; planning and continuation each release their permit before any async wait | Never run sync file reads/CreateProcess on standalone executor; finite work only |
+| Whole-copy backup / close_clean | One background/maintenance blocking slot for its entire synchronous call | At most one; reserve the remaining capacity for foreground work; not a per-step fake async call |
 | Unix process and watch events | Existing Tokio AsyncFd/kqueue reactor via ReactorAdapter implementing NativeReactor | se-proc HostConfig.reactor supplied; no Unix collector thread |
 | Windows native job/process completion | One existing se-proc IOCP collector thread per host | Section-80 custody row includes collector; no RegisterWait pool or second collector |
 | Windows provider stdin/out/err | Overlapped named-pipe host ends and IOCP readiness, bounded buffers | No tokio::fs::File/blocking read wrapper or thread per pipe; detailed below |
@@ -401,8 +401,14 @@ No extra uncounted watcher thread is reserved. CreateProcess and transcript
 native events outside the pool. A stuck kernel call retains its slot and custody,
 reports pending and cannot be killed by terminating a host thread.
 
-The two blocking slots use a common admission arbiter: one reserved foreground,
-one eligible background. Only one backup/maintenance job may run, including
+The bounded blocking slots use a common admission arbiter. Standalone resolves
+`runtime.blocking_jobs` against available native cores, within 2–8; its runtime
+thread cap and job permits use that same effective capacity. On a one-core
+host or unavailable native core observation, preserve the original single
+foreground slot and independent maintenance slot, on at most two blocking
+threads; core discovery never prevents startup. Embedded hosts supply their
+own matching runtime and HostLimits cap. Only one
+backup/maintenance job may run, including
 across generations; cancellation does not free its permit until it actually ends.
 Drain cancels and joins backup before queueing close_clean on that background
 slot. Store worker join is awaited without blocking the executor, after native
@@ -1531,8 +1537,11 @@ E2 uses the unchanged per-check B2 ceiling and real FULL set on Windows with
 Defender, both newly initialized and existing stores, and memory after a real task. Historical FULL commit tails require actual first-bind measurement, not an
 optimistic allocation. Re-adoption, Codex reconnect, backup and optional Atlas run
 after the initial real response, with per-route Recovering status; this does not
-call every prior agent ready. One SQLite writer and at most two bounded blocking
-jobs remain, with one foreground slot available during background work.
+call every prior agent ready. One SQLite writer remains; the bounded blocking
+job cap is 2–8 and core-sized, with the original foreground/maintenance split
+as the one/unknown-core fallback. At least one foreground slot remains available
+during background work. Quiesce joins the full configured capacity, including jobs
+whose callers have timed out; adding capacity never releases custody early.
 
 B3's embedded zero persistent-process observation applies when no agent is live.
 Default SE Code exit with live agents instead creates one detached successor;
