@@ -10,7 +10,9 @@
 mod windows_directory;
 #[cfg(windows)]
 pub use windows_directory::windows_directory;
+mod canonical_path;
 mod checkpoint;
+pub use canonical_path::canonicalize_path;
 pub use checkpoint::{
     Checkpoint, CheckpointError, CheckpointKind, CheckpointPrincipal, CheckpointSource,
     HistoricalCheckpoint, RootPublication, decode_checkpoint, encode_checkpoint,

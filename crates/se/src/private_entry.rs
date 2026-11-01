@@ -52,7 +52,7 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
         })?;
     let plan = &handoff.installation;
     plan.validate()?;
-    let canonical_image = std::fs::canonicalize(&helper.parent().image).map_err(|error| {
+    let canonical_image = se_proc::canonicalize_path(&helper.parent().image).map_err(|error| {
         SeError::invalid(
             "private uninstall image",
             "the pinned original image's current name",
@@ -61,7 +61,7 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
     })?;
     let mut owns_image = false;
     for file in &plan.files {
-        match std::fs::canonicalize(&file.path) {
+        match se_proc::canonicalize_path(&file.path) {
             Ok(path) => owns_image |= path == canonical_image,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(error) => {

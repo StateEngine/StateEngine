@@ -20,7 +20,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::{Child, Command},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 type Check = Result<(), Box<dyn std::error::Error>>;
 const CHILD: &str = "machine_identity_child";
@@ -28,11 +28,28 @@ struct Home(PathBuf);
 impl Home {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         se_proc::initialize_file_creation_owner()?;
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let root =
-            std::env::temp_dir().join(format!("otto-machine-{}-{nonce}", std::process::id()));
-        drop(NativeStateFiles::create(&root.join("state"))?);
-        Ok(Self(root))
+        let root = loop {
+            let candidate = std::env::temp_dir().join(format!(
+                "otto-machine-{}-{}",
+                std::process::id(),
+                uuid::Uuid::new_v4()
+            ));
+            let mut builder = fs::DirBuilder::new();
+            let directory = builder.recursive(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                directory.mode(0o700);
+            }
+            match directory.create(&candidate) {
+                Ok(()) => break candidate,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        };
+        let home = Self(root);
+        drop(NativeStateFiles::create(&home.state())?);
+        Ok(home)
     }
     fn state(&self) -> PathBuf {
         self.0.join("state")

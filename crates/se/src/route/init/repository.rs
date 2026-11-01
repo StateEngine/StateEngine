@@ -23,7 +23,7 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or_else(|| cx.cwd.clone());
-    let path = std::fs::canonicalize(if requested.is_absolute() {
+    let path = se_proc::canonicalize_path(if requested.is_absolute() {
         requested
     } else {
         cx.cwd.join(requested)
@@ -176,7 +176,7 @@ fn canonical_destination(path: &Path) -> Result<PathBuf> {
     let mut parent = path;
     let mut missing = Vec::new();
     loop {
-        match std::fs::canonicalize(parent) {
+        match se_proc::canonicalize_path(parent) {
             Ok(mut resolved) => {
                 for component in missing.into_iter().rev() {
                     resolved.push(component);

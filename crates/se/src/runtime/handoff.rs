@@ -56,9 +56,10 @@ impl Plan {
                 "the authenticated uninstall plan differs from the current owned record",
             ));
         }
-        let canonical = std::fs::canonicalize(image).map_err(|error| unreadable(image, error))?;
+        let canonical =
+            se_proc::canonicalize_path(image).map_err(|error| unreadable(image, error))?;
         for file in &self.installation.files {
-            match std::fs::canonicalize(&file.path) {
+            match se_proc::canonicalize_path(&file.path) {
                 Ok(path) if path == canonical => (),
                 Ok(_) => return Err(conflict(&file.path)), // parent authorizes only after every other asset is absent.
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),

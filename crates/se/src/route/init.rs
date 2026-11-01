@@ -150,7 +150,25 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
         setup::Setup::Present(reader) => Some(reader.info().map_err(|e| store_error(&e))?.id),
         setup::Setup::Absent(_) => None,
     };
-    let mut lease=DirectLease::acquire(files,&lock,LeaseIdentity{store:existing_store,generation:1,mode:LeaseMode::DirectClient}).map_err(|e|store_error(&e))?.ok_or_else(||scope::unreadable("setup writer","the live host holds the writer lease; finish setup through its authenticated coordinator"))?;
+    let mut lease = DirectLease::acquire(
+        files,
+        &lock,
+        LeaseIdentity {
+            store: existing_store,
+            generation: 1,
+            mode: LeaseMode::DirectClient,
+        },
+    )
+    .map_err(|e| store_error(&e))?
+    .ok_or_else(|| {
+        SeError::new(se_types::Detail::StateConflict(
+            se_types::details::StateConflict {
+                subject: "setup writer".into(),
+                reason: "the live host holds the writer lease".into(),
+                next_step: "Run se down with the same --home, then retry se init".into(),
+            },
+        ))
+    })?;
     let options = StoreOptions {
         state_directory: cx.home.clone(),
         busy_timeout: Duration::from_millis(250),

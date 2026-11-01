@@ -121,10 +121,11 @@ pub(super) fn execute(
     let mut record = Some(record);
     let current = std::env::current_exe()
         .map_err(|error| unreadable(Path::new("running executable"), error))?;
-    let canonical = std::fs::canonicalize(&current).map_err(|error| unreadable(&current, error))?;
+    let canonical =
+        se_proc::canonicalize_path(&current).map_err(|error| unreadable(&current, error))?;
     let mut matches = Vec::new();
     for file in &plan.files {
-        match std::fs::canonicalize(&file.path) {
+        match se_proc::canonicalize_path(&file.path) {
             Ok(path) if path == canonical => matches.push(file.path.clone()),
             Ok(_) => (),
             Err(error) if error.kind() == io::ErrorKind::NotFound => (),

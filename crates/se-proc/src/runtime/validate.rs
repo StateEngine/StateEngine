@@ -67,7 +67,7 @@ pub(super) fn spec(
             "window launch requires its platform window specification",
         ));
     }
-    let cwd = std::fs::canonicalize(&spec.cwd)
+    let cwd = crate::canonicalize_path(&spec.cwd)
         .map_err(|e| native(ProcErrorCode::LaunchFailed, "resolve cwd", e))?;
     if !cwd.is_dir() {
         return Err(input("cwd", "must name a directory"));
@@ -78,7 +78,7 @@ pub(super) fn spec(
             if !root.is_absolute() {
                 return Err(input("workspace", "absolute roots required"));
             }
-            let root = std::fs::canonicalize(root)
+            let root = crate::canonicalize_path(root)
                 .map_err(|e| native(ProcErrorCode::CwdOutsideWorkspace, "resolve workspace", e))?;
             allowed |= cwd.starts_with(root);
         }

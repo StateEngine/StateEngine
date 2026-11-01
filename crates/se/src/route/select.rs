@@ -100,7 +100,7 @@ pub fn apply<R: ReadStore>(
     {
         return Ok(());
     }
-    let cwd = std::fs::canonicalize(&cx.cwd)
+    let cwd = se_proc::canonicalize_path(&cx.cwd)
         .map_err(|e| scope::unreadable("current directory", &e.to_string()))?;
     let mut candidates = Vec::new();
     for record in projects(reader, admission)? {
