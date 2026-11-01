@@ -22,13 +22,19 @@ impl HostServeExit {
     /// a disconnected stop client cannot skip transport or publication cleanup.
     /// Replies precede transport join because their channel is itself an instance.
     pub async fn finish(mut self, drain_deadline: &Deadline) -> HostShutdown {
+        // serve has already spent part of this budget joining admitted calls and
+        // delivering their replies. A caller may shorten it, never renew it.
+        let drain_deadline = self.runtime.shutdown_deadline.as_ref().map_or_else(
+            || drain_deadline.clone(),
+            |bound| drain_deadline.capped_by(bound),
+        );
         #[cfg(windows)]
         let started = std::time::Instant::now();
         #[cfg(windows)]
         trace("storage-drain-start", started, true);
         let mut errors: Vec<_> = self.failure.take().into_iter().collect();
         let mut pending: Vec<_> = errors.iter().map(ToString::to_string).collect();
-        let storage = match self.runtime.drain_storage(drain_deadline).await {
+        let storage = match self.runtime.drain_storage(&drain_deadline).await {
             Ok(report) => {
                 pending.extend(report.pending.iter().cloned());
                 if !matches!(report.backup, Read::Present { .. }) {

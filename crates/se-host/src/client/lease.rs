@@ -55,6 +55,15 @@ impl Deadline {
     pub fn at(&self) -> Instant {
         self.at
     }
+    /// Share a shutdown clock without discarding this caller's cancellation.
+    #[cfg(feature = "listener")]
+    pub(crate) fn capped_by(&self, limit: &Self) -> Self {
+        Self {
+            at: self.at.min(limit.at),
+            budget: self.budget.min(limit.budget),
+            cancelled: Arc::clone(&self.cancelled),
+        }
+    }
     pub fn stage(&self, maximum: Duration) -> Result<Self> {
         let budget = maximum.min(self.remaining()?);
         let at = Instant::now()

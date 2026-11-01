@@ -194,6 +194,32 @@ impl AdmittedExchange {
         output: Result<ExecutedCall>,
         deadline: &Deadline,
     ) -> Result<HostedConnection> {
+        self.reply_with_error(output, deadline, None).await
+    }
+    pub(crate) async fn reply_draining(
+        self,
+        output: Result<ExecutedCall>,
+        deadline: &Deadline,
+    ) -> Result<HostedConnection> {
+        match deadline.remaining() {
+            Ok(_) => self.reply(output, deadline).await,
+            Err(expired) => {
+                // Report known finish facts using the existing finite transport
+                // cleanup allowance; neither execution nor storage is renewed.
+                self.reply_with_error(output, &super::shutdown::cleanup_deadline()?, Some(expired))
+                    .await
+            }
+        }
+    }
+    async fn reply_with_error(
+        self,
+        output: Result<ExecutedCall>,
+        deadline: &Deadline,
+        unavailable: Option<SeError>,
+    ) -> Result<HostedConnection> {
+        // An execution error already carries its authoritative outcome. Only a
+        // completed output needs conversion when the shutdown budget expired.
+        let unavailable = output.as_ref().ok().and(unavailable);
         let mut connection = self.connection;
         let committed = output
             .as_ref()
@@ -263,9 +289,10 @@ impl AdmittedExchange {
                 error
             }
         };
-        let result = match result {
-            Ok(result) => result,
-            Err(error) => IpcResult::Error(envelope(&response_error(error))?),
+        let result = match (result, unavailable) {
+            (_, Some(expired)) => IpcResult::Error(envelope(&response_error(expired))?),
+            (Ok(result), None) => result,
+            (Err(error), None) => IpcResult::Error(envelope(&response_error(error))?),
         };
         let mut response = IpcResponse {
             version: se_types::API_VERSION,

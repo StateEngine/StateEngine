@@ -65,7 +65,7 @@ impl HostedRuntime {
             Err(error) => return ended(self, listener, Some(error)),
         };
         let runtime = self.execution.blocking.handle();
-        let (shutdown, cancelled) = watch::channel(false);
+        let (shutdown, cancelled) = watch::channel(None);
         let mut tasks = JoinSet::new();
         let mut accept_backoff = std::time::Duration::from_millis(1);
         let mut accept_retry_at = tokio::time::Instant::now();
@@ -75,10 +75,7 @@ impl HostedRuntime {
                     accept_backoff = std::time::Duration::from_millis(1);
                     let router = router.clone();
                     let cancelled = cancelled.clone();
-                    tasks.spawn_on(
-                        until_cancelled(connection(router, stream), cancelled),
-                        &runtime,
-                    );
+                    tasks.spawn_on(connection(router, stream, cancelled), &runtime);
                 }
                 Event::Accepted(Err(error)) if transient_accept(&error) => {
                     self.failed_connection(error);
@@ -110,9 +107,17 @@ impl HostedRuntime {
         };
         outcome.runtime.fenced.store(true, Ordering::Release);
         outcome.runtime.phase = crate::HostPhase::Draining;
-        // The stop task has already returned its control channel. It is not one
-        // of the cancelled tasks, so the shutdown coordinator can still reply.
-        shutdown.send_replace(true);
+        // Waiting for the next request is cancellable; an admitted request owns
+        // its execution and reply until completion. Charge that join against the
+        // same shutdown budget used by storage drain, rather than renewing it.
+        outcome.runtime.shutdown_deadline = match options(CALL_TIMEOUT) {
+            Ok(deadline) => Some(deadline),
+            Err(error) => {
+                outcome.failure.get_or_insert(error);
+                None
+            }
+        };
+        shutdown.send_replace(outcome.runtime.shutdown_deadline.clone());
         while let Some(joined) = tasks.join_next().await {
             match joined {
                 Ok(Ok(ConnectionEnd::Stop(stop))) => {
@@ -139,7 +144,13 @@ impl HostedRuntime {
                             },
                         },
                     };
-                    match options(CALL_TIMEOUT) {
+                    match outcome
+                        .runtime
+                        .shutdown_deadline
+                        .as_ref()
+                        .cloned()
+                        .map_or_else(|| options(CALL_TIMEOUT), Ok)
+                    {
                         Ok(deadline) => {
                             if let Err(error) = stop.reply(&reply, &deadline).await {
                                 outcome.runtime.failed_connection(error);
@@ -203,41 +214,60 @@ async fn event(
     })
     .await
 }
-async fn until_cancelled(
-    work: impl Future<Output = Result<ConnectionEnd>>,
-    mut shutdown: watch::Receiver<bool>,
-) -> Result<ConnectionEnd> {
+async fn until_shutdown<T>(
+    work: impl Future<Output = Result<T>>,
+    shutdown: &mut watch::Receiver<Option<Deadline>>,
+) -> Result<Option<T>> {
+    if shutdown.borrow().is_some() {
+        return Ok(None);
+    }
     let mut work = pin!(work);
     let mut cancelled = pin!(shutdown.changed());
     poll_fn(|cx| {
         if cancelled.as_mut().poll(cx).is_ready() {
-            return Poll::Ready(Ok(ConnectionEnd::Cancelled));
+            return Poll::Ready(Ok(None));
         }
-        work.as_mut().poll(cx)
+        work.as_mut().poll(cx).map(|result| result.map(Some))
     })
     .await
 }
 async fn connection(
     router: HostedRouter,
     stream: crate::AcceptedIpcStream,
+    mut shutdown: watch::Receiver<Option<Deadline>>,
 ) -> Result<ConnectionEnd> {
-    let mut connection = match router
-        .authenticate_stream(stream, &options(HELLO_TIMEOUT)?)
-        .await?
-    {
+    let hello = options(HELLO_TIMEOUT)?;
+    let Some(peer) =
+        until_shutdown(router.authenticate_stream(stream, &hello), &mut shutdown).await?
+    else {
+        return Ok(ConnectionEnd::Cancelled);
+    };
+    let mut connection = match peer {
         AcceptedPeer::Stop(stop) => return Ok(ConnectionEnd::Stop(stop)),
         AcceptedPeer::Operation(connection) => *connection,
     };
     loop {
         let idle = Deadline::idle()?;
-        let Some((mut exchange, deadline)) = router.read_call_idle(connection, &idle).await? else {
+        let Some(next) =
+            until_shutdown(router.read_call_idle(connection, &idle), &mut shutdown).await?
+        else {
+            return Ok(ConnectionEnd::Cancelled);
+        };
+        let Some((mut exchange, deadline)) = next else {
             return Ok(ConnectionEnd::Closed);
         };
         let output = match exchange.take_call() {
             Ok(call) => router.execute_call(call, &deadline).await,
             Err(error) => Err(error),
         };
-        connection = exchange.reply(output, &deadline).await?;
+        // An expired execution clock may already carry the known-commit error.
+        // Keep the channel alive to deliver it within the shutdown's remaining
+        // budget instead of losing that fact to an expired request clock.
+        let draining = shutdown.borrow().clone();
+        connection = match draining {
+            Some(bound) => exchange.reply_draining(output, &bound).await?,
+            None => exchange.reply(output, &deadline).await?,
+        };
     }
 }
 fn options(timeout: std::time::Duration) -> Result<Deadline> {

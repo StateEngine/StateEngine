@@ -1,6 +1,7 @@
 //! Private standalone/embedded entry preparation. Installed CLI creates the
 //! runtime only after initialization; embedded callers supply their own Handle.
 use super::{files::Files, *};
+use crate::client::lease::Deadline;
 use se_core::store_error::store_error;
 use se_store::{HostStore, ReadStore, RuntimeLease, StateFiles, StoreFactory, WriterOwner};
 use se_types::{Generation, HostEpoch, Read, Result, SeError};
@@ -54,6 +55,7 @@ pub struct HostedRuntime {
     pub(crate) drained: Option<se_store::SqliteHost>,
     pub(crate) flush: Option<se_store::FlushReport>,
     pub(crate) storage_report: Option<StorageDrainReport>,
+    pub(crate) shutdown_deadline: Option<Deadline>,
     pub(crate) lease: Arc<HostLease>,
     pub(crate) epoch: HostEpoch,
     pub(crate) phase: crate::HostPhase,
@@ -280,6 +282,7 @@ fn prepare(
         drained: None,
         flush: None,
         storage_report: None,
+        shutdown_deadline: None,
         lease,
         epoch: options.epoch,
         phase: crate::HostPhase::Prepared,
