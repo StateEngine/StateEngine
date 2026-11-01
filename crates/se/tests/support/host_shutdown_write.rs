@@ -20,7 +20,25 @@ pub fn control() -> Check {
 fn run(serial: bool) -> Check {
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
     println!("shutdown_write fixture={}", f.home.display());
-    let (direct, lease) = f.direct()?;
+    let (mut direct, lease) = f.direct()?;
+    let session = SessionId::from_parts(1_700_000_000_000 + serial(), [82; 10])?;
+    let conversation = ProviderSessionId::new("shutdown-write-session")?;
+    let session_credential = secret()?;
+    let transcript = f.home.join("provider.jsonl");
+    std::fs::write(&transcript, b"")?;
+    let pin = se_proc::NativeSourcePin::open(&transcript)?.ok_or("session source absent")?;
+    prepare_session(
+        &f,
+        &mut direct,
+        &lease,
+        SessionSetup {
+            session: &session,
+            conversation: &conversation,
+            source: record(83)?,
+            pin: &pin,
+            credential: &session_credential,
+        },
+    )?;
     drop(direct);
     drop(lease);
     let machine = route::identity::ensure_machine_identity(&f.options.state_directory)?;
@@ -69,7 +87,7 @@ fn run(serial: bool) -> Check {
         let (send, sending) = std::sync::mpsc::sync_channel(1);
         let (replied, mut reply) = tokio::sync::oneshot::channel();
         let write_endpoint = endpoint.clone();
-        let write_credential = copy_secret(&credential)?;
+        let write_credential = copy_secret(&session_credential)?;
         let call = ipc::operation(
             se_core::ops::AnyOp::MessageSend(se_core::ops::MessageSend {
                 to: f.b.as_str().into(),
@@ -89,7 +107,7 @@ fn run(serial: bool) -> Check {
             let result = (|| -> se_types::Result<se_host::OperationOutput> {
                 let mut client = BlockingIpcClient::connect_authenticated(
                     &write_endpoint,
-                    ClientCredential::Machine(write_credential),
+                    ClientCredential::Session(write_credential),
                     positive(1024 * 1024)
                         .map_err(|e| se_core::scope::unreadable("reply budget", &e.to_string()))?,
                     &options(),
@@ -206,8 +224,7 @@ fn run(serial: bool) -> Check {
         let committed = loop {
             until.remaining()?;
             let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
-            let receipt =
-                snapshot.operation_receipt(Actor::Human(f.owner.clone()), key(WRITE_KEY)?)?;
+            let receipt = snapshot.operation_receipt(Actor::Agent(f.a.clone()), key(WRITE_KEY)?)?;
             snapshot.close()?;
             match receipt {
                 Read::Present { value } => break value,
@@ -244,7 +261,7 @@ fn run(serial: bool) -> Check {
         let reader = present(SqliteFactory::open_reader(&f.options)?)?;
         let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
         let receipt =
-            present(snapshot.operation_receipt(Actor::Human(f.owner.clone()), key(WRITE_KEY)?)?)?;
+            present(snapshot.operation_receipt(Actor::Agent(f.a.clone()), key(WRITE_KEY)?)?)?;
         assert_eq!(
             receipt.events, committed.events,
             "shutdown changed the original write identity"
