@@ -21,6 +21,22 @@ pub fn check() -> Check {
     let initialized = se_host::initialize_host_process()?;
     let f = Fixture::new()?;
     let (mut direct, lease) = f.direct()?;
+    direct.append(
+        f.batch(
+            f.owner_project(),
+            None,
+            vec![EventBody::PrincipalRegistered {
+                principal: Actor::Human(f.owner.clone()),
+                kind: PrincipalKind::Human,
+                owner: f.owner.clone(),
+                created_by: None,
+                name: "Owner".into(),
+                role: "owner".into(),
+                expected: Expected::Absent,
+            }],
+        )?,
+        lease.as_ref(),
+    )?;
     let agents: Vec<_> = (0..CLIENTS).map(|_| agent()).collect::<Result<_, _>>()?;
     for (index, agent) in agents.iter().enumerate() {
         direct.append(
