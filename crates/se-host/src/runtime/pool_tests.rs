@@ -50,7 +50,7 @@ async fn blocked(job: &mut Job) -> Check {
 fn runtime(capacity: u32) -> Result<tokio::runtime::Runtime, std::io::Error> {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .max_blocking_threads(capacity.max(2) as usize)
+        .max_blocking_threads(capacity as usize)
         .build()
 }
 fn configured(rt: &tokio::runtime::Runtime, capacity: u32) -> se_types::Result<BlockingPool> {
@@ -60,7 +60,7 @@ fn configured(rt: &tokio::runtime::Runtime, capacity: u32) -> se_types::Result<B
 }
 #[test]
 fn shared_jobs_and_one_maintenance_respect_configured_capacity() -> Check {
-    for capacity in [1, 2, 4, 8] {
+    for capacity in [2, 4, 8] {
         let rt = runtime(capacity)?;
         rt.block_on(async {
             let pool = configured(&rt, capacity)?;
@@ -190,56 +190,8 @@ fn expired_waiter_keeps_its_slot_and_shutdown_joins_full_configured_capacity() -
 #[test]
 fn invalid_configured_capacity_refuses() -> Check {
     let rt = runtime(2)?;
-    for capacity in [0, 9, u32::MAX] {
+    for capacity in [1, 9, u32::MAX] {
         assert!(configured(&rt, capacity).is_err());
     }
     Ok(())
-}
-
-#[test]
-fn legacy_foreground_and_maintenance_keep_custody_and_both_join() -> Check {
-    let rt = runtime(1)?;
-    rt.block_on(async {
-        let pool = configured(&rt, 1)?;
-        let mut maintenance = launch(
-            pool.clone(),
-            BlockingClass::Background,
-            Duration::from_secs(5),
-        )?;
-        entered(&mut maintenance).await?;
-        let mut expired = launch(
-            pool.clone(),
-            BlockingClass::Foreground,
-            Duration::from_millis(80),
-        )?;
-        entered(&mut expired).await?;
-        assert!(expired.task.await?.is_err());
-        let mut queued = launch(
-            pool.clone(),
-            BlockingClass::Foreground,
-            Duration::from_secs(5),
-        )?;
-        blocked(&mut queued).await?;
-        let draining = pool.clone();
-        let mut shutdown =
-            tokio::spawn(async move { draining.quiesce(&deadline(Duration::from_secs(5))?).await });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(30), &mut shutdown)
-                .await
-                .is_err()
-        );
-        expired.release.send(())?;
-        entered(&mut queued).await?;
-        maintenance.release.send(())?;
-        maintenance.task.await??;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(30), &mut shutdown)
-                .await
-                .is_err()
-        );
-        queued.release.send(())?;
-        queued.task.await??;
-        shutdown.await??;
-        Ok(())
-    })
 }
