@@ -423,9 +423,9 @@ impl PendingIpcHandshake {
 fn capacity_error(reason: &str) -> SeError {
     SeError::new(se_types::Detail::StoreBusy(se_types::details::StoreBusy {
         waited_ms: 0,
-            operation: None,
-            key: None,
-            natural_events: None,
+        operation: None,
+        key: None,
+        natural_events: None,
         reason: reason.into(),
         next_step: "Close an existing connection or wait for a bounded handshake to expire, then retry the original request key.".into(),
     }))
