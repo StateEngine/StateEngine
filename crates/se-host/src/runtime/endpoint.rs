@@ -449,6 +449,12 @@ impl HostedRuntime {
                     &record.address,
                     &bind_deadline,
                 )?;
+                se_proc::native_ipc::publish_image_cache(
+                    &directory,
+                    image_sha256,
+                    &bind_deadline.native_bound(),
+                )
+                .map_err(crate::client::lease::native_error)?;
                 let listener =
                     IpcListener::bind_with_limits(record.clone(), runtime, slots, &limits)
                         .map_err(|error| {

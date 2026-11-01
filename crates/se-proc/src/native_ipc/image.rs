@@ -9,17 +9,18 @@ use std::{
     collections::VecDeque,
     fs::File,
     sync::{Mutex, OnceLock},
-    time::SystemTime,
+    time::UNIX_EPOCH,
 };
-#[derive(Clone, Eq, PartialEq)]
-struct ImageKey {
+#[derive(Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ImageKey {
     identity: Vec<u8>,
-    modified: SystemTime,
+    modified: (bool, u64, u32),
     size: u64,
 }
 type Cache = VecDeque<(ImageKey, Sha256)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
-fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<ImageKey> {
+pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<ImageKey> {
     #[cfg(unix)]
     let identity = {
         use std::os::unix::fs::MetadataExt;
@@ -56,9 +57,17 @@ fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<ImageKey> {
     let _ = file;
     Ok(ImageKey {
         identity,
-        modified: metadata
+        modified: match metadata
             .modified()
-            .map_err(|e| error("read executable cache modification time", e))?,
+            .map_err(|e| error("read executable cache modification time", e))?
+            .duration_since(UNIX_EPOCH)
+        {
+            Ok(value) => (false, value.as_secs(), value.subsec_nanos()),
+            Err(error) => {
+                let value = error.duration();
+                (true, value.as_secs(), value.subsec_nanos())
+            }
+        },
         size: metadata.len(),
     })
 }
@@ -171,4 +180,23 @@ pub(super) fn hash_image(mut file: std::fs::File, bound: &IpcIoBound) -> IpcNati
     }
     cache.push_back((stamp, digest));
     Ok(digest)
+}
+
+/// Populate only an absent key. An already-observed process-local proof wins
+/// over a persisted hint, including a contradictory protected cache entry.
+pub(super) fn remember(stamp: ImageKey, digest: Sha256) -> IpcNativeResult<()> {
+    let mut cache = cache().lock().map_err(|_| {
+        refuse(
+            IpcNativeErrorCode::Unreadable,
+            "executable cache poisoned; restart the host",
+        )
+    })?;
+    if cache.iter().any(|(stored, _)| *stored == stamp) {
+        return Ok(());
+    }
+    if cache.len() == 64 {
+        cache.pop_front();
+    }
+    cache.push_back((stamp, digest));
+    Ok(())
 }

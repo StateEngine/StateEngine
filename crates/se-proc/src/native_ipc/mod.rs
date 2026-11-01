@@ -13,6 +13,8 @@ use std::{
 
 mod image;
 use image::hash_image;
+mod image_cache;
+pub use image_cache::{ImageCacheRead, publish_image_cache, restore_image_cache};
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
