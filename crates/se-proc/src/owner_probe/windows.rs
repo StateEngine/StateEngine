@@ -50,6 +50,31 @@ fn console(which: STD_HANDLE) -> Result<bool> {
 fn parents() -> Result<BTreeMap<u32, u32>> {
     crate::windows_native::parents().map_err(|e| native(e.operation, e.source))
 }
+fn snapshot(value: &mut Option<BTreeMap<u32, u32>>) -> Result<&BTreeMap<u32, u32>> {
+    if value.is_none() {
+        *value = Some(parents()?);
+    }
+    value
+        .as_ref()
+        .ok_or_else(|| refuse("read native ancestry", "native snapshot unavailable"))
+}
+fn parent(
+    pid: ProcessId,
+    process: &OwnedHandle,
+    fallback: &mut Option<BTreeMap<u32, u32>>,
+) -> Result<u32> {
+    if let Some(value) = crate::windows_native::parent(process.as_raw_handle(), pid.0)
+        .map_err(|e| native(e.operation, e.source))?
+    {
+        return Ok(value);
+    }
+    snapshot(fallback)?.get(&pid.0).copied().ok_or_else(|| {
+        refuse(
+            "read native ancestry",
+            "live ancestor missing from snapshot",
+        )
+    })
+}
 fn open(pid: ProcessId) -> Result<Option<OwnedHandle>> {
     // SAFETY: query/synchronize rights on a numeric ancestor selector; no mutation or inheritance.
     let raw = unsafe {
@@ -102,7 +127,7 @@ pub(super) fn observe(
         ));
     }
     let user = owner(&target_pin)?;
-    let snapshot = parents()?;
+    let mut fallback = None;
     let mut pid = target;
     let mut ancestry: Vec<(ProcessStamp, OwnedHandle)> = Vec::new();
     let mut exited_creator: Option<(ProcessStamp, OwnedHandle)> = None;
@@ -145,7 +170,7 @@ pub(super) fn observe(
                             "unopenable ancestor chain reaches a recorded agent root PID; birth cannot be verified",
                         ));
                     }
-                    let Some(parent) = snapshot.get(&unqueried) else {
+                    let Some(parent) = snapshot(&mut fallback)?.get(&unqueried) else {
                         break;
                     };
                     unqueried = *parent;
@@ -188,12 +213,7 @@ pub(super) fn observe(
             WAIT_TIMEOUT => (),
             _ => return Err(last("inspect native ancestor liveness")),
         }
-        let Some(parent) = snapshot.get(&pid.0).copied() else {
-            return Err(refuse(
-                "read native ancestry",
-                "live ancestor missing from snapshot",
-            ));
-        };
+        let parent = parent(pid, &process, &mut fallback)?;
         let value = stamp(pid, ProcessId(parent), &process)?;
         if let Some((child, _)) = ancestry.last()
             && let (
@@ -280,9 +300,14 @@ pub(super) fn observe(
             });
         }
     }
-    let recheck = parents()?;
+    let mut recheck = None;
     for (expected, process) in &ancestry {
-        if recheck.get(&expected.pid.0).copied() != Some(expected.parent.0) {
+        // A retained handle can still query an exited process. The former
+        // Toolhelp recheck excluded those objects; preserve that refusal here.
+        // SAFETY: retained SYNCHRONIZE handle and a nonblocking liveness query.
+        if unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } != WAIT_TIMEOUT
+            || parent(expected.pid, process, &mut recheck)? != expected.parent.0
+        {
             return Err(refuse(
                 "recheck native ancestry",
                 "ancestor exited or changed during observation",
