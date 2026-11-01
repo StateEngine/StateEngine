@@ -32,11 +32,11 @@ pub struct CliSelections {
 }
 impl CommonArgs {
     pub fn from_matches(matches: &ArgMatches) -> Result<Self> {
-        let m = deepest(matches).1;
+        let (path, m) = deepest(matches);
         let name = selected_meta(matches)?.name;
         let selections = match name {
             "project.status" => CliSelections {
-                status_all: flag(m, "all"),
+                status_all: !path.is_empty() && flag(m, "all"),
                 ..CliSelections::default()
             },
             "working_state.get" | "working_state.set" | "agent.show" => CliSelections {

@@ -60,7 +60,6 @@ pub struct HostedRuntime {
     pub(crate) fenced: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) response_bytes: std::num::NonZeroU32,
     pub(crate) limits: crate::HostLimits,
-    pub(crate) connections: Arc<tokio::sync::Semaphore>,
     pub(crate) state_directory: PathBuf,
     pub(crate) owner: se_types::HumanId,
     pub(crate) kind: crate::HostKind,
@@ -240,6 +239,8 @@ fn prepare(
     )
     .map_err(|e| store_error(&e))?;
     deadline.remaining()?;
+    let pending_writes =
+        super::failure::PendingWrites::new(options.writer.maximum_requests.get() as usize);
     let writer = host
         .start_writer(options.writer, lease.clone())
         .map_err(|e| store_error(&e))?;
@@ -248,6 +249,7 @@ fn prepare(
         writer: writer.client(),
         blocking,
         generation,
+        pending_writes,
     };
     Ok(HostedRuntime {
         execution,
@@ -265,9 +267,6 @@ fn prepare(
         fenced: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         sources: TranscriptBindings::new(options.limits.sessions.get() as usize),
         response_bytes: options.limits.response_bytes,
-        connections: Arc::new(tokio::sync::Semaphore::new(
-            options.limits.active_connections.get() as usize,
-        )),
         limits: options.limits,
         state_directory: options.state_directory,
         owner: owner.clone(),

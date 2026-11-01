@@ -23,6 +23,30 @@ impl HostedListener {
         self.listener.accept(cancelled).await
     }
 
+    pub(crate) async fn finish_transport(
+        self,
+        blocking: &BlockingPool,
+    ) -> (Result<()>, Result<()>) {
+        let Self {
+            listener,
+            publication,
+        } = self;
+        let closed = match super::shutdown::cleanup_deadline() {
+            Ok(bound) => listener.close_joined(blocking, &bound).await,
+            Err(error) => Err(error),
+        };
+        // Admission is fenced and tasks joined. Even failed native close must
+        // attempt compare-and-remove; its error retains any pending reservation.
+        let retired = match super::shutdown::cleanup_deadline() {
+            Ok(bound) => {
+                RetainedEndpoint { publication }
+                    .retire(blocking, &bound)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        (closed, retired)
+    }
     pub fn endpoint(&self) -> &EndpointRecord {
         &self.publication.record
     }
@@ -58,6 +82,7 @@ pub(crate) struct EndpointPublication {
 impl EndpointPublication {
     fn publish(lease: Arc<HostLease>, directory: PathBuf, record: EndpointRecord) -> Result<Self> {
         let bytes = codec::encode_endpoint(&record)?;
+        let path = directory.join("endpoint.json");
         let staged = lease
             .files()
             .create_staging(&directory)
@@ -68,7 +93,6 @@ impl EndpointPublication {
         file.sync_all()
             .map_err(|e| io_error("sync staged endpoint", e))?;
         drop(file);
-        let path = directory.join("endpoint.json");
         lease
             .files()
             .publish_no_replace(&staged.path, &path)
@@ -80,6 +104,65 @@ impl EndpointPublication {
         };
         published.verify()?;
         Ok(published)
+    }
+    fn retire_stale(
+        lease: &HostLease,
+        directory: &std::path::Path,
+        expected_address: &crate::IpcEndpoint,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<()> {
+        let path = directory.join("endpoint.json");
+        let previous = match lease.files().readback(&path).map_err(|e| store_error(&e))? {
+            Read::Absent { .. } => None,
+            Read::Present { value: mut prior } => {
+                let mut bytes = Vec::new();
+                (&mut prior)
+                    .take(crate::client::wire::MAX_ENDPOINT_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| io_error("read stale endpoint", e))?;
+                let record = codec::decode_endpoint(&bytes)?;
+                if &record.address != expected_address {
+                    return Err(SeError::invalid(
+                        "stale endpoint",
+                        "the exact native address for this exclusively leased state directory",
+                    ));
+                }
+                Some(bytes)
+            }
+            Read::Unreadable { reason, .. } => {
+                return Err(se_core::scope::unreadable("stale endpoint", &reason));
+            }
+            Read::Unknown { what } => {
+                return Err(se_core::scope::unreadable("stale endpoint", &what));
+            }
+        };
+        deadline.remaining()?;
+        #[cfg(unix)]
+        {
+            let crate::IpcEndpoint::UnixSocket(socket) = expected_address else {
+                return Err(SeError::invalid(
+                    "stale endpoint",
+                    "the native Unix socket address",
+                ));
+            };
+            let bound = deadline.native_bound();
+            if let Some(stale) =
+                se_proc::native_ipc::NativeUnixSocketCleanup::observe(&socket.to_local()?, &bound)
+                    .map_err(crate::client::lease::native_error)?
+            {
+                stale
+                    .compare_remove(&bound)
+                    .map_err(crate::client::lease::native_error)?;
+            }
+        }
+        if let Some(previous) = previous {
+            use sha2::Digest;
+            lease
+                .files()
+                .remove_owned(&path, sha2::Sha256::digest(&previous).into())
+                .map_err(|e| store_error(&e))?;
+        }
+        Ok(())
     }
     fn verify(&self) -> Result<()> {
         let mut file = match self
@@ -197,11 +280,10 @@ impl HostedRuntime {
             }
             let listener = self.publish_listener(runtime, deadline).await?;
             self.phase = crate::HostPhase::Activating;
-            let permit = self.execution.blocking.admit_owned(deadline).await?;
-            Ok((listener, permit))
+            Ok(listener)
         }
         .await;
-        let (listener, permit) = match prepared {
+        let listener = match prepared {
             Ok(value) => value,
             Err(error) => {
                 bootstrap
@@ -215,15 +297,56 @@ impl HostedRuntime {
                 return Err(error);
             }
         };
-        self.execution
-            .blocking
-            .run_admitted_owned(permit, move || {
-                bootstrap.await_commit(instance).map_err(|error| {
-                    se_core::scope::unreadable("native runtime commit", &format!("{error:?}"))
-                })?;
-                Ok(())
-            })
-            .await?;
+        // Keep the uncommitted guard outside a closure until admission succeeds;
+        // dropping a rejected closure would exit before publication cleanup.
+        let admission = self.execution.blocking.admit_owned(deadline).await;
+        let (mut bootstrap, committed) = match admission {
+            Ok(permit) => {
+                self.execution
+                    .blocking
+                    .run_admitted_owned(permit, move || {
+                        let committed =
+                            bootstrap.await_commit_retained(instance).map_err(|error| {
+                                se_core::scope::unreadable(
+                                    "native runtime commit",
+                                    &format!("{error:?}"),
+                                )
+                            });
+                        Ok((bootstrap, committed))
+                    })
+                    .await?
+            }
+            Err(error) => (bootstrap, Err(error)),
+        };
+        if let Err(error) = committed {
+            let (closed, retired) = listener.finish_transport(&self.execution.blocking).await;
+            let pending: Vec<_> = closed.err().into_iter().chain(retired.err()).collect();
+            let message = format!(
+                "{error}; listener cleanup pending: {}",
+                pending
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+            let diagnostic = bootstrap.report_startup_failure("host commit cleanup", &message);
+            let error = se_core::scope::unreadable("failed host bootstrap cleanup", &message)
+                .with_cause(BootstrapCleanup {
+                    error,
+                    _pending: pending,
+                });
+            // The uncommitted guard remains here through both cleanup attempts;
+            // its ordinary fail-closed Drop may now end the child safely.
+            return Err(match diagnostic {
+                Ok(()) => error,
+                Err(failure) => se_core::scope::unreadable(
+                    "native startup diagnostic",
+                    &format!("{failure:?}; {error}"),
+                )
+                .with_cause(error),
+            });
+        }
+        drop(bootstrap);
         self.activate_listener();
         Ok(listener)
     }
@@ -251,6 +374,7 @@ impl HostedRuntime {
         let image_sha256 = self.image_sha256;
         let slots = self.execution.blocking.foreground_admission();
         let limits = self.limits.clone();
+        let bind_deadline = deadline.clone();
         let listener = self
             .execution
             .blocking
@@ -266,6 +390,12 @@ impl HostedRuntime {
                     package_version: env!("CARGO_PKG_VERSION").into(),
                     image_sha256,
                 };
+                EndpointPublication::retire_stale(
+                    &lease,
+                    &directory,
+                    &record.address,
+                    &bind_deadline,
+                )?;
                 let listener =
                     IpcListener::bind_with_limits(record.clone(), runtime, slots, &limits)?;
                 let publication = match EndpointPublication::publish(lease, directory, record) {
@@ -310,3 +440,15 @@ fn address(directory: &std::path::Path) -> Result<IpcEndpoint> {
 fn io_error(subject: &str, error: std::io::Error) -> SeError {
     se_core::scope::unreadable(subject, &error.to_string()).with_cause(error)
 }
+
+#[derive(Debug)]
+struct BootstrapCleanup {
+    error: SeError,
+    _pending: Vec<SeError>,
+}
+impl std::fmt::Display for BootstrapCleanup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(f)
+    }
+}
+impl std::error::Error for BootstrapCleanup {}

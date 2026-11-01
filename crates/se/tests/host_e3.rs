@@ -20,8 +20,12 @@ mod host_fixture;
 mod ipc;
 #[path = "support/host_presence.rs"]
 mod presence_judge;
+#[path = "support/host_recovery.rs"]
+mod recovery_judge;
 #[path = "support/host_route.rs"]
 mod route;
+#[path = "support/host_shutdown.rs"]
+mod shutdown_judge;
 #[path = "support/host_startup.rs"]
 mod startup_judge;
 use fixture::*;
@@ -207,48 +211,24 @@ fn listener_message_working_and_hook() -> Check {
             })();
             outcome.and(stop_result).map_err(|error| error.to_string())
         });
-        let mut exit = tokio::time::timeout(Duration::from_secs(20), runtime.serve(listener))
+        let exit = tokio::time::timeout(Duration::from_secs(20), runtime.serve(listener))
             .await
             .map_err(|_| "real host supervisor did not receive its bounded stop")?;
-        let report = exit.runtime.drain_storage(&bound()?).await?;
-        assert!(report.writer_joined);
-        assert!(
-            report.pending.is_empty(),
-            "storage remained pending: {:?}",
-            report.pending
-        );
-        assert!(matches!(report.backup, Read::Present { .. }));
-        let pool = exit.runtime.blocking_pool();
-        let stop = exit
-            .stop
-            .take()
-            .ok_or("supervisor lost authenticated stop")?;
-        let reply = se_host::client::endpoint::RuntimeStopReply {
-            epoch: stop.request().expected_epoch.clone(),
-            generation: stop.request().generation,
-            key: stop.request().key.clone(),
-            outcome: se_host::client::endpoint::RuntimeStopOutcome::Facts {
-                achieved: vec![se_host::client::endpoint::RuntimeStopFact::WriterJoined],
-                retained_resume: vec![],
-                pending: vec![
-                    "Native transport release is pending; SDK test asserts storage only and full lifecycle shutdown is separate".into(),
-                ],
-            },
+        assert!(exit.stop.is_some(), "supervisor lost authenticated stop");
+        // Exercise the exact production sequence used by the CLI child.
+        let outcome = exit.finish(&bound()?).await;
+        let report = match &outcome.storage {
+            Read::Present { value } => value,
+            other => return Err(format!("storage drain report missing: {other:?}").into()),
         };
-        stop.reply(&reply, &bound()?).await?;
-        // The authenticated stop channel is itself a live pipe instance. Reply
-        // with storage facts and explicit pending release, then let the real
-        // reactor drain it before asserting transport retirement and restart.
-        exit.listener
-            .close_transport(&pool, &bound()?)
-            .await?
-            .retire(&pool, &bound()?)
-            .await?;
+        assert!(report.writer_joined);
+        assert!(report.pending.is_empty(), "storage remained pending: {:?}", report.pending);
+        assert!(matches!(report.backup, Read::Present { .. }));
+        assert!(outcome.transport_closed, "transport remained open: {:?}", outcome.pending);
+        assert!(outcome.endpoint_retired, "endpoint remained published: {:?}", outcome.pending);
         client.join().map_err(|_| "real IPC client panicked")??;
-        if let Some(error) = exit.failure {
-            return Err(Box::new(error) as Box<dyn std::error::Error>);
-        }
-        drop(exit.runtime);
+        assert!(outcome.errors.is_empty(), "shared finish failed: {:?}", outcome.errors);
+        drop(outcome);
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
     verify_capture(&f, source, 1, (line.len() + 1) as u64)?;
@@ -309,11 +289,35 @@ fn main() -> Check {
     {
         return startup_judge::without_temp_client(&args);
     }
+    if args.get(1).is_some_and(|arg| arg == "--crash-sdk-child") {
+        return recovery_judge::child(&args);
+    }
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--shutdown-stop-client" || arg == "--shutdown-cancel-client")
+    {
+        return shutdown_judge::client(&args);
+    }
+    if args.get(1).is_some_and(|arg| arg == "--judge-shutdown") {
+        shutdown_judge::disconnected_stop()?;
+        shutdown_judge::pending_drain()?;
+        return shutdown_judge::cancelled_stop();
+    }
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--judge-crash-restart")
+    {
+        return recovery_judge::restart_after_crash();
+    }
     startup_judge::private_startup_refuses_missing_and_mismatched_machine()?;
     startup_judge::private_startup_serves_and_retires()?;
     listener_message_working_and_hook()?;
+    shutdown_judge::disconnected_stop()?;
+    shutdown_judge::pending_drain()?;
+    shutdown_judge::cancelled_stop()?;
+    recovery_judge::restart_after_crash()?;
     println!(
-        "host_e3: 5 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
+        "host_e3: 9 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
     );
     Ok(())
 }

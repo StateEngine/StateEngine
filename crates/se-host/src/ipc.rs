@@ -6,7 +6,7 @@ pub type BorrowedChannel<'a> = std::os::fd::BorrowedFd<'a>;
 #[cfg(windows)]
 pub type BorrowedChannel<'a> = std::os::windows::io::BorrowedHandle<'a>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IpcEndpoint {
     UnixSocket(NativePath),
     WindowsPipe(String),

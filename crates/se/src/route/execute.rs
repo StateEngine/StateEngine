@@ -101,10 +101,7 @@ pub fn dispatch(
             return Ok((*output).into());
         }
         setup::Setup::Absent(_) => {
-            return Err(scope::unreadable(
-                "state store",
-                "StateEngine is not initialized; run se init",
-            ));
+            return Err(setup::required(cx));
         }
         setup::Setup::Present(reader) => reader,
     };
@@ -186,6 +183,7 @@ pub fn dispatch(
         "initialized direct store",
     )?;
     let kernel = Kernel::new(facts()?)?.with_configuration(cx.config.value.clone())?;
+    let operation_name = op.meta().name;
     let result = direct::execute(
         &mut store,
         &lease,
@@ -198,7 +196,23 @@ pub fn dispatch(
     let closed = store.close().map_err(|e| store_error(&e));
     match result {
         Ok(outcome) => {
-            closed?;
+            if let Err(error) = closed {
+                return Err(match &outcome {
+                    direct::Outcome::Committed {
+                        key,
+                        natural_events,
+                        events,
+                        ..
+                    } => direct::committed_failure(
+                        operation_name,
+                        key.as_ref(),
+                        natural_events,
+                        events,
+                        error,
+                    ),
+                    _ => error,
+                });
+            }
             complete(outcome)
         }
         Err(error) => Err(match closed {
@@ -209,7 +223,7 @@ pub fn dispatch(
 }
 fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
     match outcome {
-        direct::Outcome::Complete(output) => Ok(output),
+        direct::Outcome::Complete(output) | direct::Outcome::Committed { output, .. } => Ok(output),
         direct::Outcome::Custody(plan) => Err(SeError::new(se_types::Detail::Internal(
             se_types::details::Internal {
                 report_id: "unrouted-cli-custody".into(),

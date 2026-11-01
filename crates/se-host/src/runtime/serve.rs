@@ -67,15 +67,24 @@ impl HostedRuntime {
         let runtime = self.execution.blocking.handle();
         let (shutdown, cancelled) = watch::channel(false);
         let mut tasks = JoinSet::new();
+        let mut accept_backoff = std::time::Duration::from_millis(1);
+        let mut accept_retry_at = tokio::time::Instant::now();
         let mut outcome = loop {
-            match event(&mut listener, &mut tasks).await {
+            match event(&mut listener, &mut tasks, accept_retry_at).await {
                 Event::Accepted(Ok(stream)) => {
+                    accept_backoff = std::time::Duration::from_millis(1);
                     let router = router.clone();
                     let cancelled = cancelled.clone();
                     tasks.spawn_on(
                         until_cancelled(connection(router, stream), cancelled),
                         &runtime,
                     );
+                }
+                Event::Accepted(Err(error)) if transient_accept(&error) => {
+                    self.failed_connection(error);
+                    accept_retry_at = tokio::time::Instant::now() + accept_backoff;
+                    accept_backoff =
+                        (accept_backoff * 2).min(std::time::Duration::from_millis(250));
                 }
                 Event::Accepted(Err(error)) => break ended(self, listener, Some(error)),
                 Event::Joined(Ok(Ok(ConnectionEnd::Stop(stop)))) => {
@@ -175,8 +184,15 @@ fn ended(
         failure,
     }
 }
-async fn event(listener: &mut HostedListener, tasks: &mut JoinSet<Result<ConnectionEnd>>) -> Event {
-    let mut accepting = pin!(listener.accept(Arc::new(AtomicBool::new(false))));
+async fn event(
+    listener: &mut HostedListener,
+    tasks: &mut JoinSet<Result<ConnectionEnd>>,
+    retry_at: tokio::time::Instant,
+) -> Event {
+    let mut accepting = pin!(async {
+        tokio::time::sleep_until(retry_at).await;
+        listener.accept(Arc::new(AtomicBool::new(false))).await
+    });
     poll_fn(|cx| {
         if !tasks.is_empty()
             && let Poll::Ready(Some(joined)) = tasks.poll_join_next(cx)
@@ -213,8 +229,8 @@ async fn connection(
         AcceptedPeer::Operation(connection) => *connection,
     };
     loop {
-        let deadline = options(CALL_TIMEOUT)?;
-        let Some(mut exchange) = router.read_call(connection, &deadline).await? else {
+        let idle = Deadline::idle()?;
+        let Some((mut exchange, deadline)) = router.read_call_idle(connection, &idle).await? else {
             return Ok(ConnectionEnd::Closed);
         };
         let output = match exchange.take_call() {
@@ -230,4 +246,33 @@ fn options(timeout: std::time::Duration) -> Result<Deadline> {
         timeout,
         cancelled: Arc::new(AtomicBool::new(false)),
     })
+}
+
+fn transient_accept(error: &SeError) -> bool {
+    use std::error::Error;
+    let mut cause = error.source();
+    while let Some(value) = cause {
+        if let Some(error) = value.downcast_ref::<std::io::Error>() {
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::Interrupted
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::OutOfMemory
+            ) {
+                return true;
+            }
+            #[cfg(unix)]
+            if matches!(error.raw_os_error(), Some(12 | 23 | 24 | 105)) {
+                return true;
+            }
+            #[cfg(windows)]
+            if matches!(error.raw_os_error(), Some(4 | 8 | 14 | 231 | 232 | 233)) {
+                return true;
+            }
+        }
+        cause = value.source();
+    }
+    false
 }

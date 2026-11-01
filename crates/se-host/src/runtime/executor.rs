@@ -1,5 +1,6 @@
 //! The sole async store bridge. Synchronous planning, submission and continuation
 //! run on bounded blocking jobs; only the owned commit completion is awaited.
+use super::failure::WriteIdentity;
 use super::*;
 use se_core::{
     admission::read_scope,
@@ -7,7 +8,7 @@ use se_core::{
     dispatch::Kernel,
     ops::AnyOutput,
     ports::{CustodyPlan, Then},
-    store_error::{store_error, write_error},
+    store_error::store_error,
 };
 use se_store::{Admission, ReadStore, Snapshot, WriterClient};
 use se_types::{Read, Result, SeError};
@@ -19,6 +20,7 @@ struct Planned {
     kernel: Kernel,
     admission: Admission,
     operation: &'static str,
+    natural_key: Option<String>,
 }
 /// The explicit bound prevents a later snapshot/SQL-handle change from silently
 /// making the host's concrete execution future local to a worker thread.
@@ -54,15 +56,20 @@ pub fn execute(
             kernel,
             admission,
             operation,
+            natural_key,
         } = planned;
         match step {
             OpStep::Complete(output) => Ok(ExecutedCall {
                 output,
                 write_timings: None,
+                committed: None,
+                capture_commits: Vec::new(),
+                capture_keys: Vec::new(),
             }),
             OpStep::Commit { batch, then } => {
                 let identity = WriteIdentity {
                     operation,
+                    natural_key,
                     key: batch.request.as_ref().map(|request| request.key.clone()),
                     natural_events: if batch.request.is_none() {
                         batch
@@ -80,22 +87,50 @@ pub fn execute(
                 let writer = context.writer.clone();
                 let submit_deadline = deadline.clone();
                 let submitted = identity.clone();
+                let pending = context.pending_writes.clone();
                 let completion = context
                     .blocking
                     .run_owned(&deadline, move || {
                         submit_deadline.remaining()?;
-                        writer
-                            .submit(batch)
-                            .map_err(|error| submitted.store_error(&error))
+                        pending.register(&submitted)?;
+                        match writer.submit(batch) {
+                            Ok(completion) => Ok(completion),
+                            Err(error) => {
+                                pending.failed_attempt(&submitted)?;
+                                Err(submitted.store_error(&error))
+                            }
+                        }
                     })
                     .await?;
                 // Neither a worker permit nor a read transaction survives here.
                 // Timeout/cancel never cancels an accepted store transaction; the
                 // caller must resolve/retry its original operation/natural key.
-                let mut receipt = super::pool::within(&deadline, completion)
+                let receipt = super::pool::within(&deadline, completion)
                     .await
-                    .map_err(|error| identity.wait_error(error))?
-                    .map_err(|error| identity.store_error(&error))?;
+                    .map_err(|error| identity.wait_error(error))?;
+                let mut receipt = match receipt {
+                    Ok(receipt) => receipt,
+                    Err(error) => {
+                        let error = identity.store_error(&error);
+                        if !matches!(
+                            error.body.detail(),
+                            se_types::Detail::CommitOutcomeUnknown(_)
+                        ) {
+                            context.pending_writes.failed_attempt(&identity)?;
+                        }
+                        return Err(error);
+                    }
+                };
+                let committed = CommittedWrite {
+                    operation: identity.operation.into(),
+                    key: identity.key.clone(),
+                    natural_events: identity.natural_events.clone(),
+                    committed_events: receipt.events.clone(),
+                };
+                context
+                    .pending_writes
+                    .resolve(&identity)
+                    .map_err(|error| committed.response_error(error))?;
                 let write_timings = receipt.write_timings.take();
                 let finish_deadline = deadline.clone();
                 let output = context
@@ -117,13 +152,14 @@ pub fn execute(
                         );
                         close_read(result, read.close())
                     })
-                    // A durable receipt has not yet reached the caller. Any
-                    // continuation failure still needs its original retry identity.
                     .await
-                    .map_err(|error| identity.wait_error(error))?;
+                    .map_err(|error| committed.response_error(error))?;
                 Ok(ExecutedCall {
                     output,
                     write_timings,
+                    committed: Some(committed),
+                    capture_commits: Vec::new(),
+                    capture_keys: Vec::new(),
                 })
             }
             OpStep::Custody(_) => Err(se_core::scope::unreadable(
@@ -134,6 +170,16 @@ pub fn execute(
     }
 }
 fn plan(reader: &se_store::SqliteReader, call: HostedCall) -> Result<Planned> {
+    let natural_key = match &call.input {
+        HostedInput::Capture(capture) => Some(format!(
+            "session={:?}, provider={:?}, conversation={}, turn={}",
+            call.admission.session,
+            capture.request.provider,
+            capture.request.conversation,
+            capture.request.vendor_turn
+        )),
+        _ => None,
+    };
     let operation = match &call.input {
         HostedInput::Operation(operation) => operation.meta().name,
         HostedInput::Capture(_) => "hook.claude",
@@ -183,33 +229,8 @@ fn plan(reader: &se_store::SqliteReader, call: HostedCall) -> Result<Planned> {
         kernel,
         admission,
         operation,
+        natural_key,
     })
-}
-#[derive(Clone)]
-struct WriteIdentity {
-    operation: &'static str,
-    key: Option<se_types::IdempotencyKey>,
-    natural_events: Vec<se_types::EventId>,
-}
-impl WriteIdentity {
-    fn store_error(&self, error: &se_store::StoreError) -> SeError {
-        write_error(
-            error,
-            self.operation,
-            self.key.as_ref(),
-            &self.natural_events,
-        )
-    }
-    fn wait_error(&self, cause: SeError) -> SeError {
-        SeError::new(se_types::Detail::CommitOutcomeUnknown(
-            se_types::details::CommitOutcomeUnknown {
-                operation: self.operation.into(),
-                key: self.key.as_ref().map(ToString::to_string),
-                natural_events: self.natural_events.clone(),
-            },
-        ))
-        .with_cause(cause)
-    }
 }
 pub(crate) fn close_read<T>(result: Result<T>, closed: se_store::StoreResult<()>) -> Result<T> {
     match (result, closed) {

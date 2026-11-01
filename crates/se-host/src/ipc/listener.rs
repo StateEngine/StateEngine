@@ -162,7 +162,20 @@ impl IpcListener {
                 .await
                 .map_err(|e| wire::io_failure("accept IPC", e))?;
             let entered = self.runtime.enter();
-            let next = evented_pipe(&self.native)?;
+            let next = match evented_pipe(&self.native) {
+                Ok(next) => next,
+                Err(error) => {
+                    // A transient allocation failure must leave the retained
+                    // server ready for another accept rather than connected.
+                    if let Err(disconnect) = self.listener.disconnect() {
+                        return Err(se_core::scope::unreadable(
+                            "IPC accept recovery",
+                            &format!("{error}; could not reset accepted pipe: {disconnect}"),
+                        ));
+                    }
+                    return Err(error);
+                }
+            };
             drop(entered);
             std::mem::replace(&mut self.listener, next)
         };

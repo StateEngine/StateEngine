@@ -53,3 +53,47 @@ fn missing(home: &Path, generated_at: String, checked: String) -> Setup {
         checked,
     )))
 }
+
+/// Resolved setup inputs produce both the readable hint and literal remedy argv.
+pub struct InitRemedy<'a> {
+    pub home: &'a Path,
+    pub workspace: &'a Path,
+}
+impl se_types::OperationCommand for InitRemedy<'_> {
+    fn cli_argv(&self) -> Vec<String> {
+        vec![
+            "se".into(),
+            "--home".into(),
+            self.home.display().to_string(),
+            "init".into(),
+            "--repo".into(),
+            self.workspace.display().to_string(),
+        ]
+    }
+}
+impl se_types::RemedyCommands for InitRemedy<'_> {
+    fn for_error(&self, error: &se_types::ErrorBody) -> Result<Option<se_types::Cmd>> {
+        (error.code() == se_types::Code::SetupRequired)
+            .then(|| se_types::Argv::from_op(self).map(|argv| se_types::Cmd::Se { argv }))
+            .transpose()
+    }
+}
+pub fn required(cx: &crate::bootstrap::Bootstrap) -> se_types::SeError {
+    use se_types::{Detail, SeError, details};
+    SeError::new(Detail::SetupRequired(details::SetupRequired {
+        subject: "StateEngine store".into(),
+        reason: "not initialized for the selected state home".into(),
+        next_step: format!(
+            "Run se --home {} init --repo {}",
+            quote(&cx.home.display().to_string()),
+            quote(&cx.cwd.display().to_string())
+        ),
+    }))
+}
+fn quote(value: &str) -> String {
+    #[cfg(windows)]
+    let escaped = value.replace('\'', "''");
+    #[cfg(not(windows))]
+    let escaped = value.replace('\'', "'\"'\"'");
+    format!("'{escaped}'")
+}

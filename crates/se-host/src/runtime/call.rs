@@ -35,6 +35,7 @@ pub struct ExecutionContext {
     pub writer: SqliteClient,
     pub blocking: BlockingPool,
     pub generation: se_types::Generation,
+    pub(crate) pending_writes: super::failure::PendingWrites,
 }
 pub struct ExecutionCall {
     pub admitted: HostedCall,
@@ -44,7 +45,17 @@ pub struct ExecutionCall {
 /// One request's executor result. Timings are moved out of its own awaited
 /// store completion before the receipt is consumed by the core continuation.
 /// Read-only and unmeasured completions carry None; never consult an aggregate.
+#[derive(Clone, Debug)]
+pub struct CommittedWrite {
+    pub operation: String,
+    pub key: Option<se_types::IdempotencyKey>,
+    pub natural_events: Vec<se_types::EventId>,
+    pub committed_events: Vec<se_types::EventId>,
+}
 pub struct ExecutedCall {
     pub output: se_core::ops::AnyOutput,
     pub write_timings: Option<se_store::WriteTimings>,
+    pub committed: Option<CommittedWrite>,
+    pub capture_commits: Vec<se_core::ops::CaptureCommitDiagnostics>,
+    pub capture_keys: Vec<String>,
 }

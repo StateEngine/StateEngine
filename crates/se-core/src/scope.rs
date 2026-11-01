@@ -117,7 +117,9 @@ pub fn require_present<T>(read: Read<T>, subject: &str) -> Result<T> {
             details::TargetUnknown {
                 subject: subject.into(),
                 reason: what,
-                next_step: "Read the named source before retrying; no state was changed.".into(),
+                next_step:
+                    "Read the named source before retrying; preserve the original request identity."
+                        .into(),
             },
         ))),
     }

@@ -383,7 +383,9 @@ impl NativePipeReservation {
     /// Success permits the owner to drop its reservation last. On failure the
     /// borrowed reservation is still owned by the caller: report pending release
     /// and retain it for reconciliation rather than claiming transport closure.
+    /// Poll delays back off from 1 to 32 ms, clipped to the original deadline.
     pub fn wait_until_exclusive(&self, bound: &IpcIoBound) -> IpcNativeResult<()> {
+        let mut delay = std::time::Duration::from_millis(1);
         loop {
             if self.current_instances(bound)? == 1 {
                 return Ok(());
@@ -391,7 +393,8 @@ impl NativePipeReservation {
             let remaining = bound
                 .remaining()
                 .map_err(|e| error("wait for owned IPC pipe retirement", e))?;
-            std::thread::sleep(remaining.min(std::time::Duration::from_millis(1)));
+            std::thread::sleep(remaining.min(delay));
+            delay = (delay * 2).min(std::time::Duration::from_millis(32));
         }
     }
     /// Read the actual evented instance back before it accepts any credential.

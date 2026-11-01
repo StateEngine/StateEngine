@@ -21,7 +21,6 @@ pub enum AcceptedPeer {
 pub struct HostedConnection {
     connection: IpcConnection,
     grant: ConnectionGrant,
-    _slot: tokio::sync::OwnedSemaphorePermit,
 }
 pub struct AuthorizedStop {
     pending: PendingIpcHandshake,
@@ -56,7 +55,6 @@ pub struct HostedRouter {
     pub(crate) sources: TranscriptBindings,
     context: AdmissionContext,
     response_bytes: std::num::NonZeroU32,
-    connections: std::sync::Arc<tokio::sync::Semaphore>,
     fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 impl HostedRuntime {
@@ -69,7 +67,6 @@ impl HostedRuntime {
             sources: self.sources.clone(),
             context: self.admission_context(),
             response_bytes: self.response_bytes,
-            connections: std::sync::Arc::clone(&self.connections),
             fenced: std::sync::Arc::clone(&self.fenced),
         })
     }
@@ -119,21 +116,12 @@ impl HostedRouter {
         if matches!(pending.input(), HandshakeInput::Stop(_)) {
             return Ok(AcceptedPeer::Stop(Box::new(AuthorizedStop { pending })));
         }
-        let slot = match std::sync::Arc::clone(&self.connections).try_acquire_owned() {
-            Ok(slot) => slot,
-            Err(_) => {
-                let error=SeError::new(se_types::Detail::StoreBusy(se_types::details::StoreBusy {waited_ms:0,reason:"host connection capacity is occupied".into(),next_step:"Close an existing connection and retry with the same original operation key.".into()}));
-                pending.refuse(envelope(&error)?).await?;
-                return Err(error);
-            }
-        };
         let connection = pending
             .finish(AuthorizedConnection { _private: () }, self.response_bytes)
             .await?;
         Ok(AcceptedPeer::Operation(Box::new(HostedConnection {
             connection,
             grant,
-            _slot: slot,
         })))
     }
     pub async fn read_call(
@@ -149,6 +137,26 @@ impl HostedRouter {
         else {
             return Ok(None);
         };
+        self.admit_request(connection, wire, deadline).await
+    }
+    pub(crate) async fn read_call_idle(
+        &self,
+        mut connection: HostedConnection,
+        idle: &Deadline,
+    ) -> Result<Option<(AdmittedExchange, Deadline)>> {
+        self.check_open()?;
+        let Some((wire, deadline)) = connection.connection.read_after_idle(idle).await? else {
+            return Ok(None);
+        };
+        let exchange = self.admit_request(connection, wire, &deadline).await?;
+        Ok(exchange.map(|exchange| (exchange, deadline)))
+    }
+    async fn admit_request(
+        &self,
+        connection: HostedConnection,
+        wire: crate::IpcEnvelope,
+        deadline: &Deadline,
+    ) -> Result<Option<AdmittedExchange>> {
         let request_id = wire.request_id;
         self.check_open()?;
         let context = self.context.clone();
@@ -187,50 +195,93 @@ impl AdmittedExchange {
         deadline: &Deadline,
     ) -> Result<HostedConnection> {
         let mut connection = self.connection;
-        let result = match output {
-            Ok(completed) => {
-                let output = match completed.write_timings {
-                    Some(measured) => {
-                        let timings = se_core::ops::ReceiptWriteTimings::from_store(&measured);
-                        timings.validate()?;
-                        completed.output.with_write_timings(timings)
+        let committed = output
+            .as_ref()
+            .ok()
+            .and_then(|completed| completed.committed.clone());
+        let capture_keys = output
+            .as_ref()
+            .ok()
+            .map(|completed| completed.capture_keys.clone())
+            .unwrap_or_default();
+        let capture_events: Vec<_> = output
+            .as_ref()
+            .ok()
+            .into_iter()
+            .flat_map(|completed| &completed.capture_commits)
+            .map(|commit| commit.event_id.clone())
+            .collect();
+        let result = (|| -> Result<IpcResult> {
+            match output {
+                Ok(completed) => {
+                    let output = match completed.write_timings {
+                        Some(measured) => {
+                            let timings = se_core::ops::ReceiptWriteTimings::from_store(&measured);
+                            timings.validate()?;
+                            completed.output.with_write_timings(timings)
+                        }
+                        None => completed.output,
                     }
-                    None => completed.output,
-                };
-                let schema = output.family().schema();
-                let value = serde_json::to_value(output).map_err(|e| {
-                    se_core::scope::unreadable("core output encoding", &e.to_string())
-                })?;
-                // Preserve the complete core family envelope for CLI/MCP readers;
-                // the outer transport family/window never replaces those facts.
-                let window = value
-                    .get("window")
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(|_| {
-                        SeError::invalid("core output window", "the canonical complete Window")
+                    .with_capture_commits(completed.capture_commits)?;
+                    let schema = output.family().schema();
+                    let value = serde_json::to_value(output).map_err(|e| {
+                        se_core::scope::unreadable("core output encoding", &e.to_string())
                     })?;
-                IpcResult::Output(Box::new(OperationOutput {
-                    schema,
-                    value,
-                    window,
-                }))
+                    let window = value
+                        .get("window")
+                        .cloned()
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(|_| {
+                            SeError::invalid("core output window", "the canonical complete Window")
+                        })?;
+                    Ok(IpcResult::Output(Box::new(OperationOutput {
+                        schema,
+                        value,
+                        window,
+                    })))
+                }
+                Err(error) => Ok(IpcResult::Error(envelope(&error)?)),
             }
-            Err(error) => IpcResult::Error(envelope(&error)?),
+        })();
+        let response_error = |error: SeError| {
+            let error = committed
+                .as_ref()
+                .map_or(error.body.clone().into(), |known| {
+                    known.response_error(error)
+                });
+            if !capture_events.is_empty() {
+                SeError::new(se_types::Detail::CaptureIncomplete(
+                    se_types::details::CaptureIncomplete {
+                        committed_events: capture_events.clone(),
+                        natural_keys: capture_keys.clone(),
+                        reason: error.to_string(),
+                    },
+                ))
+                .with_cause(error)
+            } else {
+                error
+            }
         };
-        connection
-            .connection
-            .reply(
-                &IpcResponse {
-                    version: se_types::API_VERSION,
-                    request_id: self.request_id,
-                    generation: connection.connection.negotiated().generation,
-                    result,
-                },
-                deadline,
-            )
-            .await?;
+        let result = match result {
+            Ok(result) => result,
+            Err(error) => IpcResult::Error(envelope(&response_error(error))?),
+        };
+        let mut response = IpcResponse {
+            version: se_types::API_VERSION,
+            request_id: self.request_id,
+            generation: connection.connection.negotiated().generation,
+            result,
+        };
+        // Encode/validate before consuming the channel. A known commit whose
+        // output exceeds its negotiated budget still receives a typed key error.
+        if let Err(error) = crate::client::wire::encode_response(
+            &response,
+            connection.connection.negotiated().maximum_reply_bytes.get() as usize,
+        ) {
+            response.result = IpcResult::Error(envelope(&response_error(error))?);
+        }
+        connection.connection.reply(&response, deadline).await?;
         Ok(connection)
     }
 }

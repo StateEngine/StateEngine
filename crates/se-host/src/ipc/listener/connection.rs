@@ -60,6 +60,33 @@ impl IpcConnection {
         self.stream = Some(stream);
         Ok(Some(call))
     }
+    pub(crate) async fn read_after_idle(
+        &mut self,
+        idle: &Deadline,
+    ) -> Result<Option<(IpcEnvelope, Deadline)>> {
+        if self.awaiting.is_some() {
+            return Err(SeError::invalid("IPC request", "one outstanding operation"));
+        }
+        let stream = self
+            .stream
+            .take()
+            .ok_or_else(|| SeError::invalid("IPC channel", "a complete prior exchange"))?;
+        let Some((bytes, deadline)) =
+            super::channel::receive_after_idle(&stream, idle, wire::MAX_FRAME_BYTES).await?
+        else {
+            return Ok(None);
+        };
+        let call = wire::decode_call(bytes.as_bytes())?;
+        if call.version != self.hello.version || call.generation != self.hello.generation {
+            return Err(SeError::invalid(
+                "IPC call",
+                "the negotiated API and generation",
+            ));
+        }
+        self.awaiting = Some(call.request_id);
+        self.stream = Some(stream);
+        Ok(Some((call, deadline)))
+    }
     pub async fn reply(&mut self, response: &IpcResponse, deadline: &Deadline) -> Result<()> {
         if self.awaiting != Some(response.request_id)
             || response.version != self.hello.version

@@ -49,21 +49,10 @@ pub(super) async fn receive_optional(
     deadline: &Deadline,
     limit: usize,
 ) -> Result<Option<wire::WireBytes>> {
-    let mut header = [0; 4];
-    loop {
-        bounded(deadline, stream.readable())
-            .await?
-            .map_err(|error| wire::io_failure("wait IPC header", error))?;
-        match stream.try_read(&mut header) {
-            Ok(0) => return Ok(None),
-            Ok(count) => {
-                exact(stream, &mut header[count..], deadline).await?;
-                break;
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(error) => return Err(wire::io_failure("read IPC header", error)),
-        }
-    }
+    let Some((mut header, count)) = first_header(stream, deadline).await? else {
+        return Ok(None);
+    };
+    exact(stream, &mut header[count..], deadline).await?;
     let mut bytes = Zeroizing::new(vec![0; wire::frame_length(header, limit)?]);
     exact(stream, &mut bytes, deadline).await?;
     Ok(Some(wire::WireBytes::from_owned(bytes)))
@@ -92,4 +81,47 @@ pub(super) async fn send(
         }
     }
     Ok(())
+}
+
+/// Idle time is independent of the operation budget. The call clock starts at
+/// the first frame byte, and bounds the remaining header/body and execution.
+pub(super) async fn receive_after_idle(
+    stream: &NativeStream,
+    idle: &Deadline,
+    limit: usize,
+) -> Result<Option<(wire::WireBytes, Deadline)>> {
+    let Some((mut header, count)) = first_header(stream, idle).await? else {
+        return Ok(None);
+    };
+    let deadline = idle.next_call()?;
+    exact(stream, &mut header[count..], &deadline).await?;
+    let mut bytes = Zeroizing::new(vec![0; wire::frame_length(header, limit)?]);
+    exact(stream, &mut bytes, &deadline).await?;
+    Ok(Some((wire::WireBytes::from_owned(bytes), deadline)))
+}
+async fn first_header(stream: &NativeStream, idle: &Deadline) -> Result<Option<([u8; 4], usize)>> {
+    let mut header = [0; 4];
+    loop {
+        bounded(idle, stream.readable())
+            .await?
+            .map_err(|error| wire::io_failure("wait IPC header", error))?;
+        match stream.try_read(&mut header) {
+            Ok(0) => return Ok(None),
+            Ok(count) => return Ok(Some((header, count))),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => continue,
+            // Windows signals orderly pipe disconnect through BrokenPipe;
+            // before a frame begins it has the same meaning as Unix EOF.
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::NotConnected
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(wire::io_failure("read IPC header", error)),
+        }
+    }
 }

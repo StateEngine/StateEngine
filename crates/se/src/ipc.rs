@@ -4,7 +4,9 @@ use se_core::ops::{AnyOp, AnyOutput, CliSelections};
 use se_host::{
     EndpointRecord, IpcEnvelope, IpcRequest, OperationOutput, RawOperation,
     client::{
-        BlockingIpcClient, ClientOptions, lease::ClientCredential, presence::OwnerPresence,
+        BlockingIpcClient, ClientOptions,
+        lease::{ClientCredential, ExchangeProgress},
+        presence::OwnerPresence,
         wire::DEFAULT_REPLY_BYTES,
     },
 };
@@ -60,6 +62,13 @@ fn exchange(
     expected: &str,
     options: &ClientOptions,
 ) -> Result<AnyOutput> {
+    let keyed = match &call.request {
+        IpcRequest::Operation(operation) => operation
+            .key
+            .as_ref()
+            .map(|key| (operation.name.clone(), key.clone())),
+        IpcRequest::Hook(_) => None,
+    };
     let started = Instant::now();
     let mut connection = BlockingIpcClient::connect_authenticated(
         endpoint,
@@ -85,8 +94,19 @@ fn exchange(
         timeout: remaining,
         cancelled: options.cancelled.clone(),
     };
-    let output = connection.exchange(call, &exchange_options)?;
-    decode(output, expected)
+    let mut progress = ExchangeProgress::NotSent;
+    let output = connection
+        .exchange_with_progress(call, &exchange_options, &mut progress)
+        .map_err(|error| {
+            if progress == ExchangeProgress::SendAttempted {
+                uncertain(keyed.as_ref(), error)
+            } else {
+                // Definitely unsent and authoritative error replies keep their
+                // original classes, including confirmed-but-unreadable commits.
+                error
+            }
+        })?;
+    decode(output, expected).map_err(|error| uncertain(keyed.as_ref(), error))
 }
 
 /// The complete closed input, including its original request key, is unchanged.
@@ -145,4 +165,18 @@ fn call_operation(call: &IpcEnvelope) -> &str {
 }
 fn invalid(expected: &str) -> SeError {
     SeError::invalid("CLI IPC", expected)
+}
+
+fn uncertain(keyed: Option<&(String, se_types::IdempotencyKey)>, error: SeError) -> SeError {
+    match keyed {
+        Some((operation, key)) => SeError::new(Detail::CommitOutcomeUnknown(
+            details::CommitOutcomeUnknown {
+                operation: operation.clone(),
+                key: Some(key.to_string()),
+                natural_events: Vec::new(),
+            },
+        ))
+        .with_cause(error),
+        None => error,
+    }
 }

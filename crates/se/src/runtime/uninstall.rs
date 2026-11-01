@@ -4,6 +4,7 @@ use super::*;
 use crate::{bootstrap::Bootstrap, route};
 use se_core::ops::{installation::UninstallEffects, outputs::*};
 use se_proc::{DirectoryRemoval, OwnedFile, StateFileError, StateFileErrorCode};
+use se_store::StateFiles;
 use se_types::Read;
 use std::{
     io,
@@ -28,14 +29,36 @@ pub(super) fn execute(
 ) -> Result<(UninstallPlan, UninstallEffects)> {
     // Store absence and an initialized, record-free store are distinct native
     // observations. Endpoint absence never supplies an empty-process proof.
-    let (owner, store_observation) = match route::setup::inspect(&cx.home, clock())? {
+    let (owner, store_observation, _runtime_lease) = match route::setup::inspect(&cx.home, clock())?
+    {
         route::setup::Setup::Absent(_) => (
             route::owner::observe(&[])?,
             "runtime store absence measured",
+            None,
         ),
         route::setup::Setup::Present(reader) => {
             let files = route::files::Files::open(&cx.home)
                 .map_err(|e| se_core::store_error::store_error(&e))?;
+            let lock = match files
+                .readback(&cx.home.join("runtime.lock"))
+                .map_err(|e| se_core::store_error::store_error(&e))?
+            {
+                Read::Present { value } => value,
+                _ => {
+                    return Err(invalid(
+                        "initialized runtime lock is unavailable; preserve the installation",
+                    ));
+                }
+            };
+            match lock.try_lock() {
+                Ok(()) => (),
+                Err(std::fs::TryLockError::WouldBlock) => return Err(SeError::new(Detail::StateConflict(details::StateConflict {
+                    subject: "uninstall runtime custody".into(),
+                    reason: "the runtime is in use; the host or another writer still holds its native lease".into(),
+                    next_step: "Run se down with this same --home, wait for the host to stop, then retry se uninstall; no installation effects were attempted".into(),
+                }))),
+                Err(std::fs::TryLockError::Error(error)) => return Err(unreadable(&cx.home.join("runtime.lock"), error)),
+            }
             let inventory = route::owner::inventory(&reader, &files)?;
             if inventory.has_process_records {
                 return Err(SeError::new(Detail::StateConflict(details::StateConflict {
@@ -47,6 +70,7 @@ pub(super) fn execute(
             (
                 route::owner::from_inventory(&inventory)?,
                 "initialized store; protected home-wide process inventory is empty",
+                Some(lock),
             )
         }
     };

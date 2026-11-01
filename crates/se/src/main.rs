@@ -117,6 +117,14 @@ pub fn run(
         };
         dispatch(&context, operation, &mut diagnostic)
     };
+    let setup_remedy = route::setup::InitRemedy {
+        home: &context.home,
+        workspace: &context.cwd,
+    };
+    let render_context = RenderCx {
+        commands: Some(&setup_remedy),
+        ..RenderCx::default()
+    };
     if result.as_ref().is_ok_and(AnyOutput::maintenance_pending) {
         // The commit is known to have succeeded. Diagnostic delivery cannot
         // change its receipt or turn that success into an uncertain outcome.
@@ -146,13 +154,7 @@ pub fn run(
                 stderr.flush()?;
             }
             Err(error) => {
-                render::error::write(
-                    &error,
-                    &RenderCx::default(),
-                    false,
-                    &mut stdout,
-                    &mut stderr,
-                )?;
+                render::error::write(&error, &render_context, false, &mut stdout, &mut stderr)?;
             }
         }
         return Ok(0);
@@ -161,7 +163,7 @@ pub fn run(
         Ok(output) => render::output(&output, common.json, common.quiet, &mut stdout),
         Err(error) => render::error::write(
             &error,
-            &RenderCx::default(),
+            &render_context,
             common.json,
             &mut stdout,
             &mut stderr,

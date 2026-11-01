@@ -1,6 +1,6 @@
 use crate::*;
 
-/// Protects: cancellation after the durable receipt reaches the executor but before continuation admission must retain the accepted key, and retry must resolve exactly one effect.
+/// Protects: cancellation after the durable receipt reaches the executor but before continuation admission reports the confirmed commit with exact retained events and key; retry resolves exactly one effect.
 pub async fn check(
     f: &Fixture,
     runtime: &se_host::HostedRuntime,
@@ -13,7 +13,7 @@ pub async fn check(
     let cancel = controls.cancelled.clone();
     let deadline = se_host::client::lease::Deadline::from_options(&controls)?;
     let mut completion = std::pin::pin!(router.execute_call(call()?, &deadline));
-    loop {
+    let committed_events = loop {
         if let std::task::Poll::Ready(result) = poll(completion.as_mut()).await {
             return Err(format!(
                 "continuation write acknowledged before controlled descheduling: {:?}",
@@ -26,11 +26,11 @@ pub async fn check(
         let committed =
             snapshot.operation_receipt(Actor::Agent(f.a.clone()), key("continuation-working")?)?;
         snapshot.close()?;
-        if matches!(committed, Read::Present { .. }) {
-            break;
+        if let Read::Present { value } = committed {
+            break value.events;
         }
         deadline.remaining()?;
-    }
+    };
     // This is the actual public admission resource shared with listener native
     // checks, not a mocked executor or a production test pause hook. Once the
     // accepted submission releases it, hold it while the real continuation
@@ -62,9 +62,25 @@ pub async fn check(
     let error = result
         .err()
         .ok_or("cancelled blocked continuation reported success")?;
+    assert_eq!(
+        error.code().as_str(),
+        "committed-response-unavailable",
+        "a receipt already consumed by the executor must report a confirmed commit: {error}"
+    );
+    assert_eq!(error.class(), se_types::Class::Incomplete);
+    let wire = serde_json::to_value(error.body.detail())?;
+    let detail = &wire["detail"];
+    assert_eq!(detail["operation"], "working_state.set");
+    assert_eq!(detail["key"], "continuation-working");
+    assert_eq!(detail["natural_events"], serde_json::json!([]));
+    assert_eq!(
+        detail["committed_events"],
+        serde_json::to_value(&committed_events)?
+    );
     assert!(
-        matches!(error.body.detail(),se_types::Detail::CommitOutcomeUnknown(value) if value.operation=="working_state.set" && value.key.as_deref()==Some("continuation-working")),
-        "post-commit continuation lost accepted write identity: {error}"
+        detail["reason"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
     );
     let replay = router.execute_call(call()?, &bound()?).await?;
     let value = serde_json::to_value(replay.output)?;
@@ -79,7 +95,7 @@ pub async fn check(
     );
     snapshot.close()?;
     println!(
-        "PASS post_commit_continuation: actual foreground admission holds delivery after receipt, cancellation retains the key, and replay resolves one effect"
+        "PASS post_commit_continuation: actual foreground admission holds delivery after receipt, cancellation confirms exact committed events and key, and replay resolves one effect"
     );
     Ok(())
 }

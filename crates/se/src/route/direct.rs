@@ -8,10 +8,16 @@ use se_core::{
     store_error::{store_error, write_error},
 };
 use se_store::{Admission, DirectStore, ReadStore, RuntimeLease, Snapshot};
-use se_types::Result;
+use se_types::{Detail, EventId, IdempotencyKey, Result, SeError, details};
 
 pub enum Outcome {
     Complete(AnyOutput),
+    Committed {
+        output: AnyOutput,
+        key: Option<IdempotencyKey>,
+        natural_events: Vec<EventId>,
+        events: Vec<EventId>,
+    },
     Custody(CustodyPlan),
 }
 /// A custody result carries no store read lease. The caller must release its
@@ -44,28 +50,47 @@ pub fn execute<S: DirectStore>(
             let receipt = store
                 .append(batch, lease)
                 .map_err(|error| write_error(&error, operation, key.as_ref(), &natural_events))?;
-            let mut snapshot = store
-                .snapshot(read_scope(admission))
-                .map_err(|e| store_error(&e))?;
-            let output = kernel.committed(
-                then,
-                receipt,
-                &mut Cx {
-                    read: &mut snapshot,
-                    admission,
-                },
-            );
-            let closed = snapshot.close().map_err(|e| store_error(&e));
-            match output {
-                Ok(output) => {
-                    closed?;
-                    Ok(Outcome::Complete(output))
+            let committed_events = receipt.events.clone();
+            let continuation = (|| {
+                let mut snapshot = store
+                    .snapshot(read_scope(admission))
+                    .map_err(|e| store_error(&e))?;
+                let output = kernel.committed(
+                    then,
+                    receipt,
+                    &mut Cx {
+                        read: &mut snapshot,
+                        admission,
+                    },
+                );
+                let closed = snapshot.close().map_err(|e| store_error(&e));
+                match output {
+                    Ok(output) => {
+                        closed?;
+                        Ok(output)
+                    }
+                    Err(error) => Err(match closed {
+                        Ok(()) => error,
+                        Err(close) => error.with_cause(close),
+                    }),
                 }
-                Err(error) => Err(match closed {
-                    Ok(()) => error,
-                    Err(close) => error.with_cause(close),
-                }),
-            }
+            })();
+            continuation
+                .map(|output| Outcome::Committed {
+                    output,
+                    key: key.clone(),
+                    natural_events: natural_events.clone(),
+                    events: committed_events.clone(),
+                })
+                .map_err(|error| {
+                    committed_failure(
+                        operation,
+                        key.as_ref(),
+                        &natural_events,
+                        &committed_events,
+                        error,
+                    )
+                })
         }
     }
 }
@@ -143,4 +168,24 @@ fn plan<S: ReadStore>(
         }
     };
     Ok(step)
+}
+
+/// A received append receipt is definitive even if later readback/cleanup fails.
+pub fn committed_failure(
+    operation: &str,
+    key: Option<&IdempotencyKey>,
+    natural_events: &[EventId],
+    committed_events: &[EventId],
+    error: SeError,
+) -> SeError {
+    SeError::new(Detail::CommittedResponseUnavailable(
+        details::CommittedResponseUnavailable {
+            operation: operation.into(),
+            key: key.map(ToString::to_string),
+            natural_events: natural_events.to_vec().into_boxed_slice(),
+            committed_events: committed_events.to_vec().into_boxed_slice(),
+            reason: error.body.message().into(),
+        },
+    ))
+    .with_cause(error)
 }

@@ -98,10 +98,19 @@ pub async fn uncertain_write(
         .await
         .err()
         .ok_or("cancelled completion reported acknowledged success")?;
+    // Outside visibility can precede or follow the executor receiving its
+    // receipt. Both typed outcomes retain the key; the deterministic blocked
+    // continuation control below requires a confirmed commit specifically.
     assert!(
-        matches!(error.body.detail(),se_types::Detail::CommitOutcomeUnknown(value) if value.operation=="working_state.set" && value.key.as_deref()==Some("uncertain-working")),
-        "accepted write lost its identity: {error}"
+        matches!(
+            error.code().as_str(),
+            "commit-outcome-unknown" | "committed-response-unavailable"
+        ),
+        "accepted write lost its typed outcome: {error}"
     );
+    let wire = serde_json::to_value(error.body.detail())?;
+    assert_eq!(wire["detail"]["operation"], "working_state.set");
+    assert_eq!(wire["detail"]["key"], "uncertain-working");
     let replay = router.execute_call(call()?, &bound()?).await?;
     let value = serde_json::to_value(replay.output)?;
     assert_eq!(value["state"], "replayed");

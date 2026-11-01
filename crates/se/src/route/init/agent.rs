@@ -88,7 +88,11 @@ pub(super) fn initial_agent(
                 op,
                 &CliSelections::default(),
             )? {
-                crate::route::direct::Outcome::Complete(AnyOutput::AgentCreate(value)) => {
+                crate::route::direct::Outcome::Complete(AnyOutput::AgentCreate(value))
+                | crate::route::direct::Outcome::Committed {
+                    output: AnyOutput::AgentCreate(value),
+                    ..
+                } => {
                     created = value.value.outcome == AgentOutcome::Created;
                     value.value.agent.id
                 }

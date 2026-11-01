@@ -191,52 +191,92 @@ impl HostedRouter {
             .ok_or_else(|| SeError::invalid("capture session", "an admitted session"))?;
         let pin = self.sources.get(session)?;
         let mut last = None;
-        loop {
-            self.check_open()?;
-            let context = self.execution.clone();
-            let admitted = admission.clone();
-            let source = Arc::clone(&pin);
-            let signal = crate::ClaudeHookInput {
-                kind: hook.kind,
-                conversation: hook.conversation.clone(),
-                claimed_transcript: hook.claimed_transcript.clone(),
-                payload: serde_json::Value::Null,
-            };
-            let bound = deadline.clone();
-            let replay = last.is_none();
-            let next = self
-                .execution
-                .blocking
-                .run(BlockingClass::Foreground, deadline, move || {
-                    let mut pin = try_guard(&source)?;
-                    source::next(&context, &admitted, &mut pin, &signal, &bound, replay)
-                })
-                .await?;
-            let Some((capture, replayed)) = next else {
-                return Ok(last.unwrap_or_else(|| ExecutedCall {
-                    output:se_core::ops::HookResult {
-                        stdout:String::new(),captured:Read::Absent {checked:if matches!(hook.kind,crate::ClaudeHookKind::SessionStart) {"Session-start validated the trusted binding and protected session; it performs no capture scan."} else {"No complete new text record at the verified pinned source; an incomplete final line remains pending a real provider signal."}.into()},failure:None,receipt:None,
-                    }.into(),write_timings:None,
-                }));
-            };
-            let result = execute(
-                self.execution.clone(),
-                ExecutionCall {
-                    admitted: HostedCall {
-                        input: HostedInput::Capture(Box::new(capture)),
-                        kernel: se_core::dispatch::Kernel::read_only(),
-                        admission: admission.clone(),
-                        terminal: terminal.clone(),
-                        selections: None,
+        let mut commits = Vec::new();
+        let mut natural_keys = Vec::new();
+        let mut committed_events = Vec::new();
+        let result = async {
+            loop {
+                self.check_open()?;
+                let context = self.execution.clone();
+                let admitted = admission.clone();
+                let source = Arc::clone(&pin);
+                let signal = crate::ClaudeHookInput {
+                    kind: hook.kind,
+                    conversation: hook.conversation.clone(),
+                    claimed_transcript: hook.claimed_transcript.clone(),
+                    payload: serde_json::Value::Null,
+                };
+                let bound = deadline.clone();
+                let replay = last.is_none();
+                let next = self
+                    .execution
+                    .blocking
+                    .run(BlockingClass::Foreground, deadline, move || {
+                        let mut pin = try_guard(&source)?;
+                        source::next(&context, &admitted, &mut pin, &signal, &bound, replay)
+                    })
+                    .await?;
+                let Some((capture, replayed)) = next else {
+                    return Ok(last.unwrap_or_else(|| empty_capture(hook.kind)));
+                };
+                if commits.len() >= 128 {
+                    return Err(SeError::invalid("capture batch", "at most 128 commits per signal; repeat the same hook to continue from the committed cursor"));
+                }
+                let natural_key = format!("session={}, provider={:?}, conversation={}, turn={}", session, capture.request.provider, capture.request.conversation, capture.request.vendor_turn);
+                let result = execute(
+                    self.execution.clone(),
+                    ExecutionCall {
+                        admitted: HostedCall {
+                            input: HostedInput::Capture(Box::new(capture)),
+                            kernel: se_core::dispatch::Kernel::read_only(),
+                            admission: admission.clone(),
+                            terminal: terminal.clone(),
+                            selections: None,
+                        },
+                        deadline: deadline.clone(),
                     },
-                    deadline: deadline.clone(),
-                },
-            )
-            .await?;
-            if replayed {
-                return Ok(result);
+                ).await;
+                let result = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        if let se_types::Detail::CommittedResponseUnavailable(known) = error.body.detail() {
+                            committed_events.extend(known.committed_events.iter().cloned());
+                            natural_keys.push(natural_key);
+                        }
+                        return Err(error);
+                    }
+                };
+                if let se_core::ops::AnyOutput::HookClaude(value) = &result.output
+                    && let Some(receipt) = &value.value.receipt
+                {
+                    committed_events.push(receipt.event_id.clone());
+                    natural_keys.push(natural_key);
+                    let measured = result.write_timings.as_ref().ok_or_else(||
+                        se_core::scope::unreadable("capture timings", "committed capture has no per-completion measurement"))?;
+                    let write_timings = se_core::ops::ReceiptWriteTimings::from_store(measured);
+                    write_timings.validate()?;
+                    commits.push(se_core::ops::CaptureCommitDiagnostics { event_id: receipt.event_id.clone(), write_timings });
+                }
+                if replayed { return Ok(result); }
+                last = Some(result);
             }
-            last = Some(result);
+        }
+        .await;
+        match result {
+            Ok(mut result) => {
+                result.capture_commits = commits;
+                result.capture_keys = natural_keys;
+                Ok(result)
+            }
+            Err(error) if !committed_events.is_empty() => Err(SeError::new(
+                se_types::Detail::CaptureIncomplete(se_types::details::CaptureIncomplete {
+                    committed_events,
+                    natural_keys,
+                    reason: error.to_string(),
+                }),
+            )
+            .with_cause(error)),
+            Err(error) => Err(error),
         }
     }
 }
@@ -261,5 +301,28 @@ fn try_guard<T>(value: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
             "transcript binding",
             "a prior source worker failed; preserve the retained pin and committed cursor",
         )),
+    }
+}
+
+fn empty_capture(kind: crate::ClaudeHookKind) -> ExecutedCall {
+    let checked = if matches!(kind, crate::ClaudeHookKind::SessionStart) {
+        "Session-start validated the trusted binding and protected session; it performs no capture scan."
+    } else {
+        "No complete new text record at the verified pinned source; an incomplete final line remains pending a real provider signal."
+    };
+    ExecutedCall {
+        output: se_core::ops::HookResult {
+            stdout: String::new(),
+            captured: Read::Absent {
+                checked: checked.into(),
+            },
+            failure: None,
+            receipt: None,
+        }
+        .into(),
+        write_timings: None,
+        committed: None,
+        capture_commits: Vec::new(),
+        capture_keys: Vec::new(),
     }
 }

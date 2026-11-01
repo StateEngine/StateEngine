@@ -146,3 +146,10 @@ pub use serve::HostServeExit;
 mod capture;
 #[cfg(feature = "listener")]
 pub use capture::{CaptureRestoreReport, CaptureUnavailable, TranscriptBindings};
+
+#[cfg(feature = "listener")]
+mod failure;
+#[cfg(feature = "listener")]
+mod shutdown;
+#[cfg(feature = "listener")]
+pub use shutdown::HostShutdown;

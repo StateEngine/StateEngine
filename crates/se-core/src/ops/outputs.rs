@@ -15,6 +15,14 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct OutputDiagnostics {
     pub write_timings: ReceiptWriteTimings,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capture_commits: Vec<CaptureCommitDiagnostics>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureCommitDiagnostics {
+    pub event_id: EventId,
+    pub write_timings: ReceiptWriteTimings,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

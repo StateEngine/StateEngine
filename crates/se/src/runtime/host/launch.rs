@@ -202,55 +202,56 @@ fn wait_endpoint(
     generation: HostGeneration,
     bound: &se_host::client::lease::Deadline,
 ) -> Result<se_host::EndpointRecord> {
+    let mut different_owner = false;
     loop {
-        let remaining = bound.remaining()?;
-        match files
+        let remaining = bound.remaining().map_err(|error| {
+            if different_owner {
+                se_core::scope::unreadable("runtime endpoint rendezvous",
+                    "deadline expired waiting for the newly pinned runtime owner; a different-owner endpoint was observed and the exact new-owner publication never appeared").with_cause(error)
+            } else { error }
+        })?;
+        if let Some(mut file) = files
             .readback(&files.root().join("endpoint.json"))
             .map_err(file_error)?
         {
-            Some(mut file) => {
-                let mut bytes = Vec::new();
-                (&mut file)
-                    .take(se_host::client::wire::MAX_ENDPOINT_BYTES as u64 + 1)
-                    .read_to_end(&mut bytes)
-                    .map_err(|error| {
-                        se_core::scope::unreadable("runtime endpoint readback", &error.to_string())
-                            .with_cause(error)
-                    })?;
-                let endpoint = se_host::client::endpoint::decode_endpoint(&bytes)?;
-                let fields = endpoint.epoch.owner.fields();
-                if fields.machine != owner.machine
-                    || fields.pid.get() != owner.pid.0
-                    || fields.executable.to_local()? != owner.image
-                    || endpoint.epoch.generation != generation
-                {
-                    return Err(invalid(
-                        "the protected publication of the exact newly pinned runtime owner",
-                    ));
-                }
+            let mut bytes = Vec::new();
+            (&mut file)
+                .take(se_host::client::wire::MAX_ENDPOINT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|error| {
+                    se_core::scope::unreadable("runtime endpoint readback", &error.to_string())
+                        .with_cause(error)
+                })?;
+            let endpoint = se_host::client::endpoint::decode_endpoint(&bytes)?;
+            let fields = endpoint.epoch.owner.fields();
+            if fields.machine != owner.machine
+                || fields.pid.get() != owner.pid.0
+                || fields.executable.to_local()? != owner.image
+                || endpoint.epoch.generation != generation
+            {
+                different_owner = true;
+            } else {
                 return Ok(endpoint);
             }
-            None => {
-                // Finite startup rendezvous only; ordinary host work is evented.
-                // A native exit refuses now rather than spending the full bound.
-                match NativeProcessRuntime::read_process(owner.machine.clone(), owner.pid)
-                    .map_err(native_error)?
-                {
-                    se_proc::ProcessRead::Present(value)
-                        if value.identity == *owner
-                            && value.state != se_proc::NativeState::ExitedAwaitingReap => {}
-                    observed => {
-                        return Err(se_core::scope::unreadable(
-                            "runtime child before endpoint publication",
-                            &format!(
-                                "expected live exact child {owner:?}; native observation: {observed:?}"
-                            ),
-                        ));
-                    }
-                }
-                std::thread::park_timeout(remaining.min(Duration::from_millis(10)));
+        }
+        // Finite startup rendezvous only; ordinary host work is evented.
+        // A native exit refuses now rather than spending the full bound.
+        match NativeProcessRuntime::read_process(owner.machine.clone(), owner.pid)
+            .map_err(native_error)?
+        {
+            se_proc::ProcessRead::Present(value)
+                if value.identity == *owner
+                    && value.state != se_proc::NativeState::ExitedAwaitingReap => {}
+            observed => {
+                return Err(se_core::scope::unreadable(
+                    "runtime child before endpoint publication",
+                    &format!(
+                        "expected live exact child {owner:?}; native observation: {observed:?}"
+                    ),
+                ));
             }
         }
+        std::thread::park_timeout(remaining.min(Duration::from_millis(10)));
     }
 }
 fn file_error(error: se_proc::StateFileError) -> SeError {

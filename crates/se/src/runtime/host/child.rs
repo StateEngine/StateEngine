@@ -157,33 +157,34 @@ fn argv_digest() -> Sha256 {
     }
     Sha256::from_bytes(digest.finalize().into())
 }
-async fn finish(mut exit: se_host::HostServeExit) -> Result<u8> {
-    let bound = deadline(Duration::from_secs(30))?;
-    let report = exit.runtime.drain_storage(&bound).await?;
-    if !report.pending.is_empty() || !matches!(report.backup, se_types::Read::Present { .. }) {
-        return Err(se_core::scope::unreadable(
-            "host shutdown",
-            &format!("storage closure remains pending: {:?}", report.pending),
-        ));
-    }
-    let pool = exit.runtime.blocking_pool();
-    if let Some(stop) = exit.stop {
-        let reply=se_host::client::endpoint::RuntimeStopReply {
-            epoch:stop.request().expected_epoch.clone(),generation:stop.request().generation,key:stop.request().key.clone(),
-            outcome:se_host::client::endpoint::RuntimeStopOutcome::Facts {
-                achieved:vec![se_host::client::endpoint::RuntimeStopFact::WriterJoined],retained_resume:vec![],
-                pending:vec!["The storage writer joined; native transport release, endpoint retirement and agent/debt/resume/final lease-release witnesses remain pending.".into()],
-            },
-        };
-        stop.reply(&reply, &bound).await?;
-    }
-    exit.listener
-        .close_transport(&pool, &bound)
-        .await?
-        .retire(&pool, &bound)
-        .await?;
-    if let Some(error) = exit.failure {
-        return Err(error);
+async fn finish(exit: se_host::HostServeExit) -> Result<u8> {
+    let report = exit.finish(&deadline(Duration::from_secs(30))?).await;
+    if !report.pending.is_empty() {
+        return Err(
+            se_core::scope::unreadable("host shutdown", &report.pending.join("; ")).with_cause(
+                ShutdownPending {
+                    reason: report.pending.join("; "),
+                    _retained: std::sync::Mutex::new(report),
+                },
+            ),
+        );
     }
     Ok(0)
 }
+struct ShutdownPending {
+    reason: String,
+    _retained: std::sync::Mutex<se_host::HostShutdown>,
+}
+impl std::fmt::Debug for ShutdownPending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ShutdownPending")
+            .field(&self.reason)
+            .finish()
+    }
+}
+impl std::fmt::Display for ShutdownPending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+impl std::error::Error for ShutdownPending {}

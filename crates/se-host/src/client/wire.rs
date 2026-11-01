@@ -116,13 +116,9 @@ pub fn frame_length(header: [u8; 4], limit: usize) -> Result<usize> {
 /// an empty operation/result. The native channel applies the absolute deadline.
 pub fn read_payload<R: Read>(reader: &mut R, limit: usize) -> Result<WireBytes> {
     let mut header = [0; 4];
-    reader
-        .read_exact(&mut header)
-        .map_err(|error| io_failure("read header", error))?;
+    read_exact_frame(reader, &mut header, "read header")?;
     let mut payload = Zeroizing::new(vec![0; frame_length(header, limit)?]);
-    reader
-        .read_exact(&mut payload)
-        .map_err(|error| io_failure("read body", error))?;
+    read_exact_frame(reader, &mut payload, "read body")?;
     Ok(WireBytes(payload))
 }
 
@@ -138,21 +134,50 @@ pub fn write_frame<W: Write>(writer: &mut W, frame: &WireBytes) -> Result<()> {
     if frame_length(header, MAX_FRAME_BYTES)? != bytes.len() - 4 {
         return Err(invalid("a frame with its exact complete body"));
     }
-    writer
-        .write_all(bytes)
-        .map_err(|error| io_failure("write frame", error))?;
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        let count = writer
+            .write(remaining)
+            .map_err(|error| io_failure("write frame", error))?;
+        if count == 0 {
+            return Err(io_failure(
+                "incomplete write frame",
+                io::ErrorKind::WriteZero.into(),
+            ));
+        }
+        remaining = &remaining[count..];
+    }
     writer
         .flush()
         .map_err(|error| io_failure("flush frame", error))
 }
 
+// Native bounded streams return Interrupted when cancellation is set. The std
+// read_exact/write_all helpers retry it forever, hiding both cancel and deadline.
+fn read_exact_frame<R: Read>(reader: &mut R, mut bytes: &mut [u8], stage: &str) -> Result<()> {
+    while !bytes.is_empty() {
+        let count = reader
+            .read(bytes)
+            .map_err(|error| io_failure(stage, error))?;
+        if count == 0 {
+            return Err(io_failure(stage, io::ErrorKind::UnexpectedEof.into()));
+        }
+        bytes = &mut bytes[count..];
+    }
+    Ok(())
+}
 pub(crate) fn io_failure(stage: &str, error: io::Error) -> SeError {
-    SeError::new(se_types::Detail::IpcUnavailable(
-        se_types::details::IpcUnavailable {
+    let detail = if error.kind() == io::ErrorKind::Interrupted {
+        se_types::Detail::Cancelled(se_types::details::Cancelled {
+            op: format!("local IPC {stage}"),
+        })
+    } else {
+        se_types::Detail::IpcUnavailable(se_types::details::IpcUnavailable {
             endpoint: "verified local IPC channel".into(),
             reason: format!("{stage}: {error}"),
-        },
-    ))
+        })
+    };
+    SeError::new(detail).with_cause(error)
 }
 
 #[derive(Serialize)]

@@ -227,6 +227,19 @@ impl RuntimeBootstrap {
     /// The host has acquired its lease and authenticated endpoint, while still
     /// refusing agent admission. EOF, deadline or a different owner refuses.
     pub fn await_commit(mut self, host: HostInstanceId) -> ProcResult<RuntimeAdmission> {
+        self.await_commit_retained(host)
+    }
+    /// Retains the guard so the host can close and retire its published listener
+    /// before dropping an uncommitted guard after refusal. Only success supplies
+    /// admission; the original deadline, checks and diagnostics are unchanged.
+    /// An authenticated commit still precedes its ACK, including an ACK failure.
+    pub fn await_commit_retained(&mut self, host: HostInstanceId) -> ProcResult<RuntimeAdmission> {
+        if self.committed {
+            return Err(input(
+                "runtime ownership commit",
+                "runtime already committed",
+            ));
+        }
         let result = self.receive_commit(host);
         if let Err(error) = &result
             && !self.committed

@@ -13,7 +13,7 @@ pub struct Invocation {
 }
 
 pub struct Failure {
-    pub error: SeError,
+    pub error: Box<SeError>,
     pub json: bool,
 }
 
@@ -49,7 +49,10 @@ pub fn parse(args: Vec<OsString>) -> std::result::Result<Invocation, Failure> {
         let operation = ops::from_matches_with_key(&matches, generated)?;
         Ok(Invocation { operation, common })
     };
-    parse().map_err(|error| Failure { error, json })
+    parse().map_err(|error| Failure {
+        error: Box::new(error),
+        json,
+    })
 }
 
 pub fn json_requested(args: &[OsString]) -> bool {

@@ -53,6 +53,13 @@ impl HostedRuntime {
                 }
             }
         }
+        if self
+            .flush
+            .as_ref()
+            .is_some_and(|flush| flush.pending_requests == 0 && flush.indeterminate.is_empty())
+        {
+            self.execution.pending_writes.clear()?;
+        }
         let mut report = StorageDrainReport {
             writer_joined: self.flush.is_some(),
             flush: self.flush.clone().map_or_else(
@@ -72,7 +79,7 @@ impl HostedRuntime {
         if let Some(flush) = &self.flush
             && (flush.pending_requests != 0 || !flush.indeterminate.is_empty())
         {
-            report.pending.push("Writer join reports pending/indeterminate original operation identities; resolve them before resource closure.".into());
+            report.pending.push(format!("Writer join reports {} pending requests and indeterminate original identities {:?}; resolve them before resource closure.", flush.pending_requests, flush.indeterminate));
             return Ok(report);
         }
         let close_permit = self.execution.blocking.admit_owned(deadline).await?;
