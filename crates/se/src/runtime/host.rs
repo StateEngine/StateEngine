@@ -68,6 +68,21 @@ fn native_error(error: se_proc::ProcError) -> SeError {
             },
         ));
     }
+    if error.code == se_proc::ProcErrorCode::LaunchFailed
+        && let se_proc::ProcErrorDetail::Executable { program } = error.detail.as_ref()
+    {
+        return SeError::new(se_types::Detail::LaunchFailed(
+            se_types::details::LaunchFailed {
+                subject: program.display().to_string(),
+                reason: format!(
+                    "runtime executable could not be pinned: {}",
+                    error.native.as_ref().map(|native| native.reason.as_str())
+                        .unwrap_or("the image does not meet native launch preconditions")
+                ),
+                next_step: "Reinstall StateEngine or copy this executable to a regular single-link file and run that copy, then retry se up".into(),
+            },
+        ));
+    }
     se_core::scope::unreadable("native runtime bootstrap", &format!("{error:?}"))
 }
 fn deadline(timeout: Duration) -> Result<se_host::client::lease::Deadline> {

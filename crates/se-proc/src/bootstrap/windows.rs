@@ -160,8 +160,13 @@ impl Drop for Attributes {
     }
 }
 pub(super) fn spawn(spec: &RuntimeLaunchSpec, mut frame: Frame) -> ProcResult<Created> {
-    let image = crate::windows_native::open_image(&spec.executable, false)
-        .map_err(|e| fail("pin runtime executable", e.source))?;
+    let image = crate::windows_native::open_image(&spec.executable, false).map_err(|e| {
+        let mut error = fail("pin runtime executable", e.source);
+        error.detail = Box::new(ProcErrorDetail::Executable {
+            program: spec.executable.clone(),
+        });
+        error
+    })?;
     let (plan_read, plan_write) = pipe()?;
     let (events, ready) = pipe()?;
     let (authorization, authorize) = pipe()?;
