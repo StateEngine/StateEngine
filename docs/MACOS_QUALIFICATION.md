@@ -1,6 +1,6 @@
 # macOS qualification: native fixtures first
 
-Prepared against rust-se main `4fe8d76d43a00b4c699c24fb85d3c17c413b9e2a`.
+Prepared for the macOS J1 candidate based on main `4fe8d76d43a00b4c699c24fb85d3c17c413b9e2a`.
 No native Mac result is claimed. Counts below describe the cases in this source,
 not observed passes. Use an ordinary signed-in user's Terminal, outside an agent
 process tree; preserve failures and run the independent native checks first.
@@ -42,8 +42,8 @@ MAC_LOGS=$(mktemp -d "$HOME/se-macos-results.XXXXXX")
 the pin. `rustc -vV` must show a native Apple host (`aarch64-apple-darwin` or
 `x86_64-apple-darwin`). Save those outputs and the exact source SHA in the result
 directory. Do not substitute a Linux/Windows binary or a Rosetta run for the
-other architecture's qualification. No Homebrew SQLite is needed for these
-commands: the CLI's SQLite dependency builds its bundled C source with clang.
+other architecture's qualification. Install Python 3.11+ from [python.org](https://www.python.org/downloads/macos/)
+for the release tools; verify `python3 --version`. No Homebrew SQLite is needed: the CLI's SQLite dependency builds its bundled C source with clang.
 
 This helper keeps each real exit status beside its raw output; no pipe masks it:
 
@@ -87,21 +87,16 @@ short temporary root explicitly; it does not qualify every ambient `$TMPDIR`.
 mac_run cli-build cargo build --locked --release -p se --bin se -j 2
 ```
 
-At the prepared main, expect **compile failure / 0 CLI cases executed**:
-`crates/se/src/route/status.rs` calls `read_detachment`, but
-`crates/se/src/runtime/host.rs` exports it only on Linux/Windows. This was
-reproduced by macOS metadata checking on unchanged main `0abbfb44`; the same cfg
-mismatch remains in the prepared source. Retain the build log and skip this
-section's execution until a reviewed source fix builds; do not patch the Mac.
-
-Once that blocker is fixed, run the non-host cohort below. Its source inventory
-is **32 cases across 11 binaries, plus 1 ignored machine-identity child**; these
-are expected case counts, not a prediction that unqualified Mac adapters pass.
+The previous `read_detachment` cfg compile failure is repaired in this candidate;
+Apple metadata checks pass, while native linking/execution still need this Mac.
+Do not apply Linux SQLite metadata environment overrides to a native build.
+The supported non-host cohort below has **29 cases across 10 binaries, plus 1
+ignored machine-identity child**. These are case inventories, not observed passes.
 
 ```sh
 mac_run cli-version ./target/release/se --version
 mac_run cli-cohort env TMPDIR=/tmp cargo test --locked --release -p se -j 2 \
-  --test agent_allocations --test cli_followups --test credential_native \
+  --test agent_allocations --test cli_followups \
   --test decision_detail --test history_event --test install_home_custody \
   --test machine_identity --test project_root_absence --test project_roots \
   --test runtime_refusals --test uninstall_facts -- --test-threads=1
@@ -109,7 +104,7 @@ mac_run cli-cohort env TMPDIR=/tmp cargo test --locked --release -p se -j 2 \
 
 | Binary | Cases on macOS |
 | --- | ---: |
-| agent_allocations / cli_followups / credential_native | 1 / 4 / 3 |
+| agent_allocations / cli_followups | 1 / 4 |
 | decision_detail / history_event / install_home_custody | 5 / 6 / 1 |
 | machine_identity / project_root_absence / project_roots | 6 (+1 ignored) / 1 / 1 |
 | runtime_refusals / uninstall_facts | 1 / 3 |
@@ -120,18 +115,54 @@ Do not run `cargo test -p se --all-targets` as the first Mac probe. `host_e3`,
 Linux/Windows-only. Filtering their test names does not prevent compilation of
 those helpers. `endpoint_auto_recovery` and `unix_runtime_routing` are Linux-only;
 `breakaway_refusal` and `runtime_image_remedy` are Windows-only (0 cases on Mac).
-Detached bootstrap/process observation is also unimplemented on macOS:
-`route/runtime.rs` returns "detached host startup is unavailable on this platform".
-A cfg repair alone does not qualify `se up`, hosted writes or host retirement.
+`credential_native` has 3 additional cases but forces a 0775 parent; macOS's
+shared primary group cannot satisfy the current private-group proof. Leave that
+known fixture defect ungraded pending its reviewer-owned correction.
+
+Detached host/process supervision remains unavailable on macOS. Check the new
+plain/JSON refusal after a saved init (no host or endpoint should be created):
+
+```sh
+mkdir "$MAC_LOGS/up-repo"
+mac_run up-init ./target/release/se --home "$MAC_LOGS/up-home" \
+  init --repo "$MAC_LOGS/up-repo"
+mac_run unsupported-up ./target/release/se --json --home "$MAC_LOGS/up-home" up
+```
+
+The last command must fail with `feature-unavailable`, naming the missing native
+supervision and the direct init/status/saved-state or Linux/Windows alternative.
+Do not count this as a successful host launch or hosted-write qualification.
 
 ## 4. Journey 1 from the journey bundle
 
 Install an independent [Node.js 24+ runtime](https://nodejs.org/en/download) for
-the judge; verify `node --version`. J1 needs Git and a human Terminal, but no
-provider sign-in or agent launch. Keep the runner outside a managed agent tree;
-its environment check must pass without an authority bypass. Use the bundle's
-reviewed `product.json` describing a **native Mac** standalone archive of the
-same product SHA, not a hand-written installer wrapper or a bare copied binary:
+the reviewed standalone-capable journey bundle; verify `node --version`. Use the
+bundle that accepts `--distribution`, not the older Node main runner. J1 needs
+Git and a human Terminal, but no provider sign-in or agent launch. Its environment
+check must pass without an authority bypass.
+
+Build a native unsigned archive from the clean committed candidate. The build
+checks its native compiler host, thin Mach-O architecture, and system-only
+`otool -L` dependencies; it refuses cross-builds. Seed its offline inputs first:
+
+```sh
+case "$(uname -m)" in
+  arm64) MAC_TARGET=aarch64-apple-darwin ;;
+  x86_64) MAC_TARGET=x86_64-apple-darwin ;;
+esac
+rustup component add rust-docs
+cargo fetch --locked --target "$MAC_TARGET"
+mac_run native-build python3 scripts/release/build.py \
+  --target "$MAC_TARGET" --out "$MAC_LOGS/native-build"
+mac_run native-archive python3 scripts/release/assemble.py \
+  --build "$MAC_LOGS/native-build" --out "$MAC_LOGS/archive"
+```
+
+The build and archive must both succeed before running J1. Prime supplies the
+bundle's reviewed `product.json` pointing to that extracted native archive and
+its exact source SHA, with public installer/uninstaller argv and only `se`
+exposure. Preserve the unsigned manifest/checksum files. Do not transplant a
+binary into a Linux archive or use a hand-written installation wrapper.
 
 ```sh
 MAC_J1_OUT="$MAC_LOGS/j1"
@@ -146,14 +177,14 @@ stopped runtime, public terminal uninstall, command/PATH removal and outside
 process/fixture closure; `results.json` and `budgets.json` must agree. It does not
 qualify journeys 2–5 or hosted B9. No runtime host is launched by standalone J1.
 
-**Currently blocked before J1:** `scripts/release/inputs.json` supports only
-Linux x86_64 and Windows x86_64; `build.py` refuses Apple targets, and `install.sh`
-explicitly requires Linux x86_64 (also using GNU utilities). A native Mac archive
-and installer are required in addition to the CLI cfg fix. Do not relabel the
-Linux archive, edit its manifest or transplant a Mac binary into it. The existing
-journey harness has a Mac terminal path (`/usr/bin/script -q /dev/null`); that path
-itself still needs the native J1 walk. Give Prime the preserved blocker and
-completed socket counts if no Mac archive is available.
+The Mac installer uses the same native protected-home preparation as init,
+selects `$SE_HOME` or `~/Library/Application Support/StateEngine`, and records
+owned files and shell PATH edits for native `se uninstall`. Program commands
+remain under `~/.local/bin`; it does not overwrite an existing installation,
+repair an unsafe existing home or require GNU utilities. The native J1 run must
+witness the protected data home and the selected login shell's PATH before and
+after uninstall. Mac linking, execution, installer behavior and terminal handling
+remain ungraded until this walk; metadata alone does not clear them.
 
 ## Off-Mac preparation: metadata only
 
@@ -168,5 +199,5 @@ mac_run metadata-intel cargo check --locked --target x86_64-apple-darwin \
 ```
 
 These execute **0 native cases**, link no runnable Mac product and cannot turn
-any section above green. The runbook itself was checked without a workstation
-build, fixture or native Mac execution.
+any section above green. This candidate has cross-target metadata checks only;
+Apple linking, native execution and J1 still require the Mac.

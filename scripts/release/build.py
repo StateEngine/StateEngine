@@ -43,7 +43,9 @@ def checked_cargo_home():
     return home
 
 
-def native_requirements(path, windows):
+def native_requirements(path, windows, target=None):
+    apple = target is not None and target.endswith("apple-darwin")
+    architecture = "aarch64" if target == "aarch64-apple-darwin" else "x86_64"
     with path.open("rb") as stream:
         header = stream.read(64)
         if windows:
@@ -53,29 +55,37 @@ def native_requirements(path, windows):
             valid = stream.read(6) == b"PE\0\0\x64\x86"
             stream.seek(struct.unpack_from("<I", header, 60)[0] + 24)
             valid = valid and stream.read(2) == b"\x0b\x02"
+        elif apple:
+            cpu = 0x0100000C if architecture == "aarch64" else 0x01000007
+            valid = (len(header) >= 32 and header[:4] == b"\xcf\xfa\xed\xfe"
+                     and struct.unpack_from("<I", header, 4)[0] == cpu
+                     and struct.unpack_from("<I", header, 12)[0] == 2)
         else:
             valid = header[:6] == b"\x7fELF\x02\x01" and struct.unpack_from("<H", header, 18)[0] == 62
     if not valid:
-        raise ValueError("native executable architecture is not x86_64")
-    inspector = shutil.which("dumpbin.exe" if windows else "readelf")
+        raise ValueError(f"native executable does not match target {target or architecture}")
+    inspector = shutil.which("otool" if apple else "dumpbin.exe" if windows else "readelf")
     if not inspector:
-        raise ValueError("install native binutils or use the Visual Studio x64 Native Tools shell; dependency inspector is absent")
-    options = ["/DEPENDENTS"] if windows else ["--wide", "--dynamic", "--program-headers", "--version-info"]
+        raise ValueError("install Xcode Command Line Tools, native binutils or Visual Studio Native Tools for this platform; dependency inspector is absent")
+    options = ["-L"] if apple else ["/DEPENDENTS"] if windows else ["--wide", "--dynamic", "--program-headers", "--version-info"]
     environment = {**os.environ, "LC_ALL": "C"}
     report = subprocess.run([inspector, *options, str(path)], check=True, text=True,
                             stdout=subprocess.PIPE, env=environment).stdout
-    pattern = r"^\s+([\w.+-]+\.dll)\s*$" if windows else r"\(NEEDED\).*\[([^\]]+)\]"
+    pattern = (r"^\s+(.+?) \(compatibility version [^)]+\)\s*$" if apple else
+               r"^\s+([\w.+-]+\.dll)\s*$" if windows else r"\(NEEDED\).*\[([^\]]+)\]")
     needed = sorted(set(re.findall(pattern, report, re.M | re.I)))
     if not needed:
         raise ValueError("dependency inspector reported no readable native requirements")
     if windows and any(re.match(r"(vcruntime|msvcp|ucrtbase|api-ms-win-crt)", name, re.I) for name in needed):
         raise ValueError("Windows release unexpectedly requires a separate C runtime")
-    interpreters = re.findall(r"Requesting program interpreter: ([^\]]+)", report) if not windows else []
-    if not windows and len(interpreters) != 1:
+    if apple and any(not name.startswith(("/usr/lib/", "/System/Library/")) for name in needed):
+        raise ValueError("macOS archive requires a non-system dynamic library")
+    interpreters = re.findall(r"Requesting program interpreter: ([^\]]+)", report) if not (windows or apple) else []
+    if not (windows or apple) and len(interpreters) != 1:
         raise ValueError("GNU/Linux executable must report exactly one dynamic interpreter")
-    return {"format": "PE32+" if windows else "ELF64", "architecture": "x86_64",
-            "needed": needed, "interpreter": None if windows else interpreters[0],
-            "symbol_versions": [] if windows else sorted(set(re.findall(r"Name: ([\w.]+)", report))),
+    return {"format": "Mach-O64" if apple else "PE32+" if windows else "ELF64", "architecture": architecture,
+            "needed": needed, "interpreter": None if windows or apple else interpreters[0],
+            "symbol_versions": [] if windows or apple else sorted(set(re.findall(r"Name: ([\w.]+)", report))),
             "inspector_sha256": digest(Path(inspector))}
 
 
@@ -144,7 +154,7 @@ def main():
         out.mkdir(parents=True)
         shutil.copyfile(binary[0]["executable"], out / name)
     (out / name).chmod(0o755)
-    requirements = native_requirements(out / name, "windows" in args.target)
+    requirements = native_requirements(out / name, "windows" in args.target, args.target)
     version = subprocess.run([str(out / name), "--version"], cwd=out, check=True, text=True,
         stdout=subprocess.PIPE, env={k: v for k, v in {**os.environ, "PATH": ""}.items()
                                     if k in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP")}).stdout.strip()

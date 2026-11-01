@@ -159,26 +159,29 @@ pub fn observe<R: ReadStore>(
                     output.runtime.process =
                         Some(super::process::observe(&endpoint, &observation_bound)?);
                     drop(connection);
-                    let bound = se_host::client::lease::Deadline::from_options(&options)?;
-                    match crate::runtime::host::read_detachment(&cx.home, &endpoint, &bound) {
-                        Ok(Read::Present { value }) => {
-                            output.runtime.detachment = Some(value.detachment)
+                    #[cfg(any(target_os = "linux", windows))]
+                    {
+                        let bound = se_host::client::lease::Deadline::from_options(&options)?;
+                        match crate::runtime::host::read_detachment(&cx.home, &endpoint, &bound) {
+                            Ok(Read::Present { value }) => {
+                                output.runtime.detachment = Some(value.detachment)
+                            }
+                            Ok(Read::Absent { checked }) => output.pending.push(PendingFact {
+                                what: "host detachment".into(),
+                                since: None,
+                                detail: checked,
+                            }),
+                            Ok(other) => output.pending.push(PendingFact {
+                                what: "host detachment".into(),
+                                since: None,
+                                detail: format!("{other:?}"),
+                            }),
+                            Err(error) => output.pending.push(PendingFact {
+                                what: "host detachment".into(),
+                                since: None,
+                                detail: error.to_string(),
+                            }),
                         }
-                        Ok(Read::Absent { checked }) => output.pending.push(PendingFact {
-                            what: "host detachment".into(),
-                            since: None,
-                            detail: checked,
-                        }),
-                        Ok(other) => output.pending.push(PendingFact {
-                            what: "host detachment".into(),
-                            since: None,
-                            detail: format!("{other:?}"),
-                        }),
-                        Err(error) => output.pending.push(PendingFact {
-                            what: "host detachment".into(),
-                            since: None,
-                            detail: error.to_string(),
-                        }),
                     }
                 }
                 Err(error) => output.pending.push(PendingFact {

@@ -122,8 +122,10 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
 /// Installer wrapping is deliberately absent from the public command catalogue.
 /// The marker selects native serialization and grants no uninstall authority.
 pub fn dispatch_install_hold(args: &[OsString]) -> Option<Result<i32>> {
-    if args.get(1).map(OsString::as_os_str) != Some(OsStr::new("__install-hold")) {
-        return None;
+    match args.get(1).and_then(|value| value.to_str()) {
+        Some("__install-hold") => Some(crate::installer::run(args)),
+        Some("__install-home-check") => Some(crate::installer::check_home(args)),
+        Some("__install-sync") => Some(crate::installer::sync_paths(args)),
+        _ => None,
     }
-    Some(crate::installer::run(args))
 }

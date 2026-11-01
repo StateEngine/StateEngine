@@ -22,7 +22,7 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def native_binary(path, windows):
+def native_binary(path, windows, target=None):
     with path.open("rb") as stream:
         header = stream.read(64)
         if windows:
@@ -31,6 +31,12 @@ def native_binary(path, windows):
             stream.seek(struct.unpack_from("<I", header, 60)[0])
             if stream.read(6) != b"PE\0\0\x64\x86":
                 raise ValueError("Windows executable is not x86_64 PE")
+        elif target is not None and target.endswith("apple-darwin"):
+            cpu = 0x0100000C if target == "aarch64-apple-darwin" else 0x01000007
+            if (len(header) < 32 or header[:4] != b"\xcf\xfa\xed\xfe"
+                    or struct.unpack_from("<I", header, 4)[0] != cpu
+                    or struct.unpack_from("<I", header, 12)[0] != 2):
+                raise ValueError("macOS archive requires a thin native Mach-O executable for its target")
         elif header[:6] != b"\x7fELF\x02\x01" or struct.unpack_from("<H", header, 18)[0] != 62:
             raise ValueError("Linux executable is not x86_64 ELF")
 
@@ -74,7 +80,7 @@ def main():
             raise ValueError(f"unexpected payload path: {name}")
         if digest(build / name) != checksum:
             raise ValueError(f"build checksum mismatch: {name}")
-    native_binary(build / binary, windows)
+    native_binary(build / binary, windows, metadata["target"])
     args.out.mkdir(parents=True, exist_ok=True)
     stem = f'stateengine-{metadata["version"]}-{metadata["target"]}-unsigned'
     archive = args.out / (stem + (".zip" if windows else ".tar.gz"))
@@ -103,8 +109,8 @@ def main():
             'Installation does not launch a service or require Node, npm or Rust.\n')
         files = {p.relative_to(root).as_posix(): {"sha256": digest(p), "bytes": p.stat().st_size}
                  for p in sorted(root.rglob("*")) if p.is_file()}
-        if windows and len({name.casefold() for name in files}) != len(files):
-            raise ValueError("payload paths collide on the Windows filesystem")
+        if (windows or metadata["target"].endswith("apple-darwin")) and len({name.casefold() for name in files}) != len(files):
+            raise ValueError("payload paths collide on the target filesystem")
         (root / "manifest.json").write_text(json.dumps({
             "schema": "se.release/v1", "variant": "standalone", "trust": "unsigned",
             "version": metadata["version"], "target": metadata["target"],

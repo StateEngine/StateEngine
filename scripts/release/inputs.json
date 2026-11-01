@@ -4,7 +4,7 @@
   "package": "se",
   "default_features": false,
   "features": [],
-  "targets": ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"],
+  "targets": ["x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc", "aarch64-apple-darwin", "x86_64-apple-darwin"],
   "trust": "unsigned",
   "api_schema_sources": [
     "docs/design/10-types-and-host-api.md",

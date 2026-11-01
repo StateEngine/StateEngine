@@ -97,6 +97,10 @@ pub(super) fn prepare(creation: &mut NativeDirectoryCreation) -> Result<()> {
         .map_err(|error| invalid("the closed se.release/v1 manifest").with_cause(error))?;
     let target = if cfg!(windows) {
         "x86_64-pc-windows-msvc"
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        "aarch64-apple-darwin"
+    } else if cfg!(target_os = "macos") {
+        "x86_64-apple-darwin"
     } else {
         "x86_64-unknown-linux-gnu"
     };

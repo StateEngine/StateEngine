@@ -4,6 +4,37 @@ mod manifest;
 use args::Options;
 use se_types::{Result, SeError};
 use std::ffi::OsString;
+/// The worker marker alone cannot turn an unsafe existing home into an install.
+pub fn check_home(args: &[OsString]) -> Result<i32> {
+    if args.len() != 3 {
+        return Err(args::invalid("__install-home-check <selected data home>"));
+    }
+    let home = args::path(&args[2])?;
+    if home != crate::bootstrap::state_home(None)? {
+        return Err(args::invalid("the selected platform data home"));
+    }
+    se_proc::NativeStateFiles::open(&home).map_err(native)?;
+    Ok(0)
+}
+
+/// Darwin's sync utility has no per-file interface. Flush exact worker paths
+/// without treating an asynchronous global sync as a durable ownership claim.
+pub fn sync_paths(args: &[OsString]) -> Result<i32> {
+    if !(3..=34).contains(&args.len()) {
+        return Err(args::invalid("__install-sync <1 to 32 absolute paths>"));
+    }
+    for value in &args[2..] {
+        let path = args::path(value)?;
+        let file = std::fs::File::open(&path).map_err(|error| {
+            se_core::scope::unreadable(&path.display().to_string(), &error.to_string())
+        })?;
+        file.sync_all().map_err(|error| {
+            se_core::scope::unreadable(&path.display().to_string(), &error.to_string())
+        })?;
+    }
+    Ok(0)
+}
+
 pub fn run(args: &[OsString]) -> Result<i32> {
     let options = Options::parse(args)?;
     let claim = se_proc::NativeInstallationClaim::acquire().map_err(native)?;
