@@ -5,6 +5,8 @@ use super::macos as process;
 use super::*;
 mod cleanup;
 pub use cleanup::NativeUnixSocketCleanup;
+mod paths;
+pub use paths::UnixSocketPaths;
 use std::{
     fs::{self, File},
     io::{Read, Write},

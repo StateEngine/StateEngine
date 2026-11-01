@@ -234,6 +234,13 @@ pub(crate) fn pin_owned_directory(path: &Path) -> Result<File> {
     os::pin_directory(path)
 }
 
+/// A root-owned sticky temporary parent may contain a private runtime leaf.
+/// The caller must validate that leaf with the ordinary owned-root checks.
+#[cfg(unix)]
+pub(crate) fn pin_runtime_temporary_parent(path: &Path) -> Result<File> {
+    os::walk_effect_parent_for_creation(path)
+}
+
 /// Existing ancestors use the same native account/group policy in every creator.
 /// This never changes permissions and does not validate an owned state root.
 #[cfg(unix)]

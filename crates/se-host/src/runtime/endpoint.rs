@@ -418,13 +418,23 @@ impl HostedRuntime {
         let slots = self.execution.blocking.foreground_admission();
         let limits = self.limits.clone();
         let bind_deadline = deadline.clone();
+        #[cfg(unix)]
+        let socket_paths = self.socket_paths.clone();
         let listener = self
             .execution
             .blocking
             .run_owned(deadline, move || {
+                #[cfg(unix)]
+                let address = IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
+                    socket_paths
+                        .prepare(&directory, &bind_deadline.native_bound())
+                        .map_err(crate::client::lease::native_error)?,
+                )?);
+                #[cfg(windows)]
+                let address = address(&directory)?;
                 let record = EndpointRecord {
                     schema: 1,
-                    address: address(&directory)?,
+                    address,
                     epoch,
                     generation,
                     kind,
@@ -479,19 +489,25 @@ impl HostedRuntime {
         Ok(listener)
     }
 }
-/// The CLI compares a busy home's record before opening any channel to it.
-/// Unix platform-path inputs are supplied explicitly by the executable.
+/// Default address for an embedding without explicit Unix platform roots.
+/// A CLI with resolved Unix inputs uses UnixSocketPaths::expected_path instead;
+/// both comparisons precede any connection to a busy home's endpoint record.
 pub fn runtime_endpoint_address(directory: &std::path::Path) -> Result<IpcEndpoint> {
-    address(directory)
-}
-fn address(directory: &std::path::Path) -> Result<IpcEndpoint> {
     #[cfg(unix)]
     {
         Ok(IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
-            directory.join("runtime.sock"),
+            se_proc::native_ipc::UnixSocketPaths::default()
+                .expected_path(directory)
+                .map_err(crate::client::lease::native_error)?,
         )?))
     }
     #[cfg(windows)]
+    {
+        address(directory)
+    }
+}
+#[cfg(windows)]
+fn address(directory: &std::path::Path) -> Result<IpcEndpoint> {
     {
         use sha2::Digest;
         let peer =

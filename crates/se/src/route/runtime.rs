@@ -19,6 +19,16 @@ pub fn up(
     }
     let options = execute::options();
     let bound = Deadline::from_options(&options)?;
+    #[cfg(unix)]
+    let expected = se_host::IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
+        crate::config::unix_socket_paths()?
+            .expected_path(&cx.home)
+            .map_err(|error| {
+                scope::unreadable("expected runtime socket address", &error.to_string())
+                    .with_cause(error)
+            })?,
+    )?);
+    #[cfg(windows)]
     let expected = se_host::runtime_endpoint_address(&cx.home)?;
     let (endpoint, process, endpoint_recovery) = match se_host::route_endpoint(&cx.home, &expected)?
     {

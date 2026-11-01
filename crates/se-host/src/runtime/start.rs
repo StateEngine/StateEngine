@@ -44,6 +44,8 @@ impl RuntimeLease for HostLease {
     }
 }
 pub struct HostedRuntime {
+    #[cfg(unix)]
+    pub(crate) socket_paths: se_proc::native_ipc::UnixSocketPaths,
     pub(crate) execution: ExecutionContext,
     pub(crate) sources: TranscriptBindings,
     pub(crate) configuration: Option<se_core::config_policy::ConfigFile>,
@@ -66,6 +68,22 @@ pub struct HostedRuntime {
     pub(crate) image_sha256: se_types::Sha256,
 }
 impl HostedRuntime {
+    /// Explicit executable/embedding inputs; the library never reads ambient
+    /// XDG_RUNTIME_DIR or TMPDIR. Resolve these before listener publication.
+    #[cfg(unix)]
+    pub fn configure_unix_socket_paths(
+        &mut self,
+        paths: se_proc::native_ipc::UnixSocketPaths,
+    ) -> Result<()> {
+        if self.phase != crate::HostPhase::Prepared {
+            return Err(SeError::invalid(
+                "runtime socket paths",
+                "explicit paths before listener publication",
+            ));
+        }
+        self.socket_paths = paths;
+        Ok(())
+    }
     /// File and SQLite work run as one finite startup job before listener
     /// publication. Open never initializes missing state or invents a discovered G.
     pub async fn prepare(
@@ -253,6 +271,8 @@ fn prepare(
         pending_writes,
     };
     Ok(HostedRuntime {
+        #[cfg(unix)]
+        socket_paths: Default::default(),
         execution,
         configuration: None,
         writer: Some(writer),
