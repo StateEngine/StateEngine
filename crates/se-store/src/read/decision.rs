@@ -75,14 +75,21 @@ impl SqliteSnapshot {
                 return Ok(self.absent("decision transitions"));
             };
             let original = self.record(proposed)?;
-            if original.header.scope != self.scope.admission.scope
-                || !matches!(&original.body, EventBody::DecisionProposed { decision, .. } if decision == &id)
-            {
-                return Err(fail(
-                    StoreErrorCode::ProjectionInconsistent,
-                    "decision proposal lookup differs from its immutable event",
-                ));
-            }
+            let resolved = match &original.body {
+                EventBody::DecisionProposed {
+                    decision: resolved, ..
+                } if original.header.scope == self.scope.admission.scope
+                    && key(&self.db, "decision", resolved.as_str(), &scope, false)? == decision =>
+                {
+                    resolved
+                }
+                _ => {
+                    return Err(fail(
+                        StoreErrorCode::ProjectionInconsistent,
+                        "decision proposal lookup differs from its immutable event",
+                    ));
+                }
+            };
             let rows = {
                 let mut statement = self.db.prepare(
                     "SELECT event_seq FROM decision_data WHERE project_id=? AND (decision_id=? OR replacement_id=?) AND event_seq>? AND event_seq<=? ORDER BY event_seq LIMIT ?",
@@ -119,7 +126,7 @@ impl SqliteSnapshot {
                     break;
                 }
                 let event = self.record(seq)?;
-                if event.header.scope != self.scope.admission.scope || !relates(&event, &id) {
+                if event.header.scope != self.scope.admission.scope || !relates(&event, resolved) {
                     return Err(fail(
                         StoreErrorCode::ProjectionInconsistent,
                         "decision transition lookup differs from its immutable event",
