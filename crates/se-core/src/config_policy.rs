@@ -2,13 +2,7 @@
 use schemars::JsonSchema;
 use se_types::{Detail, Result, SeError, details};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    num::{NonZeroU32, NonZeroUsize},
-};
-
-pub const MIN_BLOCKING_JOBS: u32 = 2;
-pub const MAX_BLOCKING_JOBS: u32 = 8;
+use std::collections::BTreeMap;
 
 pub use se_types::Provider;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -30,36 +24,6 @@ pub enum Approval {
 pub struct RuntimeConfig {
     #[serde(default)]
     pub listen_port: Option<u16>,
-    /// Requested finite-work cap. Absence selects the native core count,
-    /// bounded to 2..=8; an explicit cap cannot exceed that native bound.
-    #[serde(default)]
-    pub blocking_jobs: Option<u32>,
-}
-impl RuntimeConfig {
-    pub fn resolve_blocking_jobs(&self, cores: NonZeroUsize) -> Result<NonZeroU32> {
-        if self
-            .blocking_jobs
-            .is_some_and(|jobs| !(MIN_BLOCKING_JOBS..=MAX_BLOCKING_JOBS).contains(&jobs))
-        {
-            return Err(invalid(
-                "runtime.blocking_jobs",
-                "expected an integer in 2..=8",
-            ));
-        }
-        if cores.get() < MIN_BLOCKING_JOBS as usize {
-            return Err(invalid(
-                "runtime.blocking_jobs",
-                "the host needs at least two available native cores for its minimum work cap",
-            ));
-        }
-        let native = cores.get().min(MAX_BLOCKING_JOBS as usize) as u32;
-        NonZeroU32::new(self.blocking_jobs.unwrap_or(native).min(native)).ok_or_else(|| {
-            invalid(
-                "runtime.blocking_jobs",
-                "expected a positive bounded work cap",
-            )
-        })
-    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -193,16 +157,6 @@ impl ConfigFile {
     pub fn validate(&self) -> Result<()> {
         if self.version != 1 {
             return Err(invalid("version", "expected version = 1"));
-        }
-        if self
-            .runtime
-            .blocking_jobs
-            .is_some_and(|jobs| !(MIN_BLOCKING_JOBS..=MAX_BLOCKING_JOBS).contains(&jobs))
-        {
-            return Err(invalid(
-                "runtime.blocking_jobs",
-                "expected an integer in 2..=8",
-            ));
         }
         if self
             .runtime
@@ -357,7 +311,7 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
     let parts: Vec<_> = key.split('.').collect();
     let (human_only, agent_record) = match parts.as_slice() {
         ["default_project"] | ["launch", "provider" | "terminal"] | ["atlas", "enabled"] => (false, false),
-        ["runtime", "listen_port" | "blocking_jobs"] | ["capture", "enabled"] => (true, false),
+        ["runtime", "listen_port"] | ["capture", "enabled"] => (true, false),
         ["providers", "claude" | "codex", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
         ["profiles", name, "sandbox" | "network" | "approval" | "bypass"] if !name.is_empty() => (true, false),
         _ => return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField { op: "config".into(), field: key.into(), next_step: "Use se help config for available commands; saved agent fields are model, profile and can-create.".into() }))),
@@ -366,46 +320,4 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
         human_only,
         agent_record,
     })
-}
-
-#[cfg(test)]
-mod runtime_budget_tests {
-    use super::*;
-    #[test]
-    fn finite_work_cap_respects_native_cores_and_owner_configuration() -> Result<()> {
-        for (cores, requested, expected) in [
-            (2, None, 2),
-            (4, None, 4),
-            (48, None, 8),
-            (48, Some(4), 4),
-            (4, Some(8), 4),
-        ] {
-            let cores =
-                NonZeroUsize::new(cores).ok_or_else(|| invalid("test cores", "positive"))?;
-            let config = RuntimeConfig {
-                blocking_jobs: requested,
-                ..Default::default()
-            };
-            assert_eq!(config.resolve_blocking_jobs(cores)?.get(), expected);
-        }
-        assert!(key_metadata("runtime.blocking_jobs")?.human_only);
-        Ok(())
-    }
-    #[test]
-    fn invalid_work_caps_are_refused_before_startup() -> Result<()> {
-        let cores = NonZeroUsize::new(8).ok_or_else(|| invalid("test cores", "positive"))?;
-        let one_core = NonZeroUsize::new(1).ok_or_else(|| invalid("test cores", "positive"))?;
-        assert!(
-            RuntimeConfig::default()
-                .resolve_blocking_jobs(one_core)
-                .is_err()
-        );
-        for requested in [0, 1, 9, u32::MAX] {
-            let mut config = ConfigFile::default();
-            config.runtime.blocking_jobs = Some(requested);
-            assert!(config.validate().is_err());
-            assert!(config.runtime.resolve_blocking_jobs(cores).is_err());
-        }
-        Ok(())
-    }
 }

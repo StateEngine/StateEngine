@@ -39,8 +39,6 @@ pub struct HostLimits {
     pub session_notice_ids: NonZeroU32,
     pub aggregate_notice_ids: NonZeroU32,
     pub response_bytes: NonZeroU32,
-    /// Total finite-work cap in 2..=8; the supplied runtime must use the same
-    /// blocking-thread cap. Maintenance occupies at most one of these jobs.
     pub blocking_jobs: NonZeroU32,
 }
 #[derive(Clone, Debug)]
