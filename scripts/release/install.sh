@@ -112,6 +112,17 @@ fi
 if [ "$macos" -eq 1 ]; then "$bundle/se" __install-home-check "$data"; fi
 owner=$(id -u)
 created_directories=''
+if [ "$macos" -eq 1 ]; then
+    # The native holder replaces this value with its exact creation custody.
+    # Prepend its shallow-to-deep paths so failed-install cleanup stays deepest first.
+    while IFS= read -r directory; do
+        if [ -n "$directory" ]; then
+            created_directories=$(printf '%s\n%s' "$directory" "$created_directories")
+        fi
+    done <<NATIVE_DIRECTORIES
+${SE_INSTALL_CREATED_DIRECTORIES-}
+NATIVE_DIRECTORIES
+fi
 stage=''
 temp_payload=''
 payload_destination=''
