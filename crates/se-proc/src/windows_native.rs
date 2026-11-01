@@ -1,5 +1,7 @@
 //! Shared Windows query primitives. Callers retain their handles/token buffers;
 //! typed adapters add their own operation context without copying native walks.
+mod parent;
+pub(crate) use parent::parent;
 use std::{
     collections::BTreeMap,
     fs::File,
