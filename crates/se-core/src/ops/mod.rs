@@ -7,6 +7,8 @@ pub mod agent_config_receipt;
 pub mod agent_status;
 mod cli;
 pub mod decision;
+pub mod decision_show;
+pub use decision_show::{DecisionDetail, DecisionOutput, DecisionShow, DecisionTransition};
 pub mod event;
 pub mod hook;
 pub mod inputs;
@@ -125,6 +127,7 @@ ops! {
     AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);
     ConfigGet => ConfigGet, ConfigValueOutput, ("config.get",leaf(&["config","get"]),no_mcp("Saved agent settings are inspected by the owner CLI."),Owner,false,Never,Read,Project,None,"se.config-value",ConfigValue,&["E3"]);
     ConfigSet => ConfigSet, AgentConfigReceipt, ("config.set",leaf(&["config","set"]),no_mcp("Saved agent metadata changes are owner CLI operations."),Owner,false,ConfigKey,Write,Project,HostForWrites,"se.config-receipt",ConfigReceipt,&["E3"]);
+    DecisionShow => DecisionShow, DecisionOutput, ("decision.show",leaf(&["decision","show"]),no_mcp("Decision detail is inspected through the project CLI."),Either,false,Never,Read,Project,None,"se.decision",Decision,&["E3","J4"]);
     DecisionPropose => DecisionPropose, DecisionReceipt, ("decision.propose",leaf(&["decide"]),tool("stateengine_decision_propose","Propose a decision","Save a proposal for the owner; a proposal does not ratify itself or become governing."),Either,false,Never,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J3","J4"]);
     DecisionRatify => DecisionRatify, DecisionReceipt, ("decision.ratify",leaf(&["decision","ratify"]),no_mcp("Only an independently verified owner terminal can ratify a proposal."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
     DecisionReject => DecisionReject, DecisionReceipt, ("decision.reject",leaf(&["decision","reject"]),no_mcp("Only an independently verified owner terminal can reject a proposal."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
@@ -202,6 +205,7 @@ impl AnyOutput {
             },
             Self::WorkingStateGet(v) => v.value.value.exit_code(),
             Self::ConfigGet(v) => v.value.value.exit_code(),
+            Self::DecisionShow(v) => v.value.decision.exit_code(),
             Self::AgentShow(v) => v.value.agent.exit_code(),
             Self::ProjectStatus(v) => {
                 let project = v.value.project.exit_code();

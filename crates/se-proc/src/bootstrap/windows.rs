@@ -165,6 +165,8 @@ pub(super) fn spawn(spec: &RuntimeLaunchSpec, mut frame: Frame) -> ProcResult<Cr
     let (plan_read, plan_write) = pipe()?;
     let (events, ready) = pipe()?;
     let (authorization, authorize) = pipe()?;
+    let (diagnostic_reader, diagnostic_writer) = pipe()?;
+    let diagnostics = diagnostics::Capture::start(diagnostic_reader, spec.deadline)?;
     // SAFETY: constant native current-process pseudo handle; output is uniquely owned on success.
     let parent = duplicate(unsafe { GetCurrentProcess() }, true)?;
     let auth = duplicate(authorization.as_raw_handle(), true)?;
@@ -178,22 +180,7 @@ pub(super) fn spawn(spec: &RuntimeLaunchSpec, mut frame: Frame) -> ProcResult<Cr
     }
     let input = duplicate(plan_read.as_raw_handle(), true)?;
     let output = duplicate(ready.as_raw_handle(), true)?;
-    // SAFETY: terminated constant null device and literal read/write/share flags.
-    let null = File::from(handle(
-        unsafe {
-            CreateFileW(
-                [b'N' as u16, b'U' as u16, b'L' as u16, 0].as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                ptr::null(),
-                OPEN_EXISTING,
-                0,
-                ptr::null_mut(),
-            )
-        },
-        "open runtime null stream",
-    )?);
-    let error_stream = duplicate(null.as_raw_handle(), true)?;
+    let error_stream = duplicate(diagnostic_writer.as_raw_handle(), true)?;
     let handles = [&parent, &auth, &input, &output, &error_stream];
     let mut inherited: Vec<_> = handles.iter().map(|h| h.as_raw_handle()).collect();
     let mut size = 0;
@@ -320,13 +307,14 @@ pub(super) fn spawn(spec: &RuntimeLaunchSpec, mut frame: Frame) -> ProcResult<Cr
         plan: plan_write,
         encoded: bytes,
         error: clear_error,
+        diagnostics,
     })
 }
 
-pub(super) fn receive() -> ProcResult<(Frame, File, File, Instant)> {
+pub(super) fn receive() -> ProcResult<(Frame, File, File, File, Instant)> {
     // SAFETY: static native standard-handle selectors; caller is the exact private early entry.
-    let input = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
-    let mut input = inherited(input)?;
+    let startup_stdin = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    let mut input = inherited(startup_stdin)?;
     // SAFETY: immutable type query on a retained private startup handle.
     if unsafe { GetFileType(input.as_raw_handle()) } != FILE_TYPE_PIPE {
         return Err(input_error());
@@ -345,7 +333,8 @@ pub(super) fn receive() -> ProcResult<(Frame, File, File, Instant)> {
     let parent = inherited(frame.handles[0] as usize as HANDLE)?;
     let authorize = inherited(frame.handles[1] as usize as HANDLE)?;
     // SAFETY: static stdout selector; inherited duplicates become noninheritable before any later child.
-    let events = inherited(unsafe { GetStdHandle(STD_OUTPUT_HANDLE) })?;
+    let startup_stdout = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+    let events = inherited(startup_stdout)?;
     let actual_parent = crate::windows_native::parents()
         .map_err(|e| fail(e.operation, e.source))?
         .get(&std::process::id())
@@ -372,7 +361,7 @@ pub(super) fn receive() -> ProcResult<(Frame, File, File, Instant)> {
     // the host initializes logging or creates another process.
     // SAFETY: read-only standard handle selector in this private early entry.
     let stderr = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
-    let _error_stream = inherited(stderr)?;
+    let diagnostics = inherited(stderr)?;
     // SAFETY: constant native null-device spelling and explicit noninheritance.
     let null = File::from(handle(
         unsafe {
@@ -398,7 +387,54 @@ pub(super) fn receive() -> ProcResult<(Frame, File, File, Instant)> {
         use std::os::windows::io::IntoRawHandle;
         let _table_reference = stream.into_raw_handle();
     }
-    Ok((frame, events, authorize, deadline))
+    for original in [startup_stdin, startup_stdout, stderr] {
+        // SAFETY: each distinct startup handle was duplicated into a retained
+        // private File, cleared of inheritance and replaced in the stdio table.
+        // Closing the old stderr writer is necessary for an honest later EOF.
+        if unsafe { CloseHandle(original) } == 0 {
+            return Err(last("close replaced runtime startup standard handle"));
+        }
+    }
+    Ok((frame, events, authorize, diagnostics, deadline))
+}
+
+pub(super) fn read_diagnostics(
+    file: &mut File,
+    buffer: &mut [u8],
+) -> ProcResult<diagnostics::ReadResult> {
+    let mut available = 0;
+    // SAFETY: this is the sole reader of a retained private anonymous pipe.
+    if unsafe {
+        PeekNamedPipe(
+            file.as_raw_handle(),
+            ptr::null_mut(),
+            0,
+            ptr::null_mut(),
+            &mut available,
+            ptr::null_mut(),
+        )
+    } == 0
+    {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) {
+            return Ok(diagnostics::ReadResult::Eof);
+        }
+        return Err(fail("inspect runtime startup stderr", error));
+    }
+    if available == 0 {
+        return Ok(diagnostics::ReadResult::Pending);
+    }
+    let amount = buffer.len().min(available as usize);
+    // The sole reader consumes only bytes already reported available, so this
+    // cannot wait on a live child. Oversized output is drained by the collector.
+    match file.read(&mut buffer[..amount]) {
+        Ok(0) => Ok(diagnostics::ReadResult::Eof),
+        Ok(length) => Ok(diagnostics::ReadResult::Bytes(length)),
+        Err(error) if error.raw_os_error() == Some(ERROR_BROKEN_PIPE as i32) => {
+            Ok(diagnostics::ReadResult::Eof)
+        }
+        Err(error) => Err(fail("read runtime startup stderr", error)),
+    }
 }
 fn input_error() -> ProcError {
     input(

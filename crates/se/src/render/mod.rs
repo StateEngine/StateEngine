@@ -1,4 +1,5 @@
 mod administration;
+mod decision;
 pub mod error;
 mod event;
 mod read;
@@ -38,6 +39,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             }
             (HumanKind::AgentReceipt, AnyOutput::AgentCreate(value)) => {
                 administration::agent(&value.value, out)?
+            }
+            (HumanKind::Decision, AnyOutput::DecisionShow(value)) => {
+                decision::output(&value.value, out)?
             }
             (HumanKind::DecisionReceipt, AnyOutput::Decision(value)) => {
                 administration::decision(&value.value, out)?

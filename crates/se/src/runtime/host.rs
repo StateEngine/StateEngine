@@ -9,6 +9,9 @@ pub use detachment::{DetachmentObservation, read_detachment};
 #[path = "host/child.rs"]
 mod child;
 #[cfg(any(target_os = "linux", windows))]
+#[path = "host/environment.rs"]
+mod environment;
+#[cfg(any(target_os = "linux", windows))]
 #[path = "host/launch.rs"]
 mod launch;
 #[cfg(any(target_os = "linux", windows))]

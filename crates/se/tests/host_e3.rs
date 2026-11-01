@@ -12,8 +12,6 @@ mod continuation_judge;
 mod executor_judge;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
-#[path = "support/history_cli.rs"]
-mod history_cli;
 #[path = "../src/runtime/host.rs"]
 mod host;
 #[path = "support/host_fixture.rs"]
@@ -221,11 +219,6 @@ fn listener_message_working_and_hook() -> Check {
         );
         assert!(matches!(report.backup, Read::Present { .. }));
         let pool = exit.runtime.blocking_pool();
-        exit.listener
-            .close_transport(&pool, &bound()?)
-            .await?
-            .retire(&pool, &bound()?)
-            .await?;
         let stop = exit
             .stop
             .take()
@@ -238,11 +231,19 @@ fn listener_message_working_and_hook() -> Check {
                 achieved: vec![se_host::client::endpoint::RuntimeStopFact::WriterJoined],
                 retained_resume: vec![],
                 pending: vec![
-                    "SDK test asserts storage only; full lifecycle shutdown is separate".into(),
+                    "Native transport release is pending; SDK test asserts storage only and full lifecycle shutdown is separate".into(),
                 ],
             },
         };
         stop.reply(&reply, &bound()?).await?;
+        // The authenticated stop channel is itself a live pipe instance. Reply
+        // with storage facts and explicit pending release, then let the real
+        // reactor drain it before asserting transport retirement and restart.
+        exit.listener
+            .close_transport(&pool, &bound()?)
+            .await?
+            .retire(&pool, &bound()?)
+            .await?;
         client.join().map_err(|_| "real IPC client panicked")??;
         if let Some(error) = exit.failure {
             return Err(Box::new(error) as Box<dyn std::error::Error>);
@@ -301,6 +302,12 @@ fn main() -> Check {
     se_proc::initialize_file_creation_owner()?;
     if args.get(1).is_some_and(|arg| arg == "--owner-client") {
         return presence_judge::client(&args);
+    }
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--startup-without-temp")
+    {
+        return startup_judge::without_temp_client(&args);
     }
     startup_judge::private_startup_refuses_missing_and_mismatched_machine()?;
     startup_judge::private_startup_serves_and_retires()?;

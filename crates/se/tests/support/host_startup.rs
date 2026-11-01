@@ -52,6 +52,64 @@ pub fn private_startup_refuses_missing_and_mismatched_machine() -> Check {
 /// Protects: detached E3 entry — authenticated inherited bootstrap starts the exact persisted machine owner, serves a real owner request and retires endpoint/storage before the native process exits.
 pub fn private_startup_serves_and_retires() -> Check {
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
+    let payload = serde_json::to_string(&(&f.home, &f.store, &f.owner, &f.project, &f.a, &f.b))?;
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    command.arg("--startup-without-temp").arg(payload);
+    for name in [
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "SE_SESSION",
+        "CLAUDECODE",
+        "CODEX_THREAD_ID",
+        "CODEX_CI",
+    ] {
+        command.env_remove(name);
+    }
+    let output = command.output()?;
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "private startup without inherited temp failed: {}",
+        output.status
+    );
+    drop(std::mem::ManuallyDrop::into_inner(f));
+    Ok(())
+}
+
+/// Protects: a caller without TEMP, TMP or TMPDIR still launches a native host that commits its owner message using product-owned temporary storage.
+pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
+    for name in ["TEMP", "TMP", "TMPDIR"] {
+        assert!(
+            std::env::var_os(name).is_none(),
+            "unexpected inherited {name}"
+        );
+    }
+    let payload = args
+        .get(2)
+        .and_then(|value| value.to_str())
+        .ok_or("native startup fixture identities")?;
+    let (home, store, owner, project, a, b): (
+        std::path::PathBuf,
+        StoreId,
+        se_types::HumanId,
+        se_types::ProjectId,
+        se_types::AgentId,
+        se_types::AgentId,
+    ) = serde_json::from_str(payload)?;
+    let f = std::mem::ManuallyDrop::new(Fixture {
+        options: StoreOptions {
+            state_directory: home.join("state"),
+            busy_timeout: Duration::from_secs(2),
+        },
+        home,
+        store,
+        owner,
+        project,
+        a,
+        b,
+    });
     println!("CASE private startup fixture {}", f.home.display());
     let (mut direct, lease) = f.direct()?;
     direct.append(
@@ -97,6 +155,25 @@ pub fn private_startup_serves_and_retires() -> Check {
         identity: &ready.ready.identity,
         credential: &credential,
     };
+    let temporary = f.options.state_directory.join("tmp");
+    drop(se_proc::NativeStateFiles::open(&temporary)?);
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+        assert_eq!(std::fs::metadata(&temporary)?.mode() & 0o777, 0o700);
+        let environment = std::fs::read(format!("/proc/{}/environ", ready.ready.identity.pid.0))?;
+        let entries: Vec<_> = environment
+            .split(|byte| *byte == 0)
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        let mut expected = b"TMPDIR=".to_vec();
+        expected.extend_from_slice(temporary.as_os_str().as_bytes());
+        assert_eq!(
+            entries,
+            vec![expected.as_slice()],
+            "native host environment is not the fixed protected-temp block"
+        );
+    }
     assert_eq!(ready.ready.identity.machine, machine);
     assert_eq!(ready.endpoint.epoch.owner.fields().machine, machine);
     assert_eq!(
@@ -244,9 +321,9 @@ pub fn private_startup_serves_and_retires() -> Check {
         Some(f.store.clone()),
     )?);
     println!(
-        "PASS private_startup_serves_and_retires: exact native owner, persisted machine, real message, pending full shutdown, outside exit and lease witnesses"
+        "PASS private_startup_serves_and_retires: no inherited TEMP/TMP/TMPDIR, exact native owner, persisted machine, real message, pending full shutdown, outside exit and lease witnesses"
     );
     drop(_cleanup);
-    drop(std::mem::ManuallyDrop::into_inner(f));
+    // The launching test owns fixture removal after this subprocess succeeds.
     Ok(())
 }

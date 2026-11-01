@@ -248,6 +248,8 @@ pub(super) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> ProcResult<Create
         .chain(Some(ptr::null_mut()))
         .collect();
     let (plan_read, plan_write) = pipe()?;
+    let (diagnostic_reader, diagnostic_writer) = pipe()?;
+    let diagnostics = diagnostics::Capture::start(diagnostic_reader, spec.deadline)?;
     let mut pair = [-1; 2];
     // SAFETY: exact native output; no path or listener is involved.
     if unsafe {
@@ -303,7 +305,7 @@ pub(super) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> ProcResult<Create
     for (source, target) in [
         (plan_read.as_raw_fd(), 0),
         (null.as_raw_fd(), 1),
-        (null.as_raw_fd(), 2),
+        (diagnostic_writer.as_raw_fd(), 2),
         (child.as_raw_fd(), 3),
     ] {
         // SAFETY: sources are retained >=10; targets are distinct reserved startup descriptors.
@@ -355,10 +357,11 @@ pub(super) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> ProcResult<Create
         plan: plan_write,
         encoded: bytes,
         error: None,
+        diagnostics,
     })
 }
 
-pub(super) fn receive() -> ProcResult<(Frame, File, File, Instant)> {
+pub(super) fn receive() -> ProcResult<(Frame, File, File, File, Instant)> {
     // SAFETY: exact reserved descriptors belong to this private early entry.
     let mut plan = unsafe { File::from_raw_fd(0) };
     // SAFETY: descriptor 3 is the explicit private duplex control descriptor.
@@ -438,9 +441,18 @@ pub(super) fn receive() -> ProcResult<(Frame, File, File, Instant)> {
         .write(true)
         .open("/dev/null")
         .map_err(|e| fail("open detached null stream", e))?;
+    // Keep the startup diagnostic socket private and CLOEXEC before replacing
+    // public stderr. The early launcher and final runtime share no Rust threads.
+    // SAFETY: duplicates only this authenticated private entry's stderr socket.
+    let diagnostics = owned(unsafe { libc::fcntl(2, libc::F_DUPFD_CLOEXEC, 10) })?;
     // SAFETY: replacing this private process's startup stdin with its retained null device.
     if unsafe { libc::dup2(null.as_raw_fd(), 0) } < 0 {
         return Err(fail("detach runtime stdin", io::Error::last_os_error()));
+    }
+    // SAFETY: replaces only the authenticated private child's public stderr;
+    // its separate CLOEXEC diagnostic reference remains retained by the guard.
+    if unsafe { libc::dup2(null.as_raw_fd(), 2) } < 0 {
+        return Err(fail("detach runtime stderr", io::Error::last_os_error()));
     }
     // Do not drop the old File(0) after dup2: that would close the new descriptor.
     std::mem::forget(plan);
@@ -467,7 +479,26 @@ pub(super) fn receive() -> ProcResult<(Frame, File, File, Instant)> {
     let authorization = events
         .try_clone()
         .map_err(|e| fail("duplicate runtime control", e))?;
-    Ok((frame, events, authorization, deadline))
+    Ok((frame, events, authorization, diagnostics, deadline))
+}
+
+pub(super) fn read_diagnostics(
+    file: &mut File,
+    buffer: &mut [u8],
+) -> ProcResult<diagnostics::ReadResult> {
+    match file.read(buffer) {
+        Ok(0) => Ok(diagnostics::ReadResult::Eof),
+        Ok(length) => Ok(diagnostics::ReadResult::Bytes(length)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+            ) =>
+        {
+            Ok(diagnostics::ReadResult::Pending)
+        }
+        Err(error) => Err(fail("read runtime startup stderr", error)),
+    }
 }
 pub(super) fn hello(events: &mut File, deadline: Instant) -> ProcResult<()> {
     write(events, b"R", deadline)

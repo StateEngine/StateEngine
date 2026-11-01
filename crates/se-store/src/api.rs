@@ -383,6 +383,15 @@ pub trait Snapshot {
     /// Uses the same actor/kind/unread and visibility predicates as messages.
     fn message_count(&mut self, query: MessageQuery) -> StoreResult<u64>;
     fn decision(&mut self, id: DecisionId) -> StoreResult<Read<ProjectionRecord>>;
+    /// Immutable decision events, oldest first, including supersede events
+    /// naming this decision as either prior or replacement.
+    /// A continuation retains its original high-water; unknown is Absent and a
+    /// known excluded decision/event is a typed scope refusal, never an empty page.
+    fn decision_transitions(
+        &mut self,
+        id: DecisionId,
+        budget: ReadBudget,
+    ) -> StoreResult<Read<Page<StoredEvent>>>;
     fn decisions(
         &mut self,
         query: DecisionQuery,

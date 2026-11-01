@@ -6,6 +6,10 @@
 //! Windows private uninstall handoff have concrete native implementations. Native
 //! resource layouts are intentionally opaque; no handle is Clone or Default.
 
+#[cfg(windows)]
+mod windows_directory;
+#[cfg(windows)]
+pub use windows_directory::windows_directory;
 mod checkpoint;
 pub use checkpoint::{
     Checkpoint, CheckpointError, CheckpointKind, CheckpointPrincipal, CheckpointSource,
@@ -47,8 +51,8 @@ pub use stdio::*;
 mod bootstrap;
 #[cfg(any(target_os = "linux", windows))]
 pub use bootstrap::{
-    NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, current_process_identity,
-    current_runtime_identity,
+    NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, RuntimeStartupStderr,
+    current_process_identity, current_runtime_identity,
 };
 #[cfg(any(target_os = "linux", windows))]
 mod platform;

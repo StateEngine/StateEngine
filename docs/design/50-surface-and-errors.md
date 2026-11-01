@@ -1540,7 +1540,7 @@ The same decision after `se decision ratify dec_…` run in the owner's terminal
 | `$.items[].unreadable` | null \| `{reason}` | yes | set for a row that exists but could not be decoded (its other fields are then null); also counted in `window.omitted` |
 | `$.window`, `$.next` | Window, Cursor \| null | yes | A.0. An omission with reason `unreadable` exits 2. |
 
-`se.decision/v1` (`se decision show ID`) is `{"schema":"se.decision/v1","decision":Read<DecisionDetail>}`. `DecisionDetail` is a `DecisionRow` whose `statement.complete` is always true, plus `transitions[]`: `{action, by: Ref + kind, at, event_id, reason}`, oldest first. An unknown id gives `{"state":"absent","checked":"decisions in project app"}`, exit 0. An undecodable row gives `unreadable`, exit 3.
+`se.decision/v1` (`se decision show ID`) is `{"schema":"se.decision/v1","decision":Read<DecisionDetail>}`. `DecisionDetail` is a `DecisionRow` whose `statement.complete` is always true, plus `transitions[]`: `{action, by: Ref + kind, at, event_id, reason}`, oldest first. An unknown id gives `{"state":"absent","checked":"decisions in project app"}`, exit 0. An undecodable row gives `unreadable`, exit 3. Detail uses only the exact-ID transition reader at one snapshot: up to 32 pages of 128 events and 1 MiB each, with a 250 ms deadline per page. Exhausting these bounds gives `unreadable`, never a partial success. Incoming committed supersede transitions appear in the replacement’s history without incrementing its own revision; a proposal’s intended predecessor alone is not an effective supersede transition.
 
 ```json
 {"schema":"se.decision-page/v1","project":{"id":"prj_0192f3a0-1111-7aaa-8bbb-000000000001","name":"app"},

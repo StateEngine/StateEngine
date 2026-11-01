@@ -33,9 +33,15 @@ impl HostedListener {
         blocking: &BlockingPool,
         deadline: &crate::client::lease::Deadline,
     ) -> Result<RetainedEndpoint> {
+        self.listener
+            .close_joined(blocking, deadline)
+            .await
+            .map_err(|error| {
+                se_core::scope::unreadable("IPC transport pending release", &error.to_string())
+                    .with_cause(error)
+            })?;
         blocking
             .run_owned(deadline, move || {
-                self.listener.close()?;
                 self.publication.verify()?;
                 Ok(RetainedEndpoint {
                     publication: self.publication,
@@ -174,25 +180,44 @@ impl HostedRuntime {
     pub async fn listen_bootstrap(
         &mut self,
         runtime: tokio::runtime::Handle,
-        bootstrap: se_proc::RuntimeBootstrap,
+        mut bootstrap: se_proc::RuntimeBootstrap,
         instance: se_proc::HostInstanceId,
         deadline: &crate::client::lease::Deadline,
     ) -> Result<HostedListener> {
-        let identity = bootstrap.identity();
-        if identity.machine != self.epoch.owner.fields().machine
-            || identity.pid.0 != self.epoch.owner.fields().pid.get()
-            || identity.image != self.epoch.owner.fields().executable.to_local()?
-        {
-            return Err(SeError::invalid(
-                "host bootstrap",
-                "the exact native owner of this lease",
-            ));
+        let prepared = async {
+            let identity = bootstrap.identity();
+            if identity.machine != self.epoch.owner.fields().machine
+                || identity.pid.0 != self.epoch.owner.fields().pid.get()
+                || identity.image != self.epoch.owner.fields().executable.to_local()?
+            {
+                return Err(SeError::invalid(
+                    "host bootstrap",
+                    "the exact native owner of this lease",
+                ));
+            }
+            let listener = self.publish_listener(runtime, deadline).await?;
+            self.phase = crate::HostPhase::Activating;
+            let permit = self.execution.blocking.admit_owned(deadline).await?;
+            Ok((listener, permit))
         }
-        let listener = self.publish_listener(runtime, deadline).await?;
-        self.phase = crate::HostPhase::Activating;
+        .await;
+        let (listener, permit) = match prepared {
+            Ok(value) => value,
+            Err(error) => {
+                bootstrap
+                    .report_startup_failure("host listener preparation", &error.to_string())
+                    .map_err(|failure| {
+                        se_core::scope::unreadable(
+                            "native startup diagnostic",
+                            &format!("{failure:?}"),
+                        )
+                    })?;
+                return Err(error);
+            }
+        };
         self.execution
             .blocking
-            .run_owned(deadline, move || {
+            .run_admitted_owned(permit, move || {
                 bootstrap.await_commit(instance).map_err(|error| {
                     se_core::scope::unreadable("native runtime commit", &format!("{error:?}"))
                 })?;

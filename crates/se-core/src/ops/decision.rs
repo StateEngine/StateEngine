@@ -197,7 +197,7 @@ fn text(value: &se_store::StoredText, subject: &str) -> Result<String> {
         )),
     }
 }
-fn row<R: Snapshot>(
+pub(super) fn row<R: Snapshot>(
     id: &DecisionId,
     latest: &se_store::StoredEvent,
     cx: &mut Cx<'_, R>,

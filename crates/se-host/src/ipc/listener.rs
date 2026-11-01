@@ -11,7 +11,10 @@ use crate::client::{
 use channel::{bounded, receive, send};
 #[path = "listener/connection.rs"]
 mod connection;
+#[path = "listener/retirement.rs"]
+mod retirement;
 pub use connection::IpcConnection;
+pub use retirement::IpcClose;
 use se_types::{Result, SeError};
 use std::sync::{Arc, atomic::AtomicBool};
 use tokio::{runtime::Handle, sync::Semaphore};
@@ -185,21 +188,6 @@ impl IpcListener {
             connections: Arc::clone(&self.connections),
             deadline,
         })
-    }
-    pub fn close(self) -> Result<()> {
-        let Self {
-            native, listener, ..
-        } = self;
-        drop(listener);
-        #[cfg(unix)]
-        {
-            native.close().map_err(native_error)
-        }
-        #[cfg(windows)]
-        {
-            drop(native);
-            Ok(())
-        }
     }
 }
 /// OS accept is complete. Drive this handshake in a per-connection task;

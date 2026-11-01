@@ -389,6 +389,9 @@ impl Kernel {
                 )?
                 .into(),
             ),
+            AnyOp::DecisionShow(input) => {
+                OpStep::Complete(crate::ops::decision_show::read(input, cx)?.into())
+            }
             AnyOp::EventRead(input) => OpStep::Complete(crate::ops::event::read(input, cx)?.into()),
             AnyOp::MessageList(input) => {
                 OpStep::Complete(crate::ops::message::list(input, cx)?.into())

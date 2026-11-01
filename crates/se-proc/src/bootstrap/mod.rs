@@ -17,6 +17,8 @@ use linux as os;
 mod windows;
 #[cfg(windows)]
 use windows as os;
+mod diagnostics;
+pub use diagnostics::RuntimeStartupStderr;
 
 const ENTRY: &str = "--stateengine-private-runtime-bootstrap";
 const MAX_FRAME: usize = 1024 * 1024;
@@ -98,6 +100,7 @@ struct Created {
     plan: File,
     encoded: Vec<u8>,
     error: Option<ProcError>,
+    diagnostics: diagnostics::Capture,
 }
 pub(crate) struct Parent {
     native: os::Child,
@@ -109,8 +112,14 @@ pub(crate) struct Parent {
     detachment: RuntimeDetachment,
     commit_sent: bool,
     released: bool,
+    diagnostics: diagnostics::Capture,
 }
 impl RuntimeChild {
+    /// Returns the retained stderr tail, waiting at most 250 ms and never past
+    /// the supplied deadline. Incomplete, failed and complete-empty differ.
+    pub fn startup_stderr(&self, deadline: Instant) -> ProcResult<RuntimeStartupStderr> {
+        self.state.diagnostics.readback(deadline)
+    }
     /// An ambiguous commit may have enabled admission. Core must reconcile the
     /// authenticated lease/endpoint; abort refuses after this point.
     pub fn commit_pending(&self) -> bool {
@@ -129,6 +138,7 @@ pub struct RuntimeBootstrap {
     identity: ProcessIdentity,
     deadline: Instant,
     committed: bool,
+    diagnostics: File,
 }
 /// Child-side proof that the parent committed this exact ready owner.
 pub struct RuntimeAdmission {
@@ -156,7 +166,7 @@ impl RuntimeBootstrap {
                 "no public arguments accepted",
             ));
         }
-        let (frame, mut events, mut authorization, deadline) = os::receive()?;
+        let (frame, mut events, mut authorization, diagnostics, deadline) = os::receive()?;
         if frame.version != 1 || frame.nonce == [0; 16] || frame.arguments.len() > 1024 {
             return Err(input(
                 "runtime envelope",
@@ -186,6 +196,7 @@ impl RuntimeBootstrap {
             identity,
             deadline,
             committed: false,
+            diagnostics,
         }))
     }
     pub fn arguments(&self) -> impl ExactSizeIterator<Item = &std::ffi::OsStr> {
@@ -197,9 +208,40 @@ impl RuntimeBootstrap {
     pub fn startup_nonce(&self) -> [u8; 16] {
         self.frame.nonce
     }
+    /// Writes only a fixed stage and already public/redacted refusal. Never
+    /// supply credentials, raw arguments or the authenticated bootstrap frame.
+    /// Public stdio remains detached; this bounded private stream is startup-only.
+    pub fn report_startup_failure(&mut self, stage: &str, public_refusal: &str) -> ProcResult<()> {
+        if self.committed {
+            return Err(input("startup failure", "runtime already committed"));
+        }
+        let bytes = diagnostics::public_line(stage, public_refusal)?;
+        // A refusal after the admission deadline still needs a finite chance
+        // to reach its parent; this grants no additional admission time.
+        os::write(
+            &mut self.diagnostics,
+            &bytes,
+            Instant::now() + Duration::from_millis(100),
+        )
+    }
     /// The host has acquired its lease and authenticated endpoint, while still
     /// refusing agent admission. EOF, deadline or a different owner refuses.
     pub fn await_commit(mut self, host: HostInstanceId) -> ProcResult<RuntimeAdmission> {
+        let result = self.receive_commit(host);
+        if let Err(error) = &result
+            && !self.committed
+        {
+            // Only fixed input descriptions/native operation names, never
+            // nonce bytes, frames, supplied argv or credential material.
+            let message = match error.detail.as_ref() {
+                ProcErrorDetail::Input { field, reason } => format!("{field}: {reason}"),
+                _ => format!("native ownership commit refused: {:?}", error.code),
+            };
+            let _ = self.report_startup_failure("await_commit", &message);
+        }
+        result
+    }
+    fn receive_commit(&mut self, host: HostInstanceId) -> ProcResult<RuntimeAdmission> {
         let mut command = [0; 33];
         os::read(&mut self.authorization, &mut command, self.deadline)?;
         if command[0] != b'C' || command[1..17] != self.frame.nonce || command[17..] != host.0 {
@@ -390,6 +432,7 @@ impl NativeProcessApi for NativeProcessRuntime {
             mut plan,
             encoded,
             error: creation_error,
+            diagnostics,
         } = os::spawn(&spec, frame).map_err(|error| {
             Box::new(RuntimeSpawnFailure {
                 error,
@@ -407,6 +450,7 @@ impl NativeProcessApi for NativeProcessRuntime {
                 detachment,
                 commit_sent: false,
                 released: false,
+                diagnostics,
             },
         };
         let result = (|| {

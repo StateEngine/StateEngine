@@ -76,9 +76,9 @@ pub fn start(
                 generation.get().to_string().into(),
                 configuration.as_os_str().into(),
             ],
-            // Native bootstrap owns exact inherited channels. No session/provider
-            // credential or public ambient authority is inherited by the host.
-            environment: se_proc::Environment { entries: vec![] },
+            // Native bootstrap passes only this fixed block. SQLite retains
+            // file-backed temporary storage within the protected state home.
+            environment: super::environment::prepare(&files)?,
             deadline: bound.at(),
         };
         Ok((files, spec, instance, generation))
@@ -87,18 +87,12 @@ pub fn start(
     let (files, spec, instance, generation) = setup;
     let nonce = spec.startup_nonce;
     let launched = NativeProcessRuntime::spawn_runtime(spec).map_err(|failure| {
-        Box::new(StartupFailure {
-            error: native_error(failure.error),
-            child: failure.remaining,
-        })
+        startup_failure(native_error(failure.error), failure.remaining, bound)
     })?;
     let endpoint = match wait_endpoint(&files, &launched.identity, generation, bound) {
         Ok(endpoint) => endpoint,
         Err(error) => {
-            return Err(Box::new(StartupFailure {
-                error,
-                child: Some(launched.child),
-            }));
+            return Err(startup_failure(error, Some(launched.child), bound));
         }
     };
     let proof = (|| -> Result<_> {
@@ -153,17 +147,11 @@ pub fn start(
     let proof = match proof {
         Ok(proof) => proof,
         Err(error) => {
-            return Err(Box::new(StartupFailure {
-                error,
-                child: Some(launched.child),
-            }));
+            return Err(startup_failure(error, Some(launched.child), bound));
         }
     };
     let ready = NativeProcessRuntime::commit_runtime(launched.child, proof).map_err(|failure| {
-        Box::new(StartupFailure {
-            error: native_error(failure.error),
-            child: Some(failure.child),
-        })
+        startup_failure(native_error(failure.error), Some(failure.child), bound)
     })?;
     let detachment_record = match super::detachment::publish(home, &endpoint, &ready, bound) {
         Ok(value) => se_types::Read::Present { value },
@@ -178,6 +166,35 @@ pub fn start(
         endpoint,
         detachment_record,
     })
+}
+fn startup_failure(
+    error: SeError,
+    child: Option<RuntimeChild>,
+    bound: &se_host::client::lease::Deadline,
+) -> Box<StartupFailure> {
+    let error = match child.as_ref() {
+        Some(child) => {
+            // Diagnostics never extend the original startup bound or hold an
+            // ambiguous live child open while waiting for its eventual EOF.
+            let until = bound
+                .at()
+                .min(std::time::Instant::now() + Duration::from_millis(100));
+            let observed = match child.startup_stderr(until) {
+                Ok(stderr) => format!(
+                    "child startup stderr (complete={}, truncated={}, read_failure={:?}): {}",
+                    stderr.complete,
+                    stderr.truncated,
+                    stderr.failure,
+                    String::from_utf8_lossy(&stderr.bytes),
+                ),
+                Err(failure) => format!("child startup stderr unreadable: {failure:?}"),
+            };
+            se_core::scope::unreadable("runtime startup", &format!("{error}; {observed}"))
+                .with_cause(error)
+        }
+        None => error,
+    };
+    Box::new(StartupFailure { error, child })
 }
 fn wait_endpoint(
     files: &se_proc::NativeStateFiles,
@@ -222,9 +239,12 @@ fn wait_endpoint(
                     se_proc::ProcessRead::Present(value)
                         if value.identity == *owner
                             && value.state != se_proc::NativeState::ExitedAwaitingReap => {}
-                    _ => {
-                        return Err(invalid(
-                            "the still-executing exact runtime child before publication",
+                    observed => {
+                        return Err(se_core::scope::unreadable(
+                            "runtime child before endpoint publication",
+                            &format!(
+                                "expected live exact child {owner:?}; native observation: {observed:?}"
+                            ),
                         ));
                     }
                 }

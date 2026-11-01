@@ -215,6 +215,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(positional("name", 1, true))
             .arg(value("provider").value_parser(["claude", "codex"]))
             .arg(value("model")),
+        "decision.show" => c.arg(positional("decision_id", 1, true)),
         "decision.propose" => c
             .arg(positional("decision_key", 1, true))
             .arg(positional("statement", 2, true))
@@ -433,6 +434,9 @@ pub fn from_matches_with_key(
                     .transpose()?,
                 model: text(m, "model"),
                 idempotency_key: key()?,
+            }),
+            "decision.show" => AnyOp::DecisionShow(DecisionShow {
+                decision_id: required(m, "decision_id")?,
             }),
             "decision.propose" => AnyOp::DecisionPropose(DecisionPropose {
                 key: required(m, "decision_key")?,

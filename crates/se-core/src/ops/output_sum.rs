@@ -63,5 +63,6 @@ AgentCreate => AgentCreate, AgentReceipt;
 AgentShow => AgentShow, AgentStatusOutput;
 ConfigGet => ConfigGet, ConfigValueOutput;
 ConfigSet => ConfigSet, AgentConfigReceipt;
+DecisionShow => DecisionShow, DecisionOutput;
 Decision => DecisionPropose, DecisionReceipt;
 }

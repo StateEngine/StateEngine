@@ -7,7 +7,23 @@ use std::{
 };
 
 pub(super) fn receive(guard: se_proc::RuntimeBootstrap) -> Result<u8> {
-    let args: Vec<_> = guard.arguments().map(OsString::from).collect();
+    // An uncommitted native guard exits the process when dropped. Keep it in
+    // this caller until the actual public refusal has reached its private
+    // diagnostic stream; returning an error first would erase its reason.
+    let mut guard = Some(guard);
+    let result = receive_inner(&mut guard);
+    if let (Err(error), Some(bootstrap)) = (&result, guard.as_mut()) {
+        bootstrap
+            .report_startup_failure("host preparation", &error.to_string())
+            .map_err(native_error)?;
+    }
+    result
+}
+fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
+    let bootstrap = guard
+        .as_ref()
+        .ok_or_else(|| invalid("the retained authenticated bootstrap"))?;
+    let args: Vec<_> = bootstrap.arguments().map(OsString::from).collect();
     let [tag, home, instance, generation, configuration] = args.as_slice() else {
         return Err(invalid(
             "the closed host/home/instance/generation/configuration frame",
@@ -22,7 +38,7 @@ pub(super) fn receive(guard: se_proc::RuntimeBootstrap) -> Result<u8> {
         return Err(invalid("absolute native home and configuration paths"));
     }
     let persisted = machine(&home)?;
-    if persisted != guard.identity().machine {
+    if persisted != bootstrap.identity().machine {
         return Err(invalid(
             "the initialized protected machine identity matching the native bootstrap",
         ));
@@ -40,9 +56,9 @@ pub(super) fn receive(guard: se_proc::RuntimeBootstrap) -> Result<u8> {
         configuration != home.join("config.toml"),
     )?;
     config.value.validate()?;
-    let identity = se_proc::current_runtime_identity(guard.identity().machine.clone())
+    let identity = se_proc::current_runtime_identity(bootstrap.identity().machine.clone())
         .map_err(native_error)?;
-    if identity.process != *guard.identity() {
+    if identity.process != *bootstrap.identity() {
         return Err(invalid("the native bootstrap's unchanged process identity"));
     }
     let peer = se_proc::native_ipc::observe_ipc_self().map_err(|e| {
@@ -108,8 +124,11 @@ pub(super) fn receive(guard: se_proc::RuntimeBootstrap) -> Result<u8> {
         let restored=host.restore_transcripts(&bound).await?;
         if !restored.unavailable.is_empty() {eprintln!("capture recovery: {} binding(s) unavailable; their original cursors remain protected",restored.unavailable.len());}
         host.configure(config.value)?;
+        let bootstrap = guard
+            .take()
+            .ok_or_else(|| invalid("the retained bootstrap before listener admission"))?;
         let listener = host
-            .listen_bootstrap(engine.handle().clone(), guard, instance, &bound)
+            .listen_bootstrap(engine.handle().clone(), bootstrap, instance, &bound)
             .await?;
         let exit = host.serve(listener).await;
         finish(exit).await
@@ -148,21 +167,21 @@ async fn finish(mut exit: se_host::HostServeExit) -> Result<u8> {
         ));
     }
     let pool = exit.runtime.blocking_pool();
-    exit.listener
-        .close_transport(&pool, &bound)
-        .await?
-        .retire(&pool, &bound)
-        .await?;
     if let Some(stop) = exit.stop {
         let reply=se_host::client::endpoint::RuntimeStopReply {
             epoch:stop.request().expected_epoch.clone(),generation:stop.request().generation,key:stop.request().key.clone(),
             outcome:se_host::client::endpoint::RuntimeStopOutcome::Facts {
                 achieved:vec![se_host::client::endpoint::RuntimeStopFact::WriterJoined],retained_resume:vec![],
-                pending:vec!["The storage writer and endpoint closed; agent/debt/resume and final lease-release witnesses are not yet supplied by the lifecycle coordinator.".into()],
+                pending:vec!["The storage writer joined; native transport release, endpoint retirement and agent/debt/resume/final lease-release witnesses remain pending.".into()],
             },
         };
         stop.reply(&reply, &bound).await?;
     }
+    exit.listener
+        .close_transport(&pool, &bound)
+        .await?
+        .retire(&pool, &bound)
+        .await?;
     if let Some(error) = exit.failure {
         return Err(error);
     }

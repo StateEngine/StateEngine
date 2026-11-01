@@ -300,15 +300,11 @@ pub(super) fn verify_capture(
         };
         assert_eq!(text, "outside provider text");
     }
-    let captured = turns.items().first().cloned();
     let current = present(read.capture_source(source)?)?;
     let EventBody::CaptureProgress { new_offset, .. } = current.current.body else {
         return Err("capture progress missing".into());
     };
     assert_eq!(new_offset, offset);
     read.close()?;
-    if let Some(event) = captured {
-        crate::history_cli::captured_turn(&f.options.state_directory, &f.project, &event)?;
-    }
     Ok(())
 }
