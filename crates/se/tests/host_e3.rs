@@ -28,6 +28,8 @@ mod recovery_judge;
 mod route;
 #[path = "support/host_shutdown.rs"]
 mod shutdown_judge;
+#[path = "support/host_shutdown_write.rs"]
+mod shutdown_write_judge;
 #[path = "support/host_startup.rs"]
 mod startup_judge;
 use fixture::*;
@@ -310,6 +312,18 @@ fn main() -> Check {
     }
     if args
         .get(1)
+        .is_some_and(|arg| arg == "--judge-shutdown-write")
+    {
+        return shutdown_write_judge::check();
+    }
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == "--judge-shutdown-write-control")
+    {
+        return shutdown_write_judge::control();
+    }
+    if args
+        .get(1)
         .is_some_and(|arg| arg == "--judge-crash-restart")
     {
         return recovery_judge::restart_after_crash();
@@ -320,9 +334,10 @@ fn main() -> Check {
     shutdown_judge::disconnected_stop()?;
     shutdown_judge::pending_drain()?;
     shutdown_judge::cancelled_stop()?;
+    shutdown_write_judge::check()?;
     recovery_judge::restart_after_crash()?;
     println!(
-        "host_e3: 10 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
+        "host_e3: 11 passed; 0 failed; boundary: native library and real IPC/store; agent-tree IPC case deferred to wave 2, installed lifecycle qualification separate"
     );
     Ok(())
 }
