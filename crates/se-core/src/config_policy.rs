@@ -47,11 +47,10 @@ impl RuntimeConfig {
             ));
         }
         if cores.get() < MIN_BLOCKING_JOBS as usize {
-            return Err(SeError::new(Detail::FeatureUnavailable(details::FeatureUnavailable {
-                subject: "host work capacity".into(),
-                reason: "Only one native core is available; no 2–8 job cap fits that CPU budget.".into(),
-                next_step: "Make at least two native cores available to this process, then retry se up.".into(),
-            })));
+            return Err(invalid(
+                "runtime.blocking_jobs",
+                "the host needs at least two available native cores for its minimum work cap",
+            ));
         }
         let native = cores.get().min(MAX_BLOCKING_JOBS as usize) as u32;
         NonZeroU32::new(self.blocking_jobs.unwrap_or(native).min(native)).ok_or_else(|| {
