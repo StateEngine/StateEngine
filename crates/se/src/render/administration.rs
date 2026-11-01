@@ -85,14 +85,12 @@ pub fn decision(value: &DecisionReceipt, out: &mut impl Write) -> io::Result<()>
 pub fn config(value: &AgentConfigReceipt, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "{} for {}", value.key, value.agent.name)?;
     writeln!(out, "Value: {}", value.value)?;
-    match &value.previous {
-        se_types::Read::Present { value } => writeln!(out, "Previous: {value}")?,
-        se_types::Read::Absent { .. } => writeln!(out, "Previous: absent")?,
-        se_types::Read::Unreadable { source, reason, .. } => {
-            writeln!(out, "Previous unreadable at {source}: {reason}")?
-        }
-        se_types::Read::Unknown { what } => writeln!(out, "Previous unknown: {what}")?,
-    }
+    writeln!(out, "Previous: {}", value.previous.value)?;
+    let source = match value.previous.source {
+        se_types::ConfigPreviousSource::Stored => "stored",
+        se_types::ConfigPreviousSource::Default => "default",
+    };
+    writeln!(out, "Previous source: {source}")?;
     writeln!(
         out,
         "Recorded revision {}; current revision {}",

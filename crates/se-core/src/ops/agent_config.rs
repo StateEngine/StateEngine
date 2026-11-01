@@ -22,6 +22,12 @@ pub(crate) enum Field {
     CanCreate,
 }
 impl Field {
+    pub(crate) fn default_value(self) -> Option<Value> {
+        match self {
+            Self::CanCreate => Some(Value::Bool(false)),
+            Self::Model | Self::Profile => None,
+        }
+    }
     pub(crate) fn parse(key: &str) -> Result<(&str, Self)> {
         let (selector, field) = key
             .strip_prefix("agent.")
@@ -97,19 +103,24 @@ pub fn get<R: Snapshot>(input: ConfigGet, cx: &mut Cx<'_, R>) -> Result<super::C
     input.validate()?;
     let (selector, field) = Field::parse(&input.key)?;
     let agent = agent(selector, cx)?;
+    let mut origin = format!("agent record {agent}");
     let value = match field.record(&agent, cx)? {
         Read::Present { value } => Read::Present {
             value: field.value(&value.current.body)?,
         },
-        Read::Absent { .. } if matches!(field, Field::CanCreate) => Read::Present {
-            value: Value::Bool(false),
+        Read::Absent { checked } => match field.default_value() {
+            Some(value) => {
+                origin = format!("default for agent {agent}; {checked}");
+                Read::Present { value }
+            }
+            None => Read::Absent { checked },
         },
         other => other.map(|_| Value::Null),
     };
     Ok(super::ConfigValueOutput {
         key: input.key,
         value,
-        origin: input.origin.then(|| format!("agent record {agent}")),
+        origin: input.origin.then_some(origin),
     })
 }
 fn replay_target<R: Snapshot>(key: &IdempotencyKey, cx: &mut Cx<'_, R>) -> Result<Option<AgentId>> {

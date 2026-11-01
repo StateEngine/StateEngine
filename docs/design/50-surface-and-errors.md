@@ -1641,7 +1641,7 @@ governs that separate branch.
 | `$.event_id`, `$.recorded_at`, `$.idempotency_key`, `$.writer` | Id, Time, string, Writer | yes | flattened immutable write fields; no nested `commit` object |
 | `$.project`, `$.agent` | Ref, Ref | yes | exact admitted project and saved agent |
 | `$.key` | string | yes | canonical `agent.<A>.model`, `.profile` or `.can-create` key |
-| `$.previous` | `Read<JSON value>` | yes | measured prior value; present JSON null differs from absence, unreadable and unknown |
+| `$.previous` | `{value: JSON, source: "stored" \| "default"}` | yes | effective prior value and its measured source; the first can-create write has `{value:false,source:"default"}`, while a stored false or JSON null retains source stored |
 | `$.value` | JSON value | yes | committed setting read back with its native type; `.can-create` is boolean, `.profile` is a string and `.model` is string or null |
 | `$.revision` | int | yes | entity revision committed by this request |
 | `$.current_revision` | int | yes | fresh readback revision; may be later on replay and never replaces the original committed revision |
@@ -1652,7 +1652,14 @@ Agent metadata changes are FULL store mutations. A judge requires the exact
 key/value type and entity to agree with independent `se.config-value/v1`
 readback and checks the committed/replayed event and writer. A failed or
 unreadable resulting readback refuses rather than publishing a guessed success;
-it does not become a null setting. Previous-value Read states remain explicit.
+it does not become a null setting. An unknown or unreadable prior value refuses
+rather than supplying a guessed receipt. The first can-create write reports
+`previous: {value:false, source:"default"}`, matching the effective false from
+`config get`. The source is established by the original committed first-write
+facts (`Expected::Absent` and no cause); the store's absent grant remains an
+absent storage fact. A later stored false or present JSON null has
+`source:"stored"`. Replay reconstructs the effective prior value and source
+from the original commit without substituting the current grant head.
 Transient timings, when measured, use the existing optional outer diagnostics;
 these DTO declarations add no timer, store write or executable command.
 

@@ -5,7 +5,7 @@ use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{
     Actor, CommitReceipt, EventBody, Expected, GrantKey, Snapshot, StoredEvent, StoredText,
 };
-use se_types::{AgentId, Read, Result};
+use se_types::{AgentId, ConfigPreviousSource, ConfigPreviousValue, Result};
 
 fn subject(body: &EventBody<StoredText>) -> Result<(&AgentId, &Expected)> {
     match body {
@@ -70,12 +70,19 @@ pub fn committed<R: Snapshot>(
                 "prior agent setting event",
             )?;
             checked(&prior, agent, cx.admission)?;
-            Read::Present {
+            ConfigPreviousValue {
                 value: then.field.value(&prior.body)?,
+                source: ConfigPreviousSource::Stored,
             }
         }
-        (None, Expected::Absent) => Read::Absent {
-            checked: format!("no prior setting in FULL event {}", event.header.event),
+        (None, Expected::Absent) => ConfigPreviousValue {
+            value: then.field.default_value().ok_or_else(|| {
+                scope::unreadable(
+                    "agent setting previous value",
+                    "no effective default exists for this absent stored setting",
+                )
+            })?,
+            source: ConfigPreviousSource::Default,
         },
         _ => {
             return Err(scope::unreadable(

@@ -1,5 +1,5 @@
 use super::{Named, Provider, ReceiptAuthority, WriteReceipt};
-use crate::{AgentId, ProjectId, Read};
+use crate::{AgentId, ProjectId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +70,18 @@ pub struct AgentReceipt {
 pub enum ConfigStorage {
     AgentRecord,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ConfigPreviousSource {
+    Stored,
+    Default,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigPreviousValue {
+    pub value: serde_json::Value,
+    pub source: ConfigPreviousSource,
+}
 /// Store-backed se.config-receipt/v1 branch for agent.<A>.{model,profile,can-create}.
 /// File-only general settings have no store writer and cannot use this payload.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
@@ -80,7 +92,7 @@ pub struct AgentConfigReceipt {
     pub project: Named<ProjectId>,
     pub agent: Named<AgentId>,
     pub key: String,
-    pub previous: Read<serde_json::Value>,
+    pub previous: ConfigPreviousValue,
     pub value: serde_json::Value,
     pub revision: u64,
     pub current_revision: u64,
