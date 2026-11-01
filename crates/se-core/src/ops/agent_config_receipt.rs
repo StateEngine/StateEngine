@@ -68,6 +68,7 @@ pub fn committed<R: Snapshot>(
                     .event(id.clone())
                     .map_err(|error| store_error(&error))?,
                 "prior agent setting event",
+                scope::COMMITTED_READ_RECOVERY,
             )?;
             checked(&prior, agent, cx.admission)?;
             ConfigPreviousValue {
@@ -91,8 +92,11 @@ pub fn committed<R: Snapshot>(
             ));
         }
     };
-    let current =
-        scope::require_present(then.field.record(agent, cx)?, "current saved agent setting")?;
+    let current = scope::require_present(
+        then.field.record(agent, cx)?,
+        "current saved agent setting",
+        scope::COMMITTED_READ_RECOVERY,
+    )?;
     checked(&current.current, agent, cx.admission)?;
     let current_revision = current.revision.value.get();
     if current_revision < revision {
@@ -106,6 +110,7 @@ pub fn committed<R: Snapshot>(
             .principal(Actor::Agent(agent.clone()))
             .map_err(|error| store_error(&error))?,
         "saved agent identity",
+        scope::COMMITTED_READ_RECOVERY,
     )?;
     let name = match principal.current.body {
         EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {

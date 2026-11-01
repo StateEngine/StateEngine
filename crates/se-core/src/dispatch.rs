@@ -185,6 +185,7 @@ impl CoreOps for Kernel {
                 .event(receipt.primary_event.clone())
                 .map_err(|e| store_error(&e))?,
             "committed message event",
+            scope::COMMITTED_READ_RECOVERY,
         )?;
         if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
             return Err(scope::unreadable(
@@ -253,6 +254,7 @@ impl CoreOps for Kernel {
                 .event(receipt.primary_event.clone())
                 .map_err(|e| store_error(&e))?,
             "committed working-state event",
+            scope::COMMITTED_READ_RECOVERY,
         )?;
         if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
             return Err(scope::unreadable(

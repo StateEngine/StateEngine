@@ -71,6 +71,7 @@ pub fn read<R: Snapshot>(input: EventRead, cx: &mut Cx<'_, R>) -> Result<EventOu
             .project(project.clone())
             .map_err(|e| store_error(&e))?,
         "event project metadata",
+        "Read the event's project metadata in the same data home, then retry this exact event ID.",
     )?;
     let name = match &project_record.current.body {
         EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => {

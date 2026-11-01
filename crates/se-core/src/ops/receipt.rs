@@ -36,6 +36,7 @@ pub fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<ActorRef> {
     let record = scope::require_present(
         read.principal(actor.clone()).map_err(|e| store_error(&e))?,
         "receipt principal",
+        "Verify the event's recorded principal in this project; when completing a write, preserve its original request key and event IDs.",
     )?;
     let name = match record.current.body {
         EventBody::PrincipalRegistered { name, .. } | EventBody::PrincipalRenamed { name, .. } => {
@@ -73,6 +74,7 @@ pub(crate) fn committed_event<R: Snapshot>(
         read.event(receipt.primary_event.clone())
             .map_err(|e| store_error(&e))?,
         "receipt primary event",
+        scope::COMMITTED_READ_RECOVERY,
     )?;
     if event.writer.kind() != receipt.writer.kind() || event.durability != receipt.durability {
         return Err(scope::unreadable(
@@ -116,6 +118,7 @@ pub(crate) fn named_project<R: Snapshot>(
             .project(id.clone())
             .map_err(|error| store_error(&error))?,
         "receipt project",
+        "Verify the event's recorded project in this data home; when completing a write, preserve its original request key and event IDs.",
     )?;
     let name = match &record.current.body {
         EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => {
@@ -144,6 +147,7 @@ pub fn message<R: Snapshot>(
             .project(project.clone())
             .map_err(|e| store_error(&e))?,
         "receipt project",
+        "Verify the event's recorded project in this data home; when completing a write, preserve its original request key and event IDs.",
     )?;
     let project_name = match record.current.body {
         EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => name,
@@ -224,6 +228,7 @@ pub fn working_state<R: Snapshot>(
             .working_state(output.agent.clone())
             .map_err(|e| store_error(&e))?,
         "current working state",
+        scope::COMMITTED_READ_RECOVERY,
     )?;
     if head.revision.value < event.revision.value {
         return Err(scope::unreadable(

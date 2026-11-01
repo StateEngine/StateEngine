@@ -119,7 +119,11 @@ pub(super) fn initial_agent(
     );
     snap.close().map_err(|e| store_error(&e))?;
     Ok((
-        scope::require_present(output?.agent, "initial saved agent")?,
+        scope::require_present(
+            output?.agent,
+            "initial saved agent",
+            "Read the original saved agent in this data home, then retry se init with its original --key; preserve existing agent identities.",
+        )?,
         created,
     ))
 }

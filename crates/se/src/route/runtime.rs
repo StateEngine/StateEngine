@@ -117,6 +117,7 @@ pub fn down(files: &Files, input: RuntimeDown) -> Result<AnyOutput> {
     let endpoint = scope::require_present(
         execute::endpoint(files)?,
         "a live authenticated runtime endpoint for graceful down",
+        "Run se status for this same data home and verify its recorded host; endpoint absence alone does not prove the host stopped.",
     )?;
     let now = execute::now_us()?;
     let deadline = now

@@ -71,7 +71,11 @@ pub fn require(files: &Files) -> Result<Secret> {
             "protected machine credential",
             "credential is missing; initialize a new home or use explicit credential recovery/rotation for an existing installation",
         )),
-        other => scope::require_present(other, "protected machine credential"),
+        other => scope::require_present(
+            other,
+            "protected machine credential",
+            "Restore access to the original protected credential in this data home; do not replace it or generate a new credential.",
+        ),
     }
 }
 /// Only authorized initial setup calls this after establishing that no initialized
@@ -80,7 +84,13 @@ pub fn initialize(files: &Files) -> Result<Secret> {
     match read(files)? {
         Read::Present { value } => return Ok(value),
         Read::Absent { .. } => (),
-        other => return scope::require_present(other, "protected machine credential"),
+        other => {
+            return scope::require_present(
+                other,
+                "protected machine credential",
+                "Restore access to the original protected credential in this data home; do not replace it or generate a new credential.",
+            );
+        }
     }
     // OS RNG failure happens before any staging or permanent credential write.
     let secret = se_proc::random_secret().map_err(|error| {

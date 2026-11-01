@@ -36,6 +36,7 @@ pub fn create<R: Snapshot>(
             .project(scope::project(cx.admission)?)
             .map_err(|error| store_error(&error))?,
         "agent creation project",
+        "Select an initialized project in this data home before adding an agent.",
     )?;
     let original = project.original.as_deref().unwrap_or(&project.current);
     let EventBody::ProjectRegistered { owner, .. } = &original.body else {
@@ -164,6 +165,7 @@ pub fn committed<R: Snapshot>(
                 .event(id.clone())
                 .map_err(|error| store_error(&error))?,
             "agent receipt member",
+            scope::COMMITTED_READ_RECOVERY,
         )?;
         if let EventBody::ProfileSaved {
             agent: target,

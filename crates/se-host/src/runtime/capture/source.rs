@@ -88,6 +88,7 @@ fn cursor(
             read.session(source.binding.identity.session.clone())
                 .map_err(|error| store_error(&error))?,
             "capture session",
+            "Restore access to the original active session binding before repeating capture with the same session/provider/turn identities; preserve the saved cursor.",
         )?;
         if !matches!(session.current.body, EventBody::SessionActivated { .. }) {
             return Err(scope::unreadable(
@@ -121,6 +122,7 @@ fn cursor(
             read.capture_source(source.source)
                 .map_err(|error| store_error(&error))?,
             "capture source",
+            "Restore access to the original trusted capture source binding before repeating capture with the same session/provider/turn identities; preserve the saved cursor.",
         )?;
         let original = record.original.as_deref().unwrap_or(&record.current);
         if matches!(
@@ -158,6 +160,7 @@ fn cursor(
                 let turn = scope::require_present(
                     read.turn(*last_turn).map_err(|error| store_error(&error))?,
                     "last committed capture turn",
+                    "Read the last committed turn for this original capture source; preserve its session/provider/turn identities and saved cursor.",
                 )?;
                 match turn.body {
                     EventBody::SessionTurn {

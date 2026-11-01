@@ -44,6 +44,7 @@ pub fn page<R: Snapshot>(
             )?
             .agent,
             "saved agent page row",
+            "Read the saved agent by its exact ID in this project, then refresh the agent list.",
         )?;
         row.unread = Some(
             cx.read

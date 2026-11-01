@@ -128,10 +128,18 @@ impl EndpointPublication {
                     .map_err(|e| io_error("read stale endpoint", e))?;
                 let record = codec::decode_endpoint(&bytes)?;
                 if &record.address != expected_address {
-                    return Err(SeError::invalid(
-                        "stale endpoint",
-                        "the exact native address for this exclusively leased state directory; restore the original state directory or select a separately initialized state directory",
-                    ));
+                    return Err(SeError::new(se_types::Detail::StateConflict(
+                        se_types::details::StateConflict {
+                            subject: path.display().to_string(),
+                            reason: "protected stale endpoint names a different native address from the one selected for this data home".into(),
+                            next_step: format!(
+                                "Stop any runtime using this data home ({}). With no process holding {}, move only {} aside, then retry se up for this same home. Preserve the store, credentials and machine identity; do not remove or connect to the mismatched address.",
+                                directory.display(),
+                                directory.join("runtime.lock").display(),
+                                path.display()
+                            ),
+                        },
+                    )));
                 }
                 Some(bytes)
             }

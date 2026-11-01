@@ -40,7 +40,7 @@ pub(super) fn public<R: Snapshot>(
             if event.header.door != se_store::Door::Hook {
                 return Err(scope::unreadable("turn provenance", "this adapter cannot infer a capture source from an unlabelled legacy door"));
             }
-            let record = scope::require_present(read.session(session.clone()).map_err(|e| store_error(&e))?, "turn's original session metadata")?;
+            let record = scope::require_present(read.session(session.clone()).map_err(|e| store_error(&e))?, "turn's original session metadata", "Restore access to the turn's original session metadata, then reread the same event ID; preserve the recorded session identity.")?;
             let native = record.original.as_deref().unwrap_or(&record.current);
             let SessionPrepared { session: original, provider: original_provider, native_ref, .. } = &native.body else {
                 return Err(scope::unreadable("turn session provenance", "original prepared session metadata is unavailable"));

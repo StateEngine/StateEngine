@@ -19,6 +19,7 @@ pub fn observe<R: ReadStore>(cx: &Bootstrap, reader: &R, files: &Files) -> Resul
                 .credential(Sha256::digest(secret.expose()).into())
                 .map_err(|e| store_error(&e))?,
             "session credential",
+            "Use the active session credential issued for this agent, or launch a new authenticated session; do not fall back to owner authority.",
         )?;
         if record.state != CredentialState::Active
             || record.purpose != "session"

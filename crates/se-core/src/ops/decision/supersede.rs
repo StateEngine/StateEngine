@@ -21,6 +21,7 @@ pub(super) fn plan<R: Snapshot>(
             .decision(input.replacement_id.clone())
             .map_err(|e| store_error(&e))?,
         "superseding replacement",
+        "Verify the replacement decision and its recorded revision in this project before retrying the original request unchanged.",
     )?;
     let pending = matches!(replacement.current.body, EventBody::DecisionProposed { .. });
     let ratification = if pending {
@@ -95,6 +96,7 @@ pub(super) fn committed<R: Snapshot>(
             .event(receipt.events[1].clone())
             .map_err(|e| store_error(&e))?,
         "atomic predecessor retirement",
+        scope::COMMITTED_READ_RECOVERY,
     )?;
     let EventBody::DecisionRatified {
         decision,
