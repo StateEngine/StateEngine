@@ -323,6 +323,75 @@ fn direct_cli_keeps_fixed_and_key_selected_human_presence() -> Check {
     Ok(())
 }
 
+/// Protects: a busy writer without an endpoint cannot hide the early human-only refusal.
+#[test]
+fn pipe_human_presence_refuses_before_busy_writer_rendezvous() -> Check {
+    let (f, mut store, lease) = setup()?;
+    let id = DecisionId::from_parts(1_700_000_000_000 + serial(), [91; 10])?;
+    store.append(
+        f.batch(
+            f.owner_project(),
+            None,
+            vec![EventBody::DecisionProposed {
+                decision: id.clone(),
+                key: "presence.busy".into(),
+                statement: InputText::Inline("A busy writer cannot bypass presence".into()),
+                rationale: None,
+                prior: None,
+                kind: DecisionKind::Decision,
+            }],
+        )?,
+        &*lease,
+    )?;
+    let head = store.info()?.head;
+    drop(lease);
+    let holder = Lease::acquire(
+        &f.options.state_directory,
+        LeaseMode::Host,
+        Some(f.store.clone()),
+    )?;
+    let probe = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(f.options.state_directory.join("runtime.lock"))?;
+    assert!(matches!(
+        probe.try_lock_shared(),
+        Err(std::fs::TryLockError::WouldBlock)
+    ));
+    let calls = [
+        vec![
+            "config".into(),
+            "set".into(),
+            format!("agent.{}.can-create", f.a),
+            "true".into(),
+        ],
+        vec!["decision".into(), "ratify".into(), id.to_string()],
+    ];
+    for (index, args) in calls.iter().enumerate() {
+        let key = format!("refused-busy-{index}");
+        let output =
+            command(&f.options.state_directory, f.project.as_str(), &key, args).output()?;
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(json(&output)?["code"], "human-terminal-required");
+        assert_eq!(store.info()?.head, head, "refusal committed effects");
+        let mut snapshot = store.snapshot(f.scoped(Visibility::Owner))?;
+        assert!(matches!(
+            snapshot.operation_receipt(Actor::Human(f.owner.clone()), IdempotencyKey::new(key)?)?,
+            se_types::Read::Absent { .. }
+        ));
+        snapshot.close()?;
+        assert!(
+            !f.options
+                .state_directory
+                .join("endpoint.json")
+                .try_exists()?
+        );
+    }
+    drop(holder);
+    store.close()?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 fn terminal(command: &Command) -> Outcome<Output> {
     let argv = std::iter::once(command.get_program())
