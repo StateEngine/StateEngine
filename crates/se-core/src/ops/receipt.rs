@@ -66,6 +66,21 @@ pub fn named_agent<R: Snapshot>(read: &mut R, agent: &AgentId) -> Result<Named<A
         name: actor.name,
     })
 }
+pub(crate) fn receipt_key(
+    receipt: &CommitReceipt,
+    expected: &IdempotencyKey,
+    source: &str,
+) -> Result<()> {
+    if receipt.request_key.as_ref() != Some(expected)
+        || !receipt.events.contains(&receipt.primary_event)
+    {
+        return Err(scope::unreadable(
+            source,
+            "request identity or primary event does not match the continuation",
+        ));
+    }
+    Ok(())
+}
 pub(crate) fn committed_event<R: Snapshot>(
     read: &mut R,
     receipt: &CommitReceipt,

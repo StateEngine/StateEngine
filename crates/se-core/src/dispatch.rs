@@ -1,5 +1,10 @@
 //! Owned planning facts and typed continuations; no writer, clock, RNG or read lease is retained.
-use crate::{commit::*, ops::inputs::Validate, scope, store_error::store_error};
+use crate::{
+    commit::*,
+    ops::{inputs::Validate, receipt::receipt_key},
+    scope,
+    store_error::store_error,
+};
 use se_store::{
     Actor, AtomicBatch, CommitReceipt, Door, EventBody, EventHeader, Expected, InputText,
     IntentDigest, NewEvent, RequestIdentity, Revision, Snapshot,
@@ -119,17 +124,6 @@ pub(crate) fn admitted<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
         )),
     }
 }
-pub(crate) fn receipt_key(receipt: &CommitReceipt, expected: &IdempotencyKey) -> Result<()> {
-    if receipt.request_key.as_ref() != Some(expected)
-        || !receipt.events.contains(&receipt.primary_event)
-    {
-        return Err(scope::unreadable(
-            "commit receipt",
-            "request identity or primary event does not match the continuation",
-        ));
-    }
-    Ok(())
-}
 impl CoreOps for Kernel {
     fn message_send<R: Snapshot>(
         &self,
@@ -179,7 +173,7 @@ impl CoreOps for Kernel {
         receipt: CommitReceipt,
         cx: &mut Cx<'_, R>,
     ) -> Result<MessageSendOutput> {
-        receipt_key(&receipt, &then.request)?;
+        receipt_key(&receipt, &then.request, "commit receipt")?;
         let event = scope::require_present(
             cx.read
                 .event(receipt.primary_event.clone())
@@ -248,7 +242,7 @@ impl CoreOps for Kernel {
         receipt: CommitReceipt,
         cx: &mut Cx<'_, R>,
     ) -> Result<WorkingStateSetOutput> {
-        receipt_key(&receipt, &then.request)?;
+        receipt_key(&receipt, &then.request, "commit receipt")?;
         let event = scope::require_present(
             cx.read
                 .event(receipt.primary_event.clone())

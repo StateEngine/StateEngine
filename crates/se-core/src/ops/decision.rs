@@ -304,7 +304,7 @@ pub fn committed<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<super::DecisionReceipt> {
     use super::{DecisionAction, ReceiptAuthority, ReceiptGuard};
-    crate::dispatch::receipt_key(&receipt, &then.request)?;
+    super::receipt::receipt_key(&receipt, &then.request, "decision receipt")?;
     let event = super::receipt::committed_event(cx.read, &receipt)?;
     if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
         return Err(scope::unreadable(

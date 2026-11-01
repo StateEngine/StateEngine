@@ -133,7 +133,7 @@ pub fn committed<R: Snapshot>(
     receipt: se_store::CommitReceipt,
     cx: &mut Cx<'_, R>,
 ) -> Result<super::AgentReceipt> {
-    crate::dispatch::receipt_key(&receipt, &then.request)?;
+    super::receipt::receipt_key(&receipt, &then.request, "agent creation receipt")?;
     let event = super::receipt::committed_event(cx.read, &receipt)?;
     if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
         return Err(scope::unreadable(
