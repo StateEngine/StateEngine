@@ -29,3 +29,7 @@ expect_used = "deny"
 [[test]]
 name = "process_birth"
 harness = false
+
+[[test]]
+name = "bootstrap_stderr"
+harness = false
