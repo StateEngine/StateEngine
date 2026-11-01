@@ -65,9 +65,30 @@ impl SqliteFactory {
         let metadata = match std::fs::symlink_metadata(&reader.path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Read::Absent {
-                    checked: format!("{} is absent", reader.path.display()),
-                });
+                // Windows also reports PATH_NOT_FOUND for a non-directory parent.
+                // Establish absence without losing the original state.db error.
+                for parent in reader.path.ancestors().skip(1) {
+                    let obstruction = match std::fs::metadata(parent) {
+                        Ok(m) if m.is_dir() => {
+                            return Ok(Read::Absent {
+                                checked: format!("{} is absent", reader.path.display()),
+                            });
+                        }
+                        Ok(_) => format!("parent {} is not a directory", parent.display()),
+                        Err(parent_error)
+                            if parent_error.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            continue;
+                        }
+                        Err(parent_error) => {
+                            format!("cannot verify parent {}: {parent_error}", parent.display())
+                        }
+                    };
+                    let mut error = io(e, &reader.path, StoreIoStage::Open);
+                    error.cause.push_str(&format!("; {obstruction}"));
+                    return Err(error);
+                }
+                return Err(io(e, &reader.path, StoreIoStage::Open));
             }
             Err(e) => return Err(io(e, &reader.path, StoreIoStage::Open)),
         };
