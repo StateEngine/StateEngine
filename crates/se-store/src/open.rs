@@ -93,7 +93,21 @@ impl SqliteFactory {
                         Err(parent_error)
                             if parent_error.kind() == std::io::ErrorKind::NotFound =>
                         {
-                            continue;
+                            // A dangling link exists even when following it
+                            // reports NotFound; only skip a proven absent entry.
+                            match std::fs::symlink_metadata(parent) {
+                                Err(missing) if missing.kind() == std::io::ErrorKind::NotFound => {
+                                    continue;
+                                }
+                                Ok(_) => format!(
+                                    "parent {} exists but cannot be resolved: {parent_error}",
+                                    parent.display()
+                                ),
+                                Err(check) => format!(
+                                    "cannot verify parent {} without following links: {check}",
+                                    parent.display()
+                                ),
+                            }
                         }
                         Err(parent_error) => {
                             format!("cannot verify parent {}: {parent_error}", parent.display())
