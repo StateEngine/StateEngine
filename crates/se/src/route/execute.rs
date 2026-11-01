@@ -158,7 +158,9 @@ pub fn dispatch(
             &selections,
         )?);
     }
-    se_core::admission::authorize(op.meta(), &caller.admission, &caller.terminal)?;
+    se_core::admission::authorize(op.meta(), &caller.admission)?;
+    // Refuse before acquiring writer custody or looking for a busy host's
+    // endpoint; Kernel::plan still enforces policy for every execution path.
     if op.requires_human_terminal()? {
         se_core::admission::require_human_terminal(
             op.meta().name,

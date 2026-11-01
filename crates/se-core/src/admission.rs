@@ -1,5 +1,5 @@
 //! Checks verified adapter observations. DTOs never supply actor or terminal authority.
-use crate::registry::{Auth, HumanPolicy, OpMeta, Scope as OpScope};
+use crate::registry::{Auth, OpMeta, Scope as OpScope};
 use se_store::{Actor, Admission, Scope};
 use se_types::{Detail, Result, SeError, details};
 
@@ -10,7 +10,9 @@ pub enum HumanTerminal {
     Refused { reason: String },
 }
 
-pub fn authorize(meta: &OpMeta, admission: &Admission, terminal: &HumanTerminal) -> Result<()> {
+/// Check principal, session and scope binding. Kernel::plan separately applies
+/// the operation's presence policy to the verified HumanTerminal observation.
+pub fn authorize(meta: &OpMeta, admission: &Admission) -> Result<()> {
     match (&admission.actor, meta.auth) {
         (Actor::Agent(_), Auth::Owner) => {
             return Err(SeError::new(Detail::OwnerRequired(
@@ -39,9 +41,6 @@ pub fn authorize(meta: &OpMeta, admission: &Admission, terminal: &HumanTerminal)
         return Err(SeError::new(Detail::ProjectRequired(
             details::ProjectRequired { choices: vec![] },
         )));
-    }
-    if meta.human_only == HumanPolicy::Always {
-        require_human_terminal(meta.name, admission, terminal)?;
     }
     Ok(())
 }

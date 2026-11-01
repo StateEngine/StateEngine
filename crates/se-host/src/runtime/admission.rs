@@ -154,9 +154,9 @@ impl AdmissionContext {
                 _ => (),
             }
         }
-        // Core applies this same fact both to Always operations and to the
-        // security-sensitive ConfigKey variants before constructing effects.
-        se_core::admission::authorize(operation.meta(), &admission, &terminal)?;
+        // Principal/scope admission precedes execution; Kernel::plan applies
+        // presence policy to this verified terminal fact before any effects.
+        se_core::admission::authorize(operation.meta(), &admission)?;
         let mut facts = allocate_facts()?;
         facts.door = if matches!(&operation, ops::AnyOp::HookClaude(_)) {
             se_store::Door::Hook
