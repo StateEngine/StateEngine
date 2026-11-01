@@ -13,8 +13,18 @@ pub fn check_home(args: &[OsString]) -> Result<i32> {
     if home != crate::bootstrap::state_home(None)? {
         return Err(args::invalid("the selected platform data home"));
     }
-    se_proc::NativeStateFiles::open(&home).map_err(native)?;
-    Ok(0)
+    #[cfg(unix)]
+    {
+        let directories =
+            se_proc::NativeInstallationClaim::inherited_created_directories().map_err(native)?;
+        se_proc::NativeStateFiles::open(&home).map_err(native)?;
+        for directory in directories.iter().rev() {
+            println!("{}", directory.display());
+        }
+        Ok(0)
+    }
+    #[cfg(not(unix))]
+    Err(args::invalid("a Unix native installation worker"))
 }
 
 /// Darwin's sync utility has no per-file interface. Flush exact worker paths
@@ -31,6 +41,22 @@ pub fn sync_paths(args: &[OsString]) -> Result<i32> {
         file.sync_all().map_err(|error| {
             se_core::scope::unreadable(&path.display().to_string(), &error.to_string())
         })?;
+    }
+    Ok(0)
+}
+
+/// Every installed program/asset file must pass the real native owner reader.
+pub fn check_files(args: &[OsString]) -> Result<i32> {
+    if !(3..=4098).contains(&args.len()) {
+        return Err(args::invalid(
+            "__install-files-check <1 to 4096 absolute files>",
+        ));
+    }
+    for value in &args[2..] {
+        let path = args::path(value)?;
+        se_proc::OwnedFile::open(&path)
+            .map_err(native)?
+            .ok_or_else(|| args::invalid("present native-owned installation files"))?;
     }
     Ok(0)
 }

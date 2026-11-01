@@ -177,9 +177,13 @@ stopped runtime, public terminal uninstall, command/PATH removal and outside
 process/fixture closure; `results.json` and `budgets.json` must agree. It does not
 qualify journeys 2–5 or hosted B9. No runtime host is launched by standalone J1.
 
-The Mac installer uses the same native protected-home preparation as init,
+The Unix installer uses the same native protected-home preparation as init,
 selects `$SE_HOME` or `~/Library/Application Support/StateEngine`, and records
-owned files and shell PATH edits for native `se uninstall`. Program commands
+owned files and shell PATH edits for native `se uninstall`. The native holder
+prepares every manifest program/notice directory and selected shell integration
+parent; a worker requires its inherited locked claim and native custody channel
+before publication. Environment directory lists and a worker flag grant no
+installation authority. Program commands
 remain under `~/.local/bin`; it does not overwrite an existing installation,
 repair an unsafe existing home or require GNU utilities. The native J1 run must
 witness the protected data home and the selected login shell's PATH before and

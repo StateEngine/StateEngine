@@ -35,7 +35,7 @@ case "$(uname -s):$(uname -m)" in
     *) fail 'this archive requires native Linux x86_64 or macOS arm64/x86_64' ;;
 esac
 native_held=0
-if [ "$macos" -eq 1 ] && [ "$#" -eq 1 ] && [ "$1" = --native-held ]; then
+if [ "$#" -eq 1 ] && [ "$1" = --native-held ]; then
     native_held=1
     shift
 fi
@@ -67,7 +67,9 @@ else data=${SE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/stateengine}; fi
 record=$data/standalone-install.json
 for destination in "$bin/se" "$assets" "$record"; do
     plain_path "$destination"
-    [ ! -e "$destination" ] || fail "existing installation path is preserved; run se uninstall before reinstalling: $destination"
+    if [ "$native_held" -eq 1 ] && [ "$destination" = "$assets" ]; then
+        [ -d "$assets" ] || fail "native installation assets directory is absent: $assets"
+    else [ ! -e "$destination" ] || fail "existing installation path is preserved; run se uninstall before reinstalling: $destination"; fi
 done
 if command -v se >/dev/null 2>&1; then fail "another se command is already on PATH: $(command -v se)"; fi
 profiles='.profile'
@@ -106,42 +108,27 @@ for relative in $actual_files; do
 done
 # Native preparation rejects unsafe existing homes, creates absent homes with
 # the same protection as init, and retains the account-wide installation claim.
-if [ "$macos" -eq 1 ] && [ "$native_held" -eq 0 ]; then
-    exec "$bundle/se" __install-hold --home "$data" -- /bin/sh "$bundle/install.sh" --native-held
+if [ "$native_held" -eq 0 ]; then
+    set -- __install-hold --prepare-program --home "$data"
+    for name in $profiles; do set -- "$@" --profile "$HOME/$name"; done
+    if [ -n "$fish_file" ]; then set -- "$@" --fish-directory "$(dirname "$fish_file")"; fi
+    if [ -n "${XDG_STATE_HOME-}" ]; then set -- "$@" --xdg-state-home "$XDG_STATE_HOME"; fi
+    if [ -n "${XDG_CONFIG_HOME-}" ]; then set -- "$@" --xdg-config-home "$XDG_CONFIG_HOME"; fi
+    exec "$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" --native-held
 fi
-if [ "$macos" -eq 1 ]; then "$bundle/se" __install-home-check "$data"; fi
+# This reads custody from the native channel only after verifying the inherited
+# account-wide kernel claim. A worker marker or environment list grants nothing.
+created_directories=$("$bundle/se" __install-home-check "$data") || fail 'native installation claim or directory custody is absent'
 owner=$(id -u)
-created_directories=''
-if [ "$macos" -eq 1 ]; then
-    # The native holder replaces this value with its exact creation custody.
-    # Prepend its shallow-to-deep paths so failed-install cleanup stays deepest first.
-    while IFS= read -r directory; do
-        if [ -n "$directory" ]; then
-            created_directories=$(printf '%s\n%s' "$directory" "$created_directories")
-        fi
-    done <<NATIVE_DIRECTORIES
-${SE_INSTALL_CREATED_DIRECTORIES-}
-NATIVE_DIRECTORIES
-fi
 stage=''
 temp_payload=''
 payload_destination=''
 payload_kind=''
 claimed=0
-published_assets=0
-assets_creation=not-started
+published_asset_files=''
 published_binary=0
 published_fish=0
 done_install=0
-asset_directories=''
-create_directory() {
-    if [ -d "$1" ]; then return; fi
-    create_directory "$(dirname "$1")"
-    if mkdir "$1" 2>/dev/null; then
-        created_directories=$(printf '%s\n%s' "$1" "$created_directories")
-    elif [ -d "$1" ] && [ ! -L "$1" ]; then :
-    else fail "cannot create installation directory: $1"; fi
-}
 publish_file() {
     # Copy and flush on the destination filesystem, then claim without overwrite.
     temp_payload=$(mktemp "$(dirname "$2")/.se-publish-XXXXXXXX")
@@ -151,7 +138,10 @@ publish_file() {
     chmod "$3" "$temp_payload"
     flush "$temp_payload"
     ln "$temp_payload" "$2" || fail "destination appeared during installation: $2"
-    case "$4" in binary) published_binary=1 ;; fish) published_fish=1 ;; esac
+    case "$4" in
+        binary) published_binary=1 ;; fish) published_fish=1 ;;
+        asset) published_asset_files="$5 $published_asset_files" ;;
+    esac
     rm "$temp_payload"
     temp_payload=''
     flush "$2" "$(dirname "$2")"
@@ -232,13 +222,10 @@ cleanup() {
     set +e
     rollback_complete=1
     if [ -n "$temp_payload" ] && [ "$payload_destination" -ef "$temp_payload" ]; then
-        case "$payload_kind" in binary) published_binary=1 ;; fish) published_fish=1 ;; esac
-    fi
-    if [ "$claimed" -eq 1 ] && [ -d "$assets" ] && [ ! -d "$stage/assets" ]; then published_assets=1; fi
-    if [ "$macos" -eq 1 ] && [ "$assets_creation" = started ] && [ "$published_assets" -eq 0 ] && [ -d "$assets" ]; then
-        # A signal between mkdir and its success marker leaves ownership unknown.
-        # Preserve the record and directory rather than infer that either is ours.
-        rollback_complete=0
+        case "$payload_kind" in
+            binary) published_binary=1 ;; fish) published_fish=1 ;;
+            asset) published_asset_files="${payload_destination#"$assets"/} $published_asset_files" ;;
+        esac
     fi
     if [ "$done_install" -eq 0 ]; then
         for name in $profiles; do
@@ -265,16 +252,11 @@ cleanup() {
             if [ ! -L "$bin/se" ] && cmp -s "$bin/se" "$bundle/se"; then rm "$bin/se" || rollback_complete=0
             else rollback_complete=0; fi
         fi
-        if [ "$published_assets" -eq 1 ]; then
-            for relative in $asset_files; do
-                file=$assets/$relative
-                if [ ! -L "$file" ] && cmp -s "$file" "$bundle/$relative"; then rm "$file"
-                elif [ -e "$file" ] || [ -L "$file" ]; then rollback_complete=0; fi
-            done
-            for relative in $asset_directories; do rmdir "$assets/$relative" 2>/dev/null; done
-            rmdir "$assets" 2>/dev/null
-            if [ -e "$assets" ] || [ -L "$assets" ]; then rollback_complete=0; fi
-        fi
+        for relative in $published_asset_files; do
+            file=$assets/$relative
+            if [ ! -L "$file" ] && cmp -s "$file" "$bundle/$relative"; then rm "$file" || rollback_complete=0
+            else rollback_complete=0; fi
+        done
         if [ "$claimed" -eq 1 ] && [ "$rollback_complete" -eq 1 ] && [ "$record" -ef "$stage/install.json" ]; then rm "$record"; fi
         [ "$rollback_complete" -eq 1 ] || printf 'Rollback incomplete; owned paths and blocks remain recorded: %s\n' "$record" >&2
     fi
@@ -288,31 +270,18 @@ cleanup() {
             [ "$exit_code" -ne 0 ] || exit_code=1
         fi
     fi
-    # A losing writer may have created parents that the record owner still needs.
-    # Keep them while any installation record remains, including partial rollback.
-    if [ "$done_install" -eq 0 ] && [ ! -e "$record" ] && [ ! -L "$record" ]; then
-        while IFS= read -r directory; do
-            [ -z "$directory" ] || rmdir "$directory" 2>/dev/null
-        done <<DIRECTORIES
-$created_directories
-DIRECTORIES
-    fi
+    # The native holder retains the identities of its created directories and
+    # owns failed-child directory cleanup; the script never removes them by name.
     exit "$exit_code"
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-create_directory "$bin"
-create_directory "$(dirname "$assets")"
-create_directory "$data"
-if [ -n "$fish_file" ]; then create_directory "$(dirname "$fish_file")"; fi
+for directory in "$bin" "$assets" "$data"; do
+    [ -d "$directory" ] && [ ! -L "$directory" ] || fail "native installation directory is absent or linked: $directory"
+done
 stage=$(mktemp -d "$data/.install-XXXXXXXX")
-mkdir "$stage/assets"
-cp "$bundle/manifest.json" "$bundle/build.json" "$bundle/NOTICE.txt" "$bundle/uninstall.sh" "$stage/assets/"
-cp -R "$bundle/notices" "$stage/assets/notices"
-asset_directories=$(cd "$stage/assets" && find . -depth -type d ! -name . -print)
-asset_directories=$(printf '%s\n' "$asset_directories" | sed 's|^\./||')
 cat > "$stage/path-block" <<'BLOCK'
 
 # >>> StateEngine PATH >>>
@@ -357,8 +326,6 @@ fi
     done <<DIRECTORIES
 $created_directories
 DIRECTORIES
-    for relative in $asset_directories; do printf '%s' "$comma"; json_string "$assets/$relative"; comma=','; done
-    printf '%s' "$comma"; json_string "$assets"
     printf '],\n  "path_edits": ['
     comma=''
     for name in $profiles; do
@@ -378,20 +345,9 @@ flush "$record" "$data"
 remove_stale_temps "$HOME" .se-profile-
 remove_stale_temps "$bin" .se-publish-
 if [ -n "$fish_file" ]; then remove_stale_temps "$(dirname "$fish_file")" .se-publish-; fi
-if [ "$macos" -eq 1 ]; then
-    assets_creation=started
-    if mkdir "$assets"; then published_assets=1
-    else assets_creation=refused; fail 'installation assets appeared during installation'; fi
-    assets_creation=created
-    for relative in $asset_files; do
-        create_directory "$(dirname "$assets/$relative")"
-        publish_file "$stage/assets/$relative" "$assets/$relative" 644 asset
-    done
-else
-    mv -T -n "$stage/assets" "$assets"
-    [ ! -d "$stage/assets" ] || fail 'installation assets appeared during installation'
-    published_assets=1
-fi
+for relative in $asset_files; do
+    publish_file "$bundle/$relative" "$assets/$relative" 644 asset "$relative"
+done
 publish_file "$bundle/se" "$bin/se" 755 binary
 if [ -n "$fish_file" ]; then
     publish_file "$stage/fish-config" "$fish_file" 600 fish
@@ -415,5 +371,8 @@ done
 for relative in $asset_files; do cmp -s "$assets/$relative" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done
 cmp -s "$bin/se" "$bundle/se" || fail 'installed binary readback failed'
 cmp -s "$record" "$stage/install.json" || fail 'ownership record readback failed'
+set -- "$bundle/se" __install-files-check "$bin/se"
+for relative in $asset_files; do set -- "$@" "$assets/$relative"; done
+"$@" || fail 'native installed-file ownership readback failed'
 done_install=1
 printf 'Installed se at %s\nOpen a fresh login terminal and run se --version.\n' "$bin/se"

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import select
 import signal
@@ -42,6 +43,7 @@ def contents(root):
 class LinuxInstaller(unittest.TestCase):
     archive = None
     source_root = None
+    binary = None
     maxDiff = None
 
     def setUp(self):
@@ -58,11 +60,20 @@ class LinuxInstaller(unittest.TestCase):
         self.assertEqual(len(roots), 1)
         self.bundle = roots[0]
         self.assertTrue((self.bundle / "install.sh").is_file())
+        if self.binary:
+            shutil.copyfile(self.binary, self.bundle / "se")
+            (self.bundle / "se").chmod(0o755)
         if self.source_root:
-            # Development fixture only: retain the native payload and old
-            # provenance. This neither assembles nor qualifies a new release.
+            # Development fixture only; keep the original build provenance.
             for name in ("install.sh", "uninstall.sh"):
                 shutil.copyfile(self.source_root / "scripts/release" / name, self.bundle / name)
+        if self.source_root or self.binary:
+            manifest_path = self.bundle / "manifest.json"
+            manifest = json.loads(manifest_path.read_bytes())
+            for name, entry in manifest["files"].items():
+                path = self.bundle / name
+                entry.update(sha256=digest(path), bytes=path.stat().st_size)
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
             inventory = self.bundle / "SHA256SUMS"
             inventory.write_text("".join(
                 f"{digest(path)}  {path.relative_to(self.bundle).as_posix()}\n"
@@ -215,53 +226,58 @@ class LinuxInstaller(unittest.TestCase):
         argv, environment = self.command(home)
         tools = self.root / "claim-barrier"
         tools.mkdir()
-        # Both installers must reach the exclusive claim after preflight. This
-        # prevents an up-front exists check from masquerading as a race witness.
+        # Pause inside the native holder before record publication. A forged
+        # worker must refuse even though the holder's protected directories exist.
         shim = tools / "ln"
-        shim.write_text('#!/bin/sh\nfor destination do :; done\ncase "$destination" in */se) exec /usr/bin/ln "$@";; esac\n'
+        shim.write_text('#!/bin/sh\nfor destination do :; done\ncase "$destination" in */standalone-install.json)\n'
                         'for source do case "$source" in */install.json) break;; esac; done\n'
-                        'printf "CLAIM-READY:%s\\n" "$source"\nIFS= read -r release\n'
-                        'if /usr/bin/ln "$@"; then printf "CLAIM-WON\\n"; IFS= read -r release; exit 0; else exit 1; fi\n')
+                        'printf "CLAIM-READY:%s\\n" "$source"\nIFS= read -r release;; esac\n'
+                        'exec /usr/bin/ln "$@"\n')
         shim.chmod(0o700)
         environment["PATH"] = str(tools) + ":" + environment["PATH"]
-        processes = [subprocess.Popen(argv, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(2)]
+        foreign = self.root / "foreign custody"
+        foreign.mkdir()
+        environment["SE_INSTALL_CREATED_DIRECTORIES"] = str(foreign)
+        process = subprocess.Popen(argv, env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            plans = []
-            for process in processes:
-                self.assertTrue(select.select([process.stdout], [], [], 10)[0], "installer never reached the atomic claim")
-                ready = process.stdout.readline().decode().strip()
-                self.assertTrue(ready.startswith("CLAIM-READY:"), ready)
-                plans.append(json.loads(Path(ready.removeprefix("CLAIM-READY:")).read_bytes()))
-            self.assertFalse(list(home.rglob("standalone-install.json")), "neither paused installer has claimed the record")
-            # Make the installer which created the asset parent lose. Its
-            # rollback must not remove a directory the winner still needs.
-            parent = str(home / ".local/share/stateengine")
-            owners = [i for i, plan in enumerate(plans) if parent in plan["created_directories"]]
-            self.assertEqual(len(owners), 1)
-            loser, winner = owners[0], 1 - owners[0]
-            processes[winner].stdin.write(b"claim\n")
-            processes[winner].stdin.flush()
-            self.assertTrue(select.select([processes[winner].stdout], [], [], 10)[0])
-            self.assertEqual(processes[winner].stdout.readline(), b"CLAIM-WON\n")
-            processes[loser].stdin.write(b"claim\n")
-            processes[loser].stdin.flush()
-            outputs = [None, None]
-            outputs[loser] = processes[loser].communicate(timeout=30)
-            processes[winner].stdin.write(b"publish\n")
-            processes[winner].stdin.flush()
-            outputs[winner] = processes[winner].communicate(timeout=30)
+            self.assertTrue(select.select([process.stdout], [], [], 15)[0], "installer never reached the atomic claim")
+            ready = process.stdout.readline().decode().strip()
+            self.assertTrue(ready.startswith("CLAIM-READY:"), ready)
+            plan = json.loads(Path(ready.removeprefix("CLAIM-READY:")).read_bytes())
+            self.assertFalse(list(home.rglob("standalone-install.json")))
+            before = contents(home)
+            # Also preserve a caller-nominated directory outside the installation.
+            forged = dict(environment, SE_INSTALL_CREATED_DIRECTORIES=str(foreign))
+            fake = subprocess.run([*argv, "--native-held"], env=forged, capture_output=True, timeout=15)
+            self.assertNotEqual(fake.returncode, 0, fake.stdout)
+            self.assertIn(b"native installation claim", fake.stderr)
+            self.assertEqual(contents(home), before)
+            self.assertTrue(foreign.is_dir())
+            # Even the correct claim inode, freshly opened by another process,
+            # cannot impersonate the holder's locked open file description.
+            native_lock = Path(pwd.getpwuid(os.geteuid()).pw_dir) / ".stateengine-install.lock"
+            with native_lock.open("rb") as impostor:
+                forged.update(SE_INSTALL_CLAIM_FD=str(impostor.fileno()),
+                              SE_INSTALL_CUSTODY_FD=str(impostor.fileno()))
+                fake = subprocess.run([*argv, "--native-held"], env=forged,
+                                      pass_fds=(impostor.fileno(),), capture_output=True, timeout=15)
+            self.assertNotEqual(fake.returncode, 0)
+            self.assertIn(b"installation object is in use", fake.stderr + fake.stdout)
+            self.assertEqual(contents(home), before)
+            # A second account-wide holder cannot join the active claim.
+            competing = subprocess.run([str(self.bundle / "se"), "__install-hold", "--home",
+                                        str(home / ".local/state/stateengine"), "--", "/usr/bin/true"],
+                                       env=environment, capture_output=True, timeout=15)
+            self.assertNotEqual(competing.returncode, 0)
+            self.assertIn(b"busy", competing.stderr + competing.stdout)
+            self.assertEqual(contents(home), before)
+            process.stdin.write(b"publish\n")
+            process.stdin.flush()
+            output = process.communicate(timeout=30)
+            self.assertEqual(process.returncode, 0, output)
         finally:
-            for process in processes:
-                if process.stdin and not process.stdin.closed:
-                    process.stdin.close()
-                    process.stdin = None
-                if process.poll() is None:
-                    try:
-                        process.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
-        self.assertEqual(sorted(process.returncode for process in processes), [0, 1], outputs)
+            if process.poll() is None:
+                process.communicate(b"publish\n", timeout=30)
         install_root = home / ".local"
         record_path = home / ".local/state/stateengine/standalone-install.json"
         self.assertTrue(record_path.is_file(), "ownership record belongs in the StateEngine data home")
@@ -272,7 +288,8 @@ class LinuxInstaller(unittest.TestCase):
         self.assertNotIn(b"not-a-real-key-judge-secret", record_bytes, "profiles must not acquire a second persistent secret copy")
         self.assertEqual(record["owner"], str(os.getuid()))
         self.assertEqual(stat.S_IMODE(record_path.stat().st_mode), 0o600)
-        actual = {str(p) for p in install_root.rglob("*") if p.is_file() and p != record_path}
+        machine = home / ".local/state/stateengine/machine.json"
+        actual = {str(p) for p in install_root.rglob("*") if p.is_file() and p not in (record_path, machine)}
         self.assertEqual({entry["path"] for entry in record["files"]}, actual)
         self.assertEqual(len(record["files"]), len(actual))
         for entry in record["files"]:
@@ -288,6 +305,13 @@ class LinuxInstaller(unittest.TestCase):
             self.assertEqual(set(edit), {"target", "before_sha256", "block"})
             self.assertEqual(edit["before_sha256"], hashlib.sha256(profile).hexdigest())
             self.assertEqual(Path(edit["target"]).read_bytes(), profile + edit["block"].encode())
+        native = subprocess.run([str(self.bundle / "se"), "__install-files-check",
+                                 *[entry["path"] for entry in record["files"]]],
+                                env=environment, capture_output=True, timeout=15)
+        self.assertEqual(native.returncode, 0, native.stderr)
+        self.assertEqual(set(plan["created_directories"]), set(record["created_directories"]))
+        self.assertNotIn(str(foreign), record["created_directories"])
+        self.assertTrue(foreign.is_dir())
         self.assertFalse(list(home.rglob(".install-*")))
         self.assertFalse(list(home.glob(".se-profile-*")))
         for shell in ("/bin/sh", "/bin/bash"):
@@ -295,6 +319,13 @@ class LinuxInstaller(unittest.TestCase):
                                       capture_output=True, timeout=10)
             self.assertEqual(terminal.returncode, 0, terminal.stderr)
             self.assertEqual(terminal.stdout.decode().strip(), str(install_root / "bin/se"))
+
+    def prepare_state(self, home):
+        _, environment = self.command(home)
+        run = subprocess.run([str(self.bundle / "se"), "__install-hold", "--home",
+                              str(home / ".local/state/stateengine"), "--", "/usr/bin/true"],
+                             env=environment, capture_output=True, timeout=15)
+        self.assertEqual(run.returncode, 0, run.stderr)
 
     def publication_fault(self, home, abrupt):
         """Fail at the first binary publication, after the durable ownership claim."""
@@ -322,6 +353,7 @@ class LinuxInstaller(unittest.TestCase):
         history = home / ".local/state/stateengine/history"
         history.mkdir(parents=True)
         (history / "sentinel").write_bytes(b"unrelated durable history\n")
+        self.prepare_state(home)
         before = contents(home)
         run, record = self.publication_fault(home, abrupt=False)
         self.assertNotEqual(run.returncode, 0)
@@ -338,6 +370,7 @@ class LinuxInstaller(unittest.TestCase):
                 profile.chmod(0o640)
                 os.setxattr(profile, b"user.se-install-judge", b"preserve-profile-metadata")
                 (home / ".bash_profile").write_bytes(b"# original bash profile\n")
+                self.prepare_state(home)
                 before = contents(home)
                 tools = self.root / ("profile-fault-tools-" + str(concurrent_edit))
                 tools.mkdir()
@@ -378,7 +411,7 @@ class LinuxInstaller(unittest.TestCase):
         prior = b"# credential=not-a-real-interruption-secret\n"
         (home / ".profile").write_bytes(prior)
         run, record = self.publication_fault(home, abrupt=True)
-        self.assertEqual(run.returncode, -signal.SIGKILL)
+        self.assertEqual(run.returncode, 128 + signal.SIGKILL)
         self.assertTrue(record.is_file(), "recovery ownership must precede installed effects")
         self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
         raw = record.read_bytes()
@@ -434,12 +467,14 @@ class LinuxInstaller(unittest.TestCase):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", required=True, type=Path)
+    parser.add_argument("--binary", type=Path, help="overlay a real native candidate executable in private fixtures; no release qualification")
     parser.add_argument("--source-root", type=Path, help="overlay production scripts in private test fixtures; never creates a release archive")
     args, remaining = parser.parse_known_args()
     if sys.platform != "linux":
         parser.error("these judging tests require Linux; no Windows claim is made")
     LinuxInstaller.archive = args.archive.resolve(strict=True)
     LinuxInstaller.source_root = args.source_root.resolve(strict=True) if args.source_root else None
-    if LinuxInstaller.source_root:
-        print("FIXTURE ONLY: production script overlay; native payload/provenance remain from the retained archive", flush=True)
+    LinuxInstaller.binary = args.binary.resolve(strict=True) if args.binary else None
+    if LinuxInstaller.source_root or LinuxInstaller.binary:
+        print("FIXTURE ONLY: candidate scripts/native binary over retained archive assets; original build provenance retained, no release qualification", flush=True)
     unittest.main(argv=[sys.argv[0], *remaining], verbosity=2)

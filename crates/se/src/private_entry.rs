@@ -125,6 +125,7 @@ pub fn dispatch_install_hold(args: &[OsString]) -> Option<Result<i32>> {
     match args.get(1).and_then(|value| value.to_str()) {
         Some("__install-hold") => Some(crate::installer::run(args)),
         Some("__install-home-check") => Some(crate::installer::check_home(args)),
+        Some("__install-files-check") => Some(crate::installer::check_files(args)),
         Some("__install-sync") => Some(crate::installer::sync_paths(args)),
         _ => None,
     }
