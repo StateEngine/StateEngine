@@ -114,7 +114,7 @@ pub use start::*;
 #[cfg(feature = "listener")]
 mod endpoint;
 #[cfg(feature = "listener")]
-pub use endpoint::{HostedListener, RetainedEndpoint};
+pub use endpoint::{HostedListener, RetainedEndpoint, endpoint_recovery_error};
 #[cfg(feature = "listener")]
 mod admission;
 

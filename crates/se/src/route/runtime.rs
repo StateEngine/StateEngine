@@ -27,7 +27,18 @@ pub fn up(
                 NonZeroU32::new(se_host::client::wire::DEFAULT_REPLY_BYTES)
                     .ok_or_else(|| SeError::invalid("runtime reply budget", "positive"))?,
                 &options,
-            )?;
+            )
+            .map_err(|error| {
+                if error.code() == se_types::Code::IpcUnavailable {
+                    se_host::endpoint_recovery_error(
+                        &cx.home,
+                        &format!("could not authenticate the protected runtime endpoint: {error}"),
+                    )
+                    .with_cause(error)
+                } else {
+                    error
+                }
+            })?;
             let process = process::observe(&value, &bound)?;
             (value, process)
         }

@@ -11,6 +11,24 @@ use std::{
     sync::Arc,
 };
 
+/// Shared by listener preparation and a CLI that cannot authenticate a
+/// protected endpoint. This diagnostic neither connects nor retires any address;
+/// manual recovery remains conditional on stopping the host and holding its lease.
+pub fn endpoint_recovery_error(directory: &std::path::Path, reason: &str) -> SeError {
+    SeError::new(se_types::Detail::StateConflict(
+        se_types::details::StateConflict {
+            subject: directory.join("endpoint.json").display().to_string(),
+            reason: reason.into(),
+            next_step: format!(
+                "Stop any runtime using this data home ({}). Acquire and hold an exclusive lock on {} while you move only {} aside; then release the lock and retry se up for this same home. Preserve the store, credentials and machine identity; do not remove or connect to the mismatched address.",
+                directory.display(),
+                directory.join("runtime.lock").display(),
+                directory.join("endpoint.json").display()
+            ),
+        },
+    ))
+}
+
 pub struct HostedListener {
     pub(crate) listener: IpcListener,
     pub(crate) publication: EndpointPublication,
@@ -128,18 +146,10 @@ impl EndpointPublication {
                     .map_err(|e| io_error("read stale endpoint", e))?;
                 let record = codec::decode_endpoint(&bytes)?;
                 if &record.address != expected_address {
-                    return Err(SeError::new(se_types::Detail::StateConflict(
-                        se_types::details::StateConflict {
-                            subject: path.display().to_string(),
-                            reason: "protected stale endpoint names a different native address from the one selected for this data home".into(),
-                            next_step: format!(
-                                "Stop any runtime using this data home ({}). With no process holding {}, move only {} aside, then retry se up for this same home. Preserve the store, credentials and machine identity; do not remove or connect to the mismatched address.",
-                                directory.display(),
-                                directory.join("runtime.lock").display(),
-                                path.display()
-                            ),
-                        },
-                    )));
+                    return Err(endpoint_recovery_error(
+                        directory,
+                        "protected stale endpoint names a different native address from the one selected for this data home",
+                    ));
                 }
                 Some(bytes)
             }
