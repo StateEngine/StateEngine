@@ -20,11 +20,9 @@ pub fn store_error(error: &StoreError) -> SeError {
         }),
         C::Busy | C::Backpressure => Detail::StoreBusy(details::StoreBusy {
             waited_ms: 0,
-            operation: None,
-            key: None,
-            natural_events: None,
-            reason: reason.into(),
-            next_step: next_step.into(),
+            replay: None,
+            reason,
+            next_step,
         }),
         C::WriterClosed | C::NotReady | C::GenerationChanged => {
             Detail::RuntimeNotRunning(details::RuntimeNotRunning {
@@ -185,9 +183,11 @@ pub fn retain_write_identity(
 ) -> SeError {
     if let Detail::StoreBusy(detail) = error.body.detail() {
         let mut detail = detail.clone();
-        detail.operation = Some(operation.into());
-        detail.key = key.map(|key| key.to_string().into_boxed_str());
-        detail.natural_events = Some(natural_events.into());
+        detail.replay = Some(Box::new(se_types::WriteRetryIdentity {
+            operation: operation.into(),
+            key: key.map(ToString::to_string),
+            natural_events: natural_events.to_vec(),
+        }));
         let replay = match key {
             Some(key) => format!(
                 "Original operation {operation}; repeat the same command with --key {key} (CLI) or idempotency_key {key} (MCP)."
@@ -201,7 +201,7 @@ pub fn retain_write_identity(
                     .join(", ")
             ),
         };
-        detail.next_step = format!("{} {replay}", detail.next_step).into();
+        detail.next_step = format!("{} {replay}", detail.next_step);
         error.body = se_types::ErrorBody::new(Detail::StoreBusy(detail))
             .with_retry(se_types::Retry::AfterReread);
     }

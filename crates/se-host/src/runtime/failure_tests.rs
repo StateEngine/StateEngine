@@ -37,13 +37,13 @@ fn busy_write_returns_the_refused_requests_replay_identity() -> Check {
         assert_eq!(refused.body.retry(), &Retry::AfterReread);
         let wire = serde_json::to_value(&refused.body)?;
         assert_eq!(wire["retry"]["kind"], "after_reread");
-        assert_eq!(wire["detail"]["operation"], original.operation);
+        assert_eq!(wire["detail"]["replay"]["operation"], original.operation);
         assert_eq!(
-            wire["detail"]["key"],
+            wire["detail"]["replay"]["key"],
             serde_json::to_value(original.key.as_ref().map(ToString::to_string))?
         );
         assert_eq!(
-            wire["detail"]["natural_events"],
+            wire["detail"]["replay"]["natural_events"],
             serde_json::to_value(&original.natural_events)?
         );
         let remedy = refused.body.remedy(&RenderCx::default())?;

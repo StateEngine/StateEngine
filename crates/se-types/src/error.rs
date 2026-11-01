@@ -50,6 +50,14 @@ pub struct ImportFamilyIssue {
     pub unreadable: u64,
 }
 
+/// Original write identity retained by a bounded admission refusal.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WriteRetryIdentity {
+    pub operation: String,
+    pub key: Option<String>,
+    pub natural_events: Vec<EventId>,
+}
+
 macro_rules! codes {
     ($($variant:ident => ($wire:literal,$class:ident) { $($field:ident:$ty:ty),* $(,)? } => $message:literal,$remedy:literal;)+) => {
         $(const _: [();1] = [();($wire.len()>0 && $message.len()>0 && $remedy.len()>1) as usize];)+
@@ -117,6 +125,24 @@ display_values!(
 impl HumanValue for Generation {
     fn human(&self) -> String {
         self.get().to_string()
+    }
+}
+impl HumanValue for WriteRetryIdentity {
+    fn human(&self) -> String {
+        format!(
+            "{}; key {}; natural events {}",
+            self.operation,
+            self.key.human(),
+            self.natural_events.human()
+        )
+    }
+}
+impl<T: HumanValue + ?Sized> HumanValue for Box<T> {
+    fn human(&self) -> String {
+        self.as_ref().human()
+    }
+    fn count(&self) -> Option<usize> {
+        self.as_ref().count()
     }
 }
 impl<T: HumanValue> HumanValue for Option<T> {
