@@ -9,6 +9,7 @@ type ResumeRow = (
 );
 mod capture;
 mod cursor;
+mod decision;
 mod message;
 mod message_count;
 mod page;
@@ -632,6 +633,13 @@ impl Snapshot for SqliteSnapshot {
             &[&p, &d],
             Some("proposed_seq"),
         )
+    }
+    fn decision_transitions(
+        &mut self,
+        id: DecisionId,
+        budget: ReadBudget,
+    ) -> StoreResult<Read<Page<StoredEvent>>> {
+        self.read_decision_transitions(id, budget)
     }
     fn decisions(
         &mut self,
