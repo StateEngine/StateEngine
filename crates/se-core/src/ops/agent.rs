@@ -12,7 +12,7 @@ use se_store::{
     Actor, AtomicBatch, EventBody, Expected, GrantKey, PermissionProfile, PrincipalKind, Profile,
     Snapshot,
 };
-use se_types::{AgentId, Detail, EventId, IdempotencyKey, Read, Result, SeError, details};
+use se_types::{Detail, IdempotencyKey, Read, Result, SeError, details};
 
 pub struct AgentCreateThen {
     pub(crate) request: IdempotencyKey,
@@ -89,14 +89,8 @@ pub fn create<R: Snapshot>(
     let model = input
         .model
         .or_else(|| (!defaults.model.is_empty()).then(|| defaults.model.clone()));
-    // The adapter allocated two fresh canonical UUIDs in CallFacts. The second
-    // allocation is unused by other operations in this invocation, so it supplies
-    // this new identity and its separately typed profile event without core RNG.
-    let bytes =
-        kernel.facts()?.message.canonical_bytes()?.ok_or_else(|| {
-            SeError::invalid("agent allocation", "fresh canonical UUIDv7 call facts")
-        })?;
-    let agent = AgentId::from_bytes(bytes)?;
+    let facts = kernel.facts()?;
+    let agent = facts.agent.clone();
     let identity = kernel.event(
         EventBody::PrincipalRegistered {
             principal: Actor::Agent(agent.clone()),
@@ -126,7 +120,7 @@ pub fn create<R: Snapshot>(
         },
         cx,
     )?;
-    profile.header.event = EventId::from_bytes(bytes)?;
+    profile.header.event = facts.profile_event.clone();
     let key = input.idempotency_key;
     let mut batch = kernel.batch("agent.create", key.clone(), normalized, identity, cx)?;
     batch.events.push(profile);

@@ -18,7 +18,7 @@ use se_store::{
     DirectStore, LeaseIdentity, LeaseMode, ReadStore, SqliteFactory, StateFiles, StoreFactory,
     StoreOptions,
 };
-use se_types::{EventId, MessageId, Read, Result, SeError, Secret};
+use se_types::{AgentId, EventId, MessageId, Read, Result, SeError, Secret};
 use std::{
     io::Read as _,
     sync::{Arc, atomic::AtomicBool},
@@ -36,13 +36,21 @@ pub fn facts() -> Result<CallFacts> {
     let now = now_us()?;
     let random = se_proc::random_secret()
         .map_err(|e| scope::unreadable("operation identity allocation", &e.to_string()))?;
+    let agent_random = se_proc::random_secret()
+        .map_err(|e| scope::unreadable("agent identity allocation", &e.to_string()))?;
     let mut event = [0; 10];
     let mut message = [0; 10];
+    let mut agent = [0; 10];
+    let mut profile_event = [0; 10];
     event.copy_from_slice(&random.expose()[..10]);
     message.copy_from_slice(&random.expose()[10..20]);
+    agent.copy_from_slice(&agent_random.expose()[..10]);
+    profile_event.copy_from_slice(&agent_random.expose()[10..20]);
     Ok(CallFacts {
         event: EventId::from_parts(now as u64 / 1000, event)?,
         message: MessageId::from_parts(now as u64 / 1000, message)?,
+        agent: AgentId::from_parts(now as u64 / 1000, agent)?,
+        profile_event: EventId::from_parts(now as u64 / 1000, profile_event)?,
         occurred_at_us: now,
         door: se_store::Door::Cli,
     })

@@ -4,7 +4,7 @@ use se_store::{
     Actor, AtomicBatch, CommitReceipt, Door, EventBody, EventHeader, Expected, InputText,
     IntentDigest, NewEvent, RequestIdentity, Revision, Snapshot,
 };
-use se_types::{EventId, IdempotencyKey, MessageId, Result, SeError};
+use se_types::{AgentId, EventId, IdempotencyKey, MessageId, Result, SeError};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
 
@@ -14,6 +14,8 @@ use std::num::NonZeroU64;
 pub struct CallFacts {
     pub event: EventId,
     pub message: MessageId,
+    pub agent: AgentId,
+    pub profile_event: EventId,
     pub occurred_at_us: i64,
     pub door: Door,
 }
