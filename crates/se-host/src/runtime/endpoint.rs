@@ -171,32 +171,40 @@ impl EndpointPublication {
                 return Err(se_core::scope::unreadable("stale endpoint", &what));
             }
         };
-        deadline.remaining()?;
-        #[cfg(unix)]
-        {
-            let crate::IpcEndpoint::UnixSocket(socket) = expected_address else {
-                return Err(SeError::invalid(
-                    "stale endpoint",
-                    "the native Unix socket address",
-                ));
-            };
-            let bound = deadline.native_bound();
-            if let Some(stale) =
-                se_proc::native_ipc::NativeUnixSocketCleanup::observe(&socket.to_local()?, &bound)
-                    .map_err(crate::client::lease::native_error)?
+        let cleanup = (|| -> Result<()> {
+            deadline.remaining()?;
+            #[cfg(unix)]
             {
-                stale
-                    .compare_remove(&bound)
-                    .map_err(crate::client::lease::native_error)?;
+                let crate::IpcEndpoint::UnixSocket(socket) = expected_address else {
+                    return Err(SeError::invalid(
+                        "stale endpoint",
+                        "the native Unix socket address",
+                    ));
+                };
+                let bound = deadline.native_bound();
+                if let Some(stale) = se_proc::native_ipc::NativeUnixSocketCleanup::observe(
+                    &socket.to_local()?,
+                    &bound,
+                )
+                .map_err(crate::client::lease::native_error)?
+                {
+                    stale
+                        .compare_remove(&bound)
+                        .map_err(crate::client::lease::native_error)?;
+                }
             }
-        }
-        if let Some(previous) = previous {
-            use sha2::Digest;
-            lease
-                .files()
-                .remove_owned(&path, sha2::Sha256::digest(&previous).into())
-                .map_err(|e| store_error(&e))?;
-        }
+            if let Some(previous) = previous {
+                use sha2::Digest;
+                lease
+                    .files()
+                    .remove_owned(&path, sha2::Sha256::digest(&previous).into())
+                    .map_err(|e| store_error(&e))?;
+            }
+            Ok(())
+        })();
+        cleanup.map_err(|error| {
+            super::recovery::after_retention(directory, recovery.as_ref(), error)
+        })?;
         Ok(recovery)
     }
     fn verify(&self) -> Result<()> {
@@ -442,15 +450,36 @@ impl HostedRuntime {
                     &bind_deadline,
                 )?;
                 let listener =
-                    IpcListener::bind_with_limits(record.clone(), runtime, slots, &limits)?;
-                let publication =
-                    match EndpointPublication::publish(lease, directory, record, recovery) {
-                        Ok(publication) => publication,
-                        Err(error) => {
-                            listener.close()?;
-                            return Err(error);
-                        }
-                    };
+                    IpcListener::bind_with_limits(record.clone(), runtime, slots, &limits)
+                        .map_err(|error| {
+                            super::recovery::after_retention(&directory, recovery.as_ref(), error)
+                        })?;
+                let retained = recovery.clone();
+                let publication = match EndpointPublication::publish(
+                    lease,
+                    directory.clone(),
+                    record,
+                    recovery,
+                ) {
+                    Ok(publication) => publication,
+                    Err(error) => {
+                        let error = match listener.close() {
+                            Ok(crate::IpcClose::Closed) => error,
+                            Ok(crate::IpcClose::PendingRelease { error: close }) | Err(close) => se_core::scope::unreadable(
+                                "listener publication cleanup",
+                                &format!(
+                                    "publication failed: {error}; listener close failed: {close}"
+                                ),
+                            )
+                            .with_cause(error.with_cause(close)),
+                        };
+                        return Err(super::recovery::after_retention(
+                            &directory,
+                            retained.as_ref(),
+                            error,
+                        ));
+                    }
+                };
                 Ok(HostedListener {
                     listener,
                     publication,

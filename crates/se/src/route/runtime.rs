@@ -60,8 +60,8 @@ pub fn up(
                     };
                     SeError::new(se_types::Detail::StateConflict(se_types::details::StateConflict {
                         subject: cx.home.display().to_string(),
-                        reason: format!("Retained stale endpoint {} as {retained_path}, but runtime startup did not complete: {error}", cx.home.join("endpoint.json").display()),
-                        next_step: "Preserve the retained endpoint record and retry se up for this same home; if another host has started, use se down first.".into(),
+                        reason: format!("Retained stale endpoint {} as {retained_path}, but the runtime startup response could not be completed: {error}", cx.home.join("endpoint.json").display()),
+                        next_step: "Keep the retained endpoint record and run se status for this same home before retrying se up; use se down first if another host is running.".into(),
                     })).with_cause(error)
                 } else { error }
             })?;
