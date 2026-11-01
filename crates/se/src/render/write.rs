@@ -220,6 +220,21 @@ pub fn uninstall(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()
     }
     writeln!(out, "PATH ({}):", value.path.scope)?;
     witness(&value.path.witness, out)?;
+    for entry in &value.path.before_entries {
+        writeln!(out, "  Before: {entry}")?;
+    }
+    for entry in &value.path.after_entries {
+        writeln!(out, "  After: {entry}")?;
+    }
+    for issue in &value.issues {
+        writeln!(out, "Uninstall result check: {issue}")?;
+    }
+    if !value.complete {
+        writeln!(
+            out,
+            "Resolve the named pending outcomes, then retry se uninstall with the same --home and --key."
+        )?;
+    }
     for path in &value.preserved {
         writeln!(out, "Preserved: {path}")?;
     }

@@ -573,6 +573,9 @@ pub struct UninstallOutput {
     pub path: PathEffect,
     pub preserved: Vec<String>,
     pub recovery: Vec<RecoveryDirectoryEffect>,
+    /// Completion checks can fail after native effects; keep both facts visible.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<se_types::ErrorBody>,
 }
 /// Native no-follow inventory of replacement recovery siblings. A filename
 /// prefix alone never grants deletion or restoration authority.

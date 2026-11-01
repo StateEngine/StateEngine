@@ -138,6 +138,11 @@ pub(super) fn execute(
         ));
     }
     let image = matches.remove(0);
+    let installed = plan
+        .files
+        .iter()
+        .find(|file| file.path == image)
+        .ok_or_else(|| invalid("running image disappeared from the plan"))?;
 
     let mut effects = UninstallEffects {
         install_files: Vec::new(),
@@ -188,14 +193,11 @@ pub(super) fn execute(
     diagnosis.push_str("Recovery: restore only a uniquely proved owned backup to an absent planned target in its original directory; preserve every unresolved copy.\n");
     diagnostic(&diagnosis)
         .map_err(|error| se_core::scope::unreadable("uninstall diagnostic", &error.to_string()))?;
+    let claim = installation_claim
+        .as_ref()
+        .ok_or_else(|| invalid("native installation claim missing"))?;
     recover(plan, &mut effects.recovery);
-    cleanup_temporary(
-        plan,
-        installation_claim
-            .as_ref()
-            .ok_or_else(|| invalid("native installation claim missing"))?,
-        &mut effects.recovery,
-    );
+    cleanup_temporary(plan, claim, &mut effects.recovery);
     let clean = effects.recovery.iter().all(recovery::resolved);
     if !clean {
         pending_assets(
@@ -219,11 +221,6 @@ pub(super) fn execute(
     effects.recovery = recovery::merge(effects.recovery, scan(plan, &parents));
     safe &= effects.recovery.iter().all(recovery::resolved);
     // Never strand a partially removed installation without its retry entry point.
-    let installed = plan
-        .files
-        .iter()
-        .find(|file| file.path == image)
-        .ok_or_else(|| invalid("running image disappeared from the plan"))?;
     if safe {
         #[cfg(windows)]
         {
@@ -233,9 +230,15 @@ pub(super) fn execute(
             // authorization is sent and the installed retry entry survives.
             drop(installation_claim.take());
         }
-        effects
-            .install_files
-            .push(remove_image(cx, plan, installed, record_digest)?);
+        let result = remove_image(cx, plan, installed, record_digest).unwrap_or_else(|error| {
+            file_effect(
+                &installed.path,
+                FileOutcome::Pending,
+                WitnessState::Failed,
+                &error.to_string(),
+            )
+        });
+        effects.install_files.push(result);
     } else {
         effects.install_files.push(file_effect(
             &installed.path,
@@ -279,6 +282,17 @@ pub(super) fn execute(
                 ),
             }),
         }
+    } else {
+        effects.integrations.push(IntegrationEffect {
+            path: record_path.display().to_string(),
+            entry: "owned installation record".into(),
+            action: FileOutcome::Pending,
+            witness: witness(
+                WitnessState::Unknown,
+                "record removal awaits witnessed image and installation effects",
+                None,
+            ),
+        });
     }
     let mut directories: Vec<_> = plan.created_directories.iter().collect();
     directories.sort_by_key(|path| std::cmp::Reverse(Path::new(path).components().count()));
