@@ -1,6 +1,7 @@
 //! Existing directories may use the current user's private primary group.
 //! This changes no permissions and never relaxes the final owned state root.
 use super::*;
+mod proof;
 use std::{ffi::CStr, ptr};
 
 fn account_error(path: &Path, operation: &'static str, code: i32) -> StateFileError {
@@ -114,7 +115,7 @@ pub(super) fn validate(file: &File, path: &Path) -> Result<()> {
             path,
         ));
     }
-    if meta.mode() & 0o020 != 0 && !private_group(meta.gid(), path)? {
+    if meta.mode() & 0o020 != 0 && !proof::private_group(file, &meta, path)? {
         return Err(unsafe_path(
             "ancestor is writable by a group other than the user's private primary group",
             path,
