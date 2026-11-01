@@ -74,6 +74,101 @@ fn absence_and_native_path_failure_are_distinct() -> Check {
     Ok(())
 }
 
+#[cfg(any(unix, windows))]
+fn directory_link(target: &Path, link: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link)
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(target, link)
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn dangling_parent(descendants: &Path) -> Check {
+    let f = Fixture::new()?;
+    let capacity = std::num::NonZeroU32::new(8).ok_or("zero reader capacity")?;
+    let target = f.home.join("missing-link-target");
+    let link = f.home.join("dangling-directory");
+    directory_link(&target, &link)?;
+    assert!(std::fs::symlink_metadata(&link)?.file_type().is_symlink());
+    let options = StoreOptions {
+        state_directory: link.join(descendants),
+        ..f.options.clone()
+    };
+    let path = options.state_directory.join("state.db");
+    let native = std::fs::symlink_metadata(&path)
+        .err()
+        .ok_or("dangling parent unexpectedly resolved")?
+        .raw_os_error();
+    assert!(native.is_some(), "fixture did not observe a native error");
+    for result in [
+        SqliteFactory::open_reader(&options),
+        SqliteFactory::open_reader_with_capacity(&options, capacity),
+    ] {
+        let error = result
+            .err()
+            .ok_or("dangling directory parent became a measured-absent store")?;
+        assert_eq!(error.code, StoreErrorCode::Unreadable);
+        assert_eq!(context(&error, &path, StoreIoStage::Open), (None, native));
+    }
+    assert_eq!(std::fs::read_link(&link)?, target);
+    assert_eq!(
+        std::fs::symlink_metadata(&target)
+            .err()
+            .ok_or("read-only open created the dangling target")?
+            .kind(),
+        std::io::ErrorKind::NotFound,
+        "read-only open created or replaced the dangling target"
+    );
+    Ok(())
+}
+
+/// Protects: a dangling immediate directory parent is an unreadable path, retaining the original state.db native error for both reader constructors.
+#[cfg(any(unix, windows))]
+#[test]
+fn dangling_immediate_parent_retains_native_open_failure() -> Check {
+    dangling_parent(Path::new(""))
+}
+
+/// Protects: missing descendants cannot hide a dangling directory ancestor as measured database absence.
+#[cfg(any(unix, windows))]
+#[test]
+fn dangling_ancestor_above_missing_descendants_retains_native_open_failure() -> Check {
+    dangling_parent(Path::new("missing/descendant"))
+}
+
+/// Protects: real missing directories and missing databases under valid directory links stay Absent without creating a store.
+#[cfg(any(unix, windows))]
+#[test]
+fn absent_directories_and_valid_directory_links_keep_their_meaning() -> Check {
+    let f = Fixture::new()?;
+    let capacity = std::num::NonZeroU32::new(8).ok_or("zero reader capacity")?;
+    let alias = f.home.join("valid-directory");
+    directory_link(&f.options.state_directory, &alias)?;
+    for directory in [
+        f.home.join("missing"),
+        f.home.join("missing/descendant"),
+        alias.clone(),
+        alias.join("missing/descendant"),
+    ] {
+        let options = StoreOptions {
+            state_directory: directory.clone(),
+            ..f.options.clone()
+        };
+        for result in [
+            SqliteFactory::open_reader(&options),
+            SqliteFactory::open_reader_with_capacity(&options, capacity),
+        ] {
+            assert!(matches!(result?, Read::Absent { .. }));
+        }
+        assert!(!directory.join("state.db").try_exists()?);
+    }
+    Ok(())
+}
+
 /// Protects: short damaged files and SQLite-detected non-databases report Corrupt, keep original bytes, and identify the stage that discovered corruption.
 #[test]
 fn corruption_preserves_early_and_sqlite_diagnostics() -> Check {
