@@ -143,8 +143,16 @@ pub fn apply<R: ReadStore>(
         } else {
             let mut nearest = None;
             for root in roots {
-                let root = std::fs::canonicalize(root.path.to_local()?)
-                    .map_err(|e| scope::unreadable("registered project root", &e.to_string()))?;
+                let root = match std::fs::canonicalize(root.path.to_local()?) {
+                    Ok(root) => root,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => {
+                        return Err(scope::unreadable(
+                            "registered project root",
+                            &error.to_string(),
+                        ));
+                    }
+                };
                 if cwd.starts_with(&root) {
                     nearest = Some(nearest.unwrap_or(0).max(root.components().count()));
                 }
