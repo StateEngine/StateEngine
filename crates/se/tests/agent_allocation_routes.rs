@@ -15,8 +15,8 @@ mod fixture;
 use fixture::*;
 static ROUTES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn command(home: &Path, root: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
+fn command(image: &Path, home: &Path, root: &Path) -> Command {
+    let mut command = Command::new(image);
     command
         .args(["--json", "--home"])
         .arg(home)
@@ -45,6 +45,7 @@ fn value(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Error>
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 struct Host {
+    image: PathBuf,
     home: PathBuf,
     root: PathBuf,
     identity: se_proc::ProcessIdentity,
@@ -52,8 +53,8 @@ struct Host {
     stopped: bool,
 }
 impl Host {
-    fn start(home: &Path, root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        value(command(home, root).arg("up").output()?)?;
+    fn start(image: &Path, home: &Path, root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        value(command(image, home, root).arg("up").output()?)?;
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
             home.join("endpoint.json"),
         )?)?;
@@ -69,10 +70,11 @@ impl Host {
         assert_eq!(observed.identity.pid.0, expected.pid.get());
         assert_eq!(
             std::fs::canonicalize(&observed.identity.image)?,
-            std::fs::canonicalize(env!("CARGO_BIN_EXE_se"))?,
+            std::fs::canonicalize(image)?,
             "published host PID is not running this fixture's exact image"
         );
         Ok(Self {
+            image: image.into(),
             home: home.into(),
             root: root.into(),
             identity: observed.identity,
@@ -107,7 +109,9 @@ impl Host {
             return Ok(());
         }
         if !self.exited()? {
-            let output = command(&self.home, &self.root).arg("down").output()?;
+            let output = command(&self.image, &self.home, &self.root)
+                .arg("down")
+                .output()?;
             assert!(
                 matches!(output.status.code(), Some(0) | Some(2)),
                 "actual down failed: {}",
@@ -156,10 +160,16 @@ fn check(hosted: bool) -> Check {
     se_proc::initialize_file_creation_owner()?;
     let f = Fixture::new()?;
     let home = &f.options.state_directory;
+    let installation = f.home.join("installed image");
+    std::fs::create_dir(&installation)?;
+    let image = installation.join(if cfg!(windows) { "se.exe" } else { "se" });
+    // Cargo hard-links its Windows binary into deps. Exercise the same
+    // single-link image layout as an installed archive on both platforms.
+    std::fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
     let root = f.home.join("allocation repository");
     std::fs::create_dir(&root)?;
     let initialized = value(
-        command(home, &root)
+        command(&image, home, &root)
             .args(["init", "--name", "allocation-routes"])
             .output()?,
     )?;
@@ -171,7 +181,9 @@ fn check(hosted: bool) -> Check {
         .as_str()
         .ok_or("init project")?
         .parse()?;
-    let mut host = hosted.then(|| Host::start(home, &root)).transpose()?;
+    let mut host = hosted
+        .then(|| Host::start(&image, home, &root))
+        .transpose()?;
     let expected_writer = if hosted {
         WriterKind::Host {
             generation: host
@@ -204,7 +216,7 @@ fn check(hosted: bool) -> Check {
         let name = format!("independent-{index}");
         let key = format!("route-allocation-{index}");
         let args = ["--key", key.as_str(), "agent", "add", name.as_str()];
-        let first = value(command(home, &root).args(args).output()?)?;
+        let first = value(command(&image, home, &root).args(args).output()?)?;
         assert_eq!(first["state"], "committed");
         assert_eq!(first["process_started"], false);
         assert_eq!(
@@ -262,7 +274,7 @@ fn check(hosted: bool) -> Check {
             );
         }
         snapshot.close()?;
-        let replay = value(command(home, &root).args(args).output()?)?;
+        let replay = value(command(&image, home, &root).args(args).output()?)?;
         assert_eq!(replay["state"], "replayed");
         assert_eq!(replay["agent"], first["agent"]);
         assert_eq!(replay["event_id"], first["event_id"]);
@@ -294,12 +306,12 @@ fn check(hosted: bool) -> Check {
     if hosted {
         host.as_mut().ok_or("missing native replay host")?.stop()?;
     } else {
-        host = Some(Host::start(home, &root)?);
+        host = Some(Host::start(&image, home, &root)?);
     }
     let head = reader.info()?.head;
     for (name, key, first, original) in retained {
         let replay = value(
-            command(home, &root)
+            command(&image, home, &root)
                 .args(["--key", key.as_str(), "agent", "add", name.as_str()])
                 .output()?,
         )?;
