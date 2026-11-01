@@ -62,6 +62,18 @@ pub fn options() -> ClientOptions {
         cancelled: Arc::new(AtomicBool::new(false)),
     }
 }
+fn forwarding_options(
+    home: &std::path::Path,
+    endpoint: &se_host::EndpointRecord,
+) -> Result<ClientOptions> {
+    let mut options = options();
+    let started = std::time::Instant::now();
+    let bound = se_host::client::lease::Deadline::from_options(&options)?;
+    se_proc::native_ipc::restore_image_cache(home, endpoint.image_sha256, &bound.native_bound())
+        .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
+    options.timeout = options.timeout.saturating_sub(started.elapsed());
+    Ok(options)
+}
 pub fn endpoint(files: &Files) -> Result<Read<se_host::EndpointRecord>> {
     let path = files.0.root().join("endpoint.json");
     match files.readback(&path).map_err(|e| store_error(&e))? {
@@ -126,7 +138,12 @@ pub fn dispatch(
     if let AnyOp::HookClaude(hook) = &op {
         let target = scope::require_present(endpoint(&files)?, "live runtime endpoint")?;
         let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
-        return crate::ipc::forward_hook(&target, credential(cx, &files)?, input, &options());
+        return crate::ipc::forward_hook(
+            &target,
+            credential(cx, &files)?,
+            input,
+            &forwarding_options(&cx.home, &target)?,
+        );
     }
     if op.meta().effect == Effect::Read {
         return complete(direct::read(
@@ -170,6 +187,7 @@ pub fn dispatch(
             endpoint(&files)?,
             "live runtime endpoint while the writer lease is busy",
         )?;
+        let forwarding = forwarding_options(&cx.home, &target)?;
         return crate::ipc::forward(
             &target,
             credential(cx, &files)?,
@@ -179,7 +197,7 @@ pub fn dispatch(
                 .owner
                 .as_ref()
                 .map(|owner| owner.native_observation()),
-            &options(),
+            &forwarding,
         );
     };
     let store_options = StoreOptions {
