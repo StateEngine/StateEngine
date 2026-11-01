@@ -158,14 +158,7 @@ pub fn dispatch(
             &selections,
         )?);
     }
-    se_core::admission::authorize(op.meta(), &caller.admission, &caller.terminal)?;
-    if op.requires_human_terminal()? {
-        se_core::admission::require_human_terminal(
-            op.meta().name,
-            &caller.admission,
-            &caller.terminal,
-        )?;
-    }
+    se_core::admission::authorize(op.meta(), &caller.admission)?;
     if let AnyOp::RuntimeDown(input) = op {
         return super::runtime_control::down(&files, input);
     }

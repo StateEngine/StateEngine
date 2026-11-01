@@ -38,12 +38,7 @@ pub fn committed<R: Snapshot>(
     receipt: CommitReceipt,
     cx: &mut Cx<'_, R>,
 ) -> Result<super::AgentConfigReceipt> {
-    if receipt.request_key.as_ref() != Some(&then.request) {
-        return Err(scope::unreadable(
-            "agent setting receipt",
-            "request key differs from continuation",
-        ));
-    }
+    crate::dispatch::receipt_key(&receipt, &then.request)?;
     let event = super::receipt::committed_event(cx.read, &receipt)?;
     if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
         return Err(scope::unreadable(

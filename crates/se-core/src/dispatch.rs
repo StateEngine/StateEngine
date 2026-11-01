@@ -119,7 +119,7 @@ pub(crate) fn admitted<R: Snapshot>(cx: &Cx<'_, R>) -> Result<()> {
         )),
     }
 }
-fn receipt_key(receipt: &CommitReceipt, expected: &IdempotencyKey) -> Result<()> {
+pub(crate) fn receipt_key(receipt: &CommitReceipt, expected: &IdempotencyKey) -> Result<()> {
     if receipt.request_key.as_ref() != Some(expected)
         || !receipt.events.contains(&receipt.primary_event)
     {
@@ -294,7 +294,9 @@ impl Kernel {
             return Ok(OpStep::Complete(output));
         }
         op.validate()?;
-        crate::admission::authorize(op.meta(), cx.admission, terminal)?;
+        crate::admission::authorize(op.meta(), cx.admission)?;
+        // Direct and hosted adapters provide native observations; enforce the
+        // presence policy once here, before any batch or custody plan exists.
         if op.requires_human_terminal()? {
             crate::admission::require_human_terminal(op.meta().name, cx.admission, terminal)?;
         }
@@ -307,8 +309,7 @@ impl Kernel {
             }
             AnyOp::ConfigSet(input) => {
                 let configuration=self.configuration.as_ref().ok_or_else(||scope::unreadable("saved agent configuration","adapter-resolved ConfigFile must be bound using Kernel::with_configuration"))?;
-                let (batch, then) =
-                    crate::ops::agent_config::set(self, input, configuration, cx, terminal)?;
+                let (batch, then) = crate::ops::agent_config::set(self, input, configuration, cx)?;
                 OpStep::Commit {
                     batch,
                     then: Then::AgentConfig(then),
@@ -335,28 +336,28 @@ impl Kernel {
                 }
             }
             AnyOp::DecisionRatify(input) => {
-                let (batch, then) = crate::ops::decision::ratify(self, input, cx, terminal)?;
+                let (batch, then) = crate::ops::decision::ratify(self, input, cx)?;
                 OpStep::Commit {
                     batch,
                     then: Then::Decision(then),
                 }
             }
             AnyOp::DecisionReject(input) => {
-                let (batch, then) = crate::ops::decision::reject(self, input, cx, terminal)?;
+                let (batch, then) = crate::ops::decision::reject(self, input, cx)?;
                 OpStep::Commit {
                     batch,
                     then: Then::Decision(then),
                 }
             }
             AnyOp::DecisionRetract(input) => {
-                let (batch, then) = crate::ops::decision::retract(self, input, cx, terminal)?;
+                let (batch, then) = crate::ops::decision::retract(self, input, cx)?;
                 OpStep::Commit {
                     batch,
                     then: Then::Decision(then),
                 }
             }
             AnyOp::DecisionSupersede(input) => {
-                let (batch, then) = crate::ops::decision::supersede(self, input, cx, terminal)?;
+                let (batch, then) = crate::ops::decision::supersede(self, input, cx)?;
                 OpStep::Commit {
                     batch,
                     then: Then::Decision(then),

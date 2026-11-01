@@ -2,7 +2,6 @@
 //! never a typed decision ID or a field in the operation input.
 use super::{administration::*, inputs::Validate};
 use crate::{
-    admission::{HumanTerminal, require_human_terminal},
     commit::Cx,
     dispatch::{Kernel, admitted},
     scope,
@@ -105,11 +104,9 @@ pub fn ratify<R: Snapshot>(
     kernel: &Kernel,
     input: DecisionRatify,
     cx: &mut Cx<'_, R>,
-    terminal: &HumanTerminal,
 ) -> Result<(AtomicBatch, DecisionThen)> {
     input.validate()?;
     admitted(cx)?;
-    require_human_terminal("decision.ratify", cx.admission, terminal)?;
     let normalized = intent(&input)?;
     let expected = Expected::Revision(expected(&input.decision_id, input.expect, cx)?.0);
     let body = EventBody::DecisionRatified {
@@ -132,11 +129,9 @@ pub fn reject<R: Snapshot>(
     kernel: &Kernel,
     input: DecisionReject,
     cx: &mut Cx<'_, R>,
-    terminal: &HumanTerminal,
 ) -> Result<(AtomicBatch, DecisionThen)> {
     input.validate()?;
     admitted(cx)?;
-    require_human_terminal("decision.reject", cx.admission, terminal)?;
     let normalized = intent(&input)?;
     let expected = Expected::Revision(expected(&input.decision_id, input.expect, cx)?.0);
     let body = EventBody::DecisionRejected {
@@ -158,11 +153,9 @@ pub fn retract<R: Snapshot>(
     kernel: &Kernel,
     input: DecisionRetract,
     cx: &mut Cx<'_, R>,
-    terminal: &HumanTerminal,
 ) -> Result<(AtomicBatch, DecisionThen)> {
     input.validate()?;
     admitted(cx)?;
-    require_human_terminal("decision.retract", cx.admission, terminal)?;
     let normalized = intent(&input)?;
     let expected = Expected::Revision(expected(&input.decision_id, input.expect, cx)?.0);
     let body = EventBody::DecisionRetracted {
@@ -184,9 +177,8 @@ pub fn supersede<R: Snapshot>(
     kernel: &Kernel,
     input: DecisionSupersede,
     cx: &mut Cx<'_, R>,
-    terminal: &HumanTerminal,
 ) -> Result<(AtomicBatch, DecisionThen)> {
-    supersede::plan(kernel, input, cx, terminal)
+    supersede::plan(kernel, input, cx)
 }
 
 fn text(value: &se_store::StoredText, subject: &str) -> Result<String> {
@@ -312,12 +304,7 @@ pub fn committed<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<super::DecisionReceipt> {
     use super::{DecisionAction, ReceiptAuthority, ReceiptGuard};
-    if receipt.request_key.as_ref() != Some(&then.request) {
-        return Err(scope::unreadable(
-            "decision receipt",
-            "request identity differs",
-        ));
-    }
+    crate::dispatch::receipt_key(&receipt, &then.request)?;
     let event = super::receipt::committed_event(cx.read, &receipt)?;
     if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
         return Err(scope::unreadable(

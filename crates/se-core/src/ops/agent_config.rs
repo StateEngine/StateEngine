@@ -1,7 +1,6 @@
 //! Saved agent metadata is a FULL store write, never a project config layer.
 use super::{ConfigGet, ConfigSet, inputs::Validate};
 use crate::{
-    admission::{HumanTerminal, require_human_terminal},
     commit::Cx,
     config_policy::{ConfigFile, EffectiveSandbox},
     dispatch::{Kernel, admitted},
@@ -161,7 +160,6 @@ pub fn set<R: Snapshot>(
     input: ConfigSet,
     configuration: &ConfigFile,
     cx: &mut Cx<'_, R>,
-    terminal: &HumanTerminal,
 ) -> Result<(AtomicBatch, AgentConfigThen)> {
     input.validate()?;
     admitted(cx)?;
@@ -174,9 +172,6 @@ pub fn set<R: Snapshot>(
     }
     let (selector, field) = Field::parse(&input.key)?;
     let human_only = crate::config_policy::key_metadata(&input.key)?.human_only;
-    if human_only {
-        require_human_terminal("config.set", cx.admission, terminal)?;
-    }
     let agent = match replay_target(&input.idempotency_key, cx)? {
         Some(agent) => agent,
         None => agent(selector, cx)?,

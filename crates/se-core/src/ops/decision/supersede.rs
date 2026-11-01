@@ -7,11 +7,9 @@ pub(super) fn plan<R: Snapshot>(
     kernel: &Kernel,
     input: DecisionSupersede,
     cx: &mut Cx<'_, R>,
-    terminal: &HumanTerminal,
 ) -> Result<(AtomicBatch, DecisionThen)> {
     input.validate()?;
     admitted(cx)?;
-    require_human_terminal("decision.supersede", cx.admission, terminal)?;
     let normalized = intent(&input)?;
     let prior_expected = expected(&input.decision_id, input.expect, cx)?.0;
     let (mut replacement_expected, mut cause) =
