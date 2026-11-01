@@ -21,7 +21,7 @@ fn run(serial: bool) -> Check {
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
     println!("shutdown_write fixture={}", f.home.display());
     let (mut direct, lease) = f.direct()?;
-    let session = SessionId::from_parts(1_700_000_000_000 + serial(), [82; 10])?;
+    let session = SessionId::from_parts(1_700_000_000_000 + fixture::serial(), [82; 10])?;
     let conversation = ProviderSessionId::new("shutdown-write-session")?;
     let session_credential = secret()?;
     let transcript = f.home.join("provider.jsonl");
