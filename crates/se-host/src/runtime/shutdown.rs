@@ -34,24 +34,55 @@ impl HostServeExit {
         trace("storage-drain-start", started, true);
         let mut errors: Vec<_> = self.failure.take().into_iter().collect();
         let mut pending: Vec<_> = errors.iter().map(ToString::to_string).collect();
-        let storage = match self.runtime.drain_storage(&drain_deadline).await {
-            Ok(report) => {
-                pending.extend(report.pending.iter().cloned());
-                if !matches!(report.backup, Read::Present { .. }) {
-                    pending.push("Storage clean-close backup remains pending.".into());
+        // Native custody first, while trusted capture is still open for its
+        // final capture; an incomplete stop keeps the lease and the writer.
+        let custody = self.runtime.execution.custody.get().cloned();
+        let custody_complete = match custody {
+            None => true,
+            Some(custody) => match custody.shutdown(&drain_deadline).await {
+                Ok(report) => {
+                    pending.extend(report.pending);
+                    report.complete
                 }
-                Read::Present { value: report }
-            }
-            Err(error) => {
-                pending.push(format!("Storage drain remains pending: {error}"));
-                let failure = Read::Unreadable {
-                    source: "host storage drain".into(),
-                    reason: error.to_string(),
-                    error: Some(Box::new(error.body.clone())),
-                };
-                errors.push(error);
-                failure
-            }
+                Err(error) => {
+                    pending.push(format!("Native custody shutdown remains pending: {error}"));
+                    errors.push(error);
+                    false
+                }
+            },
+        };
+        let drained = if custody_complete {
+            Some(self.runtime.drain_storage(&drain_deadline).await)
+        } else {
+            None
+        };
+        let storage = match drained {
+            None => Read::Unreadable {
+                source: "host storage drain".into(),
+                reason:
+                    "native custody shutdown is incomplete; the host retains its lease and writer"
+                        .into(),
+                error: None,
+            },
+            Some(result) => match result {
+                Ok(report) => {
+                    pending.extend(report.pending.iter().cloned());
+                    if !matches!(report.backup, Read::Present { .. }) {
+                        pending.push("Storage clean-close backup remains pending.".into());
+                    }
+                    Read::Present { value: report }
+                }
+                Err(error) => {
+                    pending.push(format!("Storage drain remains pending: {error}"));
+                    let failure = Read::Unreadable {
+                        source: "host storage drain".into(),
+                        reason: error.to_string(),
+                        error: Some(Box::new(error.body.clone())),
+                    };
+                    errors.push(error);
+                    failure
+                }
+            },
         };
         #[cfg(windows)]
         trace(

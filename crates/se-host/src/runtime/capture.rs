@@ -128,7 +128,7 @@ impl HostedRuntime {
             },
             sources: self.sources.clone(),
             lease: Arc::clone(&self.lease),
-            fenced: Arc::clone(&self.fenced),
+            fenced: Arc::clone(&self.capture_fenced),
         }
     }
 }
