@@ -409,18 +409,22 @@ impl HostedRuntime {
                 "one prepared runtime before publication",
             ));
         }
-        // Bind the loopback MCP port before anything is published, so a busy
-        // configured port fails startup itself instead of a host that
-        // reported ready and then exited.
-        let configured = self
-            .configuration
+        // Bind the loopback MCP port before anything is published (if the
+        // startup path has not already), so a busy configured port fails
+        // startup itself instead of a host that reported ready and then exited.
+        self.bind_loopback()?;
+        // Readiness only after reconciliation: recorded custody that no
+        // coordinator took for reconciliation still refuses publication.
+        if self
+            .retained_custody
             .as_ref()
-            .and_then(|file| file.runtime.listen_port);
-        let http = crate::HttpListener::bind(configured)?;
-        self.http_port.set(http.port()).map_err(|_| {
-            SeError::invalid("loopback HTTP listener", "one bind per hosted runtime")
-        })?;
-        self.http = Some(http);
+            .is_some_and(|processes| !processes.is_empty())
+        {
+            return Err(se_core::scope::unreadable(
+                "cold host activation",
+                "recorded unresolved native custody requires the coordinator's reconciliation before readiness",
+            ));
+        }
         let directory = self.state_directory.clone();
         let lease = Arc::clone(&self.lease);
         let epoch = self.epoch.clone();
@@ -556,3 +560,36 @@ impl std::fmt::Display for BootstrapCleanup {
     }
 }
 impl std::error::Error for BootstrapCleanup {}
+
+impl HostedRuntime {
+    /// Bind the loopback MCP listener on the configured `runtime.listen_port`.
+    /// Call after configure and before installing the coordinator, which needs
+    /// the port; listener publication binds it if the caller has not.
+    pub fn bind_loopback(&mut self) -> Result<u16> {
+        if let Some(port) = self.http_port.get() {
+            return Ok(*port);
+        }
+        if self.phase != crate::HostPhase::Prepared {
+            return Err(SeError::invalid(
+                "loopback HTTP listener",
+                "a prepared runtime before listener publication",
+            ));
+        }
+        let configured = self
+            .configuration
+            .as_ref()
+            .and_then(|file| file.runtime.listen_port);
+        let http = crate::HttpListener::bind(configured)?;
+        let port = http.port();
+        self.http_port.set(port).map_err(|_| {
+            SeError::invalid("loopback HTTP listener", "one bind per hosted runtime")
+        })?;
+        self.http = Some(http);
+        Ok(port)
+    }
+    /// The native custody recorded before this generation, once: the
+    /// coordinator reconciles it before the listener publishes readiness.
+    pub fn take_retained_custody(&mut self) -> Vec<se_store::OwnerGuardProcess> {
+        self.retained_custody.take().unwrap_or_default()
+    }
+}

@@ -83,6 +83,8 @@ pub(crate) struct Binding {
     transport: ProviderTransport,
     conversation: ProviderSessionId,
     transcript: PathBuf,
+    /// The output/error readers, joined by close_binding.
+    drains: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl Harness for ClaudeHarness {
@@ -176,6 +178,7 @@ impl Harness for ClaudeHarness {
                 transport: request.transport,
                 conversation: conversation.clone(),
                 transcript,
+                drains: Mutex::new(Vec::new()),
             });
             // Deliver the task, then require Claude's own echo of the exact
             // selected conversation; prepared argv is not readiness.
@@ -232,9 +235,13 @@ impl Harness for ClaudeHarness {
                     break;
                 }
             }
-            for stream in [ProviderStream::Output, ProviderStream::Error] {
-                tokio::spawn(drain(Arc::clone(&binding), stream, cx.generation));
-            }
+            let readers = [ProviderStream::Output, ProviderStream::Error]
+                .map(|stream| tokio::spawn(drain(Arc::clone(&binding), stream, cx.generation)));
+            binding
+                .drains
+                .lock()
+                .map_err(|_| poisoned())?
+                .extend(readers);
             Ok(LaunchOutcome {
                 witness: BindingWitness {
                     identity: request.request.identity.clone(),
@@ -335,6 +342,30 @@ impl Harness for ClaudeHarness {
                     checked: "headless Claude reports no interrupt event; exit is witnessed by the coordinator".into(),
                 },
             })
+        })
+    }
+    fn close_binding<'a>(&'a self, binding: HarnessBinding, cx: CallContext) -> HostFuture<'a, ()> {
+        Box::pin(async move {
+            let binding = binding
+                .claude
+                .ok_or_else(|| SeError::invalid("provider binding", "a headless Claude binding"))?;
+            // A reader holds its stream across a pending read, so stop the
+            // readers before releasing the streams they hold.
+            let readers = std::mem::take(&mut *binding.drains.lock().map_err(|_| poisoned())?);
+            for reader in readers {
+                reader.abort();
+                match reader.await {
+                    Ok(()) => {}
+                    Err(joined) if joined.is_cancelled() => {}
+                    Err(joined) => {
+                        return Err(se_core::scope::unreadable(
+                            "provider stream reader",
+                            &joined.to_string(),
+                        ));
+                    }
+                }
+            }
+            binding.io.close(&binding.transport, cx).await
         })
     }
 }
