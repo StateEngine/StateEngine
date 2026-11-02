@@ -304,10 +304,14 @@ impl AdmissionContext {
                     "revoked: this launch was stopped or superseded".to_owned(),
                     RELAUNCH,
                 )),
-                se_store::CredentialState::Prepared if pending == Pending::Refuse => Some((
-                    "session not active: this launch has not finished starting".to_owned(),
-                    "wait for the launch to finish, then retry",
-                )),
+                // Still starting, not invalid: retryable once the launch activates.
+                se_store::CredentialState::Prepared if pending == Pending::Refuse => {
+                    return Err(SeError::new(se_types::Detail::SessionNotActive(
+                        se_types::details::SessionNotActive {
+                            subject: credential.session.as_str().to_owned(),
+                        },
+                    )));
+                }
                 se_store::CredentialState::Prepared if now >= credential.activation_deadline_us => {
                     Some(("past its launch activation deadline".to_owned(), RELAUNCH))
                 }
