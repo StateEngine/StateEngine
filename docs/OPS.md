@@ -169,21 +169,13 @@ This table is compatibility metadata, **not executable aliases**. Recognized old
 
 | Old syntax | Replacement hint |
 | --- | --- |
-| `agents`; `projects`; bare `decision`; `decisions`; `pending` | `agent list`; `status --all`; `decision list`; `decision list`; `decision list --pending`, respectively |
-| `agent-rename` | `agent rename AGENT NAME` |
-| `seat create`; `seat launch`; `seat stop`; `seat wake` | `agent add NAME`; `launch AGENT`; `stop AGENT`; `wake AGENT` |
-| legacy engine `launch`, `stop`, `wake` without an agent | `up`; `down`; `wake AGENT`, respectively; missing target is never guessed |
+| `projects` | `status --all` |
+| bare `stop` (only presentation flags may follow) | `down`; an agent target is never discarded |
 | `ratify`; `ratifyall` / `ratify all`; `reject`; `retract`; `reverse` | `decision ratify ID`; repeat that command with explicit IDs instead of bulk approval; `decision reject ID`; `decision retract ID`; `decision supersede ID WITH_ID`, respectively |
-| `rawlog-search`; `floor-event` | `search QUERY`; `history --event ID` (new documented exit vocabulary) |
+| `floor-event` | `history --event ID` |
 | `capture-status`; `context`; `init --status` | `status` |
-| `working-state-show`; `working-state-set`; `seat-continuity-write` | `working-state`; `working-state set TEXT --expect REV` |
-| `packet` | `resume --preview AGENT` |
-| `decommission`; `init --remove` | `remove --project P` |
-| `plugin`; `hook-install`; `hook-uninstall` | `doctor --fix CHECK-ID` to repair owned setup; `status` to inspect; `remove` to remove the integration with its project |
-| `verify-chain` | `doctor` for inspection; no event hash-chain promise |
-| `rebuild-index` | retired; projection disagreement requires owner-human `restore`, with no alpha replay/repair command |
-| `hook-emit`; `capture-turn`; old `msg` delivery/recovery subcommands | reconfigure through `doctor --fix CHECK-ID` for the versioned native hook/mail integration; no manual delivery-marker replacement |
+| `working-state-show`; `working-state-set` | `working-state`; `working-state set TEXT --expect REV` |
 | MCP `identity_whoami`, `project_status`, `context_packet`, `working_state_get`, `rawlog_search` / `memory_recall`, `floor_event`, `seat_launch`, `seat_stop`, `seat_launch_status`, `atlas_query` (all prefixed `stateengine_`) | corresponding `whoami`, `status`, `resume`, `resume`, `search`, `event_read`, `agent_launch`, `agent_stop`, `agent_status`, `atlas_find` tool; corrected arguments required |
 | MCP `stateengine_agent_rename`; `stateengine_tools` call proxy | owner CLI `agent rename AGENT NAME`; native tools/list and direct allowed tool calls, respectively |
 
-Retired operations without equivalent product meaning return `command-retired` with a reason and an appropriate current workflow, not a fake one-to-one rename. This covers removed `process start|inspect|stop|list`, `process-start`, `process-stop` and their MCP tools (managed agents use launch/stop); manual `backup` (automatic backups remain, recovery uses restore); agent alias creation (`agent-alias`, `agent alias`, `stateengine_agent_alias`; use stable IDs or rename, while imported lookup aliases remain readable); factory campaigns/reviews/gates/landings/census/remote compute/brick/routing; PostgreSQL floor administration and floor-push servers; mirror/projection drain and repair verbs; arbitrary `file-write`; owner/human bootstrap reassignment; the old `state` front door and redundant run/serve/server/start/refresh engine entries; standalone memory tools (import retained notes into decisions); mail tunnels; dependency tooling; `msg complete/reconcile/treat`; and seat cut/move/prompt. No old MCP tool is advertised, and no unlisted command/tool, legacy actor/root flag, environment switch or Node module name grants another operation.
+The CLI retains replacement hints only for commands with a supported replacement above. Other obsolete inputs go through the current generated grammar and receive its ordinary unknown-command or unknown-flag refusal with current help, before opening state. No catalog of obsolete operator commands is compiled into the CLI. No old MCP tool is advertised, and no unlisted command/tool, legacy actor/root flag, environment switch or Node module name grants another operation.

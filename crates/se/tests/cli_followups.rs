@@ -354,7 +354,7 @@ fn project_choices_and_init_next_step_are_real_and_executable() -> Check {
     Ok(())
 }
 
-/// Protects: retired or unavailable CLI workflows name supported alternatives instead of handing users another nonexistent command; setup status never advertises an unavailable launch.
+/// Protects: unknown workflows use current help instead of handing users another nonexistent command; setup status never advertises an unavailable launch.
 #[test]
 fn compatibility_refusals_and_missing_status_use_supported_hints() -> Check {
     let f = Fixture::new()?;
@@ -398,6 +398,141 @@ fn compatibility_refusals_and_missing_status_use_supported_hints() -> Check {
         .output()?;
     assert!(status.status.success());
     assert!(!String::from_utf8_lossy(&status.stdout).contains("se launch"));
+    Ok(())
+}
+
+/// Protects: obsolete operator commands use the generated unknown-command refusal without opening state.
+#[test]
+fn obsolete_commands_use_the_live_grammar_without_opening_state() -> Check {
+    let f = Fixture::new()?;
+    let home = f.home.join("uncreated-state");
+    for args in [
+        vec!["seat", "launch", "example"],
+        vec!["seat", "create", "example"],
+        vec!["seat-continuity-write", "text"],
+        vec!["wake", "example"],
+        vec!["agents"],
+        vec!["process", "start", "anything"],
+        vec!["process-start", "anything"],
+        vec!["stateengine_process_stop", "anything"],
+        vec!["campaign"],
+        vec!["merge-land"],
+        vec!["floor-serve"],
+        vec!["brick-build"],
+        vec!["msg", "retry-delivery", "example"],
+        vec!["mail-tunnel"],
+        vec!["rawlog-search", "text"],
+        vec!["backup"],
+    ] {
+        let output = command(&home).args(&args).output()?;
+        assert_eq!(output.status.code(), Some(64), "{args:?}");
+        let error = json(&output)?;
+        assert_eq!(error["code"], "usage-unknown-command", "{args:?}: {error}");
+        assert_eq!(error["remedy"]["text"], "Use `se help`", "{args:?}");
+        assert!(!home.exists(), "unknown command created state: {args:?}");
+    }
+    Ok(())
+}
+
+/// Protects: genuine renames retain literal, supported replacement templates and stay inert.
+#[test]
+fn renamed_commands_keep_supported_replacements_without_opening_state() -> Check {
+    let f = Fixture::new()?;
+    let home = f.home.join("uncreated-state");
+    for (old, replacement, help) in [
+        (
+            vec!["projects"],
+            "se status --all",
+            vec!["status", "--all", "--help"],
+        ),
+        (vec!["stop"], "se down", vec!["down", "--help"]),
+        (
+            vec!["init", "--status"],
+            "se status",
+            vec!["status", "--help"],
+        ),
+        (
+            vec!["ratify", "id"],
+            "se decision ratify ID",
+            vec!["decision", "ratify", "--help"],
+        ),
+        (
+            vec!["reject", "id"],
+            "se decision reject ID",
+            vec!["decision", "reject", "--help"],
+        ),
+        (
+            vec!["retract", "id"],
+            "se decision retract ID",
+            vec!["decision", "retract", "--help"],
+        ),
+        (
+            vec!["reverse", "id"],
+            "se decision supersede ID WITH_ID",
+            vec!["decision", "supersede", "--help"],
+        ),
+        (
+            vec!["floor-event", "id"],
+            "se history --event ID",
+            vec!["history", "--help"],
+        ),
+        (
+            vec!["capture-status"],
+            "se status",
+            vec!["status", "--help"],
+        ),
+        (vec!["context"], "se status", vec!["status", "--help"]),
+        (
+            vec!["working-state-show"],
+            "se working-state",
+            vec!["working-state", "--help"],
+        ),
+        (
+            vec!["working-state-set", "text"],
+            "se working-state set TEXT --expect REV",
+            vec!["working-state", "set", "--help"],
+        ),
+    ] {
+        let output = command(&home).args(&old).output()?;
+        assert_eq!(output.status.code(), Some(64), "{old:?}");
+        let error = json(&output)?;
+        assert_eq!(error["code"], "renamed", "{old:?}: {error}");
+        assert!(
+            error["remedy"]["text"]
+                .as_str()
+                .ok_or("rename remedy")?
+                .contains(replacement),
+            "{error}"
+        );
+        let mut help_command = Command::new(env!("CARGO_BIN_EXE_se"));
+        clean(&mut help_command);
+        let output = help_command
+            .arg("--json")
+            .args(help)
+            .current_dir(&f.home)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "replacement help failed: {replacement}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!home.exists(), "rename or help created state: {old:?}");
+    }
+    for old in ["ratifyall", "ratify"] {
+        let mut args = vec![old];
+        if old == "ratify" {
+            args.push("all");
+        }
+        let error = json(&command(&home).args(args).output()?)?;
+        assert_eq!(error["code"], "renamed");
+        assert!(
+            error["remedy"]["text"]
+                .as_str()
+                .ok_or("bulk remedy")?
+                .contains("once per decision; no bulk approval")
+        );
+        assert!(!home.exists());
+    }
     Ok(())
 }
 
