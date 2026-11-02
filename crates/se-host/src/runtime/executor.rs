@@ -180,10 +180,19 @@ pub fn execute(
                     capture_keys: Vec::new(),
                 })
             }
-            OpStep::Custody(_) => Err(se_core::scope::unreadable(
-                "host native custody",
-                "the typed native coordinator must resolve this plan before store execution; no transaction or synthetic receipt was produced",
-            )),
+            OpStep::Custody(plan) => match context.custody.get() {
+                Some(custody) => Ok(ExecutedCall {
+                    output: custody.execute(plan, admission, &deadline).await?,
+                    write_timings: None,
+                    committed: None,
+                    capture_commits: Vec::new(),
+                    capture_keys: Vec::new(),
+                }),
+                None => Err(se_core::scope::unreadable(
+                    "host native custody",
+                    "the typed native coordinator must resolve this plan before store execution; no transaction or synthetic receipt was produced",
+                )),
+            },
         }
     }
 }

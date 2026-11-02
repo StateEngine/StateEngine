@@ -295,6 +295,7 @@ fn prepare(
         blocking,
         generation,
         pending_writes,
+        custody: Arc::default(),
     };
     Ok(HostedRuntime {
         #[cfg(unix)]

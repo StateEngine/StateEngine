@@ -11,7 +11,7 @@
 mod owner;
 mod support;
 use super::{HostedRouter, LocalStop};
-use owner::{OwnerInputs, owner_thread};
+use owner::{OwnerInputs, Started, owner_thread};
 use se_types as core;
 use secode_stateengine_api as api;
 use std::{
@@ -52,8 +52,16 @@ struct Serving {
     stop: LocalStop,
     exited: oneshot::Receiver<api::DrainReceipt>,
 }
+/// An owner thread that has not yet reported readiness. Its receivers live
+/// here, so a cancelled or timed-out activate leaves it reachable and a retry
+/// resumes the same generation instead of spawning a second owner.
+struct Activating {
+    ready: oneshot::Receiver<Started>,
+    exited: oneshot::Receiver<api::DrainReceipt>,
+}
 enum Lifecycle {
     Prepared,
+    Activating(Box<Activating>),
     Ready(Box<Serving>),
     Drained(api::DrainReceipt),
     Failed(api::ApiError),
@@ -201,6 +209,51 @@ impl EmbeddedHost {
         }
         self.changed.notify_waiters();
     }
+    /// Wait for an activating owner's readiness. Timeout keeps it Activating
+    /// (call again); a reported failure or a lost owner becomes Failed.
+    async fn await_ready(
+        &self,
+        lifecycle: &mut Lifecycle,
+        timeout: Duration,
+    ) -> Result<(), api::ApiError> {
+        let Lifecycle::Activating(activating) = lifecycle else {
+            return Ok(());
+        };
+        let started = match tokio::time::timeout(timeout, &mut activating.ready).await {
+            Ok(Ok(started)) => started,
+            Ok(Err(_)) => Err(core::SeError::invalid(
+                "embedded host",
+                "an owner thread that reports readiness",
+            )),
+            Err(_) => {
+                return Err(refused(
+                    "host activation",
+                    "readiness within the call timeout; call activate again to keep waiting",
+                ));
+            }
+        };
+        let Lifecycle::Activating(activating) = std::mem::replace(lifecycle, Lifecycle::Prepared)
+        else {
+            return Ok(());
+        };
+        match started {
+            Ok((router, stop)) => {
+                *lifecycle = Lifecycle::Ready(Box::new(Serving {
+                    router,
+                    stop,
+                    exited: activating.exited,
+                }));
+                self.set_health(api::GenerationHealth::Ready);
+                Ok(())
+            }
+            Err(error) => {
+                let failure = api_error(&error);
+                *lifecycle = Lifecycle::Failed(failure.clone());
+                self.set_health(api::GenerationHealth::Poisoned);
+                Err(failure)
+            }
+        }
+    }
     fn owner_inputs(&self, epoch: api::HostEpoch, timeout: Duration) -> OwnerInputs {
         OwnerInputs {
             runtime: self.runtime.clone(),
@@ -266,39 +319,21 @@ impl api::Host for EmbeddedHost {
                 ));
             }
             let mut lifecycle = self.lifecycle.lock().await;
-            if !matches!(*lifecycle, Lifecycle::Prepared) {
-                return Err(refused("host activation", "one prepared generation"));
-            }
-            self.set_health(api::GenerationHealth::Activating);
-            let (ready, exited) = owner_thread(self.owner_inputs(epoch, options.timeout));
-            let started = match tokio::time::timeout(options.timeout, ready).await {
-                Ok(Ok(started)) => started,
-                Ok(Err(_)) => Err(core::SeError::invalid(
-                    "embedded host",
-                    "an owner thread that reports readiness",
-                )),
-                Err(_) => Err(core::SeError::invalid(
-                    "host activation",
-                    "readiness within the call timeout",
-                )),
-            };
-            match started {
-                Ok((router, stop)) => {
-                    *lifecycle = Lifecycle::Ready(Box::new(Serving {
-                        router,
-                        stop,
-                        exited,
-                    }));
-                    self.set_health(api::GenerationHealth::Ready);
-                    Ok(api::Readiness::Ready)
+            match &*lifecycle {
+                Lifecycle::Prepared => {
+                    self.set_health(api::GenerationHealth::Activating);
+                    let (ready, exited) = owner_thread(self.owner_inputs(epoch, options.timeout));
+                    *lifecycle = Lifecycle::Activating(Box::new(Activating { ready, exited }));
                 }
-                Err(error) => {
-                    let failure = api_error(&error);
-                    *lifecycle = Lifecycle::Failed(failure.clone());
-                    self.set_health(api::GenerationHealth::Poisoned);
-                    Err(failure)
+                // A retry resumes the same owner; it never spawns another.
+                Lifecycle::Activating(_) => {}
+                Lifecycle::Ready(_) => return Ok(api::Readiness::Ready),
+                Lifecycle::Drained(_) | Lifecycle::Failed(_) => {
+                    return Err(refused("host activation", "one prepared generation"));
                 }
             }
+            self.await_ready(&mut lifecycle, options.timeout).await?;
+            Ok(api::Readiness::Ready)
         })
     }
     fn verify_capability<'a>(
@@ -386,6 +421,8 @@ impl api::Host for EmbeddedHost {
     fn drain<'a>(&'a self, options: api::CallOptions) -> api::HostFuture<'a, api::DrainReceipt> {
         Box::pin(async move {
             let mut lifecycle = self.lifecycle.lock().await;
+            // A generation still starting finishes starting before it stops.
+            self.await_ready(&mut lifecycle, options.timeout).await?;
             let receipt = match &mut *lifecycle {
                 Lifecycle::Ready(serving) => {
                     self.set_health(api::GenerationHealth::Draining);
@@ -409,6 +446,13 @@ impl api::Host for EmbeddedHost {
                             ));
                         }
                     }
+                }
+                // await_ready left it Ready or Failed, or already returned.
+                Lifecycle::Activating(_) => {
+                    return Err(refused(
+                        "embedded drain",
+                        "a generation that finished activating",
+                    ));
                 }
                 Lifecycle::Drained(receipt) => return Ok(receipt.clone()),
                 // Never activated: no writer, listener or effect ever existed.
