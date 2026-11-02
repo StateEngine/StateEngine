@@ -50,7 +50,7 @@ pub fn configuration(launch: &ClaudeLaunch<'_>) -> Result<ConfigPlan> {
         }
     });
     let mut bearer = b"Bearer ".to_vec();
-    bearer.extend_from_slice(launch.request.launch_credential.expose());
+    bearer.extend_from_slice(launch.request.mcp_bearer.expose());
     let bearer = String::from_utf8(bearer)
         .map_err(|_| SeError::invalid("session credential", "printable bearer bytes"))?;
     let mcp = json!({
