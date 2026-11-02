@@ -127,3 +127,7 @@ pub(super) fn verify_job(job: &Handle) -> ProcResult<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "../../../tests/support/windows_job_policy.rs"]
+mod judges;

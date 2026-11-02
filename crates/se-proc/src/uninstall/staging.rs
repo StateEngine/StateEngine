@@ -272,3 +272,7 @@ pub(super) fn arm_directory_cleanup(custody: &DirectoryCustody, deadline: u64) -
         std::thread::sleep(Duration::from_millis(5));
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/windows_high_policy.rs"]
+mod judges;

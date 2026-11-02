@@ -113,3 +113,7 @@ fn command_inner(
     let _thread = native::handle(result.hThread, "close uninstall helper thread")?;
     Ok(process)
 }
+
+#[cfg(test)]
+#[path = "../../tests/support/windows_uninstall_inheritance.rs"]
+mod judges;

@@ -18,6 +18,22 @@ mod judge {
             .first()
             .ok_or("missing child mode")?
             .to_string_lossy();
+        #[cfg(windows)]
+        if mode == "inheritance" {
+            let raw = arguments
+                .get(3)
+                .ok_or("missing excluded event")?
+                .to_string_lossy()
+                .parse::<usize>()
+                .map_err(error)?;
+            // from_process_entry already consumed the explicit input and auth
+            // channels and validated the inherited parent. The normal refusal
+            // below positively witnesses the child's explicit diagnostic handle.
+            // SAFETY: SetEvent validates a possibly absent native handle.
+            unsafe {
+                windows_sys::Win32::System::Threading::SetEvent(raw as _);
+            }
+        }
         if mode == "await-commit" {
             let _ = guard.await_commit(HostInstanceId([31; 16]));
             return Err("uncommitted guard unexpectedly returned to its caller".into());
@@ -113,15 +129,43 @@ mod judge {
             std::fs::create_dir(&root).map_err(error)?;
         }
         let machine = MachineId::new("persisted-cold-bootstrap-judge").map_err(error)?;
+        #[cfg(windows)]
+        let excluded = if mode == "inheritance" {
+            use std::{mem::size_of, os::windows::io::FromRawHandle};
+            use windows_sys::Win32::{
+                Security::SECURITY_ATTRIBUTES, System::Threading::CreateEventW,
+            };
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: std::ptr::null_mut(),
+                bInheritHandle: 1,
+            };
+            // SAFETY: creates an unnamed owned event with inheritance explicitly enabled.
+            let raw = unsafe { CreateEventW(&attributes, 1, 0, std::ptr::null()) };
+            if raw.is_null() {
+                return Err(error(std::io::Error::last_os_error()));
+            }
+            // SAFETY: successful event creation transferred unique ownership.
+            Some(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) })
+        } else {
+            None
+        };
+        #[allow(unused_mut)]
+        let mut arguments = vec![
+            mode.into(),
+            SECRET_SENTINEL.into(),
+            root.as_os_str().to_owned(),
+        ];
+        #[cfg(windows)]
+        if let Some(event) = &excluded {
+            use std::os::windows::io::AsRawHandle;
+            arguments.push((event.as_raw_handle() as usize).to_string().into());
+        }
         let spec = RuntimeLaunchSpec {
             machine: machine.clone(),
             startup_nonce: [61; 16],
             executable: std::env::current_exe().map_err(error)?,
-            arguments: vec![
-                mode.into(),
-                SECRET_SENTINEL.into(),
-                root.as_os_str().to_owned(),
-            ],
+            arguments,
             environment: Environment {
                 entries: vec![("JUDGE_NOT_A_CREDENTIAL".into(), SECRET_SENTINEL.into())],
             },
@@ -210,6 +254,20 @@ mod judge {
             "refused cold child still executing",
         )?;
         custody.release(&witness)?;
+        #[cfg(windows)]
+        if let Some(event) = excluded {
+            use std::os::windows::io::AsRawHandle;
+            // Observe the original object, not whether its raw number happens to
+            // name another child handle. No child report can substitute for this.
+            // SAFETY: retained parent event and zero-time native observation.
+            let state = unsafe {
+                windows_sys::Win32::System::Threading::WaitForSingleObject(event.as_raw_handle(), 0)
+            };
+            require(
+                state == windows_sys::Win32::Foundation::WAIT_TIMEOUT,
+                "bootstrap leaked an unlisted inheritable event",
+            )?;
+        }
         if mode == "retained-await" {
             require(
                 !root.join("endpoint.fixture").try_exists().map_err(error)?,
@@ -245,6 +303,12 @@ mod judge {
         ] {
             trial(mode)?;
         }
+        #[cfg(windows)]
+        {
+            trial("inheritance")?;
+            println!("bootstrap_stderr: 7 passed, 0 failed");
+        }
+        #[cfg(not(windows))]
         println!("bootstrap_stderr: 6 passed, 0 failed");
         Ok(())
     }

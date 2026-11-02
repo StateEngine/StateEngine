@@ -87,3 +87,7 @@ pub use entropy::{NativeEntropyError, fill_entropy, random_secret};
 
 mod birth_time;
 pub use birth_time::{ProcessBirthTime, observe_process_birth};
+
+#[cfg(all(test, windows))]
+#[path = "../tests/support/windows_policy_fixture.rs"]
+mod windows_policy_fixture;
