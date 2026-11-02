@@ -496,6 +496,11 @@ pub enum StoreDetail {
         state: StoreState,
         operation: Option<RecordId>,
     },
+    /// The removed project and when its tombstone was recorded.
+    ProjectRemoved {
+        project: ProjectId,
+        at: UnixMicros,
+    },
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreErrorCode {
@@ -524,6 +529,8 @@ pub enum StoreErrorCode {
     ReferenceMissing,
     ScopeMismatch,
     CreatorControlRefused,
+    /// The project was tombstoned; its history stays readable, writes refuse.
+    ProjectRemoved,
     EventInvalid,
     BodyTooLarge,
     ProjectionInconsistent,

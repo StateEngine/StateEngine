@@ -277,17 +277,25 @@ pub(crate) fn apply(
         Scope::Project(_) => Some(project_id(c, &header.scope, true)?),
     };
     if let Some(p) = &pk {
-        let state: Option<String> = c
-            .query_row("SELECT state FROM projects WHERE project_id=?", [p], |r| {
-                r.get(0)
-            })
+        let removed_at: Option<i64> = c
+            .query_row(
+                "SELECT e.recorded_at_us FROM projects p JOIN events e ON e.seq=p.last_seq WHERE p.project_id=? AND p.state='removed'",
+                [p],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(sql)?;
-        if state.as_deref() == Some("removed") {
-            return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                "project was removed; its history is retained and `se init --repo <root>` re-adopts it",
-            ));
+        if let (Some(at), Scope::Project(project)) = (removed_at, &header.scope) {
+            let mut e = fail(
+                StoreErrorCode::ProjectRemoved,
+                format!("project {project} was removed; its history is retained"),
+            );
+            e.detail = StoreDetail::ProjectRemoved {
+                project: project.clone(),
+                at: se_types::UnixMicros::new(u64::try_from(at).map_err(invalid)?)
+                    .map_err(invalid)?,
+            };
+            return Err(e);
         }
     }
     let project = || {

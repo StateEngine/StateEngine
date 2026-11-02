@@ -27,13 +27,28 @@ fn head(c: &Connection, p: &[u8], effect: &[u8]) -> StoreResult<Option<EffectHea
 pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
     let p = project_id(c, &e.header.scope, false)?;
     match &e.body {
-        EventBody::EffectRequested { effect, .. } => expected(
-            c,
-            "effects",
-            "project_id=? AND effect_id=?",
-            &[&p, &effect_key(effect)],
-            Expected::Absent,
-        ),
+        EventBody::EffectRequested { effect, .. } => {
+            let taken: bool = c
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM effects WHERE effect_id=? AND project_id IS NOT ?)",
+                    rusqlite::params![effect_key(effect), p],
+                    |r| r.get(0),
+                )
+                .map_err(sql)?;
+            if taken {
+                return Err(fail(
+                    StoreErrorCode::NaturalKeyConflict,
+                    "effect ID is already used in another project; allocate a fresh effect ID",
+                ));
+            }
+            expected(
+                c,
+                "effects",
+                "project_id=? AND effect_id=?",
+                &[&p, &effect_key(effect)],
+                Expected::Absent,
+            )
+        }
         // An offer advances the current head; it carries no caller revision.
         EventBody::EffectOffered { effect, .. } => match head(c, &p, &effect_key(effect))? {
             Some((current, ..)) => current
@@ -141,6 +156,55 @@ fn principal_kind(c: &Connection, p: &[u8], a: &[u8]) -> StoreResult<String> {
         )
     })
 }
+/// Only the project owner or the effect's own agent may request, offer or
+/// settle it; another agent can never add debt to, or cancel, someone's work.
+fn authorize(
+    c: &Connection,
+    h: &EventHeader,
+    p: &[u8],
+    scope: &[u8],
+    principal: Option<&[u8]>,
+) -> StoreResult<()> {
+    let own = match (&h.actor, principal) {
+        (Actor::Agent(_), Some(a)) => principal_key(c, &h.actor, scope)? == a,
+        (Actor::Agent(_), None) => false,
+        (Actor::Human(_), _) => super::project::is_owner(c, h, p)?,
+    };
+    if own {
+        Ok(())
+    } else {
+        Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "only the project owner or the effect's own agent may record this effect",
+        ))
+    }
+}
+/// Evidence must be a project event committed after the effect's request.
+fn after_request(
+    c: &Connection,
+    p: &[u8],
+    scope: &[u8],
+    effect: &[u8],
+    evidence: &se_types::EventId,
+) -> StoreResult<()> {
+    session::reference(c, p, scope, evidence)?;
+    let e = key(c, "event", evidence.as_str(), scope, false)?;
+    let later: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM events v JOIN effects f ON f.project_id=v.project_id AND f.effect_id=? WHERE v.event_id=? AND v.seq>f.requested_seq)",
+            rusqlite::params![effect, e],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    if later {
+        Ok(())
+    } else {
+        Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "effect evidence must be committed after the effect was requested",
+        ))
+    }
+}
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,
@@ -168,6 +232,7 @@ pub(super) fn apply(
                 .as_ref()
                 .map(|a| principal_key(c, a, &scope))
                 .transpose()?;
+            authorize(c, h, &p, &scope, a.as_deref())?;
             let k = a.as_ref().map(|a| principal_kind(c, &p, a)).transpose()?;
             c.execute(
                 "INSERT INTO effects(effect_id,project_id,kind,principal_id,requested_seq,revision,last_seq,state) VALUES(?,?,?,?,?,?,?,'pending')",
@@ -195,15 +260,19 @@ pub(super) fn apply(
                     "only a pending effect can be offered",
                 ));
             }
-            if let Some(o) = &owner
-                && *o != principal_key(c, &principal, &scope)?
-            {
+            authorize(c, h, &p, &scope, owner.as_deref())?;
+            let offered_to = principal_key(c, &principal, &scope)?;
+            let matches = match &owner {
+                Some(o) => *o == offered_to,
+                None => principal == h.actor,
+            };
+            if !matches {
                 return Err(fail(
                     StoreErrorCode::ScopeMismatch,
                     "offer principal differs from the requested principal",
                 ));
             }
-            session::reference(c, &p, &scope, &evidence)?;
+            after_request(c, &p, &scope, &id, &evidence)?;
             let reused: bool = c
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM aux_data a JOIN events e ON e.seq=a.event_seq WHERE e.project_id=? AND e.kind='effect.offered' AND json_extract(a.facts,'$.effect')=? AND json_extract(a.facts,'$.attempt')=?)",
@@ -239,6 +308,7 @@ pub(super) fn apply(
                     "a terminal effect cannot settle again",
                 ));
             }
+            authorize(c, h, &p, &scope, owner.as_deref())?;
             let reason_ok = failure
                 .as_ref()
                 .is_some_and(|f| !f.is_empty() && f.len() <= 16384);
@@ -252,7 +322,7 @@ pub(super) fn apply(
                 ));
             }
             for e in &evidence {
-                session::reference(c, &p, &scope, e)?;
+                after_request(c, &p, &scope, &id, e)?;
             }
             let state = match outcome {
                 EffectOutcome::Witnessed => "witnessed",
@@ -275,6 +345,12 @@ pub(super) fn apply(
             witness,
             ..
         } => {
+            if !super::project::is_owner(c, h, &p)? {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "only the project owner records owned integrations",
+                ));
+            }
             if k.is_empty() || k.len() > 1024 || marker.is_empty() || marker.len() > 1024 {
                 return Err(invalid("integration key/marker bounds"));
             }

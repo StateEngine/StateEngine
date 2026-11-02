@@ -43,6 +43,16 @@ impl SqliteSnapshot {
     pub(super) fn read_effect(&self, id: RecordId) -> StoreResult<Read<ProjectionRecord>> {
         let p = self.project_bytes()?;
         let id = id.as_bytes().to_vec();
+        // A self-scoped agent sees only its own effects; others read as absent.
+        if let Visibility::SelfOnly(agent) = &self.scope.visibility {
+            let a = self.agent_bytes(agent)?;
+            return self.head(
+                "effects",
+                "project_id=? AND effect_id=? AND principal_id=?",
+                &[&p, &id, &a],
+                Some("requested_seq"),
+            );
+        }
         self.head(
             "effects",
             "project_id=? AND effect_id=?",
@@ -77,28 +87,50 @@ impl SqliteSnapshot {
         &self,
         agent: AgentId,
         purpose: String,
-    ) -> StoreResult<Read<CursorRecord>> {
+    ) -> StoreResult<Read<CursorHead>> {
         let p = self.project_bytes()?;
         let a = self.agent_bytes(&agent)?;
-        let issued: Option<i64> = self
+        let head: Option<(i64, u64, Option<i64>)> = self
             .db
             .query_row(
-                "SELECT d.event_seq FROM cursors h JOIN cursor_data d ON d.cursor_id=h.cursor_id AND d.acknowledged_event IS NULL WHERE h.project_id=? AND h.agent_id=? AND h.purpose=?",
+                "SELECT d.event_seq,h.revision,h.acknowledged_seq FROM cursors h JOIN cursor_data d ON d.cursor_id=h.cursor_id AND d.acknowledged_event IS NULL WHERE h.project_id=? AND h.agent_id=? AND h.purpose=?",
                 rusqlite::params![p, a, purpose],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, crate::sql_value::value(r, 1)?, r.get(2)?)),
             )
             .optional()
             .map_err(|error| self.read_sql(error))?;
-        let Some(seq) = issued else {
+        let Some((issued, revision, acked)) = head else {
             return Ok(self.absent("cursor"));
         };
-        match self.record(seq)?.body {
-            EventBody::CursorRecorded { cursor } => Ok(Read::Present { value: *cursor }),
-            _ => Err(fail(
+        let inconsistent = || {
+            fail(
                 StoreErrorCode::ProjectionInconsistent,
-                "cursor head does not name its issuing event",
-            )),
-        }
+                "cursor head does not name its issuing and acknowledging events",
+            )
+        };
+        let EventBody::CursorRecorded { cursor } = self.record(issued)?.body else {
+            return Err(inconsistent());
+        };
+        let acknowledged = match acked {
+            None => None,
+            Some(seq) => {
+                let e = self.record(seq)?;
+                let EventBody::CursorAcknowledged { evidence, .. } = e.body else {
+                    return Err(inconsistent());
+                };
+                Some(CursorAck {
+                    event: e.header.event,
+                    evidence,
+                })
+            }
+        };
+        Ok(Read::Present {
+            value: CursorHead {
+                record: *cursor,
+                revision: codec::revision(revision)?,
+                acknowledged,
+            },
+        })
     }
     pub(super) fn cursor_visible(&self, cursor: &RecordId, agent: &AgentId) -> StoreResult<bool> {
         let p = self.project_bytes()?;

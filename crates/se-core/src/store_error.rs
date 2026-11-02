@@ -84,6 +84,19 @@ pub fn store_error(error: &StoreError) -> SeError {
                 next_step,
             }),
         },
+        C::ProjectRemoved => match &error.detail {
+            se_store::StoreDetail::ProjectRemoved { project, at } => {
+                Detail::ProjectRemoved(details::ProjectRemoved {
+                    project: project.clone(),
+                    at: *at,
+                })
+            }
+            _ => Detail::StateConflict(details::StateConflict {
+                subject,
+                reason,
+                next_step,
+            }),
+        },
         C::ScopeMismatch | C::CreatorControlRefused => {
             Detail::CapabilityInvalid(details::CapabilityInvalid {
                 subject,

@@ -14,6 +14,25 @@ pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
     let p = key(c, "project", project.as_str(), &[0], false)?;
     expected(c, "projects", "project_id=?", &[&p], *want)
 }
+/// The project's registered owner, from its immutable registration facts.
+pub(super) fn owner(c: &Connection, p: &[u8]) -> StoreResult<Option<String>> {
+    Ok(c
+        .query_row(
+            "SELECT json_extract(a.facts,'$.owner') FROM projects p JOIN aux_data a ON a.event_seq=p.first_seq WHERE p.project_id=?",
+            [p],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(sql)?
+        .flatten())
+}
+/// Whether the admitted actor is the project's owner.
+pub(super) fn is_owner(c: &Connection, h: &EventHeader, p: &[u8]) -> StoreResult<bool> {
+    Ok(match &h.actor {
+        Actor::Human(human) => owner(c, p)?.as_deref() == Some(human.as_str()),
+        Actor::Agent(_) => false,
+    })
+}
 /// Each live fact that must be gone before a tombstone, with its remedy.
 const LIVE: [(&str, &str); 5] = [
     (
@@ -62,16 +81,7 @@ pub(super) fn apply(
             "removed project differs from event scope",
         ));
     }
-    let owner: Option<String> = c
-        .query_row(
-            "SELECT json_extract(a.facts,'$.owner') FROM projects p JOIN aux_data a ON a.event_seq=p.first_seq WHERE p.project_id=?",
-            [&p],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(sql)?
-        .flatten();
-    if !matches!(&h.actor, Actor::Human(human) if owner.as_deref() == Some(human.as_str())) {
+    if !is_owner(c, h, &p)? {
         return Err(fail(
             StoreErrorCode::ScopeMismatch,
             "only the project's owner removes it",

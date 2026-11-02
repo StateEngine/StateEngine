@@ -135,11 +135,55 @@ pub(super) fn apply(
             let a = key(c, "agent", cursor.agent.as_str(), &s, false)?;
             permitted(c, h, &p, &cursor.agent, &a)?;
             let (from, to, returned, complete, omitted) = bounds(&cursor.window)?;
+            // A store-backed window must name this store and this project.
+            if let Some(se_types::Source::Store { store, project }) =
+                cursor.window.fields().map(|f| &f.source)
+            {
+                let this: Vec<u8> = c
+                    .query_row(
+                        "SELECT store_id FROM store_info WHERE singleton=1",
+                        [],
+                        |r| r.get(0),
+                    )
+                    .map_err(sql)?;
+                let scoped = matches!(&h.scope, Scope::Project(id) if project.as_ref() == Some(id));
+                if canonical(store.as_str()).as_deref() != Some(this.as_slice()) || !scoped {
+                    return Err(fail(
+                        StoreErrorCode::ScopeMismatch,
+                        "cursor window names another store or project",
+                    ));
+                }
+            }
             // The window cannot claim events this store has not committed.
             if to >= seq as u64 {
                 return Err(invalid(
                     "cursor window extends past the committed store head",
                 ));
+            }
+            // A new window continues from the last acknowledged position, or
+            // replaces the unacknowledged one from its same start: no skipped work.
+            let prior: Option<(u64, u64, Option<i64>)> = c
+                .query_row(
+                    "SELECT d.from_seq,d.to_seq,h.acknowledged_seq FROM cursors h JOIN cursor_data d ON d.event_seq=h.last_seq WHERE h.project_id=? AND h.agent_id=? AND h.purpose=?",
+                    rusqlite::params![p, a, cursor.purpose],
+                    |r| Ok((crate::sql_value::value(r, 0)?, crate::sql_value::value(r, 1)?, r.get(2)?)),
+                )
+                .optional()
+                .map_err(sql)?;
+            if let Some((prior_from, prior_to, acked)) = prior {
+                let start = if acked.is_some() {
+                    prior_to
+                } else {
+                    prior_from
+                };
+                if from != start {
+                    return Err(fail(
+                        StoreErrorCode::InvalidTransition,
+                        format!(
+                            "cursor window must start at {start}: the last acknowledged position, or the unacknowledged window it replaces"
+                        ),
+                    ));
+                }
             }
             let id = cursor.id.as_bytes().to_vec();
             let reused: bool = c
@@ -196,6 +240,20 @@ pub(super) fn apply(
                 return Err(fail(
                     StoreErrorCode::InvalidTransition,
                     "this cursor was already acknowledged",
+                ));
+            }
+            let evidence_seq: Option<i64> = c
+                .query_row(
+                    "SELECT seq FROM events WHERE project_id=? AND event_id=?",
+                    rusqlite::params![p, key(c, "event", evidence.as_str(), &s, false)?],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(sql)?;
+            if evidence_seq.is_none_or(|e| e <= last) {
+                return Err(fail(
+                    StoreErrorCode::InvalidTransition,
+                    "acknowledgment evidence must be committed after the cursor was issued",
                 ));
             }
             let agent = wire(c, "agent", &a, &s)?.parse().map_err(invalid)?;

@@ -651,6 +651,16 @@ impl Snapshot for SqliteSnapshot {
     fn session(&mut self, _id: SessionId) -> StoreResult<Read<ProjectionRecord>> {
         self.read_session(_id)
     }
+    fn latest_session(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>> {
+        let p = self.project_bytes()?;
+        let a = self.agent_bytes(&agent)?;
+        self.head(
+            "sessions",
+            "project_id=? AND agent_id=? AND first_seq=(SELECT MAX(first_seq) FROM sessions WHERE project_id=? AND agent_id=?)",
+            &[&p, &a, &p, &a],
+            Some("first_seq"),
+        )
+    }
     fn sessions(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         let p = self.project_bytes()?;
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
@@ -749,7 +759,7 @@ impl Snapshot for SqliteSnapshot {
     fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         self.read_processes(budget)
     }
-    fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorRecord>> {
+    fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorHead>> {
         self.read_cursor(agent, purpose)
     }
     fn pending_effects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
