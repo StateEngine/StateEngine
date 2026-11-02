@@ -40,7 +40,7 @@ struct Facts {
     profile: PathBuf,
     retained: PathBuf,
     directory: PathBuf,
-    plan: UninstallPlan,
+    plan: ValidatedUninstallPlan,
     effects: UninstallEffects,
 }
 impl Facts {
@@ -114,7 +114,7 @@ impl Facts {
             created_directories: vec![directory.display().to_string()],
             path_edits: edits,
         };
-        plan.validate()?;
+        let plan = plan.validate()?;
         let effects = UninstallEffects {
             install_files: vec![FileEffect {
                 path: removed.display().to_string(),

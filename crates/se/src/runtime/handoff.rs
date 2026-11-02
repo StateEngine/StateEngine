@@ -12,15 +12,15 @@ pub(crate) struct Completion {
     _claim: se_proc::NativeInstallationClaim,
     record: OwnedFile,
     record_digest: [u8; 32],
-    installation: UninstallPlan,
+    installation: ValidatedUninstallPlan,
 }
 impl Plan {
     /// Run before Ready: a changed installation record refuses authorization
     /// while the original installed process is still alive.
-    pub(crate) fn prepare(&self, image: &Path) -> Result<Completion> {
-        self.installation.validate()?;
+    pub(crate) fn prepare(self, image: &Path) -> Result<Completion> {
+        let installation = self.installation.validate()?;
         let expected = *Sha256::parse_hex(&self.record_sha256)?.as_bytes();
-        let record_path = self.installation.state_home.join("standalone-install.json");
+        let record_path = installation.state_home().join("standalone-install.json");
         let native = |error: se_proc::StateFileError| {
             se_core::scope::unreadable("private uninstall record", &error.to_string())
                 .with_cause(error)
@@ -49,7 +49,7 @@ impl Plan {
         .plan()?;
         if serde_json::to_value(&current)
             .map_err(|e| invalid("cannot encode record plan").with_cause(e))?
-            != serde_json::to_value(&self.installation)
+            != serde_json::to_value(&installation)
                 .map_err(|e| invalid("cannot encode authenticated plan").with_cause(e))?
         {
             return Err(invalid(
@@ -58,7 +58,7 @@ impl Plan {
         }
         let canonical =
             se_proc::canonicalize_path(image).map_err(|error| unreadable(image, error))?;
-        for file in &self.installation.files {
+        for file in installation.files() {
             match se_proc::canonicalize_path(&file.path) {
                 Ok(path) if path == canonical => (),
                 Ok(_) => return Err(conflict(&file.path)), // parent authorizes only after every other asset is absent.
@@ -70,16 +70,20 @@ impl Plan {
             _claim: claim,
             record,
             record_digest: expected,
-            installation: self.installation.clone(),
+            installation,
         })
     }
 }
 impl Completion {
+    pub(crate) fn installation(&self) -> &ValidatedUninstallPlan {
+        &self.installation
+    }
+
     pub(crate) fn record_helper_cleanup(
         &self,
         debt: &se_proc::UninstallHelperCleanup,
     ) -> Result<()> {
-        super::helper_cleanup::publish(&self.installation.state_home, &self._claim, debt)
+        super::helper_cleanup::publish(self.installation.state_home(), &self._claim, debt)
     }
 
     /// Called only after native proof of the exact parent's exit and image
@@ -90,10 +94,10 @@ impl Completion {
                 .with_cause(error)
         })?;
         eprintln!("Removed owned installation record (native absence witnessed)");
-        let mut directories = self.installation.created_directories;
+        let mut directories: Vec<_> = self.installation.created_directories().iter().collect();
         directories.sort_by_key(|path| std::cmp::Reverse(Path::new(path).components().count()));
         for path in directories {
-            match se_proc::remove_empty_directory(Path::new(&path)) {
+            match se_proc::remove_empty_directory(Path::new(path)) {
                 Ok(result) => eprintln!("Post-exit directory {}: {:?}", path, result),
                 Err(error) => {
                     return Err(se_core::scope::unreadable(

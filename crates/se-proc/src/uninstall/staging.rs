@@ -2,14 +2,8 @@
 //! bytes or names are exposed to a normal-integrity process of the same user.
 use super::*;
 use serde::{Deserialize, Serialize};
-use std::{
-    mem::{size_of, zeroed},
-    ptr,
-};
-use windows_sys::Win32::{
-    Security::{Authorization::*, *},
-    System::SystemServices::SYSTEM_MANDATORY_LABEL_ACE_TYPE,
-};
+use std::{mem::size_of, ptr};
+use windows_sys::Win32::Security::{Authorization::*, *};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,17 +17,8 @@ pub(super) struct Staging {
     pub directory: DirectoryCustody,
     _pin: File,
 }
-struct Allocation(*mut std::ffi::c_void);
-impl Drop for Allocation {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: successful conversion/query transferred this LocalFree allocation.
-            unsafe {
-                LocalFree(self.0);
-            }
-        }
-    }
-}
+use crate::windows_native::allocation::Allocation;
+
 pub(super) fn elevated() -> Result<bool> {
     let mut raw = ptr::null_mut();
     // SAFETY: current-process pseudo handle and writable owned-token output.
@@ -84,12 +69,8 @@ fn open_directory(path: &Path, delete: bool) -> Result<File> {
     Ok(file)
 }
 pub(super) fn directory_id(file: &File) -> Result<FileId> {
-    // SAFETY: native POD metadata output, initialized before the exact query.
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
-    // SAFETY: retained directory and writable exact metadata output.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-        return Err(native::last("read uninstall directory identity"));
-    }
+    let info = crate::windows_native::file_information(file)
+        .map_err(|e| error("read uninstall directory identity", e))?;
     if info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
         != FILE_ATTRIBUTE_DIRECTORY
     {
@@ -98,83 +79,50 @@ pub(super) fn directory_id(file: &File) -> Result<FileId> {
             "ordinary no-follow directory required",
         ));
     }
-    // SAFETY: FILE_ID_INFO is native POD, initialized before its sized query.
-    let mut id: FILE_ID_INFO = unsafe { zeroed() };
-    // SAFETY: retained directory and exact aligned FileIdInfo output.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileIdInfo,
-            (&mut id as *mut FILE_ID_INFO).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(native::last("read uninstall directory file ID"));
-    }
+    let id = crate::windows_native::file_id(file)
+        .map_err(|e| error("read uninstall directory file ID", e))?;
     Ok(FileId {
-        volume: id.VolumeSerialNumber,
-        index: id.FileId.Identifier,
+        volume: id.volume,
+        index: id.index,
     })
 }
 pub(super) fn verify_high(file: &File, directory: bool) -> Result<()> {
-    let mut sacl = ptr::null_mut();
-    let mut raw = ptr::null_mut();
-    // SAFETY: retained READ_CONTROL object and exact writable security outputs.
-    let status = unsafe {
-        GetSecurityInfo(
-            file.as_raw_handle(),
-            SE_FILE_OBJECT,
-            LABEL_SECURITY_INFORMATION,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            &mut sacl,
-            &mut raw,
-        )
-    };
-    let _allocation = Allocation(raw);
-    if status != ERROR_SUCCESS {
-        return Err(error(
-            "read mandatory uninstall label",
-            io::Error::from_raw_os_error(status as i32),
-        ));
-    }
-    // SAFETY: successful security query retains the returned ACL allocation.
-    if sacl.is_null() || unsafe { IsValidAcl(sacl) } == 0 {
-        return Err(refuse(
+    let descriptor = crate::windows_native::acl::SecurityDescriptor::query(
+        file.as_raw_handle(),
+        SE_FILE_OBJECT,
+        LABEL_SECURITY_INFORMATION,
+    )
+    .map_err(|e| error("read mandatory uninstall label", e))?;
+    let sacl = descriptor.sacl().ok_or_else(|| {
+        refuse(
             "verify mandatory uninstall label",
             "valid High label ACL required",
-        ));
-    }
-    // SAFETY: validated ACL is retained through the following ACE reads.
-    if unsafe { (*sacl).AceCount } != 1 {
+        )
+    })?;
+    if sacl.len() != 1 {
         return Err(refuse(
             "verify mandatory uninstall label",
             "one exact High mandatory label required",
         ));
     }
-    let mut raw_ace = ptr::null_mut();
-    // SAFETY: valid nonempty ACL and writable borrowed ACE output.
-    if unsafe { GetAce(sacl, 0, &mut raw_ace) } == 0 {
-        return Err(native::last("read High mandatory label ACE"));
-    }
-    // SAFETY: successful GetAce supplies an aligned header in the retained ACL.
-    let header = unsafe { &*raw_ace.cast::<ACE_HEADER>() };
-    if u32::from(header.AceType) != SYSTEM_MANDATORY_LABEL_ACE_TYPE
-        || usize::from(header.AceSize) < size_of::<SYSTEM_MANDATORY_LABEL_ACE>()
-        || header.AceFlags & INHERIT_ONLY_ACE as u8 != 0
-        || (directory
-            && header.AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8
-                != (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8)
-    {
-        return Err(refuse(
-            "verify mandatory uninstall label",
-            "applicable inheritable mandatory label required",
-        ));
-    }
-    // SAFETY: validated label ACE type and extent provide its mask and inline SID.
-    let ace = unsafe { &*raw_ace.cast::<SYSTEM_MANDATORY_LABEL_ACE>() };
+    let entry = sacl
+        .ace(0)
+        .map_err(|e| error("read High mandatory label ACE", e))?;
+    let header = entry.header();
+    let ace = entry
+        .mandatory_label()
+        .filter(|_| {
+            header.AceFlags & INHERIT_ONLY_ACE as u8 == 0
+                && (!directory
+                    || header.AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8
+                        == (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE) as u8)
+        })
+        .ok_or_else(|| {
+            refuse(
+                "verify mandatory uninstall label",
+                "applicable inheritable mandatory label required",
+            )
+        })?;
     let sid = crate::windows_native::sid_text((&raw const ace.SidStart).cast_mut().cast())
         .map_err(|e| error(e.operation, e.source))?;
     if sid != "S-1-16-12288" || ace.Mask & 1 == 0 {

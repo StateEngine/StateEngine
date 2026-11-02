@@ -1,7 +1,7 @@
 use super::*;
-pub(super) fn reconcile_paths(plan: &UninstallPlan, effects: &mut UninstallEffects) {
+pub(super) fn reconcile_paths(plan: &ValidatedUninstallPlan, effects: &mut UninstallEffects) {
     effects.path_complete = true;
-    for edit in &plan.path_edits {
+    for edit in plan.path_edits() {
         let result = path_edit(edit, &mut effects.path);
         match result {
             Ok(action) => effects.integrations.push(IntegrationEffect {

@@ -28,7 +28,7 @@ struct Candidate {
     target: String,
     digest: [u8; 32],
 }
-pub(super) fn recover(plan: &UninstallPlan, inventories: &mut [RecoveryDirectoryEffect]) {
+pub(super) fn recover(plan: &ValidatedUninstallPlan, inventories: &mut [RecoveryDirectoryEffect]) {
     let mut candidates = Vec::new();
     let mut failed = std::collections::BTreeMap::new();
     for directory in inventories.iter() {
@@ -112,21 +112,21 @@ pub(super) fn recover(plan: &UninstallPlan, inventories: &mut [RecoveryDirectory
         }
     }
 }
-fn associate(plan: &UninstallPlan, source: &str) -> Result<Option<(String, [u8; 32])>> {
+fn associate(plan: &ValidatedUninstallPlan, source: &str) -> Result<Option<(String, [u8; 32])>> {
     let path = Path::new(source);
     let Some(mut pin) = OwnedFile::open(path).map_err(native_error)? else {
         return Err(conflict(source));
     };
     let digest = pin.sha256().map_err(native_error)?;
     let mut targets = Vec::new();
-    for file in &plan.files {
+    for file in plan.files() {
         if Path::new(&file.path).parent() == path.parent() && digest_bytes(&file.sha256)? == digest
         {
             targets.push(file.path.clone());
         }
     }
     #[cfg(not(windows))]
-    for edit in &plan.path_edits {
+    for edit in plan.path_edits() {
         if Path::new(&edit.target).parent() != path.parent() {
             continue;
         }

@@ -8,20 +8,11 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     Security::{Authorization::*, *},
-    System::{SystemServices::ACCESS_ALLOWED_ACE_TYPE, Threading::*},
+    System::Threading::*,
 };
 
-struct Allocation(*mut std::ffi::c_void);
-impl Drop for Allocation {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: this uniquely owned pointer came from a LocalFree-family security API.
-            unsafe {
-                LocalFree(self.0);
-            }
-        }
-    }
-}
+use crate::windows_native::allocation::Allocation;
+
 fn sid_text(sid: PSID) -> ProcResult<String> {
     crate::windows_native::sid_text(sid)
         .map_err(|e| native(ProcErrorCode::ContainmentUnavailable, e.operation, e.source))
@@ -70,75 +61,51 @@ impl Security {
     }
 }
 pub(super) fn verify_job(job: &Handle) -> ProcResult<()> {
-    let mut owner = ptr::null_mut();
-    let mut dacl = ptr::null_mut();
-    let mut descriptor = ptr::null_mut();
-    // SAFETY: held READ_CONTROL job and initialized outputs; no policy mutation occurs.
-    let status = unsafe {
-        GetSecurityInfo(
-            job.0,
-            SE_KERNEL_OBJECT,
-            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-            &mut owner,
-            ptr::null_mut(),
-            &mut dacl,
-            ptr::null_mut(),
-            &mut descriptor,
-        )
-    };
-    let allocation = Allocation(descriptor);
-    if status != ERROR_SUCCESS {
-        return Err(native(
+    let descriptor = crate::windows_native::acl::SecurityDescriptor::query(
+        job.0,
+        SE_KERNEL_OBJECT,
+        OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+    )
+    .map_err(|e| {
+        native(
             ProcErrorCode::RecoveryUnproved,
             "read old job protection",
-            std::io::Error::from_raw_os_error(status as i32),
-        ));
-    }
+            e,
+        )
+    })?;
     let current = current_sid()?;
-    let mut control = 0;
-    let mut revision = 0;
-    // SAFETY: retained successful security descriptor and writable control outputs.
-    if unsafe { GetSecurityDescriptorControl(allocation.0, &mut control, &mut revision) } == 0 {
-        return Err(last(
+    let control = descriptor.control().map_err(|e| {
+        native(
             ProcErrorCode::RecoveryUnproved,
             "read old job DACL control",
-        ));
-    }
-    // SAFETY: non-null ACL remains inside the successful retained descriptor.
-    if sid_text(owner)? != current
-        || control & SE_DACL_PROTECTED == 0
-        || dacl.is_null()
-        // SAFETY: the non-null ACL remains inside the retained native descriptor.
-        || unsafe { IsValidAcl(dacl) } == 0
-    {
+            e,
+        )
+    })?;
+    if sid_text(descriptor.owner)? != current || control & SE_DACL_PROTECTED == 0 {
         return Err(input(
             "job security",
             "protected current-user job owner/DACL required",
         ));
     }
-    // SAFETY: validated aligned ACL is retained by allocation above.
-    let count = unsafe { (*dacl).AceCount };
-    if count != 2 {
+    let dacl = descriptor.dacl().ok_or_else(|| {
+        input(
+            "job security",
+            "protected current-user job owner/DACL required",
+        )
+    })?;
+    if dacl.len() != 2 {
         return Err(input("job security", "exact user/SYSTEM job ACL required"));
     }
     let mut seen_user = false;
     let mut seen_system = false;
-    for index in 0..count {
-        let mut raw = ptr::null_mut();
-        // SAFETY: valid ACL, in-range index and writable borrowed ACE output.
-        if unsafe { GetAce(dacl, u32::from(index), &mut raw) } == 0 {
-            return Err(last(ProcErrorCode::RecoveryUnproved, "read old job ACE"));
-        }
-        // SAFETY: GetAce returns an aligned header within the validated retained ACL.
-        let header = unsafe { &*raw.cast::<ACE_HEADER>() };
-        if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
-            || header.AceFlags != 0
-            || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
-        {
-            return Err(input("job security", "unexpected old job ACE"));
-        }
-        // SAFETY: validated allow-ACE type/size supplies its aligned mask and inline SID.
-        let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+    for index in 0..dacl.len() {
+        let entry = dacl
+            .ace(index)
+            .map_err(|e| native(ProcErrorCode::RecoveryUnproved, "read old job ACE", e))?;
+        let ace = entry
+            .allowed()
+            .filter(|_| entry.header().AceFlags == 0)
+            .ok_or_else(|| input("job security", "unexpected old job ACE"))?;
         let sid = sid_text((&raw const ace.SidStart).cast_mut().cast())?;
         let full_access = 0x1f003f; // JOB_OBJECT_ALL_ACCESS, excluding reserved bits.
         if ace.Mask != GENERIC_ALL && ace.Mask != full_access {

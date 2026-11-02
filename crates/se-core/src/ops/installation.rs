@@ -127,57 +127,8 @@ fn digest(value: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 impl UninstallPlan {
-    /// Scan these held native directories before any installation/PATH effect.
-    /// The adapter reports every .se-edit-backup-* sibling, even when ownership
-    /// or association cannot be proved, and preserves any unresolved copy.
-    pub fn recovery_directories(&self) -> Result<Vec<PathBuf>> {
-        self.validate()?;
-        Ok(self
-            .files
-            .iter()
-            .map(|file| Path::new(&file.path))
-            .chain(
-                self.path_edits
-                    .iter()
-                    .map(|edit| Path::new(&edit.target))
-                    .filter(|path| path.is_absolute()),
-            )
-            .filter_map(Path::parent)
-            .map(Path::to_path_buf)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect())
-    }
-    pub fn temporary_file(&self, path: &Path) -> Result<Option<TemporaryFileAuthority>> {
-        self.validate()?;
-        if !path.is_absolute()
-            || !self
-                .recovery_directories()?
-                .iter()
-                .any(|parent| path.parent() == Some(parent.as_path()))
-        {
-            return Ok(None);
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            return Ok(None);
-        };
-        let Some(suffix) = name
-            .strip_prefix(".se-profile-")
-            .or_else(|| name.strip_prefix(".se-publish-"))
-        else {
-            return Ok(None);
-        };
-        if let Some(file) = self.files.iter().find(|file| Path::new(&file.path) == path) {
-            return Ok(Some(TemporaryFileAuthority::Recorded {
-                sha256: file.sha256.clone(),
-            }));
-        }
-        Ok(
-            (suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()))
-                .then_some(TemporaryFileAuthority::NativeOwnedName),
-        )
-    }
-    pub fn validate(&self) -> Result<()> {
+    /// Consume untrusted input and establish the immutable execution boundary.
+    pub fn validate(self) -> Result<ValidatedUninstallPlan> {
         if !self.state_home.is_absolute()
             || self
                 .state_home
@@ -274,11 +225,95 @@ impl UninstallPlan {
                 ));
             }
         }
-        Ok(())
+        let recovery_directories = self
+            .files
+            .iter()
+            .map(|file| Path::new(&file.path))
+            .chain(
+                self.path_edits
+                    .iter()
+                    .map(|edit| Path::new(&edit.target))
+                    .filter(|path| path.is_absolute()),
+            )
+            .filter_map(Path::parent)
+            .map(Path::to_path_buf)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(ValidatedUninstallPlan {
+            plan: self,
+            recovery_directories,
+        })
+    }
+}
+
+/// An admitted immutable plan. Deserialization produces only [`UninstallPlan`];
+/// native path ownership and digest custody still belong to the executor.
+///
+/// ```compile_fail
+/// use se_core::ops::installation::ValidatedUninstallPlan;
+/// let _: ValidatedUninstallPlan = serde_json::from_str("{}").unwrap();
+/// ```
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(transparent)]
+pub struct ValidatedUninstallPlan {
+    plan: UninstallPlan,
+    #[serde(skip)]
+    recovery_directories: Vec<PathBuf>,
+}
+impl ValidatedUninstallPlan {
+    /// Wire transport is the original untrusted DTO, without cached authority.
+    pub fn as_untrusted(&self) -> &UninstallPlan {
+        &self.plan
+    }
+    pub fn state_home(&self) -> &Path {
+        &self.plan.state_home
+    }
+    pub fn owner(&self) -> &str {
+        &self.plan.owner
+    }
+    pub fn files(&self) -> &[UninstallFile] {
+        &self.plan.files
+    }
+    pub fn created_directories(&self) -> &[String] {
+        &self.plan.created_directories
+    }
+    pub fn path_edits(&self) -> &[UninstallPathEdit] {
+        &self.plan.path_edits
+    }
+    /// Sorted, unique exact parents computed before admission completes.
+    pub fn recovery_directories(&self) -> &[PathBuf] {
+        &self.recovery_directories
+    }
+    /// Name matching never grants native no-follow/current-user custody.
+    pub fn temporary_file(&self, path: &Path) -> Option<TemporaryFileAuthority> {
+        let parent = path.parent()?;
+        if !path.is_absolute()
+            || self
+                .recovery_directories
+                .binary_search_by(|candidate| candidate.as_path().cmp(parent))
+                .is_err()
+        {
+            return None;
+        }
+        let name = path.file_name()?.to_str()?;
+        let suffix = name
+            .strip_prefix(".se-profile-")
+            .or_else(|| name.strip_prefix(".se-publish-"))?;
+        if let Some(file) = self
+            .files()
+            .iter()
+            .find(|file| Path::new(&file.path) == path)
+        {
+            return Some(TemporaryFileAuthority::Recorded {
+                sha256: file.sha256.clone(),
+            });
+        }
+        (suffix.len() == 8 && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric()))
+            .then_some(TemporaryFileAuthority::NativeOwnedName)
     }
     pub fn file_path(&self, index: usize) -> Result<PathBuf> {
-        self.validate()?;
-        self.files
+        self.files()
             .get(index)
             .map(|file| PathBuf::from(&file.path))
             .ok_or_else(|| {

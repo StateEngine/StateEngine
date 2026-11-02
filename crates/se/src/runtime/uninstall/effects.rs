@@ -79,7 +79,10 @@ pub(super) fn remove_file(file: &UninstallFile) -> FileEffect {
         ),
     }
 }
-pub(super) fn scan(plan: &UninstallPlan, parents: &[PathBuf]) -> Vec<RecoveryDirectoryEffect> {
+pub(super) fn scan(
+    plan: &ValidatedUninstallPlan,
+    parents: &[PathBuf],
+) -> Vec<RecoveryDirectoryEffect> {
     parents.iter().map(|directory| {
         let (copies,state,detail)=match se_proc::scan_recovery(directory) {
             Ok(paths)=>(Read::Present {value:paths.into_iter().map(|path|RecoveryCopy {path:path.display().to_string(),restored_to:None,
@@ -90,9 +93,13 @@ pub(super) fn scan(plan: &UninstallPlan, parents: &[PathBuf]) -> Vec<RecoveryDir
         RecoveryDirectoryEffect {directory:directory.display().to_string(),copies,temporary_files:temporary_inventory(plan,directory),witness:witness(state,"finite native no-follow recovery-sibling scan",detail)}
     }).collect()
 }
-pub(super) fn pending_assets(plan: &UninstallPlan, effects: &mut UninstallEffects, reason: &str) {
+pub(super) fn pending_assets(
+    plan: &ValidatedUninstallPlan,
+    effects: &mut UninstallEffects,
+    reason: &str,
+) {
     effects.install_files = plan
-        .files
+        .files()
         .iter()
         .map(|file| {
             file_effect(
@@ -104,7 +111,7 @@ pub(super) fn pending_assets(plan: &UninstallPlan, effects: &mut UninstallEffect
         })
         .collect();
     effects.directories = plan
-        .created_directories
+        .created_directories()
         .iter()
         .map(|path| DirectoryEffect {
             path: path.clone(),
@@ -137,7 +144,7 @@ pub(super) fn preserved(home: &Path) -> Vec<String> {
     .collect()
 }
 
-fn temporary_inventory(plan: &UninstallPlan, directory: &Path) -> Read<Vec<FileEffect>> {
+fn temporary_inventory(plan: &ValidatedUninstallPlan, directory: &Path) -> Read<Vec<FileEffect>> {
     let names = match se_proc::scan_temporary(directory) {
         Ok(names) => names,
         Err(error)
@@ -158,23 +165,12 @@ fn temporary_inventory(plan: &UninstallPlan, directory: &Path) -> Read<Vec<FileE
             };
         }
     };
-    let result: Result<Vec<FileEffect>> = (|| {
-        let mut effects = Vec::new();
-        for path in names {
-            if plan.temporary_file(&path)?.is_some() {
-                effects.push(file_effect(&path.to_string_lossy(),FileOutcome::Pending,WitnessState::Unknown,
-                    "matching installer temporary name observed; native claim and leaf custody required before cleanup"));
-            }
-        }
-        Ok(effects)
-    })();
-    match result {
-        Ok(value) => Read::Present { value },
-        Err(error) => Read::Unreadable {
-            source: directory.display().to_string(),
-            reason: error.to_string(),
-            error: None,
-        },
+    Read::Present {
+        value: names.into_iter()
+            .filter(|path| plan.temporary_file(path).is_some())
+            .map(|path| file_effect(&path.to_string_lossy(), FileOutcome::Pending, WitnessState::Unknown,
+                "matching installer temporary name observed; native claim and leaf custody required before cleanup"))
+            .collect(),
     }
 }
 
@@ -182,7 +178,7 @@ fn temporary_inventory(plan: &UninstallPlan, directory: &Path) -> Read<Vec<FileE
 /// including a child whose holder died. Only exact core-approved names in
 /// planned parents receive native no-follow/current-user file custody.
 pub(super) fn cleanup_temporary(
-    plan: &UninstallPlan,
+    plan: &ValidatedUninstallPlan,
     _claim: &se_proc::NativeInstallationClaim,
     directories: &mut [RecoveryDirectoryEffect],
 ) {
@@ -195,7 +191,7 @@ pub(super) fn cleanup_temporary(
             let result: Result<FileEffect> = (|| {
                 let path = Path::new(&file.path);
                 let authority = plan
-                    .temporary_file(path)?
+                    .temporary_file(path)
                     .ok_or_else(|| invalid("temporary name is outside the admitted plan"))?;
                 let Some(mut pin) = OwnedFile::open(path).map_err(native_error)? else {
                     return Ok(file_effect(

@@ -26,7 +26,7 @@ use recovery::recover;
 pub(super) fn execute(
     cx: &Bootstrap,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
-) -> Result<(UninstallPlan, UninstallEffects)> {
+) -> Result<(ValidatedUninstallPlan, UninstallEffects)> {
     // Store absence and an initialized, record-free store are distinct native
     // observations. Endpoint absence never supplies an empty-process proof.
     let (owner, store_observation, _runtime_lease) = match route::setup::inspect(&cx.home, clock())?
@@ -124,7 +124,7 @@ pub(super) fn execute(
     let canonical =
         se_proc::canonicalize_path(&current).map_err(|error| unreadable(&current, error))?;
     let mut matches = Vec::new();
-    for file in &plan.files {
+    for file in plan.files() {
         match se_proc::canonicalize_path(&file.path) {
             Ok(path) if path == canonical => matches.push(file.path.clone()),
             Ok(_) => (),
@@ -139,7 +139,7 @@ pub(super) fn execute(
     }
     let image = matches.remove(0);
     let installed = plan
-        .files
+        .files()
         .iter()
         .find(|file| file.path == image)
         .ok_or_else(|| invalid("running image disappeared from the plan"))?;
@@ -169,22 +169,22 @@ pub(super) fn execute(
         preserved: preserved(&cx.home),
         recovery: Vec::new(),
     };
-    let parents = plan.recovery_directories()?;
-    effects.recovery = scan(plan, &parents);
+    let parents = plan.recovery_directories();
+    effects.recovery = scan(plan, parents);
     // Diagnostics flush before recovery restoration, PATH edits or file removal.
     let mut diagnosis = format!(
         "Uninstall: {store_observation}. Agents ended: 0; credentials revoked: 0; events lost: 0. User repositories, retained history/configuration and provider login are preserved.\n",
     );
-    for file in &plan.files {
+    for file in plan.files() {
         diagnosis.push_str(&format!(
             "Remove exact owned file {} at SHA-256 {}\n",
             file.path, file.sha256
         ));
     }
-    for directory in &plan.created_directories {
+    for directory in plan.created_directories() {
         diagnosis.push_str(&format!("Remove only if empty: {directory}\n"));
     }
-    for edit in &plan.path_edits {
+    for edit in plan.path_edits() {
         diagnosis.push_str(&format!(
             "Remove only the recorded StateEngine entry from {}\n",
             edit.target
@@ -210,7 +210,7 @@ pub(super) fn execute(
     let mut safe = true;
     reconcile_paths(plan, &mut effects);
     safe &= effects.path_complete;
-    for file in plan.files.iter().filter(|file| file.path != image) {
+    for file in plan.files().iter().filter(|file| file.path != image) {
         let result = remove_file(file);
         safe &= matches!(
             result.outcome,
@@ -218,7 +218,7 @@ pub(super) fn execute(
         );
         effects.install_files.push(result);
     }
-    effects.recovery = recovery::merge(effects.recovery, scan(plan, &parents));
+    effects.recovery = recovery::merge(effects.recovery, scan(plan, parents));
     safe &= effects.recovery.iter().all(recovery::resolved);
     // Never strand a partially removed installation without its retry entry point.
     if safe {
@@ -294,7 +294,7 @@ pub(super) fn execute(
             ),
         });
     }
-    let mut directories: Vec<_> = plan.created_directories.iter().collect();
+    let mut directories: Vec<_> = plan.created_directories().iter().collect();
     directories.sort_by_key(|path| std::cmp::Reverse(Path::new(path).components().count()));
     for path in directories {
         let (outcome, state, detail) = if !safe || !image_removed {
@@ -341,7 +341,7 @@ pub(super) fn execute(
     }
     // Only a successful native removal of a planned ancestor can explain why
     // a directory scanned before effects is now absent. Other failures stay visible.
-    for entry in recovery::merge(effects.recovery.clone(), scan(plan, &parents)) {
+    for entry in recovery::merge(effects.recovery.clone(), scan(plan, parents)) {
         let removed = effects.directories.iter().any(|directory| {
             matches!(directory.outcome, DirectoryOutcome::Removed)
                 && directory.witness.state == WitnessState::Witnessed
