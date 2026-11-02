@@ -265,14 +265,12 @@ async fn event(
         tokio::time::sleep_until(http_retry_at).await;
         http.accept().await
     });
-    // A dropped stop handle never stops the host; only a sent request does.
+    // A request or a dropped handle stops the host: an embedder that lost its
+    // only in-process stop (a cancelled activation, a factory dropped without
+    // drain) could never stop this generation otherwise.
     let mut stopping = pin!(async move {
         match local_stop {
-            Some(stop) => {
-                if stop.wait_for(|requested| *requested).await.is_err() {
-                    std::future::pending::<()>().await;
-                }
-            }
+            Some(stop) => drop(stop.wait_for(|requested| *requested).await),
             None => std::future::pending::<()>().await,
         }
     });
@@ -397,7 +395,8 @@ impl LocalStop {
     }
 }
 impl HostedRuntime {
-    /// Take before `serve`; requesting it fences and joins like any stop.
+    /// Take before `serve`; requesting or dropping it fences and joins like
+    /// any stop.
     pub fn local_stop(&mut self) -> LocalStop {
         let (sender, receiver) = watch::channel(false);
         self.local_stop = Some(receiver);

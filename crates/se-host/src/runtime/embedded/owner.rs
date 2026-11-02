@@ -43,11 +43,9 @@ pub(super) fn owner_thread(
                         return;
                     }
                 };
-                if let Err(Ok((_router, stop))) = ready.send(Ok((router, stop))) {
-                    // Activation stopped waiting: nobody holds this stop, so
-                    // end the generation now instead of serving unreachably.
-                    stop.request();
-                }
+                // Undelivered, or delivered but never claimed, the dropped
+                // stop ends this generation instead of serving unreachably.
+                let _ = ready.send(Ok((router, stop)));
                 let exit = host.serve(listener).await;
                 let receipt = match support::deadline(SHUTDOWN_BUDGET) {
                     Ok(deadline) => {
