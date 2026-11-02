@@ -77,9 +77,17 @@ pub async fn dispatch(
         // A client response to a server request; this server sends none.
         return McpReply::Accepted;
     };
-    let Some(id) = message.get("id").cloned().filter(valid_id) else {
-        // Notifications (initialized, cancelled) carry no reply.
-        return McpReply::Accepted;
+    let id = match message.get("id") {
+        // Only an absent id is a notification (initialized, cancelled).
+        None => return McpReply::Accepted,
+        Some(id) if valid_id(id) => id.clone(),
+        Some(_) => {
+            return McpReply::Json(rpc_error(
+                Value::Null,
+                -32600,
+                "a request id must be a string or an integer",
+            ));
+        }
     };
     let params = message.get("params").cloned().unwrap_or(Value::Null);
     // Lifecycle methods are anonymous and open no store; every tool method

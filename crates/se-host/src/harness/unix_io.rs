@@ -119,23 +119,33 @@ impl ProviderIoPlatform for UnixProviderIo {
                 return Err(SeError::invalid("provider input", "an open stdin stream"));
             };
             // Report the bytes actually accepted, so a partial frame is never
-            // mistaken for a written one.
+            // mistaken for a written one. Each write gets only the time left.
+            let until = tokio::time::Instant::now() + cx.timeout;
             let mut completed = 0usize;
-            let failure = bounded(&cx, async {
-                while completed < bytes.len() {
-                    match sender.write(&bytes[completed..]).await {
-                        Ok(0) => {
-                            return Some(
-                                io("provider input", std::io::ErrorKind::WriteZero.into()).body,
-                            );
-                        }
-                        Ok(count) => completed += count,
-                        Err(error) => return Some(io("provider input", error).body),
+            let mut failure = None;
+            while completed < bytes.len() {
+                match tokio::time::timeout_at(until, sender.write(&bytes[completed..])).await {
+                    Ok(Ok(0)) => {
+                        failure =
+                            Some(io("provider input", std::io::ErrorKind::WriteZero.into()).body);
+                        break;
+                    }
+                    Ok(Ok(count)) => completed += count,
+                    Ok(Err(error)) => {
+                        failure = Some(io("provider input", error).body);
+                        break;
+                    }
+                    Err(_) => {
+                        failure = Some(deadline_exceeded(&cx).body);
+                        break;
                     }
                 }
-                None
-            })
-            .await?;
+            }
+            // A stream left mid-frame can never carry another frame: retire it,
+            // so the provider sees EOF instead of a spliced message.
+            if failure.is_some() {
+                guard.take();
+            }
             // Bounded by the 1 MiB frame cap checked above.
             let completed_bytes = u32::try_from(completed)
                 .map_err(|_| SeError::too_large("provider input", limit, completed))?;
@@ -184,14 +194,18 @@ fn pipes(transport: &ProviderTransport) -> Result<&Pipes> {
 }
 
 async fn bounded<T>(cx: &CallContext, work: impl std::future::Future<Output = T>) -> Result<T> {
-    tokio::time::timeout(cx.timeout, work).await.map_err(|_| {
-        SeError::new(se_types::Detail::DeadlineExceeded(
-            se_types::details::DeadlineExceeded {
-                op: "provider stream".into(),
-                deadline_ms: u64::try_from(cx.timeout.as_millis()).unwrap_or(u64::MAX),
-            },
-        ))
-    })
+    tokio::time::timeout(cx.timeout, work)
+        .await
+        .map_err(|_| deadline_exceeded(cx))
+}
+
+fn deadline_exceeded(cx: &CallContext) -> SeError {
+    SeError::new(se_types::Detail::DeadlineExceeded(
+        se_types::details::DeadlineExceeded {
+            op: "provider stream".into(),
+            deadline_ms: u64::try_from(cx.timeout.as_millis()).unwrap_or(u64::MAX),
+        },
+    ))
 }
 
 fn io(what: &str, error: std::io::Error) -> SeError {
