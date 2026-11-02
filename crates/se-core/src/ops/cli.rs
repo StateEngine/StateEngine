@@ -139,12 +139,14 @@ pub fn cli_command() -> Command {
     }
     // MCP is a streaming transport for the registered operations, not another
     // store operation with a fabricated product output family.
-    root.subcommand(Command::new("mcp")
-        .about("Serve session tools over newline-delimited JSON-RPC on stdin/stdout")
-        .disable_help_flag(true)
-        .disable_version_flag(true)
-        .disable_help_subcommand(true)
-        .arg(toggle("stdio")))
+    root.subcommand(
+        Command::new("mcp")
+            .about("Serve session tools over newline-delimited JSON-RPC on stdin/stdout")
+            .disable_help_flag(true)
+            .disable_version_flag(true)
+            .disable_help_subcommand(true)
+            .arg(toggle("stdio")),
+    )
 }
 fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> Command {
     let Some((head, tail)) = path.split_first() else {

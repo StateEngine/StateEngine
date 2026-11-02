@@ -167,7 +167,10 @@ fn invalid(expected: &str) -> SeError {
     SeError::invalid("CLI IPC", expected)
 }
 
-pub(crate) fn uncertain(keyed: Option<&(String, se_types::IdempotencyKey)>, error: SeError) -> SeError {
+pub(crate) fn uncertain(
+    keyed: Option<&(String, se_types::IdempotencyKey)>,
+    error: SeError,
+) -> SeError {
     match keyed {
         Some((operation, key)) => SeError::new(Detail::CommitOutcomeUnknown(
             details::CommitOutcomeUnknown {
@@ -200,7 +203,10 @@ impl SessionForwarder {
             NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
             options,
         )?;
-        Ok(Self { connection, request_id: 0 })
+        Ok(Self {
+            connection,
+            request_id: 0,
+        })
     }
     pub fn forward(
         &mut self,
@@ -208,21 +214,35 @@ impl SessionForwarder {
         op: AnyOp,
         options: &ClientOptions,
     ) -> Result<AnyOutput> {
-        self.request_id = self.request_id.checked_add(1)
+        self.request_id = self
+            .request_id
+            .checked_add(1)
             .ok_or_else(|| invalid("an unexhausted request sequence"))?;
         let expected = op.meta().family.schema();
-        let keyed = op.idempotency_key().map(|key| (op.meta().name.to_owned(), key.clone()));
-        let mut call = operation(op, &CliSelections::default(), self.connection.negotiated().generation)?;
+        let keyed = op
+            .idempotency_key()
+            .map(|key| (op.meta().name.to_owned(), key.clone()));
+        let mut call = operation(
+            op,
+            &CliSelections::default(),
+            self.connection.negotiated().generation,
+        )?;
         call.request_id = self.request_id;
         call.cli_selections = None;
-        call.authority = Some(se_host::PresentedAuthority::Session(
-            se_types::Secret::new(secret.expose().to_vec())?,
-        ));
+        call.authority = Some(se_host::PresentedAuthority::Session(se_types::Secret::new(
+            secret.expose().to_vec(),
+        )?));
         let mut progress = ExchangeProgress::NotSent;
-        let output = self.connection.exchange_with_progress(call, options, &mut progress)
-            .map_err(|error| if progress == ExchangeProgress::SendAttempted {
-                uncertain(keyed.as_ref(), error)
-            } else { error })?;
+        let output = self
+            .connection
+            .exchange_with_progress(call, options, &mut progress)
+            .map_err(|error| {
+                if progress == ExchangeProgress::SendAttempted {
+                    uncertain(keyed.as_ref(), error)
+                } else {
+                    error
+                }
+            })?;
         decode(output, &expected).map_err(|error| uncertain(keyed.as_ref(), error))
     }
 }

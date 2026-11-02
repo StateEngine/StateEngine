@@ -147,15 +147,23 @@ fn edit_distance(left: &str, right: &str) -> usize {
 pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<Option<std::path::PathBuf>>> {
     let matches = ops::cli_command().try_get_matches_from(args).ok()?;
     let m = matches.subcommand_matches("mcp")?;
-    if m.get_flag("help") || m.get_flag("version") { return None; }
+    if m.get_flag("help") || m.get_flag("version") {
+        return None;
+    }
     let result = (|| {
         for (id, long) in [("project", "--project"), ("key", "--key")] {
             if m.get_one::<String>(id).is_some() {
-                return Err(SeError::invalid(long, "MCP session identity and request keys come from each protocol call"));
+                return Err(SeError::invalid(
+                    long,
+                    "MCP session identity and request keys come from each protocol call",
+                ));
             }
         }
         if m.get_flag("json") || m.get_flag("quiet") {
-            return Err(SeError::invalid("MCP output flags", "MCP owns its JSON-RPC stdout; use se mcp --stdio"));
+            return Err(SeError::invalid(
+                "MCP output flags",
+                "MCP owns its JSON-RPC stdout; use se mcp --stdio",
+            ));
         }
         Ok(m.get_one::<String>("home").map(std::path::PathBuf::from))
     })();

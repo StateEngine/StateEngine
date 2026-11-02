@@ -90,16 +90,27 @@ pub(crate) fn state_home(home: Option<PathBuf>) -> Result<PathBuf> {
     absolute(home, "state home")
 }
 
-fn session_input(home: &std::path::Path) -> Result<Option<Secret>> {
-    let Some(value) = std::env::var_os("SE_SESSION") else { return Ok(None); };
-    let invalid = |reason: String| SeError::new(Detail::CapabilityInvalid(details::CapabilityInvalid {
+pub(crate) fn session_input(home: &std::path::Path) -> Result<Option<Secret>> {
+    let Some(value) = std::env::var_os("SE_SESSION") else {
+        return Ok(None);
+    };
+    let invalid = |reason: String| {
+        SeError::new(Detail::CapabilityInvalid(details::CapabilityInvalid {
         subject: "SE_SESSION".into(), reason,
         next_step: "Use the opaque session handle supplied to a launched agent; invalid session input cannot grant owner authority".into(),
-    }));
-    let handle = value.to_str().ok_or_else(|| invalid("must be a canonical session handle".into()))?;
-    let _: se_types::SessionId = handle.parse().map_err(|_| invalid("must be a canonical ses_ UUID handle, never credential bytes".into()))?;
-    let files = se_proc::NativeStateFiles::open(home).map_err(|error| invalid(error.to_string()))?;
-    se_proc::read_session_pin(&files, handle).map(Some).map_err(|error| invalid(error.to_string()))
+    }))
+    };
+    let handle = value
+        .to_str()
+        .ok_or_else(|| invalid("must be a canonical session handle".into()))?;
+    let _: se_types::SessionId = handle.parse().map_err(|_| {
+        invalid("must be a canonical ses_ UUID handle, never credential bytes".into())
+    })?;
+    let files =
+        se_proc::NativeStateFiles::open(home).map_err(|error| invalid(error.to_string()))?;
+    se_proc::read_session_pin(&files, handle)
+        .map(Some)
+        .map_err(|error| invalid(error.to_string()))
 }
 
 fn variable(name: &str) -> Result<Option<OsString>> {
