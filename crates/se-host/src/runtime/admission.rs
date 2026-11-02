@@ -17,6 +17,8 @@ use sha2::{Digest, Sha256 as Hasher};
 use std::{io::Read as ByteRead, sync::Arc};
 use zeroize::Zeroizing;
 
+/// Purpose of the pin capability (`sec1.`) CLI, hooks and IPC present.
+const SESSION_CAPABILITY: &str = "session";
 #[derive(Clone)]
 pub(crate) struct AdmissionContext {
     pub reader: Arc<se_store::SqliteReader>,
@@ -192,7 +194,7 @@ impl AdmissionContext {
         let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
-            let admission = self.session(&phase, secret)?;
+            let admission = self.credential(&phase, secret, crate::MCP_BEARER_PURPOSE)?;
             se_core::admission::authorize(operation.meta(), &admission)?;
             let mut facts = allocate_facts()?;
             facts.door = se_store::Door::Mcp;
@@ -213,7 +215,8 @@ impl AdmissionContext {
         let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
-            self.session(&phase, secret).map(drop)
+            self.credential(&phase, secret, crate::MCP_BEARER_PURPOSE)
+                .map(drop)
         })();
         super::executor::close_read(result, phase.close())
     }
@@ -226,6 +229,17 @@ impl AdmissionContext {
         }
     }
     fn session(&self, phase: &se_store::ReadPhase, secret: &se_types::Secret) -> Result<Admission> {
+        self.credential(phase, secret, SESSION_CAPABILITY)
+    }
+    /// One active credential of exactly `purpose`. The pin capability and the
+    /// HTTP bearer are separate secrets (section 70 §2.2): neither is accepted
+    /// on the other's transport.
+    fn credential(
+        &self,
+        phase: &se_store::ReadPhase,
+        secret: &se_types::Secret,
+        purpose: &str,
+    ) -> Result<Admission> {
         let credential = match phase
             .credential(Hasher::digest(secret.expose()).into())
             .map_err(|e| store_error(&e))?
@@ -246,7 +260,7 @@ impl AdmissionContext {
         };
         let now = super::start::now_unix_micros()?;
         if credential.state != se_store::CredentialState::Active
-            || credential.purpose != "session"
+            || credential.purpose != purpose
             || credential.expires_at_us <= now
         {
             return Err(SeError::invalid(

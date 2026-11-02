@@ -57,9 +57,16 @@ pub struct HarnessRequest {
     pub mode: se_proc::LaunchMode,
     pub resume: Read<ProviderSessionId>,
     pub initial_input: Body,
+    /// The `sec1.` pin capability hooks resolve through `SE_SESSION`.
     pub launch_credential: Secret,
+    /// The separate `sels-` loopback MCP bearer, a credential of purpose
+    /// `MCP_BEARER_PURPOSE` issued and activated with the session; written only
+    /// into the protected per-launch MCP config.
+    pub mcp_bearer: Secret,
     pub key: IdempotencyKey,
 }
+/// Credential purpose the loopback HTTP route accepts, and only it.
+pub const MCP_BEARER_PURPOSE: &str = "http";
 /// The host's retained ends of one provider's streams. Only the platform that
 /// opened it can operate on it; dropping it closes the host ends.
 pub struct ProviderTransport {
