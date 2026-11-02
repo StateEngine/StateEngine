@@ -75,6 +75,10 @@ pub struct HostedRuntime {
     pub(crate) http: Option<crate::HttpListener>,
     /// An embedder's in-process stop request, consumed by serve.
     pub(crate) local_stop: Option<tokio::sync::watch::Receiver<bool>>,
+    /// Started on demand rather than by an explicit `se up`.
+    pub(crate) auto_start: bool,
+    /// The launch coordinator's activity count, attached before serve.
+    pub(crate) activity: Option<tokio::sync::watch::Receiver<u32>>,
 }
 impl HostedRuntime {
     /// Explicit executable/embedding inputs; the library never reads ambient
@@ -319,6 +323,8 @@ fn prepare(
         http_port: Arc::default(),
         http: None,
         local_stop: None,
+        auto_start: false,
+        activity: None,
     })
 }
 pub(crate) fn owner_budget() -> Result<se_store::ReadBudget> {
