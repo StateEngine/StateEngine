@@ -197,10 +197,17 @@ def run_client(binary, home, client, samples, barrier, report):
         finally:
             reader.close()
         # Retry after later head changes: preserve the exact original receipt identity.
-        name, arguments, original, _ = receipts[0]
-        replay, _ = rpc.tool(name, arguments)
-        if replay["state"] != "replayed" or replay["event_id"] != original["event_id"]:
-            raise ValueError("original-key retry did not replay the original event")
+        for kind in ("stateengine_msg_send", "stateengine_working_state_set"):
+            name, arguments, original, _ = next(row for row in receipts if row[0] == kind)
+            replay, _ = rpc.tool(name, arguments)
+            fields = ["schema", "idempotency_key", "event_id", "writer"]
+            fields.append("message_id" if kind.endswith("msg_send") else "revision")
+            if replay["state"] != "replayed":
+                raise ValueError("original-key retry was not reported as replayed")
+            for field in fields:
+                if replay[field] != original[field]:
+                    raise ValueError(f"{kind} replay changed original {field}")
+            # current_revision may truthfully report the later working-state head.
     except Exception as error:
         report["error"] = str(error)
         if barrier:
