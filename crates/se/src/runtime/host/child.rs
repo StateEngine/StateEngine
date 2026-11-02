@@ -31,23 +31,33 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         instance,
         generation,
         configuration,
+        origin,
         runtime_directory,
         temporary_directory,
     ] = args.as_slice()
     else {
         return Err(invalid(
-            "the closed host/home/instance/generation/configuration/socket-paths frame",
+            "the closed host/home/instance/generation/configuration/origin/socket-paths frame",
         ));
     };
     #[cfg(windows)]
-    let [tag, home, instance, generation, configuration] = args.as_slice() else {
+    let [tag, home, instance, generation, configuration, origin] = args.as_slice() else {
         return Err(invalid(
-            "the closed host/home/instance/generation/configuration frame",
+            "the closed host/home/instance/generation/configuration/origin frame",
         ));
     };
     if tag != "host" {
         return Err(invalid("the private host frame discriminator"));
     }
+    let auto_start = if origin == "automatic" {
+        true
+    } else if origin == "explicit" {
+        false
+    } else {
+        return Err(invalid(
+            "an explicit or automatic authenticated startup origin",
+        ));
+    };
     let home = PathBuf::from(home);
     let configuration = PathBuf::from(configuration);
     if !home.is_absolute() || !configuration.is_absolute() {
@@ -150,6 +160,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         let restored=host.restore_transcripts(&bound).await?;
         if !restored.unavailable.is_empty() {eprintln!("capture recovery: {} binding(s) unavailable; their original cursors remain protected",restored.unavailable.len());}
         host.configure(config.value)?;
+        host.configure_auto_start(auto_start)?;
         #[cfg(unix)]
         host.configure_unix_socket_paths(se_proc::native_ipc::UnixSocketPaths {
             runtime_directory: (!runtime_directory.is_empty())

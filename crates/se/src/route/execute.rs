@@ -136,18 +136,8 @@ pub fn dispatch(
         return super::status::observe(cx, &reader, &files, &caller.admission);
     }
     if let AnyOp::HookClaude(hook) = &op {
-        let target = scope::require_present(
-            endpoint(&files)?,
-            "live runtime endpoint",
-            "Run se up for this same data home before repeating the hook with its original session/provider/turn identities.",
-        )?;
         let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
-        return crate::ipc::forward_hook(
-            &target,
-            credential(cx, &files)?,
-            input,
-            &forwarding_options(&cx.home, &target)?,
-        );
+        return super::hook::forward(cx, &files, input, diagnostic);
     }
     if op.meta().effect == Effect::Read {
         return complete(direct::read(

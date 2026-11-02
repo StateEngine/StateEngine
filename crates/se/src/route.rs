@@ -10,6 +10,8 @@ pub mod direct;
 pub mod execute;
 #[path = "route/files.rs"]
 pub mod files;
+#[path = "route/hook.rs"]
+mod hook;
 #[path = "route/identity.rs"]
 pub mod identity;
 #[path = "route/init.rs"]
