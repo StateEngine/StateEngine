@@ -69,9 +69,7 @@ fn state_home() -> Result<PathBuf, String> {
         return if home.is_absolute() {
             Ok(home)
         } else {
-            std::env::current_dir()
-                .map(|cwd| cwd.join(home))
-                .map_err(|error| error.to_string())
+            Err("SE_HOME must name an absolute directory for the linked runtime".to_owned())
         };
     }
     #[cfg(windows)]
