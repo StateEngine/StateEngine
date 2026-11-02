@@ -40,7 +40,7 @@ impl SqliteSnapshot {
             } else {
                 self.record(seq)?
             };
-            let original = if first == "first_seq" && sort != seq as u64 {
+            let original = if matches!(first, "first_seq" | "requested_seq") && sort != seq as u64 {
                 Some(Box::new(if table == "principals" {
                     self.principal_metadata(sort as i64)?
                 } else {

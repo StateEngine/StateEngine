@@ -15,6 +15,7 @@ mod message;
 mod message_count;
 mod page;
 mod query;
+mod runtime;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::{
@@ -134,6 +135,13 @@ impl SqliteSnapshot {
                         EventBody::ProcessRegistered { identity, .. }
                         | EventBody::ProcessTransition { identity, .. } => {
                             identity.principal == who
+                        }
+                        EventBody::EffectRequested { principal, .. } => {
+                            principal.as_ref() == Some(&who)
+                        }
+                        EventBody::EffectOffered { principal, .. } => *principal == who,
+                        EventBody::EffectSettled { effect, .. } => {
+                            self.effect_visible(effect, a)?
                         }
                         _ => false,
                     }
@@ -721,20 +729,20 @@ impl Snapshot for SqliteSnapshot {
             Some("first_seq"),
         )
     }
-    fn processes(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        later("processes")
+    fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.read_processes(budget)
     }
     fn cursor(&mut self, _agent: AgentId, _purpose: String) -> StoreResult<Read<CursorRecord>> {
         later("cursor")
     }
-    fn pending_effects(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        later("pending_effects")
+    fn pending_effects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.read_pending_effects(budget)
     }
-    fn effect(&mut self, _id: RecordId) -> StoreResult<Read<ProjectionRecord>> {
-        later("effect")
+    fn effect(&mut self, id: RecordId) -> StoreResult<Read<ProjectionRecord>> {
+        self.read_effect(id)
     }
-    fn integrations(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        later("integrations")
+    fn integrations(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.read_integrations(budget)
     }
     fn import_progress(
         &mut self,
