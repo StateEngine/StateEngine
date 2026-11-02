@@ -39,6 +39,8 @@ enum ConnectionEnd {
 enum Event {
     Accepted(Result<crate::AcceptedIpcStream>),
     Http(Result<(tokio::net::TcpStream, tokio::sync::OwnedSemaphorePermit)>),
+    /// The embedder's in-process stop; the same fence and join as any stop.
+    LocalStop,
     Joined(std::result::Result<Result<ConnectionEnd>, tokio::task::JoinError>),
 }
 impl HostedRuntime {
@@ -75,6 +77,7 @@ impl HostedRuntime {
             );
             return ended(self, listener, Some(error));
         };
+        let mut local_stop = self.local_stop.take();
         let (shutdown, cancelled) = watch::channel(None);
         let mut tasks = JoinSet::new();
         let mut accept_backoff = std::time::Duration::from_millis(1);
@@ -86,11 +89,13 @@ impl HostedRuntime {
                 &mut listener,
                 &http,
                 &mut tasks,
+                local_stop.as_mut(),
                 accept_retry_at,
                 http_retry_at,
             )
             .await
             {
+                Event::LocalStop => break ended(self, listener, None),
                 Event::Accepted(Ok(stream)) => {
                     accept_backoff = std::time::Duration::from_millis(1);
                     let router = router.clone();
@@ -236,6 +241,7 @@ async fn event(
     listener: &mut HostedListener,
     http: &crate::HttpListener,
     tasks: &mut JoinSet<Result<ConnectionEnd>>,
+    local_stop: Option<&mut watch::Receiver<bool>>,
     retry_at: tokio::time::Instant,
     http_retry_at: tokio::time::Instant,
 ) -> Event {
@@ -247,7 +253,21 @@ async fn event(
         tokio::time::sleep_until(http_retry_at).await;
         http.accept().await
     });
+    // A dropped stop handle never stops the host; only a sent request does.
+    let mut stopping = pin!(async move {
+        match local_stop {
+            Some(stop) => {
+                if stop.wait_for(|requested| *requested).await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            }
+            None => std::future::pending::<()>().await,
+        }
+    });
     poll_fn(|cx| {
+        if stopping.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Event::LocalStop);
+        }
         if !tasks.is_empty()
             && let Poll::Ready(Some(joined)) = tasks.poll_join_next(cx)
         {
@@ -351,4 +371,21 @@ fn transient_accept(error: &SeError) -> bool {
         cause = value.source();
     }
     false
+}
+
+/// An embedder's in-process stop for one hosted runtime; standalone hosts stop
+/// only over the authenticated IPC control exchange.
+pub struct LocalStop(watch::Sender<bool>);
+impl LocalStop {
+    pub fn request(&self) {
+        self.0.send_replace(true);
+    }
+}
+impl HostedRuntime {
+    /// Take before `serve`; requesting it fences and joins like any stop.
+    pub fn local_stop(&mut self) -> LocalStop {
+        let (sender, receiver) = watch::channel(false);
+        self.local_stop = Some(receiver);
+        LocalStop(sender)
+    }
 }

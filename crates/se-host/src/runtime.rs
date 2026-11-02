@@ -144,7 +144,7 @@ pub use executor::execute;
 #[cfg(feature = "listener")]
 mod serve;
 #[cfg(feature = "listener")]
-pub use serve::HostServeExit;
+pub use serve::{HostServeExit, LocalStop};
 
 #[cfg(feature = "listener")]
 mod capture;

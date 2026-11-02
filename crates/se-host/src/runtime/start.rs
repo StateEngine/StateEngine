@@ -73,6 +73,8 @@ pub struct HostedRuntime {
     pub(crate) http_port: Arc<std::sync::OnceLock<u16>>,
     /// Bound before publication; serve takes it.
     pub(crate) http: Option<crate::HttpListener>,
+    /// An embedder's in-process stop request, consumed by serve.
+    pub(crate) local_stop: Option<tokio::sync::watch::Receiver<bool>>,
 }
 impl HostedRuntime {
     /// Explicit executable/embedding inputs; the library never reads ambient
@@ -316,6 +318,7 @@ fn prepare(
         image_sha256: peer.image_sha256(),
         http_port: Arc::default(),
         http: None,
+        local_stop: None,
     })
 }
 pub(crate) fn owner_budget() -> Result<se_store::ReadBudget> {
