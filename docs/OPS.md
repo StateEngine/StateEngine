@@ -139,24 +139,6 @@ Library lifecycle methods (`open`, capability verification, tool catalogue/call,
 | `atlas.changes` | `atlas changes [--since CURSOR]` | `stateengine_atlas_changes` | either | read | explicit cursor/commit/time baseline or bound agent's saved index cursor, page | `Page<CodeChange>`: added/removed/signature/body changes, dependent counts, author hints and completeness | optional J3, J4 |
 | `atlas.outline` | `atlas outline PATH` | `stateengine_atlas_outline` | either | read | registered-root-relative file path, budget | `Read<Outline>`: symbol tree, locations, supported/skipped/partial/index facts | optional J2–J4 |
 
-### Windows installation.uninstall
-
-On Windows, the installed `se uninstall` process exits **75 (deferred)** after
-native helper authorization because its actual exit is required for image
-removal. It retains the full achieved `se.uninstall/v1` report and original
-request key, with post-exit effects pending; this is not a successful uninstall.
-For a final caller-visible status, start with the matching archive's
-`uninstall.ps1`: it keeps the human console, waits for the helper verdict and
-independently checks its own installed image and record plus helper staging
-absence before returning zero. Both `--home DIR` and `--home=DIR` override
-`SE_HOME` when selecting that record, using the native command's precedence. PATH before/after and its witness come from the
-native parent only; the script's final readback covers file cleanup. JSON is one
-`se.uninstall-completion/v1` object with the original `se.uninstall/v1` snapshot
-in `achieved`; its historical pending outcomes remain labelled pending. A direct
-handoff prints the exact paths to inspect with PowerShell `Get-Item -LiteralPath`;
-not-found proves absence, while access errors leave the outcome unresolved.
-Do not retry a removed installed executable; use the matching archive for recovery.
-
 
 Atlas is built after journeys and live handover and never holds a milestone. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable. Its operations are exposed only when compiled in and enabled; status reports unavailable/disabled/absent/updating explicitly. `config.set` writes that key to config.toml like any general setting; the standalone host reads it on its next config read or restart. Cold indexing is a transient capped child. There is no project settings layer or second Atlas administration family. Reads never trigger an unbounded cold index, and optional resume enrichment is read-only and budgeted. Indexing owns a separate rebuildable code-only database; it is never the source of turns/messages/decisions. Disabled builds refuse explicit Atlas CLI invocations with an actionable feature-unavailable error and advertise no phantom tools.
 
@@ -169,6 +151,25 @@ General configuration resolves flag > documented environment variable > config.t
 Every hazard prints a concrete plan before effects: targets, agents ended, credentials revoked/rotated, events lost and retained copies. Remove/forget/restore/rotate/uninstall/doctor-fix require owner human presence outside agent ancestry, with the same-user limitation printed; no typed-ID prompts. Import prints source/family/conflict plans and keeps originals read-only. Startup migration prints its supported additive/pre-backup plan automatically; unsupported paths refuse. See 50 §8 for the per-operation hazard table. Human decision receipts state the mistake/drift boundary; ratify/reject/retract/supersede are all FULL. NORMAL may lose multiple recent ordinary commits on power/OS loss, not application crash.
 
 Default SE Code exit with live agents hands back to a detached `se up`, which exits ten minutes after its last live agent. This differs from ordinary `se down`, which stops its owned scope on every OS. Embedded binding returns an in-process session handle without credential commits. Done includes real Claude and Codex, all five journeys on Windows/Linux/macOS, standalone and embedded; Windows/Linux is intermediate and the borrowed-Mac campaign qualifies before alpha. Forget and live handover remain before alpha.
+
+### Windows installation.uninstall
+
+On Windows, the installed `se uninstall` process exits **75 (deferred)** after
+native helper authorization because its actual exit is required for image
+removal. It retains the full achieved `se.uninstall/v1` report and original
+request key, with post-exit effects pending; this is not a successful uninstall.
+For a final caller-visible status, start with the matching archive's
+`uninstall.ps1`: it keeps the human console, waits for the helper verdict and
+independently checks its own installed image and record plus helper staging
+absence before returning zero. Both `--home DIR` and `--home=DIR` override
+`SE_HOME` when selecting that record, using the native command's precedence. PATH before/after and its witness come
+from the native parent only; the script's final readback covers file cleanup. JSON is one
+`se.uninstall-completion/v1` object with the original `se.uninstall/v1` snapshot
+in `achieved`; its historical pending outcomes remain labelled pending. A direct
+handoff prints the exact paths to inspect with PowerShell `Get-Item -LiteralPath`;
+not-found proves absence, while access errors leave the outcome unresolved.
+Do not retry a removed installed executable; use the matching archive for recovery.
+
 
 ## Generation, errors and execution boundaries
 
