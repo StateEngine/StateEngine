@@ -183,6 +183,7 @@ fn input_command(name: &str, c: Command) -> Command {
                 .conflicts_with_all(["agent", "session", "kind", "since", "limit", "cursor"]),
         ),
         "history.list" => c
+            .about("Read the public timeline: conversations, mail, decisions, working state and saved identity changes")
             .arg(value("agent"))
             .arg(value("session"))
             .arg(value("kind").action(ArgAction::Append))

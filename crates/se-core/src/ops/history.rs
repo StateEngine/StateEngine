@@ -58,11 +58,18 @@ pub fn list<R: Snapshot>(input: HistoryList, cx: &mut Cx<'_, R>) -> Result<Histo
     let query = HistoryQuery {
         agent: input.owner_agent,
         session: input.session,
-        kinds: input
-            .kinds
-            .iter()
-            .map(|name| kind(name))
-            .collect::<Result<_>>()?,
+        // The public timeline is defined by its explicit payload catalogue.
+        // Native process/credential internals never become accidental default
+        // rows that cannot be rendered or safely exported.
+        kinds: if input.kinds.is_empty() {
+            PUBLIC_KINDS.iter().map(|(_, kind)| *kind).collect()
+        } else {
+            input
+                .kinds
+                .iter()
+                .map(|name| kind(name))
+                .collect::<Result<_>>()?
+        },
         families: Vec::new(),
         since: input
             .since
@@ -118,27 +125,35 @@ pub fn list<R: Snapshot>(input: HistoryList, cx: &mut Cx<'_, R>) -> Result<Histo
         page: Page::new(items, se_types::Window::new(fields)?, next)?,
     })
 }
+const PUBLIC_KINDS: &[(&str, se_store::EventKind)] = &[
+    ("session.turn", se_store::EventKind::SessionTurn),
+    ("capture.suppressed", se_store::EventKind::CaptureSuppressed),
+    ("message.sent", se_store::EventKind::MessageSent),
+    ("working_state.set", se_store::EventKind::WorkingStateSet),
+    (
+        "principal.registered",
+        se_store::EventKind::PrincipalRegistered,
+    ),
+    ("principal.renamed", se_store::EventKind::PrincipalRenamed),
+    ("profile.saved", se_store::EventKind::ProfileSaved),
+    ("grant.recorded", se_store::EventKind::GrantRecorded),
+    ("decision.proposed", se_store::EventKind::DecisionProposed),
+    ("decision.ratified", se_store::EventKind::DecisionRatified),
+    ("decision.rejected", se_store::EventKind::DecisionRejected),
+    ("decision.retracted", se_store::EventKind::DecisionRetracted),
+    (
+        "decision.superseded",
+        se_store::EventKind::DecisionSuperseded,
+    ),
+];
 fn kind(name: &str) -> Result<se_store::EventKind> {
-    use se_store::EventKind::*;
-    Ok(match name {
-        "session.turn" => SessionTurn,
-        "capture.suppressed" => CaptureSuppressed,
-        "message.sent" => MessageSent,
-        "working_state.set" => WorkingStateSet,
-        "principal.registered" => PrincipalRegistered,
-        "principal.renamed" => PrincipalRenamed,
-        "profile.saved" => ProfileSaved,
-        "grant.recorded" => GrantRecorded,
-        "decision.proposed" => DecisionProposed,
-        "decision.ratified" => DecisionRatified,
-        "decision.rejected" => DecisionRejected,
-        "decision.retracted" => DecisionRetracted,
-        "decision.superseded" => DecisionSuperseded,
-        _ => {
-            return Err(SeError::invalid(
+    PUBLIC_KINDS
+        .iter()
+        .find_map(|(wire, kind)| (*wire == name).then_some(*kind))
+        .ok_or_else(|| {
+            SeError::invalid(
                 "kind",
                 "an exact public event kind; use session.turn for captured conversation history",
-            ));
-        }
-    })
+            )
+        })
 }
