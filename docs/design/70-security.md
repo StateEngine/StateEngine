@@ -64,7 +64,11 @@ The lifecycle below applies only to process-bound CLI/hooks/provider integration
    and a 10-minute activation deadline. Text form `sec1.<session-id>.<base64url>`.
 2. **Deliver**, never through argv or environment: an owner-only pin file
    `<state>/launch/<launch-id>/pin` created `O_EXCL` and read back (managed launches; `SE_SESSION` holds
-   only the handle `ses_<uuid>`, so `env` in a captured turn reveals nothing usable); the stdout pipe of
+   only the handle `ses_<uuid>`, so `env` in a captured turn reveals nothing usable);
+   managed launch/session IDs share the newly allocated canonical UUID, with
+   their distinct `lch_`/`ses_` prefixes. `se_proc::read_session_pin` validates
+   that handle and opens the exact launch pin without scanning. The pin contains
+   the UTF-8 `sec1.<session-id>.<base64url>` token with no trailing newline; the stdout pipe of
    `session begin` (integrators only); or an IPC response to a peer-authenticated client.
 3. **Activate** on first verified use, bound to lifecycle and lease generation, with the required
    session activation/readiness in one FULL transaction. Managed launch batches preparation and
