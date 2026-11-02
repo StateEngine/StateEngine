@@ -38,7 +38,7 @@ fn duplicate(file: &File) -> ProcResult<File> {
     // SAFETY: borrowed descriptor is retained; new CLOEXEC reference avoids action target descriptors 0..3.
     owned(unsafe { libc::fcntl(file.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) })
 }
-fn pipe() -> ProcResult<(File, File)> {
+fn socket(operation: &str) -> ProcResult<(File, File)> {
     let mut pair = [-1; 2];
     // SAFETY: exact two-descriptor output; both references become owned on success.
     if unsafe {
@@ -50,10 +50,7 @@ fn pipe() -> ProcResult<(File, File)> {
         )
     } < 0
     {
-        return Err(fail(
-            "create bootstrap plan pipe",
-            io::Error::last_os_error(),
-        ));
+        return Err(fail(operation, io::Error::last_os_error()));
     }
     let read = owned(pair[0])?;
     let write = owned(pair[1])?;
@@ -247,29 +244,10 @@ pub(super) fn spawn(spec: &RuntimeLaunchSpec, frame: Frame) -> ProcResult<Create
         .map(|v| v.as_ptr().cast_mut())
         .chain(Some(ptr::null_mut()))
         .collect();
-    let (plan_read, plan_write) = pipe()?;
-    let (diagnostic_reader, diagnostic_writer) = pipe()?;
+    let (plan_read, plan_write) = socket("create bootstrap plan pipe")?;
+    let (diagnostic_reader, diagnostic_writer) = socket("create bootstrap plan pipe")?;
     let diagnostics = diagnostics::Capture::start(diagnostic_reader, spec.deadline)?;
-    let mut pair = [-1; 2];
-    // SAFETY: exact native output; no path or listener is involved.
-    if unsafe {
-        libc::socketpair(
-            libc::AF_UNIX,
-            libc::SOCK_STREAM | libc::SOCK_CLOEXEC | libc::SOCK_NONBLOCK,
-            0,
-            pair.as_mut_ptr(),
-        )
-    } < 0
-    {
-        return Err(fail(
-            "create bootstrap control socket",
-            io::Error::last_os_error(),
-        ));
-    }
-    let parent = owned(pair[0])?;
-    let child = owned(pair[1])?;
-    let parent = duplicate(&parent)?;
-    let child = duplicate(&child)?;
+    let (parent, child) = socket("create bootstrap control socket")?;
     let enable: i32 = 1;
     // SAFETY: retained receiving socket and exact native integer option value.
     if unsafe {

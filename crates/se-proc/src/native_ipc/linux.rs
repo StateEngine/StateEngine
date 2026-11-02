@@ -1,4 +1,5 @@
 use super::*;
+use crate::linux_native::{self, ProcStat};
 use std::{
     fs::{self, File},
     io::Read,
@@ -33,33 +34,31 @@ pub(super) fn credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32
 fn start(pid: u32) -> IpcNativeResult<u64> {
     let mut bytes = Vec::new();
     File::open(format!("/proc/{pid}/stat"))
-        .and_then(|f| f.take(4097).read_to_end(&mut bytes))
+        .and_then(|f| {
+            f.take(linux_native::STAT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+        })
         .map_err(|e| error("read IPC process birth", e))?;
-    if bytes.len() > 4096 {
+    if bytes.len() > linux_native::STAT_BYTES {
         return Err(refuse(
             IpcNativeErrorCode::Unreadable,
             "oversized native process stat",
         ));
     }
-    let end = bytes.windows(2).rposition(|p| p == b") ").ok_or_else(|| {
+    let facts = ProcStat::parse(&bytes).map_err(|_| {
         refuse(
             IpcNativeErrorCode::Unreadable,
             "invalid native process stat",
         )
     })?;
-    bytes[end + 2..]
-        .split(u8::is_ascii_whitespace)
-        .filter(|v| !v.is_empty())
-        .nth(19)
-        .and_then(|v| std::str::from_utf8(v).ok())
-        .and_then(|v| v.parse().ok())
-        .ok_or_else(|| {
-            refuse(
-                IpcNativeErrorCode::Unreadable,
-                "invalid process start ticks",
-            )
-        })
+    facts.start_ticks().map_err(|_| {
+        refuse(
+            IpcNativeErrorCode::Unreadable,
+            "invalid process start ticks",
+        )
+    })
 }
+
 pub(super) fn observe(pid: u32, uid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     if pid == 0 || pid > i32::MAX as u32 {
         return Err(refuse(

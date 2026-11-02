@@ -1,3 +1,4 @@
+use crate::linux_native::{self, ProcStat, StatError};
 use crate::support::*;
 use crate::*;
 use std::{
@@ -28,25 +29,25 @@ pub(super) fn bytes(path: &Path, max: usize) -> ProcResult<Vec<u8>> {
     Ok(data)
 }
 pub(super) fn boot() -> ProcResult<BootIdentity> {
-    let data = bytes(Path::new("/proc/sys/kernel/random/boot_id"), 64)?;
-    let mut id = [0; 16];
-    let digits: Vec<_> = data
-        .iter()
-        .copied()
-        .filter(|b| *b != b'-' && !b.is_ascii_whitespace())
-        .collect();
-    if digits.len() != 32 {
-        return Err(input("boot identity", "malformed kernel UUID"));
-    }
-    for (i, pair) in digits.chunks_exact(2).enumerate() {
-        let digit = |b: u8| match b {
-            b'0'..=b'9' => Ok(b - b'0'),
-            b'a'..=b'f' => Ok(b - b'a' + 10),
-            _ => Err(input("boot identity", "malformed kernel UUID")),
-        };
-        id[i] = digit(pair[0])? * 16 + digit(pair[1])?;
-    }
-    Ok(BootIdentity::Linux { boot_id: id })
+    let data = bytes(
+        Path::new("/proc/sys/kernel/random/boot_id"),
+        linux_native::BOOT_ID_BYTES,
+    )?;
+    let boot_id = linux_native::boot_id(&data)
+        .ok_or_else(|| input("boot identity", "malformed kernel UUID"))?;
+    Ok(BootIdentity::Linux { boot_id })
+}
+fn stat_error(error: StatError) -> ProcError {
+    input(
+        "proc stat",
+        match error {
+            StatError::MissingDelimiter => "missing final comm delimiter",
+            StatError::InvalidState => "invalid state",
+            StatError::TruncatedNumber => "truncated numeric suffix",
+            StatError::InvalidNumber => "invalid numeric suffix",
+            StatError::PidOverflow => "PID overflow",
+        },
+    )
 }
 pub(super) fn stat(pid: ProcessId) -> ProcResult<Option<Stat>> {
     valid_pid(pid)?;
@@ -54,7 +55,10 @@ pub(super) fn stat(pid: ProcessId) -> ProcResult<Option<Stat>> {
     let data = match fs::File::open(&path) {
         Ok(f) => {
             let mut data = Vec::new();
-            match f.take(4097).read_to_end(&mut data) {
+            match f
+                .take(linux_native::STAT_BYTES as u64 + 1)
+                .read_to_end(&mut data)
+            {
                 Ok(_) => (),
                 Err(cause) if absent(&cause) => return Ok(None),
                 Err(cause) => {
@@ -76,47 +80,23 @@ pub(super) fn stat(pid: ProcessId) -> ProcResult<Option<Stat>> {
             ));
         }
     };
-    if data.len() > 4096 {
-        return Err(capacity("proc stat", 4096));
+    if data.len() > linux_native::STAT_BYTES {
+        return Err(capacity("proc stat", linux_native::STAT_BYTES as u64));
     }
-    // comm is arbitrary bytes and can itself contain ')' and spaces.
-    let split = data
-        .windows(2)
-        .rposition(|p| p == b") ")
-        .ok_or_else(|| input("proc stat", "missing final comm delimiter"))?;
-    let fields: Vec<_> = data[split + 2..]
-        .split(u8::is_ascii_whitespace)
-        .filter(|f| !f.is_empty())
-        .collect();
-    let number = |index: usize| -> ProcResult<u64> {
-        let value = fields
-            .get(index)
-            .ok_or_else(|| input("proc stat", "truncated numeric suffix"))?;
-        std::str::from_utf8(value)
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .ok_or_else(|| input("proc stat", "invalid numeric suffix"))
-    };
-    let state = match fields.first().copied() {
-        Some(b"Z" | b"X" | b"x") => NativeState::ExitedAwaitingReap,
-        Some(b"T" | b"t") => NativeState::Stopped,
-        Some([_]) => NativeState::Running,
-        _ => return Err(input("proc stat", "invalid state")),
-    };
-    let pid_value = |index| {
-        number(index).and_then(|n| {
-            u32::try_from(n)
-                .map(ProcessId)
-                .map_err(|_| input("proc stat", "PID overflow"))
-        })
+    let facts = ProcStat::parse(&data).map_err(stat_error)?;
+    let state = match facts.state().map_err(stat_error)? {
+        b'Z' | b'X' | b'x' => NativeState::ExitedAwaitingReap,
+        b'T' | b't' => NativeState::Stopped,
+        _ => NativeState::Running,
     };
     Ok(Some(Stat {
         state,
-        parent: pid_value(1)?,
-        group: pid_value(2)?,
-        start: number(19)?,
+        parent: ProcessId(facts.parent().map_err(stat_error)?),
+        group: ProcessId(facts.group().map_err(stat_error)?),
+        start: facts.start_ticks().map_err(stat_error)?,
     }))
 }
+
 pub(super) fn valid_pid(pid: ProcessId) -> ProcResult<()> {
     if pid.0 == 0 || pid.0 > i32::MAX as u32 {
         return Err(input("pid", "must be a positive native PID"));

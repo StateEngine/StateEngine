@@ -33,3 +33,7 @@ harness = false
 [[test]]
 name = "bootstrap_stderr"
 harness = false
+
+[[test]]
+name = "linux_process_facts"
+harness = false

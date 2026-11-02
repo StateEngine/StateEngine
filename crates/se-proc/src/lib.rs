@@ -56,6 +56,8 @@ pub use bootstrap::{
     NativeRuntimeIdentity, RuntimeAdmission, RuntimeBootstrap, RuntimeStartupStderr,
     current_process_identity, current_runtime_identity,
 };
+#[cfg(target_os = "linux")]
+mod linux_native;
 #[cfg(any(target_os = "linux", windows))]
 mod platform;
 #[cfg(any(target_os = "linux", windows))]
