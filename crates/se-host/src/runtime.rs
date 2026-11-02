@@ -144,7 +144,7 @@ pub use executor::execute;
 #[cfg(feature = "secode")]
 mod embedded;
 #[cfg(feature = "secode")]
-pub use embedded::EmbeddedFactory;
+pub use embedded::{EmbeddedFactory, embedded_factory};
 #[cfg(feature = "listener")]
 mod serve;
 #[cfg(feature = "listener")]

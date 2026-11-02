@@ -36,6 +36,11 @@ impl EmbeddedFactory {
         Self { runtime }
     }
 }
+/// The commercial composition's constructor, with exactly the
+/// `EmbeddedFactoryBuilder` type in docs/design/commercial-factory.rs.
+pub fn embedded_factory(runtime: Handle) -> Arc<dyn api::HostFactory> {
+    Arc::new(EmbeddedFactory::new(runtime))
+}
 
 /// One activated generation: its router, stop and shutdown report.
 struct Serving {
