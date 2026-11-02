@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: LicenseRef-StateEngine-Proprietary
 //! Website-only composition. The public SE Code executable supplies None.
+//! The private release installs its native helper at stateengine/se[.exe] and
+//! declares stateengine.runtime = "rust-embedded" in its verified manifest.
 mod native;
 use secode_stateengine_api as api;
 use std::{num::NonZeroU32, path::PathBuf};
@@ -31,7 +33,10 @@ fn composition() -> Result<secode_product::StateEngine, String> {
     let state_home = state_home()?;
     let helper_executable = std::env::current_exe()
         .map_err(|error| format!("cannot read the installed server image: {error}"))?
-        .with_file_name(if cfg!(windows) { "se.exe" } else { "se" });
+        .parent()
+        .ok_or("installed server has no package directory")?
+        .join("stateengine")
+        .join(if cfg!(windows) { "se.exe" } else { "se" });
     Ok(secode_product::StateEngine {
         factory: se_host::embedded_factory,
         epoch: native_epoch,
