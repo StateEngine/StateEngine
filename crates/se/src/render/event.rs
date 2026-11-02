@@ -65,3 +65,22 @@ fn payload(
     }
     Ok(())
 }
+
+pub(super) fn page(value: &se_core::ops::HistoryPage, out: &mut impl Write) -> io::Result<()> {
+    for event in value.page.items() {
+        present(event, out)?;
+    }
+    if value.page.items().is_empty() {
+        writeln!(out, "No events in this history page.")?;
+    }
+    if let Some(cursor) = value.page.next() {
+        writeln!(out, "Continue the same command with --cursor {cursor}")?;
+    }
+    if !value.page.window().complete() {
+        writeln!(
+            out,
+            "This history page is incomplete; its JSON window describes the remaining omissions."
+        )?;
+    }
+    Ok(())
+}

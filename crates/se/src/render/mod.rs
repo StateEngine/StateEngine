@@ -34,6 +34,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::ConfigValue, AnyOutput::ConfigGet(value)) => {
                 administration::config_value(&value.value, out)?
             }
+            (HumanKind::AgentPage, AnyOutput::AgentList(value)) => {
+                administration::agents(&value.value, out)?
+            }
             (HumanKind::AgentStatus, AnyOutput::AgentShow(value)) => {
                 administration::agent_status(&value.value, out)?
             }
@@ -45,6 +48,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             }
             (HumanKind::DecisionReceipt, AnyOutput::Decision(value)) => {
                 administration::decision(&value.value, out)?
+            }
+            (HumanKind::HistoryPage, AnyOutput::HistoryList(value)) => {
+                event::page(&value.value, out)?
             }
             (HumanKind::Event, AnyOutput::EventRead(value)) => event::output(&value.value, out)?,
             (HumanKind::MessageReceipt, AnyOutput::MessageSend(value)) => {

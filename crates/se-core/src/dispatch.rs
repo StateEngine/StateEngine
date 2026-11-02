@@ -295,6 +295,9 @@ impl Kernel {
             crate::admission::require_human_terminal(op.meta().name, cx.admission, terminal)?;
         }
         Ok(match op {
+            AnyOp::AgentList(input) => {
+                OpStep::Complete(crate::ops::listing::agents(input, cx)?.into())
+            }
             AnyOp::AgentShow(input) => {
                 OpStep::Complete(crate::ops::agent_status::show(input, cx)?.into())
             }
@@ -390,6 +393,9 @@ impl Kernel {
             ),
             AnyOp::DecisionShow(input) => {
                 OpStep::Complete(crate::ops::decision_show::read(input, cx)?.into())
+            }
+            AnyOp::HistoryList(input) => {
+                OpStep::Complete(crate::ops::history::list(input, cx)?.into())
             }
             AnyOp::EventRead(input) => OpStep::Complete(crate::ops::event::read(input, cx)?.into()),
             AnyOp::MessageList(input) => {

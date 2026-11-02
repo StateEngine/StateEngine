@@ -10,10 +10,14 @@ pub mod decision;
 pub mod decision_show;
 pub use decision_show::{DecisionDetail, DecisionOutput, DecisionShow, DecisionTransition};
 pub mod event;
+pub mod history;
+pub use history::{HistoryList, HistoryPage};
 pub mod hook;
 pub mod inputs;
 pub mod installation;
+pub mod listing;
 pub mod message;
+pub use listing::{AgentList, AgentPage};
 mod meta;
 pub mod outputs;
 pub mod project;
@@ -114,7 +118,8 @@ ops! {
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
     ProjectStatus => ProjectStatus, StatusOutput, ("project.status",leaf(&["status"]),tool("stateengine_status","Project status","Read setup, agent and runtime facts without changing state."),Either,false,Never,Read,ProjectOrAll,None,"se.status",Status,&["J1","J2"]);
-    EventRead => EventRead, EventOutput, ("history.event_read",leaf(&["history"]),tool("stateengine_event_read","Read a committed event","Read one committed event by ID in the authorized project, with its public payload and provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
+    EventRead => EventRead, EventOutput, ("history.event_read",CliExposure::Leaf {path:&["history"],hidden:false,select:Selector::Flag("event")},tool("stateengine_event_read","Read a committed event","Read one committed event by ID in the authorized project, with its public payload and provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
+    HistoryList => HistoryList, HistoryPage, ("history.list",leaf(&["history"]),no_mcp("Sessions use event_read for exact public records; owner CLI history is read-only inspection."),Either,false,Never,Read,Project,None,"se.history-page",HistoryPage,&["J3"]);
     MessageSend => MessageSend, MessageOutput, ("message.send",leaf(&["msg","send"]),tool("stateengine_msg_send","Send a message","Commit a message to another project agent or owner; committed does not mean read."),Either,false,Never,Write,Project,HostForWrites,"se.message-receipt",MessageReceipt,&["J4"]);
     MessageList => MessageList, MessagePage, ("message.list",leaf(&["msg","list"]),tool("stateengine_msg_list","List your messages","List authorized messages with explicit completeness; listing never marks mail read."),Either,false,Never,Read,Project,None,"se.message-page",MessagePage,&["J4"]);
     WorkingStateGet => WorkingStateGet, WorkingStateOutput, ("working_state.get",leaf(&["working-state"]),tool("stateengine_working_state_get","Read working state","Read your saved note and entity revision."),Either,false,Never,Read,Session,None,"se.working-state",WorkingState,&["J3"]);
@@ -124,6 +129,7 @@ ops! {
     RuntimeDown => RuntimeDown, RuntimeStop, ("runtime.down",leaf(&["down"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,None,"se.runtime-stop",RuntimeStop,&["J3"]);
     Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal requires the owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);
     AgentCreate => AgentCreate, AgentReceipt, ("agent.create",leaf(&["agent","add"]),tool("stateengine_agent_create","Create an agent","Create a durable agent identity and safe saved profile without launching a process; sessions require their current create grant."),Either,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["E3","J2","J4"]);
+    AgentList => AgentList, AgentPage, ("agent.list",leaf(&["agent","list"]),no_mcp("Owner overview; bound agents use status for their own saved identity."),Owner,false,Never,Read,Project,None,"se.agent-page",AgentPage,&["J2","J3"]);
     AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);
     ConfigGet => ConfigGet, ConfigValueOutput, ("config.get",leaf(&["config","get"]),no_mcp("Saved agent settings are inspected by the owner CLI."),Owner,false,Never,Read,Project,None,"se.config-value",ConfigValue,&["E3"]);
     ConfigSet => ConfigSet, AgentConfigReceipt, ("config.set",leaf(&["config","set"]),no_mcp("Saved agent metadata changes are owner CLI operations."),Owner,false,ConfigKey,Write,Project,HostForWrites,"se.config-receipt",ConfigReceipt,&["E3"]);
@@ -207,6 +213,8 @@ impl AnyOutput {
             Self::ConfigGet(v) => v.value.value.exit_code(),
             Self::DecisionShow(v) => v.value.decision.exit_code(),
             Self::AgentShow(v) => v.value.agent.exit_code(),
+            Self::AgentList(v) => v.value.page.window().exit_code(false),
+            Self::HistoryList(v) => v.value.page.window().exit_code(false),
             Self::ProjectStatus(v) => {
                 let project = v.value.project.exit_code();
                 if project != 0 {

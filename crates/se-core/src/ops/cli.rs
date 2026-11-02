@@ -39,10 +39,12 @@ impl CommonArgs {
                 status_all: !path.is_empty() && flag(m, "all"),
                 ..CliSelections::default()
             },
-            "working_state.get" | "working_state.set" | "agent.show" => CliSelections {
-                agent: text(m, "agent"),
-                ..CliSelections::default()
-            },
+            "working_state.get" | "working_state.set" | "agent.show" | "history.list" => {
+                CliSelections {
+                    agent: text(m, "agent"),
+                    ..CliSelections::default()
+                }
+            }
             "message.list" => CliSelections {
                 mail_to: text(m, "to"),
                 mail_list: true,
@@ -186,7 +188,15 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("launch"))
             .arg(toggle("adopt")),
         "project.status" => c.arg(toggle("all")),
-        "history.event_read" => c.arg(value("event").required(true)),
+        "history.event_read" => c.arg(
+            value("event").conflicts_with_all(["agent", "session", "kind", "limit", "cursor"]),
+        ),
+        "history.list" => c
+            .arg(value("agent"))
+            .arg(value("session"))
+            .arg(value("kind").action(ArgAction::Append))
+            .arg(value("limit").default_value("20"))
+            .arg(value("cursor")),
         "message.send" => c
             .arg(positional("to", 1, true))
             .arg(positional("body", 2, true))
@@ -213,6 +223,9 @@ fn input_command(name: &str, c: Command) -> Command {
             ),
         "working_state.get" => c.arg(value("agent")),
         "agent.show" => c.arg(positional("agent", 1, true)),
+        "agent.list" => c
+            .arg(value("limit").default_value("20"))
+            .arg(value("cursor")),
         "config.get" => c
             .arg(positional("setting_key", 1, true))
             .arg(toggle("origin")),
@@ -266,8 +279,32 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::O
     if path.is_empty() {
         return Ok(&ProjectStatus::META);
     }
-    CATALOGUE.iter().copied().find(|meta|matches!(meta.cli,CliExposure::Leaf{path:p,..} if p.iter().copied().eq(path.iter().map(String::as_str))))
-        .ok_or_else(||unknown(&path.join(" ")))
+    let same_path = |meta: &crate::registry::OpMeta| {
+        matches!(meta.cli,
+        CliExposure::Leaf {path: registered, ..} if registered.iter().copied().eq(path.iter().map(String::as_str)))
+    };
+    CATALOGUE
+        .iter()
+        .copied()
+        .find(|meta| {
+            same_path(meta)
+                && matches!(meta.cli,
+        CliExposure::Leaf {select: Selector::Flag(flag), ..}
+            if m.value_source(flag) == Some(clap::parser::ValueSource::CommandLine))
+        })
+        .or_else(|| {
+            CATALOGUE.iter().copied().find(|meta| {
+                same_path(meta)
+                    && matches!(
+                        meta.cli,
+                        CliExposure::Leaf {
+                            select: Selector::Always,
+                            ..
+                        }
+                    )
+            })
+        })
+        .ok_or_else(|| unknown(&path.join(" ")))
 }
 pub fn from_matches(matches: &ArgMatches) -> Result<AnyOp> {
     from_matches_with_key(matches, None)
@@ -336,6 +373,12 @@ pub fn from_matches_with_key(
     };
     let op =
         match meta.name {
+            "agent.list" => AnyOp::AgentList(AgentList {
+                limit: required(m, "limit")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("limit", "1..100"))?,
+                cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+            }),
             "agent.show" => AnyOp::AgentShow(AgentShow {
                 target_agent_id: None,
             }),
@@ -387,6 +430,19 @@ pub fn from_matches_with_key(
                 launch: flag(m, "launch"),
                 adopt: flag(m, "adopt"),
                 idempotency_key: key()?,
+            }),
+            "history.list" => AnyOp::HistoryList(HistoryList {
+                session: text(m, "session")
+                    .map(|value| {
+                        value
+                            .parse()
+                            .map_err(|_| SeError::invalid("session", "a canonical session ID"))
+                    })
+                    .transpose()?,
+                kinds: many(m, "kind"),
+                limit: number(m, "limit")?,
+                cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+                owner_agent: None,
             }),
             "history.event_read" => AnyOp::EventRead(EventRead {
                 event_id: required(m, "event")?,
@@ -585,7 +641,10 @@ impl CliSelections {
         if let Some(selector) = &self.agent {
             if !matches!(
                 op,
-                AnyOp::WorkingStateGet(_) | AnyOp::WorkingStateSet(_) | AnyOp::AgentShow(_)
+                AnyOp::WorkingStateGet(_)
+                    | AnyOp::WorkingStateSet(_)
+                    | AnyOp::AgentShow(_)
+                    | AnyOp::HistoryList(_)
             ) {
                 return Err(unknown_flag(
                     "--agent",
@@ -600,6 +659,7 @@ impl CliSelections {
             crate::scope::working_agent(cx.admission, Some(&agent), op.meta().name)?;
             match op {
                 AnyOp::AgentShow(input) => input.target_agent_id = Some(agent),
+                AnyOp::HistoryList(input) => input.owner_agent = Some(agent),
                 AnyOp::WorkingStateGet(input) => input.owner_agent = Some(agent),
                 AnyOp::WorkingStateSet(input) => input.owner_agent = Some(agent),
                 _ => (),

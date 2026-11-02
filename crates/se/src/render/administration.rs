@@ -143,3 +143,35 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
     }
     Ok(())
 }
+
+pub(super) fn agents(
+    value: &se_core::ops::AgentPage,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    for agent in value.page.items() {
+        writeln!(
+            out,
+            "{} ({}) — {}; saved profile {}",
+            agent.name,
+            agent.id,
+            match agent.provider {
+                se_types::Provider::Claude => "Claude Code",
+                se_types::Provider::Codex => "Codex",
+            },
+            agent.profile
+        )?;
+    }
+    if value.page.items().is_empty() {
+        writeln!(out, "No agents in this page.")?;
+    }
+    if let Some(next) = value.page.next() {
+        writeln!(out, "Continue the same command with --cursor {next}")?;
+    }
+    if !value.page.window().complete() {
+        writeln!(
+            out,
+            "This page is incomplete; its JSON window describes the remaining omissions."
+        )?;
+    }
+    Ok(())
+}
