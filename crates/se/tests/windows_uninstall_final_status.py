@@ -64,8 +64,14 @@ exit $code
 ANSI = re.compile(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~])")
 
 
+# The journey terminal has 32,767 columns. At a soft wrap ConPTY emits
+# CRLF + cursor-to-last-column + a replay of that column's previous character.
+# Consume only that exact replay; real line breaks and all verdict text survive.
+SOFT_WRAP = re.compile(r"([^\r\n\x1b])\r\n\x1b\[[0-9]+;32767H\1")
+
+
 def clean(text):
-    return ANSI.sub("", text).replace("\r", "")
+    return ANSI.sub("", SOFT_WRAP.sub(r"\1", text)).replace("\r", "")
 
 
 def successful_verdict(code, text, observations, json_mode=False):
@@ -104,6 +110,41 @@ def failed_verdict(code, text, path):
 
 
 class VerdictOracle(unittest.TestCase):
+    def test_large_conpty_json_keeps_one_complete_reply(self):
+        report = {"schema": "se.uninstall/v1", "idempotency_key": "request", "path": {},
+                  **{key: [] for key in ("install_files", "directories", "integrations", "stops",
+                                        "revocations", "preserved", "recovery")}}
+        report["preserved"] = ["owner's files " + "large-\u00e9-\U0001f4a1" * 12000]
+        reply = json.dumps({"schema": "se.uninstall-completion/v1", "complete": True,
+                            "achieved": report}, ensure_ascii=False) + "\r\n"
+        chunks = [reply[i:i + 32767] for i in range(0, len(reply), 32767)]
+        wrapped = chunks[0] + "".join("\r\n\x1b[39;32767H" + chunks[i - 1][-1] + chunks[i]
+                                     for i in range(1, len(chunks)))
+        self.assertGreater(len(reply), 100000)
+        self.assertEqual(clean(wrapped), reply.replace("\r", ""))
+        successful_verdict(0, wrapped, [{"state": "absent"}], True)
+        for state in ("present", "unreadable"):
+            with self.subTest(state=state), self.assertRaisesRegex(AssertionError, "outside absence"):
+                successful_verdict(0, wrapped, [{"state": state}], True)
+        with self.assertRaisesRegex(AssertionError, "exactly one"):
+            successful_verdict(0, wrapped + wrapped, [{"state": "absent"}], True)
+        with self.assertRaisesRegex(AssertionError, "incomplete verdict"):
+            successful_verdict(0, "retry se uninstall\r\n" + wrapped, [{"state": "absent"}], True)
+
+    def test_only_the_exact_soft_wrap_is_rejoined(self):
+        self.assertEqual(clean('abc\r\n\x1b[39;32767Hcdef'), 'abcdef')
+        for text in ('abc\r\ndef', 'abc\r\n\x1b[39;80Hcdef',
+                     'abc\r\n\x1b[39;32767Hxdef'):
+            with self.subTest(text=text):
+                self.assertIn('\n', clean(text), 'ordinary or inconsistent lines must not be merged')
+        # The replay can fall inside a human verdict or a JSON escape. Its
+        # duplicate is renderer data; the original character must remain.
+        self.assertEqual(clean('Uninstall incomple\r\n\x1b[39;32767Hete'), 'Uninstall incomplete')
+        with self.assertRaisesRegex(AssertionError, "incomplete verdict"):
+            successful_verdict(0, 'Uninstall incomple\r\n\x1b[39;32767Hete', [{"state": "absent"}])
+        with self.assertRaises(AssertionError):
+            failed_verdict(2, 'Uninstall complet\r\n\x1b[39;32767Hte C:\\owned', r'C:\owned')
+
     def test_witnessed_success(self):
         successful_verdict(0, "Uninstall complete (verified).", [{"state": "absent"}])
 
