@@ -45,9 +45,7 @@ impl Backend {
                             "explicit session metadata must contain a bounded capability string",
                         )
                     })?;
-                return Secret::new(text.as_bytes().to_vec())
-                    .map(Arc::new)
-                    .map(Some);
+                return metadata_secret(text).map(Arc::new).map(Some);
             }
         }
         if supplied.is_some() {
@@ -123,6 +121,26 @@ fn charge_elapsed(options: &mut ClientOptions, started: Instant) -> Result<()> {
             ))
         })?;
     Ok(())
+}
+
+fn metadata_secret(text: &str) -> Result<Secret> {
+    let (session, encoded) = text
+        .strip_prefix("sec1.")
+        .and_then(|rest| rest.rsplit_once('.'))
+        .ok_or_else(|| invalid_capability("expected a sec1 session capability"))?;
+    let _: se_types::SessionId = session
+        .parse()
+        .map_err(|_| invalid_capability("capability must name a canonical session"))?;
+    if encoded.len() != 43
+        || !encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(invalid_capability(
+            "capability must contain the bounded base64url secret",
+        ));
+    }
+    Secret::new(text.as_bytes().to_vec())
 }
 
 fn invalid_capability(reason: &str) -> se_types::SeError {
