@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor/secode-stateengine-api"]
 members = [
     "crates/se-types",
     "crates/se-store",
@@ -35,3 +36,8 @@ expect_used = "deny"
 
 [profile.release]
 panic = "unwind"
+
+# The embedding workspace overrides this unpublished permissive package with
+# its own API crate, keeping one package identity across the linked boundary.
+[patch.crates-io]
+secode-stateengine-api = { path = "vendor/secode-stateengine-api" }

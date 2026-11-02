@@ -1,0 +1,3 @@
+Permissive SE Code API source: crates/secode-stateengine-api at SE Code commit baec40152bf71557a151a2c1989d4ba3c575995a.
+Source files are unchanged; Cargo.toml makes workspace-inherited edition and lints explicit for standalone consumption.
+Licensed MIT OR Apache-2.0 as declared by the upstream crate.

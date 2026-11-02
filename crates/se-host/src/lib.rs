@@ -16,3 +16,6 @@ pub use ipc::*;
 pub use model::*;
 pub use runtime::*;
 pub use session::*;
+
+#[cfg(feature = "secode")]
+pub mod linked;
