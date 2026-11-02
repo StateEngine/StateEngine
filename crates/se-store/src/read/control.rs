@@ -35,7 +35,7 @@ impl SqliteSnapshot {
             &load,
         )?;
         let sessions = self.control_heads(
-            "SELECT s.revision,s.last_seq,s.first_seq FROM sessions s WHERE s.project_id=? AND s.agent_id=? AND (s.state='active' OR (s.state='prepared' AND EXISTS(SELECT 1 FROM processes h JOIN process_data d ON d.event_seq=h.last_seq WHERE h.project_id=s.project_id AND h.ownership_released=0 AND h.state NOT IN ('exited','historical') AND d.target_session_id=s.session_id))) ORDER BY s.first_seq LIMIT ?",
+            "SELECT revision,last_seq,first_seq FROM sessions WHERE project_id=? AND agent_id=? AND state IN ('prepared','active') ORDER BY first_seq LIMIT ?",
             &p,
             &a,
             "live sessions",

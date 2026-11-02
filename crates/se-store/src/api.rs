@@ -339,9 +339,10 @@ pub struct ProjectionRecord {
     pub original: Option<Box<StoredEvent>>,
     pub current: StoredEvent,
 }
-/// A control target's principal, profile, live sessions (the active one plus
-/// prepared ones an unreleased process still binds) and unreleased processes,
-/// oldest first. Stale preparations from failed launches are not listed.
+/// A control target's principal, profile, live (prepared/active) sessions and
+/// unreleased processes, oldest first. A prepared session counts until it is
+/// revoked, so launch failure must revoke its preparation; more than the
+/// bound refuses ReadIncomplete instead of omitting one.
 /// Never continuity, mail or turns.
 #[derive(Clone)]
 pub struct ControlTarget {
