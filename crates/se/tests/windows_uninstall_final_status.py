@@ -81,6 +81,14 @@ def successful_verdict(code, text, observations, json_mode=False):
         replies = [json.loads(line) for line in text.splitlines() if line.startswith("{")]
         if len(replies) != 1 or replies[0].get("complete") is not True:
             raise AssertionError(f"expected exactly one final complete JSON object: {replies}")
+        reply = replies[0]
+        achieved = reply.get("achieved", {})
+        if reply.get("schema") != "se.uninstall-completion/v1" or achieved.get("schema") != "se.uninstall/v1":
+            raise AssertionError("final JSON lost the achieved se.uninstall/v1 report")
+        for key in ("idempotency_key", "install_files", "directories", "integrations", "stops",
+                    "revocations", "path", "preserved", "recovery"):
+            if key not in achieved:
+                raise AssertionError(f"achieved report lost {key}")
     elif len(re.findall(r"(?im)^Uninstall complete\b", text)) != 1:
         raise AssertionError("expected exactly one final human completion verdict")
 
@@ -113,10 +121,19 @@ class VerdictOracle(unittest.TestCase):
             successful_verdict(0, "retry se uninstall\nUninstall complete", [{"state": "absent"}])
 
     def test_json_requires_one_complete_object(self):
-        successful_verdict(0, '{"complete":true}', [{"state": "absent"}], True)
+        report = {"schema": "se.uninstall/v1", "idempotency_key": "request", "path": {},
+                  **{key: [] for key in ("install_files", "directories", "integrations", "stops",
+                                        "revocations", "preserved", "recovery")}}
+        reply = json.dumps({"schema": "se.uninstall-completion/v1", "complete": True, "achieved": report})
+        successful_verdict(0, reply, [{"state": "absent"}], True)
         for text in ('{"complete":false}', '{"complete":true}\n{"complete":true}'):
             with self.subTest(text=text), self.assertRaises(AssertionError):
                 successful_verdict(0, text, [{"state": "absent"}], True)
+
+    def test_final_json_keeps_achieved_facts(self):
+        with self.assertRaisesRegex(AssertionError, "achieved"):
+            successful_verdict(0, '{"schema":"se.uninstall-completion/v1","complete":true}',
+                               [{"state": "absent"}], True)
 
     def test_failure_requires_named_cause_and_no_success(self):
         failed_verdict(2, "Uninstall incomplete: C:\\owned was modified", r"C:\owned")
