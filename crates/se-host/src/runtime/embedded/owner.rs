@@ -43,8 +43,10 @@ pub(super) fn owner_thread(
                         return;
                     }
                 };
-                if ready.send(Ok((router, stop))).is_err() {
-                    // The caller gave up; still serve until stopped, never orphan.
+                if let Err(Ok((_router, stop))) = ready.send(Ok((router, stop))) {
+                    // Activation stopped waiting: nobody holds this stop, so
+                    // end the generation now instead of serving unreachably.
+                    stop.request();
                 }
                 let exit = host.serve(listener).await;
                 let receipt = match support::deadline(SHUTDOWN_BUDGET) {
@@ -108,6 +110,13 @@ async fn take_ownership(
         &deadline,
     )
     .await?;
+    // Another owner may have taken the store between open and activate.
+    if host.generation().get() != inputs.generation.0 {
+        return Err(core::SeError::invalid(
+            "host generation",
+            "the owner generation this open negotiated; reopen and retry",
+        ));
+    }
     host.restore_transcripts(&deadline).await?;
     host.configure(config)?;
     let stop = host.local_stop();

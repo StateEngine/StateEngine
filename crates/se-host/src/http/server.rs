@@ -165,9 +165,11 @@ async fn respond(
             Err(_) => status_only(StatusCode::INTERNAL_SERVER_ERROR),
         },
         Route::Mcp => {
-            let secret = match admission::bearer(request.headers()) {
-                Ok(secret) => secret,
-                Err(refusal) => return refused(&refusal),
+            // A malformed header is carried into dispatch: lifecycle methods
+            // stay anonymous, and only tool methods refuse it.
+            let (secret, malformed) = match admission::bearer(request.headers()) {
+                Ok(secret) => (secret, None),
+                Err(refusal) => (None, Some(refusal.reason)),
             };
             let deadline = match Deadline::from_options(&ClientOptions {
                 expected_generation: None,
@@ -194,6 +196,7 @@ async fn respond(
             let mut backend = HttpBackend {
                 router,
                 deadline: &deadline,
+                malformed,
             };
             match crate::mcp::dispatch(&body, secret.map(Arc::new), &mut backend).await {
                 McpReply::Json(value) => json(StatusCode::OK, &value),

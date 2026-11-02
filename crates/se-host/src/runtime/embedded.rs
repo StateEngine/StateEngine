@@ -39,6 +39,10 @@ impl EmbeddedFactory {
 
 /// One activated generation: its router, stop and shutdown report.
 struct Serving {
+    #[allow(
+        dead_code,
+        reason = "bound tool calls and capture use it in the next W3 slice"
+    )]
     router: HostedRouter,
     stop: LocalStop,
     exited: oneshot::Receiver<api::DrainReceipt>,
@@ -230,7 +234,10 @@ impl api::Host for EmbeddedHost {
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::GenerationHealth> {
         Box::pin(async move {
-            let changed = self.changed.notified();
+            // Register before reading, so a change between the read and the
+            // wait cannot be missed.
+            let mut changed = std::pin::pin!(self.changed.notified());
+            changed.as_mut().enable();
             if self.health() != after {
                 return Ok(self.health());
             }
@@ -247,6 +254,12 @@ impl api::Host for EmbeddedHost {
     ) -> api::HostFuture<'a, api::Readiness> {
         Box::pin(async move {
             let api::HostIntegration::Secode { epoch, services: _ } = integration;
+            if options.generation != self.negotiated.generation {
+                return Err(refused(
+                    "host activation",
+                    "the generation this open negotiated",
+                ));
+            }
             let mut lifecycle = self.lifecycle.lock().await;
             if !matches!(*lifecycle, Lifecycle::Prepared) {
                 return Err(refused("host activation", "one prepared generation"));
@@ -368,17 +381,13 @@ impl api::Host for EmbeddedHost {
     fn drain<'a>(&'a self, options: api::CallOptions) -> api::HostFuture<'a, api::DrainReceipt> {
         Box::pin(async move {
             let mut lifecycle = self.lifecycle.lock().await;
-            let receipt = match std::mem::replace(&mut *lifecycle, Lifecycle::Prepared) {
+            let receipt = match &mut *lifecycle {
                 Lifecycle::Ready(serving) => {
-                    let Serving {
-                        stop,
-                        exited,
-                        router,
-                    } = *serving;
-                    drop(router);
                     self.set_health(api::GenerationHealth::Draining);
-                    stop.request();
-                    match tokio::time::timeout(options.timeout, exited).await {
+                    serving.stop.request();
+                    // Await by reference: a cancelled or timed-out drain keeps the
+                    // generation serving, so a later drain waits for the real report.
+                    match tokio::time::timeout(options.timeout, &mut serving.exited).await {
                         Ok(Ok(receipt)) => receipt,
                         Ok(Err(_)) => {
                             let failure = refused(
@@ -388,18 +397,15 @@ impl api::Host for EmbeddedHost {
                             *lifecycle = Lifecycle::Failed(failure.clone());
                             return Err(failure);
                         }
-                        // Still joining: keep nothing that would claim it closed.
                         Err(_) => {
-                            let failure = refused(
+                            return Err(refused(
                                 "embedded drain",
                                 "shutdown within the call timeout; drain again",
-                            );
-                            *lifecycle = Lifecycle::Failed(failure.clone());
-                            return Err(failure);
+                            ));
                         }
                     }
                 }
-                Lifecycle::Drained(receipt) => receipt,
+                Lifecycle::Drained(receipt) => return Ok(receipt.clone()),
                 // Never activated: no writer, listener or effect ever existed.
                 Lifecycle::Prepared => api::DrainReceipt {
                     generation: self.negotiated.generation,
@@ -407,10 +413,7 @@ impl api::Host for EmbeddedHost {
                     unresolved_effects: 0,
                     writer_flushed: true,
                 },
-                Lifecycle::Failed(error) => {
-                    *lifecycle = Lifecycle::Failed(error.clone());
-                    return Err(error);
-                }
+                Lifecycle::Failed(error) => return Err(error.clone()),
             };
             *lifecycle = Lifecycle::Drained(receipt.clone());
             self.set_health(api::GenerationHealth::Drained);
