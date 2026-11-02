@@ -39,57 +39,24 @@ fn duplicate(raw: HANDLE, path: &Path) -> Result<OwnedHandle> {
     Ok(unsafe { OwnedHandle::from_raw_handle(copy) })
 }
 
-struct Attributes {
-    storage: Vec<usize>,
-}
-impl Attributes {
-    fn new(handles: &mut [HANDLE], path: &Path) -> Result<Self> {
-        let mut bytes = 0;
-        // SAFETY: documented size query with writable capacity output.
-        unsafe {
-            InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut bytes);
-        }
-        if bytes == 0 {
-            return Err(error("size installer handle allowlist", path));
-        }
-        let mut storage = vec![0usize; bytes.div_ceil(size_of::<usize>())];
-        // SAFETY: aligned owned allocation meets the reported native capacity.
-        if unsafe {
-            InitializeProcThreadAttributeList(storage.as_mut_ptr().cast(), 1, 0, &mut bytes)
-        } == 0
-        {
-            return Err(error("initialize installer handle allowlist", path));
-        }
-        let attributes = Self { storage };
-        // SAFETY: initialized list and retained inheritable handles; native API
-        // borrows the handle array until CreateProcessW completes below.
-        if unsafe {
-            UpdateProcThreadAttribute(
-                attributes.pointer(),
-                0,
-                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-                handles.as_mut_ptr().cast(),
-                size_of_val(handles),
-                ptr::null_mut(),
-                ptr::null(),
-            )
-        } == 0
-        {
-            return Err(error("bind installer handle allowlist", path));
-        }
-        Ok(attributes)
-    }
-    fn pointer(&self) -> LPPROC_THREAD_ATTRIBUTE_LIST {
-        self.storage.as_ptr().cast_mut().cast()
-    }
-}
-impl Drop for Attributes {
-    fn drop(&mut self) {
-        // SAFETY: this list was initialized successfully and owns its storage.
-        unsafe {
-            DeleteProcThreadAttributeList(self.pointer());
-        }
-    }
+fn attributes<'a>(
+    handles: &'a [HANDLE],
+    path: &Path,
+) -> Result<crate::windows_native::attributes::Attributes<'a>> {
+    let mut attributes = crate::windows_native::attributes::Attributes::new(
+        1,
+        "size installer handle allowlist",
+        "initialize installer handle allowlist",
+    )
+    .map_err(|e| io_error(e.operation, path, e.source))?;
+    attributes
+        .set(
+            PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+            handles,
+            "bind installer handle allowlist",
+        )
+        .map_err(|e| io_error(e.operation, path, e.source))?;
+    Ok(attributes)
 }
 
 // Windows argv quoting: quote each argument, double backslashes before quotes
@@ -173,8 +140,8 @@ pub(super) fn run(
             owned.push(handle);
         }
     }
-    let mut handles: Vec<_> = owned.iter().map(AsRawHandle::as_raw_handle).collect();
-    let attributes = Attributes::new(&mut handles, path)?;
+    let handles: Vec<_> = owned.iter().map(AsRawHandle::as_raw_handle).collect();
+    let attributes = attributes(&handles, path)?;
     // SAFETY: native POD initialized before all required startup fields below.
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;

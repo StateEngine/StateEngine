@@ -1,5 +1,8 @@
 //! Shared Windows query primitives. Callers retain their handles/token buffers;
 //! typed adapters add their own operation context without copying native walks.
+pub(crate) mod acl;
+pub(crate) mod allocation;
+pub(crate) mod attributes;
 mod parent;
 pub(crate) use parent::parent;
 use std::{
@@ -52,20 +55,11 @@ pub(crate) fn sid_text(sid: PSID) -> Result<String> {
     if unsafe { ConvertSidToStringSidW(sid, &mut raw) } == 0 {
         return Err(last("encode native SID"));
     }
-    struct Text(*mut u16);
-    impl Drop for Text {
-        fn drop(&mut self) {
-            // SAFETY: uniquely owned allocation returned by ConvertSidToStringSidW.
-            unsafe {
-                LocalFree(self.0.cast());
-            }
-        }
-    }
-    let text = Text(raw);
+    let _text = allocation::Allocation(raw.cast());
     let mut length = 0;
     // SAFETY: successful native conversion supplies a terminated SID string;
     // the allocation remains retained for this bounded scan and copy.
-    while length < 256 && unsafe { *text.0.add(length) } != 0 {
+    while length < 256 && unsafe { *raw.add(length) } != 0 {
         length += 1;
     }
     if length == 256 {
@@ -75,7 +69,7 @@ pub(crate) fn sid_text(sid: PSID) -> Result<String> {
         ));
     }
     // SAFETY: measured extent belongs to the retained native allocation.
-    String::from_utf16(unsafe { std::slice::from_raw_parts(text.0, length) })
+    String::from_utf16(unsafe { std::slice::from_raw_parts(raw, length) })
         .map_err(|_| invalid("encode native SID", "native SID text is invalid UTF-16"))
 }
 pub(crate) fn process_sid(process: HANDLE) -> Result<String> {
@@ -200,32 +194,19 @@ pub(crate) fn open_image(path: &Path, delete: bool) -> Result<File> {
         operation: "encode native image path",
         source: io::Error::other(e),
     })?;
-    // SAFETY: terminated owned native path and literal no-follow/read protection.
-    let file = File::from(handle(
-        unsafe {
-            CreateFileW(
-                path.as_ptr(),
-                GENERIC_READ | READ_CONTROL | if delete { DELETE } else { 0 },
-                FILE_SHARE_READ | FILE_SHARE_DELETE,
-                ptr::null(),
-                OPEN_EXISTING,
-                FILE_FLAG_OPEN_REPARSE_POINT,
-                ptr::null_mut(),
-            )
-        },
-        "pin native image",
-    )?);
+    let file = open_image_file(&path, delete).map_err(|source| Error {
+        operation: "pin native image",
+        source,
+    })?;
     file_identity(&file)?;
     Ok(file)
 }
 pub(crate) fn file_identity(file: &File) -> Result<FileIdentity> {
-    // SAFETY: native POD output accepts zero initialization before its sized query.
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
-    // SAFETY: immutable retained file and exact native writable information output.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-        return Err(last("read native file identity"));
-    }
-    // SAFETY: immutable native type query on the same retained file object.
+    let info = file_information(file).map_err(|source| Error {
+        operation: "read native file identity",
+        source,
+    })?;
+    // SAFETY: immutable type query on the retained file object.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
         || info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
         || info.nNumberOfLinks != 1
@@ -235,9 +216,46 @@ pub(crate) fn file_identity(file: &File) -> Result<FileIdentity> {
             "single-link regular disk file required",
         ));
     }
-    // SAFETY: FILE_ID_INFO is native POD, initialized before the exact sized query.
+    file_id(file).map_err(|source| Error {
+        operation: "read 128-bit native file identity",
+        source,
+    })
+}
+
+/// Raw image open only: each adapter applies its own retained-file policy.
+pub(crate) fn open_image_file(path: &[u16], delete: bool) -> io::Result<File> {
+    // SAFETY: callers retain a validated terminated path; these are the shared
+    // read/delete rights, sharing mode and no-follow flags of both image callers.
+    let raw = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | READ_CONTROL | if delete { DELETE } else { 0 },
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
+            ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            ptr::null_mut(),
+        )
+    };
+    if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful CreateFileW transferred one unique reference.
+    Ok(File::from(unsafe { OwnedHandle::from_raw_handle(raw) }))
+}
+pub(crate) fn file_information(file: &File) -> io::Result<BY_HANDLE_FILE_INFORMATION> {
+    // SAFETY: native POD is initialized before its exact writable query.
+    let mut info = unsafe { zeroed() };
+    // SAFETY: retained file and correctly typed writable metadata output.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(info)
+}
+pub(crate) fn file_id(file: &File) -> io::Result<FileIdentity> {
+    // SAFETY: native POD is initialized before its exact sized query.
     let mut id: FILE_ID_INFO = unsafe { zeroed() };
-    // SAFETY: retained file and aligned output have the FileIdInfo layout and size.
+    // SAFETY: retained file and aligned writable FileIdInfo output of the documented size.
     if unsafe {
         GetFileInformationByHandleEx(
             file.as_raw_handle(),
@@ -247,7 +265,7 @@ pub(crate) fn file_identity(file: &File) -> Result<FileIdentity> {
         )
     } == 0
     {
-        return Err(last("read 128-bit native file identity"));
+        return Err(io::Error::last_os_error());
     }
     Ok(FileIdentity {
         volume: id.VolumeSerialNumber,

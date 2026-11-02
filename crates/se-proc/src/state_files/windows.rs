@@ -78,12 +78,8 @@ pub(super) struct Identity {
     index: [u8; 16],
 }
 fn metadata(file: &File, path: &Path, directory: bool, check_security: bool) -> Result<Identity> {
-    // SAFETY: native POD output structures accept an all-zero initialization.
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
-    // SAFETY: borrowed live handle and writable native metadata output.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-        return Err(last("read pinned native file identity", path));
-    }
+    let info = crate::windows_native::file_information(file)
+        .map_err(|e| io_error("read pinned native file identity", path, e))?;
     if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0) != directory
         // SAFETY: immutable query of this retained native handle.
@@ -100,23 +96,11 @@ fn metadata(file: &File, path: &Path, directory: bool, check_security: bool) -> 
     if check_security {
         security::verify(file, path, !directory)?;
     }
-    // SAFETY: native POD buffer, then a live-handle query for ReFS/NTFS file IDs.
-    let mut id: FILE_ID_INFO = unsafe { zeroed() };
-    // SAFETY: explicit output capacity and correct FileIdInfo structure layout.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileIdInfo,
-            (&mut id as *mut FILE_ID_INFO).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(last("read 128-bit native file identity", path));
-    }
+    let id = crate::windows_native::file_id(file)
+        .map_err(|e| io_error("read 128-bit native file identity", path, e))?;
     Ok(Identity {
-        volume: id.VolumeSerialNumber,
-        index: id.FileId.Identifier,
+        volume: id.volume,
+        index: id.index,
     })
 }
 fn open(path: &Path, directory: bool, create: bool, write: bool) -> Result<File> {

@@ -5,7 +5,7 @@ use super::*;
 mod handle_flag_tests;
 use sha2::{Digest, Sha256};
 use std::{
-    mem::{size_of, zeroed},
+    mem::size_of,
     os::windows::{
         ffi::OsStringExt,
         io::{AsRawHandle, OwnedHandle},
@@ -24,20 +24,8 @@ pub(super) fn wide(path: &Path) -> Result<Vec<u16>> {
     crate::state_files::windows::wide(path).map_err(custody)
 }
 pub(super) fn open_image(path: &Path, delete: bool) -> Result<File> {
-    // SAFETY: terminated native path and literal flags; the successful result becomes one owned reference.
-    let raw = unsafe {
-        CreateFileW(
-            wide(path)?.as_ptr(),
-            GENERIC_READ | READ_CONTROL | if delete { DELETE } else { 0 },
-            FILE_SHARE_READ | FILE_SHARE_DELETE,
-            ptr::null(),
-            OPEN_EXISTING,
-            FILE_FLAG_OPEN_REPARSE_POINT,
-            ptr::null_mut(),
-        )
-    };
-    let owned = handle(raw, "pin uninstall image")?;
-    let file = File::from(owned);
+    let file = crate::windows_native::open_image_file(&wide(path)?, delete)
+        .map_err(|e| error("pin uninstall image", e))?;
     file_id(&file)?;
     Ok(file)
 }
@@ -67,12 +55,8 @@ pub(super) fn delete_on_close(file: &File) -> Result<File> {
     Ok(armed)
 }
 pub(super) fn file_id(file: &File) -> Result<FileId> {
-    // SAFETY: native POD output accepts an all-zero initialization.
-    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { zeroed() };
-    // SAFETY: immutable query on a live retained native handle.
-    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-        return Err(last("read pinned uninstall file identity"));
-    }
+    let info = crate::windows_native::file_information(file)
+        .map_err(|e| error("read pinned uninstall file identity", e))?;
     // SAFETY: immutable type query on this retained native file handle.
     if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_DISK
         || info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT) != 0
@@ -83,23 +67,11 @@ pub(super) fn file_id(file: &File) -> Result<FileId> {
             "regular disk file without reparse points or extra hard links required",
         ));
     }
-    // SAFETY: native POD output accepts an all-zero initialization.
-    let mut id: FILE_ID_INFO = unsafe { zeroed() };
-    // SAFETY: retained file handle and correctly sized native FileIdInfo output.
-    if unsafe {
-        GetFileInformationByHandleEx(
-            file.as_raw_handle(),
-            FileIdInfo,
-            (&mut id as *mut FILE_ID_INFO).cast(),
-            size_of::<FILE_ID_INFO>() as u32,
-        )
-    } == 0
-    {
-        return Err(last("read 128-bit uninstall file identity"));
-    }
+    let id = crate::windows_native::file_id(file)
+        .map_err(|e| error("read 128-bit uninstall file identity", e))?;
     Ok(FileId {
-        volume: id.VolumeSerialNumber,
-        index: id.FileId.Identifier,
+        volume: id.volume,
+        index: id.index,
     })
 }
 pub(super) fn digest(file: &mut File) -> Result<[u8; 32]> {

@@ -3,10 +3,10 @@
 //! LocalFree-owned GetSecurityInfo buffers, never caller-supplied bytes.
 use super::super::{Result, io_error, unsafe_path};
 use super::last;
+use crate::windows_native::allocation::Allocation;
 use std::{
     ffi::OsStr,
     fs::File,
-    io,
     mem::size_of,
     os::windows::{
         ffi::OsStrExt,
@@ -16,24 +16,10 @@ use std::{
     ptr,
 };
 use windows_sys::Win32::{
-    Foundation::*,
     Security::{Authorization::*, *},
-    System::{
-        SystemServices::{ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE},
-        Threading::*,
-    },
+    System::{SystemServices::ACCESS_DENIED_ACE_TYPE, Threading::*},
 };
-pub(super) struct Allocation(pub(super) *mut std::ffi::c_void);
-impl Drop for Allocation {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            // SAFETY: this allocation was returned by a LocalFree-family native API.
-            unsafe {
-                LocalFree(self.0);
-            }
-        }
-    }
-}
+
 struct User {
     storage: Vec<usize>,
 }
@@ -121,36 +107,22 @@ fn equal(left: PSID, right: PSID) -> bool {
     // SAFETY: callers supply retained native descriptor/token/allocated SID pointers.
     !left.is_null() && !right.is_null() && unsafe { EqualSid(left, right) } != 0
 }
-fn security(file: &File, path: &Path, dacl: bool) -> Result<(Allocation, PSID, *mut ACL)> {
-    let mut owner = ptr::null_mut();
-    let mut acl = ptr::null_mut();
-    let mut raw = ptr::null_mut();
-    // SAFETY: retained file handle with READ_CONTROL and valid native output slots;
-    // every output pointer remains inside the returned LocalFree-owned descriptor.
-    let status = unsafe {
-        GetSecurityInfo(
-            file.as_raw_handle(),
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION | if dacl { DACL_SECURITY_INFORMATION } else { 0 },
-            &mut owner,
-            ptr::null_mut(),
-            &mut acl,
-            ptr::null_mut(),
-            &mut raw,
-        )
-    };
-    if status != ERROR_SUCCESS {
-        return Err(io_error(
-            "read file security",
-            path,
-            io::Error::from_raw_os_error(status as i32),
-        ));
-    }
-    Ok((Allocation(raw), owner, acl))
+fn security(
+    file: &File,
+    path: &Path,
+    dacl: bool,
+) -> Result<crate::windows_native::acl::SecurityDescriptor> {
+    crate::windows_native::acl::SecurityDescriptor::query(
+        file.as_raw_handle(),
+        SE_FILE_OBJECT,
+        OWNER_SECURITY_INFORMATION | if dacl { DACL_SECURITY_INFORMATION } else { 0 },
+    )
+    .map_err(|e| io_error("read file security", path, e))
 }
 pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
     let user = User::current(path)?;
-    let (_descriptor, owner, _) = security(file, path, false)?;
+    let descriptor = security(file, path, false)?;
+    let owner = descriptor.owner;
     let system = sid("S-1-5-18", path)?;
     let administrators = sid("S-1-5-32-544", path)?;
     if !equal(owner, user.sid()) && !equal(owner, system.0) && !equal(owner, administrators.0) {
@@ -163,7 +135,8 @@ pub(super) fn verify_system_ancestor(file: &File, path: &Path) -> Result<()> {
 }
 pub(in crate::state_files) fn verify_owner(file: &File, path: &Path) -> Result<()> {
     let user = User::current(path)?;
-    let (_descriptor, owner, _) = security(file, path, false)?;
+    let descriptor = security(file, path, false)?;
+    let owner = descriptor.owner;
     if !equal(owner, user.sid()) {
         return Err(unsafe_path("file owner differs from current OS user", path));
     }
@@ -175,46 +148,40 @@ pub(crate) fn verify(
     inherited_from_protected_parent: bool,
 ) -> Result<()> {
     let user = User::current(path)?;
-    let (descriptor, owner, dacl) = security(file, path, true)?;
-    let mut control = 0;
-    let mut revision = 0;
-    // SAFETY: retained native security descriptor and initialized scalar outputs.
-    if unsafe { GetSecurityDescriptorControl(descriptor.0, &mut control, &mut revision) } == 0 {
-        return Err(last("read DACL control", path));
-    }
-    // SAFETY: DACL came from GetSecurityInfo and remains inside descriptor.
-    if !equal(owner, user.sid()) || dacl.is_null() || unsafe { IsValidAcl(dacl) } == 0 {
+    let descriptor = security(file, path, true)?;
+    let control = descriptor
+        .control()
+        .map_err(|e| io_error("read DACL control", path, e))?;
+    if !equal(descriptor.owner, user.sid()) {
         return Err(unsafe_path("owner-only valid DACL required", path));
     }
+    let dacl = descriptor
+        .dacl()
+        .ok_or_else(|| unsafe_path("owner-only valid DACL required", path))?;
     let protected = control & SE_DACL_PROTECTED != 0;
     if !protected && !inherited_from_protected_parent {
         return Err(unsafe_path("protected directory DACL required", path));
     }
     let system = sid("S-1-5-18", path)?;
-    // SAFETY: IsValidAcl validated this retained native ACL before header access.
-    let count = unsafe { (*dacl).AceCount };
+    let count = dacl.len();
     let mut has_user = false;
     let mut has_system = false;
     for index in 0..count {
-        let mut raw = ptr::null_mut();
-        // SAFETY: bounded ACL index and output pointer; descriptor outlives the ACE.
-        if unsafe { GetAce(dacl, index as u32, &mut raw) } == 0 {
-            return Err(last("read protection ACE", path));
-        }
-        // SAFETY: GetAce returns an ACE_HEADER inside the validated retained ACL.
-        let header = unsafe { &*raw.cast::<ACE_HEADER>() };
+        let entry = dacl
+            .ace(index)
+            .map_err(|e| io_error("read protection ACE", path, e))?;
+        let header = entry.header();
         let inherited = u32::from(header.AceFlags) & INHERITED_ACE != 0;
         let allowed_flags = INHERITED_ACE | OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE;
-        if u32::from(header.AceType) != ACCESS_ALLOWED_ACE_TYPE
-            || u32::from(header.AceFlags) & !allowed_flags != 0
+        if u32::from(header.AceFlags) & !allowed_flags != 0
             || (!protected && !inherited)
             || (inherited && !inherited_from_protected_parent)
-            || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
         {
             return Err(unsafe_path("unexpected protection ACE", path));
         }
-        // SAFETY: allowed ACE type/size established before accessing mask and SID.
-        let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+        let ace = entry
+            .allowed()
+            .ok_or_else(|| unsafe_path("unexpected protection ACE", path))?;
         let principal = (&ace.SidStart as *const u32).cast_mut().cast();
         // SAFETY: SID is embedded in this validated native allowed ACE.
         if unsafe { IsValidSid(principal) } == 0
@@ -255,37 +222,28 @@ pub(crate) fn verify(
 /// user write/delete/security authority. Read-only grants do not confer control.
 pub(in crate::state_files) fn verify_no_foreign_writer(file: &File, path: &Path) -> Result<()> {
     let user = User::current(path)?;
-    let (_descriptor, owner, dacl) = security(file, path, true)?;
-    // SAFETY: the ACL, when non-null, belongs to the retained native descriptor.
-    if !equal(owner, user.sid()) || dacl.is_null() || unsafe { IsValidAcl(dacl) } == 0 {
+    let descriptor = security(file, path, true)?;
+    if !equal(descriptor.owner, user.sid()) {
         return Err(unsafe_path(
             "current-user owned valid installation DACL required",
             path,
         ));
     }
+    let dacl = descriptor
+        .dacl()
+        .ok_or_else(|| unsafe_path("current-user owned valid installation DACL required", path))?;
     let system = sid("S-1-5-18", path)?;
-    // SAFETY: validated ACL retained by its security descriptor above.
-    for index in 0..unsafe { (*dacl).AceCount } {
-        let mut raw = ptr::null_mut();
-        // SAFETY: valid ACL/index and initialized native pointer output.
-        if unsafe { GetAce(dacl, index as u32, &mut raw) } == 0 {
-            return Err(last("read installation protection ACE", path));
-        }
-        // SAFETY: successful GetAce returns a native header in the retained ACL.
-        let header = unsafe { &*raw.cast::<ACE_HEADER>() };
+    for index in 0..dacl.len() {
+        let entry = dacl
+            .ace(index)
+            .map_err(|e| io_error("read installation protection ACE", path, e))?;
+        let header = entry.header();
         if header.AceType == ACCESS_DENIED_ACE_TYPE as u8 {
             continue;
         }
-        if header.AceType != ACCESS_ALLOWED_ACE_TYPE as u8
-            || usize::from(header.AceSize) < size_of::<ACCESS_ALLOWED_ACE>()
-        {
-            return Err(unsafe_path(
-                "uninterpretable installation protection ACE",
-                path,
-            ));
-        }
-        // SAFETY: verified allowed ACE type and size before fields are accessed.
-        let ace = unsafe { &*raw.cast::<ACCESS_ALLOWED_ACE>() };
+        let ace = entry
+            .allowed()
+            .ok_or_else(|| unsafe_path("uninterpretable installation protection ACE", path))?;
         let principal = (&ace.SidStart as *const u32).cast_mut().cast();
         // SAFETY: native SID is embedded in the retained validated ACE.
         if unsafe { IsValidSid(principal) } == 0 {

@@ -12,20 +12,6 @@ use windows_sys::Win32::{
     System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE},
 };
 
-struct Attributes {
-    memory: Vec<usize>,
-    initialized: bool,
-}
-impl Drop for Attributes {
-    fn drop(&mut self) {
-        if self.initialized {
-            // SAFETY: this aligned attribute list was successfully initialized and is retained.
-            unsafe {
-                DeleteProcThreadAttributeList(self.memory.as_mut_ptr().cast());
-            }
-        }
-    }
-}
 pub(super) fn start(
     path: &Path,
     stdin: &OwnedHandle,
@@ -67,27 +53,14 @@ fn command_inner(
     flags: u32,
     environment: Option<&[u16]>,
 ) -> Result<OwnedHandle> {
-    let mut size = 0;
-    // SAFETY: documented sizing or initialization call with retained aligned storage and size output.
-    unsafe {
-        InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut size);
-    }
-    if size == 0 {
-        return Err(native::last("size uninstall process attributes"));
-    }
-    let mut attributes = Attributes {
-        memory: vec![0; size.div_ceil(size_of::<usize>())],
-        initialized: false,
-    };
-    // SAFETY: retained aligned attribute storage has the size returned by the native sizing call.
-    if unsafe {
-        InitializeProcThreadAttributeList(attributes.memory.as_mut_ptr().cast(), 1, 0, &mut size)
-    } == 0
-    {
-        return Err(native::last("initialize uninstall process attributes"));
-    }
-    attributes.initialized = true;
     let mut streams = Vec::new();
+    let mut handles: Vec<HANDLE> = Vec::new();
+    let mut attributes = crate::windows_native::attributes::Attributes::new(
+        1,
+        "size uninstall process attributes",
+        "initialize uninstall process attributes",
+    )
+    .map_err(|e| error(e.operation, e.source))?;
     for which in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
         // SAFETY: standard-handle selector is a native constant; no pointers are dereferenced.
         let raw = unsafe { GetStdHandle(which) };
@@ -95,24 +68,16 @@ fn command_inner(
         // output handles so the helper can report the final measured result.
         streams.push(native::duplicate_same(raw, true)?);
     }
-    let mut handles: Vec<HANDLE> = inherited.to_vec();
+    handles.extend_from_slice(inherited);
     handles.push(stdin.as_raw_handle());
     handles.extend(streams.iter().map(AsRawHandle::as_raw_handle));
-    // SAFETY: retained attribute storage and exact handle-list slice outlive CreateProcessW.
-    if unsafe {
-        UpdateProcThreadAttribute(
-            attributes.memory.as_mut_ptr().cast(),
-            0,
+    attributes
+        .set(
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-            handles.as_mut_ptr().cast(),
-            std::mem::size_of_val(handles.as_slice()),
-            ptr::null_mut(),
-            ptr::null(),
+            &handles,
+            "set exact uninstall handle inheritance",
         )
-    } == 0
-    {
-        return Err(native::last("set exact uninstall handle inheritance"));
-    }
+        .map_err(|e| error(e.operation, e.source))?;
     // SAFETY: native POD output accepts an all-zero initialization.
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
@@ -120,7 +85,7 @@ fn command_inner(
     startup.StartupInfo.hStdInput = stdin.as_raw_handle();
     startup.StartupInfo.hStdOutput = streams[0].as_raw_handle();
     startup.StartupInfo.hStdError = streams[1].as_raw_handle();
-    startup.lpAttributeList = attributes.memory.as_mut_ptr().cast();
+    startup.lpAttributeList = attributes.pointer();
     // SAFETY: native POD output accepts an all-zero initialization.
     let mut result: PROCESS_INFORMATION = unsafe { zeroed() };
     // SAFETY: terminated owned command/path buffers, initialized startup outputs, and explicit retained inheritance list.

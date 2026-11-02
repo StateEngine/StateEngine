@@ -145,20 +145,7 @@ pub(super) fn write(file: &mut File, mut bytes: &[u8], deadline: Instant) -> Pro
     }
     Ok(())
 }
-struct Attributes {
-    storage: Vec<usize>,
-    initialized: bool,
-}
-impl Drop for Attributes {
-    fn drop(&mut self) {
-        if self.initialized {
-            // SAFETY: exact initialized aligned attribute list is retained through creation.
-            unsafe {
-                DeleteProcThreadAttributeList(self.storage.as_mut_ptr().cast());
-            }
-        }
-    }
-}
+
 pub(super) fn spawn(spec: &RuntimeLaunchSpec, mut frame: Frame) -> ProcResult<Created> {
     let image = crate::windows_native::open_image(&spec.executable, false).map_err(|e| {
         let mut error = fail("pin runtime executable", e.source);
@@ -187,42 +174,20 @@ pub(super) fn spawn(spec: &RuntimeLaunchSpec, mut frame: Frame) -> ProcResult<Cr
     let output = duplicate(ready.as_raw_handle(), true)?;
     let error_stream = duplicate(diagnostic_writer.as_raw_handle(), true)?;
     let handles = [&parent, &auth, &input, &output, &error_stream];
-    let mut inherited: Vec<_> = handles.iter().map(|h| h.as_raw_handle()).collect();
-    let mut size = 0;
-    // SAFETY: documented sizing query writes only the required size.
-    unsafe {
-        InitializeProcThreadAttributeList(ptr::null_mut(), 1, 0, &mut size);
-    }
-    if size == 0 {
-        return Err(last("size runtime process attributes"));
-    }
-    let mut attributes = Attributes {
-        storage: vec![0; size.div_ceil(size_of::<usize>())],
-        initialized: false,
-    };
-    // SAFETY: aligned retained backing storage has the native-required capacity.
-    if unsafe {
-        InitializeProcThreadAttributeList(attributes.storage.as_mut_ptr().cast(), 1, 0, &mut size)
-    } == 0
-    {
-        return Err(last("initialize runtime process attributes"));
-    }
-    attributes.initialized = true;
-    // SAFETY: retained exact handle list remains alive through CreateProcessW.
-    if unsafe {
-        UpdateProcThreadAttribute(
-            attributes.storage.as_mut_ptr().cast(),
-            0,
+    let inherited: Vec<_> = handles.iter().map(|h| h.as_raw_handle()).collect();
+    let mut attributes = crate::windows_native::attributes::Attributes::new(
+        1,
+        "size runtime process attributes",
+        "initialize runtime process attributes",
+    )
+    .map_err(|e| fail(e.operation, e.source))?;
+    attributes
+        .set(
             PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
-            inherited.as_mut_ptr().cast(),
-            std::mem::size_of_val(inherited.as_slice()),
-            ptr::null_mut(),
-            ptr::null(),
+            &inherited,
+            "set runtime handle inheritance",
         )
-    } == 0
-    {
-        return Err(last("set runtime handle inheritance"));
-    }
+        .map_err(|e| fail(e.operation, e.source))?;
     // SAFETY: startup and process outputs are native POD; used fields are initialized below.
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
@@ -230,7 +195,7 @@ pub(super) fn spawn(spec: &RuntimeLaunchSpec, mut frame: Frame) -> ProcResult<Cr
     startup.StartupInfo.hStdInput = input.as_raw_handle();
     startup.StartupInfo.hStdOutput = output.as_raw_handle();
     startup.StartupInfo.hStdError = error_stream.as_raw_handle();
-    startup.lpAttributeList = attributes.storage.as_mut_ptr().cast();
+    startup.lpAttributeList = attributes.pointer();
     let mut line: Vec<_> = format!("se {ENTRY}")
         .encode_utf16()
         .chain(Some(0))

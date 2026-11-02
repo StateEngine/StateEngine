@@ -48,7 +48,7 @@ mod windows {
     };
     use windows_sys::Win32::{
         Foundation::*,
-        Security::{Authorization::ConvertSidToStringSidW, *},
+        Security::*,
         System::Threading::{GetCurrentProcess, OpenProcessToken},
     };
     fn last(operation: &'static str) -> FileOwnerError {
@@ -101,33 +101,10 @@ mod windows {
         Ok(storage)
     }
     fn text(sid: PSID) -> Result<String, FileOwnerError> {
-        let mut raw = ptr::null_mut();
-        // SAFETY: retained native token SID and writable LocalFree-owned output.
-        if unsafe { ConvertSidToStringSidW(sid, &mut raw) } == 0 {
-            return Err(last("encode initialized owner SID"));
-        }
-        struct Allocation(*mut u16);
-        impl Drop for Allocation {
-            fn drop(&mut self) {
-                // SAFETY: the SID conversion allocated this exact LocalFree-family pointer.
-                unsafe {
-                    LocalFree(self.0.cast());
-                }
-            }
-        }
-        let allocation = Allocation(raw);
-        let mut length = 0;
-        // SAFETY: the native conversion returns a NUL-terminated SID string,
-        // retained by Allocation for the entire bounded scan and copy.
-        while length < 256 && unsafe { *allocation.0.add(length) } != 0 {
-            length += 1;
-        }
-        if length == 256 {
-            return Err(refuse("native owner SID text exceeds capacity"));
-        }
-        // SAFETY: measured UTF-16 extent remains within the retained native string.
-        String::from_utf16(unsafe { std::slice::from_raw_parts(allocation.0, length) })
-            .map_err(|_| refuse("invalid native owner SID text"))
+        crate::windows_native::sid_text(sid).map_err(|e| FileOwnerError {
+            operation: "encode initialized owner SID",
+            source: e.source,
+        })
     }
     pub(super) fn initialize() -> Result<FileOwnerInitialization, FileOwnerError> {
         let mut raw = ptr::null_mut();

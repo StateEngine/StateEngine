@@ -32,70 +32,7 @@ fn quoted(arg: &OsStr) -> Vec<u16> {
     out.push(b'"' as u16);
     out
 }
-struct Attributes {
-    storage: Vec<usize>,
-    initialized: bool,
-}
-impl Attributes {
-    fn new(count: u32) -> ProcResult<Self> {
-        let mut bytes = 0;
-        // SAFETY: documented first sizing call; no attribute list is dereferenced.
-        unsafe {
-            InitializeProcThreadAttributeList(ptr::null_mut(), count, 0, &mut bytes);
-        }
-        if bytes == 0 {
-            return Err(last(ProcErrorCode::LaunchFailed, "size process attributes"));
-        }
-        let mut a = Self {
-            storage: vec![0; bytes.div_ceil(size_of::<usize>())],
-            initialized: false,
-        };
-        // SAFETY: usize storage supplies native pointer alignment and full byte capacity.
-        if unsafe {
-            InitializeProcThreadAttributeList(a.storage.as_mut_ptr().cast(), count, 0, &mut bytes)
-        } == 0
-        {
-            return Err(last(
-                ProcErrorCode::LaunchFailed,
-                "initialize process attributes",
-            ));
-        }
-        a.initialized = true;
-        Ok(a)
-    }
-    fn set(&mut self, attribute: usize, values: &mut [HANDLE]) -> ProcResult<()> {
-        // SAFETY: values outlive CreateProcess; native attribute list stores
-        // references only until that call finishes, then Drop deletes the list.
-        if unsafe {
-            UpdateProcThreadAttribute(
-                self.storage.as_mut_ptr().cast(),
-                0,
-                attribute,
-                values.as_mut_ptr().cast(),
-                std::mem::size_of_val(values),
-                ptr::null_mut(),
-                ptr::null(),
-            )
-        } == 0
-        {
-            return Err(last(
-                ProcErrorCode::LaunchFailed,
-                "UpdateProcThreadAttribute",
-            ));
-        }
-        Ok(())
-    }
-}
-impl Drop for Attributes {
-    fn drop(&mut self) {
-        if self.initialized {
-            // SAFETY: this initialized list still owns its aligned backing storage.
-            unsafe {
-                DeleteProcThreadAttributeList(self.storage.as_mut_ptr().cast());
-            }
-        }
-    }
-}
+
 pub(super) struct Child {
     pub pin: Handle,
     pub identity: Option<ProcessIdentity>,
@@ -188,14 +125,31 @@ pub(super) fn create(spec: LaunchSpec, job: &Handle) -> ProcResult<Child> {
         startup.StartupInfo.hStdOutput = inherited[1].0;
         startup.StartupInfo.hStdError = inherited[2].0;
     }
-    let mut attributes = Attributes::new(if inherited.is_empty() { 1 } else { 2 })?;
-    let mut jobs = [job.0];
-    attributes.set(PROC_THREAD_ATTRIBUTE_JOB_LIST as usize, &mut jobs)?;
-    let mut handles: Vec<_> = inherited.iter().map(|h| h.0).collect();
+    let jobs = [job.0];
+    let handles: Vec<_> = inherited.iter().map(|h| h.0).collect();
+    let mut attributes = crate::windows_native::attributes::Attributes::new(
+        if inherited.is_empty() { 1 } else { 2 },
+        "size process attributes",
+        "initialize process attributes",
+    )
+    .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
+    attributes
+        .set(
+            PROC_THREAD_ATTRIBUTE_JOB_LIST as usize,
+            &jobs,
+            "UpdateProcThreadAttribute",
+        )
+        .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
     if !handles.is_empty() {
-        attributes.set(PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize, &mut handles)?;
+        attributes
+            .set(
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                &handles,
+                "UpdateProcThreadAttribute",
+            )
+            .map_err(|e| native(ProcErrorCode::LaunchFailed, e.operation, e.source))?;
     }
-    startup.lpAttributeList = attributes.storage.as_mut_ptr().cast();
+    startup.lpAttributeList = attributes.pointer();
     // SAFETY: native process output is POD; ownership is taken only on success.
     let mut info: PROCESS_INFORMATION = unsafe { zeroed() };
     let flags = CREATE_BREAKAWAY_FROM_JOB
