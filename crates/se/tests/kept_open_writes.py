@@ -21,6 +21,7 @@ import time
 import uuid
 
 LIMIT = 1_048_576
+REPLY_BUDGET = 32_768
 META = "stateengine.session-capability-v1"
 
 
@@ -47,8 +48,25 @@ class Rpc:
             if not isinstance(initialized.get("protocolVersion"), str):
                 raise ValueError("anonymous MCP initialize did not negotiate a version")
             self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
-            listing, _ = self.call("tools/list", {"_meta": {META: capability}})
-            names = {tool["name"] for tool in listing["tools"]}
+            names, cursors = set(), set()
+            cursor = None
+            for _ in range(100):
+                params = {"_meta": {META: capability}}
+                if cursor is not None:
+                    params["cursor"] = cursor
+                listing, _ = self.call("tools/list", params)
+                for tool in listing["tools"]:
+                    if tool["name"] in names:
+                        raise ValueError("discovery repeated a tool across pages")
+                    names.add(tool["name"])
+                cursor = listing.get("nextCursor")
+                if cursor is None:
+                    break
+                if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                    raise ValueError("discovery cursor did not advance")
+                cursors.add(cursor)
+            else:
+                raise ValueError("discovery exceeded its bounded page count")
             required = {"stateengine_msg_send", "stateengine_working_state_set",
                         "stateengine_working_state_get", "stateengine_event_read", "stateengine_status"}
             if not required <= names:
@@ -67,6 +85,8 @@ class Rpc:
                     raise EOFError("MCP stdout closed")
                 if len(line) > LIMIT or not line.endswith(b"\n"):
                     raise ValueError("MCP frame exceeds the bounded newline contract")
+                if len(line.rstrip(b"\r\n")) > REPLY_BUDGET:
+                    raise ValueError("MCP complete reply exceeds the 32768-byte budget")
                 self.frames.put(json.loads(line))
         except Exception as error:
             self.frames.put(error)
