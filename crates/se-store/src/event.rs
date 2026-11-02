@@ -74,7 +74,8 @@ pub enum ProcessState {
     Lost,
     Historical,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EffectKind {
     Bell,
     Packet,
@@ -84,13 +85,15 @@ pub enum EffectKind {
     RuntimeStart,
     RuntimeStop,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EffectOutcome {
     Witnessed,
     Failed,
     Abandoned,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IntegrationState {
     Installed,
     Removed,
@@ -639,7 +642,8 @@ pub enum EventBody<T> {
     },
 }
 /// Closed effect intent: safe references, never shell code, secret environment or arbitrary SQL.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EffectIntent {
     Mail {
         message: MessageId,

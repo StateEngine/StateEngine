@@ -18,6 +18,9 @@ pub(crate) fn fail(code: StoreErrorCode, cause: impl Into<String>) -> Box<StoreE
         | StoreErrorCode::VersionUnsupported => {
             "Use the compatible application version or the correct state directory; preserve this source rather than initialize over it."
         }
+        StoreErrorCode::ProjectRemoved => {
+            "The project was removed and its history retained; `se init --repo <root>` re-adopts the repository as a new project."
+        }
         StoreErrorCode::PragmaRefused => {
             "Restore the required SQLite/filesystem setting or use a compatible build before admitting writes."
         }

@@ -1,8 +1,11 @@
 //! Transaction-only projections. No native, network or provider calls.
 pub(crate) mod capture;
 pub(crate) mod credential;
+pub(crate) mod cursor;
 pub(crate) mod decision;
+pub(crate) mod effect;
 pub(crate) mod process;
+pub(crate) mod project;
 pub(crate) mod session;
 use crate::{codec, connection::*, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
@@ -249,6 +252,12 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         CredentialIssued { .. } | CredentialActivated { .. } | CredentialRevoked { .. } => {
             credential::revision(c, e)
         }
+        EffectRequested { .. }
+        | EffectOffered { .. }
+        | EffectSettled { .. }
+        | IntegrationRecorded { .. } => effect::revision(c, e),
+        ProjectRemoved { .. } => project::revision(c, e),
+        CursorRecorded { .. } | CursorAcknowledged { .. } => cursor::revision(c, e),
         _ => later("event revision"),
     }
 }
@@ -267,6 +276,28 @@ pub(crate) fn apply(
         Scope::Registry => None,
         Scope::Project(_) => Some(project_id(c, &header.scope, true)?),
     };
+    if let Some(p) = &pk {
+        let removed_at: Option<i64> = c
+            .query_row(
+                "SELECT e.recorded_at_us FROM projects p JOIN events e ON e.seq=p.last_seq WHERE p.project_id=? AND p.state='removed'",
+                [p],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(sql)?;
+        if let (Some(at), Scope::Project(project)) = (removed_at, &header.scope) {
+            let mut e = fail(
+                StoreErrorCode::ProjectRemoved,
+                format!("project {project} was removed; its history is retained"),
+            );
+            e.detail = StoreDetail::ProjectRemoved {
+                project: project.clone(),
+                at: se_types::UnixMicros::new(u64::try_from(at).map_err(invalid)?)
+                    .map_err(invalid)?,
+            };
+            return Err(e);
+        }
+    }
     let project = || {
         pk.as_ref().ok_or_else(|| {
             fail(
@@ -651,6 +682,14 @@ pub(crate) fn apply(
         | CaptureSuppressed { .. }) => capture::apply(c, header, b, seq, revision, facts)?,
         b @ (CredentialIssued { .. } | CredentialActivated { .. } | CredentialRevoked { .. }) => {
             credential::apply(c, header, b, seq, revision, facts)?
+        }
+        b @ (EffectRequested { .. }
+        | EffectOffered { .. }
+        | EffectSettled { .. }
+        | IntegrationRecorded { .. }) => effect::apply(c, header, b, seq, revision, facts)?,
+        b @ ProjectRemoved { .. } => project::apply(c, header, b, seq, revision, facts)?,
+        b @ (CursorRecorded { .. } | CursorAcknowledged { .. }) => {
+            cursor::apply(c, header, b, seq, revision, facts)?
         }
         _ => return later("projection"),
     }

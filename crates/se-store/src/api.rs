@@ -339,14 +339,35 @@ pub struct ProjectionRecord {
     pub original: Option<Box<StoredEvent>>,
     pub current: StoredEvent,
 }
+/// A cursor as issued, its head revision, and the acknowledgment that marked
+/// it read, if any. Issuance alone is never acknowledgment.
+#[derive(Clone, Debug)]
+pub struct CursorHead {
+    pub record: CursorRecord,
+    pub revision: Revision,
+    pub acknowledged: Option<CursorAck>,
+}
+/// The `cursor.acknowledged` event and the consumer evidence it cited.
+#[derive(Clone, Debug)]
+pub struct CursorAck {
+    pub event: EventId,
+    pub evidence: EventId,
+}
 /// A control target's principal, profile, live (prepared/active) sessions and
-/// unreleased processes, oldest first. Never continuity, mail or turns.
+/// unreleased processes, oldest first. A prepared session counts until it is
+/// revoked, so launch failure must revoke its preparation; more than the
+/// bound refuses ReadIncomplete instead of omitting one.
+/// Never continuity, mail or turns.
 #[derive(Clone)]
 pub struct ControlTarget {
     pub principal: ProjectionRecord,
     pub profile: Read<ProjectionRecord>,
     pub sessions: Vec<ProjectionRecord>,
     pub processes: Vec<ProjectionRecord>,
+    /// Newest session in any state, ended or revoked included.
+    pub latest_session: Read<ProjectionRecord>,
+    /// Newest process in any state, exited or ownership-released included.
+    pub latest_process: Read<ProjectionRecord>,
 }
 /// One finite read transaction. No method mutates a marker/cursor or repairs data.
 pub trait Snapshot {
@@ -363,6 +384,13 @@ pub trait Snapshot {
         position: &StorePosition,
         purpose: PositionPurpose,
     ) -> StoreResult<se_types::Cursor>;
+    /// Inverse of position_cursor for the same store, incarnation, scope,
+    /// principal and purpose; any other cursor refuses rather than guessing.
+    fn cursor_position(
+        &self,
+        cursor: &se_types::Cursor,
+        purpose: PositionPurpose,
+    ) -> StoreResult<StorePosition>;
     /// runtime.* facts are private: known excluded IDs return a typed refusal.
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>>;
     /// Excludes runtime.* facts, including their native nonces.
@@ -382,6 +410,9 @@ pub trait Snapshot {
     fn grant(&mut self, principal: Actor, key: GrantKey) -> StoreResult<Read<ProjectionRecord>>;
     fn session(&mut self, id: SessionId) -> StoreResult<Read<ProjectionRecord>>;
     fn sessions(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
+    /// One agent's most recent session in any state, ended and revoked
+    /// included, with its original preparation; absent if it never had one.
+    fn latest_session(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
     fn message(&mut self, id: MessageId) -> StoreResult<Read<MessageRecord>>;
     fn messages(
         &mut self,
@@ -419,7 +450,8 @@ pub trait Snapshot {
     /// Internal recorded custody for status/agent control, not a public process.list operation.
     fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn working_state(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
-    fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorRecord>>;
+    /// The agent's current cursor for one purpose and whether it was acknowledged.
+    fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorHead>>;
     fn resume_head(&mut self, principal: Actor) -> StoreResult<Read<ResumeHead>>;
     fn pending_effects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn effect(&mut self, id: RecordId) -> StoreResult<Read<ProjectionRecord>>;

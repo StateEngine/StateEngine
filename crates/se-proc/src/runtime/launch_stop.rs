@@ -639,6 +639,45 @@ fn same_root_custody(a: &RootWitness, b: &RootWitness) -> bool {
     }
 }
 pub(super) fn witness(s: &mut Slot) -> ProcResult<StopObservation> {
+    match witness_inner(s) {
+        // Windows can revoke image-query access during teardown before the
+        // retained process handle becomes signalled. Only exit observation is
+        // retryable here: stateless reads and identity/control checks still
+        // return their original unreadable error. No absence or live identity
+        // is manufactured while waiting for independent native exit evidence.
+        Err(cause)
+            if cfg!(windows)
+                && cause.code == ProcErrorCode::IdentityUnreadable
+                && cause.native.as_ref().is_some_and(|failure| {
+                    failure.api == "QueryFullProcessImageNameW" && failure.code == Some(5)
+                }) =>
+        {
+            if s.phase == LifecycleState::StopRequested {
+                s.set_phase(LifecycleState::StopUnproved)?;
+            }
+            Ok(StopObservation::Pending {
+                root: None,
+                scope: Box::new(ScopeObservation {
+                    scope: s.native()?.scope.clone(),
+                    remaining: RemainingScope {
+                        population: Population::Unknown,
+                        known_live: Vec::new(),
+                        extent: EnumerationExtent::Partial {
+                            reason: format!(
+                                "Windows exit remains unproved while image access is unavailable: {cause:?}"
+                            ),
+                            omitted: None,
+                        },
+                        observed_at_unix_ns: now()?,
+                    },
+                    exit_basis: None,
+                }),
+            })
+        }
+        result => result,
+    }
+}
+fn witness_inner(s: &mut Slot) -> ProcResult<StopObservation> {
     if s.native.is_none() && !s.launched {
         // Failed preparation cannot have created a vendor. Query the exact
         // vendor-free reservation outside the failed writer before retiring it.

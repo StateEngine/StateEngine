@@ -319,7 +319,17 @@ impl Scope {
                             ));
                         }
                         if yes != 0 {
-                            members.push(identity(machine.clone(), pid, &handle)?);
+                            match identity(machine.clone(), pid, &handle) {
+                                Ok(member) => members.push(member),
+                                Err(original) => {
+                                    // Diagnostic enumeration races process exit.
+                                    // Skip only an independently signalled original
+                                    // kernel object; unreadable live members refuse.
+                                    if exit_status(&handle)?.is_none() {
+                                        return Err(original);
+                                    }
+                                }
+                            }
                         }
                     }
                     return Ok(members);

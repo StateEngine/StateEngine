@@ -15,6 +15,7 @@ mod message;
 mod message_count;
 mod page;
 mod query;
+mod runtime;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::{
@@ -113,32 +114,55 @@ impl SqliteSnapshot {
             Visibility::Owner | Visibility::SharedProject(_) => true,
             Visibility::SelfOnly(a) => {
                 let who = Actor::Agent(a.clone());
-                e.header.actor == who
-                    || match &e.body {
-                        EventBody::MessageSent { recipient, .. } => *recipient == who,
-                        EventBody::WorkingStateSet { agent, .. } => agent == a,
-                        EventBody::PrincipalRegistered { principal, .. } => *principal == who,
-                        EventBody::SessionPrepared { agent, .. }
-                        | EventBody::SessionTurn { agent, .. } => agent == a,
-                        EventBody::SessionActivated { session, .. }
-                        | EventBody::SessionEnded { session, .. }
-                        | EventBody::SessionRevoked { session, .. }
-                        | EventBody::CaptureSource { session, .. }
-                        | EventBody::CaptureFailed { session, .. }
-                        | EventBody::CaptureSuppressed { session, .. } => {
-                            self.session_visible(session, a)?
-                        }
-                        EventBody::CaptureProgress { source, .. } => {
-                            self.source_visible(source, a)?
-                        }
-                        EventBody::ProcessRegistered { identity, .. }
-                        | EventBody::ProcessTransition { identity, .. } => {
-                            identity.principal == who
-                        }
-                        _ => false,
+                if e.header.actor == who {
+                    return Ok(true);
+                }
+                if let Some(about) = self.agent_fact(&e.body, a)? {
+                    return Ok(about);
+                }
+                match &e.body {
+                    EventBody::MessageSent { recipient, .. } => *recipient == who,
+                    EventBody::WorkingStateSet { agent, .. }
+                    | EventBody::SessionTurn { agent, .. } => agent == a,
+                    EventBody::CaptureSource { session, .. }
+                    | EventBody::CaptureFailed { session, .. }
+                    | EventBody::CaptureSuppressed { session, .. } => {
+                        self.session_visible(session, a)?
                     }
+                    EventBody::CaptureProgress { source, .. } => self.source_visible(source, a)?,
+                    EventBody::EffectRequested { principal, .. } => {
+                        principal.as_ref() == Some(&who)
+                    }
+                    EventBody::EffectOffered { principal, .. } => *principal == who,
+                    EventBody::EffectSettled { effect, .. } => self.effect_visible(effect, a)?,
+                    EventBody::CursorRecorded { cursor } => cursor.agent == *a,
+                    EventBody::CursorAcknowledged { cursor, .. } => {
+                        self.cursor_visible(cursor, a)?
+                    }
+                    _ => false,
+                }
             }
         })
+    }
+    /// Whether a principal, session or process fact concerns `agent`; None for
+    /// every other kind. The one allow-list shared by self visibility and the
+    /// creator-control port.
+    fn agent_fact(
+        &self,
+        body: &EventBody<StoredText>,
+        agent: &AgentId,
+    ) -> StoreResult<Option<bool>> {
+        let who = Actor::Agent(agent.clone());
+        Ok(Some(match body {
+            EventBody::PrincipalRegistered { principal, .. } => *principal == who,
+            EventBody::SessionPrepared { agent: owner, .. } => owner == agent,
+            EventBody::SessionActivated { session, .. }
+            | EventBody::SessionEnded { session, .. }
+            | EventBody::SessionRevoked { session, .. } => self.session_of(session, agent)?,
+            EventBody::ProcessRegistered { identity, .. }
+            | EventBody::ProcessTransition { identity, .. } => identity.principal == who,
+            _ => return Ok(None),
+        }))
     }
     fn record(&self, seq: i64) -> StoreResult<StoredEvent> {
         let e = load_event(&self.db, seq, &self.info)
@@ -390,17 +414,18 @@ impl Snapshot for SqliteSnapshot {
                 ));
             }
         }
-        let binding = codec::encode(&(
-            "position",
-            &self.scope.admission.scope,
-            &self.scope.admission.actor,
-            match purpose {
-                PositionPurpose::Receipt => "receipt",
-                PositionPurpose::Checked => "checked",
-                PositionPurpose::History => "history",
-            },
-        ))?;
-        self.cursor(&binding, position.sequence(), position.sequence())
+        self.cursor(
+            &self.position_binding(purpose)?,
+            position.sequence(),
+            position.sequence(),
+        )
+    }
+    fn cursor_position(
+        &self,
+        cursor: &Cursor,
+        purpose: PositionPurpose,
+    ) -> StoreResult<StorePosition> {
+        self.read_cursor_position(cursor, purpose)
     }
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>> {
         match self.event_seq(&id)? {
@@ -626,6 +651,16 @@ impl Snapshot for SqliteSnapshot {
     fn session(&mut self, _id: SessionId) -> StoreResult<Read<ProjectionRecord>> {
         self.read_session(_id)
     }
+    fn latest_session(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>> {
+        let p = self.project_bytes()?;
+        let a = self.agent_bytes(&agent)?;
+        self.head(
+            "sessions",
+            "project_id=? AND agent_id=? AND first_seq=(SELECT MAX(first_seq) FROM sessions WHERE project_id=? AND agent_id=?)",
+            &[&p, &a, &p, &a],
+            Some("first_seq"),
+        )
+    }
     fn sessions(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         let p = self.project_bytes()?;
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
@@ -721,20 +756,20 @@ impl Snapshot for SqliteSnapshot {
             Some("first_seq"),
         )
     }
-    fn processes(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        later("processes")
+    fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.read_processes(budget)
     }
-    fn cursor(&mut self, _agent: AgentId, _purpose: String) -> StoreResult<Read<CursorRecord>> {
-        later("cursor")
+    fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorHead>> {
+        self.read_cursor(agent, purpose)
     }
-    fn pending_effects(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        later("pending_effects")
+    fn pending_effects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.read_pending_effects(budget)
     }
-    fn effect(&mut self, _id: RecordId) -> StoreResult<Read<ProjectionRecord>> {
-        later("effect")
+    fn effect(&mut self, id: RecordId) -> StoreResult<Read<ProjectionRecord>> {
+        self.read_effect(id)
     }
-    fn integrations(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
-        later("integrations")
+    fn integrations(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.read_integrations(budget)
     }
     fn import_progress(
         &mut self,
@@ -746,3 +781,4 @@ impl Snapshot for SqliteSnapshot {
 }
 
 pub(crate) use crate::codec::event::load_event;
+pub(crate) use cursor::window_end;

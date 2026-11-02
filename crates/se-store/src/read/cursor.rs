@@ -124,6 +124,70 @@ impl SqliteSnapshot {
         Ok((if live { h } else { prior }, last))
     }
 }
+/// The last returned position a store-issued page cursor carries; None for
+/// any text that is not a version-1 store cursor.
+pub(crate) fn window_end(text: &str) -> Option<u64> {
+    let bytes = decode(text).ok()?;
+    if bytes.len() != 74 || bytes[0] != 1 {
+        return None;
+    }
+    Some(u64::from_be_bytes(bytes[34..42].try_into().ok()?))
+}
+impl SqliteSnapshot {
+    pub(super) fn position_binding(&self, purpose: PositionPurpose) -> StoreResult<String> {
+        codec::encode(&(
+            "position",
+            &self.scope.admission.scope,
+            &self.scope.admission.actor,
+            match purpose {
+                PositionPurpose::Receipt => "receipt",
+                PositionPurpose::Checked => "checked",
+                PositionPurpose::History => "history",
+            },
+        ))
+    }
+    pub(super) fn read_cursor_position(
+        &self,
+        cursor: &Cursor,
+        purpose: PositionPurpose,
+    ) -> StoreResult<StorePosition> {
+        let binding = self.position_binding(purpose)?;
+        let bytes = decode(cursor.as_str())?;
+        if bytes.len() != 74 || bytes[0] != 1 || bytes[1] != mode(&binding) {
+            return Err(fail(
+                StoreErrorCode::CursorInvalid,
+                "not a store position cursor",
+            ));
+        }
+        let number = |start: usize| -> StoreResult<u64> {
+            Ok(u64::from_be_bytes(
+                bytes[start..start + 8].try_into().map_err(invalid)?,
+            ))
+        };
+        let store = canonical(self.info.id.as_str())
+            .ok_or_else(|| invalid("canonical StoreId required"))?;
+        let head = self
+            .info
+            .head
+            .as_ref()
+            .map(StorePosition::sequence)
+            .unwrap_or(0);
+        let sequence = number(26)?;
+        if bytes[2..18] != store || number(18)? != self.info.incarnation || sequence > head {
+            return Err(fail(
+                StoreErrorCode::CursorStale,
+                "position cursor belongs to another store, incarnation or later snapshot",
+            ));
+        }
+        if number(34)? != sequence || bytes[42..74] != self.query_digest(&binding)? {
+            return Err(fail(
+                StoreErrorCode::CursorInvalid,
+                "position cursor principal/scope/purpose differs",
+            ));
+        }
+        StorePosition::new_internal(self.info.id.clone(), self.info.incarnation, sequence)
+    }
+}
 fn mode(binding: &str) -> u8 {
     if binding.starts_with("live:") {
         1
