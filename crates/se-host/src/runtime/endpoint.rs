@@ -409,6 +409,18 @@ impl HostedRuntime {
                 "one prepared runtime before publication",
             ));
         }
+        // Bind the loopback MCP port before anything is published, so a busy
+        // configured port fails startup itself instead of a host that
+        // reported ready and then exited.
+        let configured = self
+            .configuration
+            .as_ref()
+            .and_then(|file| file.runtime.listen_port);
+        let http = crate::HttpListener::bind(configured)?;
+        self.http_port.set(http.port()).map_err(|_| {
+            SeError::invalid("loopback HTTP listener", "one bind per hosted runtime")
+        })?;
+        self.http = Some(http);
         let directory = self.state_directory.clone();
         let lease = Arc::clone(&self.lease);
         let epoch = self.epoch.clone();
