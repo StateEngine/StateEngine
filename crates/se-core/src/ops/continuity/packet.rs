@@ -183,6 +183,8 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             let mut fields = data.window.fields().cloned().ok_or_else(|| {
                 scope::unreadable("context window", "complete source accounting is missing")
             })?;
+            // Preserve actual store-read byte accounting; model input has its
+            // own exact UTF-8 byte_size after this packet selection.
             fields.returned = result.recent_turns.len() as u64;
             fields.omitted_before = match fields.omitted_before {
                 WindowOmission::None => WindowOmission::Known {
