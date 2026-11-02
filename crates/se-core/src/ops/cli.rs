@@ -189,12 +189,17 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("adopt")),
         "project.status" => c.arg(toggle("all")),
         "history.event_read" => c.arg(
-            value("event").conflicts_with_all(["agent", "session", "kind", "limit", "cursor"]),
+            value("event")
+                .conflicts_with_all(["agent", "session", "kind", "since", "limit", "cursor"]),
         ),
         "history.list" => c
             .arg(value("agent"))
             .arg(value("session"))
             .arg(value("kind").action(ArgAction::Append))
+            .arg(
+                value("since")
+                    .help("An event position from se history, scoped to this caller and project"),
+            )
             .arg(value("limit").default_value("20"))
             .arg(value("cursor")),
         "message.send" => c
@@ -440,6 +445,7 @@ pub fn from_matches_with_key(
                     })
                     .transpose()?,
                 kinds: many(m, "kind"),
+                since: text(m, "since").map(Cursor::new).transpose()?,
                 limit: number(m, "limit")?,
                 cursor: text(m, "cursor").map(Cursor::new).transpose()?,
                 owner_agent: None,

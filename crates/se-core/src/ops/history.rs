@@ -3,7 +3,7 @@
 use super::{HistoryEvent, inputs::Validate};
 use crate::{commit::Cx, scope, store_error::store_error};
 use schemars::JsonSchema;
-use se_store::{HistoryQuery, ReadBudget, Snapshot};
+use se_store::{HistoryQuery, PositionPurpose, ReadBudget, Snapshot};
 use se_types::{AgentId, Cursor, Page, PageRequest, Result, SeError, SessionId};
 use serde::{Deserialize, Serialize};
 use std::{num::NonZeroU32, time::Duration};
@@ -15,6 +15,8 @@ pub struct HistoryList {
     pub session: Option<SessionId>,
     #[serde(default)]
     pub kinds: Vec<String>,
+    #[serde(default)]
+    pub since: Option<Cursor>,
     #[serde(default = "default_limit")]
     pub limit: u16,
     #[serde(default)]
@@ -62,7 +64,12 @@ pub fn list<R: Snapshot>(input: HistoryList, cx: &mut Cx<'_, R>) -> Result<Histo
             .map(|name| kind(name))
             .collect::<Result<_>>()?,
         families: Vec::new(),
-        since: None,
+        since: input
+            .since
+            .as_ref()
+            .map(|cursor| cx.read.cursor_position(cursor, PositionPurpose::History))
+            .transpose()
+            .map_err(|error| store_error(&error))?,
     };
     let page = cx
         .read
