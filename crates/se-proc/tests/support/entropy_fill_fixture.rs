@@ -77,8 +77,8 @@ pub fn assert_partial_then_eio() -> Check {
     }
     // SAFETY: the checked symbol is se_entropy_fault_phase(void) in our fixture.
     let call: unsafe extern "C" fn() -> libc::c_int = unsafe { std::mem::transmute(symbol) };
-    // SAFETY: this reads the fixture state after the synchronous native calls have completed.
     assert_eq!(
+        // SAFETY: this reads the fixture state after the synchronous native calls have completed.
         unsafe { call() },
         2,
         "partial fill/EIO native calls were not both observed"
