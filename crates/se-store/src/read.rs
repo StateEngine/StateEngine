@@ -8,6 +8,7 @@ type ResumeRow = (
     u64,
 );
 mod capture;
+mod continuity;
 mod control;
 mod cursor;
 mod decision;
@@ -735,6 +736,20 @@ impl Snapshot for SqliteSnapshot {
     }
     fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>> {
         self.read_turn(id)
+    }
+    fn recent_turns(
+        &mut self,
+        agent: AgentId,
+        since: Option<StorePosition>,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<StoredEvent>> {
+        self.read_recent_turns(agent, since, budget)
+    }
+    fn governing_decisions(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
+        self.read_governing_decisions(budget)
+    }
+    fn decision_count(&mut self, pending_only: bool) -> StoreResult<u64> {
+        self.read_decision_count(pending_only)
     }
     fn turns(&mut self, _agent: AgentId, _budget: ReadBudget) -> StoreResult<Page<StoredEvent>> {
         self.read_turns(_agent, _budget)

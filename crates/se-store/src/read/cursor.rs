@@ -140,9 +140,10 @@ impl SqliteSnapshot {
             &self.scope.admission.scope,
             &self.scope.admission.actor,
             match purpose {
-                PositionPurpose::Receipt => "receipt",
-                PositionPurpose::Checked => "checked",
-                PositionPurpose::History => "history",
+                PositionPurpose::Receipt => "receipt".to_string(),
+                PositionPurpose::Checked => "checked".to_string(),
+                PositionPurpose::History => "history".to_string(),
+                PositionPurpose::Continuity(agent) => format!("continuity:{}", agent.as_str()),
             },
         ))
     }

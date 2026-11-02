@@ -440,6 +440,18 @@ pub trait Snapshot {
     /// One immutable turn by its record ID, under this snapshot's project and visibility.
     fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>>;
     fn turns(&mut self, agent: AgentId, budget: ReadBudget) -> StoreResult<Page<StoredEvent>>;
+    /// The newest turns after `since`, oldest first; older turns the bound
+    /// left out are counted exactly in the window's omitted-before.
+    fn recent_turns(
+        &mut self,
+        agent: AgentId,
+        since: Option<StorePosition>,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<StoredEvent>>;
+    /// Current ratified decision heads, in last-change order.
+    fn governing_decisions(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
+    /// Exact decision heads in this snapshot, all or only pending proposals.
+    fn decision_count(&mut self, pending_only: bool) -> StoreResult<u64>;
     fn capture_source(&mut self, source: RecordId) -> StoreResult<Read<ProjectionRecord>>;
     /// Launch/stop metadata for one agent under self, owner or creator control.
     /// A creator needs its current can-create grant and the target's immutable

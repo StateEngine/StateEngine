@@ -33,11 +33,14 @@ pub struct StorePosition {
     _incarnation: u64,
     _sequence: Sequence,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PositionPurpose {
     Receipt,
     Checked,
     History,
+    /// A resume/continuity position for exactly this target agent; it never
+    /// decodes as a history cursor or for another target.
+    Continuity(AgentId),
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Expected {
