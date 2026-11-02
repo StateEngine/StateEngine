@@ -141,7 +141,23 @@ pub(super) fn observe(
             observed_at_unix_ns: now()?,
         });
     }
-    let found = identity(expected.machine.clone(), expected.pid, handle)?;
+    let found = match identity(expected.machine.clone(), expected.pid, handle) {
+        Ok(found) => found,
+        Err(original) => {
+            // The retained original object may exit between the first liveness
+            // sample and its image query. Its signalled handle proves exit;
+            // do not replace it with a guessed executable or an unreadable state.
+            if let Some(status) = exit_status(handle)? {
+                return Ok(ProcessObservation::Exited {
+                    expected: expected.clone(),
+                    evidence: ExitEvidence::KernelHandleSignalled,
+                    status,
+                    observed_at_unix_ns: now()?,
+                });
+            }
+            return Err(original);
+        }
+    };
     if found != *expected {
         return Err(changed(expected, Some(&found)));
     }
@@ -179,7 +195,22 @@ pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<Pro
             observed_at_unix_ns: now()?,
         });
     }
-    let expected = identity(machine, pid, &handle)?;
+    let expected = match identity(machine, pid, &handle) {
+        Ok(expected) => expected,
+        Err(original) => {
+            if let Some(status) = exit_status(&handle)? {
+                return Ok(ProcessRead::ExitedRecord {
+                    pid,
+                    boot: BootIdentity::WindowsAbsoluteCreationClock,
+                    start: birth(&handle)?,
+                    state: NativeState::Exited,
+                    status,
+                    observed_at_unix_ns: now()?,
+                });
+            }
+            return Err(original);
+        }
+    };
     match observe(&expected, &handle)? {
         ProcessObservation::Live(live) => Ok(ProcessRead::Present(live)),
         ProcessObservation::Exited {
