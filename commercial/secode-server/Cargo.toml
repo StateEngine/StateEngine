@@ -1,0 +1,41 @@
+[package]
+name = "stateengine-secode-server"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.97.1"
+license = "LicenseRef-StateEngine-Proprietary"
+publish = false
+
+# Private release assembly places the two source trees beside one another.
+# This standalone workspace never adds proprietary dependencies to SE Code.
+[workspace]
+resolver = "2"
+
+[[bin]]
+name = "secode-server"
+path = "src/main.rs"
+
+[dependencies]
+secode-product = { path = "../../../rust-secode/crates/secode-product" }
+secode-stateengine-api = { path = "../../../rust-secode/crates/secode-stateengine-api" }
+se-host = { path = "../../crates/se-host", features = ["secode"] }
+se-proc = { path = "../../crates/se-proc" }
+se-core = { path = "../../crates/se-core" }
+se-store = { path = "../../crates/se-store" }
+se-types = { path = "../../crates/se-types" }
+sha2 = "0.10.9"
+
+[patch.crates-io]
+regress = { path = "../../../rust-secode/third-party/regress-0.10.5" }
+windows-spawn = { path = "../../../rust-secode/third-party/windows-spawn-0.1.0" }
+conpty-oxide = { path = "../../../rust-secode/third-party/conpty-oxide-0.1.2" }
+secode-stateengine-api = { path = "../../../rust-secode/crates/secode-stateengine-api" }
+
+[lints.rust]
+unsafe_code = "forbid"
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+panic = "unwind"
