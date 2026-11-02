@@ -135,6 +135,10 @@ impl SqliteSnapshot {
                     }
                     EventBody::EffectOffered { principal, .. } => *principal == who,
                     EventBody::EffectSettled { effect, .. } => self.effect_visible(effect, a)?,
+                    EventBody::CursorRecorded { cursor } => cursor.agent == *a,
+                    EventBody::CursorAcknowledged { cursor, .. } => {
+                        self.cursor_visible(cursor, a)?
+                    }
                     _ => false,
                 }
             }
@@ -745,8 +749,8 @@ impl Snapshot for SqliteSnapshot {
     fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         self.read_processes(budget)
     }
-    fn cursor(&mut self, _agent: AgentId, _purpose: String) -> StoreResult<Read<CursorRecord>> {
-        later("cursor")
+    fn cursor(&mut self, agent: AgentId, purpose: String) -> StoreResult<Read<CursorRecord>> {
+        self.read_cursor(agent, purpose)
     }
     fn pending_effects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         self.read_pending_effects(budget)

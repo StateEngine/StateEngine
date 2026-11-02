@@ -1,6 +1,7 @@
 //! Transaction-only projections. No native, network or provider calls.
 pub(crate) mod capture;
 pub(crate) mod credential;
+pub(crate) mod cursor;
 pub(crate) mod decision;
 pub(crate) mod effect;
 pub(crate) mod process;
@@ -256,6 +257,7 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         | EffectSettled { .. }
         | IntegrationRecorded { .. } => effect::revision(c, e),
         ProjectRemoved { .. } => project::revision(c, e),
+        CursorRecorded { .. } | CursorAcknowledged { .. } => cursor::revision(c, e),
         _ => later("event revision"),
     }
 }
@@ -678,6 +680,9 @@ pub(crate) fn apply(
         | EffectSettled { .. }
         | IntegrationRecorded { .. }) => effect::apply(c, header, b, seq, revision, facts)?,
         b @ ProjectRemoved { .. } => project::apply(c, header, b, seq, revision, facts)?,
+        b @ (CursorRecorded { .. } | CursorAcknowledged { .. }) => {
+            cursor::apply(c, header, b, seq, revision, facts)?
+        }
         _ => return later("projection"),
     }
     Ok(())

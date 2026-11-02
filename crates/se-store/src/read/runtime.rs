@@ -71,6 +71,46 @@ impl SqliteSnapshot {
             budget,
         )
     }
+    /// The agent's current cursor for one purpose, as issued; an
+    /// acknowledgment is a later head event in history, never a new window.
+    pub(super) fn read_cursor(
+        &self,
+        agent: AgentId,
+        purpose: String,
+    ) -> StoreResult<Read<CursorRecord>> {
+        let p = self.project_bytes()?;
+        let a = self.agent_bytes(&agent)?;
+        let issued: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT d.event_seq FROM cursors h JOIN cursor_data d ON d.cursor_id=h.cursor_id AND d.acknowledged_event IS NULL WHERE h.project_id=? AND h.agent_id=? AND h.purpose=?",
+                rusqlite::params![p, a, purpose],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|error| self.read_sql(error))?;
+        let Some(seq) = issued else {
+            return Ok(self.absent("cursor"));
+        };
+        match self.record(seq)?.body {
+            EventBody::CursorRecorded { cursor } => Ok(Read::Present { value: *cursor }),
+            _ => Err(fail(
+                StoreErrorCode::ProjectionInconsistent,
+                "cursor head does not name its issuing event",
+            )),
+        }
+    }
+    pub(super) fn cursor_visible(&self, cursor: &RecordId, agent: &AgentId) -> StoreResult<bool> {
+        let p = self.project_bytes()?;
+        let a = self.agent_bytes(agent)?;
+        self.db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM cursor_data d JOIN events e ON e.seq=d.event_seq WHERE e.project_id=? AND d.cursor_id=? AND d.agent_id=?)",
+                rusqlite::params![p, cursor.as_bytes().as_slice(), a],
+                |r| r.get(0),
+            )
+            .map_err(|error| self.read_sql(error))
+    }
     pub(super) fn effect_visible(&self, effect: &RecordId, agent: &AgentId) -> StoreResult<bool> {
         let p = self.project_bytes()?;
         let a = self.agent_bytes(agent)?;

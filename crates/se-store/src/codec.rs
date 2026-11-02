@@ -223,6 +223,17 @@ pub(crate) fn body(
                     expected: field(&v, "expected")?,
                     reason: stored_text(c, seq, "reason")?,
                 },
+                "cursor.recorded" => CursorRecorded {
+                    cursor: Box::new(crate::apply::cursor::decode(
+                        v.get("cursor")
+                            .ok_or_else(|| invalid("stored cursor record missing"))?,
+                    )?),
+                },
+                "cursor.acknowledged" => CursorAcknowledged {
+                    cursor: field(&v, "cursor")?,
+                    expected: field(&v, "expected")?,
+                    evidence: field(&v, "evidence")?,
+                },
                 "project.removed" => ProjectRemoved {
                     project: field(&v, "project")?,
                     expected: field(&v, "expected")?,
@@ -566,6 +577,18 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         } => (
             "decision.superseded",
             json!({"prior":prior,"replacement":replacement,"prior_expected":prior_expected,"replacement_expected":replacement_expected,"approval":approval}),
+        ),
+        CursorRecorded { cursor } => (
+            "cursor.recorded",
+            json!({"cursor": crate::apply::cursor::metadata(cursor)?}),
+        ),
+        CursorAcknowledged {
+            cursor,
+            expected,
+            evidence,
+        } => (
+            "cursor.acknowledged",
+            json!({"cursor":cursor,"expected":expected,"evidence":evidence}),
         ),
         ProjectRemoved {
             project,
