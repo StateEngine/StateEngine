@@ -250,7 +250,7 @@ pub struct SessionView {
     pub state: String,
     pub session_id: Option<SessionId>,
     pub launch_id: Option<se_types::LaunchId>,
-    pub surface: String,
+    pub surface: Option<String>,
     pub process: Option<ProcessView>,
     pub since: Option<String>,
     pub observed_at: Option<String>,

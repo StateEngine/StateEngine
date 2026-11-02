@@ -27,6 +27,8 @@ mod init_config;
 pub mod owner;
 #[path = "route/process.rs"]
 mod process;
+#[path = "route/remove.rs"]
+mod remove;
 #[path = "route/runtime.rs"]
 mod runtime_control;
 #[path = "route/select.rs"]

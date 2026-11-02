@@ -27,6 +27,7 @@ impl Validate for AgentList {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AgentPage {
+    pub project: se_types::Named<se_types::ProjectId>,
     pub consistency: String,
     #[serde(flatten)]
     pub page: Page<AgentRow>,
@@ -44,7 +45,9 @@ pub fn agents<R: se_store::Snapshot>(input: AgentList, cx: &mut Cx<'_, R>) -> Re
         },
         deadline: Duration::from_secs(5),
     };
+    let project = super::receipt::named_project(cx)?;
     Ok(AgentPage {
+        project,
         consistency: "live-keyset".into(),
         page: super::agent_status::page(budget, cx)?,
     })

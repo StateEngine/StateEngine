@@ -157,13 +157,21 @@ impl std::error::Error for RetainedStartup {
 }
 
 pub fn down(files: &Files, input: RuntimeDown) -> Result<AnyOutput> {
-    use se_host::client::endpoint::{RuntimeStopFact as Fact, RuntimeStopOutcome};
     let options = execute::options();
     let endpoint = scope::require_present(
         execute::endpoint(files)?,
         "a live authenticated runtime endpoint for graceful down",
         "Run se status for this same data home and verify its recorded host; endpoint absence alone does not prove the host stopped.",
     )?;
+    down_endpoint(files, &endpoint, input, &options)
+}
+pub(super) fn down_endpoint(
+    files: &Files,
+    endpoint: &se_host::EndpointRecord,
+    input: RuntimeDown,
+    options: &se_host::client::ClientOptions,
+) -> Result<AnyOutput> {
+    use se_host::client::endpoint::{RuntimeStopFact as Fact, RuntimeStopOutcome};
     let now = execute::now_us()?;
     let deadline = now
         .checked_add(
@@ -172,11 +180,11 @@ pub fn down(files: &Files, input: RuntimeDown) -> Result<AnyOutput> {
         )
         .ok_or_else(|| SeError::invalid("stop deadline", "representable microseconds"))?;
     let reply = BlockingIpcClient::stop(
-        &endpoint,
+        endpoint,
         &super::credential::require(files)?,
         input.idempotency_key,
         se_types::UnixMicros::new(deadline as u64)?,
-        &options,
+        options,
     )?;
     match reply.outcome {
         RuntimeStopOutcome::Refused { error } => Err(SeError {

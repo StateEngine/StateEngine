@@ -14,6 +14,7 @@ pub use agent_stop::{AgentStop, StopResult};
 pub use project_remove::{ProjectRemove, RemoveResult};
 pub mod agent_config;
 pub mod agent_config_receipt;
+mod agent_session;
 pub mod agent_status;
 mod cli;
 pub mod decision;
@@ -223,7 +224,7 @@ impl AnyOutput {
         match self {
             Self::Uninstall(v) if !v.value.complete => 2,
             Self::AgentStop(v) if !v.value.complete => 2,
-            Self::ProjectRemove(v) if v.value.outcome != "removed" => 2,
+            Self::ProjectRemove(v) if !matches!(v.value.outcome.as_str(), "removed" | "absent") => 2,
             Self::RuntimeDown(v) if !v.value.complete => 2,
             Self::RuntimeUp(v) if v.value.state == "pending" => 2,
             Self::EventRead(v) => match &v.value {

@@ -131,8 +131,30 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
                 writeln!(out, "Model: {model}")?;
             }
             writeln!(out, "Session: {}", value.session.state)?;
+            if let Some(session) = &value.session.session_id {
+                writeln!(out, "Session ID: {session}")?;
+            }
+            if let Some(surface) = &value.session.surface {
+                writeln!(out, "Surface: {surface}")?;
+            }
+            if let Some(containment) = &value.session.containment {
+                writeln!(out, "Recorded containment: {containment}")?;
+            }
+            if let Some(reason) = &value.session.containment_cause {
+                writeln!(out, "Containment reason: {reason}")?;
+            }
+            writeln!(out, "Conversation: {}", value.conversation.state)?;
+            if let Some(conversation) = &value.conversation.id {
+                writeln!(out, "Conversation ID: {conversation}")?;
+            }
+            if let Some(unread) = value.unread {
+                writeln!(out, "Unread messages: {unread}")?;
+            }
             if let Some(reason) = &value.resume.reason {
                 writeln!(out, "Resume: {reason}")?;
+            }
+            if let Some(command) = &value.resume.command {
+                writeln!(out, "Launch: {command}")?;
             }
         }
         se_types::Read::Absent { checked } => writeln!(out, "Agent absent: {checked}")?,
@@ -148,6 +170,7 @@ pub(super) fn agents(
     value: &se_core::ops::AgentPage,
     out: &mut impl std::io::Write,
 ) -> std::io::Result<()> {
+    writeln!(out, "Agents in {}", value.project.name)?;
     for agent in value.page.items() {
         writeln!(
             out,
@@ -160,6 +183,13 @@ pub(super) fn agents(
             },
             agent.profile
         )?;
+        writeln!(out, "  Session: {}", agent.session.state)?;
+        if let Some(session) = &agent.session.session_id {
+            writeln!(out, "  Session ID: {session}")?;
+        }
+        if let Some(reason) = &agent.resume.reason {
+            writeln!(out, "  Resume: {reason}")?;
+        }
     }
     if value.page.items().is_empty() {
         writeln!(out, "No agents in this page.")?;

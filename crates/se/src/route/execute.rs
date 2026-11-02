@@ -166,7 +166,7 @@ pub fn dispatch(
         return super::runtime_control::down(&files, input);
     }
     if host_required && !matches!(op, AnyOp::RuntimeUp(_)) {
-        return super::hosted::forward(cx, &files, &caller, op, &selections, diagnostic);
+        return super::hosted::forward(cx, &files, &reader, &caller, op, &selections, diagnostic);
     }
     let identity = LeaseIdentity {
         store: Some(reader.info().map_err(|e| store_error(&e))?.id),

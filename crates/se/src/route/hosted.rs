@@ -13,9 +13,10 @@ use std::sync::Arc;
 #[cfg(any(target_os = "linux", windows))]
 use std::time::Duration;
 
-pub fn forward(
+pub fn forward<R: se_store::ReadStore>(
     cx: &Bootstrap,
     files: &Files,
+    reader: &R,
     caller: &Caller,
     operation: AnyOp,
     selections: &CliSelections,
@@ -66,7 +67,8 @@ pub fn forward(
         .map_err(|error| {
             scope::unreadable("protected executable cache", &error.to_string()).with_cause(error)
         })?;
-    crate::ipc::forward(
+    let remove_all = matches!(&operation, AnyOp::ProjectRemove(input) if input.all);
+    let output = crate::ipc::forward(
         &target,
         execute::credential(cx, files)?,
         operation,
@@ -80,5 +82,17 @@ pub fn forward(
             timeout: bound.remaining()?,
             cancelled: Arc::clone(&bound.native_bound().cancelled),
         },
-    )
+    )?;
+    if remove_all {
+        Ok(super::remove::complete(
+            files,
+            reader,
+            &caller.admission,
+            &target,
+            output,
+            &bound,
+        ))
+    } else {
+        Ok(output)
+    }
 }
