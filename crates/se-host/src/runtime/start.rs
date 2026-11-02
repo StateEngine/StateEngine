@@ -73,6 +73,9 @@ pub struct HostedRuntime {
     pub(crate) http_port: Arc<std::sync::OnceLock<u16>>,
     /// Bound before publication; serve takes it.
     pub(crate) http: Option<crate::HttpListener>,
+    /// Native custody the store recorded before this generation took ownership,
+    /// handed once to the coordinator's reconciliation.
+    pub(crate) retained_custody: Option<Vec<se_store::OwnerGuardProcess>>,
     /// An embedder's in-process stop request, consumed by serve.
     pub(crate) local_stop: Option<tokio::sync::watch::Receiver<bool>>,
     /// Started on demand rather than by an explicit `se up`.
@@ -198,12 +201,10 @@ fn prepare(
     let [owner] = inventory.owners.as_slice() else {
         return Err(SeError::invalid("host owner", "one protected store owner"));
     };
-    if !inventory.processes.is_empty() {
-        return Err(se_core::scope::unreadable(
-            "cold host activation",
-            "recorded unresolved native custody requires reconciliation before activation",
-        ));
-    }
+    // Recorded native custody is the Come back case after a crash or with a
+    // live agent. It is retained for the coordinator's reconciliation, which
+    // runs before readiness; it never blocks taking ownership.
+    let retained_custody = inventory.processes.clone();
     deadline.remaining()?;
     let old = reader.runtime_owner().map_err(|e| store_error(&e))?;
     let (previous, expected) = match old {
@@ -323,6 +324,7 @@ fn prepare(
         image_sha256: peer.image_sha256(),
         http_port: Arc::default(),
         http: None,
+        retained_custody: Some(retained_custody),
         local_stop: None,
         auto_start: false,
         activity: None,
