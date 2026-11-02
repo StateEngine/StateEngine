@@ -93,3 +93,70 @@ impl std::fmt::Display for NativeObservationError {
 }
 #[cfg(any(target_os = "linux", windows))]
 impl std::error::Error for NativeObservationError {}
+
+#[cfg(any(target_os = "linux", windows))]
+pub(super) fn witness_exit(instance: &se_types::ProcessInstance, bound: &Deadline) -> Result<()> {
+    let expected = instance.fields();
+    loop {
+        bound.remaining()?;
+        let native = se_proc::current_runtime_identity(expected.machine.clone())
+            .map_err(|e| scope::unreadable("remove host exit", &format!("{e:?}")))?;
+        if native.boot_id != expected.boot {
+            return Ok(());
+        }
+        let observed = se_proc::read_process(
+            expected.machine.clone(),
+            se_proc::ProcessId(expected.pid.get()),
+        )
+        .map_err(|e| scope::unreadable("remove host exit", &format!("{e:?}")))?;
+        match observed {
+            se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. } => {
+                return Ok(());
+            }
+            se_proc::ProcessRead::Present(live) => {
+                let same_start = match (&live.identity.start, &expected.started) {
+                    (
+                        se_proc::StartIdentity::Linux { start_ticks: a },
+                        se_types::StartIdentity::Linux { start_ticks: b },
+                    ) => a == b,
+                    (
+                        se_proc::StartIdentity::Windows {
+                            creation_filetime: a,
+                        },
+                        se_types::StartIdentity::Windows {
+                            creation_filetime: b,
+                        },
+                    ) => *a == b.get(),
+                    _ => {
+                        return Err(scope::unreadable(
+                            "remove host exit",
+                            "native start identity has an incompatible platform",
+                        ));
+                    }
+                };
+                if !same_start
+                    || matches!(
+                        live.state,
+                        se_proc::NativeState::Exited | se_proc::NativeState::ExitedAwaitingReap
+                    )
+                {
+                    return Ok(());
+                }
+                if live.identity.image != expected.executable.to_local()? {
+                    return Err(scope::unreadable(
+                        "remove host exit",
+                        "the same process changed its executable; exit is not proven",
+                    ));
+                }
+            }
+        }
+        std::thread::sleep(bound.remaining()?.min(std::time::Duration::from_millis(25)));
+    }
+}
+#[cfg(not(any(target_os = "linux", windows)))]
+pub(super) fn witness_exit(_instance: &se_types::ProcessInstance, _bound: &Deadline) -> Result<()> {
+    Err(scope::unreadable(
+        "remove host exit",
+        "native host exit observation is unavailable on this platform",
+    ))
+}

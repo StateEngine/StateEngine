@@ -97,7 +97,7 @@ fn finish<R: ReadStore>(
                 .unwrap_or("graceful shutdown obligations remain"),
         ));
     }
-    witness_exit(target, bound)?;
+    super::process::witness_exit(&target.epoch.owner, bound)?;
     value.runtime.action = "stopped".into();
     value.runtime.witness = witnessed(
         "authenticated graceful down and exact native process exit",
@@ -200,70 +200,4 @@ fn witnessed(method: &str, detail: Option<String>) -> Result<project_remove::Rem
         observed_at: Some(receipt::timestamp(execute::now_us()?)?),
         detail,
     })
-}
-#[cfg(any(target_os = "linux", windows))]
-fn witness_exit(target: &EndpointRecord, bound: &Deadline) -> Result<()> {
-    let expected = target.epoch.owner.fields();
-    loop {
-        bound.remaining()?;
-        let native = se_proc::current_runtime_identity(expected.machine.clone())
-            .map_err(|e| scope::unreadable("remove host exit", &format!("{e:?}")))?;
-        if native.boot_id != expected.boot {
-            return Ok(());
-        }
-        let observed = se_proc::read_process(
-            expected.machine.clone(),
-            se_proc::ProcessId(expected.pid.get()),
-        )
-        .map_err(|e| scope::unreadable("remove host exit", &format!("{e:?}")))?;
-        match observed {
-            se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. } => {
-                return Ok(());
-            }
-            se_proc::ProcessRead::Present(live) => {
-                let same_start = match (&live.identity.start, &expected.started) {
-                    (
-                        se_proc::StartIdentity::Linux { start_ticks: a },
-                        se_types::StartIdentity::Linux { start_ticks: b },
-                    ) => a == b,
-                    (
-                        se_proc::StartIdentity::Windows {
-                            creation_filetime: a,
-                        },
-                        se_types::StartIdentity::Windows {
-                            creation_filetime: b,
-                        },
-                    ) => *a == b.get(),
-                    _ => {
-                        return Err(scope::unreadable(
-                            "remove host exit",
-                            "native start identity has an incompatible platform",
-                        ));
-                    }
-                };
-                if !same_start
-                    || matches!(
-                        live.state,
-                        se_proc::NativeState::Exited | se_proc::NativeState::ExitedAwaitingReap
-                    )
-                {
-                    return Ok(());
-                }
-                if live.identity.image != expected.executable.to_local()? {
-                    return Err(scope::unreadable(
-                        "remove host exit",
-                        "the same process changed its executable; exit is not proven",
-                    ));
-                }
-            }
-        }
-        std::thread::sleep(bound.remaining()?.min(Duration::from_millis(25)));
-    }
-}
-#[cfg(not(any(target_os = "linux", windows)))]
-fn witness_exit(_target: &EndpointRecord, _bound: &Deadline) -> Result<()> {
-    Err(scope::unreadable(
-        "remove host exit",
-        "native host exit observation is unavailable on this platform",
-    ))
 }

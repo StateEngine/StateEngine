@@ -2,7 +2,7 @@
 use super::write;
 use se_core::ops::{
     LaunchResult, RemoveResult, StopResult,
-    agent_stop::{AgentStopResult, OwnershipRelease, StopCapture, StopResume},
+    agent_stop::{AgentStopResult, OwnershipRelease, StopCapture, StopResume, StopWitness},
     project_remove::RemovalWitness,
 };
 use std::io::{self, Write};
@@ -59,7 +59,7 @@ pub fn stop(value: &StopResult, out: &mut impl Write) -> io::Result<()> {
         )?;
     }
     if let Some(witness) = &value.witness {
-        write::witness(witness, out)?;
+        stop_witness(witness, out)?;
     }
     if let Some(population) = &value.population {
         writeln!(out, "Population: {population}")?;
@@ -90,13 +90,26 @@ pub fn stop(value: &StopResult, out: &mut impl Write) -> io::Result<()> {
     }
     writeln!(out, "Request key: {}", value.idempotency_key)
 }
+fn stop_witness(value: &StopWitness, out: &mut impl Write) -> io::Result<()> {
+    write!(out, "Witness: {}", value.state)?;
+    if let Some(method) = &value.method {
+        write!(out, " via {method}")?;
+    }
+    if let Some(at) = &value.observed_at {
+        write!(out, " at {at}")?;
+    }
+    if let Some(detail) = &value.detail {
+        write!(out, ": {detail}")?;
+    }
+    writeln!(out)
+}
 fn stopped(value: &AgentStopResult, out: &mut impl Write) -> io::Result<()> {
     writeln!(
         out,
         "Agent {} in {}: {}",
         value.target.agent.name, value.target.project.name, value.result
     )?;
-    write::witness(&value.witness, out)?;
+    stop_witness(&value.witness, out)?;
     writeln!(
         out,
         "Population: {}; enumeration: {}",

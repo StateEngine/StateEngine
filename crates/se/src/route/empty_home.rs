@@ -13,6 +13,9 @@ pub fn lock<R: ReadStore>(
     admission: &Admission,
     timeout: Duration,
 ) -> Result<File> {
+    let mut options = super::execute::options();
+    options.timeout = timeout;
+    let bound = se_host::client::lease::Deadline::from_options(&options)?;
     let path = files.0.root().join("runtime.lock");
     let lock = scope::require_present(
         files.readback(&path).map_err(|e| store_error(&e))?,
@@ -39,7 +42,7 @@ pub fn lock<R: ReadStore>(
                 max_bytes: NonZeroU32::new(64 * 1024)
                     .ok_or_else(|| SeError::invalid("project bytes", "positive bound"))?,
             },
-            deadline: timeout.min(Duration::from_secs(5)),
+            deadline: bound.remaining()?.min(Duration::from_secs(5)),
         })
         .map_err(|e| store_error(&e));
     let closed = snapshot.close().map_err(|e| store_error(&e));
@@ -50,6 +53,19 @@ pub fn lock<R: ReadStore>(
             "empty-home exclusion",
             "registered projects remain or their inventory is incomplete; the original credential must be restored rather than regenerated",
         ));
+    }
+    match reader.runtime_owner().map_err(|e| store_error(&e))? {
+        se_types::Read::Present { value } => {
+            super::process::witness_exit(&value.epoch.owner, &bound)?
+        }
+        se_types::Read::Absent { .. } => (),
+        other => {
+            scope::require_present(
+                other,
+                "empty-home prior runtime owner",
+                "Restore the recorded runtime identity before declaring the home idle.",
+            )?;
+        }
     }
     Ok(lock)
 }
