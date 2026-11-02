@@ -58,7 +58,7 @@ fn wait_path(path: &std::path::Path) -> Check {
 fn outcome(value: StoreResult<CommitReceipt>) -> Value {
     match value {
         Ok(receipt) => {
-            json!({"code":"Committed","event":receipt.primary_event.as_str(),"state":format!("{:?}",receipt.state),"maintenance_pending":receipt.maintenance_pending,"checkpoint_ran":receipt.write_timings.as_ref().map(|timing|timing.checkpoint.is_some())})
+            json!({"code":"Committed","event":receipt.primary_event.as_str(),"state":format!("{:?}",receipt.state),"maintenance_pending":receipt.maintenance_pending,"checkpoint_ran":receipt.write_timings.as_ref().map(|timing|timing.checkpoint.is_some()),"timing_key":receipt.write_timings.as_ref().and_then(|timing|timing.request_key.as_ref()).map(ToString::to_string)})
         }
         Err(error) => {
             json!({"code":format!("{:?}",error.code),"cause":error.cause,"detail":format!("{:?}",error.detail)})
@@ -151,10 +151,10 @@ fn fault_child_fixture() -> Check {
             if mode == "checkpoint" { 40 } else { 1 },
         )?)?)?));
     }
-    let timing_keys: Vec<_> = client
-        .take_timings()?
-        .into_iter()
-        .map(|timing| timing.request_key.map(|key| key.to_string()))
+    let timing_keys: Vec<_> = results
+        .iter()
+        .filter_map(|result| result.get("timing_key").and_then(Value::as_str))
+        .map(str::to_owned)
         .collect();
     let reopen_deadline = Instant::now() + Duration::from_secs(3);
     let mut reopen_busy = 0usize;

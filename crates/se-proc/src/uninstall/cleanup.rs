@@ -2,6 +2,9 @@
 //! system executable receives two native objects and a private readiness pipe,
 //! never a pathname or core plan. It cannot select anything to uninstall.
 use super::*;
+use windows_sys::Win32::Security::Cryptography::{
+    CRYPT_STRING_BASE64, CRYPT_STRING_NOCRLF, CryptBinaryToStringW,
+};
 
 #[cfg(test)]
 #[path = "../../tests/support/uninstall_carrier_environment.rs"]
@@ -41,18 +44,8 @@ impl Carrier {
         let (ready, write) = native::pipe()?;
         let write = native::duplicate_same(write.as_raw_handle(), true)?;
         let mut nonce = [0; 32];
-        // SAFETY: fixed owned output and the system-preferred entropy provider.
-        if unsafe {
-            BCryptGenRandom(
-                std::ptr::null_mut(),
-                nonce.as_mut_ptr(),
-                32,
-                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-            )
-        } < 0
-        {
-            return Err(refuse("prepare helper cleanup", "native entropy failed"));
-        }
+        crate::fill_entropy(&mut nonce)
+            .map_err(|e| error("prepare helper cleanup", io::Error::other(e)))?;
         let mut acknowledgment = vec![b'R'];
         acknowledgment.extend_from_slice(&nonce);
         let acknowledgment = acknowledgment

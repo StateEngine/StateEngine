@@ -217,7 +217,7 @@ fn refused(reason: &str) -> SeError {
 
 pub fn fresh_nonce() -> Result<[u8; 32]> {
     let mut nonce = [0; 32];
-    getrandom::fill(&mut nonce).map_err(|_| refused("OS randomness is unavailable"))?;
+    se_proc::fill_entropy(&mut nonce).map_err(|_| refused("OS randomness is unavailable"))?;
     Ok(nonce)
 }
 

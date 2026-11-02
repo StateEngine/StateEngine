@@ -110,10 +110,7 @@ pub(super) fn retain(files: &NativeStateFiles, bytes: &[u8]) -> Result<EndpointR
         se_core::scope::unreadable("endpoint retention name allocation", &error.to_string())
             .with_cause(error)
     })?;
-    let suffix: String = random.expose()[..16]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let suffix: String = se_types::hex_lower(&random.expose()[..16]);
     let retained = files
         .root()
         .join(format!("endpoint.retained-{suffix}.json"));

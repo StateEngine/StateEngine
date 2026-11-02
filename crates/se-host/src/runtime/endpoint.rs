@@ -522,7 +522,7 @@ fn address(directory: &std::path::Path) -> Result<IpcEndpoint> {
             return Err(SeError::invalid("IPC owner", "a native Windows SID"));
         };
         let digest = sha2::Sha256::digest(sid.as_bytes());
-        let hash: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        let hash: String = se_types::hex_lower(&digest);
         let _ = directory;
         Ok(IpcEndpoint::WindowsPipe(format!(
             r"\\.\pipe\stateengine-{hash}"

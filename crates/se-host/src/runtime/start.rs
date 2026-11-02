@@ -325,7 +325,7 @@ pub(crate) fn allocate_facts() -> Result<se_core::dispatch::CallFacts> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| se_core::scope::unreadable("system clock", &e.to_string()))?;
     let mut random = [0; 40];
-    getrandom::fill(&mut random)
+    se_proc::fill_entropy(&mut random)
         .map_err(|e| se_core::scope::unreadable("host identity entropy", &e.to_string()))?;
     let mut event = [0; 10];
     event.copy_from_slice(&random[..10]);

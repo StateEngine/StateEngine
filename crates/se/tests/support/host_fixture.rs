@@ -124,7 +124,7 @@ pub(super) fn bound() -> Result<se_host::client::lease::Deadline, Box<dyn std::e
 }
 pub(super) fn secret() -> Result<Secret, Box<dyn std::error::Error>> {
     let mut bytes = vec![0; 32];
-    if let Err(error) = getrandom::fill(&mut bytes) {
+    if let Err(error) = se_proc::fill_entropy(&mut bytes) {
         bytes.fill(0);
         return Err(error.to_string().into());
     }

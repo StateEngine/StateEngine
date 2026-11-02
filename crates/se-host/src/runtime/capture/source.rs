@@ -271,7 +271,7 @@ fn facts() -> Result<se_core::ops::hook::CaptureFacts> {
     let first = super::super::start::allocate_facts()?;
     let second = super::super::start::allocate_facts()?;
     let mut random = [0; 10];
-    getrandom::fill(&mut random)
+    se_proc::fill_entropy(&mut random)
         .map_err(|error| scope::unreadable("capture entropy", &error.to_string()))?;
     Ok(se_core::ops::hook::CaptureFacts {
         turn: se_store::RecordId::from_parts(first.occurred_at_us as u64 / 1000, random)

@@ -6,7 +6,6 @@ use windows_sys::Win32::{
 };
 
 pub(super) fn job_name(reservation: &LaunchReservation) -> ProcResult<String> {
-    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let lifecycle = reservation
         .lifecycle
         .as_str()
@@ -20,9 +19,9 @@ pub(super) fn job_name(reservation: &LaunchReservation) -> ProcResult<String> {
         .replace('-', "");
     Ok(format!(
         "Local\\SE-{}-{}-{}",
-        hex(&reservation.host.0),
+        se_types::hex_lower(&reservation.host.0),
         lifecycle,
-        hex(&reservation.scope_nonce)
+        se_types::hex_lower(&reservation.scope_nonce)
     ))
 }
 fn departed(expected: &ProcessIdentity) -> ProcResult<RootWitness> {

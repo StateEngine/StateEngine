@@ -217,22 +217,9 @@ impl Staging {
             bInheritHandle: 0,
         };
         let mut nonce = [0; 16];
-        // SAFETY: exact initialized entropy output and system-preferred native RNG.
-        if unsafe {
-            BCryptGenRandom(
-                ptr::null_mut(),
-                nonce.as_mut_ptr(),
-                16,
-                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-            )
-        } < 0
-        {
-            return Err(refuse(
-                "create High uninstall staging",
-                "native entropy failed",
-            ));
-        }
-        let name: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+        crate::fill_entropy(&mut nonce)
+            .map_err(|e| error("create High uninstall staging", io::Error::other(e)))?;
+        let name: String = se_types::hex_lower(&nonce);
         let path = parent.root().join(format!(".se-uninstall-{name}"));
         let _root = NativeStateFiles::open(parent.root()).map_err(custody)?;
         // SAFETY: retained descriptor supplies High integrity at creation; the

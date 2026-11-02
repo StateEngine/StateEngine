@@ -12,7 +12,6 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::*,
-    Security::Cryptography::*,
     Storage::FileSystem::*,
     System::{Console::*, Threading::*},
 };

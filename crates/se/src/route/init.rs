@@ -27,12 +27,9 @@ use std::time::Duration;
 mod repository;
 
 fn phase_key(key: &IdempotencyKey, phase: &str) -> Result<IdempotencyKey> {
-    let digest: String = Sha256::digest(
+    let digest: String = se_types::hex_lower(&Sha256::digest(
         serde_json::to_vec(key).map_err(|e| scope::unreadable("setup key", &e.to_string()))?,
-    )
-    .iter()
-    .map(|b| format!("{b:02x}"))
-    .collect();
+    ));
     IdempotencyKey::new(format!("init.{phase}.{digest}"))
 }
 fn present<R: ReadStore>(store: &R, admission: &Admission, actor: Actor) -> Result<bool> {

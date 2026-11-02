@@ -6,7 +6,6 @@ use crate::{
     *,
 };
 use std::{
-    collections::VecDeque,
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
@@ -28,11 +27,6 @@ pub struct WriteTimings {
     /// promotion by another request. A replay receipt retains its original stamp.
     pub durability: CommitDurability,
 }
-#[derive(Default)]
-struct TimingBuffer {
-    records: VecDeque<WriteTimings>,
-    dropped: u64,
-}
 struct AdmissionState {
     bytes: usize,
     requests: usize,
@@ -45,7 +39,6 @@ struct Shared {
     admission: Mutex<AdmissionState>,
     byte_limit: usize,
     request_limit: usize,
-    timings: Mutex<TimingBuffer>,
 }
 struct Request {
     batch: AtomicBatch,
@@ -63,6 +56,13 @@ enum Command {
     Drain(Instant),
     Recover,
 }
+/// Submission diagnostics belong to each completion's receipt, with no second stream.
+///
+/// ```compile_fail
+/// fn legacy_observer(client: &se_store::SqliteClient) {
+///     client.take_timings();
+/// }
+/// ```
 #[derive(Clone)]
 pub struct SqliteClient {
     sender: SyncSender<Command>,
@@ -88,28 +88,6 @@ impl Shared {
             .checked_sub(1)
             .ok_or_else(|| invalid("writer request accounting underflow"))?;
         Ok(())
-    }
-}
-impl SqliteClient {
-    /// Legacy bounded diagnostic sample. Use receipt.write_timings for exact
-    /// per-request delivery; this stream refuses once any record was dropped.
-    pub fn take_timings(&self) -> StoreResult<Vec<WriteTimings>> {
-        let mut q = self.shared.timings.lock().map_err(|_| {
-            fail(
-                StoreErrorCode::WriterClosed,
-                "writer timing buffer poisoned",
-            )
-        })?;
-        if q.dropped != 0 {
-            return Err(fail(
-                StoreErrorCode::ReadIncomplete,
-                format!(
-                    "writer timing buffer dropped {} records; use each host receipt's write_timings",
-                    q.dropped
-                ),
-            ));
-        }
-        Ok(q.records.drain(..).collect())
     }
 }
 impl WriterClient for SqliteClient {
@@ -218,7 +196,6 @@ pub(crate) fn start(
         }),
         byte_limit: options.resident_bytes.get() as usize,
         request_limit,
-        timings: Mutex::new(TimingBuffer::default()),
     });
     let (sender, receiver) = mpsc::sync_channel(request_limit + 3);
     let client = SqliteClient {
@@ -454,20 +431,7 @@ fn run(
                                         CommitDurability::Normal
                                     },
                                 };
-                                receipt.write_timings = Some(timings.clone());
-                                let mut q = shared.timings.lock().map_err(|_| {
-                                    fail(
-                                        StoreErrorCode::WriterClosed,
-                                        "writer timing buffer poisoned",
-                                    )
-                                })?;
-                                if q.records.len() == 1024 {
-                                    q.records.pop_front();
-                                    q.dropped = q.dropped.checked_add(1).ok_or_else(|| {
-                                        invalid("writer diagnostic drop count overflow")
-                                    })?;
-                                }
-                                q.records.push_back(timings);
+                                receipt.write_timings = Some(timings);
                             }
                             reply.send(result);
                         }

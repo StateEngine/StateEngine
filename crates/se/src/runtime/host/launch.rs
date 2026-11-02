@@ -47,9 +47,9 @@ pub fn start(
         let mut nonce = [0; 16];
         let mut instance = [0; 16];
         let mut epoch = [0; 8];
-        getrandom::fill(&mut nonce)
-            .and_then(|()| getrandom::fill(&mut instance))
-            .and_then(|()| getrandom::fill(&mut epoch))
+        se_proc::fill_entropy(&mut nonce)
+            .and_then(|()| se_proc::fill_entropy(&mut instance))
+            .and_then(|()| se_proc::fill_entropy(&mut epoch))
             .map_err(|error| {
                 se_core::scope::unreadable("runtime startup entropy", &error.to_string())
             })?;
@@ -63,12 +63,7 @@ pub fn start(
         let arguments = vec![
             "host".into(),
             home.as_os_str().into(),
-            instance
-                .0
-                .iter()
-                .map(|v| format!("{v:02x}"))
-                .collect::<String>()
-                .into(),
+            se_types::hex_lower(&instance.0).into(),
             generation.get().to_string().into(),
             configuration.as_os_str().into(),
         ];

@@ -357,7 +357,7 @@ impl Sha256 {
         &self.0
     }
     pub fn hex(&self) -> String {
-        self.0.iter().map(|b| format!("{b:02x}")).collect()
+        crate::hex_lower(&self.0)
     }
 }
 impl TryFrom<String> for Sha256 {

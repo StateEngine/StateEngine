@@ -616,7 +616,7 @@ pub(super) fn boot_id() -> ProcResult<se_types::BootId> {
     if id.data1 == 0 && id.data2 == 0 && id.data3 == 0 && id.data4 == [0; 8] {
         return Err(input("runtime boot", "native boot identifier is zero"));
     }
-    let tail: String = id.data4.iter().map(|b| format!("{b:02x}")).collect();
+    let tail: String = se_types::hex_lower(&id.data4);
     se_types::BootId::new(format!(
         "windows:{:08x}-{:04x}-{:04x}-{tail}",
         id.data1, id.data2, id.data3

@@ -4,7 +4,6 @@ mod ancestors;
 pub(super) mod effects;
 use std::{
     ffi::{CString, OsStr},
-    io::Read,
     os::{
         fd::{AsRawFd, FromRawFd},
         unix::{ffi::OsStrExt, fs::MetadataExt},
@@ -184,9 +183,13 @@ pub(super) fn pin_directory(path: &Path) -> Result<File> {
 
 pub(super) fn random(path: &Path) -> Result<[u8; 16]> {
     let mut bytes = [0; 16];
-    File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut bytes))
-        .map_err(|e| io_error("native staging entropy", path, e))?;
+    crate::fill_entropy(&mut bytes).map_err(|e| {
+        let source = match e.native_code.and_then(|code| i32::try_from(code).ok()) {
+            Some(code) => io::Error::from_raw_os_error(code),
+            None => io::Error::other(e),
+        };
+        io_error("native staging entropy", path, source)
+    })?;
     Ok(bytes)
 }
 pub(super) fn identity(file: &File, path: &Path) -> Result<(u64, u64)> {

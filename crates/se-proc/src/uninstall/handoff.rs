@@ -87,21 +87,8 @@ impl NativeUninstallHandoff {
             ];
             let (plan_read, mut plan_write) = native::pipe()?;
             let mut nonce = [0; 32];
-            // SAFETY: owned fixed buffer and native system-preferred entropy source.
-            if unsafe {
-                BCryptGenRandom(
-                    std::ptr::null_mut(),
-                    nonce.as_mut_ptr(),
-                    nonce.len() as u32,
-                    BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-                )
-            } < 0
-            {
-                return Err(refuse(
-                    "prepare uninstall handoff",
-                    "native entropy source failed",
-                ));
-            }
+            crate::fill_entropy(&mut nonce)
+                .map_err(|e| error("prepare uninstall handoff", io::Error::other(e)))?;
             let deadline = clock()
                 .checked_add(timeout.as_millis() as u64)
                 .ok_or_else(|| refuse("prepare uninstall handoff", "deadline overflow"))?;

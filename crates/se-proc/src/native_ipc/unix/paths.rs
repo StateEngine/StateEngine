@@ -72,7 +72,7 @@ impl UnixSocketPaths {
             ));
         }
         let digest = Sha256::digest(state.as_os_str().as_bytes());
-        let key: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+        let key: String = se_types::hex_lower(&digest[..16]);
         let (parent, child, name, temporary) = self.selection(state, &key)?;
         if !normalized(&parent) {
             return Err(refuse(

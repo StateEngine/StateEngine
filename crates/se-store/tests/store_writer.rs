@@ -32,9 +32,13 @@ fn dropped_waiter_is_resolved_by_the_same_key_and_drain_releases_the_lock() -> C
     same_receipt(&retained, &replay);
     assert_eq!(retained.state, CommitState::Committed);
     s.close()?;
-    let timings = client.take_timings()?;
-    assert_eq!(timings.len(), 2);
-    assert!(timings.iter().all(|t| t.group_requests >= 1));
+    assert!(retained.write_timings.is_none());
+    let timings = replay
+        .write_timings
+        .as_ref()
+        .ok_or("host replay omitted its own timing")?;
+    assert_eq!(timings.request_key, replay.request_key);
+    assert!(timings.group_requests >= 1);
     let drained = wait(owner.drain(Duration::from_secs(2)))??;
     assert_eq!(drained.report.pending_requests, 0);
     assert_eq!(

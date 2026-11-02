@@ -18,7 +18,7 @@ impl ExitSink for Notices {
 fn verbatim_only_child_is_inside_plain_workspace_but_not_its_plain_alias()
 -> Result<(), Box<dyn std::error::Error>> {
     let entropy: [u8; 16] = crate::random_secret()?.expose()[..16].try_into()?;
-    let name: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+    let name: String = se_types::hex_lower(&entropy);
     let path = std::env::temp_dir().join(format!("se-workspace-path-{name}"));
     fs::create_dir(&path)?;
     let home = Home(fs::canonicalize(path)?);

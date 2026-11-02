@@ -3,6 +3,7 @@
 //! Public host-facing contracts are owned by SE Code, not this proprietary crate.
 pub mod code;
 mod error;
+mod hex;
 mod id;
 mod process;
 mod read;
@@ -10,6 +11,7 @@ mod receipt;
 mod sensitive;
 mod surface;
 pub use error::*;
+pub use hex::hex_lower;
 pub use id::*;
 pub use process::*;
 pub use read::*;

@@ -10,11 +10,7 @@ use std::{
     path::Component,
     ptr,
 };
-use windows_sys::Win32::{
-    Foundation::*,
-    Security::{Cryptography::*, *},
-    Storage::FileSystem::*,
-};
+use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
 pub(crate) mod security;
 use security::descriptor;
@@ -453,22 +449,8 @@ impl Directory {
 
 pub(super) fn random(path: &Path) -> Result<[u8; 16]> {
     let mut bytes = [0; 16];
-    // SAFETY: writable fixed-size buffer and system-preferred native CSPRNG.
-    let status = unsafe {
-        BCryptGenRandom(
-            ptr::null_mut(),
-            bytes.as_mut_ptr(),
-            bytes.len() as u32,
-            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
-        )
-    };
-    if status < 0 {
-        return Err(io_error(
-            "native staging entropy",
-            path,
-            io::Error::other(format!("BCryptGenRandom NTSTATUS {status}")),
-        ));
-    }
+    crate::fill_entropy(&mut bytes)
+        .map_err(|e| io_error("native staging entropy", path, io::Error::other(e)))?;
     Ok(bytes)
 }
 pub(super) fn identity(file: &File, path: &Path) -> Result<Identity> {

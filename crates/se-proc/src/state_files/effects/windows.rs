@@ -440,7 +440,7 @@ impl Pin {
         self.check()?;
         verify(&self.file, &self.path, expected)?;
         let random = random(&self.path)?;
-        let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
+        let suffix: String = se_types::hex_lower(&random);
         let stage_path = self.physical.with_file_name(format!(".se-edit-{suffix}"));
         let backup_path = self
             .physical

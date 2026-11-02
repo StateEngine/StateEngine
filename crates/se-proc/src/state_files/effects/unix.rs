@@ -194,7 +194,7 @@ fn move_no_replace(parent: &File, left: &CString, right: &CString, path: &Path) 
 }
 fn recovery_name(path: &Path) -> Result<(PathBuf, CString)> {
     let random = super::random(path)?;
-    let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+    let suffix: String = se_types::hex_lower(&random);
     let sibling = path.with_file_name(format!(".se-edit-backup-{suffix}"));
     let leaf = name(
         sibling
@@ -481,7 +481,7 @@ impl Pin {
         self.check()?;
         verify(&self.file, &self.path, expected)?;
         let random = super::random(&self.path)?;
-        let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
+        let suffix: String = se_types::hex_lower(&random);
         let stage_path = self
             .path
             .with_file_name(format!(".se-edit-backup-{suffix}"));

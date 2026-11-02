@@ -457,7 +457,7 @@ pub(crate) fn runtime_boot_id() -> ProcResult<se_types::BootId> {
     let BootIdentity::Linux { boot_id } = identity::boot()? else {
         return Err(input("runtime boot", "native Linux UUID required"));
     };
-    let text: String = boot_id.iter().map(|b| format!("{b:02x}")).collect();
+    let text: String = se_types::hex_lower(&boot_id);
     se_types::BootId::new(format!("linux:{text}"))
         .map_err(|e| input("runtime boot", &e.to_string()))
 }

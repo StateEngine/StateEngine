@@ -10,7 +10,7 @@ pub(in crate::state_files) struct CreatedDirectory {
 }
 fn random_name(path: &Path, prefix: &str) -> Result<CString> {
     let nonce = super::super::random(path)?;
-    let suffix: String = nonce.iter().map(|byte| format!("{byte:02x}")).collect();
+    let suffix: String = se_types::hex_lower(&nonce);
     name(std::ffi::OsStr::new(&format!("{prefix}{suffix}")), path)
 }
 impl CreatedDirectory {

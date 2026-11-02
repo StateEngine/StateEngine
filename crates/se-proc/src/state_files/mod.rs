@@ -124,7 +124,7 @@ impl NativeStateFiles {
         self.check(directory)?;
         for _ in 0..8 {
             let random = os::random(directory)?;
-            let suffix: String = random.iter().map(|b| format!("{b:02x}")).collect();
+            let suffix: String = se_types::hex_lower(&random);
             let path = directory.join(format!(".se-stage-{suffix}"));
             let file = match self.directory.create_staging_at(&path, &self.root) {
                 Ok(file) => file,

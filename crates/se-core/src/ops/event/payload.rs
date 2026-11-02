@@ -13,10 +13,7 @@ fn text(value: &StoredText) -> Result<Value> {
             "content was erased; no complete public body is available",
         ));
     };
-    let hash: String = Sha256::digest(value.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
+    let hash: String = se_types::hex_lower(&Sha256::digest(value.as_bytes()));
     Ok(json!({"text":value,"bytes":value.len(),"sha256":hash,"complete":true}))
 }
 pub(super) fn public<R: Snapshot>(

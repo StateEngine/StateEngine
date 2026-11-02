@@ -7,15 +7,6 @@ use fixture::*;
 mod native_host;
 use native_host::*;
 use std::time::Duration;
-fn same_timing(a: &WriteTimings, b: &WriteTimings) {
-    assert_eq!(a.request_key, b.request_key);
-    assert_eq!(a.queue, b.queue);
-    assert_eq!(a.transaction, b.transaction);
-    assert_eq!(a.commit_sync, b.commit_sync);
-    assert_eq!(a.checkpoint, b.checkpoint);
-    assert_eq!(a.group_requests, b.group_requests);
-    assert_eq!(a.durability, b.durability);
-}
 fn timed(receipt: &CommitReceipt) -> Result<&WriteTimings, Box<dyn std::error::Error>> {
     receipt
         .write_timings
@@ -53,10 +44,8 @@ fn concurrent_keyless_receipts_match_their_own_store_measurements() -> Check {
     let ar = wait(aw)??;
     assert_eq!(ar.primary_event, aid);
     assert_eq!(br.primary_event, bid);
-    let sample = client.take_timings()?;
-    assert_eq!(sample.len(), 2);
-    same_timing(timed(&ar)?, &sample[0]);
-    same_timing(timed(&br)?, &sample[1]);
+    assert!(timed(&ar)?.group_requests >= 1);
+    assert!(timed(&br)?.group_requests >= 1);
     assert_eq!(timed(&ar)?.request_key, None);
     assert_eq!(timed(&br)?.request_key, None);
     assert!(
@@ -103,7 +92,6 @@ fn group_promotion_and_replay_attempt_timings_keep_distinct_durability() -> Chec
         "retained-normal",
     )?)?)??;
     assert_eq!(original.durability, CommitDurability::Normal);
-    client.take_timings()?;
     let blocker = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
     blocker.execute_batch("BEGIN IMMEDIATE")?;
     let gate = client.submit(mail(&f, "gate", false)?)?;
@@ -143,11 +131,12 @@ fn group_promotion_and_replay_attempt_timings_keep_distinct_durability() -> Chec
     assert_eq!(replay.state, CommitState::Replayed);
     assert_eq!(replay.durability, CommitDurability::Normal);
     same_receipt(&original, &replay);
-    let sample = client.take_timings()?;
-    assert_eq!(sample.len(), 4);
-    same_timing(timed(&normal)?, &sample[1]);
-    same_timing(timed(&full)?, &sample[2]);
-    same_timing(timed(&replay)?, &sample[3]);
+    for receipt in [&normal, &full, &replay] {
+        assert_eq!(timed(receipt)?.request_key, receipt.request_key);
+        assert_eq!(timed(receipt)?.transaction, timed(&normal)?.transaction);
+        assert_eq!(timed(receipt)?.commit_sync, timed(&normal)?.commit_sync);
+        assert_eq!(timed(receipt)?.checkpoint, timed(&normal)?.checkpoint);
+    }
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let mut snap = reader.snapshot(f.self_scope(&f.a))?;
     let retained = present(
@@ -160,30 +149,19 @@ fn group_promotion_and_replay_attempt_timings_keep_distinct_durability() -> Chec
     Ok(())
 }
 
-/// Protects: E3 timing — aggregate overflow reports exact data loss while every awaited receipt still has complete own measurements.
+/// Protects: E3 timing — every completion owns its measurements beyond the retired sample's old capacity.
 #[test]
-fn timing_sample_overflow_is_a_refusal_and_does_not_erase_receipt_timings() -> Check {
+fn every_receipt_keeps_timings_past_the_former_sample_capacity() -> Check {
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
     let owner = host.start_writer(options(256)?, lease)?;
     let client = owner.client();
-    for n in 0..1025 {
-        let receipt = wait(client.submit(mail(&f, &format!("overflow-{n}"), true)?)?)??;
-        assert!(receipt.write_timings.is_some());
+    for n in 0..1026 {
+        let receipt = wait(client.submit(mail(&f, &format!("timed-{n}"), true)?)?)??;
+        assert_eq!(timed(&receipt)?.request_key, receipt.request_key);
+        assert!(timed(&receipt)?.group_requests >= 1);
+        assert_eq!(timed(&receipt)?.durability, CommitDurability::Normal);
     }
-    let error = client
-        .take_timings()
-        .err()
-        .ok_or("truncated timing sample reported success")?;
-    assert_eq!(error.code, StoreErrorCode::ReadIncomplete);
-    assert!(error.cause.contains("dropped 1 records"));
-    let next = wait(client.submit(mail(&f, "after-overflow", true)?)?)??;
-    assert!(next.write_timings.is_some());
-    let error = client
-        .take_timings()
-        .err()
-        .ok_or("overflow sample silently reset")?;
-    assert!(error.cause.contains("dropped 2 records"));
     drop(wait(owner.drain(Duration::from_secs(2)))??);
     Ok(())
 }
