@@ -298,3 +298,61 @@ fn native_error(error: StateFileError) -> Box<StoreError> {
         StateFileErrorCode::SourceChanged=>StoreErrorCode::SourceChanged,
     },cause:error.to_string(),detail:StoreDetail::None,remedy:Remedy {text:"Preserve the existing file and restore native ownership/protection before retrying the same request identity.".into(),command:None},retry:Retry::Never})
 }
+
+/// Read-only machine identity for a host that never creates one (the embedded
+/// SE Code path): the same bounded, twice-read, byte-compared rule the CLI's
+/// creating port applies, through this root's retained native custody.
+pub fn machine_identity(files: &Files) -> se_types::Result<se_types::MachineId> {
+    use se_core::machine_identity::{
+        MACHINE_IDENTITY_FILE, MACHINE_IDENTITY_MAX_BYTES, MachineIdentityPort, Publication,
+    };
+    use std::io::Read as _;
+    struct ReadOnly<'a>(&'a Files);
+    fn read_bounded(files: &Files, path: &Path) -> se_types::Result<Option<Vec<u8>>> {
+        let unreadable = |e: &dyn std::fmt::Display| {
+            se_core::scope::unreadable("protected machine identity", &e.to_string())
+        };
+        let Some(file) = files.0.readback(path).map_err(|e| unreadable(&e))? else {
+            return Ok(None);
+        };
+        let mut bytes = Vec::new();
+        file.take((MACHINE_IDENTITY_MAX_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| unreadable(&e))?;
+        if bytes.len() > MACHINE_IDENTITY_MAX_BYTES {
+            return Err(unreadable(&"record exceeds 1024 bytes"));
+        }
+        Ok(Some(bytes))
+    }
+    impl MachineIdentityPort for ReadOnly<'_> {
+        fn read(&self, home: &Path) -> se_types::Result<Read<Vec<u8>>> {
+            if home != self.0.0.root() {
+                return Err(se_core::scope::unreadable(
+                    "protected machine identity",
+                    "home differs from retained native custody",
+                ));
+            }
+            let path = home.join(MACHINE_IDENTITY_FILE);
+            let Some(bytes) = read_bounded(self.0, &path)? else {
+                return Ok(Read::Absent {
+                    checked: format!("native owner-only file absence at {}", path.display()),
+                });
+            };
+            // Reopen independently; a changed record supplies no startup fact.
+            if read_bounded(self.0, &path)?.as_ref() != Some(&bytes) {
+                return Err(se_core::scope::unreadable(
+                    "protected machine identity",
+                    "record changed during read",
+                ));
+            }
+            Ok(Read::Present { value: bytes })
+        }
+        fn publish_no_replace(&self, _home: &Path, _bytes: &[u8]) -> se_types::Result<Publication> {
+            Err(se_types::SeError::invalid(
+                "machine identity",
+                "one created by se init; an embedded host never creates it",
+            ))
+        }
+    }
+    se_core::machine_identity::require_machine_identity(files.0.root(), &ReadOnly(files))
+}
