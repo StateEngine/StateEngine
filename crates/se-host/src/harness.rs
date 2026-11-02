@@ -242,8 +242,13 @@ pub trait Harness: Send + Sync {
         cx: CallContext,
     ) -> HostFuture<'a, ProviderInterrupt>;
     /// After the coordinator has witnessed the provider closed: stop this
-    /// binding's stream readers and release every host stream end.
-    fn close_binding<'a>(&'a self, binding: HarnessBinding, cx: CallContext) -> HostFuture<'a, ()>;
+    /// binding's stream readers and release every host stream end. Borrowed,
+    /// so a failed or timed-out close keeps the binding for a retry.
+    fn close_binding<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: CallContext,
+    ) -> HostFuture<'a, ()>;
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ClaudeHookKind {

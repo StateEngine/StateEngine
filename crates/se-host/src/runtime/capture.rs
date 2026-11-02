@@ -117,9 +117,15 @@ impl HostedRuntime {
     }
     /// The trusted capture handle the native coordinator retains: transcript
     /// binding at launch and the final catch-up at stop.
+    /// Trusted capture never dispatches a native plan, so the handle carries a
+    /// detached empty custody slot: a coordinator retaining it holds no strong
+    /// path back to itself through the installed custody executor.
     pub fn capture_handle(&self) -> CaptureHandle {
         CaptureHandle {
-            execution: self.execution.clone(),
+            execution: ExecutionContext {
+                custody: Arc::default(),
+                ..self.execution.clone()
+            },
             sources: self.sources.clone(),
             lease: Arc::clone(&self.lease),
             fenced: Arc::clone(&self.fenced),
