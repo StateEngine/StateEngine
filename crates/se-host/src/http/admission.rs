@@ -57,7 +57,9 @@ pub(crate) fn admit<B>(request: &Request<B>, port: u16) -> Result<Route, Refusal
     match route {
         Route::Mcp if method == Method::POST => json_media(headers)?,
         Route::Livez if method == Method::GET => {
-            if headers.contains_key(header::CONTENT_LENGTH) {
+            // An exact zero declares no body; `framing` has already refused
+            // duplicate, unreadable or oversized lengths.
+            if single(headers, &header::CONTENT_LENGTH)?.is_some_and(|length| length != "0") {
                 return Err(Refusal::new(StatusCode::BAD_REQUEST, "GET carries no body"));
             }
         }
