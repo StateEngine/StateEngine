@@ -10,6 +10,7 @@ mod ipc;
 mod model;
 mod runtime;
 mod session;
+pub mod state_files;
 pub use harness::*;
 pub use ipc::*;
 pub use model::*;
