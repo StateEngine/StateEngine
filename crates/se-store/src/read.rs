@@ -32,20 +32,19 @@ pub struct SqliteSnapshot {
 }
 impl SqliteSnapshot {
     pub(crate) fn open(reader: &SqliteReader, scope: ReadScope) -> StoreResult<Self> {
-        let slot = reader.slots.acquire()?;
-        let db = connection::connect(&reader.path, false, reader.timeout)?;
-        connection::begin_snapshot(&db, &reader.path)?;
-        let info = connection::info_at(&db, &reader.path)?;
-        if info.state != StoreState::Ready {
+        reader.read_phase()?.into_snapshot(scope)
+    }
+    pub(crate) fn from_phase(phase: ReadPhase, scope: ReadScope) -> StoreResult<Self> {
+        if phase.info.state != StoreState::Ready {
             return Err(fail(StoreErrorCode::NotReady, "store is in maintenance"));
         }
         Ok(Self {
-            db,
-            info,
+            db: phase.db,
+            info: phase.info,
             scope,
-            path: reader.path.clone(),
-            _slot: slot,
-            _local: PhantomData,
+            path: phase.path,
+            _slot: phase.slot,
+            _local: phase.local,
         })
     }
     fn read_sql(&self, error: rusqlite::Error) -> Box<StoreError> {

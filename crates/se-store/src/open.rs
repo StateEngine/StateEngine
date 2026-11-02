@@ -427,23 +427,9 @@ impl ReadStore for SqliteReader {
         SqliteSnapshot::open(self, scope)
     }
     fn runtime_owner(&self) -> StoreResult<Read<RuntimeOwnerHead>> {
-        let c = self.connect()?;
-        let info = connection::info_at(&c, &self.path)?;
-        let row:Option<(String,u64,u64,i64)>=c.query_row("SELECT owner_epoch,owner_generation,revision,last_seq FROM runtime_owner WHERE singleton=1",[],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?))).optional().map_err(sql)?;
-        match row {
-            None => Ok(Read::Absent {
-                checked: "runtime_owner singleton absent".into(),
-            }),
-            Some((epoch, generation, revision, seq)) => Ok(Read::Present {
-                value: RuntimeOwnerHead {
-                    epoch: serde_json::from_str(&epoch).map_err(invalid)?,
-                    generation: se_types::Generation::new(generation).map_err(invalid)?,
-                    revision: crate::codec::revision(revision)?,
-                    event: crate::read::load_event(&c, seq, &info)?.header.event,
-                    handover: None,
-                },
-            }),
-        }
+        let phase = self.read_phase()?;
+        let result = phase.runtime_owner();
+        phase.finish(result)
     }
     fn owner_guard(
         &self,

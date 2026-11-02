@@ -10,7 +10,7 @@ use se_core::{
     ports::{CustodyPlan, Then},
     store_error::store_error,
 };
-use se_store::{Admission, ReadStore, Snapshot, WriterClient};
+use se_store::{Admission, Snapshot, WriterClient};
 use se_types::{Read, Result, SeError};
 use std::future::Future;
 
@@ -47,8 +47,8 @@ pub fn execute(
             .blocking
             .run(BlockingClass::Foreground, &deadline, move || {
                 plan_deadline.remaining()?;
-                check_generation(&reader, generation)?;
-                plan(&reader, admitted)
+                let phase = checked_phase(&reader, generation)?;
+                plan(phase, admitted)
             })
             .await?;
         let Planned {
@@ -156,10 +156,9 @@ pub fn execute(
                     .blocking
                     .run(BlockingClass::Foreground, &deadline, move || {
                         finish_deadline.remaining()?;
-                        check_generation(&context.reader, generation)?;
-                        let mut read = context
-                            .reader
-                            .snapshot(read_scope(&admission))
+                        let phase = checked_phase(&context.reader, generation)?;
+                        let mut read = phase
+                            .into_snapshot(read_scope(&admission))
                             .map_err(|error| store_error(&error))?;
                         let result = kernel.committed(
                             then,
@@ -188,7 +187,7 @@ pub fn execute(
         }
     }
 }
-fn plan(reader: &se_store::SqliteReader, call: HostedCall) -> Result<Planned> {
+fn plan(phase: se_store::ReadPhase, call: HostedCall) -> Result<Planned> {
     let natural_key = match &call.input {
         HostedInput::Capture(capture) => Some(format!(
             "session={:?}, provider={:?}, conversation={}, turn={}",
@@ -210,8 +209,8 @@ fn plan(reader: &se_store::SqliteReader, call: HostedCall) -> Result<Planned> {
         terminal,
         selections,
     } = call;
-    let mut read = reader
-        .snapshot(read_scope(&admission))
+    let mut read = phase
+        .into_snapshot(read_scope(&admission))
         .map_err(|error| store_error(&error))?;
     let result = (|| {
         let mut cx = Cx {
@@ -262,22 +261,36 @@ pub(crate) fn check_generation(
     reader: &se_store::SqliteReader,
     expected: se_types::Generation,
 ) -> Result<()> {
-    match reader
+    let phase = checked_phase(reader, expected)?;
+    close_read(Ok(()), phase.close())
+}
+fn checked_phase(
+    reader: &se_store::SqliteReader,
+    expected: se_types::Generation,
+) -> Result<se_store::ReadPhase> {
+    let phase = reader.read_phase().map_err(|error| store_error(&error))?;
+    let result = phase
         .runtime_owner()
-        .map_err(|error| store_error(&error))?
-    {
-        Read::Present { value } if value.generation == expected => Ok(()),
-        Read::Present { .. } => Err(SeError::invalid(
-            "execution generation",
-            "the same committed runtime owner generation",
-        )),
-        Read::Absent { checked } => Err(se_core::scope::unreadable(
-            "execution generation",
-            &format!("runtime owner absent: {checked}"),
-        )),
-        Read::Unreadable { source, reason, .. } => {
-            Err(se_core::scope::unreadable(&source, &reason))
-        }
-        Read::Unknown { what } => Err(se_core::scope::unreadable("execution generation", &what)),
+        .map_err(|error| store_error(&error))
+        .and_then(|owner| match owner {
+            Read::Present { value } if value.generation == expected => Ok(()),
+            Read::Present { .. } => Err(SeError::invalid(
+                "execution generation",
+                "the same committed runtime owner generation",
+            )),
+            Read::Absent { checked } => Err(se_core::scope::unreadable(
+                "execution generation",
+                &format!("runtime owner absent: {checked}"),
+            )),
+            Read::Unreadable { source, reason, .. } => {
+                Err(se_core::scope::unreadable(&source, &reason))
+            }
+            Read::Unknown { what } => {
+                Err(se_core::scope::unreadable("execution generation", &what))
+            }
+        });
+    match result {
+        Ok(()) => Ok(phase),
+        Err(error) => close_read(Err(error), phase.close()),
     }
 }

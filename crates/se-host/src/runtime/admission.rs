@@ -11,7 +11,7 @@ use se_core::{
     ops::{self, CliSelections},
     store_error::store_error,
 };
-use se_store::{Actor, Admission, ReadStore, RuntimeLease, Scope};
+use se_store::{Actor, Admission, RuntimeLease, Scope};
 use se_types::{Read, Result, SeError, Sha256};
 use sha2::{Digest, Sha256 as Hasher};
 use std::{io::Read as ByteRead, sync::Arc};
@@ -37,24 +37,32 @@ pub(crate) struct OperationMetadata {
 }
 impl AdmissionContext {
     pub fn handshake(&self, pending: &mut PendingIpcHandshake) -> Result<ConnectionGrant> {
-        self.check_generation()?;
-        match pending.input() {
-            HandshakeInput::Call(hello) => match &hello.authority {
-                PresentedAuthority::OwnerProof { .. } => self.owner_handshake(pending),
-                PresentedAuthority::Session(secret) => {
-                    self.session(secret)?;
-                    Ok(ConnectionGrant { owner_key: None })
-                }
-                PresentedAuthority::Launch(_) => Err(SeError::invalid(
-                    "launch credential",
-                    "the dedicated prepared launch-activation route",
-                )),
-            },
-            HandshakeInput::Stop(_) => self.owner_handshake(pending),
-        }
+        let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
+        let result = (|| {
+            self.check_generation(&phase)?;
+            match pending.input() {
+                HandshakeInput::Call(hello) => match &hello.authority {
+                    PresentedAuthority::OwnerProof { .. } => self.owner_handshake(&phase, pending),
+                    PresentedAuthority::Session(secret) => {
+                        self.session(&phase, secret)?;
+                        Ok(ConnectionGrant { owner_key: None })
+                    }
+                    PresentedAuthority::Launch(_) => Err(SeError::invalid(
+                        "launch credential",
+                        "the dedicated prepared launch-activation route",
+                    )),
+                },
+                HandshakeInput::Stop(_) => self.owner_handshake(&phase, pending),
+            }
+        })();
+        super::executor::close_read(result, phase.close())
     }
-    fn owner_handshake(&self, pending: &mut PendingIpcHandshake) -> Result<ConnectionGrant> {
-        self.owner_peer(pending.peer())?;
+    fn owner_handshake(
+        &self,
+        phase: &se_store::ReadPhase,
+        pending: &mut PendingIpcHandshake,
+    ) -> Result<ConnectionGrant> {
+        self.owner_peer(phase, pending.peer())?;
         let key = self.machine_key()?;
         pending.verify_owner_mac(&key)?;
         Ok(ConnectionGrant {
@@ -70,116 +78,119 @@ impl AdmissionContext {
         raw: RawOperation,
         metadata: OperationMetadata,
     ) -> Result<HostedCall> {
-        self.check_generation()?;
-        let operation = ops::decode_operation(&raw.name, raw.arguments, raw.key.as_ref())?;
-        let selections: Option<CliSelections> = metadata
-            .selections
-            .map(serde_json::from_value)
-            .transpose()
-            .map_err(|_| {
-                SeError::invalid("CLI selections", "the core's closed CliSelections object")
-            })?;
-        if let Some(selection) = &selections {
-            selection.validate()?;
-        }
-        let (mut admission, terminal) = match override_authority {
-            Some(PresentedAuthority::Session(secret)) => (
-                self.session(secret)?,
-                HumanTerminal::Refused {
-                    reason: "session authority cannot become an owner terminal".into(),
-                },
-            ),
-            Some(_) => {
-                return Err(SeError::invalid(
-                    "per-call authority",
-                    "a valid session override; OwnerProof is one-use handshake-only and Launch uses activation",
-                ));
+        let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
+        let result = (|| {
+            self.check_generation(&phase)?;
+            let operation = ops::decode_operation(&raw.name, raw.arguments, raw.key.as_ref())?;
+            let selections: Option<CliSelections> = metadata
+                .selections
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| {
+                    SeError::invalid("CLI selections", "the core's closed CliSelections object")
+                })?;
+            if let Some(selection) = &selections {
+                selection.validate()?;
             }
-            None => match connection {
-                PresentedAuthority::Session(secret) => (
-                    self.session(secret)?,
+            let (mut admission, terminal) = match override_authority {
+                Some(PresentedAuthority::Session(secret)) => (
+                    self.session(&phase, secret)?,
                     HumanTerminal::Refused {
                         reason: "session authority cannot become an owner terminal".into(),
                     },
                 ),
-                PresentedAuthority::OwnerProof { .. } => {
-                    let key = self.machine_key()?;
-                    let current = Sha256::from_bytes(Hasher::digest(key.expose()).into());
-                    if grant.owner_key != Some(current) {
-                        return Err(SeError::invalid(
-                            "owner connection",
-                            "the same current protected machine credential",
-                        ));
-                    }
-                    // This rechecks current owner/ancestry against a complete
-                    // protected inventory for every request, not just connect.
-                    self.owner_peer(peer)?;
-                    let peer_owner = match peer.native().principal() {
-                        se_proc::native_ipc::IpcPrincipal::Unix { uid } => uid.to_string(),
-                        se_proc::native_ipc::IpcPrincipal::Windows { sid } => sid.clone(),
-                    };
-                    let terminal = match metadata.presence.as_ref() {
+                Some(_) => {
+                    return Err(SeError::invalid(
+                        "per-call authority",
+                        "a valid session override; OwnerProof is one-use handshake-only and Launch uses activation",
+                    ));
+                }
+                None => match connection {
+                    PresentedAuthority::Session(secret) => (
+                        self.session(&phase, secret)?,
+                        HumanTerminal::Refused {
+                            reason: "session authority cannot become an owner terminal".into(),
+                        },
+                    ),
+                    PresentedAuthority::OwnerProof { .. } => {
+                        let key = self.machine_key()?;
+                        let current = Sha256::from_bytes(Hasher::digest(key.expose()).into());
+                        if grant.owner_key != Some(current) {
+                            return Err(SeError::invalid(
+                                "owner connection",
+                                "the same current protected machine credential",
+                            ));
+                        }
+                        // This rechecks current owner/ancestry against a complete
+                        // protected inventory for every request, not just connect.
+                        self.owner_peer(&phase, peer)?;
+                        let peer_owner = match peer.native().principal() {
+                            se_proc::native_ipc::IpcPrincipal::Unix { uid } => uid.to_string(),
+                            se_proc::native_ipc::IpcPrincipal::Windows { sid } => sid.clone(),
+                        };
+                        let terminal = match metadata.presence.as_ref() {
                         Some(observed) if observed.passes(&peer_owner) => HumanTerminal::OutsideAgentTree,
                         _ => HumanTerminal::Refused {
                             reason: "human presence requires the native CLI's stdin/stdout consoles, no session/provider markers, and matching independent peer owner/ancestry checks".into(),
                         },
                     };
-                    (
-                        Admission {
-                            scope: Scope::Registry,
-                            actor: Actor::Human(self.owner.clone()),
-                            session: None,
-                            generation: self.generation.get(),
-                        },
-                        terminal,
-                    )
+                        (
+                            Admission {
+                                scope: Scope::Registry,
+                                actor: Actor::Human(self.owner.clone()),
+                                session: None,
+                                generation: self.generation.get(),
+                            },
+                            terminal,
+                        )
+                    }
+                    PresentedAuthority::Launch(_) => {
+                        return Err(SeError::invalid(
+                            "launch authority",
+                            "the dedicated activation route",
+                        ));
+                    }
+                },
+            };
+            if let Some(project) = selections.as_ref().and_then(|value| value.project.as_ref()) {
+                match (&admission.actor, &admission.scope) {
+                    (Actor::Agent(_), Scope::Project(bound)) if bound != project => {
+                        return Err(SeError::invalid(
+                            "CLI project selection",
+                            "the authenticated session's exact project",
+                        ));
+                    }
+                    (Actor::Human(_), _) => admission.scope = Scope::Project(project.clone()),
+                    _ => (),
                 }
-                PresentedAuthority::Launch(_) => {
-                    return Err(SeError::invalid(
-                        "launch authority",
-                        "the dedicated activation route",
-                    ));
-                }
-            },
-        };
-        if let Some(project) = selections.as_ref().and_then(|value| value.project.as_ref()) {
-            match (&admission.actor, &admission.scope) {
-                (Actor::Agent(_), Scope::Project(bound)) if bound != project => {
-                    return Err(SeError::invalid(
-                        "CLI project selection",
-                        "the authenticated session's exact project",
-                    ));
-                }
-                (Actor::Human(_), _) => admission.scope = Scope::Project(project.clone()),
-                _ => (),
             }
-        }
-        // Principal/scope admission precedes execution; Kernel::plan applies
-        // presence policy to this verified terminal fact before any effects.
-        se_core::admission::authorize(operation.meta(), &admission)?;
-        let mut facts = allocate_facts()?;
-        facts.door = if matches!(&operation, ops::AnyOp::HookClaude(_)) {
-            se_store::Door::Hook
-        } else if selections.is_some() {
-            se_store::Door::Cli
-        } else {
-            se_store::Door::Mcp
-        };
-        Ok(HostedCall {
-            input: HostedInput::Operation(operation),
-            kernel: match &self.configuration {
-                Some(configuration) => se_core::dispatch::Kernel::new(facts)?
-                    .with_configuration(configuration.clone())?,
-                None => se_core::dispatch::Kernel::new(facts)?,
-            },
-            admission,
-            terminal,
-            selections,
-        })
+            // Principal/scope admission precedes execution; Kernel::plan applies
+            // presence policy to this verified terminal fact before any effects.
+            se_core::admission::authorize(operation.meta(), &admission)?;
+            let mut facts = allocate_facts()?;
+            facts.door = if matches!(&operation, ops::AnyOp::HookClaude(_)) {
+                se_store::Door::Hook
+            } else if selections.is_some() {
+                se_store::Door::Cli
+            } else {
+                se_store::Door::Mcp
+            };
+            Ok(HostedCall {
+                input: HostedInput::Operation(operation),
+                kernel: match &self.configuration {
+                    Some(configuration) => se_core::dispatch::Kernel::new(facts)?
+                        .with_configuration(configuration.clone())?,
+                    None => se_core::dispatch::Kernel::new(facts)?,
+                },
+                admission,
+                terminal,
+                selections,
+            })
+        })();
+        super::executor::close_read(result, phase.close())
     }
-    fn session(&self, secret: &se_types::Secret) -> Result<Admission> {
-        let credential = match self
-            .reader
+    fn session(&self, phase: &se_store::ReadPhase, secret: &se_types::Secret) -> Result<Admission> {
+        let credential = match phase
             .credential(Hasher::digest(secret.expose()).into())
             .map_err(|e| store_error(&e))?
         {
@@ -243,9 +254,8 @@ impl AdmissionContext {
         }
         se_types::Secret::new(std::mem::take(&mut *bytes))
     }
-    fn owner_peer(&self, peer: &PeerProof) -> Result<()> {
-        let inventory = self
-            .reader
+    fn owner_peer(&self, phase: &se_store::ReadPhase, peer: &PeerProof) -> Result<()> {
+        let inventory = phase
             .owner_guard(self.lease.files(), owner_budget()?)
             .map_err(|e| store_error(&e))?;
         if inventory.owners.as_slice() != [self.owner.clone()] {
@@ -318,8 +328,8 @@ impl AdmissionContext {
         Ok(())
     }
 
-    pub fn check_generation(&self) -> Result<()> {
-        match self.reader.runtime_owner().map_err(|e| store_error(&e))? {
+    fn check_generation(&self, phase: &se_store::ReadPhase) -> Result<()> {
+        match phase.runtime_owner().map_err(|e| store_error(&e))? {
             Read::Present { value } if value.generation == self.generation => Ok(()),
             _ => Err(SeError::invalid(
                 "host generation",
