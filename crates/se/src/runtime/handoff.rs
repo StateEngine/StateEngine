@@ -75,6 +75,10 @@ impl Plan {
     }
 }
 impl Completion {
+    pub(crate) fn installation(&self) -> &ValidatedUninstallPlan {
+        &self.installation
+    }
+
     pub(crate) fn record_helper_cleanup(
         &self,
         debt: &se_proc::UninstallHelperCleanup,

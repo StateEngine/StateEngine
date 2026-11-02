@@ -50,8 +50,8 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
             )
             .with_cause(error)
         })?;
-    let plan = &handoff.installation;
-    plan.validate()?;
+    let completion = handoff.prepare(&helper.parent().image)?;
+    let plan = completion.installation();
     let canonical_image = se_proc::canonicalize_path(&helper.parent().image).map_err(|error| {
         SeError::invalid(
             "private uninstall image",
@@ -60,7 +60,7 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
         .with_cause(error)
     })?;
     let mut owns_image = false;
-    for file in &plan.files {
+    for file in plan.files() {
         match se_proc::canonicalize_path(&file.path) {
             Ok(path) => owns_image |= path == canonical_image,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
@@ -84,7 +84,6 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
             "an exact owned file matching the authenticated parent image",
         ));
     }
-    let completion = handoff.prepare(&helper.parent().image)?;
     completion.record_helper_cleanup(helper.helper_cleanup())?;
     helper.announce_ready().map_err(native_error)?;
     if let Some(directory) = helper.staging_directory() {
@@ -108,7 +107,7 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
         "Removed installed image: {} (native parent exit and deletion witnessed)",
         witness.removed_image().display()
     );
-    crate::runtime::helper_cleanup::verify(&plan.state_home, witness.helper_cleanup())?;
+    crate::runtime::helper_cleanup::verify(plan.state_home(), witness.helper_cleanup())?;
     if let Some((path, reason)) = witness.pending_helper() {
         eprintln!(
             "Helper cleanup pending at {}: {reason}; retry install or uninstall after the helper exits",
