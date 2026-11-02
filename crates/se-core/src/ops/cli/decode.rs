@@ -69,6 +69,27 @@ pub fn from_matches_with_key(
     };
     let op =
         match meta.name {
+            "continuity.resume" => AnyOp::Resume(Resume {
+                limit: required(m, "limit")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("limit", "1..100"))?,
+                governing_cursor: text(m, "governing_cursor").map(Cursor::new).transpose()?,
+                since: text(m, "since").map(Cursor::new).transpose()?,
+                byte_budget: required(m, "budget")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("budget", "1024..1048576"))?,
+                preview_agent: None,
+            }),
+            "session.context" => AnyOp::SessionContext(SessionContextRequest {
+                governing_cursor: text(m, "governing_cursor").map(Cursor::new).transpose()?,
+                limit: required(m, "limit")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("limit", "1..100"))?,
+                since: text(m, "since").map(Cursor::new).transpose()?,
+                byte_budget: required(m, "budget")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("budget", "1024..1048576"))?,
+            }),
             "agent.list" => AnyOp::AgentList(AgentList {
                 limit: required(m, "limit")?
                     .parse()

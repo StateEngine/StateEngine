@@ -1,4 +1,5 @@
 mod administration;
+mod continuity;
 mod control;
 mod decision;
 pub mod error;
@@ -20,6 +21,10 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
         writeln!(out)?;
     } else if !quiet || value.exit_code() != 0 || matches!(value.human_kind(), HumanKind::Help) {
         match (value.human_kind(), value) {
+            (HumanKind::Resume, AnyOutput::Resume(value)) => continuity::resume(&value.value, out)?,
+            (HumanKind::SessionContext, AnyOutput::SessionContext(value)) => {
+                write!(out, "{}", value.value.assembled_model_input)?
+            }
             (HumanKind::Version, AnyOutput::MetaVersion(value)) => {
                 writeln!(out, "stateengine {}", value.value.version)?
             }

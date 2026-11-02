@@ -6,6 +6,7 @@ use super::*;
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CliSelections {
+    pub preview: Option<String>,
     /// Resolved from CLI project policy before forwarding; never an authority.
     /// The host must select/check this scope before opening an admitted snapshot.
     pub project: Option<se_types::ProjectId>,
@@ -19,7 +20,11 @@ pub struct CliSelections {
 }
 impl CliSelections {
     pub fn validate(&self) -> Result<()> {
-        for (name, selector) in [("agent", &self.agent), ("to", &self.mail_to)] {
+        for (name, selector) in [
+            ("agent", &self.agent),
+            ("to", &self.mail_to),
+            ("preview", &self.preview),
+        ] {
             if let Some(selector) = selector {
                 bounded(name, selector, 512, false)?;
             }
@@ -56,6 +61,32 @@ impl CliSelections {
                         "--all",
                         op.meta().name,
                         "only status accepts all-project routing",
+                    ));
+                }
+            }
+        }
+        if let Some(target) = &self.preview {
+            if !matches!(cx.admission.actor, se_store::Actor::Human(_)) {
+                return Err(SeError::new(se_types::Detail::OwnerRequired(
+                    se_types::details::OwnerRequired {
+                        op: "continuity preview".into(),
+                    },
+                )));
+            }
+            match op {
+                AnyOp::Resume(input) => {
+                    let se_store::Actor::Agent(agent) =
+                        crate::scope::actor_selector(cx.read, target)?
+                    else {
+                        return Err(SeError::invalid("preview", "a saved agent"));
+                    };
+                    input.preview_agent = Some(agent);
+                }
+                _ => {
+                    return Err(unknown_flag(
+                        "--preview",
+                        op.meta().name,
+                        "preview is only a read-only continuity operation",
                     ));
                 }
             }

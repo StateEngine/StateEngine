@@ -168,6 +168,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
             temporary_directory: (!temporary_directory.is_empty())
                 .then(|| PathBuf::from(temporary_directory)),
         })?;
+        host.bind_loopback()?;
         let bootstrap = guard
             .take()
             .ok_or_else(|| invalid("the retained bootstrap before listener admission"))?;

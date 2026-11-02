@@ -71,6 +71,8 @@ macro_rules! output_types {
     }
 }
 output_types! {
+Resume => Resume, ResumeOutput;
+SessionContext => SessionContextRequest, SessionContextOutput;
 MetaVersion => MetaVersion, VersionOutput;
 MetaHelp => MetaHelp, HelpOutput;
 MetaSchema => MetaSchema, SchemaCatalogue;

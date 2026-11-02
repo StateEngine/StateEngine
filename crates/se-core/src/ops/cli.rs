@@ -25,6 +25,10 @@ impl CommonArgs {
         let (path, m) = deepest(matches);
         let name = selected_meta(matches)?.name;
         let selections = match name {
+            "continuity.resume" => CliSelections {
+                preview: text(m, "preview"),
+                ..CliSelections::default()
+            },
             "project.status" => CliSelections {
                 status_all: !path.is_empty() && flag(m, "all"),
                 ..CliSelections::default()
@@ -210,6 +214,17 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(positional("agent", 1, false).conflicts_with("all"))
             .arg(toggle("all").conflicts_with("release"))
             .arg(toggle("release")),
+        "continuity.resume" => c
+            .arg(value("since"))
+            .arg(value("budget").default_value("32768"))
+            .arg(value("limit").default_value("20"))
+            .arg(value("governing_cursor").long("governing-cursor"))
+            .arg(value("preview")),
+        "session.context" => c
+            .arg(value("since"))
+            .arg(value("budget").default_value("32768"))
+            .arg(value("governing_cursor").long("governing-cursor"))
+            .arg(value("limit").default_value("20")),
         "project.remove" => c
             .arg(toggle("all").conflicts_with("project"))
             .arg(toggle("keep-integrations")),

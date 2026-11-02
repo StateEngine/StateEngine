@@ -1,6 +1,8 @@
 //! The operation list for the executable wave-one surface. Later waves add their
 //! production operations here; no placeholder handlers or phantom tools are exposed.
 pub mod administration;
+pub mod continuity;
+pub use continuity::{Resume, ResumeOutput, SessionContextOutput, SessionContextRequest};
 pub mod agent;
 pub mod agent_launch;
 pub mod agent_stop;
@@ -140,6 +142,8 @@ ops! {
     RuntimeDown => RuntimeDown, RuntimeStop, ("runtime.down",leaf(&["down"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,None,"se.runtime-stop",RuntimeStop,&["J3"]);
     Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal requires the owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);
     AgentCreate => AgentCreate, AgentReceipt, ("agent.create",leaf(&["agent","add"]),tool("stateengine_agent_create","Create an agent","Create a durable agent identity and safe saved profile without launching a process; sessions require their current create grant."),Either,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["E3","J2","J4"]);
+    Resume => Resume, ResumeOutput, ("continuity.resume",leaf(&["resume"]),tool("stateengine_resume","Restore your context","Restore your own working state, unread mail, governing decisions and recent captured turns; omissions name explicit full reads. This read acknowledges nothing."),Either,false,Never,Read,Project,None,"se.resume",Resume,&["J3","J4"]);
+    SessionContext => SessionContextRequest, SessionContextOutput, ("session.context",CliExposure::Leaf{path:&["session","context"],hidden:true,select:Selector::Always},no_mcp("Harness/SE Code context uses the verified bound session; model tools use stateengine_resume."),Session,false,Never,Read,Session,None,"secode.session-context",SessionContext,&["J2","J3"]);
     AgentList => AgentList, AgentPage, ("agent.list",leaf(&["agent","list"]),no_mcp("Owner overview; bound agents use status for their own saved identity."),Owner,false,Never,Read,Project,None,"se.agent-page",AgentPage,&["J2","J3"]);
     AgentLaunch => AgentLaunch, LaunchResult, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Launch your own saved agent or a directly created agent you currently control; readiness and process custody are witnessed."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
     AgentStop => AgentStop, StopResult, ("agent.stop",leaf(&["stop"]),tool("stateengine_agent_stop","Stop an agent","Stop your own agent or a directly created agent you currently control; returns the command that resumes its saved conversation."),Either,false,Never,Custody,ProjectOrAll,HostAutoStart,"se.stop",Stop,&["J3","J5"]);
@@ -237,6 +241,12 @@ impl AnyOutput {
             Self::ConfigGet(v) => v.value.value.exit_code(),
             Self::DecisionShow(v) => v.value.decision.exit_code(),
             Self::AgentShow(v) => v.value.agent.exit_code(),
+            Self::Resume(v)
+                if !v.value.complete || v.value.resume_status == "integrity_blocked" =>
+            {
+                2
+            }
+            Self::SessionContext(v) if v.value.truncated || !v.value.failures.is_empty() => 2,
             Self::AgentList(v) => v.value.page.window().exit_code(false),
             Self::HistoryList(v) => v.value.page.window().exit_code(false),
             Self::ProjectStatus(v) => {
