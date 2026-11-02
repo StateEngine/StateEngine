@@ -1,3 +1,8 @@
+//! Retry::AfterReread and Retry::WhenRuntimeReady both become AfterRefresh:
+//! callers must refresh the failed observation rather than automatically retry
+//! a mutation. Their original error code and remedy remain available.
+//! ApiFailure::NotIncluded, EnginePanicked and GenerationPoisoned have no
+//! producer in ErrorBody/Class; inclusion and lifecycle wrappers own those arms.
 use se_types as core;
 use secode_stateengine_api as api;
 
@@ -8,12 +13,21 @@ pub fn error_body(
     context: &core::RenderCx<'_>,
 ) -> core::Result<api::ApiError> {
     let remedy = value.remedy(context)?;
+    let mut text = remedy.text;
     let command = match remedy.command {
         Some(core::Cmd::Tool { name, args }) => Some(api::ApiCommand::Tool { name, args }),
         Some(core::Cmd::Manual) => Some(api::ApiCommand::Manual),
-        // CLI argv is already rendered into the remedy text. Linked consumers
-        // cannot execute a CLI command as if it were an authorized model tool.
-        Some(core::Cmd::Se { .. }) | None => None,
+        Some(core::Cmd::Se { argv }) => {
+            // The API has no executable CLI remedy. Retain each literal token
+            // as JSON data for a human; never flatten argv into shell source.
+            let arguments = serde_json::to_string(argv.as_slice()).map_err(|_| {
+                core::SeError::invalid("linked remedy", "serializable literal arguments")
+            })?;
+            text.push_str("\nRun se with these literal arguments: ");
+            text.push_str(&arguments);
+            Some(api::ApiCommand::Manual)
+        }
+        None => None,
     };
     let retry = match value.retry() {
         core::Retry::Never => api::ApiRetry::Never,
@@ -39,10 +53,7 @@ pub fn error_body(
         kind,
         code: value.code().as_str().to_owned(),
         message: value.message(),
-        remedy: api::ApiRemedy {
-            text: remedy.text,
-            command,
-        },
+        remedy: api::ApiRemedy { text, command },
         retry,
     })
 }
