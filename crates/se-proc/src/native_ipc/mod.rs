@@ -52,16 +52,9 @@ pub struct IpcNativeError {
     pub operation: &'static str,
     pub source: io::Error,
 }
-impl std::fmt::Display for IpcNativeError {
-    fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(out, "{}: {:?}: {}", self.operation, self.code, self.source)
-    }
-}
-impl std::error::Error for IpcNativeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
+crate::native_error::native_error!(IpcNativeError, |error, out| {
+    write!(out, "{}: {:?}: {}", error.operation, error.code, error.source)
+}; source Some(&error.source));
 pub type IpcNativeResult<T> = std::result::Result<T, IpcNativeError>;
 fn error(operation: &'static str, source: io::Error) -> IpcNativeError {
     let code = match source.kind() {

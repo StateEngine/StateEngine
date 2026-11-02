@@ -107,12 +107,7 @@ pub struct HistoricalCheckpoint {
 pub struct CheckpointError {
     pub reason: String,
 }
-impl std::fmt::Display for CheckpointError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.reason)
-    }
-}
-impl std::error::Error for CheckpointError {}
+crate::native_error::native_error!(CheckpointError, |error, out| out.write_str(&error.reason));
 fn invalid(reason: impl ToString) -> CheckpointError {
     CheckpointError {
         reason: reason.to_string(),

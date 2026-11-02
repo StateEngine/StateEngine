@@ -1,7 +1,7 @@
 //! The one per-user PATH value. Transactions protect comparison from concurrent
 //! nontransactional edits; no expanded environment text is ever read or written.
 use std::{
-    fmt, io,
+    io,
     os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     ptr,
 };
@@ -33,20 +33,9 @@ pub struct PathUpdateError {
     pub phase: PathUpdatePhase,
     pub source: io::Error,
 }
-impl fmt::Display for PathUpdateError {
-    fn fmt(&self, out: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            out,
-            "{} ({:?}): {}",
-            self.operation, self.phase, self.source
-        )
-    }
-}
-impl std::error::Error for PathUpdateError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
+crate::native_error::native_error!(PathUpdateError, |error, out| {
+    write!(out, "{} ({:?}): {}", error.operation, error.phase, error.source)
+}; source Some(&error.source));
 fn error(operation: &'static str, phase: PathUpdatePhase, source: io::Error) -> PathUpdateError {
     PathUpdateError {
         operation,

@@ -34,26 +34,13 @@ pub struct StateFileError {
     pub path: PathBuf,
     pub source: Option<io::Error>,
 }
-impl std::fmt::Display for StateFileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} at {}: {:?}",
-            self.operation,
-            self.path.display(),
-            self.code
-        )?;
-        if let Some(source) = &self.source {
-            write!(f, ": {source}")?;
-        }
-        Ok(())
+crate::native_error::native_error!(StateFileError, |error, out| {
+    write!(out, "{} at {}: {:?}", error.operation, error.path.display(), error.code)?;
+    if let Some(source) = &error.source {
+        write!(out, ": {source}")?;
     }
-}
-impl std::error::Error for StateFileError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|e| e as _)
-    }
-}
+    Ok(())
+}; source error.source.as_ref().map(|e| e as _));
 pub(super) type Result<T> = std::result::Result<T, StateFileError>;
 pub(super) fn failure(
     code: StateFileErrorCode,

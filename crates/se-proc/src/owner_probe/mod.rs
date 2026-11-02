@@ -85,16 +85,9 @@ pub struct OwnerProbeError {
     pub operation: &'static str,
     pub source: io::Error,
 }
-impl std::fmt::Display for OwnerProbeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.operation, self.source)
-    }
-}
-impl std::error::Error for OwnerProbeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
+crate::native_error::native_error!(OwnerProbeError, |error, out| {
+    write!(out, "{}: {}", error.operation, error.source)
+}; source Some(&error.source));
 type Result<T> = std::result::Result<T, OwnerProbeError>;
 fn native(operation: &'static str, source: io::Error) -> OwnerProbeError {
     OwnerProbeError { operation, source }
