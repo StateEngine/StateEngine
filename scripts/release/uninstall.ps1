@@ -5,8 +5,31 @@ try {
     if ($env:OS -ne 'Windows_NT') { throw 'this script requires Windows' }
     $root = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'StateEngine'))
     $binary = Join-Path $root 'bin\se.exe'
-    if ($env:SE_HOME -and -not [IO.Path]::IsPathRooted($env:SE_HOME)) { throw 'SE_HOME must be absolute' }
-    $data = if ($env:SE_HOME) { [IO.Path]::GetFullPath($env:SE_HOME) } else { $root }
+    # Match Bootstrap::state_home: an explicit --home wins over SE_HOME,
+    # including an environment value that would be invalid if selected.
+    $selectedHome = [Environment]::GetEnvironmentVariable('SE_HOME')
+    if ($null -eq $selectedHome) { $selectedHome = $root }
+    $homeFlagSeen = $false
+    for ($index = 0; $index -lt $args.Count; $index++) {
+        $argument = [string]$args[$index]
+        if ($argument -ceq '--') { break }
+        if ($argument -ceq '--home' -or $argument.StartsWith('--home=', [StringComparison]::Ordinal)) {
+            if ($homeFlagSeen) { throw '--home may be specified only once' }
+            $homeFlagSeen = $true
+            if ($argument -ceq '--home') {
+                $index++
+                if ($index -ge $args.Count) { throw '--home requires a directory' }
+                $selectedHome = [string]$args[$index]
+            } else { $selectedHome = $argument.Substring(7) }
+        }
+    }
+    if ([string]::IsNullOrEmpty($selectedHome)) { throw 'selected state home must name a directory' }
+    # Native CLI relative homes resolve from the PowerShell command's filesystem
+    # location, which can differ from .NET's process-wide current directory.
+    if (-not [IO.Path]::IsPathRooted($selectedHome)) {
+        $selectedHome = Join-Path $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath $selectedHome
+    }
+    $data = [IO.Path]::GetFullPath($selectedHome)
     $record = Join-Path $data 'standalone-install.json'
     foreach ($path in @($binary, $record)) {
         $part = [IO.Path]::GetFullPath($path)

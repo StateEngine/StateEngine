@@ -138,6 +138,9 @@ Library lifecycle methods (`open`, capability verification, tool catalogue/call,
 | `atlas.impact` | `atlas impact SYMBOL` | `stateengine_atlas_impact` | either | read | symbol selector, bounded depth at most 3, budget | `Impact`: bounded dependent graph, per-hop confidence, test references and omitted frontier | optional J2–J4 |
 | `atlas.changes` | `atlas changes [--since CURSOR]` | `stateengine_atlas_changes` | either | read | explicit cursor/commit/time baseline or bound agent's saved index cursor, page | `Page<CodeChange>`: added/removed/signature/body changes, dependent counts, author hints and completeness | optional J3, J4 |
 | `atlas.outline` | `atlas outline PATH` | `stateengine_atlas_outline` | either | read | registered-root-relative file path, budget | `Read<Outline>`: symbol tree, locations, supported/skipped/partial/index facts | optional J2–J4 |
+
+### Windows installation.uninstall
+
 On Windows, the installed `se uninstall` process exits **75 (deferred)** after
 native helper authorization because its actual exit is required for image
 removal. It retains the full achieved `se.uninstall/v1` report and original
@@ -145,7 +148,8 @@ request key, with post-exit effects pending; this is not a successful uninstall.
 For a final caller-visible status, start with the matching archive's
 `uninstall.ps1`: it keeps the human console, waits for the helper verdict and
 independently checks its own installed image and record plus helper staging
-absence before returning zero. PATH before/after and its witness come from the
+absence before returning zero. Both `--home DIR` and `--home=DIR` override
+`SE_HOME` when selecting that record, using the native command's precedence. PATH before/after and its witness come from the
 native parent only; the script's final readback covers file cleanup. JSON is one
 `se.uninstall-completion/v1` object with the original `se.uninstall/v1` snapshot
 in `achieved`; its historical pending outcomes remain labelled pending. A direct
