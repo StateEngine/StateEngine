@@ -25,13 +25,33 @@ fn legal(from: ProcessState, to: ProcessState) -> bool {
     matches!(
         (from, to),
         (Reserved, Starting | Exited | Lost)
-            | (Starting, Running | StopRequested | Exited | Lost)
+            // Starting → Starting is only the pre-exec RootCheckpoint; apply
+            // checks that it publishes the root of an unpublished scope.
+            | (Starting, Starting | Running | StopRequested | Exited | Lost)
             | (Running, LeaderExited | StopRequested | Exited | Lost)
             | (LeaderExited, StopRequested | Exited | Lost)
             | (StopRequested, StopUnproved | Exited | Lost)
             | (StopUnproved, StopRequested | Exited | Lost)
             | (Lost, Running | LeaderExited | StopUnproved | Exited)
     )
+}
+/// The one authorized image change: a checkpointed pre-exec root publishing
+/// its verified vendor image (Starting → Running). Machine, boot, PID, native
+/// birth and argv digest stay identical; only the executable may differ.
+fn exec_image(
+    from: ProcessState,
+    to: ProcessState,
+    old: &se_types::ProcessInstance,
+    new: &se_types::ProcessInstance,
+) -> bool {
+    let (a, b) = (old.fields(), new.fields());
+    from == ProcessState::Starting
+        && to == ProcessState::Running
+        && a.machine == b.machine
+        && a.boot == b.boot
+        && a.pid == b.pid
+        && a.started == b.started
+        && a.argv_sha256 == b.argv_sha256
 }
 fn shape(identity: &ProcessIdentityRecord, state: ProcessState) -> StoreResult<()> {
     if identity.custody.format_version != 1
@@ -177,9 +197,14 @@ pub(super) fn apply(
             "process principal is not registered in its project",
         )
     })?;
-    let permitted = match &h.actor {
-        Actor::Human(human) => key(c, "human", human.as_str(), &[0], false)? == owner,
-        Actor::Agent(_) => h.actor == identity.principal && h.session == identity.session,
+    let permitted = match (&h.actor, &identity.principal) {
+        (Actor::Human(human), _) => key(c, "human", human.as_str(), &[0], false)? == owner,
+        (Actor::Agent(_), _) if h.actor == identity.principal => h.session == identity.session,
+        (Actor::Agent(creator), Actor::Agent(_)) => {
+            crate::creator::require(c, &p, &scope, creator, &principal)?;
+            true
+        }
+        (Actor::Agent(_), Actor::Human(_)) => false,
     };
     if !permitted {
         return Err(fail(
@@ -210,9 +235,20 @@ pub(super) fn apply(
             ));
         }
         let old = codec::process::identity(c, old_seq, &p, &id, rev - 1, &old_state, false)?;
+        if from == ProcessState::Starting
+            && to == ProcessState::Starting
+            && !(old.root_identity == RootIdentityState::Unpublished
+                && matches!(old.instance, RecordedIdentity::Absent { .. })
+                && identity.root_identity == RootIdentityState::Identified)
+        {
+            return Err(fail(
+                StoreErrorCode::InvalidTransition,
+                "Starting to Starting is only the pre-exec RootCheckpoint publishing an unpublished scope's root",
+            ));
+        }
         if old.principal != identity.principal
             || old.session != identity.session
-            || matches!((&old.instance,&identity.instance),(RecordedIdentity::Present(a),RecordedIdentity::Present(b)) if a != b)
+            || matches!((&old.instance,&identity.instance),(RecordedIdentity::Present(a),RecordedIdentity::Present(b)) if a != b && !exec_image(from, to, a, b))
             || matches!(
                 (&old.instance, &identity.instance),
                 (

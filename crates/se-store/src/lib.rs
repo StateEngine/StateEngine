@@ -7,6 +7,7 @@ mod backup_context;
 mod codec;
 mod completion;
 mod connection;
+mod creator;
 mod credential;
 mod error;
 mod event;

@@ -8,6 +8,7 @@ type ResumeRow = (
     u64,
 );
 mod capture;
+mod control;
 mod cursor;
 mod decision;
 mod message;
@@ -215,6 +216,26 @@ impl SqliteSnapshot {
         keys: &[&dyn rusqlite::ToSql],
         original: Option<&str>,
     ) -> StoreResult<Read<ProjectionRecord>> {
+        self.head_with(table, filter, keys, original, &|seq| {
+            if table == "principals" {
+                self.principal_metadata(seq)
+            } else if table == "projects" {
+                self.project_metadata(seq)
+            } else {
+                self.record(seq)
+            }
+        })
+    }
+    /// One current head plus its original event, each loaded by `load`, which
+    /// owns the visibility decision for that event.
+    fn head_with(
+        &self,
+        table: &str,
+        filter: &str,
+        keys: &[&dyn rusqlite::ToSql],
+        original: Option<&str>,
+        load: &dyn Fn(i64) -> StoreResult<StoredEvent>,
+    ) -> StoreResult<Read<ProjectionRecord>> {
         let row: Option<(u64, i64, Option<i64>)> = self
             .db
             .query_row(
@@ -238,24 +259,10 @@ impl SqliteSnapshot {
             Some((revision, seq, first)) => Ok(Read::Present {
                 value: ProjectionRecord {
                     revision: codec::revision(revision)?,
-                    current: if table == "principals" {
-                        self.principal_metadata(seq)?
-                    } else if table == "projects" {
-                        self.project_metadata(seq)?
-                    } else {
-                        self.record(seq)?
-                    },
+                    current: load(seq)?,
                     original: first
                         .filter(|s| *s != seq)
-                        .map(|s| {
-                            if table == "principals" {
-                                self.principal_metadata(s).map(Box::new)
-                            } else if table == "projects" {
-                                self.project_metadata(s).map(Box::new)
-                            } else {
-                                self.record(s).map(Box::new)
-                            }
-                        })
+                        .map(|s| load(s).map(Box::new))
                         .transpose()?,
                 },
             }),
@@ -699,6 +706,9 @@ impl Snapshot for SqliteSnapshot {
     }
     fn capture_source(&mut self, _source: RecordId) -> StoreResult<Read<ProjectionRecord>> {
         self.read_capture_source(_source)
+    }
+    fn control_target(&mut self, target: AgentId) -> StoreResult<Read<ControlTarget>> {
+        self.read_control_target(target)
     }
     fn process(&mut self, _id: LifecycleId) -> StoreResult<Read<ProjectionRecord>> {
         let p = self.project_bytes()?;
