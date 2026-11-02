@@ -56,6 +56,7 @@ pub struct HostedRouter {
     context: AdmissionContext,
     response_bytes: std::num::NonZeroU32,
     fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    http_port: std::sync::Arc<std::sync::OnceLock<u16>>,
 }
 impl HostedRuntime {
     pub fn router(&self) -> Result<HostedRouter> {
@@ -68,6 +69,7 @@ impl HostedRuntime {
             context: self.admission_context(),
             response_bytes: self.response_bytes,
             fenced: std::sync::Arc::clone(&self.fenced),
+            http_port: std::sync::Arc::clone(&self.http_port),
         })
     }
 }
@@ -237,39 +239,10 @@ impl AdmittedExchange {
             .flat_map(|completed| &completed.capture_commits)
             .map(|commit| commit.event_id.clone())
             .collect();
-        let result = (|| -> Result<IpcResult> {
-            match output {
-                Ok(completed) => {
-                    let output = match completed.write_timings {
-                        Some(measured) => {
-                            let timings = se_core::ops::ReceiptWriteTimings::from_store(&measured);
-                            timings.validate()?;
-                            completed.output.with_write_timings(timings)
-                        }
-                        None => completed.output,
-                    }
-                    .with_capture_commits(completed.capture_commits)?;
-                    let schema = output.family().schema();
-                    let value = serde_json::to_value(output).map_err(|e| {
-                        se_core::scope::unreadable("core output encoding", &e.to_string())
-                    })?;
-                    let window = value
-                        .get("window")
-                        .cloned()
-                        .map(serde_json::from_value)
-                        .transpose()
-                        .map_err(|_| {
-                            SeError::invalid("core output window", "the canonical complete Window")
-                        })?;
-                    Ok(IpcResult::Output(Box::new(OperationOutput {
-                        schema,
-                        value,
-                        window,
-                    })))
-                }
-                Err(error) => Ok(IpcResult::Error(envelope(&error)?)),
-            }
-        })();
+        let result = match output {
+            Ok(completed) => encode_executed(completed).map(|o| IpcResult::Output(Box::new(o))),
+            Err(error) => envelope(&error).map(IpcResult::Error),
+        };
         let response_error = |error: SeError| {
             let error = committed
                 .as_ref()
@@ -357,6 +330,92 @@ fn route(
     )?;
     Ok(RoutedCall { admitted, hook })
 }
+/// The one completed-output encoding shared by IPC and loopback MCP replies.
+pub(crate) fn encode_executed(completed: ExecutedCall) -> Result<OperationOutput> {
+    let output = match completed.write_timings {
+        Some(measured) => {
+            let timings = se_core::ops::ReceiptWriteTimings::from_store(&measured);
+            timings.validate()?;
+            completed.output.with_write_timings(timings)
+        }
+        None => completed.output,
+    }
+    .with_capture_commits(completed.capture_commits)?;
+    let schema = output.family().schema();
+    let value = serde_json::to_value(output)
+        .map_err(|e| se_core::scope::unreadable("core output encoding", &e.to_string()))?;
+    let window = value
+        .get("window")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| SeError::invalid("core output window", "the canonical complete Window"))?;
+    Ok(OperationOutput {
+        schema,
+        value,
+        window,
+    })
+}
 fn envelope(error: &SeError) -> Result<ErrorEnvelope> {
     ErrorEnvelope::new(error.body.clone(), &RenderCx::default())
+}
+impl HostedRouter {
+    /// Loopback MCP: admit on the blocking pool exactly as IPC does, then run
+    /// the same executor. A known commit survives a later encoding failure.
+    pub(crate) async fn mcp_call(
+        &self,
+        secret: std::sync::Arc<se_types::Secret>,
+        operation: se_core::ops::AnyOp,
+        deadline: &Deadline,
+    ) -> Result<OperationOutput> {
+        self.check_open()?;
+        let context = self.context.clone();
+        let fenced = std::sync::Arc::clone(&self.fenced);
+        let admitted = self
+            .execution
+            .blocking
+            .run_owned(deadline, move || {
+                if fenced.load(std::sync::atomic::Ordering::Acquire) {
+                    return Err(SeError::invalid(
+                        "host admission",
+                        "a call admitted before its drain fence",
+                    ));
+                }
+                context.mcp_call(&secret, operation)
+            })
+            .await?;
+        let completed = self
+            .execute_call(
+                RoutedCall {
+                    admitted,
+                    hook: None,
+                },
+                deadline,
+            )
+            .await?;
+        let committed = completed.committed.clone();
+        encode_executed(completed).map_err(|error| match committed {
+            Some(known) => known.response_error(error),
+            None => error,
+        })
+    }
+    pub(crate) async fn check_session(
+        &self,
+        secret: std::sync::Arc<se_types::Secret>,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        self.check_open()?;
+        let context = self.context.clone();
+        self.execution
+            .blocking
+            .run_owned(deadline, move || context.check_session(&secret))
+            .await
+    }
+    pub(crate) fn response_limit(&self) -> std::num::NonZeroU32 {
+        self.response_bytes
+    }
+    /// The loopback MCP port a launch writes into its provider's MCP config.
+    pub fn http_port(&self) -> Option<u16> {
+        self.http_port.get().copied()
+    }
 }

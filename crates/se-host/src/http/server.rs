@@ -1,0 +1,239 @@
+//! Loopback HTTP/1 listener and per-connection service (section 40 §7.3, H17).
+//! One request per connection: keep-alive is off, so pipelined requests are
+//! never parsed. Upgrades are never enabled. Responses carry no CORS headers.
+use super::{
+    admission::{self, MAX_BODY_BYTES, Refusal, Route},
+    mcp::HttpBackend,
+};
+use crate::{
+    HostedRouter, McpReply,
+    client::{
+        ClientOptions,
+        lease::{CALL_TIMEOUT, Deadline},
+    },
+};
+use http_body_util::{BodyExt, Full, Limited};
+use hyper::{
+    Request, Response, StatusCode,
+    body::{Bytes, Incoming},
+    header,
+};
+use se_types::Result;
+use std::{
+    convert::Infallible,
+    future::{Future, poll_fn},
+    net::Ipv4Addr,
+    pin::pin,
+    sync::{Arc, atomic::AtomicBool},
+    task::Poll,
+    time::Duration,
+};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    sync::{OwnedSemaphorePermit, Semaphore, watch},
+};
+
+/// Active request connections; separate from any future parked mail waits.
+pub(crate) const ACTIVE_CONNECTIONS: usize = 64;
+const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
+/// hyper's smallest legal read buffer is 8 KiB; 16 KiB bounds the header block.
+const MAX_HEADER_BYTES: usize = 16 * 1024;
+
+pub struct HttpListener {
+    listener: TcpListener,
+    port: u16,
+    slots: Arc<Semaphore>,
+}
+impl HttpListener {
+    /// An ephemeral port on 127.0.0.1 only; never a wildcard or LAN address.
+    /// Call inside the supplied runtime: registration needs its reactor.
+    pub fn bind() -> Result<Self> {
+        let io = |what: &str, error: std::io::Error| {
+            se_core::scope::unreadable(what, &error.to_string()).with_cause(error)
+        };
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .map_err(|e| io("loopback HTTP bind", e))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| io("loopback HTTP listener mode", e))?;
+        let port = listener
+            .local_addr()
+            .map_err(|e| io("loopback HTTP address", e))?
+            .port();
+        let listener =
+            TcpListener::from_std(listener).map_err(|e| io("loopback HTTP registration", e))?;
+        Ok(Self {
+            listener,
+            port,
+            slots: Arc::new(Semaphore::new(ACTIVE_CONNECTIONS)),
+        })
+    }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+    /// The next connection that fits the active cap. Over-cap peers are closed
+    /// at once rather than queued; the caller retries like any refused connect.
+    pub(crate) async fn accept(&self) -> Result<(TcpStream, OwnedSemaphorePermit)> {
+        loop {
+            let (stream, _) = self.listener.accept().await.map_err(|error| {
+                se_core::scope::unreadable("loopback HTTP accept", &error.to_string())
+                    .with_cause(error)
+            })?;
+            match Arc::clone(&self.slots).try_acquire_owned() {
+                Ok(permit) => return Ok((stream, permit)),
+                Err(_) => drop(stream),
+            }
+        }
+    }
+}
+
+/// Serve one connection to completion, or close it gracefully once the host
+/// fence publishes its shutdown deadline. The permit is held throughout.
+pub(crate) async fn connection(
+    router: HostedRouter,
+    stream: TcpStream,
+    port: u16,
+    permit: OwnedSemaphorePermit,
+    mut shutdown: watch::Receiver<Option<Deadline>>,
+) -> Result<()> {
+    let service = hyper::service::service_fn(move |request| {
+        let router = router.clone();
+        async move { Ok::<_, Infallible>(respond(&router, request, port).await) }
+    });
+    let mut builder = hyper::server::conn::http1::Builder::new();
+    builder
+        .timer(hyper_util::rt::TokioTimer::new())
+        .header_read_timeout(HEADER_TIMEOUT)
+        .max_buf_size(MAX_HEADER_BYTES)
+        .keep_alive(false);
+    let mut served = pin!(builder.serve_connection(hyper_util::rt::TokioIo::new(stream), service));
+    let finished = if shutdown.borrow().is_some() {
+        None
+    } else {
+        let mut fenced = pin!(shutdown.changed());
+        poll_fn(|cx| {
+            if let Poll::Ready(result) = served.as_mut().poll(cx) {
+                return Poll::Ready(Some(result));
+            }
+            fenced.as_mut().poll(cx).map(|_| None)
+        })
+        .await
+    };
+    let result = match finished {
+        Some(result) => result,
+        None => {
+            served.as_mut().graceful_shutdown();
+            served.await
+        }
+    };
+    drop(permit);
+    // A client that disconnects mid-request is an ordinary closed connection.
+    result.or_else(|error| {
+        if error.is_incomplete_message() || error.is_canceled() || error.is_timeout() {
+            Ok(())
+        } else {
+            Err(se_core::scope::unreadable(
+                "loopback HTTP connection",
+                &error.to_string(),
+            ))
+        }
+    })
+}
+
+async fn respond(
+    router: &HostedRouter,
+    request: Request<Incoming>,
+    port: u16,
+) -> Response<Full<Bytes>> {
+    let route = match admission::admit(&request, port) {
+        Ok(route) => route,
+        Err(refusal) => return refused(&refusal),
+    };
+    match route {
+        Route::Livez => match serde_json::to_value(se_types::API_VERSION) {
+            // Anonymous liveness: no counts, projects or readiness claims.
+            Ok(api) => json(StatusCode::OK, &serde_json::json!({"ok": true, "api": api})),
+            Err(_) => status_only(StatusCode::INTERNAL_SERVER_ERROR),
+        },
+        Route::Mcp => {
+            let secret = match admission::bearer(request.headers()) {
+                Ok(secret) => secret,
+                Err(refusal) => return refused(&refusal),
+            };
+            let deadline = match Deadline::from_options(&ClientOptions {
+                expected_generation: None,
+                timeout: CALL_TIMEOUT,
+                cancelled: Arc::new(AtomicBool::new(false)),
+            }) {
+                Ok(deadline) => deadline,
+                Err(_) => return status_only(StatusCode::SERVICE_UNAVAILABLE),
+            };
+            // Count actual bytes whatever Content-Length claimed, within the
+            // same request clock as execution.
+            let body = Limited::new(request.into_body(), MAX_BODY_BYTES).collect();
+            let body = match tokio::time::timeout(CALL_TIMEOUT, body).await {
+                Ok(Ok(body)) => body.to_bytes(),
+                Ok(Err(_)) => {
+                    return refused(&Refusal {
+                        status: StatusCode::PAYLOAD_TOO_LARGE,
+                        reason: "body exceeds 1 MiB or ended early",
+                        allow: None,
+                    });
+                }
+                Err(_) => return status_only(StatusCode::REQUEST_TIMEOUT),
+            };
+            let mut backend = HttpBackend {
+                router,
+                deadline: &deadline,
+            };
+            match crate::mcp::dispatch(&body, secret.map(Arc::new), &mut backend).await {
+                McpReply::Json(value) => json(StatusCode::OK, &value),
+                McpReply::Accepted => status_only(StatusCode::ACCEPTED),
+            }
+        }
+    }
+}
+
+fn refused(refusal: &Refusal) -> Response<Full<Bytes>> {
+    let mut response = json(
+        refusal.status,
+        &serde_json::json!({"error": refusal.reason}),
+    );
+    if let Some(allow) = refusal.allow {
+        response
+            .headers_mut()
+            .insert(header::ALLOW, header::HeaderValue::from_static(allow));
+    }
+    if refusal.status == StatusCode::UNAUTHORIZED {
+        response.headers_mut().insert(
+            header::WWW_AUTHENTICATE,
+            header::HeaderValue::from_static("Bearer"),
+        );
+    }
+    response
+}
+
+fn json(status: StatusCode, value: &serde_json::Value) -> Response<Full<Bytes>> {
+    let bytes = match serde_json::to_vec(value) {
+        Ok(bytes) => bytes,
+        Err(_) => return status_only(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    let mut response = Response::new(Full::new(Bytes::from(bytes)));
+    *response.status_mut() = status;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        header::HeaderValue::from_static("application/json"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_static("no-store"),
+    );
+    response
+}
+
+fn status_only(status: StatusCode) -> Response<Full<Bytes>> {
+    let mut response = Response::new(Full::new(Bytes::new()));
+    *response.status_mut() = status;
+    response
+}

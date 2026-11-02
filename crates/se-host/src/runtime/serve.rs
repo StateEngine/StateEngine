@@ -38,6 +38,7 @@ enum ConnectionEnd {
 )]
 enum Event {
     Accepted(Result<crate::AcceptedIpcStream>),
+    Http(Result<(tokio::net::TcpStream, tokio::sync::OwnedSemaphorePermit)>),
     Joined(std::result::Result<Result<ConnectionEnd>, tokio::task::JoinError>),
 }
 impl HostedRuntime {
@@ -65,12 +66,33 @@ impl HostedRuntime {
             Err(error) => return ended(self, listener, Some(error)),
         };
         let runtime = self.execution.blocking.handle();
+        // Provider MCP sessions reach this host over loopback HTTP. Bound once
+        // per hosted runtime, inside the supplied runtime's reactor.
+        let http = match crate::HttpListener::bind() {
+            Ok(http) if self.http_port.set(http.port()).is_ok() => http,
+            Ok(_) => {
+                let error =
+                    SeError::invalid("loopback HTTP listener", "one bind per hosted runtime");
+                return ended(self, listener, Some(error));
+            }
+            Err(error) => return ended(self, listener, Some(error)),
+        };
         let (shutdown, cancelled) = watch::channel(None);
         let mut tasks = JoinSet::new();
         let mut accept_backoff = std::time::Duration::from_millis(1);
         let mut accept_retry_at = tokio::time::Instant::now();
+        let mut http_backoff = std::time::Duration::from_millis(1);
+        let mut http_retry_at = tokio::time::Instant::now();
         let mut outcome = loop {
-            match event(&mut listener, &mut tasks, accept_retry_at).await {
+            match event(
+                &mut listener,
+                &http,
+                &mut tasks,
+                accept_retry_at,
+                http_retry_at,
+            )
+            .await
+            {
                 Event::Accepted(Ok(stream)) => {
                     accept_backoff = std::time::Duration::from_millis(1);
                     let router = router.clone();
@@ -84,6 +106,23 @@ impl HostedRuntime {
                         (accept_backoff * 2).min(std::time::Duration::from_millis(250));
                 }
                 Event::Accepted(Err(error)) => break ended(self, listener, Some(error)),
+                Event::Http(Ok((stream, permit))) => {
+                    http_backoff = std::time::Duration::from_millis(1);
+                    let (router, cancelled, port) =
+                        (router.clone(), cancelled.clone(), http.port());
+                    let served = async move {
+                        crate::http::connection(router, stream, port, permit, cancelled)
+                            .await
+                            .map(|()| ConnectionEnd::Closed)
+                    };
+                    tasks.spawn_on(served, &runtime);
+                }
+                Event::Http(Err(error)) if transient_accept(&error) => {
+                    self.failed_connection(error);
+                    http_retry_at = tokio::time::Instant::now() + http_backoff;
+                    http_backoff = (http_backoff * 2).min(std::time::Duration::from_millis(250));
+                }
+                Event::Http(Err(error)) => break ended(self, listener, Some(error)),
                 Event::Joined(Ok(Ok(ConnectionEnd::Stop(stop)))) => {
                     let mut exit = ended(self, listener, None);
                     exit.stop = Some(stop);
@@ -197,18 +236,27 @@ fn ended(
 }
 async fn event(
     listener: &mut HostedListener,
+    http: &crate::HttpListener,
     tasks: &mut JoinSet<Result<ConnectionEnd>>,
     retry_at: tokio::time::Instant,
+    http_retry_at: tokio::time::Instant,
 ) -> Event {
     let mut accepting = pin!(async {
         tokio::time::sleep_until(retry_at).await;
         listener.accept(Arc::new(AtomicBool::new(false))).await
+    });
+    let mut http_accepting = pin!(async {
+        tokio::time::sleep_until(http_retry_at).await;
+        http.accept().await
     });
     poll_fn(|cx| {
         if !tasks.is_empty()
             && let Poll::Ready(Some(joined)) = tasks.poll_join_next(cx)
         {
             return Poll::Ready(Event::Joined(joined));
+        }
+        if let Poll::Ready(accepted) = http_accepting.as_mut().poll(cx) {
+            return Poll::Ready(Event::Http(accepted));
         }
         accepting.as_mut().poll(cx).map(Event::Accepted)
     })

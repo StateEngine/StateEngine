@@ -177,17 +177,53 @@ impl AdmissionContext {
             };
             Ok(HostedCall {
                 input: HostedInput::Operation(operation),
-                kernel: match &self.configuration {
-                    Some(configuration) => se_core::dispatch::Kernel::new(facts)?
-                        .with_configuration(configuration.clone())?,
-                    None => se_core::dispatch::Kernel::new(facts)?,
-                },
+                kernel: self.kernel(facts)?,
                 admission,
                 terminal,
                 selections,
             })
         })();
         super::executor::close_read(result, phase.close())
+    }
+    /// MCP over loopback HTTP: a current session bearer only. This transport has
+    /// no owner proof, launch activation or per-call authority override (§7.3).
+    /// The shared consumer has already decoded the tool through core's registry.
+    pub fn mcp_call(&self, secret: &se_types::Secret, operation: ops::AnyOp) -> Result<HostedCall> {
+        let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
+        let result = (|| {
+            self.check_generation(&phase)?;
+            let admission = self.session(&phase, secret)?;
+            se_core::admission::authorize(operation.meta(), &admission)?;
+            let mut facts = allocate_facts()?;
+            facts.door = se_store::Door::Mcp;
+            Ok(HostedCall {
+                input: HostedInput::Operation(operation),
+                kernel: self.kernel(facts)?,
+                admission,
+                terminal: HumanTerminal::Refused {
+                    reason: "session authority cannot become an owner terminal".into(),
+                },
+                selections: None,
+            })
+        })();
+        super::executor::close_read(result, phase.close())
+    }
+    /// Read-only MCP methods still require the same current session bearer.
+    pub fn check_session(&self, secret: &se_types::Secret) -> Result<()> {
+        let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
+        let result = (|| {
+            self.check_generation(&phase)?;
+            self.session(&phase, secret).map(drop)
+        })();
+        super::executor::close_read(result, phase.close())
+    }
+    fn kernel(&self, facts: se_core::dispatch::CallFacts) -> Result<se_core::dispatch::Kernel> {
+        match &self.configuration {
+            Some(configuration) => {
+                se_core::dispatch::Kernel::new(facts)?.with_configuration(configuration.clone())
+            }
+            None => se_core::dispatch::Kernel::new(facts),
+        }
     }
     fn session(&self, phase: &se_store::ReadPhase, secret: &se_types::Secret) -> Result<Admission> {
         let credential = match phase

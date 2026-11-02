@@ -177,23 +177,6 @@ pub struct AdmissionAdapter {
 pub struct Dispatcher {
     pub(crate) _private: (),
 }
-#[derive(Clone, Debug)]
-pub struct HttpRequestHead {
-    pub method: String,
-    pub target: String,
-    pub host: String,
-    pub origin: Option<String>,
-    pub sec_fetch_site: Option<String>,
-    pub content_type: Option<String>,
-    pub accept: Option<String>,
-    pub declared_bytes: Option<u64>,
-}
-pub struct HttpChannel {
-    pub(crate) _private: (),
-}
-pub struct HttpListener {
-    pub(crate) _private: (),
-}
 
 #[cfg(feature = "listener")]
 #[path = "ipc/listener.rs"]

@@ -6,7 +6,13 @@
 extern crate self as se_host;
 pub mod client;
 mod harness;
+#[cfg(feature = "listener")]
+mod http;
+#[cfg(feature = "listener")]
+pub use http::HttpListener;
 mod ipc;
+pub mod mcp;
+pub use mcp::{McpBackend, McpReply};
 mod model;
 mod runtime;
 mod session;
