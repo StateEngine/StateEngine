@@ -20,6 +20,7 @@ pub use checkpoint::{
 mod error;
 mod identity;
 mod launch;
+mod native_error;
 pub mod native_ipc;
 mod owner_probe;
 #[cfg(windows)]

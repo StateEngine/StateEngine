@@ -31,16 +31,9 @@ pub struct UninstallNativeError {
     /// Exact protected artifacts whose cleanup remains unresolved after failure.
     pub pending_paths: Vec<PathBuf>,
 }
-impl std::fmt::Display for UninstallNativeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.operation, self.source)
-    }
-}
-impl std::error::Error for UninstallNativeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
+crate::native_error::native_error!(UninstallNativeError, |error, out| {
+    write!(out, "{}: {}", error.operation, error.source)
+}; source Some(&error.source));
 type Result<T> = std::result::Result<T, UninstallNativeError>;
 fn error(operation: &'static str, source: io::Error) -> UninstallNativeError {
     UninstallNativeError {

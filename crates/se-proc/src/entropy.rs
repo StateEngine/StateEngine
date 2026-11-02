@@ -7,16 +7,11 @@ pub struct NativeEntropyError {
     pub operation: &'static str,
     pub native_code: Option<i64>,
 }
-impl std::fmt::Display for NativeEntropyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{} failed (native code {:?}); no secret allocated",
-            self.operation, self.native_code
-        )
-    }
-}
-impl std::error::Error for NativeEntropyError {}
+crate::native_error::native_error!(NativeEntropyError, |error, out| write!(
+    out,
+    "{} failed (native code {:?}); no secret allocated",
+    error.operation, error.native_code
+));
 
 /// Allocates exactly 32 fresh OS-CSPRNG bytes in a redacted, zeroizing Secret.
 /// Callers own protected publication; this function does no file or log I/O.

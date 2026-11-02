@@ -14,16 +14,9 @@ pub struct FileOwnerError {
     pub operation: &'static str,
     pub source: io::Error,
 }
-impl std::fmt::Display for FileOwnerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}: {}", self.operation, self.source)
-    }
-}
-impl std::error::Error for FileOwnerError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
+crate::native_error::native_error!(FileOwnerError, |error, out| {
+    write!(out, "{}: {}", error.operation, error.source)
+}; source Some(&error.source));
 /// Call first in the CLI and host entry points. This changes only the Windows
 /// process token's default owner to its actual user; no DACL, privilege, existing
 /// file owner, Unix uid or process umask changes. Every native failure refuses.
