@@ -294,3 +294,7 @@ fn checked_phase(
         Err(error) => close_read(Err(error), phase.close()),
     }
 }
+
+#[cfg(test)]
+#[path = "read_phase_tests.rs"]
+mod read_phase_tests;

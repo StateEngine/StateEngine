@@ -255,6 +255,10 @@ impl AdmissionContext {
         se_types::Secret::new(std::mem::take(&mut *bytes))
     }
     fn owner_peer(&self, phase: &se_store::ReadPhase, peer: &PeerProof) -> Result<()> {
+        // This finite auth phase deliberately retains its SQL pin through the
+        // protected readback and bounded native ancestry observation below.
+        // machine_key likewise reads a protected file before the phase closes;
+        // none of these synchronous reads submits a write or awaits the network.
         let inventory = phase
             .owner_guard(self.lease.files(), owner_budget()?)
             .map_err(|e| store_error(&e))?;

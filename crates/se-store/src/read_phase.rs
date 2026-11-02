@@ -5,9 +5,12 @@ use se_types::Read;
 use std::{marker::PhantomData, path::PathBuf, rc::Rc};
 
 /// A fresh SQLite read transaction and one shared reader-capacity reservation.
-/// Query generation and authority again on every new phase. Close this phase
-/// before a network wait, commit or effect, or consume it into its scoped
-/// snapshot and close that snapshot before leaving the synchronous job.
+/// Query generation and authority again on every new phase. A finite auth
+/// phase may include protected file reads and bounded native process-tree
+/// observations on the same synchronous job; these reads retain the pin.
+/// Close before a network wait, commit or externally mutating effect, or consume
+/// this phase into its scoped snapshot and close that snapshot before leaving
+/// the synchronous job. The pin covers these bounded native reads as well as SQL.
 ///
 /// A phase cannot escape a blocking job through its `Send` result:
 /// ```compile_fail
