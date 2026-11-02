@@ -12,7 +12,8 @@ pub(super) fn epoch(home: &Path) -> Result<secode_stateengine_api::HostEpoch, St
     let files = se_host::state_files::Files::open(home).map_err(|error| error.to_string())?;
     let machine = machine_identity::require_machine_identity(home, &MachineReader(&files))
         .map_err(|error| error.to_string())?;
-    let native = se_proc::current_runtime_identity(machine).map_err(|error| error.to_string())?;
+    let native = se_proc::current_runtime_identity(machine)
+        .map_err(|error| format!("native runtime identity: {error:?}"))?;
     let peer = se_proc::native_ipc::observe_ipc_self().map_err(|error| error.to_string())?;
     let owner = ProcessInstance::from_observation(ProcessFields {
         machine: native.process.machine,
