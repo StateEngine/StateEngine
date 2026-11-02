@@ -5,6 +5,8 @@ mod grammar;
 mod hook;
 mod installer;
 mod ipc;
+mod mcp;
+mod mcp_stdio;
 mod private_entry;
 mod render;
 mod route;
@@ -225,6 +227,9 @@ fn main() -> std::process::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
     if let Err(error) = bootstrap::initialize_file_owner() {
         return finish(Err(error), &args);
+    }
+    if let Some(result) = mcp::entry(&args) {
+        return finish(result, &args);
     }
     if let Some(result) = runtime::host::dispatch(&args) {
         return finish(result, &args);

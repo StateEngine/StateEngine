@@ -167,7 +167,7 @@ fn invalid(expected: &str) -> SeError {
     SeError::invalid("CLI IPC", expected)
 }
 
-fn uncertain(keyed: Option<&(String, se_types::IdempotencyKey)>, error: SeError) -> SeError {
+pub(crate) fn uncertain(keyed: Option<&(String, se_types::IdempotencyKey)>, error: SeError) -> SeError {
     match keyed {
         Some((operation, key)) => SeError::new(Detail::CommitOutcomeUnknown(
             details::CommitOutcomeUnknown {
@@ -178,5 +178,51 @@ fn uncertain(keyed: Option<&(String, se_types::IdempotencyKey)>, error: SeError)
         ))
         .with_cause(error),
         None => error,
+    }
+}
+
+/// A session-only client with one outstanding request and a pinned host epoch.
+/// Every call sends its capability again; the host rechecks revocation and scope.
+/// Incomplete exchanges consume the native channel and never trigger a retry.
+pub struct SessionForwarder {
+    connection: se_host::client::BlockingConnection,
+    request_id: u64,
+}
+impl SessionForwarder {
+    pub fn connect(
+        endpoint: &EndpointRecord,
+        secret: &se_types::Secret,
+        options: &ClientOptions,
+    ) -> Result<Self> {
+        let connection = BlockingIpcClient::connect_authenticated(
+            endpoint,
+            ClientCredential::Session(se_types::Secret::new(secret.expose().to_vec())?),
+            NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
+            options,
+        )?;
+        Ok(Self { connection, request_id: 0 })
+    }
+    pub fn forward(
+        &mut self,
+        secret: &se_types::Secret,
+        op: AnyOp,
+        options: &ClientOptions,
+    ) -> Result<AnyOutput> {
+        self.request_id = self.request_id.checked_add(1)
+            .ok_or_else(|| invalid("an unexhausted request sequence"))?;
+        let expected = op.meta().family.schema();
+        let keyed = op.idempotency_key().map(|key| (op.meta().name.to_owned(), key.clone()));
+        let mut call = operation(op, &CliSelections::default(), self.connection.negotiated().generation)?;
+        call.request_id = self.request_id;
+        call.cli_selections = None;
+        call.authority = Some(se_host::PresentedAuthority::Session(
+            se_types::Secret::new(secret.expose().to_vec())?,
+        ));
+        let mut progress = ExchangeProgress::NotSent;
+        let output = self.connection.exchange_with_progress(call, options, &mut progress)
+            .map_err(|error| if progress == ExchangeProgress::SendAttempted {
+                uncertain(keyed.as_ref(), error)
+            } else { error })?;
+        decode(output, &expected).map_err(|error| uncertain(keyed.as_ref(), error))
     }
 }
