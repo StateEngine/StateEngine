@@ -278,15 +278,27 @@ impl AdmissionContext {
         // that discovery may use a still-prepared credential, and only while it
         // is the agent's current launch before its activation deadline. Each
         // refusal names its own reason and next step; none echoes the secret.
-        let refusal = if credential.purpose != purpose {
-            Some((
-                format!("issued for another purpose, not `{purpose}`"),
-                "present the credential this transport was issued",
-            ))
-        } else if credential.expires_at_us <= now {
-            Some(("expired".to_owned(), RELAUNCH))
-        } else {
-            match credential.state {
+        let refusal =
+            if credential.purpose != purpose {
+                Some((
+                    format!("issued for another purpose, not `{purpose}`"),
+                    "present the credential this transport was issued",
+                ))
+            } else if credential.expires_at_us <= now {
+                Some(("expired".to_owned(), RELAUNCH))
+            } else {
+                match credential.state {
+                // Reconciliation could not prove this launch stopped: its agent
+                // stays fenced until the owner releases it, active or not.
+                _ if pending == Pending::Refuse
+                    && phase.credential_stop_unproved(hash).map_err(|e| store_error(&e))? =>
+                {
+                    Some((
+                        "fenced: StateEngine could not prove this agent's earlier process stopped"
+                            .to_owned(),
+                        "the project owner checks the agent, then stops or releases it",
+                    ))
+                }
                 se_store::CredentialState::Active => None,
                 se_store::CredentialState::Revoked => Some((
                     "revoked: this launch was stopped or superseded".to_owned(),
@@ -311,7 +323,7 @@ impl AdmissionContext {
                 }
                 se_store::CredentialState::Prepared => None,
             }
-        };
+            };
         if let Some((reason, next_step)) = refusal {
             return Err(SeError::new(se_types::Detail::CapabilityInvalid(
                 se_types::details::CapabilityInvalid {
