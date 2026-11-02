@@ -12,8 +12,10 @@ use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
 
 pub fn credential_id(plan: &LaunchPlan, purpose: &str) -> Result<RecordId> {
-    let bytes = plan
-        .session
+    session_credential_id(&plan.session, purpose)
+}
+fn session_credential_id(session: &se_types::SessionId, purpose: &str) -> Result<RecordId> {
+    let bytes = session
         .canonical_bytes()?
         .ok_or_else(|| scope::unreadable("launch session", "noncanonical identity"))?;
     let mut time = [0; 8];
@@ -89,7 +91,7 @@ pub fn reserve<R: Snapshot>(
     identity: ProcessIdentityRecord,
     session_hash: [u8; 32],
     http_hash: [u8; 32],
-    cx: &Cx<'_, R>,
+    cx: &mut Cx<'_, R>,
 ) -> Result<AtomicBatch> {
     let now = kernel.facts()?.occurred_at_us;
     let deadline = now
@@ -120,6 +122,56 @@ pub fn reserve<R: Snapshot>(
             initial: ProcessState::Reserved,
         },
     ];
+    // Re-read the control grant and preparations in the same finite planning
+    // snapshot. No new native effect may coexist with an unreleased lifecycle.
+    let current = scope::require_present(
+        cx.read
+            .control_target(plan.agent.id.clone())
+            .map_err(|e| crate::store_error::store_error(&e))?,
+        "launch control",
+        "Restore the current create grant or use the owner's terminal.",
+    )?;
+    if !current.processes.is_empty() {
+        return Err(se_types::SeError::invalid(
+            "launch target",
+            "stop or reconcile the target's owned lifecycle before launching again",
+        ));
+    }
+    for old in current.sessions {
+        let (session, provider) = match &old.current.body {
+            EventBody::SessionPrepared {
+                session, provider, ..
+            } => (session, *provider),
+            _ => {
+                return Err(se_types::SeError::invalid(
+                    "launch target",
+                    "stop its active session before launching again",
+                ));
+            }
+        };
+        if provider != se_store::Provider::Claude {
+            return Err(se_types::SeError::invalid(
+                "launch preparation",
+                "reconcile the existing provider preparation before changing provider",
+            ));
+        }
+        // Managed Claude preparations have exactly these two capabilities;
+        // missing or independently changed credentials refuse the whole batch.
+        for purpose in ["session", "http"] {
+            bodies.push(EventBody::CredentialRevoked {
+                credential: session_credential_id(session, purpose)?,
+                expected: revision(1)?,
+                reason: InputText::Inline(
+                    "superseded by a newer managed launch preparation".into(),
+                ),
+            });
+        }
+        bodies.push(EventBody::SessionRevoked {
+            session: session.clone(),
+            expected: Expected::Revision(old.revision),
+            reason: InputText::Inline("superseded by a newer managed launch preparation".into()),
+        });
+    }
     for (purpose, hash) in [("session", session_hash), ("http", http_hash)] {
         bodies.push(EventBody::CredentialIssued {
             credential: credential_id(plan, purpose)?,
@@ -259,6 +311,50 @@ pub fn retire_session<R: Snapshot>(
         phase_key(&plan.input.idempotency_key, "retire-session")?,
         serde_json::json!({"session":plan.session,"phase":"retire-session"}),
         bodies,
+        cx,
+    )
+}
+
+/// One observed native transition under its original control request. The
+/// lifecycle participates in the phase key so --all has independent CAS rows.
+pub struct ProcessChange {
+    pub request: IdempotencyKey,
+    pub phase: &'static str,
+    pub previous: se_store::ProjectionRecord,
+    pub identity: ProcessIdentityRecord,
+    pub edge: (ProcessState, ProcessState),
+}
+pub fn advance<R: Snapshot>(
+    kernel: &Kernel,
+    change: ProcessChange,
+    cx: &Cx<'_, R>,
+) -> Result<AtomicBatch> {
+    let lifecycle = change.identity.record.clone();
+    let containment = change.identity.containment.clone();
+    let key = phase_key(&change.request, &format!("{lifecycle}/{}", change.phase))?;
+    let operation = if matches!(
+        change.edge.1,
+        ProcessState::StopRequested | ProcessState::StopUnproved
+    ) {
+        "agent.stop"
+    } else {
+        "agent.lifecycle"
+    };
+    batch(
+        kernel,
+        operation,
+        key,
+        serde_json::json!({"lifecycle":lifecycle,"phase":change.phase,"from":change.edge.0,"to":change.edge.1}),
+        vec![EventBody::ProcessTransition {
+            process: lifecycle,
+            identity: Box::new(change.identity),
+            expected: Expected::Revision(change.previous.revision),
+            from: change.edge.0,
+            to: change.edge.1,
+            observation: change.previous.current.header.event,
+            outcome: change.phase.into(),
+            containment,
+        }],
         cx,
     )
 }

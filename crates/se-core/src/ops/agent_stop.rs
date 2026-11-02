@@ -1,6 +1,6 @@
 //! Exact agent stop receipts. An empty diagnostic list is never an empty scope.
 use super::{
-    ProcessView, Witness,
+    ProcessView,
     inputs::{Validate, bounded},
 };
 use crate::config_policy::Provider;
@@ -76,12 +76,19 @@ pub struct OwnershipRelease {
     pub released_at: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct StopWitness {
+    pub state: String,
+    pub method: Option<String>,
+    pub observed_at: Option<String>,
+    pub detail: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AgentStopResult {
     pub target: StopTarget,
     pub result: String,
     pub event_id: Option<EventId>,
     pub method: Option<String>,
-    pub witness: Witness,
+    pub witness: StopWitness,
     pub population: String,
     pub population_reason: Option<String>,
     pub ownership_release: Option<OwnershipRelease>,
@@ -100,7 +107,7 @@ pub struct StopResult {
     pub event_id: Option<EventId>,
     pub target: Option<StopTarget>,
     pub method: Option<String>,
-    pub witness: Option<Witness>,
+    pub witness: Option<StopWitness>,
     pub population: Option<String>,
     pub population_reason: Option<String>,
     pub ownership_release: Option<OwnershipRelease>,
