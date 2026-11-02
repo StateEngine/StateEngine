@@ -124,6 +124,15 @@ impl SqliteSnapshot {
         Ok((if live { h } else { prior }, last))
     }
 }
+/// The last returned position a store-issued page cursor carries; None for
+/// any text that is not a version-1 store cursor.
+pub(crate) fn window_end(text: &str) -> Option<u64> {
+    let bytes = decode(text).ok()?;
+    if bytes.len() != 74 || bytes[0] != 1 {
+        return None;
+    }
+    Some(u64::from_be_bytes(bytes[34..42].try_into().ok()?))
+}
 impl SqliteSnapshot {
     pub(super) fn position_binding(&self, purpose: PositionPurpose) -> StoreResult<String> {
         codec::encode(&(

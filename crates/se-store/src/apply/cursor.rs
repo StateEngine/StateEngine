@@ -98,6 +98,21 @@ pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         _ => Err(invalid("cursor revision dispatch")),
     }
 }
+/// The last item an issued window actually returned, from its own store
+/// end cursor; None when the window carries no store-issued end cursor.
+fn confirmed_end(c: &Connection, issued: i64) -> StoreResult<Option<u64>> {
+    let v = codec::facts(c, issued)?;
+    let end: Option<Cursor> = v
+        .get("cursor")
+        .and_then(|cursor| cursor.get("window"))
+        .and_then(|window| window.get("end_cursor"))
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(invalid)?
+        .flatten();
+    Ok(end.and_then(|cursor| crate::read::window_end(cursor.as_str())))
+}
 /// The window's snapshot bounds as stored columns: (from, to, returned, complete, omitted).
 fn bounds(window: &Window) -> StoreResult<(u64, u64, u64, bool, Option<u64>)> {
     let f = window
@@ -160,27 +175,42 @@ pub(super) fn apply(
                     "cursor window extends past the committed store head",
                 ));
             }
-            // A new window continues from the last acknowledged position, or
-            // replaces the unacknowledged one from its same start: no skipped work.
-            let prior: Option<(u64, u64, Option<i64>)> = c
+            // A new window may re-read, but never start past work its
+            // predecessor did not confirm: after an ack, past that window's
+            // last returned item; before one, past the unacknowledged start.
+            let prior: Option<(i64, u64, u64, bool, Option<i64>)> = c
                 .query_row(
-                    "SELECT d.from_seq,d.to_seq,h.acknowledged_seq FROM cursors h JOIN cursor_data d ON d.event_seq=h.last_seq WHERE h.project_id=? AND h.agent_id=? AND h.purpose=?",
+                    "SELECT d.event_seq,d.from_seq,d.to_seq,d.complete,h.acknowledged_seq FROM cursors h JOIN cursor_data d ON d.cursor_id=h.cursor_id AND d.acknowledged_event IS NULL WHERE h.project_id=? AND h.agent_id=? AND h.purpose=?",
                     rusqlite::params![p, a, cursor.purpose],
-                    |r| Ok((crate::sql_value::value(r, 0)?, crate::sql_value::value(r, 1)?, r.get(2)?)),
+                    |r| {
+                        Ok((
+                            r.get(0)?,
+                            crate::sql_value::value(r, 1)?,
+                            crate::sql_value::value(r, 2)?,
+                            r.get(3)?,
+                            r.get(4)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(sql)?;
-            if let Some((prior_from, prior_to, acked)) = prior {
-                let start = if acked.is_some() {
-                    prior_to
+            if let Some((issued, prior_from, prior_to, complete, acked)) = prior {
+                // Without a store end cursor, a complete window returned
+                // everything up to `to`; an incomplete one confirms only `from`.
+                let limit = if acked.is_some() {
+                    confirmed_end(c, issued)?.unwrap_or(if complete {
+                        prior_to
+                    } else {
+                        prior_from
+                    })
                 } else {
                     prior_from
                 };
-                if from != start {
+                if from > limit {
                     return Err(fail(
                         StoreErrorCode::InvalidTransition,
                         format!(
-                            "cursor window must start at {start}: the last acknowledged position, or the unacknowledged window it replaces"
+                            "cursor window would skip unconfirmed work: it must start at or before {limit}"
                         ),
                     ));
                 }
