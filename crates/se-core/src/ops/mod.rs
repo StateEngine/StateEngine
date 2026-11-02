@@ -2,6 +2,12 @@
 //! production operations here; no placeholder handlers or phantom tools are exposed.
 pub mod administration;
 pub mod agent;
+pub mod agent_launch;
+pub mod agent_stop;
+pub mod project_remove;
+pub use agent_launch::{AgentLaunch, LaunchResult};
+pub use agent_stop::{AgentStop, StopResult};
+pub use project_remove::{ProjectRemove, RemoveResult};
 pub mod agent_config;
 pub mod agent_config_receipt;
 pub mod agent_status;
