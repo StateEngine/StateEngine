@@ -39,3 +39,8 @@ expect_used = "deny"
 
 [profile.release]
 panic = "unwind"
+
+[profile.dev]
+debug = "line-tables-only"
+[profile.dev.package."*"]
+debug = false
