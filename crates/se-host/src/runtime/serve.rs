@@ -446,4 +446,34 @@ impl HostedRuntime {
     pub fn attach_activity(&mut self, activity: watch::Receiver<u32>) {
         self.activity = Some(activity);
     }
+    /// After the listener (and so the loopback port) is bound and before serve:
+    /// one native coordinator for every hosted call, with its activity count
+    /// for the idle window. Both startup paths install through here.
+    pub fn install_custody(
+        &mut self,
+        custody: std::sync::Arc<dyn super::CustodyExecutor>,
+        activity: watch::Receiver<u32>,
+    ) -> Result<()> {
+        if self.http_port.get().is_none() {
+            return Err(SeError::invalid(
+                "native coordinator",
+                "installation after the loopback listener is bound",
+            ));
+        }
+        self.execution.custody.set(custody).map_err(|_| {
+            SeError::invalid("native coordinator", "one coordinator per hosted runtime")
+        })?;
+        self.attach_activity(activity);
+        Ok(())
+    }
+    /// What the coordinator's opener needs from this runtime.
+    pub fn execution_context(&self) -> super::ExecutionContext {
+        self.execution.clone()
+    }
+    pub fn transcript_bindings(&self) -> super::TranscriptBindings {
+        self.sources.clone()
+    }
+    pub fn configuration(&self) -> Option<&se_core::config_policy::ConfigFile> {
+        self.configuration.as_ref()
+    }
 }

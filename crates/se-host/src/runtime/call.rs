@@ -36,6 +36,19 @@ pub struct ExecutionContext {
     pub blocking: BlockingPool,
     pub generation: se_types::Generation,
     pub(crate) pending_writes: super::failure::PendingWrites,
+    /// The native process coordinator, installed once before serving.
+    pub(crate) custody: Arc<std::sync::OnceLock<Arc<dyn CustodyExecutor>>>,
+}
+/// The launch/stop/remove coordinator's entry: it resolves a core custody plan
+/// (native effects plus their FULL commits) for one admitted caller. Installed
+/// through `HostedRuntime::install_custody`; absent, custody plans refuse.
+pub trait CustodyExecutor: Send + Sync {
+    fn execute<'a>(
+        &'a self,
+        plan: se_core::ports::CustodyPlan,
+        admission: Admission,
+        deadline: &'a Deadline,
+    ) -> crate::HostFuture<'a, se_core::ops::AnyOutput>;
 }
 pub struct ExecutionCall {
     pub admitted: HostedCall,

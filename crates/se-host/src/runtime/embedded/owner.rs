@@ -20,7 +20,7 @@ pub(super) struct OwnerInputs {
     pub(super) epoch: api::HostEpoch,
     pub(super) timeout: Duration,
 }
-type Started = core::Result<(HostedRouter, LocalStop)>;
+pub(super) type Started = core::Result<(HostedRouter, LocalStop)>;
 
 pub(super) fn owner_thread(
     inputs: OwnerInputs,

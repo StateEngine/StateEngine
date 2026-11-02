@@ -278,18 +278,34 @@ impl AdmissionContext {
         // A launched provider lists its tools before its launch activates. Only
         // discovery may use a still-prepared credential, before its activation
         // deadline; the coordinator revokes a superseded or failed preparation.
-        let usable = match credential.state {
-            se_store::CredentialState::Active => true,
-            se_store::CredentialState::Prepared => {
-                pending == Pending::Discover && now < credential.activation_deadline_us
+        // Each refusal names its own reason; none echoes the credential.
+        let refusal = if credential.purpose != purpose {
+            Some(format!("a credential issued for `{purpose}`"))
+        } else if credential.expires_at_us <= now {
+            Some("a credential before its expiry; relaunch the agent".to_owned())
+        } else {
+            match credential.state {
+                se_store::CredentialState::Active => None,
+                se_store::CredentialState::Revoked => Some(
+                    "an unrevoked credential; this launch was stopped or superseded".to_owned(),
+                ),
+                // A launched provider lists its tools before activation. Only
+                // that discovery may use a still-prepared credential, before its
+                // deadline; the coordinator revokes a superseded preparation.
+                se_store::CredentialState::Prepared if pending == Pending::Refuse => Some(
+                    "an activated credential; this launch has not finished starting".to_owned(),
+                ),
+                se_store::CredentialState::Prepared if now >= credential.activation_deadline_us => {
+                    Some(
+                        "a launch credential before its activation deadline; relaunch the agent"
+                            .to_owned(),
+                    )
+                }
+                se_store::CredentialState::Prepared => None,
             }
-            se_store::CredentialState::Revoked => false,
         };
-        if !usable || credential.purpose != purpose || credential.expires_at_us <= now {
-            return Err(SeError::invalid(
-                "session credential",
-                "an unrevoked active session-purpose credential before its expiry",
-            ));
+        if let Some(expected) = refusal {
+            return Err(SeError::invalid("session credential", &expected));
         }
         Ok(Admission {
             scope: Scope::Project(credential.project),
