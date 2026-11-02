@@ -339,8 +339,10 @@ pub struct ProjectionRecord {
     pub original: Option<Box<StoredEvent>>,
     pub current: StoredEvent,
 }
-/// A control target's principal, profile, live (prepared/active) sessions and
-/// unreleased processes, oldest first. Never continuity, mail or turns.
+/// A control target's principal, profile, live sessions (the active one plus
+/// prepared ones an unreleased process still binds) and unreleased processes,
+/// oldest first. Stale preparations from failed launches are not listed.
+/// Never continuity, mail or turns.
 #[derive(Clone)]
 pub struct ControlTarget {
     pub principal: ProjectionRecord,
@@ -363,6 +365,13 @@ pub trait Snapshot {
         position: &StorePosition,
         purpose: PositionPurpose,
     ) -> StoreResult<se_types::Cursor>;
+    /// Inverse of position_cursor for the same store, incarnation, scope,
+    /// principal and purpose; any other cursor refuses rather than guessing.
+    fn cursor_position(
+        &self,
+        cursor: &se_types::Cursor,
+        purpose: PositionPurpose,
+    ) -> StoreResult<StorePosition>;
     /// runtime.* facts are private: known excluded IDs return a typed refusal.
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>>;
     /// Excludes runtime.* facts, including their native nonces.

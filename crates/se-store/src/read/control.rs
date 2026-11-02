@@ -35,14 +35,14 @@ impl SqliteSnapshot {
             &load,
         )?;
         let sessions = self.control_heads(
-            "SELECT revision,last_seq,first_seq FROM sessions WHERE project_id=? AND agent_id=? AND state IN ('prepared','active') ORDER BY first_seq LIMIT ?",
+            "SELECT s.revision,s.last_seq,s.first_seq FROM sessions s WHERE s.project_id=? AND s.agent_id=? AND (s.state='active' OR (s.state='prepared' AND EXISTS(SELECT 1 FROM processes h JOIN process_data d ON d.event_seq=h.last_seq WHERE h.project_id=s.project_id AND h.ownership_released=0 AND h.state NOT IN ('exited','historical') AND d.target_session_id=s.session_id))) ORDER BY s.first_seq LIMIT ?",
             &p,
             &a,
             "live sessions",
             &load,
         )?;
         let processes = self.control_heads(
-            "SELECT h.revision,h.last_seq,h.first_seq FROM processes h JOIN process_data d ON d.event_seq=h.last_seq WHERE h.project_id=? AND d.principal_id=? AND h.ownership_released=0 AND h.state NOT IN ('exited','historical') ORDER BY h.first_seq LIMIT ?",
+            "SELECT h.revision,h.last_seq,h.first_seq FROM processes h INDEXED BY processes_live JOIN process_data d ON d.event_seq=h.last_seq WHERE h.project_id=? AND d.principal_id=? AND h.ownership_released=0 AND h.state NOT IN ('exited','historical') ORDER BY h.first_seq LIMIT ?",
             &p,
             &a,
             "unreleased processes",
@@ -100,19 +100,13 @@ impl SqliteSnapshot {
     fn control_event(&self, seq: i64, target: &AgentId) -> StoreResult<StoredEvent> {
         let e = load_event(&self.db, seq, &self.info)
             .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
-        let who = Actor::Agent(target.clone());
         let about_target = e.header.scope == self.scope.admission.scope
             && match &e.body {
-                EventBody::PrincipalRegistered { principal, .. }
-                | EventBody::PrincipalRenamed { principal, .. } => *principal == who,
-                EventBody::ProfileSaved { agent, .. }
-                | EventBody::SessionPrepared { agent, .. } => agent == target,
-                EventBody::SessionActivated { session, .. }
-                | EventBody::SessionEnded { session, .. }
-                | EventBody::SessionRevoked { session, .. } => self.session_of(session, target)?,
-                EventBody::ProcessRegistered { identity, .. }
-                | EventBody::ProcessTransition { identity, .. } => identity.principal == who,
-                _ => false,
+                EventBody::PrincipalRenamed { principal, .. } => {
+                    *principal == Actor::Agent(target.clone())
+                }
+                EventBody::ProfileSaved { agent, .. } => agent == target,
+                body => self.agent_fact(body, target)?.unwrap_or(false),
             };
         if !about_target {
             return Err(fail(
@@ -122,7 +116,7 @@ impl SqliteSnapshot {
         }
         Ok(e)
     }
-    fn session_of(&self, session: &SessionId, target: &AgentId) -> StoreResult<bool> {
+    pub(super) fn session_of(&self, session: &SessionId, target: &AgentId) -> StoreResult<bool> {
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let id = key(&self.db, "session", session.as_str(), &scope, false)?;

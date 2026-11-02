@@ -114,39 +114,51 @@ impl SqliteSnapshot {
             Visibility::Owner | Visibility::SharedProject(_) => true,
             Visibility::SelfOnly(a) => {
                 let who = Actor::Agent(a.clone());
-                e.header.actor == who
-                    || match &e.body {
-                        EventBody::MessageSent { recipient, .. } => *recipient == who,
-                        EventBody::WorkingStateSet { agent, .. } => agent == a,
-                        EventBody::PrincipalRegistered { principal, .. } => *principal == who,
-                        EventBody::SessionPrepared { agent, .. }
-                        | EventBody::SessionTurn { agent, .. } => agent == a,
-                        EventBody::SessionActivated { session, .. }
-                        | EventBody::SessionEnded { session, .. }
-                        | EventBody::SessionRevoked { session, .. }
-                        | EventBody::CaptureSource { session, .. }
-                        | EventBody::CaptureFailed { session, .. }
-                        | EventBody::CaptureSuppressed { session, .. } => {
-                            self.session_visible(session, a)?
-                        }
-                        EventBody::CaptureProgress { source, .. } => {
-                            self.source_visible(source, a)?
-                        }
-                        EventBody::ProcessRegistered { identity, .. }
-                        | EventBody::ProcessTransition { identity, .. } => {
-                            identity.principal == who
-                        }
-                        EventBody::EffectRequested { principal, .. } => {
-                            principal.as_ref() == Some(&who)
-                        }
-                        EventBody::EffectOffered { principal, .. } => *principal == who,
-                        EventBody::EffectSettled { effect, .. } => {
-                            self.effect_visible(effect, a)?
-                        }
-                        _ => false,
+                if e.header.actor == who {
+                    return Ok(true);
+                }
+                if let Some(about) = self.agent_fact(&e.body, a)? {
+                    return Ok(about);
+                }
+                match &e.body {
+                    EventBody::MessageSent { recipient, .. } => *recipient == who,
+                    EventBody::WorkingStateSet { agent, .. }
+                    | EventBody::SessionTurn { agent, .. } => agent == a,
+                    EventBody::CaptureSource { session, .. }
+                    | EventBody::CaptureFailed { session, .. }
+                    | EventBody::CaptureSuppressed { session, .. } => {
+                        self.session_visible(session, a)?
                     }
+                    EventBody::CaptureProgress { source, .. } => self.source_visible(source, a)?,
+                    EventBody::EffectRequested { principal, .. } => {
+                        principal.as_ref() == Some(&who)
+                    }
+                    EventBody::EffectOffered { principal, .. } => *principal == who,
+                    EventBody::EffectSettled { effect, .. } => self.effect_visible(effect, a)?,
+                    _ => false,
+                }
             }
         })
+    }
+    /// Whether a principal, session or process fact concerns `agent`; None for
+    /// every other kind. The one allow-list shared by self visibility and the
+    /// creator-control port.
+    fn agent_fact(
+        &self,
+        body: &EventBody<StoredText>,
+        agent: &AgentId,
+    ) -> StoreResult<Option<bool>> {
+        let who = Actor::Agent(agent.clone());
+        Ok(Some(match body {
+            EventBody::PrincipalRegistered { principal, .. } => *principal == who,
+            EventBody::SessionPrepared { agent: owner, .. } => owner == agent,
+            EventBody::SessionActivated { session, .. }
+            | EventBody::SessionEnded { session, .. }
+            | EventBody::SessionRevoked { session, .. } => self.session_of(session, agent)?,
+            EventBody::ProcessRegistered { identity, .. }
+            | EventBody::ProcessTransition { identity, .. } => identity.principal == who,
+            _ => return Ok(None),
+        }))
     }
     fn record(&self, seq: i64) -> StoreResult<StoredEvent> {
         let e = load_event(&self.db, seq, &self.info)
@@ -398,17 +410,18 @@ impl Snapshot for SqliteSnapshot {
                 ));
             }
         }
-        let binding = codec::encode(&(
-            "position",
-            &self.scope.admission.scope,
-            &self.scope.admission.actor,
-            match purpose {
-                PositionPurpose::Receipt => "receipt",
-                PositionPurpose::Checked => "checked",
-                PositionPurpose::History => "history",
-            },
-        ))?;
-        self.cursor(&binding, position.sequence(), position.sequence())
+        self.cursor(
+            &self.position_binding(purpose)?,
+            position.sequence(),
+            position.sequence(),
+        )
+    }
+    fn cursor_position(
+        &self,
+        cursor: &Cursor,
+        purpose: PositionPurpose,
+    ) -> StoreResult<StorePosition> {
+        self.read_cursor_position(cursor, purpose)
     }
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>> {
         match self.event_seq(&id)? {
