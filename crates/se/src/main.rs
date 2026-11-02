@@ -159,6 +159,41 @@ pub fn run(
         }
         return Ok(0);
     }
+    let handoff = runtime::uninstall_completion::take_started();
+    if let Some(receiver) = handoff {
+        if let Err(error) = &result {
+            writeln!(
+                stderr,
+                "Uninstall parent post-authorization observation: {}; final outcome awaits the helper",
+                error.body.message()
+            )?;
+            stderr.flush()?;
+        }
+        if common.json && !receiver {
+            // Structured effects remain explicitly pending, never complete.
+            if let Ok(output) = &result {
+                render::output(output, true, common.quiet, &mut stdout)?;
+            }
+        } else if !common.json {
+            if let Ok(AnyOutput::Uninstall(value)) = &result {
+                render::uninstall_deferred(&value.value, &mut stdout)?;
+            }
+            writeln!(
+                stdout,
+                "Finishing uninstall; the installed process exits 75 while its removal is pending."
+            )?;
+            if !receiver {
+                writeln!(
+                    stdout,
+                    "For a final exit status, start with the matching archive's uninstall.ps1. This handoff has already started: use PowerShell Get-Item -LiteralPath on each printed image, record and helper path to check absence; access errors remain unresolved."
+                )?;
+            }
+            stdout.flush()?;
+        }
+        // The installed image must exit before its helper can remove it. This
+        // code means delegation, not success; uninstall.ps1 returns the verdict.
+        return Ok(runtime::uninstall_completion::DEFERRED_EXIT);
+    }
     match result {
         Ok(output) => render::output(&output, common.json, common.quiet, &mut stdout),
         Err(error) => render::error::write(

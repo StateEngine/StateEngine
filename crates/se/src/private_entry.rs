@@ -50,72 +50,93 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
             )
             .with_cause(error)
         })?;
-    let completion = handoff.prepare(&helper.parent().image)?;
-    let plan = completion.installation();
-    let canonical_image = se_proc::canonicalize_path(&helper.parent().image).map_err(|error| {
-        SeError::invalid(
-            "private uninstall image",
-            "the pinned original image's current name",
-        )
-        .with_cause(error)
-    })?;
-    let mut owns_image = false;
-    for file in plan.files() {
-        match se_proc::canonicalize_path(&file.path) {
-            Ok(path) => owns_image |= path == canonical_image,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => {
-                return Err(SeError::new(se_types::Detail::SourceUnreadable(
-                    se_types::details::SourceUnreadable {
-                        subject: file.path.clone(),
-                        reason: error.to_string(),
-                        next_step:
-                            "Restore access to the exact planned path before retrying uninstall"
-                                .into(),
-                    },
-                ))
-                .with_cause(error));
+    // The channel carries only an outcome. Native authentication above and
+    // plan/owner validation below still govern every uninstall effect.
+    let sender = handoff
+        .completion
+        .as_ref()
+        .map(|request| request.connect())
+        .transpose()?;
+    let achieved = handoff.achieved.clone();
+    let cleanup = helper.helper_cleanup().clone();
+    let image = helper.parent().image.clone();
+    let record = handoff
+        .installation
+        .state_home
+        .join("standalone-install.json");
+    let outcome = (|| {
+        let completion = handoff.prepare(&helper.parent().image)?;
+        let plan = completion.installation();
+        let canonical_image =
+            se_proc::canonicalize_path(&helper.parent().image).map_err(|error| {
+                SeError::invalid(
+                    "private uninstall image",
+                    "the pinned original image's current name",
+                )
+                .with_cause(error)
+            })?;
+        let mut owns_image = false;
+        for file in plan.files() {
+            match se_proc::canonicalize_path(&file.path) {
+                Ok(path) => owns_image |= path == canonical_image,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => {
+                    return Err(SeError::new(se_types::Detail::SourceUnreadable(
+                        se_types::details::SourceUnreadable {
+                            subject: file.path.clone(),
+                            reason: error.to_string(),
+                            next_step:
+                                "Restore access to the exact planned path before retrying uninstall"
+                                    .into(),
+                        },
+                    ))
+                    .with_cause(error));
+                }
             }
         }
-    }
-    if !owns_image {
-        return Err(SeError::invalid(
-            "private uninstall plan",
-            "an exact owned file matching the authenticated parent image",
-        ));
-    }
-    completion.record_helper_cleanup(helper.helper_cleanup())?;
-    helper.announce_ready().map_err(native_error)?;
-    if let Some(directory) = helper.staging_directory() {
+        if !owns_image {
+            return Err(SeError::invalid(
+                "private uninstall plan",
+                "an exact owned file matching the authenticated parent image",
+            ));
+        }
+        completion.record_helper_cleanup(helper.helper_cleanup())?;
+        helper.announce_ready().map_err(native_error)?;
+        if let Some(directory) = helper.staging_directory() {
+            eprintln!(
+                "Protected helper staging directory: {}; cleanup remains journaled until outside readback",
+                directory.display()
+            );
+        }
+        if let Some((path, reason)) = helper.pending_helper() {
+            eprintln!(
+                "Helper cleanup pending at {}: {reason}; preserve this path and recover using the matching archive after the helper exits",
+                path.display()
+            );
+        }
+        while !helper.poll_parent_exit().map_err(native_error)? {
+            // The native envelope owns the finite deadline and exact-instance wait.
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let witness = helper.delete_parent_image().map_err(native_error)?;
         eprintln!(
-            "Protected helper staging directory: {}; cleanup remains journaled until outside readback",
-            directory.display()
+            "Removed installed image: {} (native parent exit and deletion witnessed)",
+            witness.removed_image().display()
         );
+        crate::runtime::helper_cleanup::verify(plan.state_home(), witness.helper_cleanup())?;
+        if let Some((path, reason)) = witness.pending_helper() {
+            eprintln!(
+                "Helper cleanup pending at {}: {reason}; preserve this path and recover using the matching archive after the helper exits",
+                path.display()
+            );
+        }
+        completion.finish()?;
+        Ok(0)
+    })();
+    if let Some(sender) = sender {
+        sender.finish(&outcome, &image, &record, &cleanup, &achieved)?;
     }
-    if let Some((path, reason)) = helper.pending_helper() {
-        eprintln!(
-            "Helper cleanup pending at {}: {reason}; retry install or uninstall after the helper exits",
-            path.display()
-        );
-    }
-    while !helper.poll_parent_exit().map_err(native_error)? {
-        // The native envelope owns the finite deadline and exact-instance wait.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    let witness = helper.delete_parent_image().map_err(native_error)?;
-    eprintln!(
-        "Removed installed image: {} (native parent exit and deletion witnessed)",
-        witness.removed_image().display()
-    );
-    crate::runtime::helper_cleanup::verify(plan.state_home(), witness.helper_cleanup())?;
-    if let Some((path, reason)) = witness.pending_helper() {
-        eprintln!(
-            "Helper cleanup pending at {}: {reason}; retry install or uninstall after the helper exits",
-            path.display()
-        );
-    }
-    completion.finish()?;
-    Ok(0)
+    outcome
 }
 
 /// Installer wrapping is deliberately absent from the public command catalogue.

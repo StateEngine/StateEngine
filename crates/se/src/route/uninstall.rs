@@ -8,6 +8,6 @@ pub fn execute(
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<UninstallOutput> {
     input.validate()?;
-    let (plan, effects) = crate::runtime::uninstall(context, diagnostic)?;
+    let (plan, effects) = crate::runtime::uninstall(context, &input.idempotency_key, diagnostic)?;
     finish_uninstall(&plan, input.idempotency_key, effects)
 }

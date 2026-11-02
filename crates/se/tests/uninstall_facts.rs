@@ -315,3 +315,44 @@ fn complete_native_readbacks_still_return_success() -> Check {
     assert!(serde_json::to_value(output)?.get("issues").is_none());
     Ok(())
 }
+
+/// Protects: a deferred Windows parent keeps achieved effects, recovery, PATH,
+/// preserved work and the original key without claiming completion or retrying
+/// through its about-to-be-deleted image.
+#[test]
+fn deferred_report_preserves_facts_and_omits_the_dead_image_retry() -> Check {
+    let mut f = Facts::new()?;
+    f.recovery()?;
+    let output = finish_uninstall(
+        &f.plan,
+        IdempotencyKey::new("deferred-original-key")?,
+        f.effects.clone(),
+    )?;
+    let mut text = Vec::new();
+    render_write::uninstall_deferred(&output, &mut text)?;
+    let text = String::from_utf8(text)?;
+    for fact in [
+        "removed-asset: removed",
+        "retry-image: pending",
+        "Recovery scan",
+        "Preserved:",
+        "PATH (",
+        "deferred-original-key",
+        "Uninstall handoff pending",
+    ] {
+        assert!(text.contains(fact), "deferred report lost {fact}: {text}");
+    }
+    assert!(!text.contains("retry se uninstall"));
+    assert!(!text.contains("Uninstall incomplete"));
+    let structured = serde_json::to_value(AnyOutput::from(output))?;
+    assert_eq!(structured["schema"], "se.uninstall/v1");
+    assert_eq!(structured["idempotency_key"], "deferred-original-key");
+    assert!(!structured["complete"].as_bool().ok_or("completion flag")?);
+    assert!(
+        !structured["install_files"]
+            .as_array()
+            .ok_or("file facts")?
+            .is_empty()
+    );
+    Ok(())
+}

@@ -159,6 +159,16 @@ pub fn runtime_stop(value: &RuntimeStop, out: &mut impl Write) -> io::Result<()>
 }
 
 pub fn uninstall(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()> {
+    uninstall_report(value, false, out)
+}
+pub fn uninstall_deferred(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()> {
+    uninstall_report(value, true, out)
+}
+fn uninstall_report(
+    value: &UninstallOutput,
+    deferred: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
     stops(&value.stops, out)?;
     for file in &value.install_files {
         writeln!(out, "{}: {}", file.path, outcome(file.outcome))?;
@@ -246,7 +256,7 @@ pub fn uninstall(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()
     for issue in &value.issues {
         writeln!(out, "Uninstall result check: {issue}")?;
     }
-    if !value.complete {
+    if !value.complete && !deferred {
         writeln!(
             out,
             "Resolve the named pending outcomes, then retry se uninstall with the same --home and --key."
@@ -258,7 +268,9 @@ pub fn uninstall(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()
     writeln!(
         out,
         "Uninstall {}. Request key: {}",
-        if value.complete {
+        if deferred {
+            "handoff pending"
+        } else if value.complete {
             "complete"
         } else {
             "incomplete"
