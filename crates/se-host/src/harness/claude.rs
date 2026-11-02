@@ -4,7 +4,8 @@
 //!
 //! Per launch: one settings file holding only the fixed hook mappings, and one
 //! MCP config naming this host's loopback /mcp with the session bearer. Both are
-//! protected launch files; the bearer never enters argv. Claude then runs as
+//! protected launch files; the bearer never enters argv or the environment,
+//! which carries only the `ses_` handle hooks resolve. Claude then runs as
 //! `claude -p` with stream-json input and output, so the host can write tasks
 //! and mail as user messages and read readiness from the provider's own echo.
 use crate::{ConfigPlan, HarnessRequest, OwnedLaunchFile, ProviderInvocation};
@@ -116,9 +117,12 @@ pub fn invocation(
         .into_iter()
         .filter(|(name, _)| !is_session_variable(name))
         .collect();
-    let handle = std::str::from_utf8(request.launch_credential.expose())
-        .map_err(|_| SeError::invalid("session credential", "printable bearer bytes"))?;
-    entries.push(("SE_SESSION".into(), handle.into()));
+    // Hooks present only the session handle; se resolves the secret from the
+    // owner-only launch pin. The token itself never enters the environment.
+    entries.push((
+        "SE_SESSION".into(),
+        request.identity.session.as_str().into(),
+    ));
     Ok(ProviderInvocation {
         executable: request.executable.clone(),
         arguments,
