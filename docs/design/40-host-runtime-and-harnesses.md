@@ -410,7 +410,13 @@ threads; core discovery never prevents startup. Embedded hosts supply their
 own matching runtime and HostLimits cap. Before listener publication, the host
 opens its shared store reader with capacity `max(2, effective blocking_jobs)`;
 snapshots, owner guards and credential reads share that immutable budget across
-reader clones. Other store readers keep their default capacity of two. Only one
+reader clones. Other store readers keep their default capacity of two. In the
+current wave-1 composition, `open_host` binds its `BackupContext` to its own
+two-slot reader, independently of the configurable runtime reader. The runtime
+invokes backup through clean close only after foreground quiescence and writer
+join, so it does not compete with those runtime snapshots. A future start-of-day
+backup must preserve that separation or explicitly join the runtime reader budget;
+it cannot assume the context already shares that budget. Only one
 backup/maintenance job may run, including
 across generations; cancellation does not free its permit until it actually ends.
 Drain cancels and joins backup before queueing close_clean on that background

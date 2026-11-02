@@ -12,6 +12,53 @@ use fixture::*;
 mod host_fixture;
 use host_fixture::host;
 
+/// Protects: the host backup context retains its own two-slot budget beside a
+/// separately configured eight-slot runtime reader; failures return its permit.
+#[test]
+fn backup_capacity_is_bound_to_its_host_reader_not_a_separate_runtime_reader() -> Check {
+    let f = Fixture::new()?;
+    let (host, lease) = host(&f)?;
+    let context = host.backup_context();
+    let reader = present(SqliteFactory::open_reader_with_capacity(
+        &f.options,
+        std::num::NonZeroU32::new(8).ok_or("reader capacity")?,
+    )?)?;
+    let snapshots = (0..8)
+        .map(|_| reader.snapshot(f.scoped(Visibility::Owner)))
+        .collect::<StoreResult<Vec<_>>>()?;
+    let attempt = || {
+        SqliteFactory::backup(
+            &f.options,
+            lease.clone(),
+            context.clone(),
+            Duration::from_secs(2),
+        )
+        .err()
+        .ok_or("unwired backup succeeded")
+    };
+    // All eight runtime slots are occupied. Backup still reaches the unwired
+    // native publication port, proving it acquired its separate host permit.
+    let error = attempt()?;
+    assert_eq!(error.code, StoreErrorCode::BackupFailed);
+    assert!(error.cause.contains("directory preparation is not wired"));
+
+    let first = host.snapshot(f.scoped(Visibility::Owner))?;
+    let second = host.snapshot(f.scoped(Visibility::Owner))?;
+    assert_eq!(attempt()?.code, StoreErrorCode::Backpressure);
+    first.close()?;
+    let error = attempt()?;
+    assert_eq!(error.code, StoreErrorCode::BackupFailed);
+    assert!(error.cause.contains("directory preparation is not wired"));
+    let replacement = host.snapshot(f.scoped(Visibility::Owner))?;
+    assert_eq!(attempt()?.code, StoreErrorCode::Backpressure);
+    replacement.close()?;
+    second.close()?;
+    for snapshot in snapshots {
+        snapshot.close()?;
+    }
+    Ok(())
+}
+
 /// Protects: E3 — unbound directory/publication ports never produce a successful backup or clean-close receipt.
 #[test]
 fn unavailable_native_ports_refuse_and_release_backup_reservations() -> Check {
