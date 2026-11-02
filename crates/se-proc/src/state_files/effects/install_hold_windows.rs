@@ -195,3 +195,7 @@ pub(super) fn run(
 
 #[path = "install_environment_windows.rs"]
 mod environment;
+
+#[cfg(test)]
+#[path = "../../../tests/support/windows_install_inheritance.rs"]
+mod judges;
