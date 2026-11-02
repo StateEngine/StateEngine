@@ -17,6 +17,13 @@ use sha2::{Digest, Sha256 as Hasher};
 use std::{io::Read as ByteRead, sync::Arc};
 use zeroize::Zeroizing;
 
+/// Whether a still-prepared credential may be used: only for read-only tool
+/// discovery during its launch, never for an operation.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Pending {
+    Discover,
+    Refuse,
+}
 /// Purpose of the pin capability (`sec1.`) CLI, hooks and IPC present.
 const SESSION_CAPABILITY: &str = "session";
 #[derive(Clone)]
@@ -215,7 +222,7 @@ impl AdmissionContext {
         let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
-            self.credential(&phase, secret, crate::MCP_BEARER_PURPOSE)
+            self.credential_in(&phase, secret, crate::MCP_BEARER_PURPOSE, Pending::Discover)
                 .map(drop)
         })();
         super::executor::close_read(result, phase.close())
@@ -240,6 +247,15 @@ impl AdmissionContext {
         secret: &se_types::Secret,
         purpose: &str,
     ) -> Result<Admission> {
+        self.credential_in(phase, secret, purpose, Pending::Refuse)
+    }
+    fn credential_in(
+        &self,
+        phase: &se_store::ReadPhase,
+        secret: &se_types::Secret,
+        purpose: &str,
+        pending: Pending,
+    ) -> Result<Admission> {
         let credential = match phase
             .credential(Hasher::digest(secret.expose()).into())
             .map_err(|e| store_error(&e))?
@@ -259,10 +275,17 @@ impl AdmissionContext {
             }
         };
         let now = super::start::now_unix_micros()?;
-        if credential.state != se_store::CredentialState::Active
-            || credential.purpose != purpose
-            || credential.expires_at_us <= now
-        {
+        // A launched provider lists its tools before its launch activates. Only
+        // discovery may use a still-prepared credential, before its activation
+        // deadline; the coordinator revokes a superseded or failed preparation.
+        let usable = match credential.state {
+            se_store::CredentialState::Active => true,
+            se_store::CredentialState::Prepared => {
+                pending == Pending::Discover && now < credential.activation_deadline_us
+            }
+            se_store::CredentialState::Revoked => false,
+        };
+        if !usable || credential.purpose != purpose || credential.expires_at_us <= now {
             return Err(SeError::invalid(
                 "session credential",
                 "an unrevoked active session-purpose credential before its expiry",
