@@ -41,6 +41,8 @@ enum Event {
     Http(Result<(tokio::net::TcpStream, tokio::sync::OwnedSemaphorePermit)>),
     /// The embedder's in-process stop; the same fence and join as any stop.
     LocalStop,
+    /// An automatically started host stayed at zero activity for the full window.
+    IdleExpired,
     Joined(std::result::Result<Result<ConnectionEnd>, tokio::task::JoinError>),
 }
 impl HostedRuntime {
@@ -78,6 +80,13 @@ impl HostedRuntime {
             return ended(self, listener, Some(error));
         };
         let mut local_stop = self.local_stop.take();
+        // Only an automatically started host with a known activity count may
+        // exit when idle; an explicit `se up` or an unknown count stays resident.
+        let mut idle = if self.auto_start {
+            self.activity.take()
+        } else {
+            None
+        };
         let (shutdown, cancelled) = watch::channel(None);
         let mut tasks = JoinSet::new();
         let mut accept_backoff = std::time::Duration::from_millis(1);
@@ -90,12 +99,13 @@ impl HostedRuntime {
                 &http,
                 &mut tasks,
                 local_stop.as_mut(),
+                idle.as_mut(),
                 accept_retry_at,
                 http_retry_at,
             )
             .await
             {
-                Event::LocalStop => break ended(self, listener, None),
+                Event::LocalStop | Event::IdleExpired => break ended(self, listener, None),
                 Event::Accepted(Ok(stream)) => {
                     accept_backoff = std::time::Duration::from_millis(1);
                     let router = router.clone();
@@ -242,6 +252,7 @@ async fn event(
     http: &crate::HttpListener,
     tasks: &mut JoinSet<Result<ConnectionEnd>>,
     local_stop: Option<&mut watch::Receiver<bool>>,
+    idle: Option<&mut watch::Receiver<u32>>,
     retry_at: tokio::time::Instant,
     http_retry_at: tokio::time::Instant,
 ) -> Event {
@@ -264,9 +275,18 @@ async fn event(
             None => std::future::pending::<()>().await,
         }
     });
+    let mut idling = pin!(async move {
+        match idle {
+            Some(activity) => idle_expiry(activity).await,
+            None => std::future::pending::<()>().await,
+        }
+    });
     poll_fn(|cx| {
         if stopping.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Event::LocalStop);
+        }
+        if idling.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(Event::IdleExpired);
         }
         if !tasks.is_empty()
             && let Poll::Ready(Some(joined)) = tasks.poll_join_next(cx)
@@ -387,5 +407,48 @@ impl HostedRuntime {
         let (sender, receiver) = watch::channel(false);
         self.local_stop = Some(receiver);
         LocalStop(sender)
+    }
+}
+
+/// An automatically started host exits after this long at zero activity
+/// (section 40 §10.1); any activity restarts the window.
+pub const AUTO_EXIT_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Resolve only after the activity count has stayed zero for the whole window,
+/// rechecked at expiry. A closed activity source never ends the host.
+async fn idle_expiry(activity: &mut watch::Receiver<u32>) {
+    loop {
+        if activity.wait_for(|count| *count == 0).await.is_err() {
+            return std::future::pending().await;
+        }
+        // Any activity inside the window restarts it; expiry is rechecked.
+        // The watch guard is released before the count is read again.
+        let woke = tokio::time::timeout(AUTO_EXIT_IDLE, activity.wait_for(|count| *count != 0))
+            .await
+            .map(|seen| seen.map(drop));
+        match woke {
+            Err(_) if *activity.borrow() == 0 => return,
+            Err(_) | Ok(Ok(())) => continue,
+            Ok(Err(_)) => return std::future::pending().await,
+        }
+    }
+}
+impl HostedRuntime {
+    /// Before listener publication: true only for a host started on demand
+    /// (a launch, a hook, an SE Code handback), never an explicit `se up`.
+    pub fn configure_auto_start(&mut self, enabled: bool) -> Result<()> {
+        if self.phase != crate::HostPhase::Prepared {
+            return Err(SeError::invalid(
+                "host start origin",
+                "a prepared runtime before listener publication",
+            ));
+        }
+        self.auto_start = enabled;
+        Ok(())
+    }
+    /// Before serve: the coordinator's live process/cleanup count. Zero is the
+    /// only input that can start the idle window.
+    pub fn attach_activity(&mut self, activity: watch::Receiver<u32>) {
+        self.activity = Some(activity);
     }
 }
