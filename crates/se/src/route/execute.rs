@@ -162,11 +162,11 @@ pub fn dispatch(
             &caller.terminal,
         )?;
     }
-    if host_required {
-        return super::hosted::forward(cx, &files, &caller, op, &selections, diagnostic);
-    }
     if let AnyOp::RuntimeDown(input) = op {
         return super::runtime_control::down(&files, input);
+    }
+    if host_required && !matches!(op, AnyOp::RuntimeUp(_)) {
+        return super::hosted::forward(cx, &files, &caller, op, &selections, diagnostic);
     }
     let identity = LeaseIdentity {
         store: Some(reader.info().map_err(|e| store_error(&e))?.id),
