@@ -1,7 +1,8 @@
 //! Private standalone/embedded entry preparation. Installed CLI creates the
 //! runtime only after initialization; embedded callers supply their own Handle.
-use super::{files::Files, *};
+use super::*;
 use crate::client::lease::Deadline;
+use crate::state_files::{FilePolicy, Files};
 use se_core::store_error::store_error;
 use se_store::{HostStore, ReadStore, RuntimeLease, StateFiles, StoreFactory, WriterOwner};
 use se_types::{Generation, HostEpoch, Read, Result, SeError};
@@ -152,7 +153,8 @@ fn prepare(
             "at most 1 MiB per reply, 256 active connections and min(active,64) pending handshakes",
         ));
     }
-    let files = Files::open(&options.state_directory).map_err(|e| store_error(&e))?;
+    let files = Files::open_with_policy(&options.state_directory, FilePolicy::Host)
+        .map_err(|e| store_error(&e))?;
     let lock_path = options.state_directory.join("runtime.lock");
     let lock = present(
         files.readback(&lock_path).map_err(|e| store_error(&e))?,

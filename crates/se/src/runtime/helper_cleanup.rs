@@ -53,7 +53,7 @@ pub(crate) fn publish(
             return Err(conflict(&home.join(NAME).to_string_lossy()));
         }
     } else {
-        crate::route::files::Files(files)
+        crate::route::files::Files::from_native(files)
             .replace_owned(&home.join(NAME), None, &bytes)
             .map_err(|e| se_core::store_error::store_error(&e))?;
     }
