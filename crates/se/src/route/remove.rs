@@ -3,10 +3,10 @@
 use super::{execute, files::Files};
 use se_core::{ops::*, scope, store_error::store_error};
 use se_host::{EndpointRecord, client::lease::Deadline};
-use se_store::{Admission, ReadStore, Snapshot, StateFiles};
-use se_types::{Read, Result, SeError};
+use se_store::{Admission, ReadStore, StateFiles};
+use se_types::{Read, Result};
 use sha2::{Digest, Sha256};
-use std::{num::NonZeroU32, time::Duration};
+use std::time::Duration;
 
 pub fn complete<R: ReadStore>(
     files: &Files,
@@ -106,51 +106,13 @@ fn finish<R: ReadStore>(
 
     // An exclusive lock excludes both host startup and concurrent direct setup.
     // No removal is authorized by endpoint absence or a lock file's existence.
-    let path = files.0.root().join("runtime.lock");
-    let lock = scope::require_present(
-        files.readback(&path).map_err(|e| store_error(&e))?,
-        "runtime lock",
-        "Restore the protected runtime lock before retrying remove --all.",
-    )?;
-    lock.try_lock().map_err(|error| {
-        scope::unreadable(
-            "remove credential exclusion",
-            &format!("runtime or direct writer is active: {error}"),
-        )
-    })?;
-    bound.remaining()?;
+    let _lock = super::empty_home::lock(files, reader, admission, bound.remaining()?)?;
     if let Read::Present { value: current } = execute::endpoint(files)?
         && (current.epoch != target.epoch || current.generation != target.generation)
     {
         return Err(scope::unreadable(
             "remove credential exclusion",
             "a different host endpoint appeared; its credential was preserved",
-        ));
-    }
-    let mut admitted = admission.clone();
-    admitted.scope = se_store::Scope::Registry;
-    let mut snapshot = reader
-        .snapshot(se_core::admission::read_scope(&admitted))
-        .map_err(|e| store_error(&e))?;
-    let projects = snapshot
-        .projects(se_store::ReadBudget {
-            page: se_types::PageRequest {
-                after: None,
-                limit: NonZeroU32::new(1)
-                    .ok_or_else(|| SeError::invalid("project check", "positive bound"))?,
-                max_bytes: NonZeroU32::new(64 * 1024)
-                    .ok_or_else(|| SeError::invalid("project bytes", "positive bound"))?,
-            },
-            deadline: bound.remaining()?.min(Duration::from_secs(5)),
-        })
-        .map_err(|e| store_error(&e));
-    let closed = snapshot.close().map_err(|e| store_error(&e));
-    let projects = projects?;
-    closed?;
-    if !projects.items().is_empty() || !projects.window().complete() {
-        return Err(scope::unreadable(
-            "remove credential exclusion",
-            "registered projects remain or their inventory is incomplete; credential preserved",
         ));
     }
     bound.remaining()?;
@@ -180,6 +142,56 @@ fn finish<R: ReadStore>(
     }
     .into();
     Ok(())
+}
+/// After a successful --all retirement there is deliberately no credential
+/// with which to start a host. A measured empty home can answer absence alone.
+pub fn absent<R: ReadStore>(
+    files: &Files,
+    reader: &R,
+    admission: &Admission,
+    input: &ProjectRemove,
+) -> Result<Option<AnyOutput>> {
+    if !input.all || !matches!(super::credential::read(files)?, Read::Absent { .. }) {
+        return Ok(None);
+    }
+    let _claim = se_proc::NativeInstallationClaim::acquire().map_err(|error| {
+        scope::unreadable("remove installation claim", &error.to_string()).with_cause(error)
+    })?;
+    let _lock = super::empty_home::lock(files, reader, admission, Duration::from_secs(5))?;
+    let Read::Absent { checked } = super::credential::read(files)? else {
+        return Err(scope::unreadable(
+            "empty-home credential",
+            "a credential appeared during exclusion; retry without replacing it",
+        ));
+    };
+    Ok(Some(
+        RemoveResult {
+            idempotency_key: input.idempotency_key.clone(),
+            scope: "all".into(),
+            outcome: "absent".into(),
+            projects: vec![],
+            runtime: project_remove::RemovedRuntime {
+                action: "not-running".into(),
+                process: None,
+                witness: witnessed(
+                    "exclusive native runtime lock",
+                    Some(
+                        "No active project and no host/direct writer held the runtime lock.".into(),
+                    ),
+                )?,
+            },
+            machine_credential: project_remove::RemovedMachineCredential {
+                state: "removed".into(),
+                witness: witnessed("independent protected-file absence", Some(checked))?,
+            },
+            next: project_remove::RemovalNext {
+                text: "Initialize a repository to come back".into(),
+                command: "se init".into(),
+                argv: vec!["se".into(), "init".into()],
+            },
+        }
+        .into(),
+    ))
 }
 fn witnessed(method: &str, detail: Option<String>) -> Result<project_remove::RemovalWitness> {
     Ok(project_remove::RemovalWitness {

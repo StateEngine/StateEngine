@@ -9,6 +9,8 @@ mod autostart;
 pub mod credential;
 #[path = "route/direct.rs"]
 pub mod direct;
+#[path = "route/empty_home.rs"]
+mod empty_home;
 #[path = "route/execute.rs"]
 pub mod execute;
 #[path = "route/files.rs"]

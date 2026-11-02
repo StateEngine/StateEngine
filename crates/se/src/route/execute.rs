@@ -162,6 +162,11 @@ pub fn dispatch(
             &caller.terminal,
         )?;
     }
+    if let AnyOp::ProjectRemove(input) = &op
+        && let Some(absent) = super::remove::absent(&files, &reader, &caller.admission, input)?
+    {
+        return Ok(absent);
+    }
     if let AnyOp::RuntimeDown(input) = op {
         return super::runtime_control::down(&files, input);
     }

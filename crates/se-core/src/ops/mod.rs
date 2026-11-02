@@ -224,7 +224,9 @@ impl AnyOutput {
         match self {
             Self::Uninstall(v) if !v.value.complete => 2,
             Self::AgentStop(v) if !v.value.complete => 2,
-            Self::ProjectRemove(v) if !matches!(v.value.outcome.as_str(), "removed" | "absent") => 2,
+            Self::ProjectRemove(v) if !matches!(v.value.outcome.as_str(), "removed" | "absent") => {
+                2
+            }
             Self::RuntimeDown(v) if !v.value.complete => 2,
             Self::RuntimeUp(v) if v.value.state == "pending" => 2,
             Self::EventRead(v) => match &v.value {

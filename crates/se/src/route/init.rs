@@ -111,9 +111,39 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
     observed.authorize("project.init", observed.os_owner(), false, false)?;
     let files = Files::create(&cx.home).map_err(|e| store_error(&e))?;
     match &before {
-        setup::Setup::Present(_) => {
+        setup::Setup::Present(reader) => {
             super::identity::require_machine(&files)?;
-            super::credential::require(&files)?;
+            match super::credential::read(&files)? {
+                Read::Absent { .. } => {
+                    let inventory = owner::inventory(reader, &files)?;
+                    let [human] = inventory.owners.as_slice() else {
+                        return Err(scope::unreadable(
+                            "explicit setup credential",
+                            "one retained protected owner is required",
+                        ));
+                    };
+                    let admitted = Admission {
+                        actor: Actor::Human(human.clone()),
+                        scope: Scope::Registry,
+                        session: None,
+                        generation: 1,
+                    };
+                    // Explicit init can establish a fresh key after Remove --all,
+                    // only with no projects, host or direct writer. Automatic
+                    // startup still requires the original key and never repairs it.
+                    let _empty =
+                        super::empty_home::lock(&files, reader, &admitted, Duration::from_secs(5))?;
+                    super::credential::initialize(&files)?;
+                }
+                Read::Present { .. } => (),
+                other => {
+                    scope::require_present(
+                        other,
+                        "explicit setup credential",
+                        "Restore access to the original credential; unreadable state cannot become a new key.",
+                    )?;
+                }
+            }
         }
         setup::Setup::Absent(_) => {
             super::identity::initialize_machine(&files)?;
