@@ -304,26 +304,22 @@ impl AdmissionContext {
                     "revoked: this launch was stopped or superseded".to_owned(),
                     RELAUNCH,
                 )),
-                // Still starting, not invalid: retryable once the launch activates.
+                // An expired or superseded preparation is invalid; only a live,
+                // current one that has not finished starting is retryable.
+                se_store::CredentialState::Prepared if now >= credential.activation_deadline_us => {
+                    Some(("past its launch activation deadline".to_owned(), RELAUNCH))
+                }
+                se_store::CredentialState::Prepared
+                    if phase.credential_superseded(hash).map_err(|e| store_error(&e))? =>
+                {
+                    Some(("superseded by a later launch of this agent".to_owned(), RELAUNCH))
+                }
                 se_store::CredentialState::Prepared if pending == Pending::Refuse => {
                     return Err(SeError::new(se_types::Detail::SessionNotActive(
                         se_types::details::SessionNotActive {
                             subject: credential.session.as_str().to_owned(),
                         },
                     )));
-                }
-                se_store::CredentialState::Prepared if now >= credential.activation_deadline_us => {
-                    Some(("past its launch activation deadline".to_owned(), RELAUNCH))
-                }
-                se_store::CredentialState::Prepared
-                    if phase
-                        .credential_superseded(hash)
-                        .map_err(|e| store_error(&e))? =>
-                {
-                    Some((
-                        "superseded by a later launch of this agent".to_owned(),
-                        RELAUNCH,
-                    ))
                 }
                 se_store::CredentialState::Prepared => None,
             }
