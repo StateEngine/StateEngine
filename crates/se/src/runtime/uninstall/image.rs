@@ -2,7 +2,7 @@ use super::*;
 #[cfg(not(windows))]
 pub(super) fn remove_image(
     _cx: &Bootstrap,
-    _plan: &UninstallPlan,
+    _plan: &ValidatedUninstallPlan,
     file: &UninstallFile,
     _record_digest: [u8; 32],
 ) -> Result<FileEffect> {
@@ -11,7 +11,7 @@ pub(super) fn remove_image(
 #[cfg(windows)]
 pub(super) fn remove_image(
     cx: &Bootstrap,
-    plan: &UninstallPlan,
+    plan: &ValidatedUninstallPlan,
     file: &UninstallFile,
     record_digest: [u8; 32],
 ) -> Result<FileEffect> {
@@ -26,7 +26,7 @@ pub(super) fn remove_image(
     }
     let files = NativeStateFiles::open(&cx.home).map_err(native_error)?;
     let bytes = serde_json::to_vec(&crate::runtime::handoff::Plan {
-        installation: plan.clone(),
+        installation: plan.as_untrusted().clone(),
         record_sha256: Sha256::from_bytes(record_digest).hex(),
     })
     .map_err(|e| invalid("cannot encode helper plan").with_cause(e))?;

@@ -1,6 +1,8 @@
 //! Installation input adapter. Core owns uninstall admission, plans and receipts.
 //! These read-only observations do not grant custody for a later file mutation.
-use se_core::ops::installation::{UninstallFile, UninstallPathEdit, UninstallPlan};
+use se_core::ops::installation::{
+    UninstallFile, UninstallPathEdit, UninstallPlan, ValidatedUninstallPlan,
+};
 use se_types::{Detail, Result, SeError, Sha256, details};
 use serde::Deserialize;
 use sha2::{Digest, Sha256 as Hasher};
@@ -50,7 +52,7 @@ pub struct Installation {
 impl Installation {
     /// Translate observations into the one core-owned plan. This validates
     /// protected history/configuration exclusions before any executor runs.
-    pub fn plan(&self) -> Result<UninstallPlan> {
+    pub fn plan(&self) -> Result<ValidatedUninstallPlan> {
         let state_home = self
             .record_path
             .parent()
@@ -92,8 +94,7 @@ impl Installation {
                 })
                 .collect(),
         };
-        plan.validate()?;
-        Ok(plan)
+        plan.validate()
     }
 }
 
@@ -208,7 +209,10 @@ mod uninstall;
 pub fn uninstall(
     cx: &crate::bootstrap::Bootstrap,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
-) -> Result<(UninstallPlan, se_core::ops::installation::UninstallEffects)> {
+) -> Result<(
+    ValidatedUninstallPlan,
+    se_core::ops::installation::UninstallEffects,
+)> {
     uninstall::execute(cx, diagnostic)
 }
 

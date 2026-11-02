@@ -1,5 +1,5 @@
 //! Preserve native effects even when final receipt validation cannot complete.
-use super::{UninstallEffects, UninstallPlan, bounded_path};
+use super::{UninstallEffects, ValidatedUninstallPlan, bounded_path};
 use crate::ops::outputs::*;
 use se_types::{Detail, IdempotencyKey, Read, Result, SeError, details};
 use std::{
@@ -10,7 +10,7 @@ use std::{
 /// This is completion after effects, not admission. A failed check must not
 /// discard an already witnessed removal or turn an omitted readback into absence.
 pub fn finish_uninstall(
-    plan: &UninstallPlan,
+    plan: &ValidatedUninstallPlan,
     key: IdempotencyKey,
     mut effects: UninstallEffects,
 ) -> Result<UninstallOutput> {
@@ -45,11 +45,10 @@ fn same_paths(
     let observed: BTreeSet<_> = actual.map(PathBuf::from).collect();
     expected == observed && observed.len() == actual_count
 }
-fn check_readback(plan: &UninstallPlan, effects: &UninstallEffects) -> Result<bool> {
-    plan.validate()?;
-    let recovery_directories = plan.recovery_directories()?;
+fn check_readback(plan: &ValidatedUninstallPlan, effects: &UninstallEffects) -> Result<bool> {
+    let recovery_directories = plan.recovery_directories();
     if !same_paths(
-        recovery_directories.into_iter(),
+        recovery_directories.iter().cloned(),
         effects.recovery.iter().map(|entry| entry.directory.clone()),
         effects.recovery.len(),
     ) {
@@ -59,10 +58,10 @@ fn check_readback(plan: &UninstallPlan, effects: &UninstallEffects) -> Result<bo
         ));
     }
     let targets: BTreeSet<_> = plan
-        .files
+        .files()
         .iter()
         .map(|file| file.path.as_str())
-        .chain(plan.path_edits.iter().map(|edit| edit.target.as_str()))
+        .chain(plan.path_edits().iter().map(|edit| edit.target.as_str()))
         .collect();
     for directory in &effects.recovery {
         if let se_types::Read::Present { value: copies } = &directory.copies {
@@ -109,7 +108,7 @@ fn check_readback(plan: &UninstallPlan, effects: &UninstallEffects) -> Result<bo
                 if !bounded_path(&file.path)
                     || path.parent() != Some(Path::new(&directory.directory))
                     || !seen.insert(&file.path)
-                    || plan.temporary_file(path)?.is_none()
+                    || plan.temporary_file(path).is_none()
                 {
                     return Err(SeError::invalid(
                         "temporary file",
@@ -140,11 +139,11 @@ fn check_readback(plan: &UninstallPlan, effects: &UninstallEffects) -> Result<bo
             }
     });
     if !same_paths(
-        plan.files.iter().map(|file| PathBuf::from(&file.path)),
+        plan.files().iter().map(|file| PathBuf::from(&file.path)),
         effects.install_files.iter().map(|file| file.path.clone()),
         effects.install_files.len(),
     ) || !same_paths(
-        plan.created_directories.iter().map(PathBuf::from),
+        plan.created_directories().iter().map(PathBuf::from),
         effects
             .directories
             .iter()
@@ -153,7 +152,7 @@ fn check_readback(plan: &UninstallPlan, effects: &UninstallEffects) -> Result<bo
     ) {
         return Err(SeError::new(Detail::StateConflict(details::StateConflict {subject:"uninstall readback".into(),reason:"each exact planned file and directory requires its own outcome, including unreadable or conflicting paths".into(),next_step:"Read each owned path and retry without discarding unresolved outcomes.".into()})));
     }
-    if plan.path_edits.iter().any(|edit| {
+    if plan.path_edits().iter().any(|edit| {
         !effects
             .integrations
             .iter()
@@ -213,12 +212,9 @@ fn unobserved() -> Witness {
         ),
     }
 }
-fn missing_outcomes(plan: &UninstallPlan, effects: &mut UninstallEffects) {
-    // Invalid plans are reported by check_readback, never used to infer facts.
-    let Ok(parents) = plan.recovery_directories() else {
-        return;
-    };
-    for file in &plan.files {
+fn missing_outcomes(plan: &ValidatedUninstallPlan, effects: &mut UninstallEffects) {
+    let parents = plan.recovery_directories();
+    for file in plan.files() {
         if !effects
             .install_files
             .iter()
@@ -231,7 +227,7 @@ fn missing_outcomes(plan: &UninstallPlan, effects: &mut UninstallEffects) {
             });
         }
     }
-    for path in &plan.created_directories {
+    for path in plan.created_directories() {
         if !effects
             .directories
             .iter()
@@ -244,7 +240,7 @@ fn missing_outcomes(plan: &UninstallPlan, effects: &mut UninstallEffects) {
             });
         }
     }
-    for edit in &plan.path_edits {
+    for edit in plan.path_edits() {
         if !effects
             .integrations
             .iter()
