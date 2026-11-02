@@ -24,7 +24,8 @@ pub struct StdioConfig {
 }
 /// A revocable arena reference, never a raw handle or an independent native owner.
 pub struct StdioPort {
-    pub(crate) _private: (),
+    pub(crate) key: crate::runtime::Reference,
+    pub(crate) binding: u64,
 }
 pub struct ProviderStdio {
     /// Move into LaunchSpec; no parent copies of these child endpoints survive launch.
@@ -43,6 +44,8 @@ pub struct StdioOperationId(pub u64);
 pub struct StdioTicket {
     pub operation: StdioOperationId,
     pub identity: StdioIdentity,
+    pub(crate) key: crate::runtime::Reference,
+    pub(crate) binding: u64,
 }
 pub struct StdioState {
     pub port: StdioPort,
@@ -102,7 +105,10 @@ pub enum StdioCloseScope {
 /// Selected endpoints closed and their kernel requests drained; results need release.
 /// release_stdio accepts only a matching All witness, never a Stdin witness.
 pub struct StdioClosed {
-    pub(crate) _private: (),
+    pub(crate) native: std::sync::Weak<crate::platform::NativeStdio>,
+    pub(crate) identity: StdioIdentity,
+    pub(crate) binding: u64,
+    pub(crate) scope: StdioCloseScope,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StdioNotice {

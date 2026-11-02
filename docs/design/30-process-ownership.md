@@ -246,10 +246,10 @@ lifetime/readiness and provider readiness remain separate facts.
 
 ### 2.3 Windows provider-stdio port (narrow amendment)
 
-`stdio.rs` is the compile-only safe native counterpart of section 40's
-`ProviderIoPlatform`; it adds no backend or thread. `ProviderStdioApi` extends
-the existing `ProcessRuntime`, so every port uses that host's one arena and
-one IOCP collector. It is Windows-only; Unix keeps nonblocking descriptors on
+`stdio.rs` is the safe native counterpart of section 40's
+`ProviderIoPlatform`. `NativeProcessRuntime` implements `ProviderStdioApi`
+on Windows through its existing arena and IOCP collector, with no additional
+collector or per-stream thread. It is Windows-only; Unix keeps nonblocking descriptors on
 the host's existing AsyncFd reactor.
 
 | Native method | Safe host contract |

@@ -32,6 +32,8 @@ pub(crate) struct Slot {
     pub native: Option<crate::platform::Scope>,
     pub spec: Option<LaunchSpec>,
     pub stdio_bound: bool,
+    #[cfg(windows)]
+    pub stdio: Option<Arc<crate::platform::NativeStdio>>,
     pub deadline: std::time::Instant,
     pub argv_sha256: [u8; 32],
     pub hub: Arc<Hub>,

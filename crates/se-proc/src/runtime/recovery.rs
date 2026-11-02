@@ -298,6 +298,8 @@ fn cold_linux(
         native: None,
         spec: None,
         stdio_bound: true,
+        #[cfg(windows)]
+        stdio: None,
         deadline: Instant::now(),
         argv_sha256: record.argv_sha256,
         hub: hub.clone(),

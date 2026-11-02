@@ -113,6 +113,8 @@ impl ProcessRuntime for NativeProcessRuntime {
             native: None,
             spec: Some(spec),
             stdio_bound,
+            #[cfg(windows)]
+            stdio: None,
             deadline,
             argv_sha256: digest,
             hub: hub.clone(),
@@ -249,6 +251,16 @@ impl ProcessRuntime for NativeProcessRuntime {
             }
             if let Some(failure) = &s.failure {
                 return Err(failure.clone());
+            }
+            #[cfg(windows)]
+            if let Some(stdio) = &s.stdio {
+                if !s.stdio_bound {
+                    return Err(input(
+                        "stdio",
+                        "created provider streams must bind before vendor execution",
+                    ));
+                }
+                stdio.launch_ready()?;
             }
             if Instant::now() >= s.deadline {
                 return Err(error(
@@ -495,6 +507,12 @@ impl ProcessRuntime for NativeProcessRuntime {
             {
                 return Err(input("generation", "same or next generation required"));
             }
+            #[cfg(windows)]
+            if to != from
+                && let Some(stdio) = &s.stdio
+            {
+                stdio.fence(to)?;
+            }
             s.generation = to;
             if let Some(record) = &mut s.record {
                 record.generation = to;
@@ -603,6 +621,13 @@ impl ProcessRuntime for NativeProcessRuntime {
                 return Err(input(
                     "exit witness",
                     "witness differs from retained native custody",
+                ));
+            }
+            #[cfg(windows)]
+            if s.stdio.as_ref().is_some_and(|stdio| !stdio.released()) {
+                return Err(input(
+                    "release",
+                    "close/drain provider streams and release every operation and port first",
                 ));
             }
             if let Some(native) = &mut s.native {

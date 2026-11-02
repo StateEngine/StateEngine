@@ -4,6 +4,7 @@ mod recovery;
 pub(crate) use recovery::uncreated_scope;
 mod security;
 mod spawn;
+mod stdio;
 use crate::platform::{Progress, empty};
 use crate::runtime::notify::Hub;
 use crate::support::*;
@@ -11,10 +12,12 @@ use crate::*;
 use identity::*;
 pub(crate) use identity::{read_process, verify_live_identity};
 use std::{mem::zeroed, ptr, sync::Arc};
+pub(crate) use stdio::NativeStdio;
 use windows_sys::Win32::{Foundation::*, System::JobObjects::*};
 
 pub(crate) struct Driver {
     collector: notify::Collector,
+    stdio_budget: Arc<stdio::Budget>,
 }
 pub(crate) struct Scope {
     job: Handle,
@@ -27,10 +30,14 @@ pub(crate) struct Scope {
 }
 const LIMITS: JOB_OBJECT_LIMIT = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
 impl Driver {
-    pub fn new(_config: &HostConfig) -> ProcResult<Self> {
+    pub fn new(config: &HostConfig) -> ProcResult<Self> {
         Ok(Self {
             collector: notify::Collector::new()?,
+            stdio_budget: stdio::Budget::new(config.limits.max_stdio_buffer_bytes),
         })
+    }
+    pub fn create_stdio(&self, config: &StdioConfig) -> ProcResult<Arc<NativeStdio>> {
+        NativeStdio::create(&self.collector, self.stdio_budget.clone(), config)
     }
     pub fn capabilities(&self) -> PlatformCapabilities {
         PlatformCapabilities {
