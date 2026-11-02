@@ -5,6 +5,9 @@ use crate::{
 use se_types::{Body, IdempotencyKey, NativePath, ProviderSessionId, Read, Secret, Sha256};
 use std::{ffi::OsString, path::PathBuf};
 
+/// Headless Claude launch plan: settings/MCP files, argv, readiness, transcript.
+pub mod claude;
+
 /// One stock Codex feature/version floor for every launch/probe mode.
 pub const CODEX_MINIMUM_VERSION: (u16, u16, u16) = (0, 152, 0);
 
