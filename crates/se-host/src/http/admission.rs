@@ -207,7 +207,8 @@ fn json_media(headers: &HeaderMap) -> Result<(), Refusal> {
 
 /// The session capability a launched provider received in its protected MCP
 /// configuration; never logged, echoed or read from a query. Absent is legal
-/// for the anonymous lifecycle methods; a malformed header is refused.
+/// for the anonymous lifecycle methods; a malformed header is reported so the
+/// MCP consumer refuses tool methods while initialize and ping still answer.
 pub(crate) fn bearer(headers: &HeaderMap) -> Result<Option<Secret>, Refusal> {
     let malformed = || Refusal::new(StatusCode::UNAUTHORIZED, "malformed session bearer");
     let Some(value) = single(headers, &header::AUTHORIZATION)? else {

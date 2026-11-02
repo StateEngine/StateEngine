@@ -82,11 +82,12 @@ impl HostedRuntime {
         let mut local_stop = self.local_stop.take();
         // Only an automatically started host with a known activity count may
         // exit when idle; an explicit `se up` or an unknown count stays resident.
-        let mut idle = if self.auto_start {
-            self.activity.take()
-        } else {
-            None
-        };
+        // Built once: unrelated traffic must not restart its zero-activity window.
+        let mut idle: std::pin::Pin<Box<dyn Future<Output = ()>>> =
+            match self.auto_start.then(|| self.activity.take()).flatten() {
+                Some(mut activity) => Box::pin(async move { idle_expiry(&mut activity).await }),
+                None => Box::pin(std::future::pending()),
+            };
         let (shutdown, cancelled) = watch::channel(None);
         let mut tasks = JoinSet::new();
         let mut accept_backoff = std::time::Duration::from_millis(1);
@@ -99,7 +100,7 @@ impl HostedRuntime {
                 &http,
                 &mut tasks,
                 local_stop.as_mut(),
-                idle.as_mut(),
+                &mut idle,
                 accept_retry_at,
                 http_retry_at,
             )
@@ -252,7 +253,7 @@ async fn event(
     http: &crate::HttpListener,
     tasks: &mut JoinSet<Result<ConnectionEnd>>,
     local_stop: Option<&mut watch::Receiver<bool>>,
-    idle: Option<&mut watch::Receiver<u32>>,
+    idle: &mut std::pin::Pin<Box<dyn Future<Output = ()>>>,
     retry_at: tokio::time::Instant,
     http_retry_at: tokio::time::Instant,
 ) -> Event {
@@ -275,17 +276,11 @@ async fn event(
             None => std::future::pending::<()>().await,
         }
     });
-    let mut idling = pin!(async move {
-        match idle {
-            Some(activity) => idle_expiry(activity).await,
-            None => std::future::pending::<()>().await,
-        }
-    });
     poll_fn(|cx| {
         if stopping.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Event::LocalStop);
         }
-        if idling.as_mut().poll(cx).is_ready() {
+        if idle.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Event::IdleExpired);
         }
         if !tasks.is_empty()
