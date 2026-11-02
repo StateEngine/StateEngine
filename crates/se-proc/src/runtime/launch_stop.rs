@@ -183,6 +183,7 @@ impl ProcessRuntime for NativeProcessRuntime {
         });
         match result {
             Ok(checkpoint) => Ok(PreparedScope {
+                argv_sha256: digest,
                 prepared: PreparedLaunch { key: key.clone() },
                 process: OwnedProcess { key },
                 checkpoint,

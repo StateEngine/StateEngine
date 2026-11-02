@@ -448,6 +448,8 @@ pub struct ScopeCheckpoint {
     pub guarantee: ContainmentGuarantee,
 }
 pub struct PreparedScope {
+    /// Validated native argv digest, reused by pre-exec protected indices.
+    pub argv_sha256: [u8; 32],
     pub prepared: PreparedLaunch,
     pub process: OwnedProcess,
     pub checkpoint: ScopeCheckpoint,
@@ -549,6 +551,9 @@ pub trait NativeReadiness: Send + Sync {
     fn ready(&self);
 }
 pub trait NativeRegistration: Send {
+    /// Re-arm after native state has consumed readiness. Level-ready exit and
+    /// EOF descriptors must not produce repeated callbacks without this step.
+    fn rearm(&self);
     /// Disable future sink calls. In-flight callbacks retain their Arc state
     /// until drained; cancellation must not block an async runtime thread.
     fn cancel(&mut self);

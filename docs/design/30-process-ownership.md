@@ -774,7 +774,11 @@ the public NativeReactor/NativeReadiness/NativeRegistration and ExitSink
 boundaries prevent unsafe code leaking into se-host. NativeReactor wraps the
 provided owned File in the existing host AsyncFd/kqueue driver with Readable
 or Priority interest; its task calls NativeReadiness::ready, and se-proc assigns
-the lifecycle/generation/sequence nudge. NativeRegistration cancellation
+the lifecycle/generation/sequence nudge. NativeRegistration::rearm is called
+after native state consumes readiness; until then a terminal pidfd or EOF
+produces only one callback, preventing an idle readiness spin. PreparedScope
+also returns the native-validated argv_sha256 so the pre-exec root index and
+the eventual vendor record use exactly the same digest. NativeRegistration cancellation
 disables callbacks without blocking an async thread; in-flight callbacks hold
 Arc state until drained. There is no hidden tokio runtime or collector inside
 the Unix backend.
