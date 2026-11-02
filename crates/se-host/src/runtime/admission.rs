@@ -24,6 +24,7 @@ enum Pending {
     Discover,
     Refuse,
 }
+const RELAUNCH: &str = "relaunch the agent with `se launch AGENT`";
 /// Purpose of the pin capability (`sec1.`) CLI, hooks and IPC present.
 const SESSION_CAPABILITY: &str = "session";
 #[derive(Clone)]
@@ -256,10 +257,8 @@ impl AdmissionContext {
         purpose: &str,
         pending: Pending,
     ) -> Result<Admission> {
-        let credential = match phase
-            .credential(Hasher::digest(secret.expose()).into())
-            .map_err(|e| store_error(&e))?
-        {
+        let hash: [u8; 32] = Hasher::digest(secret.expose()).into();
+        let credential = match phase.credential(hash).map_err(|e| store_error(&e))? {
             Read::Present { value } => value,
             Read::Absent { .. } => {
                 return Err(SeError::invalid(
@@ -276,36 +275,51 @@ impl AdmissionContext {
         };
         let now = super::start::now_unix_micros()?;
         // A launched provider lists its tools before its launch activates. Only
-        // discovery may use a still-prepared credential, before its activation
-        // deadline; the coordinator revokes a superseded or failed preparation.
-        // Each refusal names its own reason; none echoes the credential.
+        // that discovery may use a still-prepared credential, and only while it
+        // is the agent's current launch before its activation deadline. Each
+        // refusal names its own reason and next step; none echoes the secret.
         let refusal = if credential.purpose != purpose {
-            Some(format!("a credential issued for `{purpose}`"))
+            Some((
+                format!("issued for another purpose, not `{purpose}`"),
+                "present the credential this transport was issued",
+            ))
         } else if credential.expires_at_us <= now {
-            Some("a credential before its expiry; relaunch the agent".to_owned())
+            Some(("expired".to_owned(), RELAUNCH))
         } else {
             match credential.state {
                 se_store::CredentialState::Active => None,
-                se_store::CredentialState::Revoked => Some(
-                    "an unrevoked credential; this launch was stopped or superseded".to_owned(),
-                ),
-                // A launched provider lists its tools before activation. Only
-                // that discovery may use a still-prepared credential, before its
-                // deadline; the coordinator revokes a superseded preparation.
-                se_store::CredentialState::Prepared if pending == Pending::Refuse => Some(
-                    "an activated credential; this launch has not finished starting".to_owned(),
-                ),
+                se_store::CredentialState::Revoked => Some((
+                    "revoked: this launch was stopped or superseded".to_owned(),
+                    RELAUNCH,
+                )),
+                se_store::CredentialState::Prepared if pending == Pending::Refuse => Some((
+                    "session not active: this launch has not finished starting".to_owned(),
+                    "wait for the launch to finish, then retry",
+                )),
                 se_store::CredentialState::Prepared if now >= credential.activation_deadline_us => {
-                    Some(
-                        "a launch credential before its activation deadline; relaunch the agent"
-                            .to_owned(),
-                    )
+                    Some(("past its launch activation deadline".to_owned(), RELAUNCH))
+                }
+                se_store::CredentialState::Prepared
+                    if phase
+                        .credential_superseded(hash)
+                        .map_err(|e| store_error(&e))? =>
+                {
+                    Some((
+                        "superseded by a later launch of this agent".to_owned(),
+                        RELAUNCH,
+                    ))
                 }
                 se_store::CredentialState::Prepared => None,
             }
         };
-        if let Some(expected) = refusal {
-            return Err(SeError::invalid("session credential", &expected));
+        if let Some((reason, next_step)) = refusal {
+            return Err(SeError::new(se_types::Detail::CapabilityInvalid(
+                se_types::details::CapabilityInvalid {
+                    subject: "presented".into(),
+                    reason,
+                    next_step: next_step.into(),
+                },
+            )));
         }
         Ok(Admission {
             scope: Scope::Project(credential.project),
