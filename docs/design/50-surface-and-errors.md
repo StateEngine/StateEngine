@@ -568,7 +568,7 @@ The table below mirrors `crates/se-types/src/error/catalog.rs`; typed detail fie
 | --- | --- | --- | --- | --- |
 | capability-invalid | A | subject: String, reason: String, next_step: String | Session credential {subject}: {reason} | {next_step} |
 | grant-required | A | grant: String, agent: AgentId | Session for {agent} lacks permission {grant} | Owner: `se config set agent.{agent}.can-create true` |
-| human-terminal-required | A | op: String, reason: String | `{op}` needs you at an interactive terminal not started by an agent | Open your own terminal outside an agent tree; this mistake/drift guard is not proof against a determined agent using your account |
+| human-terminal-required | A | op: String, reason: String | `{op}` needs you at an interactive terminal not started by an agent: {reason} | Open your own terminal outside an agent tree; this mistake/drift guard is not proof against a determined agent using your account |
 | listener-admission-refused | A | reason: String | local server refused the request: {reason} | reconnect through `se mcp token`; non-loopback access is not supported |
 | message-scope-denied | A | filter: String, agent: AgentId | as an agent, {agent} can list only messages it sent or received; `{filter}` names others' mail | Drop the filter, or the owner runs `se msg list` from their own terminal. |
 | not-recipient | A | message: MessageId, recipient: String | only {recipient} can mark {message} read or dismissed | read it with `se msg read` as that agent, or leave it |

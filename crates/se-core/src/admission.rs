@@ -129,7 +129,15 @@ pub fn authorize_file_owner(
         AgentTreeCheck::Outside=>(),
     }
     if human_only && !(observed.stdin_console && observed.stdout_console) {
-        return Err(SeError::new(Detail::HumanTerminalRequired(details::HumanTerminalRequired {op:op.into(),reason:"stdin and stdout must both be real consoles/TTYs outside every recorded agent tree".into()})));
+        return Err(SeError::new(Detail::HumanTerminalRequired(
+            details::HumanTerminalRequired {
+                op: op.into(),
+                reason: format!(
+                    "stdin_console={}, stdout_console={}; stdin and stdout must both be consoles/TTYs",
+                    observed.stdin_console, observed.stdout_console
+                ),
+            },
+        )));
     }
     Ok(())
 }
