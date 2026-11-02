@@ -425,6 +425,7 @@ dependencies = [
  "se-proc",
  "se-store",
  "se-types",
+ "secode-stateengine-api",
  "serde",
  "serde_ignored",
  "serde_json",
@@ -469,6 +470,13 @@ dependencies = [
  "sha2",
  "uuid",
  "zeroize",
+]
+
+[[package]]
+name = "secode-stateengine-api"
+version = "2.0.0"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

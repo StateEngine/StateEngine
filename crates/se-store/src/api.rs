@@ -339,6 +339,15 @@ pub struct ProjectionRecord {
     pub original: Option<Box<StoredEvent>>,
     pub current: StoredEvent,
 }
+/// A control target's principal, profile, live (prepared/active) sessions and
+/// unreleased processes, oldest first. Never continuity, mail or turns.
+#[derive(Clone)]
+pub struct ControlTarget {
+    pub principal: ProjectionRecord,
+    pub profile: Read<ProjectionRecord>,
+    pub sessions: Vec<ProjectionRecord>,
+    pub processes: Vec<ProjectionRecord>,
+}
 /// One finite read transaction. No method mutates a marker/cursor or repairs data.
 pub trait Snapshot {
     type LegacyRegistry<'a>: se_types::LegacyIdRegistry
@@ -401,6 +410,11 @@ pub trait Snapshot {
     fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>>;
     fn turns(&mut self, agent: AgentId, budget: ReadBudget) -> StoreResult<Page<StoredEvent>>;
     fn capture_source(&mut self, source: RecordId) -> StoreResult<Read<ProjectionRecord>>;
+    /// Launch/stop metadata for one agent under self, owner or creator control.
+    /// A creator needs its current can-create grant and the target's immutable
+    /// direct created_by, both read in this snapshot; other private reads are
+    /// unchanged.
+    fn control_target(&mut self, target: AgentId) -> StoreResult<Read<ControlTarget>>;
     fn process(&mut self, id: LifecycleId) -> StoreResult<Read<ProjectionRecord>>;
     /// Internal recorded custody for status/agent control, not a public process.list operation.
     fn processes(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;

@@ -109,7 +109,11 @@ pub(super) fn apply(
             let owner = owner
                 .ok_or_else(|| fail(StoreErrorCode::ReferenceMissing, "session agent absent"))?;
             let permitted = match &h.actor {
-                Actor::Agent(actor) => *actor == agent,
+                Actor::Agent(actor) if *actor == agent => true,
+                Actor::Agent(creator) => {
+                    crate::creator::require(c, &p, &scope, creator, &a)?;
+                    true
+                }
                 Actor::Human(human) => key(c, "human", human.as_str(), &[0], false)? == owner,
             };
             if !permitted {

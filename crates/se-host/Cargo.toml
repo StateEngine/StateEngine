@@ -10,9 +10,10 @@ publish.workspace = true
 default = ["runtime", "listener"]
 runtime = ["dep:tokio"]
 listener = ["runtime", "tokio/net", "tokio/io-util", "tokio/time", "tokio/sync"]
-secode = ["runtime"]
+secode = ["runtime", "dep:secode-stateengine-api"]
 
 [dependencies]
+secode-stateengine-api = { version = "=2.0.0", optional = true }
 se-types = { path = "../se-types" }
 se-core = { path = "../se-core" }
 se-store = { path = "../se-store" }

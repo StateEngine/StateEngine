@@ -1,0 +1,13 @@
+Permissive SE Code API source: windows:E:/rust-secode commit baec40152bf71557a151a2c1989d4ba3c575995a.
+Upstream crate: crates/secode-stateengine-api; licensed MIT OR Apache-2.0.
+Cargo.toml alone makes workspace-inherited edition and lints explicit.
+The source files below match the upstream Git objects byte for byte (SHA-256):
+f447d66d6720b1454fbbe8787ff080c634f1e830c9ca18a47f15f25969f3fce5  src/config.rs
+ffb94f928e1f4798d2de9dd9086c9c3b47b56a9df2a86cb224c83f83f09927f1  src/error.rs
+84c25fff4a05d7a02a663ea29d1d8ea2d421aba503f3f8045a9da43ef4093a5b  src/handover.rs
+7d618519bc4873f359628a60a173469a7e914d8545050bb4729382ff46fa0bca  src/host.rs
+c77e3fe53302eb2be89e1d9c207f99d3a7a61a18826326a64808d66e265f11b6  src/identity.rs
+9014ef2d242b5320080a09cf0032ee60a22bb9b0ce3850f10efa7feade04a3b3  src/lib.rs
+76fa559dc2dac8ea326df2100997eaea36fe693ddc6c289d2f50a33bedb0b38b  src/native.rs
+15f8ccf79e24576d28a7bd8916a9b74a8de44ff627cf551b346b37cd235d7f5f  src/read.rs
+15331cbb66bd8f1b270e0c01f0e5cbeee98ed7edc200cf220af9a82106dcdaa2  src/session.rs
