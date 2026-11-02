@@ -31,9 +31,64 @@ fn legal(from: ProcessState, to: ProcessState) -> bool {
             | (Running, LeaderExited | StopRequested | Exited | Lost)
             | (LeaderExited, StopRequested | Exited | Lost)
             | (StopRequested, StopUnproved | Exited | Lost)
-            | (StopUnproved, StopRequested | Exited | Lost)
+            // StopUnproved → StopUnproved is only the owner's uncontained
+            // ownership release; apply checks its custody marker.
+            | (StopUnproved, StopUnproved | StopRequested | Exited | Lost)
             | (Lost, Running | LeaderExited | StopUnproved | Exited)
     )
+}
+/// The owner's release of an uncontained StopUnproved process whose stop
+/// could not be proved: its custody must be a process record carrying an
+/// ownership release for this lifecycle, host generation and resulting
+/// revision. The state stays StopUnproved; no exit is invented.
+fn release(
+    c: &Connection,
+    h: &EventHeader,
+    p: &[u8],
+    identity: &ProcessIdentityRecord,
+    rev: u64,
+    lease: &LeaseIdentity,
+) -> StoreResult<()> {
+    let refuse = |why: &str| {
+        Err(fail(
+            StoreErrorCode::InvalidTransition,
+            format!(
+                "StopUnproved to StopUnproved is only the owner's uncontained ownership release: {why}"
+            ),
+        ))
+    };
+    if !super::project::is_owner(c, h, p)? {
+        return refuse("the actor is not the project owner");
+    }
+    if !matches!(identity.containment, ContainmentFact::Uncontained { .. }) {
+        return refuse("the process is not an uncontained tracked group");
+    }
+    // se-proc owns the custody codec and se-store does not link it; read only
+    // the release marker fields that section 20 says the store projects.
+    let v: Value = serde_json::from_slice(&identity.custody.record).map_err(|e| {
+        invalid(format!(
+            "release custody is not the versioned JSON record: {e}"
+        ))
+    })?;
+    let lifecycle = serde_json::to_value(&identity.record).map_err(invalid)?;
+    let checkpoint = &v["checkpoint"];
+    if identity.custody.format_version != 1
+        || v["lifecycle"] != lifecycle
+        || checkpoint["kind"] != "process"
+    {
+        return refuse("custody is not this lifecycle's version-1 process record");
+    }
+    let marker = &checkpoint["value"]["ownership_release"];
+    if !marker.is_object() {
+        return refuse("custody carries no ownership release");
+    }
+    if marker["lifecycle"] != lifecycle
+        || marker["generation"].as_u64() != Some(lease.generation)
+        || marker["revision"].as_u64() != Some(rev)
+    {
+        return refuse("the release names another lifecycle, host generation or revision");
+    }
+    Ok(())
 }
 /// The one authorized image change: a checkpointed pre-exec root publishing
 /// its verified vendor image (Starting → Running). Machine, boot, PID, native
@@ -235,6 +290,9 @@ pub(super) fn apply(
             ));
         }
         let old = codec::process::identity(c, old_seq, &p, &id, rev - 1, &old_state, false)?;
+        if from == ProcessState::StopUnproved && to == ProcessState::StopUnproved {
+            release(c, h, &p, &identity, rev, lease)?;
+        }
         if from == ProcessState::Starting
             && to == ProcessState::Starting
             && !(old.root_identity == RootIdentityState::Unpublished
@@ -356,7 +414,8 @@ pub(super) fn apply(
     c.execute("INSERT INTO process_data(event_seq,process_id,principal_id,target_session_id,root_identity,identity_state,identity_cause,machine_id,boot_identity,pid,birth_identity,executable,argv_sha256,custody_version,custody,containment,containment_cause,containment_unknown_reason,containment_observed_at_us,containment_probe,state,expected_revision,observation_event) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,id,principal,target,root,identity_state,cause,machine,boot,pid,birth,executable,argv,identity.custody.format_version,identity.custody.record,containment,containment_cause,unknown,observed,probe,name(to),expected_revision,observation]).map_err(sql)?;
     if let Some(from) = from {
         codec::aux(c, seq, serde_json::json!({"from":from,"outcome":outcome}))?;
-        let changed = c.execute("UPDATE processes SET revision=?,last_seq=?,state=? WHERE project_id=? AND process_id=? AND revision=? AND state=? AND ownership_released=0",crate::sql_value::sql_params![rev,seq,name(to),p,id,rev-1,name(from)]).map_err(sql)?;
+        let released = from == ProcessState::StopUnproved && to == ProcessState::StopUnproved;
+        let changed = c.execute("UPDATE processes SET revision=?,last_seq=?,state=?,ownership_released=? WHERE project_id=? AND process_id=? AND revision=? AND state=? AND ownership_released=0",crate::sql_value::sql_params![rev,seq,name(to),released,p,id,rev-1,name(from)]).map_err(sql)?;
         if changed != 1 {
             return Err(fail(
                 StoreErrorCode::RevisionConflict,

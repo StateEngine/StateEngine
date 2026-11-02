@@ -48,12 +48,30 @@ impl SqliteSnapshot {
             "unreleased processes",
             &load,
         )?;
+        // The newest session and process in any state, so stop/status/resume
+        // can tell a witnessed exit from a human-released StopUnproved.
+        let latest_session = self.head_with(
+            "sessions",
+            "project_id=? AND agent_id=? AND first_seq=(SELECT MAX(first_seq) FROM sessions WHERE project_id=? AND agent_id=?)",
+            &[&p, &a, &p, &a],
+            Some("first_seq"),
+            &load,
+        )?;
+        let latest_process = self.head_with(
+            "processes",
+            "project_id=? AND first_seq=(SELECT MAX(h.first_seq) FROM processes h JOIN process_data d ON d.event_seq=h.first_seq WHERE h.project_id=? AND d.principal_id=?)",
+            &[&p, &p, &a],
+            Some("first_seq"),
+            &load,
+        )?;
         Ok(Read::Present {
             value: ControlTarget {
                 principal,
                 profile,
                 sessions,
                 processes,
+                latest_session,
+                latest_process,
             },
         })
     }

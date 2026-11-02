@@ -364,6 +364,10 @@ pub struct ControlTarget {
     pub profile: Read<ProjectionRecord>,
     pub sessions: Vec<ProjectionRecord>,
     pub processes: Vec<ProjectionRecord>,
+    /// Newest session in any state, ended or revoked included.
+    pub latest_session: Read<ProjectionRecord>,
+    /// Newest process in any state, exited or ownership-released included.
+    pub latest_process: Read<ProjectionRecord>,
 }
 /// One finite read transaction. No method mutates a marker/cursor or repairs data.
 pub trait Snapshot {
