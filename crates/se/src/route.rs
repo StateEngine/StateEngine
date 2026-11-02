@@ -2,6 +2,9 @@
 //! reads configuration and before a worker or store is opened.
 #[path = "route/admit.rs"]
 mod admit;
+#[cfg(any(target_os = "linux", windows))]
+#[path = "route/autostart.rs"]
+mod autostart;
 #[path = "route/credential.rs"]
 pub mod credential;
 #[path = "route/direct.rs"]
@@ -12,6 +15,8 @@ pub mod execute;
 pub mod files;
 #[path = "route/hook.rs"]
 mod hook;
+#[path = "route/hosted.rs"]
+mod hosted;
 #[path = "route/identity.rs"]
 pub mod identity;
 #[path = "route/init.rs"]

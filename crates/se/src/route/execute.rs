@@ -9,7 +9,7 @@ use crate::bootstrap::Bootstrap;
 use se_core::{
     dispatch::{CallFacts, Kernel},
     ops::{AnyOp, AnyOutput},
-    registry::Effect,
+    registry::{Effect, RuntimeNeed},
     scope,
     store_error::store_error,
 };
@@ -139,7 +139,11 @@ pub fn dispatch(
         let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
         return super::hook::forward(cx, &files, input, diagnostic);
     }
-    if op.meta().effect == Effect::Read {
+    let host_required = matches!(
+        op.meta().runtime,
+        RuntimeNeed::Host | RuntimeNeed::HostAutoStart
+    );
+    if op.meta().effect == Effect::Read && !host_required {
         return complete(direct::read(
             &reader,
             &caller.admission,
@@ -157,6 +161,9 @@ pub fn dispatch(
             &caller.admission,
             &caller.terminal,
         )?;
+    }
+    if host_required {
+        return super::hosted::forward(cx, &files, &caller, op, &selections, diagnostic);
     }
     if let AnyOp::RuntimeDown(input) = op {
         return super::runtime_control::down(&files, input);
