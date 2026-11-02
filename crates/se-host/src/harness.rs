@@ -7,6 +7,10 @@ use std::{ffi::OsString, path::PathBuf};
 
 /// Headless Claude launch plan: settings/MCP files, argv, readiness, transcript.
 pub mod claude;
+#[cfg(all(unix, feature = "listener"))]
+mod unix_io;
+#[cfg(all(unix, feature = "listener"))]
+pub use unix_io::UnixProviderIo;
 
 /// One stock Codex feature/version floor for every launch/probe mode.
 pub const CODEX_MINIMUM_VERSION: (u16, u16, u16) = (0, 152, 0);
@@ -49,7 +53,11 @@ pub struct HarnessRequest {
     pub launch_credential: Secret,
     pub key: IdempotencyKey,
 }
+/// The host's retained ends of one provider's streams. Only the platform that
+/// opened it can operate on it; dropping it closes the host ends.
 pub struct ProviderTransport {
+    #[cfg(all(unix, feature = "listener"))]
+    pub(crate) unix: Option<unix_io::Pipes>,
     pub(crate) _private: (),
 }
 pub struct ProviderIo {

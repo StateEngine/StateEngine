@@ -134,6 +134,9 @@ fn initialize(params: &Value) -> Value {
 }
 
 /// Discovery comes only from core's generated registry; listing is read-only.
+/// It advertises input schemas only: MCP makes outputSchema optional, the
+/// output schemas are ~97% of the catalogue's bytes, and they remain public
+/// through `se schema`. Results still carry the schema-tagged structuredContent.
 fn tools() -> Result<Value> {
     let tools: Vec<Value> = se_core::ops::mcp_tools()?
         .into_iter()
@@ -143,7 +146,6 @@ fn tools() -> Result<Value> {
                 "title": tool.title,
                 "description": tool.description,
                 "inputSchema": tool.input_schema,
-                "outputSchema": tool.output_schema,
             })
         })
         .collect();
