@@ -1,0 +1,323 @@
+//! Independent wave-2 store judges. These persist typed store facts; they do
+//! not claim native launch custody, provider execution or host authentication.
+#![cfg(any(target_os = "linux", windows))]
+use se_store::*;
+use se_types::{AgentId, LifecycleId, Read, SessionId};
+use std::time::Duration;
+#[path = "support/store_fixture.rs"]
+mod fixture;
+use fixture::*;
+#[path = "support/host_fixture.rs"]
+mod native_host;
+use native_host::*;
+#[path = "support/capture_fixture.rs"]
+#[allow(dead_code, reason = "only typed session preparation is shared")]
+mod capture;
+
+#[path = "support/wave2_control_fixture.rs"]
+#[allow(
+    dead_code,
+    reason = "checkpoint and creator judges share typed store fixtures"
+)]
+mod control_fixture;
+use control_fixture::*;
+/// Protects: a creator controls only its direct child under a current grant; bounded metadata never widens ordinary private readers.
+#[test]
+fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
+    let f = Fixture::new()?;
+    let (host, lease) = host(&f)?;
+    let writer = host.start_writer(options(256)?, lease)?;
+    let client = writer.client();
+    let child = agent()?;
+    let grandchild = agent()?;
+    let other = agent()?;
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        None,
+        vec![
+            grant(&f.a, true, Expected::Absent),
+            helper(&f, &child, Some(&f.a)),
+            helper(&f, &grandchild, Some(&child)),
+            helper(&f, &other, Some(&f.b)),
+            EventBody::ProfileSaved {
+                agent: child.clone(),
+                profile: Profile {
+                    provider: Provider::Claude,
+                    model: Some("private-model".into()),
+                    permission: PermissionProfile::WorkspaceWrite,
+                    named_profile: "workspace-write".into(),
+                    effort: None,
+                },
+                expected: Expected::Absent,
+            },
+        ],
+    )?)?)??;
+    let session = capture::session()?;
+    let admission = f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone()));
+    let session_receipt = wait(client.submit(f.batch(
+        admission.clone(),
+        None,
+        vec![capture::prepared(&f, &session, &child)],
+    )?)?)??;
+    let mut process = identity(&child)?;
+    process.root_identity = RootIdentityState::NoChildCreated;
+    process.session = Some(session.clone());
+    wait(client.submit(f.batch(
+        admission.clone(),
+        None,
+        vec![registration(&process, ProcessState::Reserved)],
+    )?)?)??;
+    process.root_identity = RootIdentityState::Unpublished;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        None,
+        vec![transition(
+            &process,
+            1,
+            ProcessState::Reserved,
+            ProcessState::Starting,
+            session_receipt.primary_event.clone(),
+        )?],
+    )?)?)??;
+    let private_message = message()?;
+    wait(client.submit(f.send(
+        Actor::Human(f.owner.clone()),
+        Actor::Agent(child.clone()),
+        private_message.clone(),
+        "child private mail",
+        "child-mail",
+    )?)?)??;
+    wait(client.submit(f.batch(
+        f.admission(
+            Scope::Project(f.project.clone()),
+            Actor::Agent(child.clone()),
+        ),
+        None,
+        vec![EventBody::WorkingStateSet {
+            agent: child.clone(),
+            text: InputText::Inline("child private continuity".into()),
+            expected: Expected::Absent,
+        }],
+    )?)?)??;
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let mut snapshot = reader.snapshot(f.self_scope(&f.a))?;
+    let control = present(snapshot.control_target(child.clone())?)?;
+    assert!(
+        matches!(control.profile, Read::Present { value } if matches!(&value.current.body, EventBody::ProfileSaved { agent, .. } if agent == &child))
+    );
+    assert_eq!(control.sessions.len(), 1);
+    assert_eq!(control.processes.len(), 1);
+    assert!(
+        matches!(&control.sessions[0].current.body, EventBody::SessionPrepared { session: id, .. } if *id == session)
+    );
+    assert!(
+        matches!(&control.processes[0].current.body, EventBody::ProcessTransition { identity, to: ProcessState::Starting, .. } if identity.record == process.record)
+    );
+    assert!(snapshot.profile(child.clone()).is_err());
+    assert!(snapshot.working_state(child.clone()).is_err());
+    assert!(snapshot.message(private_message).is_err());
+    assert!(snapshot.session(session.clone()).is_err());
+    assert!(
+        snapshot
+            .turns(child.clone(), budget(10, 32768, None)?)
+            .is_err()
+    );
+    assert!(snapshot.resume_head(Actor::Agent(child.clone())).is_err());
+    for forbidden in [f.b.clone(), grandchild.clone(), other.clone()] {
+        assert_eq!(
+            snapshot
+                .control_target(forbidden.clone())
+                .err()
+                .ok_or("non-child control read admitted")?
+                .code,
+            StoreErrorCode::CreatorControlRefused
+        );
+        let attempted = capture::session()?;
+        assert_eq!(
+            wait(client.submit(f.batch(
+                admission.clone(),
+                None,
+                vec![capture::prepared(&f, &attempted, &forbidden)]
+            )?)?)?
+            .err()
+            .ok_or("non-child session write admitted")?
+            .code,
+            StoreErrorCode::CreatorControlRefused
+        );
+        let wrong = identity(&forbidden)?;
+        assert_eq!(
+            wait(client.submit(f.batch(
+                admission.clone(),
+                None,
+                vec![registration(&wrong, ProcessState::Starting)]
+            )?)?)?
+            .err()
+            .ok_or("non-child process write admitted")?
+            .code,
+            StoreErrorCode::CreatorControlRefused
+        );
+    }
+    let missing_grant = f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.b.clone()));
+    assert_eq!(
+        reader
+            .snapshot(f.self_scope(&f.b))?
+            .control_target(other.clone())
+            .err()
+            .ok_or("creator without a grant read its child")?
+            .code,
+        StoreErrorCode::CreatorControlRefused
+    );
+    let ungranted_session = capture::session()?;
+    assert_eq!(
+        wait(client.submit(f.batch(
+            missing_grant.clone(),
+            None,
+            vec![capture::prepared(&f, &ungranted_session, &other)]
+        )?)?)?
+        .err()
+        .ok_or("creator without a grant prepared its child")?
+        .code,
+        StoreErrorCode::CreatorControlRefused
+    );
+    assert_eq!(
+        wait(client.submit(f.batch(
+            missing_grant,
+            None,
+            vec![registration(&identity(&other)?, ProcessState::Starting)]
+        )?)?)?
+        .err()
+        .ok_or("creator without a grant wrote its child process")?
+        .code,
+        StoreErrorCode::CreatorControlRefused
+    );
+    let mut human = identity(&child)?;
+    human.principal = Actor::Human(f.owner.clone());
+    assert!(
+        wait(client.submit(f.batch(
+            admission.clone(),
+            None,
+            vec![registration(&human, ProcessState::Starting)]
+        )?)?)?
+        .is_err(),
+        "creator controlled a human principal"
+    );
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        None,
+        vec![grant(&f.a, false, revision(1)?)],
+    )?)?)??;
+    // The already measured snapshot keeps its grant and child facts together.
+    assert!(matches!(
+        snapshot.control_target(child.clone())?,
+        Read::Present { .. }
+    ));
+    let mut current = reader.snapshot(f.self_scope(&f.a))?;
+    assert_eq!(
+        current
+            .control_target(child.clone())
+            .err()
+            .ok_or("revoked creator read admitted")?
+            .code,
+        StoreErrorCode::CreatorControlRefused
+    );
+    drop(current);
+    let new_session = capture::session()?;
+    assert_eq!(
+        wait(client.submit(f.batch(
+            admission.clone(),
+            None,
+            vec![capture::prepared(&f, &new_session, &child)]
+        )?)?)?
+        .err()
+        .ok_or("revoked creator session write admitted")?
+        .code,
+        StoreErrorCode::CreatorControlRefused
+    );
+    process.root_identity = RootIdentityState::Unpublished;
+    assert_eq!(
+        wait(client.submit(f.batch(
+            admission,
+            None,
+            vec![transition(
+                &process,
+                2,
+                ProcessState::Starting,
+                ProcessState::StopRequested,
+                session_receipt.primary_event
+            )?]
+        )?)?)?
+        .err()
+        .ok_or("revoked creator process write admitted")?
+        .code,
+        StoreErrorCode::CreatorControlRefused
+    );
+    assert_eq!(head(&f, process.record.clone())?.revision.value.get(), 2);
+    assert!(matches!(
+        reader
+            .snapshot(f.scoped(Visibility::Owner))?
+            .session(new_session)?,
+        Read::Absent { .. }
+    ));
+    assert!(matches!(
+        reader
+            .snapshot(f.self_scope(&child))?
+            .control_target(child)?,
+        Read::Present { .. }
+    ));
+    drop(snapshot);
+    drop(reader);
+    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    Ok(())
+}
+
+/// Protects: control inventory refuses overflow rather than silently omitting a live session, and excludes revoked preparations.
+#[test]
+fn control_inventory_is_complete_or_refuses() -> Check {
+    let f = Fixture::new()?;
+    let (host, lease) = host(&f)?;
+    let writer = host.start_writer(options(256)?, lease)?;
+    let client = writer.client();
+    let child = agent()?;
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        None,
+        vec![
+            grant(&f.a, true, Expected::Absent),
+            helper(&f, &child, Some(&f.a)),
+        ],
+    )?)?)??;
+    let mut sessions: Vec<SessionId> = Vec::new();
+    for _ in 0..17 {
+        sessions.push(capture::session()?);
+    }
+    let bodies = sessions
+        .iter()
+        .map(|id| capture::prepared(&f, id, &child))
+        .collect();
+    wait(client.submit(f.batch(f.owner_project(), None, bodies)?)?)??;
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    assert_eq!(
+        reader
+            .snapshot(f.self_scope(&f.a))?
+            .control_target(child.clone())
+            .err()
+            .ok_or("oversized live session inventory truncated")?
+            .code,
+        StoreErrorCode::ReadIncomplete
+    );
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        None,
+        vec![EventBody::SessionRevoked {
+            session: sessions[0].clone(),
+            expected: revision(1)?,
+            reason: InputText::Inline("failed preparation revoked by independent fixture".into()),
+        }],
+    )?)?)??;
+    let control = present(reader.snapshot(f.self_scope(&f.a))?.control_target(child)?)?;
+    assert_eq!(control.sessions.len(), 16);
+    assert!(control.sessions.iter().all(|entry| matches!(&entry.current.body, EventBody::SessionPrepared { session, .. } if session != &sessions[0])));
+    drop(reader);
+    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    Ok(())
+}
