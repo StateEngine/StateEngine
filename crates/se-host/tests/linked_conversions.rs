@@ -500,6 +500,33 @@ fn linked_windows_and_pages_retain_source_bounds_and_refuse_unsupported() -> Che
         )?)?;
         assert_eq!(linked::window(&window)?.stop_reason, expected);
     }
+    let mut partial = fields(
+        core::Source::Configuration {
+            location: "partial earlier range".into(),
+        },
+        core::StopReason::Unreadable,
+        core::Omission::None,
+    )?;
+    partial.unreadable = 3;
+    partial.omitted_before = core::Omission::Known {
+        count: NonZeroU64::new(2).ok_or("zero earlier omission")?,
+        reason: core::OmissionReason::Limit,
+    };
+    let partial = linked::window(&core::Window::new(partial)?)?;
+    assert_eq!(
+        partial.unreadable, 3,
+        "unreadable source count was discarded"
+    );
+    assert_eq!(
+        partial.omitted_before,
+        api::Omission::Known {
+            count: 2,
+            reason: api::OmissionReason::Limit,
+        },
+        "earlier omission was discarded"
+    );
+    assert_eq!(partial.omitted_after, api::Omission::None);
+    assert!(!partial.complete);
     let atlas = core::Source::Atlas {
         project,
         root: core::AtlasRootId::from_parts(1_700_000_000_000, [5; 10])?,
