@@ -34,6 +34,19 @@ pub trait McpBackend {
     ) -> impl Future<Output = Result<Value>> + Send;
     /// The complete JSON-RPC response budget for this transport, in bytes.
     fn response_limit(&self) -> usize;
+    /// Resolve the capability for a selected tool method, after lifecycle
+    /// methods were answered. `metadata` is the request's `params._meta`. The
+    /// default uses the transport-supplied capability (HTTP's bearer); a
+    /// transport that reads metadata must refuse a malformed explicit value
+    /// rather than fall back to another identity.
+    fn capability(
+        &mut self,
+        metadata: Option<&Value>,
+        supplied: Option<Arc<Secret>>,
+    ) -> Result<Option<Arc<Secret>>> {
+        let _ = metadata;
+        Ok(supplied)
+    }
 }
 
 pub async fn dispatch(
@@ -77,12 +90,16 @@ pub async fn dispatch(
         "tools/list" | "tools/call" => (),
         _ => return McpReply::Json(rpc_error(id, -32601, "method not found")),
     }
-    let Some(capability) = capability else {
-        return McpReply::Json(rpc_error(
-            id,
-            SESSION_REQUIRED,
-            "session-required: tools need the launched session's capability",
-        ));
+    let capability = match backend.capability(params.get("_meta"), capability) {
+        Ok(Some(capability)) => capability,
+        Ok(None) => {
+            return McpReply::Json(rpc_error(
+                id,
+                SESSION_REQUIRED,
+                "session-required: tools need the launched session's capability",
+            ));
+        }
+        Err(error) => return McpReply::Json(rpc_error(id, SESSION_REQUIRED, &error.to_string())),
     };
     let response = if method == "tools/list" {
         match backend
