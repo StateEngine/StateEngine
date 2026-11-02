@@ -71,6 +71,8 @@ pub struct HostedRuntime {
     pub(crate) image_sha256: se_types::Sha256,
     /// Set once by serve when its loopback HTTP listener is bound.
     pub(crate) http_port: Arc<std::sync::OnceLock<u16>>,
+    /// Bound before publication; serve takes it.
+    pub(crate) http: Option<crate::HttpListener>,
 }
 impl HostedRuntime {
     /// Explicit executable/embedding inputs; the library never reads ambient
@@ -313,6 +315,7 @@ fn prepare(
         kind: options.kind,
         image_sha256: peer.image_sha256(),
         http_port: Arc::default(),
+        http: None,
     })
 }
 pub(crate) fn owner_budget() -> Result<se_store::ReadBudget> {

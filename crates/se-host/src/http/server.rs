@@ -45,14 +45,23 @@ pub struct HttpListener {
     slots: Arc<Semaphore>,
 }
 impl HttpListener {
-    /// An ephemeral port on 127.0.0.1 only; never a wildcard or LAN address.
-    /// Call inside the supplied runtime: registration needs its reactor.
-    pub fn bind() -> Result<Self> {
+    /// 127.0.0.1 only; never a wildcard or LAN address. `configured` is the
+    /// stable `runtime.listen_port` init persisted: it is bound exactly, and a
+    /// busy port refuses startup rather than moving silently. With no
+    /// configured port, the OS picks one. Call inside the supplied runtime:
+    /// registration needs its reactor.
+    pub fn bind(configured: Option<u16>) -> Result<Self> {
         let io = |what: &str, error: std::io::Error| {
             se_core::scope::unreadable(what, &error.to_string()).with_cause(error)
         };
-        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .map_err(|e| io("loopback HTTP bind", e))?;
+        let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, configured.unwrap_or(0)))
+            .map_err(|e| match configured {
+                Some(port) => io(
+                    &format!("configured loopback port {port} (runtime.listen_port)"),
+                    e,
+                ),
+                None => io("loopback HTTP bind", e),
+            })?;
         listener
             .set_nonblocking(true)
             .map_err(|e| io("loopback HTTP listener mode", e))?;

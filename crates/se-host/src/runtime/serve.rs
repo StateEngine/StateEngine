@@ -66,16 +66,14 @@ impl HostedRuntime {
             Err(error) => return ended(self, listener, Some(error)),
         };
         let runtime = self.execution.blocking.handle();
-        // Provider MCP sessions reach this host over loopback HTTP. Bound once
-        // per hosted runtime, inside the supplied runtime's reactor.
-        let http = match crate::HttpListener::bind() {
-            Ok(http) if self.http_port.set(http.port()).is_ok() => http,
-            Ok(_) => {
-                let error =
-                    SeError::invalid("loopback HTTP listener", "one bind per hosted runtime");
-                return ended(self, listener, Some(error));
-            }
-            Err(error) => return ended(self, listener, Some(error)),
+        // Provider MCP sessions reach this host over the loopback HTTP listener
+        // bound at publication, before readiness was reported.
+        let Some(http) = self.http.take() else {
+            let error = SeError::invalid(
+                "loopback HTTP listener",
+                "one bound at listener publication",
+            );
+            return ended(self, listener, Some(error));
         };
         let (shutdown, cancelled) = watch::channel(None);
         let mut tasks = JoinSet::new();
