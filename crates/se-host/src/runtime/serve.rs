@@ -83,7 +83,7 @@ impl HostedRuntime {
         // Only an automatically started host with a known activity count may
         // exit when idle; an explicit `se up` or an unknown count stays resident.
         // Built once: unrelated traffic must not restart its zero-activity window.
-        let mut idle: std::pin::Pin<Box<dyn Future<Output = ()>>> =
+        let mut idle: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> =
             match self.auto_start.then(|| self.activity.take()).flatten() {
                 Some(mut activity) => Box::pin(async move { idle_expiry(&mut activity).await }),
                 None => Box::pin(std::future::pending()),
@@ -253,7 +253,7 @@ async fn event(
     http: &crate::HttpListener,
     tasks: &mut JoinSet<Result<ConnectionEnd>>,
     local_stop: Option<&mut watch::Receiver<bool>>,
-    idle: &mut std::pin::Pin<Box<dyn Future<Output = ()>>>,
+    idle: &mut std::pin::Pin<Box<dyn Future<Output = ()> + Send>>,
     retry_at: tokio::time::Instant,
     http_retry_at: tokio::time::Instant,
 ) -> Event {

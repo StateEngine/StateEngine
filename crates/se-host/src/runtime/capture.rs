@@ -111,33 +111,19 @@ impl HostedRuntime {
         pin: se_proc::NativeSourcePin,
         deadline: &Deadline,
     ) -> Result<()> {
-        let pins = self.sources.clone();
-        let lease = Arc::clone(&self.lease);
-        let context = self.execution.clone();
-        let bound = deadline.clone();
-        self.execution
-            .blocking
-            .run_owned(deadline, move || {
-                let mut source = BoundTranscript {
-                    binding,
-                    source,
-                    pin,
-                };
-                let path = source.binding.path.to_local()?;
-                if path != source.pin.path()
-                    || source.binding.file_identity
-                        != se_types::Sha256::from_bytes(source.pin.identity())
-                {
-                    return Err(SeError::invalid(
-                        "trusted transcript bind",
-                        "the exact native path and retained file identity",
-                    ));
-                }
-                source.pin.validate_path(&path).map_err(native_error)?;
-                source::validate(&context, &mut source, &bound)?;
-                pins.insert(source, Some(&lease))
-            })
+        self.capture_handle()
+            .bind(binding, source, pin, deadline)
             .await
+    }
+    /// The trusted capture handle the native coordinator retains: transcript
+    /// binding at launch and the final catch-up at stop.
+    pub fn capture_handle(&self) -> CaptureHandle {
+        CaptureHandle {
+            execution: self.execution.clone(),
+            sources: self.sources.clone(),
+            lease: Arc::clone(&self.lease),
+            fenced: Arc::clone(&self.fenced),
+        }
     }
 }
 impl HostedRuntime {
@@ -179,6 +165,91 @@ impl HostedRouter {
             selections,
             ..
         } = call.admitted;
+        self.capturing()
+            .capture(admission, terminal, selections, hook, deadline)
+            .await
+    }
+    fn capturing(&self) -> Capturing<'_> {
+        Capturing {
+            execution: &self.execution,
+            sources: &self.sources,
+            fenced: &self.fenced,
+        }
+    }
+}
+fn native_error(error: se_proc::StateFileError) -> SeError {
+    se_core::scope::unreadable("retained transcript source", &error.to_string()).with_cause(error)
+}
+fn busy() -> SeError {
+    SeError::new(se_types::Detail::StoreBusy(se_types::details::StoreBusy {
+        waited_ms: 0,
+        replay: None,
+        reason: "transcript binding or bounded source capacity is occupied".into(),
+        next_step:
+            "Wait for the current bounded capture to finish and retry the original hook identity."
+                .into(),
+    }))
+}
+
+fn try_guard<T>(value: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
+    match value.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(std::sync::TryLockError::WouldBlock) => Err(busy()),
+        Err(std::sync::TryLockError::Poisoned(_)) => Err(se_core::scope::unreadable(
+            "transcript binding",
+            "a prior source worker failed; preserve the retained pin and committed cursor",
+        )),
+    }
+}
+
+fn empty_capture(kind: crate::ClaudeHookKind) -> ExecutedCall {
+    let checked = if matches!(kind, crate::ClaudeHookKind::SessionStart) {
+        "Session-start validated the trusted binding and protected session; it performs no capture scan."
+    } else {
+        "No complete new text record at the verified pinned source; an incomplete final line remains pending a real provider signal."
+    };
+    ExecutedCall {
+        output: se_core::ops::HookResult {
+            stdout: String::new(),
+            captured: Read::Absent {
+                checked: checked.into(),
+            },
+            failure: None,
+            receipt: None,
+        }
+        .into(),
+        write_timings: None,
+        committed: None,
+        capture_commits: Vec::new(),
+        capture_keys: Vec::new(),
+    }
+}
+
+/// Capture through one retained source pin, shared by the hook route and the
+/// coordinator's handle; the drain fence stops it like any admitted call.
+struct Capturing<'a> {
+    execution: &'a ExecutionContext,
+    sources: &'a TranscriptBindings,
+    fenced: &'a std::sync::atomic::AtomicBool,
+}
+impl Capturing<'_> {
+    fn check_open(&self) -> Result<()> {
+        if self.fenced.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(SeError::invalid(
+                "host admission",
+                "a ready runtime before its drain fence",
+            ));
+        }
+        Ok(())
+    }
+    async fn capture(
+        &self,
+        admission: se_store::Admission,
+        terminal: se_core::admission::HumanTerminal,
+        selections: Option<se_core::ops::CliSelections>,
+        hook: crate::ClaudeHookInput,
+        deadline: &Deadline,
+    ) -> Result<ExecutedCall> {
         if selections.is_some() || admission.generation != self.execution.generation.get() {
             return Err(SeError::invalid(
                 "capture admission",
@@ -280,50 +351,78 @@ impl HostedRouter {
         }
     }
 }
-fn native_error(error: se_proc::StateFileError) -> SeError {
-    se_core::scope::unreadable("retained transcript source", &error.to_string()).with_cause(error)
-}
-fn busy() -> SeError {
-    SeError::new(se_types::Detail::StoreBusy(se_types::details::StoreBusy {
-        waited_ms: 0,
-        replay: None,
-        reason: "transcript binding or bounded source capacity is occupied".into(),
-        next_step:
-            "Wait for the current bounded capture to finish and retry the original hook identity."
-                .into(),
-    }))
-}
 
-fn try_guard<T>(value: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>> {
-    match value.try_lock() {
-        Ok(guard) => Ok(guard),
-        Err(std::sync::TryLockError::WouldBlock) => Err(busy()),
-        Err(std::sync::TryLockError::Poisoned(_)) => Err(se_core::scope::unreadable(
-            "transcript binding",
-            "a prior source worker failed; preserve the retained pin and committed cursor",
-        )),
+/// Held by the native coordinator; valid for this hosted generation only.
+#[derive(Clone)]
+pub struct CaptureHandle {
+    execution: ExecutionContext,
+    sources: TranscriptBindings,
+    lease: Arc<HostLease>,
+    fenced: Arc<std::sync::atomic::AtomicBool>,
+}
+impl CaptureHandle {
+    /// Called only by trusted provider launch/owner-adoption code with its
+    /// retained native pin. No hook/IPC payload is decoded into this method.
+    pub async fn bind(
+        &self,
+        binding: crate::TranscriptPin,
+        source: se_store::RecordId,
+        pin: se_proc::NativeSourcePin,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let pins = self.sources.clone();
+        let lease = Arc::clone(&self.lease);
+        let context = self.execution.clone();
+        let bound = deadline.clone();
+        self.execution
+            .blocking
+            .run_owned(deadline, move || {
+                let mut source = BoundTranscript {
+                    binding,
+                    source,
+                    pin,
+                };
+                let path = source.binding.path.to_local()?;
+                if path != source.pin.path()
+                    || source.binding.file_identity
+                        != se_types::Sha256::from_bytes(source.pin.identity())
+                {
+                    return Err(SeError::invalid(
+                        "trusted transcript bind",
+                        "the exact native path and retained file identity",
+                    ));
+                }
+                source.pin.validate_path(&path).map_err(native_error)?;
+                source::validate(&context, &mut source, &bound)?;
+                pins.insert(source, Some(&lease))
+            })
+            .await
     }
-}
-
-fn empty_capture(kind: crate::ClaudeHookKind) -> ExecutedCall {
-    let checked = if matches!(kind, crate::ClaudeHookKind::SessionStart) {
-        "Session-start validated the trusted binding and protected session; it performs no capture scan."
-    } else {
-        "No complete new text record at the verified pinned source; an incomplete final line remains pending a real provider signal."
-    };
-    ExecutedCall {
-        output: se_core::ops::HookResult {
-            stdout: String::new(),
-            captured: Read::Absent {
-                checked: checked.into(),
-            },
-            failure: None,
-            receipt: None,
-        }
-        .into(),
-        write_timings: None,
-        committed: None,
-        capture_commits: Vec::new(),
-        capture_keys: Vec::new(),
+    /// The final catch-up after a stop: read the bound session's pinned
+    /// transcript to its last complete record and commit what is new.
+    pub async fn catch_up(
+        &self,
+        admission: se_store::Admission,
+        conversation: se_types::ProviderSessionId,
+        transcript: se_types::NativePath,
+        deadline: &Deadline,
+    ) -> Result<ExecutedCall> {
+        let capturing = Capturing {
+            execution: &self.execution,
+            sources: &self.sources,
+            fenced: &self.fenced,
+        };
+        let terminal = se_core::admission::HumanTerminal::Refused {
+            reason: "a coordinator capture is not an owner terminal".into(),
+        };
+        let stop = crate::ClaudeHookInput {
+            kind: crate::ClaudeHookKind::Stop,
+            conversation,
+            claimed_transcript: transcript,
+            payload: serde_json::Value::Null,
+        };
+        capturing
+            .capture(admission, terminal, None, stop, deadline)
+            .await
     }
 }

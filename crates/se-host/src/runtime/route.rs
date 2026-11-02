@@ -55,7 +55,7 @@ pub struct HostedRouter {
     pub(crate) sources: TranscriptBindings,
     context: AdmissionContext,
     response_bytes: std::num::NonZeroU32,
-    fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(crate) fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     http_port: std::sync::Arc<std::sync::OnceLock<u16>>,
 }
 impl HostedRuntime {
