@@ -168,8 +168,8 @@ async fn respond(
             // A malformed header is carried into dispatch: lifecycle methods
             // stay anonymous, and only tool methods refuse it.
             let (secret, malformed) = match admission::bearer(request.headers()) {
-                Ok(secret) => (secret, None),
-                Err(refusal) => (None, Some(refusal.reason)),
+                Ok(secret) => (secret, false),
+                Err(_) => (None, true),
             };
             let deadline = match Deadline::from_options(&ClientOptions {
                 expected_generation: None,
