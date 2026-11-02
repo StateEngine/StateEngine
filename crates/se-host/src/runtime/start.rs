@@ -69,6 +69,8 @@ pub struct HostedRuntime {
     pub(crate) owner: se_types::HumanId,
     pub(crate) kind: crate::HostKind,
     pub(crate) image_sha256: se_types::Sha256,
+    /// Set once by serve when its loopback HTTP listener is bound.
+    pub(crate) http_port: Arc<std::sync::OnceLock<u16>>,
 }
 impl HostedRuntime {
     /// Explicit executable/embedding inputs; the library never reads ambient
@@ -124,6 +126,10 @@ impl HostedRuntime {
     }
     pub fn phase(&self) -> crate::HostPhase {
         self.phase
+    }
+    /// The loopback MCP port, once serve has bound it; None before that.
+    pub fn http_port(&self) -> Option<u16> {
+        self.http_port.get().copied()
     }
 }
 fn present<T>(read: Read<T>, subject: &str) -> Result<T> {
@@ -306,6 +312,7 @@ fn prepare(
         owner: owner.clone(),
         kind: options.kind,
         image_sha256: peer.image_sha256(),
+        http_port: Arc::default(),
     })
 }
 pub(crate) fn owner_budget() -> Result<se_store::ReadBudget> {
