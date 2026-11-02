@@ -156,10 +156,12 @@ class NativeFinalStatus(unittest.TestCase):
         (root / (name + ".json")).write_text(json.dumps({"argv": argv, "code": result.returncode}, indent=2))
         return result, (result.stdout + result.stderr).decode("utf-8", errors="replace")
 
-    def exercise(self, json_mode=False, changed=False):
+    def exercise(self, json_mode=False, changed=False, home_form=None, conflicting_home=False):
         import winreg
 
         root = self.options.out / self._testMethodName
+        if home_form:
+            root /= "conflicting-environment" if conflicting_home else "unset-environment"
         root.mkdir(parents=True, exist_ok=False)
         bundle = root / "archive"
         shutil.copytree(self.options.bundle, bundle)
@@ -198,13 +200,29 @@ class NativeFinalStatus(unittest.TestCase):
         snapshot_path = root / "at-public-return.json"
         # Plain uses the archive entry; JSON uses the installed mirror entry.
         entry = root / "local/StateEngine/installation/uninstall.ps1" if json_mode else bundle / "uninstall.ps1"
-        plan = {"entry": str(entry), "arguments": ["--json"] if json_mode else [],
+        arguments = ["--json"] if json_mode else []
+        uninstall_env = env.copy()
+        unrelated = None
+        if home_form:
+            # Installation/init used the actual custom home. Only the public
+            # uninstall invocation now changes environment/flag selection.
+            if conflicting_home:
+                other_home = root / "unrelated-state"
+                other_home.mkdir()
+                unrelated = other_home / "user-work.txt"
+                unrelated.write_bytes(b"unrelated home must remain untouched\n")
+                uninstall_env["SE_HOME"] = str(other_home)
+            else:
+                uninstall_env.pop("SE_HOME")
+            arguments += (["--home", str(record.parent)] if home_form == "separate"
+                          else ["--home=" + str(record.parent)])
+        plan = {"entry": str(entry), "arguments": arguments,
                 "paths": [row["path"] for row in inventory["files"]] + [str(record)],
                 "journal": str(root / "state/uninstall-helper-cleanup.json"), "snapshot": str(snapshot_path)}
         plan_path = root / "plan.json"
         plan_path.write_text(json.dumps(plan), encoding="utf-8")
         result, text = self.run_command([shutil.which("powershell.exe"), "-NoProfile", "-NonInteractive", "-File",
-                                         str(caller), "-Plan", str(plan_path)], env, root, "uninstall", terminal=True)
+                                         str(caller), "-Plan", str(plan_path)], uninstall_env, root, "uninstall", terminal=True)
         self.assertTrue(snapshot_path.is_file(), "outside caller could not capture the returned outcome: " + text[-1800:])
         snapshot = json.loads(snapshot_path.read_bytes())
         self.assertEqual(result.returncode, snapshot["code"], "terminal changed the public exit code")
@@ -220,6 +238,9 @@ class NativeFinalStatus(unittest.TestCase):
         self.assertEqual(sentinel.read_bytes(), b"user work survives uninstall\n")
         for path, data in retained.items():
             self.assertEqual(path.read_bytes(), data, "uninstall changed retained user data")
+        if unrelated:
+            self.assertEqual(unrelated.read_bytes(), b"unrelated home must remain untouched\n")
+            self.assertEqual(list(unrelated.parent.iterdir()), [unrelated], "uninstall wrote into the conflicting environment home")
 
     def test_plain_archive_entry_waits_for_native_cleanup(self):
         self.exercise()
@@ -229,6 +250,16 @@ class NativeFinalStatus(unittest.TestCase):
 
     def test_real_changed_asset_has_named_failure_and_retains_retry(self):
         self.exercise(changed=True)
+
+    def test_home_flag_selects_own_record_over_unset_or_conflicting_environment(self):
+        for conflicting in (False, True):
+            with self.subTest(conflicting_home=conflicting):
+                self.exercise(home_form="separate", conflicting_home=conflicting)
+
+    def test_home_equals_selects_own_record_over_unset_or_conflicting_environment(self):
+        for conflicting in (False, True):
+            with self.subTest(conflicting_home=conflicting):
+                self.exercise(json_mode=True, home_form="equals", conflicting_home=conflicting)
 
 
 def recorded_journey(archive):
