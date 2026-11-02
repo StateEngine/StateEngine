@@ -11,6 +11,10 @@ pub mod claude;
 mod unix_io;
 #[cfg(all(unix, feature = "listener"))]
 pub use unix_io::UnixProviderIo;
+#[cfg(all(windows, feature = "listener"))]
+mod windows_io;
+#[cfg(all(windows, feature = "listener"))]
+pub use windows_io::WindowsProviderIo;
 #[cfg(feature = "listener")]
 mod claude_harness;
 #[cfg(feature = "listener")]
@@ -73,6 +77,8 @@ pub const MCP_BEARER_PURPOSE: &str = "http";
 pub struct ProviderTransport {
     #[cfg(all(unix, feature = "listener"))]
     pub(crate) unix: Option<unix_io::Pipes>,
+    #[cfg(all(windows, feature = "listener"))]
+    pub(crate) windows: Option<windows_io::Port>,
     pub(crate) _private: (),
 }
 pub struct ProviderIo {
@@ -98,8 +104,8 @@ pub struct StreamWrite {
     pub failure: Option<se_types::ErrorBody>,
 }
 /// Genuine Unix/Windows evented I/O implementations. The Windows implementation
-/// wraps se-proc's safe native IOCP bridge; no blocking File wrapper or raw-handle
-/// conversion is performed by se-host.
+/// (`WindowsProviderIo`) wraps se-proc's safe native IOCP port; se-host performs
+/// no blocking File wrapper or raw-handle conversion.
 pub trait ProviderIoPlatform: Send + Sync {
     fn open(
         &self,
