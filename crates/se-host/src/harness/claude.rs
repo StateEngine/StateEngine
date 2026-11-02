@@ -9,7 +9,7 @@
 //! `claude -p` with stream-json input and output, so the host can write tasks
 //! and mail as user messages and read readiness from the provider's own echo.
 use crate::{ConfigPlan, HarnessRequest, OwnedLaunchFile, ProviderInvocation};
-use se_types::{Body, NativePath, ProviderSessionId, Result, SeError, Secret};
+use se_types::{Body, NativePath, ProviderSessionId, Read, Result, SeError, Secret};
 use serde_json::{Value, json};
 use std::{
     ffi::OsString,
@@ -237,4 +237,90 @@ fn file(path: &Path, value: &Value) -> Result<OwnedLaunchFile> {
         path: NativePath::from_local(path.to_path_buf())?,
         contents: Secret::new(bytes)?,
     })
+}
+
+/// Host-environment names a provider legitimately needs: OS transport, the
+/// user's home and the provider's own login. Never fleet or session names.
+const ENVIRONMENT: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LANG",
+    "TZ",
+    "TMPDIR",
+    "TERM",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR",
+    "CLAUDE_CONFIG_DIR",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "SystemRoot",
+    "windir",
+    "ComSpec",
+    "PATHEXT",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "ProgramData",
+    "ProgramFiles",
+];
+
+/// A new conversation reuses the session's own UUID, so its identity is fixed
+/// by the reservation before any provider runs. Resume uses the saved one.
+pub fn conversation(request: &HarnessRequest) -> Result<ProviderSessionId> {
+    match &request.resume {
+        Read::Present { value } => Ok(value.clone()),
+        Read::Absent { .. } => ProviderSessionId::new(session_uuid(request)?),
+        Read::Unreadable { reason, .. } => Err(se_core::scope::unreadable(
+            "saved Claude conversation",
+            reason,
+        )),
+        Read::Unknown { what } => Err(se_core::scope::unreadable(
+            "saved Claude conversation",
+            what,
+        )),
+    }
+}
+
+pub(crate) fn session_uuid(request: &HarnessRequest) -> Result<&str> {
+    request
+        .identity
+        .session
+        .as_str()
+        .strip_prefix("ses_")
+        .ok_or_else(|| SeError::invalid("session id", "a canonical ses_<UUID> session"))
+}
+
+/// The base environment handed to the provider, built from an allowlist.
+pub fn provider_environment() -> Vec<(OsString, OsString)> {
+    std::env::vars_os()
+        .filter(|(name, _)| {
+            let name = name.to_string_lossy();
+            ENVIRONMENT
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(&name))
+                || name.starts_with("LC_")
+        })
+        .collect()
+}
+
+/// Where this provider's Claude config lives, as the child will see it.
+pub fn config_home(environment: &[(OsString, OsString)]) -> Result<PathBuf> {
+    let value = |wanted: &str| {
+        environment
+            .iter()
+            .find(|(name, _)| name.to_string_lossy().eq_ignore_ascii_case(wanted))
+            .map(|(_, value)| PathBuf::from(value))
+    };
+    value("CLAUDE_CONFIG_DIR")
+        .or_else(|| value("HOME").map(|home| home.join(".claude")))
+        .or_else(|| value("USERPROFILE").map(|home| home.join(".claude")))
+        .ok_or_else(|| SeError::invalid("Claude config home", "HOME or CLAUDE_CONFIG_DIR"))
 }

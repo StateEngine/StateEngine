@@ -14,10 +14,11 @@ pub use unix_io::UnixProviderIo;
 #[cfg(feature = "listener")]
 mod claude_harness;
 #[cfg(feature = "listener")]
-pub use claude_harness::{
-    ClaudeHarness, config_home as claude_config_home, conversation as claude_conversation,
-    provider_environment, transcript_location as claude_transcript_location,
+pub use claude::{
+    config_home as claude_config_home, conversation as claude_conversation, provider_environment,
 };
+#[cfg(feature = "listener")]
+pub use claude_harness::{ClaudeHarness, transcript_location as claude_transcript_location};
 
 /// One stock Codex feature/version floor for every launch/probe mode.
 pub const CODEX_MINIMUM_VERSION: (u16, u16, u16) = (0, 152, 0);
