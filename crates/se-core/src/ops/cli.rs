@@ -35,6 +35,26 @@ impl CommonArgs {
                     ..CliSelections::default()
                 }
             }
+            "agent.launch" => CliSelections {
+                agent: text(m, "agent"),
+                launch_provider: text(m, "provider")
+                    .map(|value| {
+                        serde_json::from_value(serde_json::Value::String(value))
+                            .map_err(|_| SeError::invalid("provider", "claude or codex"))
+                    })
+                    .transpose()?,
+                ..CliSelections::default()
+            },
+            "agent.stop" => CliSelections {
+                agent: text(m, "agent"),
+                control_all: flag(m, "all"),
+                stop_release: flag(m, "release"),
+                ..CliSelections::default()
+            },
+            "project.remove" => CliSelections {
+                control_all: flag(m, "all"),
+                ..CliSelections::default()
+            },
             "message.list" => CliSelections {
                 mail_to: text(m, "to"),
                 mail_list: true,
@@ -178,6 +198,21 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("launch"))
             .arg(toggle("adopt")),
         "project.status" => c.arg(toggle("all")),
+        "agent.launch" => c
+            .about("Start or resume a saved agent; this release supports headless --detach")
+            .arg(positional("agent", 1, true))
+            .arg(toggle("new"))
+            .arg(value("provider"))
+            .arg(value("model"))
+            .arg(value("task"))
+            .arg(toggle("detach")),
+        "agent.stop" => c
+            .arg(positional("agent", 1, false).conflicts_with("all"))
+            .arg(toggle("all").conflicts_with("release"))
+            .arg(toggle("release")),
+        "project.remove" => c
+            .arg(toggle("all").conflicts_with("project"))
+            .arg(toggle("keep-integrations")),
         "history.event_read" => c.arg(
             value("event")
                 .conflicts_with_all(["agent", "session", "kind", "since", "limit", "cursor"]),

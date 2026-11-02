@@ -69,7 +69,10 @@ pub fn run(
             });
         }
     }
-    if let Err(error) = operation.resolve_stdin(&mut bootstrap::text_input) {
+    if let Err(error) = operation
+        .resolve_stdin(&mut bootstrap::text_input)
+        .and_then(|()| operation.validate())
+    {
         return render::error::write(
             &error,
             &RenderCx::default(),

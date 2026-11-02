@@ -13,6 +13,9 @@ pub struct CliSelections {
     pub mail_to: Option<String>,
     pub mail_list: bool,
     pub status_all: bool,
+    pub control_all: bool,
+    pub stop_release: bool,
+    pub launch_provider: Option<crate::config_policy::Provider>,
 }
 impl CliSelections {
     pub fn validate(&self) -> Result<()> {
@@ -57,31 +60,73 @@ impl CliSelections {
                 }
             }
         }
-        if let Some(selector) = &self.agent {
-            if !matches!(
-                op,
-                AnyOp::WorkingStateGet(_)
-                    | AnyOp::WorkingStateSet(_)
-                    | AnyOp::AgentShow(_)
-                    | AnyOp::HistoryList(_)
-            ) {
-                return Err(unknown_flag(
-                    "--agent",
-                    op.meta().name,
-                    "this operation has no agent selector",
-                ));
-            }
-            let actor = crate::scope::actor_selector(cx.read, selector)?;
-            let se_store::Actor::Agent(agent) = actor else {
-                return Err(SeError::invalid("agent", "a project agent, not the owner"));
-            };
-            crate::scope::working_agent(cx.admission, Some(&agent), op.meta().name)?;
+        if self.control_all {
             match op {
-                AnyOp::AgentShow(input) => input.target_agent_id = Some(agent),
-                AnyOp::HistoryList(input) => input.owner_agent = Some(agent),
-                AnyOp::WorkingStateGet(input) => input.owner_agent = Some(agent),
-                AnyOp::WorkingStateSet(input) => input.owner_agent = Some(agent),
-                _ => (),
+                AnyOp::AgentStop(input) => input.all = true,
+                AnyOp::ProjectRemove(input) if input.all => (),
+                _ => {
+                    return Err(unknown_flag(
+                        "--all",
+                        op.meta().name,
+                        "only stop or remove accepts control-all selection",
+                    ));
+                }
+            }
+        }
+        if self.stop_release {
+            match op {
+                AnyOp::AgentStop(input) => input.release = true,
+                _ => {
+                    return Err(unknown_flag(
+                        "--release",
+                        op.meta().name,
+                        "only a single-agent stop can release ownership",
+                    ));
+                }
+            }
+        }
+        if let Some(provider) = self.launch_provider {
+            match op {
+                AnyOp::AgentLaunch(input) => input.owner_provider = Some(provider),
+                _ => {
+                    return Err(unknown_flag(
+                        "--provider",
+                        op.meta().name,
+                        "this control selection is only a launch override",
+                    ));
+                }
+            }
+        }
+        if let Some(selector) = &self.agent {
+            match op {
+                // Keep control selection in its own path: the core planner's
+                // control_target read applies the current direct-creator grant.
+                AnyOp::AgentLaunch(input) => input.owner_agent = Some(selector.clone()),
+                AnyOp::AgentStop(input) => input.owner_agent = Some(selector.clone()),
+                AnyOp::WorkingStateGet(_)
+                | AnyOp::WorkingStateSet(_)
+                | AnyOp::AgentShow(_)
+                | AnyOp::HistoryList(_) => {
+                    let actor = crate::scope::actor_selector(cx.read, selector)?;
+                    let se_store::Actor::Agent(agent) = actor else {
+                        return Err(SeError::invalid("agent", "a project agent, not the owner"));
+                    };
+                    crate::scope::working_agent(cx.admission, Some(&agent), op.meta().name)?;
+                    match op {
+                        AnyOp::AgentShow(input) => input.target_agent_id = Some(agent),
+                        AnyOp::HistoryList(input) => input.owner_agent = Some(agent),
+                        AnyOp::WorkingStateGet(input) => input.owner_agent = Some(agent),
+                        AnyOp::WorkingStateSet(input) => input.owner_agent = Some(agent),
+                        _ => (),
+                    }
+                }
+                _ => {
+                    return Err(unknown_flag(
+                        "--agent",
+                        op.meta().name,
+                        "this operation has no agent selector",
+                    ));
+                }
             }
         }
         if self.mail_list || self.mail_to.is_some() {

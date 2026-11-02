@@ -265,6 +265,9 @@ fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
                     se_core::ports::CustodyPlan::RuntimeUp(_) => "runtime.up",
                     se_core::ports::CustodyPlan::RuntimeDown(_) => "runtime.down",
                     se_core::ports::CustodyPlan::Uninstall(_) => "uninstall",
+                    se_core::ports::CustodyPlan::Launch(_) => "host launch coordinator",
+                    se_core::ports::CustodyPlan::Stop(_) => "host stop coordinator",
+                    se_core::ports::CustodyPlan::Remove(_) => "host removal coordinator",
                 }
                 .into(),
             },

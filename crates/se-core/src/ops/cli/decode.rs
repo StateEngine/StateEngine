@@ -186,6 +186,32 @@ pub fn from_matches_with_key(
                 owner_to: text(m, "to"),
             }),
             "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet { owner_agent: None }),
+            "agent.launch" => AnyOp::AgentLaunch(AgentLaunch {
+                target_agent_id: None,
+                fresh: flag(m, "new"),
+                model: text(m, "model"),
+                task: text(m, "task"),
+                detach: flag(m, "detach"),
+                idempotency_key: key()?,
+                owner_agent: text(m, "agent"),
+                owner_provider: common.selections.launch_provider,
+            }),
+            "agent.stop" => AnyOp::AgentStop(AgentStop {
+                target_agent_id: None,
+                idempotency_key: key()?,
+                owner_agent: if flag(m, "all") {
+                    None
+                } else {
+                    Some(required(m, "agent")?)
+                },
+                all: flag(m, "all"),
+                release: flag(m, "release"),
+            }),
+            "project.remove" => AnyOp::ProjectRemove(ProjectRemove {
+                all: flag(m, "all"),
+                keep_integrations: flag(m, "keep-integrations"),
+                idempotency_key: key()?,
+            }),
             "agent.create" => AnyOp::AgentCreate(AgentCreate {
                 name: required(m, "name")?,
                 provider: text(m, "provider")

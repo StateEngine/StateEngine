@@ -1,4 +1,5 @@
 mod administration;
+mod control;
 mod decision;
 pub mod error;
 mod event;
@@ -36,6 +37,13 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             }
             (HumanKind::AgentPage, AnyOutput::AgentList(value)) => {
                 administration::agents(&value.value, out)?
+            }
+            (HumanKind::Launch, AnyOutput::AgentLaunch(value)) => {
+                control::launch(&value.value, out)?
+            }
+            (HumanKind::Stop, AnyOutput::AgentStop(value)) => control::stop(&value.value, out)?,
+            (HumanKind::Remove, AnyOutput::ProjectRemove(value)) => {
+                control::remove(&value.value, out)?
             }
             (HumanKind::AgentStatus, AnyOutput::AgentShow(value)) => {
                 administration::agent_status(&value.value, out)?
