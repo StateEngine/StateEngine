@@ -372,6 +372,9 @@ pub trait ProcessRuntime: Send + Sync {
         reservation: LaunchReservation,
         spec: LaunchSpec,
     ) -> ProcResult<PreparedScope>;
+    /// Install provider child endpoints once, after native scope preparation.
+    /// Rejection leaves the prepared scope owned and prevents vendor execution.
+    fn bind_stdio(&self, prepared: &PreparedLaunch, child: StandardIo) -> ProcResult<()>;
     fn begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart;
     fn poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress>;
     fn authorize_exec(&self, ticket: &LaunchTicket) -> ProcResult<()>;

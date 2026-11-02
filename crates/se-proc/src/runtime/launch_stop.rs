@@ -102,6 +102,9 @@ impl ProcessRuntime for NativeProcessRuntime {
             spec.notifications.clone(),
         ));
         let deadline = spec.deadline;
+        let stdio_bound = spec.stdio.stdin.is_some()
+            || spec.stdio.stdout.is_some()
+            || spec.stdio.stderr.is_some();
         let slot = Arc::new(Mutex::new(Slot {
             reservation: reservation.clone(),
             checkpoint: None,
@@ -109,6 +112,7 @@ impl ProcessRuntime for NativeProcessRuntime {
             record: None,
             native: None,
             spec: Some(spec),
+            stdio_bound,
             deadline,
             argv_sha256: digest,
             hub: hub.clone(),
@@ -192,11 +196,59 @@ impl ProcessRuntime for NativeProcessRuntime {
             }
         }
     }
+    fn bind_stdio(&self, prepared: &PreparedLaunch, child: StandardIo) -> ProcResult<()> {
+        let key = &prepared.key;
+        self.inner.apply(key, false, |slot| {
+            if slot.launched || slot.phase != LifecycleState::Starting {
+                return Err(state(&key.lifecycle, slot.phase, "bind_stdio"));
+            }
+            let result = (|| {
+                if let Some(failure) = &slot.failure {
+                    return Err(failure.clone());
+                }
+                if Instant::now() >= slot.deadline {
+                    return Err(error(
+                        ProcErrorCode::LaunchTimedOut,
+                        ProcErrorDetail::Input {
+                            field: "deadline".into(),
+                            reason: "launch deadline elapsed before stream binding".into(),
+                        },
+                    ));
+                }
+                if slot.stdio_bound {
+                    return Err(input(
+                        "stdio",
+                        "prepared launch already owns stream bindings",
+                    ));
+                }
+                let spec = slot
+                    .spec
+                    .as_mut()
+                    .ok_or_else(|| input("stdio", "prepared launch spec is unavailable"))?;
+                if spec.mode != LaunchMode::Headless {
+                    return Err(input(
+                        "stdio",
+                        "provider stream binding requires headless mode",
+                    ));
+                }
+                spec.stdio = child;
+                slot.stdio_bound = true;
+                Ok(())
+            })();
+            if let Err(failure) = &result {
+                slot.failure = Some(failure.clone());
+            }
+            result
+        })
+    }
     fn begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart {
         let key = prepared.key;
         let result = self.inner.apply(&key, false, |s| {
             if s.launched || s.phase != LifecycleState::Starting {
                 return Err(state(&key.lifecycle, s.phase, "begin_launch"));
+            }
+            if let Some(failure) = &s.failure {
+                return Err(failure.clone());
             }
             if Instant::now() >= s.deadline {
                 return Err(error(

@@ -297,6 +297,7 @@ fn cold_linux(
         record: None,
         native: None,
         spec: None,
+        stdio_bound: true,
         deadline: Instant::now(),
         argv_sha256: record.argv_sha256,
         hub: hub.clone(),

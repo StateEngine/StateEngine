@@ -129,6 +129,7 @@ pub trait ProcessRuntime: Send + Sync {
         reservation: LaunchReservation,
         spec: LaunchSpec,
     ) -> ProcResult<PreparedScope>;
+    fn bind_stdio(&self, prepared: &PreparedLaunch, child: StandardIo) -> ProcResult<()>;
     fn begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart;
     fn poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress>;
     fn authorize_exec(&self, ticket: &LaunchTicket) -> ProcResult<()>;
@@ -504,8 +505,13 @@ are batched into C1/C3 instead of adding serial security transactions.
 
 `prepare_launch` consumes LaunchSpec as well as the committed reservation,
 so mode, selected terminal/broker and containment requirement are known before
-native preparation. PreparedLaunch retains that unchanged spec; begin_launch
-cannot substitute a different launch mode or policy after C2. It inserts its
+native preparation. PreparedLaunch retains that spec; begin_launch
+cannot substitute a different launch mode or policy after C2. For headless provider I/O,
+`bind_stdio(&PreparedLaunch, StandardIo)` installs the child endpoints once after
+`create_stdio`/the host's Unix reactor preparation, before `begin_launch`.
+It refuses preexisting streams or a second binding and fences execution after a
+failed binding; the prepared scope remains available for ordinary cleanup.
+The host registers its transport for reads before beginning the launch. It inserts its
 Starting arena slot **before** any native effect, creates an exclusive scope (no vendor child) and returns PreparedScope with an opaque
 PreparedLaunch, OwnedProcess reference and ScopeCheckpoint. The checkpoint
 contains reservation, resolved parent, exact ScopeIdentity and achieved guarantee. The host

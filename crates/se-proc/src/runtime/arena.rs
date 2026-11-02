@@ -31,6 +31,7 @@ pub(crate) struct Slot {
     pub record: Option<ProcessRecord>,
     pub native: Option<crate::platform::Scope>,
     pub spec: Option<LaunchSpec>,
+    pub stdio_bound: bool,
     pub deadline: std::time::Instant,
     pub argv_sha256: [u8; 32],
     pub hub: Arc<Hub>,
