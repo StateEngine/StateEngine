@@ -521,6 +521,7 @@ The statically linked SE Code API requires exact version identity as declared in
 | 3 | unreadable | `Unreadable`; `Read::Unreadable` |
 | 4 | unknown target or commit outcome | `Unknown`; `Read::Unknown`; transient `commit-outcome-unknown` retains original request identity |
 | 64 | usage | `Usage` (also `renamed`, `command-retired`) |
+| 75 | deferred Windows uninstall | the installed process has authorized its helper and must exit before image removal; achieved `se.uninstall/v1` facts are retained, post-exit effects remain pending, and no success is claimed |
 
 Rules: `ExitStatus::exit(&self)` on each output computes the code from payload facts, so a nonzero exit always comes with the full payload on stdout. Doctor: 0 all healthy, 1 any check failed, 2 none failed but some unmeasured. Native `se hook claude` exits 0 (Claude treats exit 2 as blocking; a failed capture is a recorded fact and a stderr line). Explicit `se hook claude stop --json` is the receipt mode for an outside caller: it performs the same authenticated natural-identity capture, emits the complete `se.hook-result/v1` envelope with any measured diagnostics, and uses the ordinary payload/error exit policy. Native stop and stop-failure keep empty stdout; session-start keeps provider framing. Neither mode permits `--project` or `--key` to replace the bound session or natural identity. `se mcp` exits 0 on EOF and 1 on a transport failure. Human errors go to stderr; with `--json` the `se.error/v1` object goes to stdout and the human text still goes to stderr.
 
@@ -1729,6 +1730,25 @@ Restore retry and the stored original receipt are owned by [20 — restore](20-d
 | `se.restore/v1` | `recovery_event_id`, `backup {id, path, schema, through: Cursor, verified_at}`, `source {store_id: Id|null, incarnation: int|null}`, `target {store_id: Id, incarnation: int}`, `preserved_source {path, witness}`, `lost {after: Cursor, through: Cursor|null, count: Read<int>}`, `stops[]`, `revocations[]`, `restored_store {schema, through: Cursor, witness}` | first execution independently reopens the newest valid automatic backup and preserves corrupt source; RecoveryRecorded retains the complete original receipt payload before atomic publication; retry returns the stored original receipt verbatim, without reselection, reconstruction or fresh observations; no event salvage |
 | `se.credential-rotation/v1` | `revoked[] {credential_id, session_id, witness}`, `new_credential {credential_id, witness}`, `stops[]` | no credential bytes; verify new protected credential and every named revocation/stop; partial effects remain pending/incomplete |
 | `se.uninstall/v1` | `install_files[] {path, outcome, witness}`, `integrations[] {path, entry, outcome, witness}`, `stops[]: StopResult[]` (A.6, unknown included), `revocations[]`, `path {scope, before_entries, after_entries, witness}`, `preserved[]` | ordinary graceful down and saved resume references must be witnessed and printed first; scripts/SE Code installer invoke this one operation; only then owned install/integration/PATH entries removed/restored with fresh-shell PATH readback; preserved repositories, Git, history, backups and provider transcripts named; any unresolved obligation makes complete false |
+
+Windows uninstall has two reporting points. Before returning 75, the native
+parent retains the full achieved report: stops with original resume references,
+PATH before/after with its native witness, preserved paths, recovery inventory
+and the original request key. Plain output labels the remaining work "handoff
+pending" and prints how to check the reported names; it does not instruct a retry
+through an image that the helper is deleting. To wait for a final exit status,
+start with the matching archive's `uninstall.ps1`.
+
+That entry returns zero only after a matching helper success and outside absence
+of its **own** installed image/record and the helper's reported staging names.
+A mismatched reply image/record is a failure even if the claimed names are absent.
+The final JSON is `se.uninstall-completion/v1` with `complete`, cleanup names and
+witness, and `achieved` containing the original `se.uninstall/v1` snapshot. Its
+pending entries describe the parent observation; the completion witness separately
+resolves post-exit cleanup, without inventing earlier observations or dropping
+achieved facts. PATH is witnessed only by the native parent, not by the script's
+file-absence checks. Failed or missing helper replies, unreadable cleanup or a
+bounded wait expiring produce a named nonzero result and archive recovery guidance.
 
 Store-committing subresults carry their event/writer stamps from A.0. A file-only
 readback has a Witness, never a manufactured event or writer. Secret header-helper

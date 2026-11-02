@@ -208,12 +208,13 @@ fn unreadable(path: &Path, error: std::io::Error) -> SeError {
 mod uninstall;
 pub fn uninstall(
     cx: &crate::bootstrap::Bootstrap,
+    key: &se_types::IdempotencyKey,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<(
     ValidatedUninstallPlan,
     se_core::ops::installation::UninstallEffects,
 )> {
-    uninstall::execute(cx, diagnostic)
+    uninstall::execute(cx, key, diagnostic)
 }
 
 #[cfg(windows)]

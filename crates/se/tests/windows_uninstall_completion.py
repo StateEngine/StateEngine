@@ -13,6 +13,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import threading
+import time
 
 SOURCE = r'''
 using System;
@@ -25,42 +27,50 @@ using System.Web.Script.Serialization;
 public static class CompletionFixture {
     public static int Main(string[] args) {
         string mode = Environment.GetEnvironmentVariable("SE_TEST_COMPLETION_MODE");
-        if (args.Length == 0 || args[0] != "--fixture-child") {
-            if (mode == "parent-failure") return 23;
-            string pending = Path.Combine(Environment.GetEnvironmentVariable("SE_TEST_COMPLETION_ROOT"), "helper-directory");
-            Directory.CreateDirectory(pending);
-            File.WriteAllText(Path.Combine(pending, "staged-helper.exe"), "pending before parent exit");
-            ProcessStartInfo start = new ProcessStartInfo(Environment.GetCommandLineArgs()[0], "--fixture-child");
-            start.UseShellExecute = false;
-            start.CreateNoWindow = true;
-            start.RedirectStandardOutput = true;
-            start.RedirectStandardError = true;
-            Process.Start(start).Dispose();
-            return 75;
-        }
         string root = Environment.GetEnvironmentVariable("SE_TEST_COMPLETION_ROOT");
-        string image = Path.Combine(root, "image"), record = Path.Combine(root, "record");
+        string image = Environment.GetEnvironmentVariable("SE_TEST_INSTALLED_IMAGE");
+        string record = Path.Combine(Environment.GetEnvironmentVariable("SE_HOME"), "standalone-install.json");
         string directory = Path.Combine(root, "helper-directory");
         string helper = Path.Combine(directory, "staged-helper.exe");
-        File.WriteAllText(image, "owned fixture image");
-        File.WriteAllText(record, "owned fixture record");
-        Directory.CreateDirectory(directory);
-        File.WriteAllText(helper, "owned fixture staged bytes");
+        if (args.Length == 0 || args[0] != "--fixture-child") {
+            if (mode == "parent-failure") return 23;
+            Directory.CreateDirectory(directory);
+            File.Copy(image, helper);
+            Process parent = Process.GetCurrentProcess();
+            ProcessStartInfo start = new ProcessStartInfo(helper, "--fixture-child " + parent.Id + " " + parent.StartTime.ToUniversalTime().Ticks);
+            start.UseShellExecute = false; start.CreateNoWindow = true;
+            start.RedirectStandardOutput = true; start.RedirectStandardError = true;
+            Process.Start(start).Dispose(); return 75;
+        }
         try {
+            // Wait on the fixture parent's exact process object before deleting
+            // its actual image. The worker executes a distinct staged copy.
+            try {
+                using (Process parent = Process.GetProcessById(Int32.Parse(args[1]))) {
+                    if (parent.StartTime.ToUniversalTime().Ticks == Int64.Parse(args[2]) && !parent.WaitForExit(10000))
+                        throw new Exception("fixture parent did not exit");
+                }
+            } catch (ArgumentException) { }
             using (NamedPipeClientStream pipe = new NamedPipeClientStream(".", Environment.GetEnvironmentVariable("SE_UNINSTALL_COMPLETION_PIPE"), PipeDirection.Out)) {
                 pipe.Connect(10000);
                 if (mode != "empty") {
                     string token = Environment.GetEnvironmentVariable("SE_UNINSTALL_COMPLETION_TOKEN");
                     if (mode == "wrong-token") token = new string('0', 64);
+                    var achieved = new Dictionary<string, object> {
+                        {"schema", "se.uninstall/v1"}, {"idempotency_key", "fixture-request"}, {"complete", false},
+                        {"stops", new object[0]}, {"revocations", new object[0]},
+                        {"preserved", new string[]{"retained-history"}}, {"recovery", new object[0]},
+                        {"path", new Dictionary<string, object>{{"before_entries", new string[]{"owned-path"}}, {"after_entries", new string[0]}}}
+                    };
                     Dictionary<string, object> reply = new Dictionary<string, object> {
                         {"schema", "se.uninstall-completion/v1"}, {"token", token},
                         {"complete", mode != "failure"}, {"error", "fixture named deletion failure"},
-                        {"image", image}, {"record", record}, {"helper", helper}, {"directory", directory}
+                        {"image", image}, {"record", record}, {"helper", helper}, {"directory", directory}, {"achieved", achieved}
                     };
                     if (mode == "invalid-path") reply["helper"] = "relative-helper";
-                    // The script must wait for outside cleanup, not just this
-                    // positive helper verdict. No stdout parsing can supply it.
-                    File.Delete(image); File.Delete(record);
+                    if (mode == "bogus-image") reply["image"] = Path.Combine(root, "never-installed-image");
+                    if (mode != "image-present" && mode != "bogus-image") File.Delete(image);
+                    File.Delete(record);
                     using (StreamWriter output = new StreamWriter(pipe)) {
                         output.WriteLine(new JavaScriptSerializer().Serialize(reply));
                     }
@@ -68,8 +78,8 @@ public static class CompletionFixture {
             }
             Thread.Sleep(2000);
         } finally {
-            File.Delete(image); File.Delete(record); File.Delete(helper);
-            Directory.Delete(directory);
+            // The external test monitor removes the real mapped helper only
+            // after it can be deleted. The script must wait for that readback.
             File.WriteAllText(Path.Combine(root, "worker-finished"), "done");
         }
         return 0;
@@ -111,21 +121,46 @@ class CompletionReader(unittest.TestCase):
         shutil.copy2(self.binary, installed)
         (archive / "manifest.json").write_text(json.dumps({"files": {"se.exe": {
             "sha256": hashlib.sha256(installed.read_bytes()).hexdigest()}}}))
+        state = root / "state"
+        state.mkdir()
+        (state / "standalone-install.json").write_text("owned fixture record")
+        if mode == "image-present":
+            # Exercise the unchanged readback loop with a short test-only wait.
+            script.write_text(script.read_text().replace("45000", "1000"))
+        errors = []
+        def retire_worker():
+            try:
+                until = time.monotonic() + 30
+                while not (root / "worker-finished").exists():
+                    if time.monotonic() >= until:
+                        raise AssertionError("fixture worker did not finish")
+                    time.sleep(.02)
+                helper = root / "helper-directory/staged-helper.exe"
+                while True:
+                    try:
+                        helper.unlink()
+                        helper.parent.rmdir()
+                        break
+                    except PermissionError:
+                        if time.monotonic() >= until:
+                            raise
+                        time.sleep(.02)
+            except Exception as error:
+                errors.append(error)
+        monitor = None if mode == "parent-failure" else threading.Thread(target=retire_worker)
+        if monitor:
+            monitor.start()
         env = {**os.environ, "LOCALAPPDATA": str(local), "SE_HOME": str(root / "state"),
-               "SE_TEST_COMPLETION_MODE": mode, "SE_TEST_COMPLETION_ROOT": str(root),
+               "SE_TEST_COMPLETION_MODE": mode, "SE_TEST_COMPLETION_ROOT": str(root), "SE_TEST_INSTALLED_IMAGE": str(installed),
                "SE_UNINSTALL_COMPLETION_PIPE": "outer-pipe", "SE_UNINSTALL_COMPLETION_TOKEN": "outer-token"}
         result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(script)]
                                 + (["--json"] if json_output else []), env=env,
                                 capture_output=True, text=True, timeout=60)
         result.cleanup_pending_on_return = (root / "helper-directory").exists()
-        # Failed protocol reads can finish before the fixture worker. Retain
-        # the fixture until its own exact work is finished; never kill by name.
-        if mode != "parent-failure":
-            import time
-            until = time.monotonic() + 10
-            while not (root / "worker-finished").exists() and time.monotonic() < until:
-                time.sleep(.02)
-            self.assertTrue((root / "worker-finished").exists(), result.stderr)
+        if monitor:
+            monitor.join(30)
+            self.assertFalse(monitor.is_alive(), "fixture cleanup monitor remains live")
+            self.assertFalse(errors, str(errors))
         return result, root
 
     def test_success_waits_for_outside_cleanup(self):
@@ -139,7 +174,12 @@ class CompletionReader(unittest.TestCase):
     def test_json_success_is_one_final_object(self):
         result, _ = self.run_reader("success", True)
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(json.loads(result.stdout)["complete"])
+        reply = json.loads(result.stdout)
+        self.assertTrue(reply["complete"])
+        self.assertEqual(reply["achieved"]["schema"], "se.uninstall/v1")
+        self.assertEqual(reply["achieved"]["idempotency_key"], "fixture-request")
+        self.assertEqual(reply["achieved"]["preserved"], ["retained-history"])
+        self.assertEqual(reply["achieved"]["path"]["before_entries"], ["owned-path"])
 
     def test_helper_failure_is_named_and_nonzero(self):
         result, _ = self.run_reader("failure")
@@ -168,6 +208,16 @@ class CompletionReader(unittest.TestCase):
         result, _ = self.run_reader("invalid-path")
         self.assertEqual(result.returncode, 2)
         self.assertIn("invalid cleanup path", result.stderr)
+
+    def test_truthful_present_installed_image_cannot_claim_success(self):
+        result, _ = self.run_reader("image-present")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("cleanup absence was not witnessed", result.stderr)
+
+    def test_bogus_absent_image_cannot_replace_own_binary_readback(self):
+        result, _ = self.run_reader("bogus-image")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("different installed image or record", result.stderr)
 
     def test_pre_handoff_failure_keeps_its_exit_code(self):
         result, _ = self.run_reader("parent-failure")

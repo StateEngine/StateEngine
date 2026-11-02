@@ -115,6 +115,7 @@ impl Sender {
         image: &std::path::Path,
         record: &std::path::Path,
         cleanup: &se_proc::UninstallHelperCleanup,
+        achieved: &se_core::ops::UninstallOutput,
     ) -> Result<()> {
         use std::io::Write;
         // Success here covers the native image, owned record and directory
@@ -128,6 +129,7 @@ impl Sender {
             "record": record,
             "helper": cleanup.path(),
             "directory": cleanup.directory_path(),
+            "achieved": se_core::ops::AnyOutput::from(achieved.clone()),
         }))
         .map_err(|error| {
             SeError::invalid(

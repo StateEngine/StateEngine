@@ -57,6 +57,7 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
         .as_ref()
         .map(|request| request.connect())
         .transpose()?;
+    let achieved = handoff.achieved.clone();
     let cleanup = helper.helper_cleanup().clone();
     let image = helper.parent().image.clone();
     let record = handoff
@@ -133,7 +134,7 @@ pub fn receive_uninstall_handoff() -> Result<u8> {
         Ok(0)
     })();
     if let Some(sender) = sender {
-        sender.finish(&outcome, &image, &record, &cleanup)?;
+        sender.finish(&outcome, &image, &record, &cleanup, &achieved)?;
     }
     outcome
 }

@@ -25,6 +25,7 @@ use recovery::recover;
 
 pub(super) fn execute(
     cx: &Bootstrap,
+    key: &se_types::IdempotencyKey,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
 ) -> Result<(ValidatedUninstallPlan, UninstallEffects)> {
     // Store absence and an initialized, record-free store are distinct native
@@ -231,8 +232,12 @@ pub(super) fn execute(
             // authorization is sent and the installed retry entry survives.
             drop(installation_claim.take());
         }
-        let result =
-            remove_image(cx, plan, installed, record_digest, completion).unwrap_or_else(|error| {
+        // Preserve the already achieved native facts and original request key
+        // across parent exit. Missing post-exit outcomes remain pending here.
+        let achieved =
+            se_core::ops::installation::finish_uninstall(plan, key.clone(), effects.clone())?;
+        let result = remove_image(cx, plan, installed, record_digest, completion, achieved)
+            .unwrap_or_else(|error| {
                 file_effect(
                     &installed.path,
                     FileOutcome::Pending,

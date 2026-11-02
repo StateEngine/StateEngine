@@ -9,6 +9,7 @@ pub(crate) struct Plan {
     pub record_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completion: Option<super::uninstall_completion::Request>,
+    pub achieved: se_core::ops::UninstallOutput,
 }
 pub(crate) struct Completion {
     _claim: se_proc::NativeInstallationClaim,

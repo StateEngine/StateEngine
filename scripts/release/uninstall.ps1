@@ -32,6 +32,7 @@ try {
 # learn about the helper would remove the human-terminal evidence it requires.
 # This random output-only channel cannot authorize uninstall or choose a target.
 $pipe = $null
+$achieved = $null
 $oldPipe = $env:SE_UNINSTALL_COMPLETION_PIPE
 $oldToken = $env:SE_UNINSTALL_COMPLETION_TOKEN
 try {
@@ -65,7 +66,7 @@ try {
             Await-CompletionTask $read
             if ($read.Result -eq 0) { break }
             $bytes.Write($buffer, 0, $read.Result)
-            if ($bytes.Length -gt 65536) { throw 'helper completion reply exceeds its bound' }
+            if ($bytes.Length -gt (2 * 1024 * 1024)) { throw 'helper completion reply exceeds its bound' }
         }
         if ($bytes.Length -eq 0) { throw 'helper channel closed without a completion verdict' }
         $reply = [Text.Encoding]::UTF8.GetString($bytes.ToArray()) | ConvertFrom-Json
@@ -73,12 +74,26 @@ try {
     if ($reply.schema -cne 'se.uninstall-completion/v1' -or $reply.token -cne $token) {
         throw 'helper completion reply does not match this invocation'
     }
+    if ($null -ne $reply.PSObject.Properties['achieved']) { $achieved = $reply.achieved }
     if ($reply.complete -isnot [bool] -or -not $reply.complete) {
         throw "helper could not complete uninstall: $($reply.error)"
     }
     # A helper cannot witness its own mapped-image teardown. This outside reader
     # treats access errors as failures and waits for every reported name's absence.
-    $pending = @($reply.image, $reply.record, $reply.helper)
+    function Completion-Name($path) {
+        if ($path -isnot [string] -or -not [IO.Path]::IsPathRooted($path)) { throw 'helper reported an invalid installed path' }
+        $name = [IO.Path]::GetFullPath($path)
+        if ($name.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) { return '\\' + $name.Substring(8) }
+        if ($name.StartsWith('\\?\')) { return $name.Substring(4) }
+        return $name
+    }
+    if (-not [StringComparer]::OrdinalIgnoreCase.Equals((Completion-Name $reply.image), (Completion-Name $binary)) -or
+        -not [StringComparer]::OrdinalIgnoreCase.Equals((Completion-Name $reply.record), (Completion-Name $record))) {
+        throw "completion reply names a different installed image or record; expected $binary and $record"
+    }
+    # The endpoint's claimed names cannot substitute for the entry's own targets.
+    # PATH is witnessed by the native parent; this step verifies file cleanup only.
+    $pending = @($binary, $record, $reply.helper)
     if ($null -ne $reply.directory) { $pending += $reply.directory }
     foreach ($path in $pending) {
         if ($path -isnot [string] -or -not [IO.Path]::IsPathRooted($path)) {
@@ -97,17 +112,19 @@ try {
         }
     }
     if ($args -contains '--json') {
+        if ($null -eq $achieved -or $achieved.schema -cne 'se.uninstall/v1') { throw 'helper completion lost the achieved uninstall report' }
         [Console]::WriteLine((@{ schema='se.uninstall-completion/v1'; complete=$true;
-            image=$reply.image; record=$reply.record; helper=$reply.helper; directory=$reply.directory;
-            witness='helper verdict and post-exit outside absence' } | ConvertTo-Json -Compress))
+            image=$binary; record=$record; helper=$reply.helper; directory=$reply.directory;
+            achieved=$achieved; path_witness_scope='native parent report only';
+            witness='helper verdict and post-exit outside absence' } | ConvertTo-Json -Depth 64 -Compress))
     } else {
         [Console]::WriteLine('Uninstall complete (removal and cleanup verified). Retained user data is preserved.')
     }
     exit 0
 } catch {
-    $failure = "Uninstall incomplete: $($_.Exception.Message). Preserve any reported paths and inspect their state; use the matching archive for recovery."
+    $failure = "Uninstall incomplete: $($_.Exception.Message). Pending checks include image $binary and record $record; helper staging may be unknown if no reply arrived. Preserve reported paths and use the matching archive for recovery."
     if ($args -contains '--json') {
-        [Console]::WriteLine((@{ schema='se.uninstall-completion/v1'; complete=$false; error=$failure } | ConvertTo-Json -Compress))
+        [Console]::WriteLine((@{ schema='se.uninstall-completion/v1'; complete=$false; error=$failure; achieved=$achieved } | ConvertTo-Json -Depth 64 -Compress))
     }
     [Console]::Error.WriteLine($failure)
     exit 2

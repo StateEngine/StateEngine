@@ -175,10 +175,19 @@ pub fn run(
                 render::output(output, true, common.quiet, &mut stdout)?;
             }
         } else if !common.json {
+            if let Ok(AnyOutput::Uninstall(value)) = &result {
+                render::uninstall_deferred(&value.value, &mut stdout)?;
+            }
             writeln!(
                 stdout,
-                "Finishing uninstall; waiting for the removal process to complete."
+                "Finishing uninstall; the installed process exits 75 while its removal is pending."
             )?;
+            if !receiver {
+                writeln!(
+                    stdout,
+                    "For a final exit status, start with the matching archive's uninstall.ps1. This handoff has already started: use PowerShell Get-Item -LiteralPath on each printed image, record and helper path to check absence; access errors remain unresolved."
+                )?;
+            }
             stdout.flush()?;
         }
         // The installed image must exit before its helper can remove it. This

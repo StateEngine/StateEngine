@@ -6,6 +6,7 @@ pub(super) fn remove_image(
     file: &UninstallFile,
     _record_digest: [u8; 32],
     _completion: Option<super::super::uninstall_completion::Request>,
+    _achieved: se_core::ops::UninstallOutput,
 ) -> Result<FileEffect> {
     Ok(remove_file(file))
 }
@@ -16,6 +17,7 @@ pub(super) fn remove_image(
     file: &UninstallFile,
     record_digest: [u8; 32],
     completion: Option<super::super::uninstall_completion::Request>,
+    achieved: se_core::ops::UninstallOutput,
 ) -> Result<FileEffect> {
     use se_proc::{NativeStateFiles, NativeUninstallHandoff, UninstallReady};
     use std::time::{Duration, Instant};
@@ -32,6 +34,7 @@ pub(super) fn remove_image(
         installation: plan.as_untrusted().clone(),
         record_sha256: Sha256::from_bytes(record_digest).hex(),
         completion,
+        achieved,
     })
     .map_err(|e| invalid("cannot encode helper plan").with_cause(e))?;
     let mut helper = NativeUninstallHandoff::start(&files, &bytes, Duration::from_secs(30))
@@ -72,8 +75,17 @@ pub(super) fn remove_image(
         FileOutcome::Pending,
         WitnessState::Unknown,
         &format!(
-            "authorized helper PID {} awaits actual parent exit; image deletion and helper cleanup require post-exit outside readback",
-            receipt.helper.pid
+            "authorized helper PID {} at {} awaits actual parent exit; verify post-exit absence of image {}, record {}, helper {}{}",
+            receipt.helper.pid,
+            receipt.pending_helper.display(),
+            receipt.pending_image.display(),
+            cx.home.join("standalone-install.json").display(),
+            receipt.helper_cleanup.path().display(),
+            receipt
+                .helper_cleanup
+                .directory_path()
+                .map(|path| format!(", staging directory {}", path.display()))
+                .unwrap_or_default()
         ),
     ))
 }
