@@ -27,5 +27,92 @@ try {
     [Console]::Error.WriteLine("Uninstall refused: $($_.Exception.Message)")
     exit 1
 }
-& $binary uninstall @args
-exit $LASTEXITCODE
+
+# Keep the native invocation on the caller's console. Capturing its stdout to
+# learn about the helper would remove the human-terminal evidence it requires.
+# This random output-only channel cannot authorize uninstall or choose a target.
+$pipe = $null
+$oldPipe = $env:SE_UNINSTALL_COMPLETION_PIPE
+$oldToken = $env:SE_UNINSTALL_COMPLETION_TOKEN
+try {
+    $name = 'stateengine-uninstall-' + [Guid]::NewGuid().ToString('N')
+    $secret = New-Object byte[] 32
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($secret) } finally { $rng.Dispose() }
+    $token = [BitConverter]::ToString($secret).Replace('-', '').ToLowerInvariant()
+    $pipe = [IO.Pipes.NamedPipeServerStream]::new($name, [IO.Pipes.PipeDirection]::In, 1,
+        [IO.Pipes.PipeTransmissionMode]::Byte, [IO.Pipes.PipeOptions]::Asynchronous)
+    $connected = $pipe.WaitForConnectionAsync()
+    $env:SE_UNINSTALL_COMPLETION_PIPE = $name
+    $env:SE_UNINSTALL_COMPLETION_TOKEN = $token
+    & $binary uninstall @args
+    $code = $LASTEXITCODE
+    if ($code -ne 75) { exit $code }
+
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    function Await-CompletionTask($task) {
+        $remaining = 45000 - $clock.ElapsedMilliseconds
+        if ($remaining -le 0 -or -not $task.Wait([int]$remaining)) {
+            throw 'helper completion deadline exhausted; the final uninstall outcome is unknown'
+        }
+    }
+    Await-CompletionTask $connected
+    $bytes = [IO.MemoryStream]::new()
+    try {
+        $buffer = New-Object byte[] 4096
+        while ($true) {
+            $read = $pipe.ReadAsync($buffer, 0, $buffer.Length)
+            Await-CompletionTask $read
+            if ($read.Result -eq 0) { break }
+            $bytes.Write($buffer, 0, $read.Result)
+            if ($bytes.Length -gt 65536) { throw 'helper completion reply exceeds its bound' }
+        }
+        if ($bytes.Length -eq 0) { throw 'helper channel closed without a completion verdict' }
+        $reply = [Text.Encoding]::UTF8.GetString($bytes.ToArray()) | ConvertFrom-Json
+    } finally { $bytes.Dispose() }
+    if ($reply.schema -cne 'se.uninstall-completion/v1' -or $reply.token -cne $token) {
+        throw 'helper completion reply does not match this invocation'
+    }
+    if ($reply.complete -isnot [bool] -or -not $reply.complete) {
+        throw "helper could not complete uninstall: $($reply.error)"
+    }
+    # A helper cannot witness its own mapped-image teardown. This outside reader
+    # treats access errors as failures and waits for every reported name's absence.
+    $pending = @($reply.image, $reply.record, $reply.helper)
+    if ($null -ne $reply.directory) { $pending += $reply.directory }
+    foreach ($path in $pending) {
+        if ($path -isnot [string] -or -not [IO.Path]::IsPathRooted($path)) {
+            throw 'helper reported an invalid cleanup path'
+        }
+        while ($true) {
+            $observation = 'name is still present'
+            try { $null = [IO.File]::GetAttributes($path) }
+            catch [IO.FileNotFoundException] { break }
+            catch [IO.DirectoryNotFoundException] { break }
+            catch { $observation = $_.Exception.Message }
+            if ($clock.ElapsedMilliseconds -ge 45000) {
+                throw "cleanup absence was not witnessed: $path ($observation)"
+            }
+            Start-Sleep -Milliseconds 20
+        }
+    }
+    if ($args -contains '--json') {
+        [Console]::WriteLine((@{ schema='se.uninstall-completion/v1'; complete=$true;
+            image=$reply.image; record=$reply.record; helper=$reply.helper; directory=$reply.directory;
+            witness='helper verdict and post-exit outside absence' } | ConvertTo-Json -Compress))
+    } else {
+        [Console]::WriteLine('Uninstall complete (removal and cleanup verified). Retained user data is preserved.')
+    }
+    exit 0
+} catch {
+    $failure = "Uninstall incomplete: $($_.Exception.Message). Preserve any reported paths and inspect their state; use the matching archive for recovery."
+    if ($args -contains '--json') {
+        [Console]::WriteLine((@{ schema='se.uninstall-completion/v1'; complete=$false; error=$failure } | ConvertTo-Json -Compress))
+    }
+    [Console]::Error.WriteLine($failure)
+    exit 2
+} finally {
+    $env:SE_UNINSTALL_COMPLETION_PIPE = $oldPipe
+    $env:SE_UNINSTALL_COMPLETION_TOKEN = $oldToken
+    if ($null -ne $pipe) { $pipe.Dispose() }
+}

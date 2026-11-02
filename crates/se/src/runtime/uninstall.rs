@@ -169,6 +169,7 @@ pub(super) fn execute(
         preserved: preserved(&cx.home),
         recovery: Vec::new(),
     };
+    let completion = super::uninstall_completion::request()?;
     let parents = plan.recovery_directories();
     effects.recovery = scan(plan, parents);
     // Diagnostics flush before recovery restoration, PATH edits or file removal.
@@ -230,14 +231,15 @@ pub(super) fn execute(
             // authorization is sent and the installed retry entry survives.
             drop(installation_claim.take());
         }
-        let result = remove_image(cx, plan, installed, record_digest).unwrap_or_else(|error| {
-            file_effect(
-                &installed.path,
-                FileOutcome::Pending,
-                WitnessState::Failed,
-                &error.to_string(),
-            )
-        });
+        let result =
+            remove_image(cx, plan, installed, record_digest, completion).unwrap_or_else(|error| {
+                file_effect(
+                    &installed.path,
+                    FileOutcome::Pending,
+                    WitnessState::Failed,
+                    &error.to_string(),
+                )
+            });
         effects.install_files.push(result);
     } else {
         effects.install_files.push(file_effect(

@@ -5,6 +5,7 @@ pub(super) fn remove_image(
     _plan: &ValidatedUninstallPlan,
     file: &UninstallFile,
     _record_digest: [u8; 32],
+    _completion: Option<super::super::uninstall_completion::Request>,
 ) -> Result<FileEffect> {
     Ok(remove_file(file))
 }
@@ -14,6 +15,7 @@ pub(super) fn remove_image(
     plan: &ValidatedUninstallPlan,
     file: &UninstallFile,
     record_digest: [u8; 32],
+    completion: Option<super::super::uninstall_completion::Request>,
 ) -> Result<FileEffect> {
     use se_proc::{NativeStateFiles, NativeUninstallHandoff, UninstallReady};
     use std::time::{Duration, Instant};
@@ -25,9 +27,11 @@ pub(super) fn remove_image(
         return Err(conflict(&file.path));
     }
     let files = NativeStateFiles::open(&cx.home).map_err(native_error)?;
+    let receiver = completion.is_some();
     let bytes = serde_json::to_vec(&crate::runtime::handoff::Plan {
         installation: plan.as_untrusted().clone(),
         record_sha256: Sha256::from_bytes(record_digest).hex(),
+        completion,
     })
     .map_err(|e| invalid("cannot encode helper plan").with_cause(e))?;
     let mut helper = NativeUninstallHandoff::start(&files, &bytes, Duration::from_secs(30))
@@ -61,6 +65,7 @@ pub(super) fn remove_image(
     let receipt = helper.authorize().map_err(|e| {
         se_core::scope::unreadable("Windows uninstall authorization", &e.to_string())
     })?;
+    super::super::uninstall_completion::mark_started(receiver);
     crate::runtime::helper_cleanup::verify(&cx.home, &receipt.helper_cleanup)?;
     Ok(file_effect(
         &file.path,

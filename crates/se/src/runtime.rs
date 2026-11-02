@@ -225,3 +225,5 @@ pub(crate) mod helper_cleanup;
 
 #[path = "runtime/host.rs"]
 pub mod host;
+
+pub(crate) mod uninstall_completion;
