@@ -4,7 +4,11 @@ pub mod administration;
 pub mod agent;
 pub mod agent_launch;
 pub mod agent_stop;
+pub mod process_commit;
+pub mod process_plan;
 pub mod project_remove;
+pub mod session_commit;
+pub mod stop_plan;
 pub use agent_launch::{AgentLaunch, LaunchResult};
 pub use agent_stop::{AgentStop, StopResult};
 pub use project_remove::{ProjectRemove, RemoveResult};
@@ -136,6 +140,9 @@ ops! {
     Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal requires the owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);
     AgentCreate => AgentCreate, AgentReceipt, ("agent.create",leaf(&["agent","add"]),tool("stateengine_agent_create","Create an agent","Create a durable agent identity and safe saved profile without launching a process; sessions require their current create grant."),Either,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["E3","J2","J4"]);
     AgentList => AgentList, AgentPage, ("agent.list",leaf(&["agent","list"]),no_mcp("Owner overview; bound agents use status for their own saved identity."),Owner,false,Never,Read,Project,None,"se.agent-page",AgentPage,&["J2","J3"]);
+    AgentLaunch => AgentLaunch, LaunchResult, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Launch your own saved agent or a directly created agent you currently control; readiness and process custody are witnessed."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
+    AgentStop => AgentStop, StopResult, ("agent.stop",leaf(&["stop"]),tool("stateengine_agent_stop","Stop an agent","Stop your own agent or a directly created agent you currently control; returns the command that resumes its saved conversation."),Either,false,Never,Custody,ProjectOrAll,HostAutoStart,"se.stop",Stop,&["J3","J5"]);
+    ProjectRemove => ProjectRemove, RemoveResult, ("project.remove",leaf(&["remove"]),no_mcp("Project removal requires the verified owner at a human terminal."),Owner,false,Always,Custody,ProjectOrAll,HostAutoStart,"se.remove",Remove,&["J5"]);
     AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);
     ConfigGet => ConfigGet, ConfigValueOutput, ("config.get",leaf(&["config","get"]),no_mcp("Saved agent settings are inspected by the owner CLI."),Owner,false,Never,Read,Project,None,"se.config-value",ConfigValue,&["E3"]);
     ConfigSet => ConfigSet, AgentConfigReceipt, ("config.set",leaf(&["config","set"]),no_mcp("Saved agent metadata changes are owner CLI operations."),Owner,false,ConfigKey,Write,Project,HostForWrites,"se.config-receipt",ConfigReceipt,&["E3"]);
@@ -149,6 +156,9 @@ ops! {
 impl AnyOp {
     /// Shared per-operation/per-key classification for CLI and host admission.
     pub fn requires_human_terminal(&self) -> Result<bool> {
+        if matches!(self, Self::AgentStop(input) if input.release) {
+            return Ok(true);
+        }
         match self.meta().human_only {
             HumanPolicy::Always => Ok(true),
             HumanPolicy::Never => Ok(false),
@@ -172,6 +182,9 @@ impl AnyOp {
             Self::RuntimeDown(v) => Some(&v.idempotency_key),
             Self::Uninstall(v) => Some(&v.idempotency_key),
             Self::AgentCreate(v) => Some(&v.idempotency_key),
+            Self::AgentLaunch(v) => Some(&v.idempotency_key),
+            Self::AgentStop(v) => Some(&v.idempotency_key),
+            Self::ProjectRemove(v) => Some(&v.idempotency_key),
             Self::ConfigSet(v) => Some(&v.idempotency_key),
             Self::DecisionPropose(v) => Some(&v.idempotency_key),
             Self::DecisionRatify(v) => Some(&v.idempotency_key),
@@ -209,6 +222,8 @@ impl AnyOutput {
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Uninstall(v) if !v.value.complete => 2,
+            Self::AgentStop(v) if !v.value.complete => 2,
+            Self::ProjectRemove(v) if v.value.outcome != "removed" => 2,
             Self::RuntimeDown(v) if !v.value.complete => 2,
             Self::RuntimeUp(v) if v.value.state == "pending" => 2,
             Self::EventRead(v) => match &v.value {

@@ -50,15 +50,22 @@ impl Validate for AgentLaunch {
 }
 /// Finite admitted metadata, consumed by the host after its planning snapshot
 /// closes. The coordinator never substitutes a different target or profile.
+#[derive(Clone)]
 pub struct LaunchPlan {
     pub input: AgentLaunch,
     pub project: Named<ProjectId>,
+    pub owner: se_types::HumanId,
     pub agent: Named<AgentId>,
     pub cwd: NativePath,
     pub profile: se_store::Profile,
     pub resolved: ResolvedProfile,
     pub conversation: Read<ProviderSessionId>,
     pub capture: bool,
+    pub control: se_store::ControlTarget,
+    pub seed: EventId,
+    pub replayed: bool,
+    pub session: SessionId,
+    pub lifecycle: LifecycleId,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LaunchResult {

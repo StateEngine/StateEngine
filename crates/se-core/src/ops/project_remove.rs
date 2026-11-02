@@ -122,3 +122,26 @@ pub struct RemoveResult {
     pub machine_credential: RemovedMachineCredential,
     pub next: RemovalNext,
 }
+
+/// Selected registered projects only. Each project is re-read in its own
+/// admitted snapshot before stopping processes or preparing a tombstone.
+pub struct RemovePlan {
+    pub input: ProjectRemove,
+    pub projects: Vec<Named<ProjectId>>,
+}
+pub fn plan<R: se_store::Snapshot>(
+    input: ProjectRemove,
+    cx: &mut crate::commit::Cx<'_, R>,
+) -> Result<RemovePlan> {
+    input.validate()?;
+    if !input.all && !matches!(cx.admission.scope, se_store::Scope::Project(_)) {
+        return Err(se_types::SeError::invalid(
+            "remove project",
+            "one selected project or --all",
+        ));
+    }
+    Ok(RemovePlan {
+        input,
+        projects: super::stop_plan::projects(cx)?,
+    })
+}

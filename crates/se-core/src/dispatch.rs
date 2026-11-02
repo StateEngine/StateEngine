@@ -298,6 +298,23 @@ impl Kernel {
             AnyOp::AgentList(input) => {
                 OpStep::Complete(crate::ops::listing::agents(input, cx)?.into())
             }
+            AnyOp::AgentLaunch(input) => {
+                let configuration = self.configuration.as_ref().ok_or_else(|| {
+                    scope::unreadable(
+                        "launch configuration",
+                        "adapter-resolved ConfigFile is not bound",
+                    )
+                })?;
+                OpStep::Custody(CustodyPlan::Launch(Box::new(
+                    crate::ops::process_plan::launch(self, input, configuration, cx)?,
+                )))
+            }
+            AnyOp::AgentStop(input) => OpStep::Custody(CustodyPlan::Stop(Box::new(
+                crate::ops::stop_plan::plan(input, cx)?,
+            ))),
+            AnyOp::ProjectRemove(input) => OpStep::Custody(CustodyPlan::Remove(Box::new(
+                crate::ops::project_remove::plan(input, cx)?,
+            ))),
             AnyOp::AgentShow(input) => {
                 OpStep::Complete(crate::ops::agent_status::show(input, cx)?.into())
             }
