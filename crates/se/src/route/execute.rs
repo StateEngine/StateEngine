@@ -110,7 +110,7 @@ pub fn dispatch(
     if let AnyOp::Uninstall(input) = op {
         return Ok(super::uninstall::execute(cx, input, diagnostic)?.into());
     }
-    let (reader, phase) =
+    let (files, (reader, phase)) =
         match setup::inspect_phase(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
             setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
                 return Ok((*output).into());
@@ -120,7 +120,6 @@ pub fn dispatch(
             }
             setup::Setup::Present(reader) => reader,
         };
-    let files = Files::open(&cx.home).map_err(|e| store_error(&e))?;
     // The host verifier admits a prepared launch's first fixed hook after C3.
     // End this finite read pin before stdin or forwarding; ordinary operations
     // still require active-session admission below.

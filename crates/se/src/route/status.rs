@@ -51,7 +51,7 @@ pub fn observe_snapshot<S: Snapshot>(
     // The shared native lock is held for the observation. Its acquisition proves
     // that no host currently holds its required exclusive writer lease.
     let lease = super::files::DirectLease::acquire(
-        Files::open(&cx.home).map_err(|e| store_error(&e))?,
+        files,
         &cx.home.join("runtime.lock"),
         se_store::LeaseIdentity {
             store: Some(snap.info().id),
@@ -221,7 +221,7 @@ pub fn observe_snapshot<S: Snapshot>(
                     #[cfg(any(target_os = "linux", windows))]
                     {
                         let bound = se_host::client::lease::Deadline::from_options(&options)?;
-                        match crate::runtime::host::read_detachment(&cx.home, &endpoint, &bound) {
+                        match crate::runtime::host::read_detachment(files, &endpoint, &bound) {
                             Ok(Read::Present { value }) => {
                                 output.runtime.detachment = Some(value.detachment)
                             }

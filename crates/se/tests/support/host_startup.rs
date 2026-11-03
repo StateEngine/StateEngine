@@ -260,18 +260,15 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
         Read::Present { value } => value,
         _ => return Err("native detachment publication missing".into()),
     };
-    let readback = present(host::read_detachment(
-        &f.options.state_directory,
-        &ready.endpoint,
-        &bound()?,
-    )?)?;
+    let files = route::files::Files::open(&f.options.state_directory)?;
+    let readback = present(host::read_detachment(&files, &ready.endpoint, &bound()?)?)?;
     assert_eq!(
         serde_json::to_value(&readback)?,
         serde_json::to_value(published)?
     );
     let mut stale = ready.endpoint.clone();
     stale.generation = se_types::Generation::new(ready.endpoint.generation.get() + 1)?;
-    assert!(host::read_detachment(&f.options.state_directory, &stale, &bound()?).is_err());
+    assert!(host::read_detachment(&files, &stale, &bound()?).is_err());
     let selected = se_core::ops::CliSelections {
         project: Some(f.project.clone()),
         ..Default::default()

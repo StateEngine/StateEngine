@@ -4,18 +4,19 @@ use se_store::{
     LeaseIdentity, RuntimeLease, StateFiles, StoreDetail, StoreError, StoreErrorCode, StoreResult,
 };
 use se_types::{Read, Remedy, Retry};
-use std::{fs::File, path::Path};
+use std::{borrow::Borrow, fs::File, path::Path};
 
 /// The file handle holds the shared OS lock until the direct transaction and its
 /// fresh continuation read have finished. A file's mere existence is no lease.
-pub struct DirectLease {
-    pub files: Files,
+/// Status borrows its existing protected root; writers retain owned custody.
+pub struct DirectLease<F = Files> {
+    pub files: F,
     pub identity: LeaseIdentity,
     _locked: File,
 }
-impl DirectLease {
+impl<F: Borrow<Files>> DirectLease<F> {
     pub fn acquire(
-        files: Files,
+        files: F,
         lock_file: &Path,
         identity: LeaseIdentity,
     ) -> StoreResult<Option<Self>> {
@@ -25,7 +26,7 @@ impl DirectLease {
                 "direct lease requires DirectClient mode",
             ));
         }
-        let file = match files.readback(lock_file)? {
+        let file = match files.borrow().readback(lock_file)? {
             Read::Present { value } => value,
             Read::Absent { .. } => {
                 return Err(fail(
@@ -52,12 +53,12 @@ impl DirectLease {
         }
     }
 }
-impl RuntimeLease for DirectLease {
+impl<F: Borrow<Files> + Send + Sync> RuntimeLease for DirectLease<F> {
     fn identity(&self) -> StoreResult<LeaseIdentity> {
         Ok(self.identity.clone())
     }
     fn files(&self) -> &dyn StateFiles {
-        &self.files
+        self.files.borrow()
     }
 }
 fn fail(code: StoreErrorCode, cause: &str) -> Box<StoreError> {

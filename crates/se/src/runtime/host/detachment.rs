@@ -105,13 +105,14 @@ pub(super) fn publish(
 }
 /// Read only for an independently verified current endpoint. A missing record
 /// is absent, and a stale/damaged record is unreadable; none supplies a mode.
+/// Every read revalidates the caller's retained root's native name, identity
+/// and protection before and after opening the record.
 pub fn read_detachment(
-    home: &Path,
+    files: &crate::route::files::Files,
     endpoint: &EndpointRecord,
     bound: &Deadline,
 ) -> Result<Read<DetachmentObservation>> {
-    let files = crate::route::files::Files::open(home).map_err(|error| store_error(&error))?;
-    let Some(bytes) = read_bytes(&files, bound)? else {
+    let Some(bytes) = read_bytes(files, bound)? else {
         return Ok(Read::Absent {
             checked: "protected runtime-info.json is absent".into(),
         });
@@ -131,7 +132,7 @@ pub fn read_detachment(
             "inherited cgroup fact disagrees with observed detachment mode",
         ));
     }
-    if read_bytes(&files, bound)?.as_deref() != Some(bytes.as_slice()) {
+    if read_bytes(files, bound)?.as_deref() != Some(bytes.as_slice()) {
         return Err(scope::unreadable(
             "runtime detachment record",
             "record changed during independent protected readback",

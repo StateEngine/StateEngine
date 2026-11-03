@@ -13,19 +13,24 @@ pub enum Setup<T = SqliteReader> {
     Present(T),
 }
 pub fn inspect(home: &Path, generated_at: String) -> Result<Setup> {
-    inspect_with(home, generated_at, SqliteFactory::open_reader)
+    Ok(
+        match inspect_with(home, generated_at, SqliteFactory::open_reader)? {
+            Setup::Absent(output) => Setup::Absent(output),
+            Setup::Present((_, reader)) => Setup::Present(reader),
+        },
+    )
 }
 pub fn inspect_phase(
     home: &Path,
     generated_at: String,
-) -> Result<Setup<(SqliteReader, ReadPhase)>> {
+) -> Result<Setup<(Files, (SqliteReader, ReadPhase))>> {
     inspect_with(home, generated_at, SqliteFactory::open_reader_with_phase)
 }
 fn inspect_with<T>(
     home: &Path,
     generated_at: String,
     open: impl FnOnce(&StoreOptions) -> se_store::StoreResult<Read<T>>,
-) -> Result<Setup<T>> {
+) -> Result<Setup<(Files, T)>> {
     match std::fs::symlink_metadata(home) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(missing(
@@ -44,7 +49,7 @@ fn inspect_with<T>(
         Ok(_) => (),
     }
     // Protection and directory identity are native facts, independent of DB bytes.
-    let _files = Files::open(home).map_err(|e| store_error(&e))?;
+    let files = Files::open(home).map_err(|e| store_error(&e))?;
     match open(&StoreOptions {
         state_directory: home.to_owned(),
         busy_timeout: Duration::from_millis(250),
@@ -52,7 +57,7 @@ fn inspect_with<T>(
     .map_err(|e| store_error(&e))?
     {
         Read::Absent { checked } => Ok(missing(home, generated_at, checked)),
-        Read::Present { value } => Ok(Setup::Present(value)),
+        Read::Present { value } => Ok(Setup::Present((files, value))),
         Read::Unreadable { source, reason, .. } => {
             Err(se_core::scope::unreadable(&source, &reason))
         }
