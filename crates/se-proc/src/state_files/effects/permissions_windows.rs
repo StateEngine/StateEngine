@@ -28,14 +28,14 @@ pub(in crate::state_files) struct Pin {
     file: File,
     object: [u8; 32],
 }
-fn open_metadata(path: &Path) -> Result<File> {
+fn open_metadata(path: &Path, repair: bool) -> Result<File> {
     let name = wide(path)?;
     // SAFETY: retained terminated path, metadata/security rights only, no handle
     // inheritance, no leaf reparse traversal and no delete sharing for this pin.
     let raw = unsafe {
         CreateFileW(
             name.as_ptr(),
-            FILE_READ_ATTRIBUTES | READ_CONTROL | WRITE_DAC,
+            FILE_READ_ATTRIBUTES | READ_CONTROL | if repair { WRITE_DAC } else { 0 },
             FILE_SHARE_READ | FILE_SHARE_WRITE,
             ptr::null(),
             OPEN_EXISTING,
@@ -106,7 +106,7 @@ impl Pin {
             Err(e) if absent(&e) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let file = match open_metadata(&parent.path.join(name)) {
+        let file = match open_metadata(&parent.path.join(name), false) {
             Ok(value) => value,
             Err(e) if absent(&e) => return Ok(None),
             Err(e) => return Err(e),
@@ -137,7 +137,7 @@ impl Pin {
             .path
             .file_name()
             .ok_or_else(|| unsafe_path("repair leaf missing", &self.path))?;
-        let named = open_metadata(&current.path.join(name))?;
+        let named = open_metadata(&current.path.join(name), false)?;
         if snapshot(&named, &self.path)?.object != self.object
             || self.snapshot()?.object != self.object
         {
@@ -152,8 +152,18 @@ impl Pin {
                 &self.path,
             ));
         }
+        // Diagnosis keeps read-only metadata handles. Request WRITE_DAC only
+        // at the admitted effect, and compare that held object's full snapshot
+        // before changing it; a newly named object never inherits the plan.
+        let writable = open_metadata(&self.path, true)?;
+        if snapshot(&writable, &self.path)? != *expected {
+            return Err(changed(
+                "named repair object changed before tightening",
+                &self.path,
+            ));
+        }
         security::tighten_owner_only(
-            &self.file,
+            &writable,
             &self.path,
             expected.kind == PermissionKind::Directory,
         )
