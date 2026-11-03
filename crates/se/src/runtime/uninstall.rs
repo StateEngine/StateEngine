@@ -28,8 +28,9 @@ pub(super) fn execute(
     key: &se_types::IdempotencyKey,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
 ) -> Result<(ValidatedUninstallPlan, UninstallEffects)> {
-    // Store absence and an initialized, record-free store are distinct native
-    // observations. Endpoint absence never supplies an empty-process proof.
+    // Store absence and a complete inventory with no unresolved custody are
+    // distinct observations. Retained exit history is never live custody;
+    // endpoint absence never supplies an empty-process proof.
     let (owner, store_observation, _runtime_lease) = match route::setup::inspect(&cx.home, clock())?
     {
         route::setup::Setup::Absent(_) => (
@@ -61,16 +62,26 @@ pub(super) fn execute(
                 Err(std::fs::TryLockError::Error(error)) => return Err(unreadable(&cx.home.join("runtime.lock"), error)),
             }
             let inventory = route::owner::inventory(&reader, &files)?;
-            if inventory.has_process_records {
+            if let Some(first) = inventory.processes.first() {
                 return Err(SeError::new(Detail::StateConflict(details::StateConflict {
-                    subject: "uninstall process inventory".into(),
-                    reason: "recorded agent processes exist, including any exited or released records; this build supports uninstall only before agents have been launched".into(),
-                    next_step: "Preserve the installation and retained data; uninstall with recorded agents requires the supported lifecycle-control build".into(),
+                    subject: "uninstall unresolved process custody".into(),
+                    reason: format!("The complete home-wide inventory contains {} unresolved custody records; process {} in project {} {}. Retained completed exit history does not block uninstall.",
+                        inventory.processes.len(), first.identity.record, first.project,
+                        if first.state == se_store::ProcessState::Exited {
+                            "has a durable exit but its session or capture cleanup is unfinished"
+                        } else {
+                            "has not durably completed or released its native custody"
+                        }),
+                    next_step: "Run se down with this same --home to finish ordinary stop and session/capture cleanup, then retry se uninstall; if down reports unproved custody, resolve that named process through se stop before retrying. No installation effects were attempted".into(),
                 })));
             }
             (
                 route::owner::from_inventory(&inventory)?,
-                "initialized store; protected home-wide process inventory is empty",
+                if inventory.has_process_records {
+                    "initialized store; complete protected home-wide inventory has no unresolved custody; completed process history is retained"
+                } else {
+                    "initialized store; complete protected home-wide process inventory is empty"
+                },
                 Some(lock),
             )
         }
