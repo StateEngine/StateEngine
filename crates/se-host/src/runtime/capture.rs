@@ -7,6 +7,7 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex, Weak},
 };
+mod binding;
 mod claude;
 mod persistent;
 mod source;

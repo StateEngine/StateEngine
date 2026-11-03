@@ -8,6 +8,26 @@ impl LaunchCoordinator {
         if work.capture_flushed || !work.meta.capture || !work.active {
             return Ok(());
         }
+        if work.transcript.is_none() {
+            let restored = self.capture.binding(crate::SessionIdentity {
+                project: work.meta.project.id.clone(),
+                agent: work.meta.agent.id.clone(),
+                session: work.meta.session.clone(),
+            })?;
+            let transcript = se_core::scope::require_present(
+                restored,
+                "final transcript capture",
+                "Restore the original protected binding and native file incarnation; preserve the committed cursor.",
+            )?;
+            if !matches!(&work.meta.conversation, Read::Present { value } if value == &transcript.conversation)
+            {
+                return Err(error(
+                    "final transcript capture",
+                    "restored binding differs from the original saved conversation",
+                ));
+            }
+            work.transcript = Some(transcript);
+        }
         let transcript=work.transcript.clone().ok_or_else(||error("final transcript capture","trusted binding is unavailable; retain the revoked session and committed cursor for recovery"))?;
         let admission = se_store::Admission {
             scope: se_store::Scope::Project(work.meta.project.id.clone()),
