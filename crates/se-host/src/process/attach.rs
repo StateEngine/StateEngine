@@ -219,10 +219,10 @@ impl LaunchCoordinator {
                 )
                 .await?;
         }
-        let resume = se_core::ops::AgentCommand::launch(
+        let resume = se_core::ops::AgentCommand::launch_in_home(
             &plan.agent.id,
-            Some(&self.options.home.display().to_string()),
-            Some(&plan.project.id),
+            &self.options.home,
+            &plan.project.id,
             false,
         );
         Ok(LaunchResult {
@@ -253,11 +253,13 @@ impl LaunchCoordinator {
             .into(),
             containment_cause,
             resume: ResumeCommand {
-                ready: true,
+                ready: resume.is_some(),
                 mode: "resume".into(),
-                reason: None,
-                command: Some(resume.command),
-                argv: Some(resume.argv),
+                reason: resume
+                    .is_none()
+                    .then(|| se_core::ops::AgentCommand::HOME_UNAVAILABLE.into()),
+                command: resume.as_ref().map(|value| value.command.clone()),
+                argv: resume.map(|value| value.argv),
             },
         })
     }

@@ -222,21 +222,28 @@ fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
         },
         _ => None,
     };
-    let resume = se_core::ops::AgentCommand::launch(
+    let resume = se_core::ops::AgentCommand::launch_in_home(
         &target.target.agent.id,
-        Some(&home.display().to_string()),
-        Some(&target.target.project.id),
+        home,
+        &target.target.project.id,
         false,
     );
     AgentStopResult {
         resume: StopResume {
             state: "unavailable".into(),
-            reason: Some("No original conversation has been proven by this stop.".into()),
+            reason: Some(if resume.is_none() {
+                se_core::ops::AgentCommand::HOME_UNAVAILABLE.into()
+            } else {
+                "No original conversation has been proven by this stop.".into()
+            }),
             conversation_id: None,
             provider: target.target.provider,
             model: profile.and_then(|p| p.model),
-            command: resume.command,
-            argv: resume.argv,
+            command: resume
+                .as_ref()
+                .map(|value| value.command.clone())
+                .unwrap_or_default(),
+            argv: resume.map(|value| value.argv).unwrap_or_default(),
         },
         target: target.target,
         result: "unwitnessed".into(),
@@ -334,10 +341,15 @@ pub(super) fn fill_stopped(
     };
     row.resume.model = work.meta.model.clone();
     match (&work.meta.conversation, work.activated) {
-        (se_types::Read::Present { value }, true) => {
+        (se_types::Read::Present { value }, true) if !row.resume.argv.is_empty() => {
             row.resume.state = "ready".into();
             row.resume.reason = None;
             row.resume.conversation_id = Some(value.to_string());
+        }
+        _ if row.resume.argv.is_empty() => {
+            row.resume.state = "unavailable".into();
+            row.resume.reason = Some(se_core::ops::AgentCommand::HOME_UNAVAILABLE.into());
+            row.resume.conversation_id = None;
         }
         _ => {
             row.resume.state = "unavailable".into();

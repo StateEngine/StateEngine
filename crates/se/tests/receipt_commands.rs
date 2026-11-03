@@ -62,6 +62,19 @@ fn removal_retry_parses_as_the_exact_agent_stop() -> Check {
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_home_never_emits_a_command_for_its_lossy_alias() -> Check {
+    use std::os::unix::ffi::OsStringExt;
+    let agent = AgentId::from_parts(1_700_000_000_000, [37; 10])?;
+    let project = ProjectId::from_parts(1_700_000_000_000, [41; 10])?;
+    let home = PathBuf::from(std::ffi::OsString::from_vec(b"/private/se-\xff".to_vec()));
+    assert!(AgentCommand::launch_in_home(&agent, &home, &project, false).is_none());
+    assert!(AgentCommand::launch_in_home(&agent, &home, &project, true).is_none());
+    assert!(AgentCommand::stop_in_home(&agent, &home, &project).is_none());
+    Ok(())
+}
+
 #[test]
 fn public_status_list_and_show_keep_the_selected_installation() -> Check {
     se_proc::initialize_file_creation_owner()?;
@@ -117,6 +130,47 @@ fn public_status_list_and_show_keep_the_selected_installation() -> Check {
         assert_eq!(parsed.common.selections.agent.as_deref(), Some(agent));
         assert!(
             matches!(parsed.operation, AnyOp::AgentLaunch(input) if input.detach && input.fresh)
+        );
+    }
+    #[cfg(unix)]
+    {
+        use se_store::{ReadStore, Snapshot, StoreFactory};
+        use std::os::unix::ffi::OsStringExt;
+        let displayed = call(&["--project", project, "agent", "show", agent])?;
+        let mut row = serde_json::from_value(displayed["agent"]["value"].clone())?;
+        let mut options = fixture.options.clone();
+        options.state_directory = home;
+        let reader = fixture::present(se_store::SqliteFactory::open_reader(&options)?)?;
+        let project: ProjectId = project.parse()?;
+        let mut snapshot = reader.snapshot(se_store::ReadScope {
+            admission: se_store::Admission {
+                scope: se_store::Scope::Project(project.clone()),
+                actor: se_store::Actor::Human(
+                    initialized["owner"]["human_id"]
+                        .as_str()
+                        .ok_or("owner")?
+                        .parse()?,
+                ),
+                session: None,
+                generation: 1,
+            },
+            visibility: se_store::Visibility::Owner,
+        })?;
+        let plan = se_host::prepare_agent_observation(&project, &row, &mut snapshot)?;
+        snapshot.close()?;
+        let invalid_home =
+            PathBuf::from(std::ffi::OsString::from_vec(b"/private/se-\xff".to_vec()));
+        se_host::observe_agent(
+            plan.with_command_home(&invalid_home),
+            std::time::Instant::now() + std::time::Duration::from_secs(10),
+        )?
+        .apply(&mut row)?;
+        assert!(!row.resume.ready);
+        assert!(row.resume.command.is_none());
+        assert!(row.resume.argv.is_none());
+        assert_eq!(
+            row.resume.reason.as_deref(),
+            Some(AgentCommand::HOME_UNAVAILABLE)
         );
     }
     Ok(())

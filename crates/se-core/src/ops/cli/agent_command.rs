@@ -6,6 +6,28 @@ pub struct AgentCommand {
     pub argv: Vec<String>,
 }
 impl AgentCommand {
+    pub const HOME_UNAVAILABLE: &str =
+        "The data home is not UTF-8; no portable CLI command can name it exactly.";
+    pub fn launch_in_home(
+        agent: &AgentId,
+        home: &std::path::Path,
+        project: &ProjectId,
+        new: bool,
+    ) -> Option<Self> {
+        Some(Self::launch(
+            agent,
+            Some(home.to_str()?),
+            Some(project),
+            new,
+        ))
+    }
+    pub fn stop_in_home(
+        agent: &AgentId,
+        home: &std::path::Path,
+        project: &ProjectId,
+    ) -> Option<Self> {
+        Some(Self::stop(agent, Some(home.to_str()?), Some(project)))
+    }
     pub fn launch(
         agent: &AgentId,
         home: Option<&str>,
