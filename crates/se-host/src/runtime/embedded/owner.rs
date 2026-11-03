@@ -23,13 +23,11 @@ pub(super) struct OwnerInputs {
     pub(super) timeout: Duration,
 }
 pub(super) type Started = core::Result<(HostedRouter, LocalStop)>;
+pub(super) type Stopped = core::Result<api::DrainReceipt>;
 
 pub(super) fn owner_thread(
     inputs: OwnerInputs,
-) -> (
-    oneshot::Receiver<Started>,
-    oneshot::Receiver<api::DrainReceipt>,
-) {
+) -> (oneshot::Receiver<Started>, oneshot::Receiver<Stopped>) {
     let (ready, ready_rx) = oneshot::channel();
     let (exited, exited_rx) = oneshot::channel();
     let runtime = inputs.runtime.clone();
@@ -55,22 +53,46 @@ pub(super) fn owner_thread(
                         // Pending obligations and close errors stay unresolved;
                         // the writer counts as flushed only when storage drained.
                         let unresolved = (report.pending.len() + report.errors.len()) as u64;
-                        api::DrainReceipt {
+                        let receipt = api::DrainReceipt {
                             generation,
                             pending_notices: 0,
                             unresolved_effects: unresolved,
-                            writer_flushed: matches!(report.storage, core::Read::Present { .. })
+                            writer_flushed: matches!(&report.storage, core::Read::Present { value } if value.writer_joined && value.pending.is_empty())
                                 && unresolved == 0,
+                        };
+                        if !receipt.writer_flushed {
+                            // A failed embedded drain cannot drop native custody or
+                            // free its lease while the application keeps running.
+                            // The returned incomplete receipt requires controlled
+                            // application restart; this dedicated owner thread parks.
+                            let _ = exited.send(Ok(receipt));
+                            let _retained = report;
+                            loop {
+                                std::thread::park();
+                            }
+                        }
+                        // Drop the successfully closed runtime before publishing
+                        // drain completion; the external CLI checks the actual lock.
+                        drop(report);
+                        receipt
+                    }
+                    Err(error) => {
+                        // Forward the diagnostic through drain's error channel;
+                        // a library must not print into its embedding application.
+                        let failure = se_core::scope::unreadable(
+                            "embedded shutdown budget",
+                            &format!(
+                                "Could not create the shutdown budget: {error}. This runtime retains its writer and lease; preserve the data home and use controlled application restart."
+                            ),
+                        );
+                        let _ = exited.send(Err(failure));
+                        let _retained = exit;
+                        loop {
+                            std::thread::park();
                         }
                     }
-                    Err(_) => api::DrainReceipt {
-                        generation,
-                        pending_notices: 0,
-                        unresolved_effects: 1,
-                        writer_flushed: false,
-                    },
                 };
-                let _ = exited.send(receipt);
+                let _ = exited.send(Ok(receipt));
             });
         });
     if spawned.is_err() {

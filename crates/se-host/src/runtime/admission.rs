@@ -14,7 +14,10 @@ use se_core::{
 use se_store::{Actor, Admission, RuntimeLease, Scope};
 use se_types::{Read, Result, SeError, Sha256};
 use sha2::{Digest, Sha256 as Hasher};
-use std::{io::Read as ByteRead, sync::Arc};
+use std::{
+    io::Read as ByteRead,
+    sync::{Arc, Weak},
+};
 use zeroize::Zeroizing;
 
 /// Whether a still-prepared credential may be used: only for read-only tool
@@ -30,7 +33,9 @@ const SESSION_CAPABILITY: &str = "session";
 #[derive(Clone)]
 pub(crate) struct AdmissionContext {
     pub reader: Arc<se_store::SqliteReader>,
-    pub lease: Arc<HostLease>,
+    // Retained routers borrow admission authority; only the runtime and its
+    // writer obligations own the lease after the admission fence is joined.
+    pub lease: Weak<HostLease>,
     pub owner: se_types::HumanId,
     pub generation: se_types::Generation,
     pub state_directory: std::path::PathBuf,
@@ -47,6 +52,16 @@ pub(crate) struct OperationMetadata {
     pub presence: Option<crate::client::presence::OwnerPresence>,
 }
 impl AdmissionContext {
+    fn lease(&self) -> Result<Arc<HostLease>> {
+        self.lease.upgrade().ok_or_else(|| {
+            SeError::new(se_types::Detail::RuntimeNotRunning(
+                se_types::details::RuntimeNotRunning {
+                    op: "host admission".into(),
+                    reason: "this retained handle's original host lease has been released".into(),
+                },
+            ))
+        })
+    }
     pub fn handshake(&self, pending: &mut PendingIpcHandshake) -> Result<ConnectionGrant> {
         let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
@@ -346,12 +361,8 @@ impl AdmissionContext {
     }
     fn machine_key(&self) -> Result<se_types::Secret> {
         let path = self.state_directory.join("credential");
-        let mut file = match self
-            .lease
-            .files()
-            .readback(&path)
-            .map_err(|e| store_error(&e))?
-        {
+        let lease = self.lease()?;
+        let mut file = match lease.files().readback(&path).map_err(|e| store_error(&e))? {
             Read::Present { value } => value,
             _ => {
                 return Err(SeError::invalid(
@@ -378,8 +389,9 @@ impl AdmissionContext {
         // protected readback and bounded native ancestry observation below.
         // machine_key likewise reads a protected file before the phase closes;
         // none of these synchronous reads submits a write or awaits the network.
+        let lease = self.lease()?;
         let inventory = phase
-            .owner_guard(self.lease.files(), owner_budget()?)
+            .owner_guard(lease.files(), owner_budget()?)
             .map_err(|e| store_error(&e))?;
         if inventory.owners.as_slice() != [self.owner.clone()] {
             return Err(SeError::invalid(
@@ -467,7 +479,7 @@ impl HostedRuntime {
             configuration: self.configuration.clone(),
             prepared_requests: self.prepared_requests.clone(),
             reader: Arc::clone(&self.execution.reader),
-            lease: Arc::clone(&self.lease),
+            lease: Arc::downgrade(&self.lease),
             owner: self.owner.clone(),
             generation: self.generation(),
             state_directory: self.state_directory.clone(),

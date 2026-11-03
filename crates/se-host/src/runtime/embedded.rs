@@ -11,7 +11,7 @@
 mod owner;
 mod support;
 use super::{HostedRouter, LocalStop};
-use owner::{OwnerInputs, Started, owner_thread};
+use owner::{OwnerInputs, Started, Stopped, owner_thread};
 use se_types as core;
 use secode_stateengine_api as api;
 use std::{
@@ -48,14 +48,14 @@ struct Serving {
     )]
     router: HostedRouter,
     stop: LocalStop,
-    exited: oneshot::Receiver<api::DrainReceipt>,
+    exited: oneshot::Receiver<Stopped>,
 }
 /// An owner thread that has not yet reported readiness. Its receivers live
 /// here, so a cancelled or timed-out activate leaves it reachable and a retry
 /// resumes the same generation instead of spawning a second owner.
 struct Activating {
     ready: oneshot::Receiver<Started>,
-    exited: oneshot::Receiver<api::DrainReceipt>,
+    exited: oneshot::Receiver<Stopped>,
 }
 enum Lifecycle {
     Prepared,
@@ -395,7 +395,13 @@ impl api::Host for EmbeddedHost {
                     // Await by reference: a cancelled or timed-out drain keeps the
                     // generation serving, so a later drain waits for the real report.
                     match tokio::time::timeout(options.timeout, &mut serving.exited).await {
-                        Ok(Ok(receipt)) => receipt,
+                        Ok(Ok(Ok(receipt))) => receipt,
+                        Ok(Ok(Err(error))) => {
+                            let failure = api_error(&error);
+                            *lifecycle = Lifecycle::Failed(failure.clone());
+                            self.set_health(api::GenerationHealth::Poisoned);
+                            return Err(failure);
+                        }
                         Ok(Err(_)) => {
                             let failure = refused(
                                 "embedded host",
@@ -430,7 +436,16 @@ impl api::Host for EmbeddedHost {
                 Lifecycle::Failed(error) => return Err(error.clone()),
             };
             *lifecycle = Lifecycle::Drained(receipt.clone());
-            self.set_health(api::GenerationHealth::Drained);
+            self.set_health(
+                if receipt.writer_flushed
+                    && receipt.unresolved_effects == 0
+                    && receipt.pending_notices == 0
+                {
+                    api::GenerationHealth::Drained
+                } else {
+                    api::GenerationHealth::Poisoned
+                },
+            );
             Ok(receipt)
         })
     }
@@ -443,6 +458,15 @@ impl api::Host for EmbeddedHost {
             let lifecycle = self.lifecycle.lock().await;
             match &*lifecycle {
                 Lifecycle::Drained(receipt) if *receipt == drained => {
+                    if !receipt.writer_flushed
+                        || receipt.unresolved_effects != 0
+                        || receipt.pending_notices != 0
+                    {
+                        return Err(refused(
+                            "embedded host close",
+                            "a completely flushed drain with no unresolved effects or notices; this runtime retains custody and requires controlled application restart",
+                        ));
+                    }
                     self.set_health(api::GenerationHealth::Closed);
                     Ok(receipt.clone())
                 }

@@ -43,9 +43,31 @@ pub(super) fn stop_native(
         until,
         &options(),
     )?;
+    use se_host::client::endpoint::{RuntimeStopFact as Fact, RuntimeStopOutcome};
+    let RuntimeStopOutcome::Facts {
+        achieved, pending, ..
+    } = reply.outcome
+    else {
+        return Err("authenticated fixture shutdown was refused".into());
+    };
+    for fact in [
+        Fact::AgentsStopped,
+        Fact::ResumeSaved,
+        Fact::CaptureFlushed,
+        Fact::DebtFlushed,
+        Fact::WriterJoined,
+    ] {
+        assert!(
+            achieved.contains(&fact),
+            "shutdown omitted {fact:?}: {pending:?}"
+        );
+    }
     assert!(
-        matches!(reply.outcome,se_host::client::endpoint::RuntimeStopOutcome::Facts{ref pending,..} if !pending.is_empty())
+        pending.is_empty(),
+        "fixture shutdown remains incomplete: {pending:?}"
     );
+    assert!(!achieved.contains(&Fact::ResourcesClosed));
+    assert!(!achieved.contains(&Fact::LeaseReleased));
     Ok(())
 }
 pub(super) fn wait_native_exit(identity: &se_proc::ProcessIdentity) -> Check {

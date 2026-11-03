@@ -7,6 +7,8 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
+mod agents;
+mod facts;
 
 pub struct HostShutdown {
     pub runtime: HostedRuntime,
@@ -34,11 +36,23 @@ impl HostServeExit {
         trace("storage-drain-start", started, true);
         let mut errors: Vec<_> = self.failure.take().into_iter().collect();
         let mut pending: Vec<_> = errors.iter().map(ToString::to_string).collect();
+        let before = match facts::before(&self.runtime, &drain_deadline).await {
+            Ok(value) => Some(value),
+            Err(error) => {
+                pending.push(format!(
+                    "Shutdown resume inventory remains unreadable: {error}. Storage drain is withheld; this fenced host retains its writer and lease after retiring the endpoint, so another down cannot retry it. Preserve the data home and repair the original session metadata before controlled application restart/recovery."
+                ));
+                errors.push(error);
+                None
+            }
+        };
         // Native custody first, while trusted capture is still open for its
         // final capture; an incomplete stop keeps the lease and the writer.
         let custody = self.runtime.execution.custody.get().cloned();
         let custody_complete = match custody {
-            None => true,
+            None => before
+                .as_ref()
+                .is_some_and(|value| !value.had_process_records),
             Some(custody) => match custody.shutdown(&drain_deadline).await {
                 Ok(report) => {
                     pending.extend(report.pending);
@@ -51,7 +65,44 @@ impl HostServeExit {
                 }
             },
         };
-        let drained = if custody_complete {
+        let agents_stopped = if custody_complete {
+            match facts::remaining(&self.runtime, &drain_deadline).await {
+                Ok(false) => true,
+                Ok(true) => {
+                    pending.push("Recorded native custody remains unresolved after the shutdown coordinator returned.".into());
+                    false
+                }
+                Err(error) => {
+                    pending.push(format!(
+                        "Shutdown native inventory remains unreadable: {error}"
+                    ));
+                    errors.push(error);
+                    false
+                }
+            }
+        } else {
+            pending.push("Native custody shutdown is incomplete or its observer is unavailable; retain the lease and writer.".into());
+            false
+        };
+        let stops = if let Some(before) = &before {
+            agents::observe(&self.runtime, &before.targets, &drain_deadline).await
+        } else {
+            Vec::new()
+        };
+        for target in &stops {
+            if target.witness.is_none() {
+                pending.push(format!(
+                    "Agent {} lifecycle {} exit remains unproved: {}. After endpoint retirement this fenced runtime retains the lease; preserve the data home and use controlled application restart/recovery.",
+                    target.agent,
+                    target.lifecycle,
+                    target
+                        .reason
+                        .as_deref()
+                        .unwrap_or("no native exit checkpoint")
+                ));
+            }
+        }
+        let drained = if agents_stopped && before.is_some() {
             Some(self.runtime.drain_storage(&drain_deadline).await)
         } else {
             None
@@ -60,7 +111,7 @@ impl HostServeExit {
             None => Read::Unreadable {
                 source: "host storage drain".into(),
                 reason:
-                    "native custody shutdown is incomplete; the host retains its lease and writer"
+                    "native custody shutdown or resume preservation is incomplete; the host retains its lease and writer"
                         .into(),
                 error: None,
             },
@@ -108,21 +159,42 @@ impl HostServeExit {
                 ));
             }
         }
+        let close_request = self.stop.as_ref().map(|stop| {
+            (
+                stop.request().expected_epoch.clone(),
+                stop.request().generation,
+                stop.request().key.clone(),
+            )
+        });
         if let Some(stop) = self.stop.take() {
-            let mut reply_pending = pending.clone();
-            reply_pending.push("Native transport release and endpoint retirement are pending; agent/debt/resume/final lease-release witnesses remain separate obligations.".into());
+            let mut achieved = Vec::new();
+            if agents_stopped {
+                achieved.push(RuntimeStopFact::AgentsStopped);
+            }
+            if before.is_some() {
+                achieved.push(RuntimeStopFact::ResumeSaved);
+            }
+            if writer_joined {
+                achieved.push(RuntimeStopFact::WriterJoined);
+            }
+            if agents_stopped
+                && self.runtime.flush.as_ref().is_some_and(|value| {
+                    value.pending_requests == 0 && value.indeterminate.is_empty()
+                })
+            {
+                achieved.extend([
+                    RuntimeStopFact::CaptureFlushed,
+                    RuntimeStopFact::DebtFlushed,
+                ]);
+            }
             let reply = RuntimeStopReply {
                 epoch: stop.request().expected_epoch.clone(),
                 generation: stop.request().generation,
                 key: stop.request().key.clone(),
                 outcome: RuntimeStopOutcome::Facts {
-                    achieved: if writer_joined {
-                        vec![RuntimeStopFact::WriterJoined]
-                    } else {
-                        vec![]
-                    },
-                    retained_resume: vec![],
-                    pending: reply_pending,
+                    achieved,
+                    retained_resume: before.map_or_else(Vec::new, |value| value.resumes),
+                    pending: pending.clone(),
                 },
             };
             let result = match cleanup_deadline() {
@@ -152,6 +224,31 @@ impl HostServeExit {
         ] {
             if let Err(error) = result {
                 pending.push(format!("{stage} remains pending: {error}"));
+                errors.push(error);
+            }
+        }
+        if let Some((epoch, generation, key)) = close_request {
+            let record = crate::client::closure::RuntimeClosure {
+                schema: 1,
+                epoch,
+                generation,
+                key,
+                resources_closed: pending.is_empty()
+                    && transport_closed
+                    && endpoint_retired
+                    && writer_joined
+                    && agents_stopped,
+                stops,
+                pending: pending.clone(),
+            };
+            let lease = self.runtime.lease.clone();
+            let result = pool
+                .run_owned(&drain_deadline, move || {
+                    crate::client::closure::publish(&lease.files, lease.files.0.root(), &record)
+                })
+                .await;
+            if let Err(error) = result {
+                pending.push(format!("Protected post-transport close receipt remains unproved: {error}; retain this runtime's lease."));
                 errors.push(error);
             }
         }
