@@ -129,7 +129,7 @@ impl Pin {
         let target = if expected.kind == PermissionKind::Directory {
             0o700
         } else {
-            0o600
+            0o600 | (mode & 0o100)
         };
         if mode & target != target {
             return Err(unsafe_path(
@@ -141,7 +141,7 @@ impl Pin {
             return Ok(());
         }
         // SAFETY: retained O_PATH descriptor, empty literal pathname and a mode
-        // that only removes bits and restores the exact documented 0700/0600.
+        // that only removes bits, retaining any existing owner execute access.
         let result = unsafe {
             libc::syscall(
                 libc::SYS_fchmodat2,
@@ -159,7 +159,7 @@ impl Pin {
             ) {
                 return Err(failure(
                     StateFileErrorCode::Unsupported,
-                    "metadata-only repair requires fchmodat2 AT_EMPTY_PATH",
+                    "metadata-only repair requires Linux 6.6 fchmodat2 AT_EMPTY_PATH; manually tighten this named path and rerun doctor",
                     &self.path,
                 ));
             }
@@ -170,9 +170,7 @@ impl Pin {
     pub(in crate::state_files) fn verify_private(&self) -> Result<()> {
         let snapshot = self.snapshot()?;
         let directory = snapshot.kind == PermissionKind::Directory;
-        let target = if directory { 0o700 } else { 0o600 };
-        if !matches!(snapshot.protection, PermissionProtection::UnixMode { mode, .. } if mode == target)
-        {
+        if !self.is_owner_only()? {
             return Err(changed(
                 "exact documented owner-only mode was not retained",
                 &self.path,
@@ -182,13 +180,9 @@ impl Pin {
     }
     pub(in crate::state_files) fn is_owner_only(&self) -> Result<bool> {
         let snapshot = self.snapshot()?;
-        let target = if snapshot.kind == PermissionKind::Directory {
-            0o700
-        } else {
-            0o600
-        };
         Ok(
-            matches!(snapshot.protection, PermissionProtection::UnixMode { mode, .. } if mode == target),
+            matches!(snapshot.protection, PermissionProtection::UnixMode { mode, .. }
+            if mode == 0o700 || (snapshot.kind == PermissionKind::File && mode == 0o600)),
         )
     }
 }

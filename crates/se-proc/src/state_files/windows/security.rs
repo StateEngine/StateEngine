@@ -20,6 +20,8 @@ use windows_sys::Win32::{
     System::{SystemServices::ACCESS_DENIED_ACE_TYPE, Threading::*},
 };
 
+mod permission_repair;
+
 struct User {
     storage: Vec<usize>,
 }
@@ -103,6 +105,7 @@ pub(in crate::state_files) fn tighten_owner_only(
     path: &Path,
     directory: bool,
 ) -> Result<()> {
+    permission_repair::require_existing_access(file, path, directory)?;
     let descriptor = descriptor(path, directory)?;
     // SAFETY: retained WRITE_DAC handle and native self-relative descriptor.
     // NtSetSecurityObject changes this one pinned object; unlike SetSecurityInfo

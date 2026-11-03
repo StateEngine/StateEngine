@@ -101,7 +101,7 @@ impl Pin {
         let name = path
             .file_name()
             .ok_or_else(|| unsafe_path("repair requires a literal leaf", path))?;
-        let parent = match Parent::open_with_access(parent_path, false) {
+        let parent = match Parent::open_for_permission_repair(parent_path) {
             Ok(value) => value,
             Err(e) if absent(&e) => return Ok(None),
             Err(e) => return Err(e),
@@ -129,7 +129,7 @@ impl Pin {
             .path
             .parent()
             .ok_or_else(|| unsafe_path("repair parent missing", &self.path))?;
-        let current = Parent::open_with_access(parent_path, false)?;
+        let current = Parent::open_for_permission_repair(parent_path)?;
         if current.identity != self.parent.identity {
             return Err(changed("permission repair parent changed", &self.path));
         }
