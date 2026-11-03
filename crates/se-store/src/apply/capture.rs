@@ -51,6 +51,56 @@ pub(crate) fn canonicalize(c: &Connection, batch: &mut AtomicBatch) -> StoreResu
             *last_turn = *actual;
         }
     }
+    // Reconnects may carry a different request key for the same native turn.
+    // Retain its original source fact before natural membership and CAS checks;
+    // the ordinary descriptor comparison still checks every immutable field.
+    let sources: Vec<_> = batch
+        .events
+        .iter()
+        .filter_map(|e| match &e.body {
+            EventBody::CaptureProgress {
+                source, last_turn, ..
+            } if ids.iter().any(|(_, actual)| actual == last_turn) => Some(*source),
+            _ => None,
+        })
+        .collect();
+    for e in &mut batch.events {
+        if let EventBody::CaptureSource {
+            source,
+            session,
+            consent,
+            incarnation,
+            native_ref,
+            ..
+        } = &mut e.body
+            && sources.contains(source)
+            && let Ok(Value::Object(mut candidate)) = serde_json::from_str(native_ref)
+            && candidate.get("source_cli").and_then(Value::as_str) == Some("secode")
+            && candidate
+                .get("request_key")
+                .and_then(Value::as_str)
+                .is_some()
+        {
+            let original: Option<String> = c.query_row(
+                "SELECT json_extract(facts,'$.native_ref') FROM aux_data INDEXED BY capture_source_natural WHERE json_extract(facts,'$.capture_kind')='source' AND json_extract(facts,'$.project')=? AND json_extract(facts,'$.source')=? AND json_extract(facts,'$.incarnation')=? AND json_extract(facts,'$.session')=? AND json_extract(facts,'$.consent')=? ORDER BY event_seq LIMIT 1",
+                rusqlite::params![crate::identity::project(&e.header.scope)?.as_str(), codec::encode(source)?, codec::encode(incarnation)?, session.as_str(), codec::encode(consent)?.trim_matches('"')],
+                |row| row.get(0),
+            ).optional().map_err(sql)?;
+            if let Some(original) = original
+                && let Ok(Value::Object(mut retained)) = serde_json::from_str(&original)
+                && retained
+                    .get("request_key")
+                    .and_then(Value::as_str)
+                    .is_some()
+            {
+                candidate.remove("request_key");
+                retained.remove("request_key");
+                if candidate == retained {
+                    *native_ref = original;
+                }
+            }
+        }
+    }
     Ok(())
 }
 pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult<()> {
