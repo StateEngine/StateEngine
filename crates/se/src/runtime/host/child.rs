@@ -115,6 +115,10 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         .map_err(|e| {
             se_core::scope::unreadable("native host epoch", &e.to_string()).with_cause(e)
         })?;
+    // The same native image was just verified against the bootstrap and peer;
+    // no PATH/cwd lookup may select a different helper for owned agent custody.
+    let helper_executable = epoch.owner.fields().executable.clone();
+    let maximum_sessions = positive(256)?;
     // Standalone owns one runtime; all library methods below use this Handle.
     let engine = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -141,7 +145,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
                     group_bytes: positive(1024 * 1024)?,
                 },
                 limits: se_host::HostLimits {
-                    sessions: positive(256)?,
+                    sessions: maximum_sessions,
                     active_connections: positive(64)?,
                     // Admit the supported 20-client burst with bounded headroom.
                     preauth_connections: positive(32)?,
@@ -168,7 +172,19 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
             temporary_directory: (!temporary_directory.is_empty())
                 .then(|| PathBuf::from(temporary_directory)),
         })?;
-        host.bind_loopback()?;
+        let (_coordinator, reconciliation) = se_host::LaunchCoordinator::install(
+            &mut host,
+            se_host::ProcessOptions {
+                helper_executable,
+                linux_delegation: se_proc::LinuxDelegation::CurrentScope,
+                maximum_sessions: maximum_sessions.get(),
+            },
+            &bound,
+        )
+        .await?;
+        for failure in &reconciliation.unproved {
+            eprintln!("Agent recovery incomplete; its custody remains fenced: {failure}");
+        }
         let bootstrap = guard
             .take()
             .ok_or_else(|| invalid("the retained bootstrap before listener admission"))?;
