@@ -5,6 +5,8 @@ mod admit;
 #[cfg(any(target_os = "linux", windows))]
 #[path = "route/autostart.rs"]
 mod autostart;
+#[path = "route/clock.rs"]
+mod clock;
 #[path = "route/credential.rs"]
 pub mod credential;
 #[path = "route/direct.rs"]

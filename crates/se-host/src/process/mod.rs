@@ -33,7 +33,13 @@ use std::{path::PathBuf, sync::Arc};
 pub struct ProcessOptions {
     pub helper_executable: NativePath,
     pub linux_delegation: se_proc::LinuxDelegation,
+    /// Active native custody slots, including unresolved cleanup. Larger
+    /// deployments must explicitly budget their additional per-slot memory.
     pub maximum_sessions: u32,
+}
+impl ProcessOptions {
+    /// Section 30's default native custody budget, independent of stored sessions.
+    pub const DEFAULT_MAXIMUM_SESSIONS: u32 = 16;
 }
 pub struct ProcessConfiguration {
     pub home: PathBuf,
@@ -75,6 +81,7 @@ impl LaunchCoordinator {
     ) -> Result<(Arc<Self>, Reconciliation)> {
         host_runtime.bind_loopback()?;
         let coordinator = Self::open(host_runtime, requested, deadline).await?;
+        host_runtime.install_prepared_request_proofs(coordinator.prepared_request_proofs())?;
         host_runtime.install_custody(
             Arc::new(coordinator.clone()),
             coordinator.subscribe_activity(),

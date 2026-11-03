@@ -177,7 +177,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
             se_host::ProcessOptions {
                 helper_executable,
                 linux_delegation: se_proc::LinuxDelegation::CurrentScope,
-                maximum_sessions: maximum_sessions.get(),
+                maximum_sessions: se_host::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
             },
             &bound,
         )

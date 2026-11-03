@@ -22,16 +22,10 @@ use se_types::{AgentId, EventId, MessageId, Read, Result, SeError, Secret};
 use std::{
     io::Read as _,
     sync::{Arc, atomic::AtomicBool},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
-pub fn now_us() -> Result<i64> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| scope::unreadable("system clock", &e.to_string()))?;
-    i64::try_from(elapsed.as_micros())
-        .map_err(|_| SeError::invalid("system clock", "representable Unix microseconds"))
-}
+pub use super::clock::now_us;
 pub fn facts() -> Result<CallFacts> {
     let now = now_us()?;
     let random = se_proc::random_secret()
@@ -127,6 +121,15 @@ pub fn dispatch(
             setup::Setup::Present(reader) => reader,
         };
     let files = Files::open(&cx.home).map_err(|e| store_error(&e))?;
+    // The host verifier admits a prepared launch's first fixed hook after C3.
+    // End this finite read pin before stdin or forwarding; ordinary operations
+    // still require active-session admission below.
+    if let AnyOp::HookClaude(hook) = &op {
+        phase.close().map_err(|e| store_error(&e))?;
+        drop(reader);
+        let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
+        return super::hook::forward(cx, &files, input, diagnostic);
+    }
     let owner = if matches!(op, AnyOp::ProjectStatus(_)) {
         Some(phase.runtime_owner().map_err(|e| store_error(&e))?)
     } else {
@@ -178,10 +181,6 @@ pub fn dispatch(
     }
     // End the finite auth/selection pin before stdin, IPC, writer or custody work.
     snapshot.close().map_err(|e| store_error(&e))?;
-    if let AnyOp::HookClaude(hook) = &op {
-        let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
-        return super::hook::forward(cx, &files, input, diagnostic);
-    }
     se_core::admission::authorize(op.meta(), &caller.admission)?;
     // Refuse before acquiring writer custody or looking for a busy host's
     // endpoint; Kernel::plan still enforces policy for every execution path.
