@@ -85,7 +85,7 @@ pub(super) fn decode<R: ImportSnapshot>(
             "source marker for retained mail; no native recipient fact inferred",
         );
     }
-    let mut retained_fields = serde_json::Map::new();
+    let mut retained_fields = None;
     let (by, key, body) = match kind {
         "message" => {
             if row.get("from_project").is_some_and(|v|!v.is_null() && !matches!(&cx.admission.scope,Scope::Project(p) if v.as_str()==Some(p.as_str()))) {
@@ -139,23 +139,25 @@ pub(super) fn decode<R: ImportSnapshot>(
             ) {
                 original_kind
             } else {
-                retained_fields.insert("original_kind".into(), json!(original_kind));
+                retained_fields = Some(json!({"original_kind":original_kind}));
                 "note"
             };
-            let mut reply_to = optional(row, "reply_to")
+            let reply_to = optional(row, "reply_to")
                 .map(MessageId::from_legacy)
                 .transpose()
                 .map_err(invalid)?;
             if let Some(reply) = &reply_to
-                && let MessageReference::Retained(owned) = reference::lookup(cx, read, reply)?
+                && matches!(
+                    reference::lookup(cx, read, reply)?,
+                    MessageReference::Retained(_)
+                )
             {
-                // Retained mail has no native message identity. Keep its source
-                // reply relation beside the native text with its real event ID.
-                retained_fields.insert(
-                    "recorded_reply_to".into(),
-                    json!({"message":reply,"event":owned}),
+                return retained(
+                    row,
+                    id.clone(),
+                    format!("message:{id}"),
+                    "reply to retained source mail; original attribution and parent preserved without native message identities",
                 );
-                reply_to = None;
             }
             (
                 by,
@@ -212,7 +214,6 @@ pub(super) fn decode<R: ImportSnapshot>(
             .filter(|v| v.len() <= 32)
             .ok_or_else(|| invalid("bounded source supersedes list required"))?;
         let mut unique = std::collections::BTreeSet::new();
-        let mut recorded = Vec::new();
         for value in values {
             let old = MessageId::from_legacy(
                 value
@@ -227,11 +228,13 @@ pub(super) fn decode<R: ImportSnapshot>(
             }
             let prior = match reference::lookup(cx, read, &old)? {
                 MessageReference::Native(prior) => prior,
-                MessageReference::Retained(owned) => {
-                    // This is recorded source history, not a native mark or a
-                    // replacement of a fabricated sender/recipient identity.
-                    recorded.push(json!({"message":old,"event":owned}));
-                    continue;
+                MessageReference::Retained(_) => {
+                    return retained(
+                        row,
+                        id.clone(),
+                        format!("message:{id}"),
+                        "replacement of retained source mail; original attribution and links preserved without a native replacement fact",
+                    );
                 }
             };
             if prior.superseded_by.as_ref() == Some(&id) {
@@ -256,16 +259,13 @@ pub(super) fn decode<R: ImportSnapshot>(
                 },
             )?);
         }
-        if !recorded.is_empty() {
-            retained_fields.insert("recorded_supersedes".into(), Value::Array(recorded));
-        }
     }
     Ok(DecodedRow {
         events,
         family: ImportFamily::Messages,
         legacy_id: key,
         target: LegacyTarget::Message(id),
-        retained: (!retained_fields.is_empty()).then_some(Value::Object(retained_fields)),
+        retained: retained_fields,
         resume: Vec::new(),
         duplicate,
         dropped_by_policy: false,
