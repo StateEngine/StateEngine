@@ -81,9 +81,11 @@ impl EmbeddedHost {
         let source = se_store::RecordId::from_parts(turn.occurred_at.0 / 1000, random)
             .map_err(|e| store_error(&e))?;
         let incarnation = digest.to_vec();
+        // Request keys describe delivery attempts, not the native source. Keep
+        // source metadata stable when reconnects resend the same provider turn.
         let metadata = serde_json::to_string(&serde_json::json!({
             "conversation":turn.conversation.0,"event":turn.vendor_event,"source_ref":turn.source_ref,
-            "source_cli":turn.source_cli,"machine_id":turn.machine_id,"request_key":turn.idempotency_key.0,
+            "source_cli":turn.source_cli,"machine_id":turn.machine_id,
             "nesting":turn.nesting.map(|n| serde_json::json!({"parent_session":n.parent_session.map(|v|v.0),"nested_agent":n.nested_agent.map(|v|v.0),"depth":n.depth}))
         })).map_err(|e| scope::unreadable("native source metadata", &e.to_string()))?;
         se_core::ops::inputs::bounded("native source metadata", &metadata, 32768, false)?;
