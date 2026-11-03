@@ -80,14 +80,41 @@ pub fn project_event<R: Snapshot>(event: StoredEvent, cx: &mut Cx<'_, R>) -> Res
         "event project metadata",
         "Read the event's project metadata in the same data home, then retry this exact event ID.",
     )?;
-    let name = match &project_record.current.body {
-        EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => {
-            name.clone()
+    let metadata = if let EventBody::ProjectRemoved {
+        project: removed, ..
+    } = &project_record.current.body
+    {
+        if removed != &project {
+            return Err(scope::unreadable(
+                "event project",
+                "tombstone identity differs from the admitted project",
+            ));
         }
+        &project_record
+            .original
+            .as_deref()
+            .ok_or_else(|| {
+                scope::unreadable("event project", "retained registration is unavailable")
+            })?
+            .body
+    } else {
+        &project_record.current.body
+    };
+    let name = match metadata {
+        EventBody::ProjectRegistered {
+            project: registered,
+            name,
+            ..
+        }
+        | EventBody::ProjectUpdated {
+            project: registered,
+            name,
+            ..
+        } if registered == &project => name.clone(),
         _ => {
             return Err(scope::unreadable(
                 "event project",
-                "active project metadata is unavailable",
+                "matching project registration metadata is unavailable",
             ));
         }
     };
