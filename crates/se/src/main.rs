@@ -88,26 +88,27 @@ pub fn run(
             }
         });
     }
-    let mut context =
-        match bootstrap::Bootstrap::resolve(common.home, common.project, common.no_color) {
-            Ok(context) => context,
-            Err(error) => {
-                return render::error::write(
-                    &error,
-                    &RenderCx::default(),
-                    common.json,
-                    &mut stdout,
-                    &mut stderr,
-                )
-                .map(|code| {
-                    if hook_event.is_some() && !common.json {
-                        0
-                    } else {
-                        code
-                    }
-                });
-            }
-        };
+    let mut context = match bootstrap::check_session_route(&operation)
+        .and_then(|()| bootstrap::Bootstrap::resolve(common.home, common.project, common.no_color))
+    {
+        Ok(context) => context,
+        Err(error) => {
+            return render::error::write(
+                &error,
+                &RenderCx::default(),
+                common.json,
+                &mut stdout,
+                &mut stderr,
+            )
+            .map(|code| {
+                if hook_event.is_some() && !common.json {
+                    0
+                } else {
+                    code
+                }
+            });
+        }
+    };
     context.selections = common.selections;
     if context.legacy_environment_present {
         writeln!(

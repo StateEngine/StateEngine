@@ -29,6 +29,22 @@ pub struct Bootstrap {
     pub legacy_environment_present: bool,
 }
 
+/// An agent marker cannot select an owner-only operation, even when its opaque
+/// handle is malformed. Refuse before session-pin or configuration reads.
+pub(crate) fn check_session_route(operation: &se_core::ops::AnyOp) -> Result<()> {
+    if std::env::var_os("SE_SESSION").is_some()
+        && (matches!(operation.meta().auth, se_core::registry::Auth::Owner)
+            || operation.requires_human_terminal()?)
+    {
+        return Err(SeError::new(Detail::OwnerRequired(
+            details::OwnerRequired {
+                op: operation.meta().name.into(),
+            },
+        )));
+    }
+    Ok(())
+}
+
 impl Bootstrap {
     /// A session handle is opaque here. Only the native admission adapter may
     /// verify it; its presence must never fall through to owner authentication.

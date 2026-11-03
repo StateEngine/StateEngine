@@ -1567,7 +1567,10 @@ no child setup/readiness, graceful deadline or stop wait occupies it.
 
 Default active lifecycle cap is the embedded 16-session spend plan; an explicit
 larger deployment must negotiate/measure its extra per-slot memory within the
-global budget, rather than quietly allocating 256 entries eagerly. The cap counts Reserved/Starting/Running/LeaderExited/StopRequested/
+global budget, rather than quietly allocating 256 entries eagerly. Standalone
+and embedded hosts both default to 16 native custody slots; the standalone
+host's 256 stored-session limit does not enlarge this active custody budget.
+The cap counts Reserved/Starting/Running/LeaderExited/StopRequested/
 StopUnproved and Lost entries whose required scope is not proved empty,
 including quarantined unpublished children. Reservation admission is charged
 before any native effect; concurrent reservations cannot oversubscribe 16.
