@@ -29,6 +29,34 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("a recognized record type"))?;
     if kind != "user" && kind != "assistant" {
+        // Claude's request cache repeats API messages, including system text;
+        // these are not conversation records and have no vendor turn uuid.
+        // Recognize its explicit envelope without accepting arbitrary records
+        // carrying message text as metadata.
+        if kind == "api-request-blob"
+            && !object.contains_key("uuid")
+            && !object.contains_key("content")
+            && object
+                .get("hash")
+                .and_then(Value::as_str)
+                .is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            && object
+                .get("message")
+                .and_then(Value::as_object)
+                .is_some_and(|message| {
+                    matches!(
+                        message.get("role").and_then(Value::as_str),
+                        Some("system" | "user" | "assistant")
+                    ) && matches!(
+                        message.get("content"),
+                        Some(Value::String(_) | Value::Array(_))
+                    )
+                })
+        {
+            return Ok(None);
+        }
         // Known non-turn metadata contains no message/body. Unknown kinds stop
         // the cursor so a future schema change cannot silently discard text.
         if matches!(
@@ -52,6 +80,10 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
                 | "artifact-autoreact-ledger"
                 | "relocated"
                 | "worktree-state"
+                | "session-owner"
+                | "tools-used"
+                | "api-request-shape"
+                | "api-request"
         ) && !object.contains_key("message")
             && !object.contains_key("content")
         {
@@ -88,7 +120,6 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         .get("content")
         .ok_or_else(|| invalid("a provider content field"))?;
     let mut text = String::new();
-    let mut tool_result = false;
     match content {
         Value::String(value) => append(&mut text, value)?,
         Value::Array(blocks) => {
@@ -102,20 +133,17 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
                             .ok_or_else(|| invalid("a text block string"))?,
                     )?,
                     Some("tool_result") if kind == "user" => {
-                        tool_result = true;
+                        // Tool replies stay in the pinned source evidence;
+                        // the public chat family contains user/assistant turns.
                         match block.get("content") {
-                            Some(Value::String(value)) => append(&mut text, value)?,
+                            Some(Value::String(_)) => (),
                             Some(Value::Array(parts)) => {
                                 for part in parts {
-                                    if part.get("type").and_then(Value::as_str) != Some("text") {
+                                    if part.get("type").and_then(Value::as_str) != Some("text")
+                                        || part.get("text").and_then(Value::as_str).is_none()
+                                    {
                                         return Err(invalid("supported tool-result text blocks"));
                                     }
-                                    append(
-                                        &mut text,
-                                        part.get("text")
-                                            .and_then(Value::as_str)
-                                            .ok_or_else(|| invalid("a tool-result string"))?,
-                                    )?;
                                 }
                             }
                             _ => return Err(invalid("supported tool-result content")),
@@ -140,9 +168,7 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
     }
     Ok(Some(TextRecord {
         vendor_turn: vendor_turn.into(),
-        role: if tool_result {
-            se_store::Role::Tool
-        } else if kind == "user" {
+        role: if kind == "user" {
             se_store::Role::User
         } else {
             se_store::Role::Assistant
