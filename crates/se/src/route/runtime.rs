@@ -15,6 +15,9 @@ use se_types::Read;
 use se_types::{Result, SeError};
 #[cfg(any(target_os = "linux", windows))]
 use std::num::NonZeroU32;
+#[cfg(any(target_os = "linux", windows))]
+#[path = "runtime/completion.rs"]
+mod completion;
 
 #[cfg(any(target_os = "linux", windows))]
 pub fn up(
@@ -172,6 +175,12 @@ pub(super) fn down_endpoint(
     options: &se_host::client::ClientOptions,
 ) -> Result<AnyOutput> {
     use se_host::client::endpoint::{RuntimeStopFact as Fact, RuntimeStopOutcome};
+    let bound = Deadline::from_options(options)?;
+    let mut options = se_host::client::ClientOptions {
+        expected_generation: options.expected_generation,
+        timeout: options.timeout,
+        cancelled: options.cancelled.clone(),
+    };
     let now = execute::now_us()?;
     let deadline = now
         .checked_add(
@@ -179,12 +188,13 @@ pub(super) fn down_endpoint(
                 .map_err(|_| SeError::invalid("stop deadline", "representable microseconds"))?,
         )
         .ok_or_else(|| SeError::invalid("stop deadline", "representable microseconds"))?;
+    options.timeout = bound.remaining()?;
     let reply = BlockingIpcClient::stop(
         endpoint,
         &super::credential::require(files)?,
         input.idempotency_key,
         se_types::UnixMicros::new(deadline as u64)?,
-        options,
+        &options,
     )?;
     match reply.outcome {
         RuntimeStopOutcome::Refused { error } => Err(SeError {
@@ -192,12 +202,22 @@ pub(super) fn down_endpoint(
             cause: None,
         }),
         RuntimeStopOutcome::Facts {
-            achieved,
+            mut achieved,
             retained_resume,
-            pending,
+            mut pending,
         } => {
+            // The fixed reply certifies only the stages finished before its
+            // own channel closes. Never infer final release from decoding it.
+            #[cfg(any(target_os = "linux", windows))]
+            if pending.is_empty() {
+                match completion::witness(files, endpoint, &bound) {
+                    Ok(()) => achieved.extend([Fact::ResourcesClosed, Fact::LeaseReleased]),
+                    Err(error) => pending.push(format!(
+                        "Final native resource/lease release remains unproved: {error}"
+                    )),
+                }
+            }
             let complete = pending.is_empty()
-                && retained_resume.is_empty()
                 && [
                     Fact::AgentsStopped,
                     Fact::ResumeSaved,
@@ -217,10 +237,10 @@ pub(super) fn down_endpoint(
             let observed_at = receipt::timestamp(execute::now_us()?)?;
             let stops = retained_resume.into_iter().map(|retained| StopFact {
                 target: retained.agent.to_string(),
-                complete: false,
+                complete: achieved.contains(&Fact::AgentsStopped),
                 witness: Witness {
-                    state: WitnessState::Unknown,
-                    method: "authenticated retained resume reference".into(),
+                    state: if achieved.contains(&Fact::AgentsStopped) { WitnessState::Witnessed } else { WitnessState::Unknown },
+                    method: "authenticated shutdown coordinator and saved original conversation".into(),
                     observed_at: observed_at.clone(),
                     detail: Some(format!("project={}; agent={}; conversation={}", retained.project, retained.agent, retained.conversation)),
                 },
@@ -241,7 +261,12 @@ pub(super) fn down_endpoint(
                     } else {
                         WitnessState::Unknown
                     },
-                    method: "authenticated fixed graceful-stop reply".into(),
+                    method: if complete {
+                        "authenticated shutdown stages and outside native completion readback"
+                    } else {
+                        "authenticated shutdown stages with pending completion readback"
+                    }
+                    .into(),
                     observed_at: receipt::timestamp(execute::now_us()?)?,
                     detail: Some(detail),
                 },
