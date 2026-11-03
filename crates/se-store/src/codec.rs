@@ -29,9 +29,9 @@ pub(crate) fn aux(c: &Connection, seq: i64, v: Value) -> StoreResult<()> {
 }
 pub(crate) fn facts(c: &Connection, seq: i64) -> StoreResult<Value> {
     let s: String = c
-        .query_row("SELECT facts FROM aux_data WHERE event_seq=?", [seq], |r| {
-            crate::sql_value::value(r, 0)
-        })
+        .prepare_cached("SELECT facts FROM aux_data WHERE event_seq=?")
+        .map_err(sql)?
+        .query_row([seq], |r| crate::sql_value::value(r, 0))
         .map_err(sql)?;
     serde_json::from_str(&s).map_err(invalid)
 }
@@ -50,17 +50,17 @@ pub(crate) fn text(input: InputText, max: usize) -> StoreResult<String> {
 }
 pub(crate) fn stored_text(c: &Connection, seq: i64, field: &str) -> StoreResult<StoredText> {
     let (length, encoding, hash): (u64, String, Vec<u8>) = c
-        .query_row(
+        .prepare_cached(
             "SELECT length(content),encoding,sha256 FROM payloads WHERE event_seq=? AND field=?",
-            crate::sql_value::sql_params![seq, field],
-            |r| {
-                Ok((
-                    crate::sql_value::value(r, 0)?,
-                    crate::sql_value::value(r, 1)?,
-                    crate::sql_value::value(r, 2)?,
-                ))
-            },
         )
+        .map_err(sql)?
+        .query_row(crate::sql_value::sql_params![seq, field], |r| {
+            Ok((
+                crate::sql_value::value(r, 0)?,
+                crate::sql_value::value(r, 1)?,
+                crate::sql_value::value(r, 2)?,
+            ))
+        })
         .map_err(sql)?;
     if length > 1024 * 1024 || encoding != "utf8" || hash.len() != 32 {
         return Err(fail(
@@ -69,11 +69,11 @@ pub(crate) fn stored_text(c: &Connection, seq: i64, field: &str) -> StoreResult<
         ));
     }
     let bytes: Vec<u8> = c
-        .query_row(
-            "SELECT content FROM payloads WHERE event_seq=? AND field=?",
-            crate::sql_value::sql_params![seq, field],
-            |r| crate::sql_value::value(r, 0),
-        )
+        .prepare_cached("SELECT content FROM payloads WHERE event_seq=? AND field=?")
+        .map_err(sql)?
+        .query_row(crate::sql_value::sql_params![seq, field], |r| {
+            crate::sql_value::value(r, 0)
+        })
         .map_err(sql)?;
     use sha2::{Digest, Sha256};
     if Sha256::digest(&bytes).as_slice() != hash {
@@ -96,7 +96,7 @@ pub(crate) fn body(
     Ok(match kind {
         "process.registered" | "process.transition" => process::body(c, seq, kind, scope)?,
         "message.sent" => {
-            let (message,recipient,kind,refs,reply):(Vec<u8>,Vec<u8>,String,String,Option<Vec<u8>>)=c.query_row("SELECT message_id,recipient_id,message_kind,refs,reply_to FROM message_data WHERE event_seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).map_err(sql)?;
+            let (message,recipient,kind,refs,reply):(Vec<u8>,Vec<u8>,String,String,Option<Vec<u8>>)=c.prepare_cached("SELECT message_id,recipient_id,message_kind,refs,reply_to FROM message_data WHERE event_seq=?").map_err(sql)?.query_row([seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).map_err(sql)?;
             let s = scope_key(c, scope, false)?;
             MessageSent {
                 message: wire(c, "message", &message, &s)?.parse().map_err(invalid)?,

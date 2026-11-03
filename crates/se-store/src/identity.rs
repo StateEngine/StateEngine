@@ -134,11 +134,13 @@ pub(crate) fn wire(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> S
 pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<Actor> {
     if scope.len() == 17 && scope[0] == 1 {
         let kind: Option<String> = db
-            .query_row(
+            .prepare_cached(
                 "SELECT principal_kind FROM principals WHERE project_id=? AND principal_id=?",
-                crate::sql_value::sql_params![&scope[1..], bytes],
-                |r| crate::sql_value::value(r, 0),
             )
+            .map_err(sql)?
+            .query_row(crate::sql_value::sql_params![&scope[1..], bytes], |r| {
+                crate::sql_value::value(r, 0)
+            })
             .optional()
             .map_err(sql)?;
         if kind.as_deref() == Some("agent") {
@@ -148,11 +150,9 @@ pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<
         }
     }
     let owner: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM owners WHERE human_id=?)",
-            [bytes],
-            |r| crate::sql_value::value(r, 0),
-        )
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM owners WHERE human_id=?)")
+        .map_err(sql)?
+        .query_row([bytes], |r| crate::sql_value::value(r, 0))
         .map_err(sql)?;
     if owner {
         return Ok(Actor::Human(

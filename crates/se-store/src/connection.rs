@@ -41,6 +41,7 @@ pub(crate) fn configure(
             return Err(invalid("busy timeout exceeds 5000ms"));
         }
         c.busy_timeout(timeout).map_err(sql)?;
+        c.set_prepared_statement_cache_capacity(32);
         c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA mmap_size=0; PRAGMA temp_store=FILE; PRAGMA cache_size=-512;").map_err(sql)?;
         if writable {
             let journal: String = c
