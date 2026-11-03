@@ -97,5 +97,6 @@ AgentList => AgentList, AgentPage;
 ConfigGet => ConfigGet, ConfigValueOutput;
 ConfigSet => ConfigSet, AgentConfigReceipt;
 DecisionShow => DecisionShow, DecisionOutput;
+DecisionList => DecisionList, DecisionPage;
 Decision => DecisionPropose, DecisionReceipt;
 }

@@ -255,7 +255,9 @@ pub struct MessageQuery {
     pub unread_only: bool,
     pub full_body: bool,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
+/// Current heads by default; `history` adds terminal heads without changing
+/// ordering or the admitted visibility of another principal's requests.
 pub struct DecisionQuery {
     pub id: Option<DecisionId>,
     pub pending_only: bool,
@@ -436,6 +438,9 @@ pub trait Snapshot {
     /// Uses the same actor/kind/unread and visibility predicates as messages.
     fn message_count(&mut self, query: MessageQuery) -> StoreResult<u64>;
     fn decision(&mut self, id: DecisionId) -> StoreResult<Read<ProjectionRecord>>;
+    /// Exact committed predecessor link for a visible decision head. Proposal
+    /// intent alone is not an effective supersede; no other decision text is read.
+    fn decision_predecessor(&mut self, id: DecisionId) -> StoreResult<Read<DecisionId>>;
     /// Immutable decision events, oldest first, including supersede events
     /// naming this decision as either prior or replacement.
     /// A continuation retains its original high-water; unknown is Absent and a
@@ -450,6 +455,14 @@ pub trait Snapshot {
         query: DecisionQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>>;
+    /// Same selection as `decisions`, retaining a counted unreadable slot for a
+    /// selected head whose stored content cannot be decoded. Query, authority
+    /// and deadline failures still refuse the whole read.
+    fn decision_rows(
+        &mut self,
+        query: DecisionQuery,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<Read<ProjectionRecord>>>;
     /// One immutable turn by its record ID, under this snapshot's project and visibility.
     fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>>;
     fn turns(&mut self, agent: AgentId, budget: ReadBudget) -> StoreResult<Page<StoredEvent>>;

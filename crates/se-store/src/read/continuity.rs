@@ -125,28 +125,10 @@ impl SqliteSnapshot {
         &self,
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>> {
-        let p = self.project_bytes()?;
-        self.list_heads(
-            "decisions",
-            "last_seq",
-            "project_id=? AND state='ratified'",
-            vec![rusqlite::types::Value::Blob(p)],
-            budget,
-        )
+        self.read_decision_heads(DecisionQuery::default(), true, budget)
     }
-    /// Exact decision heads in this snapshot, all or only pending proposals.
+    /// Exact visible heads, all states or only pending proposals.
     pub(super) fn read_decision_count(&self, pending_only: bool) -> StoreResult<u64> {
-        let p = self.project_bytes()?;
-        self.db
-            .query_row(
-                if pending_only {
-                    "SELECT count(*) FROM decisions WHERE project_id=? AND state='proposed'"
-                } else {
-                    "SELECT count(*) FROM decisions WHERE project_id=?"
-                },
-                [&p],
-                |r| crate::sql_value::value(r, 0),
-            )
-            .map_err(|error| self.read_sql(error))
+        self.count_decision_heads(pending_only)
     }
 }

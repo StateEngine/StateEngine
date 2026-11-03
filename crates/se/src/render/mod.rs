@@ -56,6 +56,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::AgentReceipt, AnyOutput::AgentCreate(value)) => {
                 administration::agent(&value.value, out)?
             }
+            (HumanKind::DecisionPage, AnyOutput::DecisionList(value)) => {
+                decision::page(&value.value, out)?
+            }
             (HumanKind::Decision, AnyOutput::DecisionShow(value)) => {
                 decision::output(&value.value, out)?
             }

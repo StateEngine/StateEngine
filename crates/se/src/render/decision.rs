@@ -45,3 +45,47 @@ pub fn output(value: &DecisionOutput, out: &mut impl Write) -> io::Result<()> {
     }
     Ok(())
 }
+
+pub fn page(value: &se_core::ops::DecisionPage, out: &mut impl Write) -> io::Result<()> {
+    for item in value.page.items() {
+        match item {
+            se_core::ops::DecisionPageRow::Present { row, .. } => {
+                writeln!(
+                    out,
+                    "{}  {:?}  {}  {}",
+                    row.key, row.state, row.proposed_by.name, row.statement.text
+                )?;
+                if let Some(command) = &row.statement.command {
+                    writeln!(out, "Full statement: {command}")?;
+                }
+            }
+            se_core::ops::DecisionPageRow::Unreadable { unreadable, .. } => {
+                writeln!(out, "Decision unreadable: {}", unreadable.reason)?
+            }
+        }
+    }
+    if value.page.items().is_empty() {
+        writeln!(out, "No matching decisions.")?;
+    }
+    if !value.page.window().complete() {
+        writeln!(out, "This page is incomplete.")?;
+    }
+    if let Some(cursor) = value.page.next() {
+        write!(
+            out,
+            "Next page: se decision list --project {}",
+            value.project.id
+        )?;
+        if let Some(id) = &value.filter.id {
+            write!(out, " --id {id}")?;
+        }
+        if value.filter.pending {
+            write!(out, " --pending")?;
+        }
+        if value.filter.history {
+            write!(out, " --history")?;
+        }
+        writeln!(out, " --cursor {}", cursor.as_str())?;
+    }
+    Ok(())
+}

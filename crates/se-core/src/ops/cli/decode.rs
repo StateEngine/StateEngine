@@ -257,6 +257,20 @@ pub fn from_matches_with_key(
                 model: text(m, "model"),
                 idempotency_key: key()?,
             }),
+            "decision.list" => AnyOp::DecisionList(DecisionList {
+                id: text(m, "id"),
+                pending: flag(m, "pending"),
+                history: flag(m, "history"),
+                limit: text(m, "limit")
+                    .map(|value| {
+                        value
+                            .parse()
+                            .map_err(|_| SeError::invalid("limit", "1..100"))
+                    })
+                    .transpose()?
+                    .unwrap_or(20),
+                cursor: text(m, "cursor").map(se_types::Cursor::new).transpose()?,
+            }),
             "decision.show" => AnyOp::DecisionShow(DecisionShow {
                 decision_id: required(m, "decision_id")?,
             }),

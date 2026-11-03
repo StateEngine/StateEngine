@@ -12,6 +12,7 @@ mod continuity;
 mod control;
 mod cursor;
 mod decision;
+mod decision_heads;
 mod message;
 mod message_count;
 mod page;
@@ -698,12 +699,16 @@ impl Snapshot for SqliteSnapshot {
         let p = self.project_bytes()?;
         let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let d = key(&self.db, "decision", _id.as_str(), &s, false)?;
-        self.head(
+        self.head_with(
             "decisions",
             "project_id=? AND decision_id=?",
             &[&p, &d],
             Some("proposed_seq"),
+            &|seq| self.decision_event(seq, &_id),
         )
+    }
+    fn decision_predecessor(&mut self, id: DecisionId) -> StoreResult<Read<DecisionId>> {
+        self.read_decision_predecessor(id)
     }
     fn decision_transitions(
         &mut self,
@@ -714,33 +719,17 @@ impl Snapshot for SqliteSnapshot {
     }
     fn decisions(
         &mut self,
-        _query: DecisionQuery,
-        _budget: ReadBudget,
+        query: DecisionQuery,
+        budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>> {
-        let p = self.project_bytes()?;
-        if _query.history {
-            return Err(fail(
-                StoreErrorCode::InvalidTransition,
-                "use immutable history for decision history",
-            ));
-        }
-        let mut filter = String::from("project_id=?");
-        let mut keys = vec![rusqlite::types::Value::Blob(p)];
-        if _query.pending_only {
-            filter.push_str(" AND state='proposed'")
-        }
-        if let Some(id) = _query.id {
-            let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
-            filter.push_str(" AND decision_id=?");
-            keys.push(rusqlite::types::Value::Blob(key(
-                &self.db,
-                "decision",
-                id.as_str(),
-                &s,
-                false,
-            )?));
-        }
-        self.list_heads("decisions", "last_seq", &filter, keys, _budget)
+        self.read_decision_heads(query, false, budget)
+    }
+    fn decision_rows(
+        &mut self,
+        query: DecisionQuery,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<Read<ProjectionRecord>>> {
+        self.read_decision_rows(query, false, budget)
     }
     fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>> {
         self.read_turn(id)

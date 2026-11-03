@@ -293,7 +293,23 @@ pub(super) fn row<R: Snapshot>(
             None
         },
         reason,
-        supersedes: prior.clone(),
+        supersedes: if state == DecisionState::Pending {
+            prior.clone()
+        } else {
+            match cx
+                .read
+                .decision_predecessor(id.clone())
+                .map_err(|error| store_error(&error))?
+            {
+                se_types::Read::Present { value } => Some(value),
+                se_types::Read::Absent { .. } => None,
+                other => Some(scope::require_present(
+                    other,
+                    "decision predecessor",
+                    "Restore the exact committed decision links before retrying this read.",
+                )?),
+            }
+        },
         superseded_by: replacement,
         event_id: latest.header.event.clone(),
     })

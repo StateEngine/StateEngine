@@ -153,6 +153,22 @@ pub fn cli_command() -> Command {
             root = insert(root, path, meta.name, hidden);
         }
     }
+    root = root
+        .mut_subcommand("decision", |command| {
+            input_command("decision.list", command)
+                .visible_alias("decisions")
+                .args_conflicts_with_subcommands(true)
+        })
+        .subcommand(
+            input_command(
+                "decision.list",
+                Command::new("pending")
+                    .disable_help_flag(true)
+                    .disable_version_flag(true)
+                    .disable_help_subcommand(true),
+            )
+            .mut_arg("pending", |arg| arg.default_value("true")),
+        );
     // MCP is a streaming transport for the registered operations, not another
     // store operation with a fabricated product output family.
     root.subcommand(
@@ -290,6 +306,12 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(positional("name", 1, true))
             .arg(value("provider").value_parser(["claude", "codex"]))
             .arg(value("model")),
+        "decision.list" => c
+            .arg(value("id"))
+            .arg(toggle("pending"))
+            .arg(toggle("history"))
+            .arg(value("limit").default_value("20"))
+            .arg(value("cursor")),
         "decision.show" => c.arg(positional("decision_id", 1, true)),
         "decision.propose" => c
             .arg(positional("decision_key", 1, true))
@@ -331,6 +353,9 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::O
     }
     if path.is_empty() {
         return Ok(&ProjectStatus::META);
+    }
+    if path.len() == 1 && matches!(path[0].as_str(), "decision" | "pending") {
+        return Ok(&DecisionList::META);
     }
     let same_path = |meta: &crate::registry::OpMeta| {
         matches!(meta.cli,
