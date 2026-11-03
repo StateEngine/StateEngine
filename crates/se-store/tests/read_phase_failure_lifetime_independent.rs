@@ -17,7 +17,9 @@
 //! slot-before-connection order Prime requested.
 
 use se_store::*;
-use std::{fs, num::NonZeroU32, path::Path};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::{fs, num::NonZeroU32};
 #[path = "support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -36,10 +38,11 @@ fn open_db_handles(path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
     let mut handles = 0;
     for entry in fs::read_dir("/proc/self/fd")? {
         let entry = entry?;
-        if let Ok(target) = fs::read_link(entry.path()) {
-            if target == canonical {
-                handles += 1;
-            }
+        let Ok(target) = fs::read_link(entry.path()) else {
+            continue;
+        };
+        if target == canonical {
+            handles += 1;
         }
     }
     Ok(handles)
@@ -56,7 +59,10 @@ fn failed_phase_open_returns_slot_and_closes_connection() -> Check {
     let db = db_path(&f);
     let original = fs::read(&db)?;
     writer.close()?;
-    let reader = present(SqliteFactory::open_reader_with_capacity(&f.options, capacity(8)?)?)?;
+    let reader = present(SqliteFactory::open_reader_with_capacity(
+        &f.options,
+        capacity(8)?,
+    )?)?;
     fs::write(&db, b"judge-replaced-database-not-sqlite")?;
     for attempt in 1..=16 {
         let error = reader
@@ -115,7 +121,10 @@ fn exhausted_capacity_backpressures_before_any_connection() -> Check {
     let db = db_path(&f);
     let original = fs::read(&db)?;
     writer.close()?;
-    let reader = present(SqliteFactory::open_reader_with_capacity(&f.options, capacity(8)?)?)?;
+    let reader = present(SqliteFactory::open_reader_with_capacity(
+        &f.options,
+        capacity(8)?,
+    )?)?;
     let mut phases = Vec::new();
     for _ in 0..8 {
         phases.push(reader.read_phase()?);
@@ -123,7 +132,10 @@ fn exhausted_capacity_backpressures_before_any_connection() -> Check {
     #[cfg(target_os = "linux")]
     let before = open_db_handles(&db)?;
     #[cfg(target_os = "linux")]
-    assert_eq!(before, 8, "each live phase holds one connection to the database");
+    assert_eq!(
+        before, 8,
+        "each live phase holds one connection to the database"
+    );
     // Replace the database in place: any new connection now fails at the
     // pragma readback before BEGIN, so a Backpressure answer proves no
     // connection was attempted.
