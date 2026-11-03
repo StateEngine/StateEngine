@@ -120,3 +120,106 @@ fn later_millisecond_user_replay_preserves_original_receipt_and_head() {
 fn later_second_assistant_replay_preserves_original_receipt_and_head() {
     check(api::TurnRole::Assistant, 1_000_000);
 }
+
+/// Protects: distinct native turn keys remain distinct even when time, role,
+/// content and the other provenance fields are identical.
+#[test]
+fn distinct_native_turns_at_one_timestamp_commit_and_replay_independently() {
+    let mut judge = Judge::new("timestamp-distinct").required();
+    judge.retain = true;
+    let opened = judge.open().required();
+    let generation = judge.activate(&opened).required();
+    let host = opened.host.clone();
+    let issued = judge
+        .bind(&host, generation, "conv-timestamp-replay", "distinct-bind")
+        .required();
+    let timestamp = 1_700_000_001_000_000;
+    let capture = |vendor: &str, key: &str| {
+        let mut turn = captured(api::TurnRole::User, timestamp, key);
+        turn.vendor_turn = vendor.into();
+        judge
+            .capture_with(&host, &issued.session, generation, turn)
+            .map_err(|error| format!("{error:?}"))
+    };
+    let first = capture("native-distinct-a", "distinct-first");
+    let head_first = witness(&judge, generation.0, |snapshot| {
+        Ok::<_, String>(snapshot.info().head)
+    })
+    .required();
+    let second = capture("native-distinct-b", "distinct-second");
+    let head_second = witness(&judge, generation.0, |snapshot| {
+        Ok::<_, String>(snapshot.info().head)
+    })
+    .required();
+    let first_retry = capture("native-distinct-a", "distinct-first-retry");
+    let second_retry = capture("native-distinct-b", "distinct-second-retry");
+    let head_replayed = witness(&judge, generation.0, |snapshot| {
+        Ok::<_, String>(snapshot.info().head)
+    })
+    .required();
+    let rows = turn_rows(&judge, generation.0).required();
+    judge.drain_close(&host, generation).required();
+    drop(host);
+    drop(opened);
+
+    let (first_commit, first_event) =
+        committed_value(first.required(), "first distinct timestamp capture").required();
+    let (second_commit, second_event) =
+        committed_value(second.required(), "second distinct timestamp capture").required();
+    let (first_replay, first_replayed_event) =
+        replayed_value(first_retry.required(), "first distinct turn retry").required();
+    let (second_replay, second_replayed_event) =
+        replayed_value(second_retry.required(), "second distinct turn retry").required();
+    assert_ne!(
+        first_event.id, second_event.id,
+        "distinct turns need distinct events"
+    );
+    assert_ne!(
+        head_first, head_second,
+        "the second native turn must append"
+    );
+    assert_eq!(
+        head_second, head_replayed,
+        "both retries append zero events"
+    );
+    assert_eq!(first_replayed_event, first_event);
+    assert_eq!(second_replayed_event, second_event);
+    assert_eq!(first_replay.event, first_commit.event);
+    assert_eq!(second_replay.event, second_commit.event);
+    assert_eq!(rows.len(), 2, "both native turns survive independently");
+    let ids: std::collections::BTreeSet<_> = rows
+        .iter()
+        .map(|row| row.header.event.to_string())
+        .collect();
+    assert_eq!(
+        ids,
+        [first_event.id.0.clone(), second_event.id.0.clone()].into()
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.header.occurred_at_us == timestamp as i64)
+    );
+    let text = "timestamp replay: café π";
+    for (event, vendor) in [
+        (&first_event.id.0, "native-distinct-a"),
+        (&second_event.id.0, "native-distinct-b"),
+    ] {
+        assert_public_turn(&judge, event, "conv-timestamp-replay", "user", vendor, text).required();
+    }
+    std::fs::write(
+        judge.root.join("distinct-observation.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "project": judge.project, "agent": judge.agent, "timestamp_us": timestamp,
+            "events": [
+                {"event": first_event.id.0, "vendor_turn": "native-distinct-a"},
+                {"event": second_event.id.0, "vendor_turn": "native-distinct-b"}
+            ],
+            "turn_count": rows.len(), "text": text,
+            "head_first": format!("{head_first:?}"),
+            "head_second": format!("{head_second:?}"),
+            "head_replayed": format!("{head_replayed:?}")
+        }))
+        .required(),
+    )
+    .required();
+}
