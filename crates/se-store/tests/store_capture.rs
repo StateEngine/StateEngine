@@ -282,3 +282,104 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
     );
     Ok(())
 }
+
+/// Protects: a reconnect's delivery key cannot change a retained native turn,
+/// its original source provenance or the three-event atomic receipt.
+#[test]
+fn native_capture_replay_preserves_original_source_and_rejects_changed_content() -> Check {
+    let f = Fixture::new()?;
+    let (mut d, lease) = f.direct()?;
+    let id = session()?;
+    let source_id = record()?;
+    let mut prepared = prepared(&f, &id, &f.a);
+    if let EventBody::SessionPrepared { provider, .. } = &mut prepared {
+        *provider = Provider::SeCode;
+    }
+    d.append(
+        f.batch(f.owner_project(), None, vec![prepared, activated(&id)?])?,
+        &lease,
+    )?;
+    let attempt = |key: &str| -> Result<AtomicBatch, Box<dyn std::error::Error>> {
+        let mut batch = capture(&f, &id, source_id, b"native-turn", 0, 1, "native-one")?;
+        if let EventBody::SessionTurn {
+            provider, evidence, ..
+        } = &mut batch.events[0].body
+        {
+            *provider = Provider::SeCode;
+            evidence.path = None;
+        }
+        let source = source(source_id, &id, b"native-turn", Expected::Absent);
+        let mut member = batch.events[0].clone();
+        member.header.event = event()?;
+        member.body = source;
+        if let EventBody::CaptureSource { native_ref, .. } = &mut member.body {
+            *native_ref = serde_json::json!({
+                "source_cli":"secode", "conversation":"native-conversation",
+                "source_ref":"native-one", "request_key":key,
+            })
+            .to_string();
+        }
+        batch.events.insert(0, member);
+        Ok(batch)
+    };
+    let first = d.append(attempt("first-delivery")?, &lease)?;
+    assert_eq!(first.events.len(), 3);
+    let head = d.info()?.head;
+    for key in ["first-delivery", "reconnect-delivery"] {
+        let replay = d.append(attempt(key)?, &lease)?;
+        assert_eq!(replay.state, CommitState::NaturalKeyReplay);
+        same_receipt(&first, &replay);
+        assert_eq!(d.info()?.head, head);
+    }
+    for field in ["text", "role", "source"] {
+        let mut changed = attempt("changed-delivery")?;
+        match field {
+            "text" => {
+                if let EventBody::SessionTurn { text, .. } = &mut changed.events[1].body {
+                    *text = InputText::Inline("different immutable text".into());
+                }
+            }
+            "role" => {
+                if let EventBody::SessionTurn { role, .. } = &mut changed.events[1].body {
+                    *role = Role::User;
+                }
+            }
+            "source" => {
+                if let EventBody::CaptureSource { native_ref, .. } = &mut changed.events[0].body {
+                    let mut value: serde_json::Value = serde_json::from_str(native_ref)?;
+                    value["source_ref"] = "different native source".into();
+                    *native_ref = value.to_string();
+                }
+            }
+            _ => unreachable!(),
+        }
+        let refused = d
+            .append(changed, &lease)
+            .err()
+            .ok_or("changed native content replayed")?;
+        assert!(matches!(
+            refused.code,
+            StoreErrorCode::NaturalKeyConflict | StoreErrorCode::RevisionConflict
+        ));
+        assert_eq!(d.info()?.head, head);
+    }
+    let mut snap = d.snapshot(f.self_scope(&f.a))?;
+    let retained = present(snap.capture_source(source_id)?)?;
+    assert_eq!(retained.revision.value.get(), 2);
+    let EventBody::CaptureSource { native_ref, .. } =
+        retained.original.ok_or("source registration missing")?.body
+    else {
+        return Err("source registration changed kind".into());
+    };
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&native_ref)?["request_key"],
+        "first-delivery"
+    );
+    assert_eq!(
+        snap.turns(f.a.clone(), budget(10, 65536, None)?)?
+            .items()
+            .len(),
+        1
+    );
+    Ok(())
+}
