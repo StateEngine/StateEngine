@@ -5,7 +5,7 @@ use crate::client::lease::Deadline;
 use se_types::{Read, Result, SeError, SessionId};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, Weak},
 };
 mod claude;
 mod persistent;
@@ -119,7 +119,9 @@ impl HostedRuntime {
     /// binding at launch and the final catch-up at stop.
     /// Trusted capture never dispatches a native plan, so the handle carries a
     /// detached empty custody slot: a coordinator retaining it holds no strong
-    /// path back to itself through the installed custody executor.
+    /// path back to itself through the installed custody executor. The handle
+    /// borrows the lease between binds; retaining an idle coordinator cannot
+    /// extend the runtime lease beyond completed shutdown.
     pub fn capture_handle(&self) -> CaptureHandle {
         CaptureHandle {
             execution: ExecutionContext {
@@ -127,7 +129,7 @@ impl HostedRuntime {
                 ..self.execution.clone()
             },
             sources: self.sources.clone(),
-            lease: Arc::clone(&self.lease),
+            lease: Arc::downgrade(&self.lease),
             fenced: Arc::clone(&self.capture_fenced),
         }
     }
@@ -363,7 +365,7 @@ impl Capturing<'_> {
 pub struct CaptureHandle {
     execution: ExecutionContext,
     sources: TranscriptBindings,
-    lease: Arc<HostLease>,
+    lease: Weak<HostLease>,
     fenced: Arc<std::sync::atomic::AtomicBool>,
 }
 impl CaptureHandle {
@@ -377,7 +379,12 @@ impl CaptureHandle {
         deadline: &Deadline,
     ) -> Result<()> {
         let pins = self.sources.clone();
-        let lease = Arc::clone(&self.lease);
+        let lease = self.lease.upgrade().ok_or_else(|| {
+            SeError::invalid(
+                "trusted transcript bind",
+                "a runtime that still owns its native lease",
+            )
+        })?;
         let context = self.execution.clone();
         let bound = deadline.clone();
         self.execution
