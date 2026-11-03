@@ -23,13 +23,11 @@ pub(super) struct OwnerInputs {
     pub(super) timeout: Duration,
 }
 pub(super) type Started = core::Result<(HostedRouter, LocalStop)>;
+pub(super) type Stopped = core::Result<api::DrainReceipt>;
 
 pub(super) fn owner_thread(
     inputs: OwnerInputs,
-) -> (
-    oneshot::Receiver<Started>,
-    oneshot::Receiver<api::DrainReceipt>,
-) {
+) -> (oneshot::Receiver<Started>, oneshot::Receiver<Stopped>) {
     let (ready, ready_rx) = oneshot::channel();
     let (exited, exited_rx) = oneshot::channel();
     let runtime = inputs.runtime.clone();
@@ -67,9 +65,11 @@ pub(super) fn owner_thread(
                             // free its lease while the application keeps running.
                             // The returned incomplete receipt requires controlled
                             // application restart; this dedicated owner thread parks.
-                            let _ = exited.send(receipt);
+                            let _ = exited.send(Ok(receipt));
                             let _retained = report;
-                            loop { std::thread::park(); }
+                            loop {
+                                std::thread::park();
+                            }
                         }
                         // Drop the successfully closed runtime before publishing
                         // drain completion; the external CLI checks the actual lock.
@@ -77,13 +77,22 @@ pub(super) fn owner_thread(
                         receipt
                     }
                     Err(error) => {
-                        eprintln!("Embedded shutdown budget could not be created; preserve this data home and use controlled application restart: {error}");
-                        let _ = exited.send(api::DrainReceipt { generation, pending_notices: 0, unresolved_effects: 1, writer_flushed: false });
+                        // Forward the diagnostic through drain's error channel;
+                        // a library must not print into its embedding application.
+                        let failure = se_core::scope::unreadable(
+                            "embedded shutdown budget",
+                            &format!(
+                                "Could not create the shutdown budget: {error}. This runtime retains its writer and lease; preserve the data home and use controlled application restart."
+                            ),
+                        );
+                        let _ = exited.send(Err(failure));
                         let _retained = exit;
-                        loop { std::thread::park(); }
+                        loop {
+                            std::thread::park();
+                        }
                     }
                 };
-                let _ = exited.send(receipt);
+                let _ = exited.send(Ok(receipt));
             });
         });
     if spawned.is_err() {
