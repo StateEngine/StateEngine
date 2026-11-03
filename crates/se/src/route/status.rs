@@ -13,16 +13,19 @@ pub fn observe<R: ReadStore>(
     files: &Files,
     admission: &Admission,
 ) -> Result<AnyOutput> {
+    let deadline = super::session_observation::deadline()?;
     let owner = Some(reader.runtime_owner().map_err(|e| store_error(&e))?);
     let mut snapshot = reader
         .snapshot(read_scope(admission))
         .map_err(|e| store_error(&e))?;
-    let result = observe_snapshot(cx, &mut snapshot, owner, files, admission);
+    let result = observe_snapshot(cx, &mut snapshot, owner, files, admission).and_then(|output| {
+        super::session_observation::prepare(output, &mut snapshot, admission, deadline)
+    });
     let closed = snapshot.close().map_err(|e| store_error(&e));
     match result {
         Ok(value) => {
             closed?;
-            Ok(value)
+            super::session_observation::finish(value)
         }
         Err(error) => Err(match closed {
             Ok(()) => error,

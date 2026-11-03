@@ -1005,6 +1005,9 @@ denied, not bypassed. The Claude example above keeps its on-request policy.
 | row`.model` | string \| null | yes | saved model; null means the provider's default |
 | row`.profile` | string | yes | permission profile name |
 | row`.session.state` | `"never-launched"` \| `"starting"` \| `"running"` \| `"stopping"` \| `"stopped"` \| `"lost"` \| `"unknown"` | yes | `lost`: recorded as running but not found on re-read. `unknown`: the process identity was unreadable. |
+| row`.session.recorded_state` | `"prepared"` \| `"activated"` \| `"ended"` \| `"revoked"` \| null | yes | the immutable session projection; activation alone is not a fresh liveness observation |
+| row`.session.process_state` | `Read<string>` | yes | the matching lifecycle projection, including `stop-unproved`; absent, unreadable and unknown remain distinct. An unrelated newer session's process is never substituted. |
+| row`.session.liveness` | `Read<string>` | yes | fresh outside native observation (`live` or `exited`), or a named absent/unreadable/unknown result. A recorded PID or exited index alone is not a new native witness. |
 | row`.session.session_id` | Id \| null | yes | current or most recent session |
 | row`.session.launch_id` | Id \| null | yes | current or most recent launch |
 | row`.session.surface` | `"window"` \| `"headless"` \| `"secode"` \| `"attended"` \| null | yes | how the agent runs or last ran |
