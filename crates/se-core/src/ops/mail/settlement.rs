@@ -1,5 +1,5 @@
-//! Reconcile a notice only from committed recipient read/dismiss facts. A newer
-//! legitimate recipient session may resolve old notice debt without promoting it.
+//! Reconcile a notice from committed recipient dispositions or supersession.
+//! Neither supersession nor settlement invents delivery or recipient read.
 use super::*;
 use se_store::{EffectOutcome, Expected};
 #[derive(Clone, Debug)]
@@ -15,7 +15,7 @@ pub struct SettlementThen {
     notice_id: RecordId,
 }
 
-/// Actual committed mark IDs obtained by the host's finite store read. No
+/// Actual committed disposition IDs obtained by the host's finite store read. No
 /// boolean, transport report or provider acknowledgement can replace these.
 pub struct SettleResolved {
     pub target: MailTarget,
@@ -24,7 +24,7 @@ pub struct SettleResolved {
 }
 
 /// The host calls this before reusing/selecting a pending notice after real
-/// read/dismiss triggers. No transport or captured-delivery event resolves debt.
+/// read/dismiss/supersession triggers. Transport or capture alone cannot resolve debt.
 pub fn settle_resolved<S: MailSnapshot>(
     kernel: &Kernel,
     cx: &mut Cx<'_, S>,
@@ -79,7 +79,7 @@ pub fn settle_resolved<S: MailSnapshot>(
     if evidence.len() > 32 {
         return Err(SeError::invalid(
             "mail resolution evidence",
-            "at most 32 original recipient marker events",
+            "at most 32 original message disposition events",
         ));
     }
     let mut markers = Vec::new();
@@ -102,10 +102,11 @@ pub fn settle_resolved<S: MailSnapshot>(
             EventBody::MessageRead { message, recipient }
             | EventBody::MessageDismissed { message, recipient }
                 if recipient == &cx.admission.actor && notice.ids.contains(message) => {}
+            EventBody::MessageSuperseded { message, .. } if notice.ids.contains(message) => {}
             _ => {
                 return Err(SeError::invalid(
                     "mail resolution evidence",
-                    "actual read/dismiss events for this recipient and original notice IDs",
+                    "actual recipient read/dismiss or committed supersession events for original notice IDs",
                 ));
             }
         }
@@ -124,6 +125,15 @@ pub fn settle_resolved<S: MailSnapshot>(
                 "mail settlement",
                 "all original messages belong to this actual recipient",
             ));
+        }
+        // Supersession is a committed monotonic fact for this exact original
+        // message. It retires notification debt without asserting a recipient
+        // marker, queue acceptance or captured delivery.
+        let superseded = markers.iter().any(|event| {
+            matches!(&event.body, EventBody::MessageSuperseded { message, .. } if message == id)
+        });
+        if superseded {
+            continue;
         }
         if message.read.is_none() && message.dismissed.is_none() {
             return Ok(OpStep::Complete(Read::Absent {
@@ -148,7 +158,7 @@ pub fn settle_resolved<S: MailSnapshot>(
             ));
         }
     }
-    // All original IDs were independently verified above. One actual marker
+    // All original IDs were independently verified above. One actual disposition
     // anchors this completion within the legacy bounded settlement receipt;
     // the complete immutable recipient history remains in the same store.
     let evidence = markers
