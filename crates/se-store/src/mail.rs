@@ -76,6 +76,10 @@ impl MailNotice {
 /// The core mail planner adds this bound to Snapshot; ordinary readers and
 /// pre-existing Snapshot implementations need no new capability.
 pub trait MailSnapshot: Snapshot {
+    /// Recreate a checked-through cursor under the verified recipient's read
+    /// scope. Owner maintenance may reserve, but cannot mint an agent cursor
+    /// under the owner's unrelated principal binding.
+    fn mail_cursor(&self, through: &MailThrough) -> StoreResult<se_types::Cursor>;
     fn mail_notices(
         &mut self,
         recipient: AgentId,
