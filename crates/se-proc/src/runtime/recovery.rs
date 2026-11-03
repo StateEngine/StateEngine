@@ -216,6 +216,24 @@ pub(super) fn recover(
             ))
         });
     }
+    // Publication can fail after the host commits C1 but before prepare_launch
+    // installs an arena slot. The exact original owner can prove this empty
+    // preparation; another live host still has to preserve its reservation.
+    if let RecoverySource::Reservation(reserved) = &checked.source
+        && reserved.host == runtime.inner.config.instance
+        && reserved.owner == runtime.inner.owner
+        && reserved.generation == generation
+    {
+        let (scope_exit, guarantee) = crate::platform::uncreated_scope(reserved)?;
+        return Ok(RecoveryOutcome::Exited(Box::new(StopWitness {
+            lifecycle: reserved.lifecycle.clone(),
+            root: RootWitness::NoChildCreated,
+            scope: scope_exit.scope.clone(),
+            scope_exit,
+            guarantee,
+            observed_at_unix_ns: now()?,
+        })));
+    }
     #[cfg(windows)]
     {
         match runtime.inner.driver.reconcile(&checked.source) {
