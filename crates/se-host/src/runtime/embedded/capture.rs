@@ -78,7 +78,9 @@ impl EmbeddedHost {
         .into();
         let mut random = [0; 10];
         random.copy_from_slice(&digest[..10]);
-        let source = se_store::RecordId::from_parts(turn.occurred_at.0 / 1000, random)
+        // This is a derived identity, not an observation clock. The actual
+        // occurrence time remains on the events; retries keep the same source.
+        let source = se_store::RecordId::from_parts(0, random)
             .map_err(|e| store_error(&e))?;
         let incarnation = digest.to_vec();
         let metadata = serde_json::to_string(&serde_json::json!({
