@@ -38,6 +38,37 @@ pub fn observe<R: ReadStore>(
     if lease.is_some() {
         output.runtime.state = "stopped".into();
     }
+    if cx.selections.status_all {
+        output.scope = "all".into();
+        let mut snapshot = reader
+            .snapshot(read_scope(admission))
+            .map_err(|e| store_error(&e))?;
+        let projects = snapshot
+            .projects(super::select::budget(None)?)
+            .map_err(|e| store_error(&e));
+        let closed = snapshot.close().map_err(|e| store_error(&e));
+        let projects = match projects {
+            Ok(projects) => {
+                closed?;
+                projects
+            }
+            Err(error) => {
+                return Err(match closed {
+                    Ok(()) => error,
+                    Err(close) => error.with_cause(close),
+                });
+            }
+        };
+        // Empty registration is a measured fact; no per-project runtime
+        // counts need to be guessed to render the post-remove --all answer.
+        if projects.items().is_empty() && projects.window().complete() {
+            output.projects = Some(se_types::Page::new(
+                vec![],
+                projects.window().clone(),
+                projects.next().cloned(),
+            )?);
+        }
+    }
     if let Scope::Project(project) = &admission.scope {
         let mut snap = reader
             .snapshot(read_scope(admission))
@@ -48,6 +79,34 @@ pub fn observe<R: ReadStore>(
                 "selected project",
                 "Select an existing project in this data home with --project, or restore its original project metadata.",
             )?;
+            if let Some(removal) = project_remove::removed_view(&record)? {
+                output.scope = "project".into();
+                output.project = Read::Absent {
+                    checked: format!(
+                        "registry: last registration of {} was removed",
+                        removal.project.name
+                    ),
+                };
+                output.capture.state = "off".into();
+                output.atlas.state = "absent".into();
+                let quoted_root = if cfg!(windows) {
+                    format!("'{}'", removal.root.replace('\'', "''"))
+                } else {
+                    format!("'{}'", removal.root.replace('\'', "'\"'\"'"))
+                };
+                output.next = NextStep {
+                    text: "Re-adopt this folder".into(),
+                    command: format!("se init --repo {quoted_root}"),
+                    argv: vec![
+                        "se".into(),
+                        "init".into(),
+                        "--repo".into(),
+                        removal.root.clone(),
+                    ],
+                };
+                output.removal = Some(removal);
+                return Ok(());
+            }
             let (name, roots) = match &record.current.body {
                 EventBody::ProjectRegistered { name, roots, .. }
                 | EventBody::ProjectUpdated { name, roots, .. } => (name, roots),
@@ -208,11 +267,13 @@ pub fn observe<R: ReadStore>(
             detail: error.to_string(),
         }),
     }
-    output.next = NextStep {
-        text: "Inspect the selected agent's saved state.".into(),
-        command: "se agent show main".into(),
-        argv: vec!["se".into(), "agent".into(), "show".into(), "main".into()],
-    };
+    if output.removal.is_none() {
+        output.next = NextStep {
+            text: "Inspect the selected agent's saved state.".into(),
+            command: "se agent show main".into(),
+            argv: vec!["se".into(), "agent".into(), "show".into(), "main".into()],
+        };
+    }
     Ok(output.into())
 }
 pub fn endpoint_name(endpoint: &se_host::EndpointRecord) -> Result<String> {

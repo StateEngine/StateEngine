@@ -3,7 +3,7 @@
 use super::{execute, files::Files};
 use se_core::{ops::*, scope, store_error::store_error};
 use se_host::{EndpointRecord, client::lease::Deadline};
-use se_store::{Admission, ReadStore, StateFiles};
+use se_store::{Admission, ReadStore, Snapshot, StateFiles};
 use se_types::{Read, Result};
 use sha2::{Digest, Sha256};
 use std::time::Duration;
@@ -146,11 +146,15 @@ fn finish<R: ReadStore>(
 /// After a successful --all retirement there is deliberately no credential
 /// with which to start a host. A measured empty home can answer absence alone.
 pub fn absent<R: ReadStore>(
+    cx: &crate::bootstrap::Bootstrap,
     files: &Files,
     reader: &R,
     admission: &Admission,
     input: &ProjectRemove,
 ) -> Result<Option<AnyOutput>> {
+    if !input.all {
+        return absent_project(cx, files, reader, admission, input);
+    }
     if !input.all || !matches!(super::credential::read(files)?, Read::Absent { .. }) {
         return Ok(None);
     }
@@ -188,6 +192,129 @@ pub fn absent<R: ReadStore>(
                 text: "Initialize a repository to come back".into(),
                 command: "se init".into(),
                 argv: vec!["se".into(), "init".into()],
+            },
+        }
+        .into(),
+    ))
+}
+/// A project tombstone is permanent. A human retry can report its measured
+/// absence without starting a host, replacing a retired key or writing again.
+fn absent_project<R: ReadStore>(
+    cx: &crate::bootstrap::Bootstrap,
+    files: &Files,
+    reader: &R,
+    admission: &Admission,
+    input: &ProjectRemove,
+) -> Result<Option<AnyOutput>> {
+    let mut snapshot = reader
+        .snapshot(se_core::admission::read_scope(admission))
+        .map_err(|e| store_error(&e))?;
+    let plan = project_remove::plan(
+        input.clone(),
+        &mut se_core::commit::Cx {
+            read: &mut snapshot,
+            admission,
+        },
+    );
+    let closed = snapshot.close().map_err(|e| store_error(&e));
+    let plan = match plan {
+        Ok(plan) => {
+            closed?;
+            plan
+        }
+        Err(error) => {
+            return Err(match closed {
+                Ok(()) => error,
+                Err(close) => error.with_cause(close),
+            });
+        }
+    };
+    if !plan.projects.is_empty() {
+        return Ok(None);
+    }
+    let AnyOutput::ProjectStatus(status) = super::status::observe(cx, reader, files, admission)?
+    else {
+        return Err(scope::unreadable(
+            "removed project retry",
+            "status returned a different output family",
+        ));
+    };
+    let status = status.value;
+    let removal = status.removal.ok_or_else(|| {
+        scope::unreadable(
+            "removed project retry",
+            "the selected project's tombstone was not read back",
+        )
+    })?;
+    let action = match status.runtime.state.as_str() {
+        "running" => "left-running",
+        "stopped" => "not-running",
+        _ => {
+            return Err(scope::unreadable(
+                "removed project runtime",
+                "status could not establish the runtime state; restore its protected endpoint and retry the same project ID",
+            ));
+        }
+    };
+    let credential = match super::credential::read(files)? {
+        Read::Present { .. } => project_remove::RemovedMachineCredential {
+            state: "kept".into(),
+            witness: project_remove::RemovalWitness {
+                state: "not-applicable".into(),
+                method: None,
+                observed_at: None,
+                detail: Some("This already removed project changes no machine credential.".into()),
+            },
+        },
+        Read::Absent { checked } => project_remove::RemovedMachineCredential {
+            state: "removed".into(),
+            witness: witnessed("independent protected-file absence", Some(checked))?,
+        },
+        other => {
+            scope::require_present(
+                other,
+                "removed project credential",
+                "Restore access to the original credential state before retrying; unreadable is not absent.",
+            )?;
+            unreachable!()
+        }
+    };
+    Ok(Some(
+        RemoveResult {
+            idempotency_key: input.idempotency_key.clone(),
+            scope: "project".into(),
+            outcome: "absent".into(),
+            projects: vec![project_remove::ProjectRemoval {
+                project: project_remove::RemovedProject {
+                    id: removal.project.id,
+                    name: removal.project.name,
+                    root: removal.root,
+                },
+                outcome: "absent".into(),
+                removed_at: Some(removal.removed_at),
+                event_id: Some(removal.event_id),
+                agents_stopped: vec![],
+                processes_stopped: vec![],
+                processes_may_remain: vec![],
+                credentials_revoked: vec![],
+                integrations: vec![],
+                removed: vec![],
+                kept: vec![],
+                remaining: vec![],
+            }],
+            runtime: project_remove::RemovedRuntime {
+                action: action.into(),
+                process: status.runtime.process,
+                witness: witnessed(
+                    "independent native status observation",
+                    Some("No runtime or project effects were performed by this retry.".into()),
+                )?,
+            },
+            machine_credential: credential,
+            next: project_remove::RemovalNext {
+                text: status.next.text,
+                command: status.next.command,
+                argv: status.next.argv,
             },
         }
         .into(),

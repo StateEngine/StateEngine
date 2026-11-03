@@ -166,7 +166,7 @@ pub fn dispatch(
         )?;
     }
     if let AnyOp::ProjectRemove(input) = &op
-        && let Some(absent) = super::remove::absent(&files, &reader, &caller.admission, input)?
+        && let Some(absent) = super::remove::absent(cx, &files, &reader, &caller.admission, input)?
     {
         return Ok(absent);
     }

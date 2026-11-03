@@ -105,6 +105,45 @@ pub fn apply<R: ReadStore>(
     {
         return Ok(());
     }
+    // Retained history and removal retries must still select a tombstone by
+    // its exact ID. The ordinary project list intentionally contains only
+    // active registrations; sessions remain bound by the earlier branch.
+    if (op.meta().effect == registry::Effect::Read
+        || matches!(op, se_core::ops::AnyOp::ProjectRemove(_)))
+        && let Some(id) = requested.and_then(|value| value.parse::<se_types::ProjectId>().ok())
+    {
+        let mut snapshot = reader
+            .snapshot(read_scope(admission))
+            .map_err(|e| store_error(&e))?;
+        let record = snapshot.project(id.clone()).map_err(|e| store_error(&e));
+        let closed = snapshot.close().map_err(|e| store_error(&e));
+        let record = match record {
+            Ok(record) => {
+                closed?;
+                record
+            }
+            Err(error) => {
+                return Err(match closed {
+                    Ok(()) => error,
+                    Err(close) => error.with_cause(close),
+                });
+            }
+        };
+        match record {
+            se_types::Read::Present { .. } => {
+                admission.scope = Scope::Project(id);
+                return Ok(());
+            }
+            se_types::Read::Absent { .. } => (),
+            other => {
+                scope::require_present(
+                    other,
+                    "selected project",
+                    "Restore access to the retained project metadata, then retry its exact ID.",
+                )?;
+            }
+        }
+    }
     let cwd = std::fs::canonicalize(&cx.cwd)
         .map_err(|e| scope::unreadable("current directory", &e.to_string()))?;
     let mut candidates = Vec::new();

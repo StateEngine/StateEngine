@@ -130,6 +130,57 @@ pub struct RemovePlan {
     pub input: ProjectRemove,
     pub projects: Vec<Named<ProjectId>>,
 }
+/// A tombstone keeps its original registration for read-only status and retry
+/// receipts. No filesystem existence or active-root lookup can replace it.
+pub fn removed_view(head: &se_store::ProjectionRecord) -> Result<Option<super::RemovalView>> {
+    let se_store::EventBody::ProjectRemoved { project, .. } = &head.current.body else {
+        return Ok(None);
+    };
+    let original = head.original.as_deref().ok_or_else(|| {
+        crate::scope::unreadable(
+            "removed project",
+            "its original registration is unavailable",
+        )
+    })?;
+    let (registered, name, roots) = match &original.body {
+        se_store::EventBody::ProjectRegistered {
+            project,
+            name,
+            roots,
+            ..
+        }
+        | se_store::EventBody::ProjectUpdated {
+            project,
+            name,
+            roots,
+            ..
+        } => (project, name, roots),
+        _ => {
+            return Err(crate::scope::unreadable(
+                "removed project",
+                "its retained metadata is not a registration",
+            ));
+        }
+    };
+    if registered != project {
+        return Err(crate::scope::unreadable(
+            "removed project",
+            "registration and tombstone identities differ",
+        ));
+    }
+    let root = roots.first().ok_or_else(|| {
+        crate::scope::unreadable("removed project", "its registered root is unavailable")
+    })?;
+    Ok(Some(super::RemovalView {
+        project: Named {
+            id: project.clone(),
+            name: name.clone(),
+        },
+        root: root.path.to_local()?.display().to_string(),
+        removed_at: super::receipt::timestamp(head.current.recorded_at_us)?,
+        event_id: head.current.header.event.clone(),
+    }))
+}
 pub fn plan<R: se_store::Snapshot>(
     input: ProjectRemove,
     cx: &mut crate::commit::Cx<'_, R>,
@@ -140,6 +191,40 @@ pub fn plan<R: se_store::Snapshot>(
             "remove project",
             "one selected project or --all",
         ));
+    }
+    if !input.all
+        && let se_store::Scope::Project(project) = &cx.admission.scope
+    {
+        let head = crate::scope::require_present(
+            cx.read
+                .project(project.clone())
+                .map_err(|e| crate::store_error::store_error(&e))?,
+            "removal project",
+            "Select the retained project by its exact ID.",
+        )?;
+        if matches!(
+            head.current.body,
+            se_store::EventBody::ProjectRemoved { .. }
+        ) {
+            let original = head.original.as_deref().ok_or_else(|| {
+                crate::scope::unreadable(
+                    "removal owner",
+                    "the original registration is unavailable",
+                )
+            })?;
+            if !matches!(&original.body, se_store::EventBody::ProjectRegistered { owner, .. } if cx.admission.actor == se_store::Actor::Human(owner.clone()))
+            {
+                return Err(se_types::SeError::new(se_types::Detail::OwnerRequired(
+                    se_types::details::OwnerRequired {
+                        op: "project.remove".into(),
+                    },
+                )));
+            }
+            return Ok(RemovePlan {
+                input,
+                projects: vec![],
+            });
+        }
     }
     Ok(RemovePlan {
         input,
