@@ -120,7 +120,6 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         .get("content")
         .ok_or_else(|| invalid("a provider content field"))?;
     let mut text = String::new();
-    let mut tool_result = false;
     match content {
         Value::String(value) => append(&mut text, value)?,
         Value::Array(blocks) => {
@@ -134,20 +133,17 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
                             .ok_or_else(|| invalid("a text block string"))?,
                     )?,
                     Some("tool_result") if kind == "user" => {
-                        tool_result = true;
+                        // Tool replies stay in the pinned source evidence;
+                        // the public chat family contains user/assistant turns.
                         match block.get("content") {
-                            Some(Value::String(value)) => append(&mut text, value)?,
+                            Some(Value::String(_)) => (),
                             Some(Value::Array(parts)) => {
                                 for part in parts {
-                                    if part.get("type").and_then(Value::as_str) != Some("text") {
+                                    if part.get("type").and_then(Value::as_str) != Some("text")
+                                        || part.get("text").and_then(Value::as_str).is_none()
+                                    {
                                         return Err(invalid("supported tool-result text blocks"));
                                     }
-                                    append(
-                                        &mut text,
-                                        part.get("text")
-                                            .and_then(Value::as_str)
-                                            .ok_or_else(|| invalid("a tool-result string"))?,
-                                    )?;
                                 }
                             }
                             _ => return Err(invalid("supported tool-result content")),
@@ -172,9 +168,7 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
     }
     Ok(Some(TextRecord {
         vendor_turn: vendor_turn.into(),
-        role: if tool_result {
-            se_store::Role::Tool
-        } else if kind == "user" {
+        role: if kind == "user" {
             se_store::Role::User
         } else {
             se_store::Role::Assistant
