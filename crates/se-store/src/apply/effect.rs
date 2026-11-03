@@ -87,8 +87,10 @@ pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
 fn intent_matches(kind: EffectKind, intent: &EffectIntent) -> bool {
     matches!(
         (kind, intent),
-        (EffectKind::Bell, EffectIntent::Mail { .. })
-            | (EffectKind::Packet, EffectIntent::Packet { .. })
+        (
+            EffectKind::Bell,
+            EffectIntent::Mail { .. } | EffectIntent::MailNotice(_)
+        ) | (EffectKind::Packet, EffectIntent::Packet { .. })
             | (
                 EffectKind::IntegrationWrite,
                 EffectIntent::Integration { .. }
@@ -233,6 +235,9 @@ pub(super) fn apply(
                 .map(|a| principal_key(c, a, &scope))
                 .transpose()?;
             authorize(c, h, &p, &scope, a.as_deref())?;
+            if let EffectIntent::MailNotice(notice) = &intent {
+                super::mail::validate(c, h, &principal, notice)?;
+            }
             let k = a.as_ref().map(|a| principal_kind(c, &p, a)).transpose()?;
             c.execute(
                 "INSERT INTO effects(effect_id,project_id,kind,principal_id,requested_seq,revision,last_seq,state) VALUES(?,?,?,?,?,?,?,'pending')",

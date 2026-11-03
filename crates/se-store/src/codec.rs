@@ -240,14 +240,25 @@ pub(crate) fn body(
                     witnesses: field(&v, "witnesses")?,
                     preserved: field(&v, "preserved")?,
                 },
-                "effect.requested" => EffectRequested {
-                    principal: field(&v, "principal")?,
-                    effect: field(&v, "effect")?,
-                    kind: field(&v, "kind")?,
-                    intent: field(&v, "intent")?,
-                    cause: field(&v, "cause")?,
-                    request_key: field(&v, "request_key")?,
-                },
+                "effect.requested" => {
+                    let intent: EffectIntent = field(&v, "intent")?;
+                    if let EffectIntent::MailNotice(notice) = &intent {
+                        notice.validate().map_err(|error| {
+                            fail(
+                                StoreErrorCode::Unreadable,
+                                format!("stored mail notice: {}", error.cause),
+                            )
+                        })?;
+                    }
+                    EffectRequested {
+                        principal: field(&v, "principal")?,
+                        effect: field(&v, "effect")?,
+                        kind: field(&v, "kind")?,
+                        intent,
+                        cause: field(&v, "cause")?,
+                        request_key: field(&v, "request_key")?,
+                    }
+                }
                 "effect.offered" => EffectOffered {
                     effect: field(&v, "effect")?,
                     principal: field(&v, "principal")?,

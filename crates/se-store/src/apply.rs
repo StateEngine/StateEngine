@@ -4,6 +4,7 @@ pub(crate) mod credential;
 pub(crate) mod cursor;
 pub(crate) mod decision;
 pub(crate) mod effect;
+mod mail;
 pub(crate) mod process;
 pub(crate) mod project;
 pub(crate) mod session;
