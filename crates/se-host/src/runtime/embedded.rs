@@ -430,7 +430,16 @@ impl api::Host for EmbeddedHost {
                 Lifecycle::Failed(error) => return Err(error.clone()),
             };
             *lifecycle = Lifecycle::Drained(receipt.clone());
-            self.set_health(api::GenerationHealth::Drained);
+            self.set_health(
+                if receipt.writer_flushed
+                    && receipt.unresolved_effects == 0
+                    && receipt.pending_notices == 0
+                {
+                    api::GenerationHealth::Drained
+                } else {
+                    api::GenerationHealth::Poisoned
+                },
+            );
             Ok(receipt)
         })
     }
@@ -443,6 +452,15 @@ impl api::Host for EmbeddedHost {
             let lifecycle = self.lifecycle.lock().await;
             match &*lifecycle {
                 Lifecycle::Drained(receipt) if *receipt == drained => {
+                    if !receipt.writer_flushed
+                        || receipt.unresolved_effects != 0
+                        || receipt.pending_notices != 0
+                    {
+                        return Err(refused(
+                            "embedded host close",
+                            "a completely flushed drain with no unresolved effects or notices; this runtime retains custody and requires controlled application restart",
+                        ));
+                    }
                     self.set_health(api::GenerationHealth::Closed);
                     Ok(receipt.clone())
                 }
