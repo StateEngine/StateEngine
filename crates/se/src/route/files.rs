@@ -4,10 +4,55 @@ use se_store::{
     LeaseIdentity, RuntimeLease, StateFiles, StoreDetail, StoreError, StoreErrorCode, StoreResult,
 };
 use se_types::{Read, Remedy, Retry};
+use sha2::{Digest, Sha256};
 use std::{borrow::Borrow, fs::File, path::Path};
 
-/// The file handle holds the shared OS lock until the direct transaction and its
-/// fresh continuation read have finished. A file's mere existence is no lease.
+/// Persistent home-local exclusion for setup and uninstall. Never replace a
+/// published lock: every cooperating operation must retain the same inode.
+pub fn setup_lock(files: &Files) -> StoreResult<Option<File>> {
+    let path = files.0.root().join("runtime.lock");
+    match files.readback(&path)? {
+        Read::Present { .. } => (),
+        Read::Unreadable { reason, .. } => return Err(fail(StoreErrorCode::Unreadable, &reason)),
+        Read::Unknown { what } => return Err(fail(StoreErrorCode::Unreadable, &what)),
+        Read::Absent { .. } => {
+            let staged = files.create_staging(files.0.root())?;
+            staged
+                .file
+                .sync_all()
+                .map_err(|error| fail(StoreErrorCode::Unreadable, &error.to_string()))?;
+            drop(staged.file);
+            match files.publish_no_replace(&staged.path, &path) {
+                Ok(()) => (),
+                Err(error) if error.code == StoreErrorCode::AlreadyExists => {
+                    files.retire_staging(&staged.path, Sha256::digest([]).into())?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    let file = match files.readback(&path)? {
+        Read::Present { value } => value,
+        Read::Absent { .. } => {
+            return Err(fail(
+                StoreErrorCode::Absent,
+                "setup runtime lock disappeared",
+            ));
+        }
+        Read::Unreadable { reason, .. } => return Err(fail(StoreErrorCode::Unreadable, &reason)),
+        Read::Unknown { what } => return Err(fail(StoreErrorCode::Unreadable, &what)),
+    };
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => {
+            Err(fail(StoreErrorCode::Unreadable, &error.to_string()))
+        }
+    }
+}
+
+/// Ordinary transactions share the OS lock; setup holds it exclusively before
+/// credential mutation through registration and close. Existence is no lease.
 /// Status borrows its existing protected root; writers retain owned custody.
 pub struct DirectLease<F = Files> {
     pub files: F,
@@ -15,6 +60,22 @@ pub struct DirectLease<F = Files> {
     _locked: File,
 }
 impl<F: Borrow<Files>> DirectLease<F> {
+    pub fn acquire_setup(files: F, identity: LeaseIdentity) -> StoreResult<Option<Self>> {
+        if identity.mode != se_store::LeaseMode::DirectClient {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "setup lease requires DirectClient mode",
+            ));
+        }
+        let Some(file) = setup_lock(files.borrow())? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            files,
+            identity,
+            _locked: file,
+        }))
+    }
     pub fn acquire(
         files: F,
         lock_file: &Path,

@@ -16,7 +16,7 @@ use se_core::{
 };
 use se_store::{
     Actor, Admission, DirectStore, EventBody, LeaseIdentity, LeaseMode, ReadStore, Scope, Snapshot,
-    SqliteDirect, SqliteFactory, StateFiles, StoreFactory, StoreOptions,
+    SqliteDirect, SqliteFactory, StoreFactory, StoreOptions,
 };
 use se_types::{
     AgentId, HumanId, IdempotencyKey, NativePath, ProjectId, Read, Result, SeError, StoreId,
@@ -109,12 +109,36 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
     };
     observed.authorize("project.init", observed.os_owner(), false, false)?;
     let files = Files::create(&cx.home).map_err(|e| store_error(&e))?;
+    drop(before);
+    let mut lease = DirectLease::acquire_setup(
+        files,
+        LeaseIdentity { store: None, generation: 1, mode: LeaseMode::DirectClient },
+    ).map_err(|e| store_error(&e))?.ok_or_else(|| SeError::new(se_types::Detail::StateConflict(
+        se_types::details::StateConflict {
+            subject: "setup writer".into(),
+            reason: "another setup, removal, uninstall or runtime holds this home's lease".into(),
+            next_step: "Wait for that operation, or run se down with the same --home, then retry se init".into(),
+        },
+    )))?;
+    // Re-read after exclusion: another setup or removal may have completed
+    // between the preliminary owner check and acquisition of this home.
+    let before = setup::inspect(&cx.home, receipt::timestamp(execute::now_us()?)?)?;
+    let files = &lease.files;
+    let observed = match &before {
+        setup::Setup::Absent(_) => owner::observe(&[])?,
+        setup::Setup::Present(reader) => owner::from_inventory(&owner::inventory(reader, files)?)?,
+    };
+    observed.authorize("project.init", observed.os_owner(), false, false)?;
+    lease.identity.store = match &before {
+        setup::Setup::Present(reader) => Some(reader.info().map_err(|e| store_error(&e))?.id),
+        setup::Setup::Absent(_) => None,
+    };
     match &before {
         setup::Setup::Present(reader) => {
-            super::identity::require_machine(&files)?;
-            match super::credential::read(&files)? {
+            super::identity::require_machine(files)?;
+            match super::credential::read(files)? {
                 Read::Absent { .. } => {
-                    let inventory = owner::inventory(reader, &files)?;
+                    let inventory = owner::inventory(reader, files)?;
                     let [human] = inventory.owners.as_slice() else {
                         return Err(scope::unreadable(
                             "explicit setup credential",
@@ -130,9 +154,8 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
                     // Explicit init can establish a fresh key after Remove --all,
                     // only with no projects, host or direct writer. Automatic
                     // startup still requires the original key and never repairs it.
-                    let _empty =
-                        super::empty_home::lock(&files, reader, &admitted, Duration::from_secs(5))?;
-                    super::credential::initialize(&files)?;
+                    super::empty_home::verify(reader, &admitted, Duration::from_secs(5))?;
+                    super::credential::initialize(files)?;
                 }
                 Read::Present { .. } => (),
                 other => {
@@ -145,56 +168,10 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
             }
         }
         setup::Setup::Absent(_) => {
-            super::identity::initialize_machine(&files)?;
-            super::credential::initialize(&files)?;
+            super::identity::initialize_machine(files)?;
+            super::credential::initialize(files)?;
         }
     }
-    let lock = cx.home.join("runtime.lock");
-    match files.readback(&lock).map_err(|e| store_error(&e))? {
-        Read::Absent { .. } => {
-            let staged = files
-                .create_staging(&cx.home)
-                .map_err(|e| store_error(&e))?;
-            staged
-                .file
-                .sync_all()
-                .map_err(|e| scope::unreadable("setup runtime lock", &e.to_string()))?;
-            drop(staged.file);
-            match files.publish_no_replace(&staged.path, &lock) {
-                Ok(()) => (),
-                Err(error) if error.code == se_store::StoreErrorCode::AlreadyExists => files
-                    .retire_staging(&staged.path, Sha256::digest([]).into())
-                    .map_err(|e| store_error(&e))?,
-                Err(error) => return Err(store_error(&error)),
-            }
-        }
-        Read::Present { .. } => (),
-        Read::Unreadable { source, reason, .. } => return Err(scope::unreadable(&source, &reason)),
-        Read::Unknown { what } => return Err(scope::unreadable("runtime lock", &what)),
-    }
-    let existing_store = match &before {
-        setup::Setup::Present(reader) => Some(reader.info().map_err(|e| store_error(&e))?.id),
-        setup::Setup::Absent(_) => None,
-    };
-    let mut lease = DirectLease::acquire(
-        files,
-        &lock,
-        LeaseIdentity {
-            store: existing_store,
-            generation: 1,
-            mode: LeaseMode::DirectClient,
-        },
-    )
-    .map_err(|e| store_error(&e))?
-    .ok_or_else(|| {
-        SeError::new(se_types::Detail::StateConflict(
-            se_types::details::StateConflict {
-                subject: "setup writer".into(),
-                reason: "the live host holds the writer lease".into(),
-                next_step: "Run se down with the same --home, then retry se init".into(),
-            },
-        ))
-    })?;
     let options = StoreOptions {
         state_directory: cx.home.clone(),
         busy_timeout: Duration::from_millis(250),
