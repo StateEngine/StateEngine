@@ -195,8 +195,17 @@ fn installation(cx: &Bootstrap, owner: &str) -> Result<()> {
             "installation record schema or owner does not match the pinned state root",
         ));
     }
-    // The record's parent is the sole state home; it contains no caller-supplied
-    // repair path, and no file listed by the record becomes a repair target.
+    let installed = crate::runtime::Installation {
+        record_path: path,
+        record,
+    };
+    if installed.plan()?.state_home() != cx.home {
+        return Err(refused(
+            "installation.record",
+            "the installation record does not match the selected state root; no further repair was attempted",
+        ));
+    }
+    // No file listed by the record becomes a permission repair target.
     Ok(())
 }
 /// Some returns a complete bounded diagnosis or exactly one named tightening.
@@ -273,7 +282,19 @@ pub(in crate::route) fn recover(
             "this explicit recovery needs an interactive terminal and no managed session; no store authority is inferred",
         ));
     }
-    installation(cx, &root.pin.snapshot().owner)?;
+    if id == "home.permissions" {
+        // Use the installer's selection policy, without inspecting anything
+        // inside a loose root. A caller-supplied arbitrary --home is not a
+        // platform installation and cannot acquire this recovery exception.
+        if cx.home != crate::bootstrap::state_home(None)? {
+            return Err(refused(
+                id,
+                "root recovery requires the selected per-user installation home; restore the matching HOME/XDG/SE_HOME selection and retry",
+            ));
+        }
+    } else {
+        installation(cx, &root.pin.snapshot().owner)?;
+    }
     let current = if id == "home.permissions" {
         &mut root
     } else {
@@ -285,6 +306,17 @@ pub(in crate::route) fn recover(
         })?
     };
     let (fact, readback, changed) = tighten(current, id, &at, diagnostic)?;
+    if id == "home.permissions" {
+        // The regular file reader is usable only after root protection has
+        // been independently witnessed. A failed record check leaves the
+        // tightening in place but grants no database or store authority.
+        installation(cx, &root.pin.snapshot().owner).map_err(|error| {
+            refused(
+                "installation.record",
+                &format!("the state root now has owner-only protection, but its installation record could not be verified; no database or store access was attempted: {error}"),
+            )
+        })?;
+    }
     let mut remaining = Vec::new();
     // Resume the regular protected reader and complete custody guard now. Any
     // failure remains an obligation; it never erases the achieved tightening.
