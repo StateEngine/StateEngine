@@ -47,8 +47,7 @@ impl LaunchCoordinator {
                         }
                         Ok(false) => (),
                         Err(error) => {
-                            let reported =
-                                self.report_capture_failure(&state, &error, &deadline).await;
+                            let reported = self.report_capture_failure(&state, &error).await;
                             state.cleanup_failure = Some(reported.err().unwrap_or(error).body);
                         }
                     }

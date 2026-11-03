@@ -140,16 +140,7 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
                 }
                 se_store::ContainmentFact::Uncontained { cause, .. } => {
                     session.containment = Some("uncontained".into());
-                    session.containment_cause = Some(
-                        match cause {
-                            se_store::ContainmentCause::NoUserManager => "no-user-manager",
-                            se_store::ContainmentCause::NoDelegation => "no-delegation",
-                            se_store::ContainmentCause::CgroupV2Absent => "cgroup-v2-absent",
-                            se_store::ContainmentCause::CgroupUnreadable => "cgroup-unreadable",
-                            se_store::ContainmentCause::ScopeCreateFailed => "scope-create-failed",
-                        }
-                        .into(),
-                    );
+                    session.containment_cause = Some(super::containment_cause_code(cause).into());
                 }
                 se_store::ContainmentFact::NotLaunched
                 | se_store::ContainmentFact::Unknown { .. } => (),

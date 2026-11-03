@@ -23,7 +23,11 @@ pub fn launch(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(out, "Containment: {}", value.containment)?;
     if let Some(reason) = &value.containment_cause {
-        writeln!(out, "Containment reason: {reason}")?;
+        writeln!(
+            out,
+            "Containment reason: {}",
+            se_core::ops::containment_cause_description(reason)
+        )?;
     }
     write::profile(&value.permission_profile, out)?;
     writeln!(out, "Conversation: {}", value.conversation_id)?;

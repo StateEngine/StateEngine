@@ -128,6 +128,12 @@ impl LaunchCoordinator {
             Some(record.guarantee),
             &self.options.epoch.owner.fields().boot,
         )?;
+        let containment_cause = match &stored.containment {
+            se_store::ContainmentFact::Uncontained { cause, .. } => {
+                Some(se_core::ops::containment_cause_code(cause).into())
+            }
+            _ => None,
+        };
         let previous = self.head(work, deadline).await?;
         let first = loop {
             let changed = work.wake.event.notified();
@@ -239,10 +245,7 @@ impl LaunchCoordinator {
                 _ => "uncontained",
             }
             .into(),
-            containment_cause: match record.guarantee {
-                se_proc::ContainmentGuarantee::KernelScope { .. } => None,
-                other => Some(format!("{other:?}")),
-            },
+            containment_cause,
             resume: ResumeCommand {
                 ready: true,
                 mode: "resume".into(),
