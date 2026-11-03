@@ -105,9 +105,44 @@ def floor_and_unmapped_human_mail_keep_recorded_attribution(f):
     assert f.import_history()["complete"] and f.history() == history, "retry duplicated retained source mail"
 
 
+def agent_replies_to_retained_floor_and_human_mail_complete(f):
+    registration_only(f)
+    rows, expected = [], []
+    for number, sender in enumerate(["floor", "hum-abcd-1234-5678"], 1):
+        original = f.message(number, "PARENT-" + sender)
+        original.update(from_seat=sender, to_seat=AGENT)
+        reply = f.message(number + 10, "AGENT-REPLY-" + sender)
+        reply.update(to_seat=f.owner, reply_to=original["msg_id"])
+        rows.extend([original, reply])
+        expected.append((reply["body"], original["msg_id"]))
+    f.messages.parent.mkdir(parents=True, exist_ok=True)
+    f.messages.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    before = f.snapshot_sources()
+    receipt = f.import_history()
+    assert receipt["complete"], "agent replies to retained parents remained deferred"
+    family, = f.family(receipt, "messages")
+    assert family["read"] == 4 and family["imported"] == 4 and family["deferred"] == 0, family
+    history = f.history()
+    for body, parent in expected:
+        assert f.count(body) == 1, "reply body was lost or copied twice"
+        linked = False
+        for event in history:
+            payload = event["payload"]
+            text = (payload.get("body") or {}).get("text", "")
+            if event["kind"] == "message.sent" and text == body:
+                linked |= payload.get("reply_to") == parent
+            if event["kind"] == "legacy.retained" and text:
+                source = json.loads(text)
+                linked |= source.get("body") == body and source.get("reply_to") == parent
+        assert linked, "recorded reply relationship was discarded"
+    assert f.import_history()["complete"] and f.history() == history, "reply retry duplicated history"
+    assert f.snapshot_sources() == before, "reply import rewrote retained source"
+
+
 CASES = [safe_owner_default_and_existing_profile,
          committed_row_rejection_is_durable_and_later_rows_import,
-         floor_and_unmapped_human_mail_keep_recorded_attribution]
+         floor_and_unmapped_human_mail_keep_recorded_attribution,
+         agent_replies_to_retained_floor_and_human_mail_complete]
 
 
 def main():
