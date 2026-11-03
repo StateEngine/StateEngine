@@ -35,3 +35,11 @@ toml = { version = "0.9.11", optional = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "w3_realhost_independent"
+path = "tests/w3_realhost_independent.rs"
+required-features = ["secode"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
