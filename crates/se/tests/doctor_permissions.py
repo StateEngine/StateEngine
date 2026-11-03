@@ -120,6 +120,43 @@ class DoctorPermissions(unittest.TestCase):
         finally:
             self.state.chmod(0o700)
 
+    def test_selected_home_without_record_reports_tightening_without_store_authority(self):
+        other = self.home / 'uninstalled-selection' / 'stateengine'
+        other.mkdir(parents=True, mode=0o755)
+        other.chmod(0o755)
+        previous = self.env['XDG_STATE_HOME']
+        self.env['XDG_STATE_HOME'] = str(other.parent)
+        try:
+            completed, _ = self.call('uninstalled-selected-home', ['doctor', '--fix', 'home.permissions'], terminal=True, state=other)
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertEqual(stat.S_IMODE(other.stat().st_mode), 0o700)
+            self.assertIn(b'state root now has owner-only protection', completed.stdout + completed.stderr)
+            self.assertIn(b'no database or store access was attempted', completed.stdout + completed.stderr)
+            self.assertEqual(list(other.iterdir()), [])
+        finally:
+            self.env['XDG_STATE_HOME'] = previous
+            other.chmod(0o755)
+
+    def test_root_recovery_does_not_depend_on_runtime_configuration(self):
+        config = self.state / 'config.toml'
+        original = config.read_bytes() if config.exists() else None
+        invalid = b'This is deliberately invalid TOML.\n'
+        config.write_bytes(invalid)
+        config.chmod(0o600)
+        self.state.chmod(0o755)
+        try:
+            _, result = self.call('invalid-config-root', ['doctor', '--fix', 'home.permissions'], terminal=True, expected=0)
+            self.assertTrue(result['complete'])
+            self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o700)
+            self.assertEqual(config.read_bytes(), invalid)
+            self.unchanged()
+        finally:
+            self.state.chmod(0o700)
+            if original is None:
+                config.unlink()
+            else:
+                config.write_bytes(original)
+
     def test_missing_owner_rights_are_never_added(self):
         self.db.chmod(0o400)
         try:
