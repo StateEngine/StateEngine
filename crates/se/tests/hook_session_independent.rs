@@ -117,11 +117,12 @@ fn check_case(case: &str) -> Check {
     let output = command(&image, &f, &root).arg("down").output()?;
     std::fs::write(f.home.join("down.stdout"), &output.stdout)?;
     std::fs::write(f.home.join("down.stderr"), &output.stderr)?;
-    // This H05 input predates the separately reviewed complete-down change.
-    // Its honest partial reply is settled by our outside native observer.
+    // Seed sessions only after the public shutdown succeeds and the outside
+    // native observer confirms that this exact fixture owner has exited.
     assert!(
-        matches!(output.status.code(), Some(0 | 2)),
-        "down refused rather than returning stop facts"
+        output.status.success(),
+        "fixture shutdown did not complete; retained {}",
+        f.home.display()
     );
     let down: serde_json::Value = serde_json::from_slice(&output.stdout)?;
     assert_eq!(down["schema"], "se.runtime-stop/v1");
