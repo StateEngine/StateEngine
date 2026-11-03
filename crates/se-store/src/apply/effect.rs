@@ -214,6 +214,7 @@ pub(super) fn apply(
     seq: i64,
     rev: u64,
     facts: Value,
+    lease: &LeaseIdentity,
 ) -> StoreResult<()> {
     let p = project_id(c, &h.scope, false)?;
     let scope = scope_key(c, &h.scope, false)?;
@@ -277,7 +278,17 @@ pub(super) fn apply(
                     "offer principal differs from the requested principal",
                 ));
             }
-            after_request(c, &p, &scope, &id, &evidence)?;
+            match &evidence {
+                crate::mail::OfferEvidence::Committed(event) => {
+                    if event == &h.event {
+                        return Err(invalid("an effect offer cannot witness itself"));
+                    }
+                    after_request(c, &p, &scope, &id, event)?
+                }
+                crate::mail::OfferEvidence::Observed(observation) => {
+                    super::mail::validate_offer(c, h, &effect, observation, lease)?
+                }
+            }
             let reused: bool = c
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM aux_data a JOIN events e ON e.seq=a.event_seq WHERE json_extract(a.facts,'$.attempt') IS NOT NULL AND json_extract(a.facts,'$.effect')=? AND json_extract(a.facts,'$.attempt')=? AND e.project_id=? AND e.kind='effect.offered')",

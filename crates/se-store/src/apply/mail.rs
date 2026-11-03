@@ -2,6 +2,56 @@
 //! changing message marks or permitting a sender to impersonate its recipient.
 use super::*;
 use crate::mail::MailNotice;
+pub(super) fn validate_offer(
+    c: &Connection,
+    h: &EventHeader,
+    effect: &RecordId,
+    observation: &crate::mail::OfferObservation,
+    lease: &LeaseIdentity,
+) -> StoreResult<()> {
+    observation.validate()?;
+    if lease.mode != LeaseMode::Host || lease.generation != observation.generation {
+        return Err(fail(
+            StoreErrorCode::GenerationChanged,
+            "observed Bell offers require the matching host writer generation",
+        ));
+    }
+    let p = project_id(c, &h.scope, false)?;
+    let requested: i64 = c
+        .query_row(
+            "SELECT requested_seq FROM effects WHERE project_id=? AND effect_id=?",
+            crate::sql_value::sql_params![p, effect.as_bytes()],
+            |r| r.get(0),
+        )
+        .map_err(sql)?;
+    let original = crate::codec::event::load_event(c, requested, &crate::connection::info(c)?)?;
+    let EventBody::EffectRequested {
+        kind: EffectKind::Bell,
+        intent: EffectIntent::MailNotice(notice),
+        ..
+    } = original.body
+    else {
+        return Err(invalid(
+            "typed mail observations require an original Bell notice reservation",
+        ));
+    };
+    if observation.notice_id != notice.notice_id
+        || observation.target_agent != notice.target_agent
+        || observation.session != notice.session
+        || observation.epoch != notice.epoch
+        || observation.generation != notice.generation
+        || observation.fingerprint != notice.fingerprint
+        || observation.digest != notice.digest
+        || observation.observed_at_us < original.header.occurred_at_us
+        || observation.observed_at_us > h.occurred_at_us
+    {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "mail offer observation differs from the original notice target or time window",
+        ));
+    }
+    Ok(())
+}
 pub(super) fn validate(
     c: &Connection,
     h: &EventHeader,

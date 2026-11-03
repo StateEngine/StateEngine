@@ -526,7 +526,7 @@ pub enum EventBody<T> {
         effect: RecordId,
         principal: Actor,
         attempt: RecordId,
-        evidence: EventId,
+        evidence: crate::mail::OfferEvidence,
     },
     EffectSettled {
         effect: RecordId,

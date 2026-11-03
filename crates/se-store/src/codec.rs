@@ -259,12 +259,23 @@ pub(crate) fn body(
                         request_key: field(&v, "request_key")?,
                     }
                 }
-                "effect.offered" => EffectOffered {
-                    effect: field(&v, "effect")?,
-                    principal: field(&v, "principal")?,
-                    attempt: field(&v, "attempt")?,
-                    evidence: field(&v, "evidence")?,
-                },
+                "effect.offered" => {
+                    let evidence: crate::mail::OfferEvidence = field(&v, "evidence")?;
+                    if let crate::mail::OfferEvidence::Observed(observation) = &evidence {
+                        observation.validate().map_err(|error| {
+                            fail(
+                                StoreErrorCode::Unreadable,
+                                format!("stored Bell offer observation: {}", error.cause),
+                            )
+                        })?;
+                    }
+                    EffectOffered {
+                        effect: field(&v, "effect")?,
+                        principal: field(&v, "principal")?,
+                        attempt: field(&v, "attempt")?,
+                        evidence,
+                    }
+                }
                 "effect.settled" => EffectSettled {
                     effect: field(&v, "effect")?,
                     expected: field(&v, "expected")?,
