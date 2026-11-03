@@ -58,6 +58,16 @@ pub struct CallContext {
     pub timeout: Duration,
     pub cancellation: Arc<CancellationState>,
 }
+impl CallContext {
+    /// An ordinary bounded host call with an initially uncancelled context.
+    pub fn new(generation: Generation, timeout: Duration) -> Self {
+        Self {
+            generation,
+            timeout,
+            cancellation: Arc::new(CancellationState { _private: () }),
+        }
+    }
+}
 pub struct OpenContext {
     pub expected_generation: Option<Generation>,
     pub timeout: Duration,

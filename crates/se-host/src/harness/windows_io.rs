@@ -20,6 +20,8 @@ use se_proc::{
 use se_types::{Result, SeError};
 use std::{num::NonZeroU32, pin::pin, sync::Arc, time::Duration};
 use tokio::{sync::Mutex, sync::Notify, time::Instant};
+mod operations;
+use operations::{bounded, deadline_exceeded, native, poisoned, port};
 
 /// How long a cancelled write may take to report its true count.
 const CANCEL_GRACE: Duration = Duration::from_secs(1);
@@ -44,6 +46,9 @@ struct Reader {
 }
 struct Writer {
     open: bool,
+    pending: Option<StdioTicket>,
+    closing: Option<StdioTicket>,
+    finished: bool,
 }
 #[derive(Default)]
 struct Closing {
@@ -111,7 +116,12 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
                     wake,
                     stdout: Mutex::default(),
                     stderr: Mutex::default(),
-                    stdin: Mutex::new(Writer { open: true }),
+                    stdin: Mutex::new(Writer {
+                        open: true,
+                        pending: None,
+                        closing: None,
+                        finished: false,
+                    }),
                     unreleased: std::sync::Mutex::default(),
                     closed: Mutex::default(),
                 }),
@@ -141,18 +151,20 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
                 if reader.ended {
                     return Ok(StreamRead::Eof);
                 }
-                let ticket = match reader.pending.take() {
-                    Some(ticket) => ticket,
-                    None => self
-                        .runtime
-                        .begin_read(&port.port, native_stream, maximum_bytes.get())
-                        .map_err(|e| native("provider output", &e))?,
-                };
-                let Some(completion) = self.settle(port, &ticket, until).await? else {
-                    reader.pending = Some(ticket);
+                if reader.pending.is_none() {
+                    reader.pending = Some(
+                        self.runtime
+                            .begin_read(&port.port, native_stream, maximum_bytes.get())
+                            .map_err(|e| native("provider output", &e))?,
+                    );
+                }
+                // The stream retains the accepted ticket across every await,
+                // including a caller or harness drain dropping this future.
+                let ticket = reader.pending.as_ref().ok_or_else(poisoned)?;
+                let Some(completion) = self.settle(port, ticket, until).await? else {
                     return Err(deadline_exceeded(&cx));
                 };
-                self.release(port, ticket, true);
+                self.release(port, reader.pending.take().ok_or_else(poisoned)?, true);
                 let StdioCompletion::Read {
                     bytes,
                     eof,
@@ -226,26 +238,30 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
                     });
                 }
             };
-            let completion = match self.settle(port, &ticket, until).await? {
+            // A dropped write may have sent a partial frame. Keep its ticket
+            // and forbid another frame until the streams have been closed.
+            writer.pending = Some(ticket);
+            writer.open = false;
+            let ticket = writer.pending.as_ref().ok_or_else(poisoned)?;
+            let completion = match self.settle(port, ticket, until).await? {
                 Some(completion) => completion,
                 None => {
                     // Cancel, then wait briefly for the true count: neither the
                     // cancel acknowledgment nor the deadline proves completion.
-                    let _ = self.runtime.cancel(&ticket);
+                    let _ = self.runtime.cancel(ticket);
                     match self
-                        .settle(port, &ticket, Instant::now() + CANCEL_GRACE)
+                        .settle(port, ticket, Instant::now() + CANCEL_GRACE)
                         .await?
                     {
                         Some(completion) => completion,
                         None => {
-                            self.owe(port, ticket, false);
                             self.retire_stdin(port, &mut writer);
                             return Err(deadline_exceeded(&cx));
                         }
                     }
                 }
             };
-            self.release(port, ticket, true);
+            self.release(port, writer.pending.take().ok_or_else(poisoned)?, true);
             let StdioCompletion::Write {
                 written, outcome, ..
             } = completion
@@ -267,6 +283,8 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
             // so the provider sees EOF instead of a spliced message.
             if failure.is_some() {
                 self.retire_stdin(port, &mut writer);
+            } else {
+                writer.open = true;
             }
             Ok(StreamWrite {
                 completed_bytes: written,
@@ -283,22 +301,28 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
             let port = port(transport)?;
             let until = Instant::now() + cx.timeout;
             let mut writer = bounded(&cx, port.stdin.lock()).await?;
-            if !writer.open {
+            if writer.finished {
                 return Ok(());
             }
             writer.open = false;
-            // se-proc finishes the accepted write before closing stdin.
-            let ticket = self
-                .runtime
-                .begin_close(&port.port, StdioCloseScope::Stdin)
-                .map_err(|e| native("provider input close", &e))?;
-            let Some(completion) = self.settle(port, &ticket, until).await? else {
-                self.owe(port, ticket, false);
+            if writer.closing.is_none() {
+                // se-proc finishes an accepted write before closing stdin.
+                writer.closing = Some(
+                    self.runtime
+                        .begin_close(&port.port, StdioCloseScope::Stdin)
+                        .map_err(|e| native("provider input close", &e))?,
+                );
+            }
+            let ticket = writer.closing.as_ref().ok_or_else(poisoned)?;
+            let Some(completion) = self.settle(port, ticket, until).await? else {
                 return Err(deadline_exceeded(&cx));
             };
-            self.release(port, ticket, true);
+            self.release(port, writer.closing.take().ok_or_else(poisoned)?, true);
             match completion {
-                StdioCompletion::Close { result: Ok(_), .. } => Ok(()),
+                StdioCompletion::Close { result: Ok(_), .. } => {
+                    writer.finished = true;
+                    Ok(())
+                }
                 StdioCompletion::Close {
                     result: Err(failure),
                     ..
@@ -326,19 +350,19 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
                 return Ok(());
             }
             if closing.closed.is_none() {
-                let ticket = match closing.ticket.take() {
-                    Some(ticket) => ticket,
-                    None => self
-                        .runtime
-                        .begin_close(&port.port, StdioCloseScope::All)
-                        .map_err(|e| native("provider streams close", &e))?,
-                };
-                // Close cancels and drains every read and write, so readers
-                // holding their stream locks finish before this takes them.
-                let Some(completion) = self.settle(port, &ticket, until).await? else {
-                    closing.ticket = Some(ticket);
+                if closing.ticket.is_none() {
+                    closing.ticket = Some(
+                        self.runtime
+                            .begin_close(&port.port, StdioCloseScope::All)
+                            .map_err(|e| native("provider streams close", &e))?,
+                    );
+                }
+                // All-close custody survives a dropped or timed-out close.
+                let ticket = closing.ticket.as_ref().ok_or_else(poisoned)?;
+                let Some(completion) = self.settle(port, ticket, until).await? else {
                     return Err(deadline_exceeded(&cx));
                 };
+                let ticket = closing.ticket.take().ok_or_else(poisoned)?;
                 match completion {
                     StdioCompletion::Close {
                         result: Ok(witness),
@@ -370,7 +394,17 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
                     self.owe(port, pending, false);
                 }
             }
-            bounded(&cx, port.stdin.lock()).await?.open = false;
+            {
+                let mut writer = bounded(&cx, port.stdin.lock()).await?;
+                writer.open = false;
+                writer.finished = true;
+                for ticket in [writer.pending.take(), writer.closing.take()]
+                    .into_iter()
+                    .flatten()
+                {
+                    self.owe(port, ticket, false);
+                }
+            }
             // Every operation is terminal after the All close; release each,
             // keeping any that fail owed to the next close.
             let owed = std::mem::take(&mut *port.unreleased.lock().map_err(|_| poisoned())?);
@@ -409,86 +443,5 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
     }
 }
 
-impl<R: ProviderStdioApi + Send + Sync + 'static> WindowsProviderIo<R> {
-    /// Wait for one ticket's terminal result until `until`; `None` means it is
-    /// still pending and its custody stays with the caller.
-    async fn settle(
-        &self,
-        port: &Port,
-        ticket: &StdioTicket,
-        until: Instant,
-    ) -> Result<Option<StdioCompletion>> {
-        loop {
-            // Register before checking, so a nudge between the two is not lost.
-            let mut notified = pin!(port.wake.0.notified());
-            notified.as_mut().enable();
-            match self
-                .runtime
-                .take_completion(ticket)
-                .map_err(|e| native("provider stream completion", &e))?
-            {
-                StdioCompletion::Pending => {}
-                done => return Ok(Some(done)),
-            }
-            if tokio::time::timeout_at(until, notified).await.is_err() {
-                return Ok(None);
-            }
-        }
-    }
-    /// Release a ticket whose result was taken; a failed release is owed to
-    /// `close` rather than dropped.
-    fn release(&self, port: &Port, ticket: StdioTicket, taken: bool) {
-        if self.runtime.release_operation(&ticket).is_err() {
-            self.owe(port, ticket, taken);
-        }
-    }
-    fn owe(&self, port: &Port, ticket: StdioTicket, taken: bool) {
-        if let Ok(mut owed) = port.unreleased.lock() {
-            owed.push(Unreleased { ticket, taken });
-        }
-    }
-    /// Close host stdin without waiting; `close` drains its ticket.
-    fn retire_stdin(&self, port: &Port, writer: &mut Writer) {
-        if !writer.open {
-            return;
-        }
-        writer.open = false;
-        if let Ok(ticket) = self.runtime.begin_close(&port.port, StdioCloseScope::Stdin) {
-            self.owe(port, ticket, false);
-        }
-    }
-}
-
-fn port(transport: &ProviderTransport) -> Result<&Port> {
-    transport
-        .windows
-        .as_ref()
-        .ok_or_else(|| SeError::invalid("provider transport", "one opened by this platform"))
-}
-
-async fn bounded<T>(cx: &CallContext, work: impl std::future::Future<Output = T>) -> Result<T> {
-    tokio::time::timeout(cx.timeout, work)
-        .await
-        .map_err(|_| deadline_exceeded(cx))
-}
-
-fn deadline_exceeded(cx: &CallContext) -> SeError {
-    SeError::new(se_types::Detail::DeadlineExceeded(
-        se_types::details::DeadlineExceeded {
-            op: "provider stream".into(),
-            deadline_ms: u64::try_from(cx.timeout.as_millis()).unwrap_or(u64::MAX),
-        },
-    ))
-}
-
-fn native(what: &str, error: &ProcError) -> SeError {
-    let reason = match &error.native {
-        Some(failure) => format!("{:?}: {}", error.code, failure.reason),
-        None => format!("{:?}", error.code),
-    };
-    se_core::scope::unreadable(what, &reason)
-}
-
-fn poisoned() -> SeError {
-    se_core::scope::unreadable("provider stream state", "a poisoned lock")
-}
+#[cfg(test)]
+mod independent_cancellation;
