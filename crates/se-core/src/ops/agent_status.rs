@@ -69,10 +69,29 @@ pub fn page<R: Snapshot>(
 
 pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentStatusOutput> {
     let agent = scope::working_agent(cx.admission, input.target_agent_id.as_ref(), "agent.show")?;
-    let principal = cx
-        .read
-        .principal(Actor::Agent(agent.clone()))
-        .map_err(|error| store_error(&error))?;
+    // An owner's saved profile and rename events are not session history.
+    // The target-bound control port exposes this agent's metadata without
+    // granting its session visibility into the owner's other events.
+    let mut controlled_profile = None;
+    let principal = if matches!(&cx.admission.actor, Actor::Agent(_)) {
+        match cx
+            .read
+            .control_target(agent.clone())
+            .map_err(|error| store_error(&error))?
+        {
+            Read::Present { value } => {
+                controlled_profile = Some(value.profile);
+                Read::Present {
+                    value: value.principal,
+                }
+            }
+            other => other.map(|_| unreachable!("present control target handled above")),
+        }
+    } else {
+        cx.read
+            .principal(Actor::Agent(agent.clone()))
+            .map_err(|error| store_error(&error))?
+    };
     let principal = match principal {
         Read::Present { value } => value,
         Read::Absent { checked } => {
@@ -122,10 +141,13 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
             ));
         }
     };
-    let profile = cx
-        .read
-        .profile(agent.clone())
-        .map_err(|error| store_error(&error))?;
+    let profile = match controlled_profile {
+        Some(profile) => profile,
+        None => cx
+            .read
+            .profile(agent.clone())
+            .map_err(|error| store_error(&error))?,
+    };
     let saved = match profile {
         Read::Present { value } => value,
         Read::Absent { checked } => {
