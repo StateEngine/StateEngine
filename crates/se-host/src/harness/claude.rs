@@ -46,6 +46,7 @@ pub fn configuration(launch: &ClaudeLaunch<'_>) -> Result<ConfigPlan> {
             "SessionStart": hook("session-start"),
             "UserPromptSubmit": hook("prompt"),
             "Stop": hook("stop"),
+            "SubagentStop": hook("stop"),
             "StopFailure": hook("stop-failure"),
         }
     });

@@ -5,6 +5,7 @@
 //! Capture arrives through the pinned hook path; this harness reads nothing
 //! a hook claims.
 use super::claude::{self, ClaudeLaunch, Readiness};
+mod completion;
 mod io;
 use crate::{
     BellOutcome, BindingWitness, BoundSession, CallContext, CaptureInput, ConfigPlan, Harness,
@@ -85,6 +86,7 @@ pub(crate) struct Binding {
     transport: ProviderTransport,
     conversation: ProviderSessionId,
     transcript: PathBuf,
+    pub(crate) completion: completion::Completion,
     /// The output/error readers, joined by close_binding.
     drains: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -180,6 +182,7 @@ impl Harness for ClaudeHarness {
                 transport: request.transport,
                 conversation: conversation.clone(),
                 transcript,
+                completion: completion::Completion::default(),
                 drains: Mutex::new(Vec::new()),
             });
             // Deliver the task, then require Claude's own echo of the exact
@@ -220,6 +223,14 @@ impl Harness for ClaudeHarness {
                 let mut ready = false;
                 while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
                     let line: Vec<u8> = pending.drain(..=end).collect();
+                    if line.len() > completion::MAX_LINE {
+                        return Err(SeError::too_large(
+                            "Claude readiness frame",
+                            completion::MAX_LINE,
+                            line.len(),
+                        ));
+                    }
+                    binding.completion.inspect(&line, &conversation);
                     match claude::readiness(&line, &conversation) {
                         Readiness::Ready => ready = true,
                         Readiness::NotYet => (),
@@ -233,12 +244,25 @@ impl Harness for ClaudeHarness {
                         }
                     }
                 }
+                if pending.len() > completion::MAX_LINE {
+                    return Err(SeError::too_large(
+                        "Claude readiness frame",
+                        completion::MAX_LINE,
+                        pending.len(),
+                    ));
+                }
                 if ready {
                     break;
                 }
             }
-            let readers = [ProviderStream::Output, ProviderStream::Error]
-                .map(|stream| tokio::spawn(drain(Arc::clone(&binding), stream, cx.generation)));
+            let readers = [ProviderStream::Output, ProviderStream::Error].map(|stream| {
+                let initial = if stream == ProviderStream::Output {
+                    std::mem::take(&mut pending)
+                } else {
+                    Vec::new()
+                };
+                tokio::spawn(drain(Arc::clone(&binding), stream, cx.generation, initial))
+            });
             binding
                 .drains
                 .lock()

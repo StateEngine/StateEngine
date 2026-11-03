@@ -21,6 +21,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
     ) -> HostFuture<'a, AnyOutput> {
         Box::pin(async move {
             match plan {
+                CustodyPlan::ObserveStatus(input) => self.status(input, admission, deadline).await,
                 CustodyPlan::Launch(plan) => self
                     .launch(*plan, admission, deadline)
                     .await

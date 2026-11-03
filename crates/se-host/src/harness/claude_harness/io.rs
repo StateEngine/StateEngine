@@ -32,7 +32,12 @@ pub(super) async fn drain(
     binding: Arc<Binding>,
     stream: ProviderStream,
     generation: se_types::Generation,
+    initial: Vec<u8>,
 ) {
+    let mut frames = super::completion::Frames::default();
+    if stream == ProviderStream::Output {
+        frames.push(&initial, &binding);
+    }
     loop {
         let cx = CallContext {
             generation,
@@ -44,7 +49,11 @@ pub(super) async fn drain(
             .read(&binding.transport, stream, READ_CHUNK, cx)
             .await
         {
-            Ok(StreamRead::Bytes(_)) => (),
+            Ok(StreamRead::Bytes(bytes)) => {
+                if stream == ProviderStream::Output {
+                    frames.push(&bytes, &binding);
+                }
+            }
             Ok(StreamRead::Eof | StreamRead::Failed { .. }) => return,
             // Only this loop's own day-long idle bound re-arms the read; any
             // other failure ends the drain instead of spinning on it.
