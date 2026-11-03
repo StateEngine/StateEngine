@@ -14,7 +14,9 @@ pub fn hook_session(cx: &Bootstrap, phase: ReadPhase) -> Result<()> {
     use se_store::{EventBody, Snapshot};
     let secret = cx.session.as_ref().ok_or_else(|| {
         SeError::new(se_types::Detail::SessionRequired(
-            se_types::details::SessionRequired { op: "hook.claude".into() },
+            se_types::details::SessionRequired {
+                op: "hook.claude".into(),
+            },
         ))
     })?;
     let hash = Sha256::digest(secret.expose()).into();
@@ -24,12 +26,18 @@ pub fn hook_session(cx: &Bootstrap, phase: ReadPhase) -> Result<()> {
         "Launch a new authenticated session; retired credentials cannot start a host.",
     )?;
     let now = super::execute::now_us()?;
-    if !matches!(record.state, CredentialState::Prepared | CredentialState::Active)
-        || record.purpose != "session"
+    if !matches!(
+        record.state,
+        CredentialState::Prepared | CredentialState::Active
+    ) || record.purpose != "session"
         || record.expires_at_us <= now
         || (record.state == CredentialState::Prepared && record.activation_deadline_us <= now)
-        || phase.credential_superseded(hash).map_err(|e| store_error(&e))?
-        || phase.credential_stop_unproved(hash).map_err(|e| store_error(&e))?
+        || phase
+            .credential_superseded(hash)
+            .map_err(|e| store_error(&e))?
+        || phase
+            .credential_stop_unproved(hash)
+            .map_err(|e| store_error(&e))?
     {
         return Err(SeError::invalid(
             "hook session credential",
@@ -52,7 +60,8 @@ pub fn hook_session(cx: &Bootstrap, phase: ReadPhase) -> Result<()> {
         .map_err(|e| store_error(&e))?;
     let result = (|| {
         let session = scope::require_present(
-            read.session(record.session.clone()).map_err(|e| store_error(&e))?,
+            read.session(record.session.clone())
+                .map_err(|e| store_error(&e))?,
             "hook session",
             "Launch a new authenticated session; absent sessions cannot start a host.",
         )?;
@@ -62,7 +71,10 @@ pub fn hook_session(cx: &Bootstrap, phase: ReadPhase) -> Result<()> {
                 | (CredentialState::Active, EventBody::SessionActivated { session, .. })
                 if session == &record.session
         ) {
-            return Err(SeError::invalid("hook session", "the credential's current prepared or active session"));
+            return Err(SeError::invalid(
+                "hook session",
+                "the credential's current prepared or active session",
+            ));
         }
         Ok(())
     })();
