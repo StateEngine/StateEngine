@@ -69,7 +69,14 @@ pub(super) fn witness(
                         {
                             return Ok(());
                         }
-                        None if endpoint.kind == se_host::HostKind::Standalone => return Ok(()),
+                        value
+                            if endpoint.kind == se_host::HostKind::Standalone
+                                && value
+                                    .as_ref()
+                                    .is_none_or(|record| !record.matches(endpoint, key)) =>
+                        {
+                            return Ok(());
+                        }
                         _ => {
                             return Err(scope::unreadable(
                                 "runtime close receipt",
