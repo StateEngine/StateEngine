@@ -17,6 +17,7 @@ pub struct VerifiedPreparedRequest {
     pub request: RecordId,
 }
 struct Slot {
+    incarnation: Arc<()>,
     generation: u64,
     hashes: [[u8; 32]; 2],
     first: [Option<RecordId>; 2],
@@ -65,6 +66,7 @@ impl PreparedRequestProofs {
         slots.insert(
             session,
             Slot {
+                incarnation: Arc::new(()),
                 generation,
                 hashes: [session_hash, http_hash],
                 first: [None, None],
@@ -114,6 +116,7 @@ impl PreparedRequestProofs {
         session: &SessionId,
         deadline: &Deadline,
     ) -> Result<PreparedFirstRequests> {
+        let mut original = None;
         loop {
             deadline.remaining()?;
             let changed = self.0.changed.notified();
@@ -129,6 +132,16 @@ impl PreparedRequestProofs {
                         "the exact issued session has no retained verifier slot",
                     )
                 })?;
+                if let Some(incarnation) = &original {
+                    if !Arc::ptr_eq(incarnation, &slot.incarnation) {
+                        return Err(proof_error(
+                            "credential readiness",
+                            "the original C1 issuance was retired or replaced; no successor proofs may activate it",
+                        ));
+                    }
+                } else {
+                    original = Some(slot.incarnation.clone());
+                }
                 if let [Some(session_request), Some(http_request)] = slot.first {
                     return Ok(PreparedFirstRequests {
                         session_request,
