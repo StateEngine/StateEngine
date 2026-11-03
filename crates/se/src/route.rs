@@ -11,6 +11,7 @@ mod clock;
 pub mod credential;
 #[path = "route/direct.rs"]
 pub mod direct;
+mod doctor;
 #[path = "route/empty_home.rs"]
 mod empty_home;
 #[path = "route/execute.rs"]

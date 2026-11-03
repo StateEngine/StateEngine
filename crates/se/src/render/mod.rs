@@ -2,6 +2,7 @@ mod administration;
 mod continuity;
 mod control;
 mod decision;
+mod doctor;
 pub mod error;
 mod event;
 mod read;
@@ -31,6 +32,12 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::Help, AnyOutput::MetaHelp(value)) => write!(out, "{}", value.value.usage)?,
             (HumanKind::Schema, AnyOutput::MetaSchema(value)) => read::schema(&value.value, out)?,
             (HumanKind::Init, AnyOutput::ProjectInit(value)) => write::init(&value.value, out)?,
+            (HumanKind::Diagnosis, AnyOutput::DoctorInspect(value)) => {
+                doctor::diagnosis(&value.value, out)?
+            }
+            (HumanKind::Repair, AnyOutput::DoctorRepair(value)) => {
+                doctor::repair(&value.value, out)?
+            }
             (HumanKind::Status, AnyOutput::ProjectStatus(value)) => {
                 read::status(&value.value, out)?
             }

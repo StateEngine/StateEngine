@@ -79,6 +79,41 @@ fn read(files: &NativeStateFiles) -> Result<Option<(EndpointRecord, Vec<u8>)>> {
 /// Both callers retain the real exclusive home lease across pinning, native
 /// no-replace rename and independent protected readback. No address is probed.
 pub(super) fn retain(files: &NativeStateFiles, bytes: &[u8]) -> Result<EndpointRecovery> {
+    let random = se_proc::random_secret().map_err(|error| {
+        se_core::scope::unreadable("endpoint retention name allocation", &error.to_string())
+            .with_cause(error)
+    })?;
+    let retained = files.root().join(format!(
+        "endpoint.retained-{}.json",
+        se_types::hex_lower(&random.expose()[..16])
+    ));
+    retain_at(files, bytes, &retained)
+}
+/// The caller retains the exclusive runtime lease through this exact-byte
+/// no-replace rename and independent readback. The destination is planned
+/// before the effect, inside this same private state home.
+pub fn retain_at(
+    files: &NativeStateFiles,
+    bytes: &[u8],
+    retained: &Path,
+) -> Result<EndpointRecovery> {
+    if retained.parent() != Some(files.root())
+        || !retained
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.strip_prefix("endpoint.retained-")
+                    .and_then(|name| name.strip_suffix(".json"))
+                    .is_some_and(|suffix| {
+                        suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    })
+            })
+    {
+        return Err(endpoint_recovery_error(
+            files.root(),
+            "retention requires one exact generated endpoint name in the same home",
+        ));
+    }
     let source = files.root().join("endpoint.json");
     // The private-root read establishes protection; the mutation pin binds the
     // exact same bytes and object, refusing links, replacements and collisions.
@@ -106,19 +141,11 @@ pub(super) fn retain(files: &NativeStateFiles, bytes: &[u8]) -> Result<EndpointR
             "endpoint changed before retention; the new record was preserved",
         ));
     }
-    let random = se_proc::random_secret().map_err(|error| {
-        se_core::scope::unreadable("endpoint retention name allocation", &error.to_string())
-            .with_cause(error)
-    })?;
-    let suffix: String = se_types::hex_lower(&random.expose()[..16]);
-    let retained = files
-        .root()
-        .join(format!("endpoint.retained-{suffix}.json"));
     let verified = (|| -> Result<()> {
-        pin.restore_to(&retained, Sha256::digest(bytes).into())
+        pin.restore_to(retained, Sha256::digest(bytes).into())
             .map_err(native_error)?;
         let actual = files
-            .readback(&retained)
+            .readback(retained)
             .map_err(native_error)?
             .ok_or_else(|| {
                 endpoint_recovery_error(
@@ -150,7 +177,7 @@ pub(super) fn retain(files: &NativeStateFiles, bytes: &[u8]) -> Result<EndpointR
     })?;
     Ok(EndpointRecovery {
         original: NativePath::from_local(source)?,
-        retained: NativePath::from_local(retained)?,
+        retained: NativePath::from_local(retained.to_owned())?,
     })
 }
 /// A later bind/publication/cleanup failure cannot erase an already verified

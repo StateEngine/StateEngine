@@ -25,6 +25,8 @@ pub mod decision_list;
 pub mod decision_show;
 pub use decision_list::{DecisionList, DecisionPage, DecisionPageRow};
 pub use decision_show::{DecisionDetail, DecisionOutput, DecisionShow, DecisionTransition};
+pub mod doctor;
+pub use doctor::{Diagnosis, DoctorInspect, DoctorRepair, RepairOutput};
 pub mod event;
 pub mod history;
 pub use history::{HistoryList, HistoryPage};
@@ -135,6 +137,8 @@ ops! {
     MetaHelp => MetaHelp, HelpOutput, ("meta.help",leaf(&["help"]),no_mcp("MCP descriptions derive from the same catalogue."),Either,true,Never,Read,None,None,"se.help",Help,&["J1"]);
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
+    DoctorInspect => DoctorInspect, Diagnosis, ("doctor.inspect",leaf(&["doctor"]),no_mcp("Owner installation diagnosis uses the installed CLI."),Owner,false,Never,Read,Home,None,"se.diagnosis",Diagnosis,&["J5"]);
+    DoctorRepair => DoctorRepair, RepairOutput, ("doctor.repair",CliExposure::Leaf {path:&["doctor"],hidden:false,select:Selector::Flag("fix")},no_mcp("One-check repair requires an owner terminal."),Owner,false,Always,Write,Home,None,"se.repair",Repair,&["J5"]);
     ProjectStatus => ProjectStatus, StatusOutput, ("project.status",leaf(&["status"]),tool("stateengine_status","Project status","Read setup, agent and runtime facts without changing state."),Either,false,Never,Read,ProjectOrAll,None,"se.status",Status,&["J1","J2"]);
     EventRead => EventRead, EventOutput, ("history.event_read",CliExposure::Leaf {path:&["history"],hidden:false,select:Selector::Flag("event")},tool("stateengine_event_read","Read a committed event","Read one committed event by ID in the authorized project, with its public payload and provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
     HistoryList => HistoryList, HistoryPage, ("history.list",leaf(&["history"]),no_mcp("Sessions use event_read for exact public records; owner CLI history is read-only inspection."),Either,false,Never,Read,Project,None,"se.history-page",HistoryPage,&["J3"]);
@@ -233,6 +237,8 @@ impl AnyOp {
 impl AnyOutput {
     pub fn exit_code(&self) -> u8 {
         match self {
+            Self::DoctorInspect(v) => v.value.exit_code(),
+            Self::DoctorRepair(v) if !v.value.complete => 2,
             Self::Uninstall(v) if !v.value.complete => 2,
             Self::AgentStop(v) if !v.value.complete => 2,
             Self::ProjectRemove(v) if !matches!(v.value.outcome.as_str(), "removed" | "absent") => {

@@ -12,6 +12,9 @@ use std::{
 };
 use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
+#[path = "permissions_windows.rs"]
+pub(in crate::state_files) mod permissions;
+
 fn open(path: &Path, directory: bool, access: u32, create: bool) -> Result<File> {
     open_shared(path, directory, access, create, true)
 }
@@ -95,6 +98,12 @@ impl Parent {
         Self::open_with_access(path, true)
     }
     fn open_with_access(path: &Path, writable: bool) -> Result<Self> {
+        Self::walk(path, writable, true)
+    }
+    fn open_for_permission_repair(path: &Path) -> Result<Self> {
+        Self::walk(path, false, false)
+    }
+    fn walk(path: &Path, writable: bool, allow_reparse: bool) -> Result<Self> {
         wide(path)?;
         let mut prefix = PathBuf::new();
         let mut pins = Vec::new();
@@ -118,6 +127,12 @@ impl Parent {
                 return Err(last("inspect installation ancestor", &prefix));
             }
             let file = if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                if !allow_reparse {
+                    return Err(unsafe_path(
+                        "permission repair refuses reparse ancestors",
+                        &prefix,
+                    ));
+                }
                 security::verify_system_ancestor(&file, &prefix)?;
                 // Resolve a trusted ancestor once, then use its held target's final
                 // physical path. Later operations never traverse the junction again.

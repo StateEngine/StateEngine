@@ -121,7 +121,7 @@ pub use endpoint::{
 #[cfg(feature = "listener")]
 mod recovery;
 #[cfg(feature = "listener")]
-pub use recovery::{EndpointRoute, route_endpoint};
+pub use recovery::{EndpointRoute, retain_at as retain_endpoint_at, route_endpoint};
 #[cfg(feature = "listener")]
 mod activation;
 #[cfg(feature = "listener")]

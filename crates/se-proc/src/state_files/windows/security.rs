@@ -20,6 +20,8 @@ use windows_sys::Win32::{
     System::{SystemServices::ACCESS_DENIED_ACE_TYPE, Threading::*},
 };
 
+mod permission_repair;
+
 struct User {
     storage: Vec<usize>,
 }
@@ -93,6 +95,38 @@ pub(super) fn descriptor(path: &Path, directory: bool) -> Result<Allocation> {
         return Err(last("create protected owner DACL", path));
     }
     Ok(Allocation(raw))
+}
+pub(in crate::state_files) fn current_owner_sid(path: &Path) -> Result<String> {
+    User::current(path)?.text(path)
+}
+
+pub(in crate::state_files) fn tighten_owner_only(
+    file: &File,
+    path: &Path,
+    directory: bool,
+) -> Result<()> {
+    permission_repair::require_existing_access(file, path, directory)?;
+    let descriptor = descriptor(path, directory)?;
+    // SAFETY: retained WRITE_DAC handle and native self-relative descriptor.
+    // NtSetSecurityObject changes this one pinned object; unlike SetSecurityInfo
+    // it does not run Win32's recursive propagation of inheritable directory ACEs.
+    let status = unsafe {
+        windows_sys::Wdk::Storage::FileSystem::NtSetSecurityObject(
+            file.as_raw_handle(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor.0,
+        )
+    };
+    if status < 0 {
+        // SAFETY: pure conversion of the native status returned above.
+        let code = unsafe { windows_sys::Win32::Foundation::RtlNtStatusToDosError(status) };
+        return Err(io_error(
+            "tighten pinned DACL",
+            path,
+            std::io::Error::from_raw_os_error(code as i32),
+        ));
+    }
+    Ok(())
 }
 fn sid(text: &str, path: &Path) -> Result<Allocation> {
     let text: Vec<_> = OsStr::new(text).encode_wide().chain(Some(0)).collect();

@@ -111,10 +111,20 @@ pub fn dispatch(
     if let AnyOp::Uninstall(input) = op {
         return Ok(super::uninstall::execute(cx, input, diagnostic)?.into());
     }
+    if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_))
+        && let Some(output) = super::doctor::permissions::recover(cx, &op, diagnostic)?
+    {
+        return Ok(output);
+    }
     let (files, (reader, phase)) =
         match setup::inspect_phase(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
             setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
                 return Ok((*output).into());
+            }
+            setup::Setup::Absent(_)
+                if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) =>
+            {
+                return super::doctor::uninitialized(cx, &op);
             }
             setup::Setup::Absent(_) => {
                 return Err(setup::required(cx));
@@ -162,6 +172,10 @@ pub fn dispatch(
                 });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
         return super::session_observation::finish(prepared);
+    }
+    if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) {
+        snapshot.close().map_err(|e| store_error(&e))?;
+        return super::doctor::execute(cx, &files, &caller, op, diagnostic);
     }
     let host_required = matches!(
         op.meta().runtime,

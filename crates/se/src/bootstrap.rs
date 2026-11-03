@@ -26,6 +26,7 @@ pub struct Bootstrap {
     pub session: Option<Secret>,
     pub log: Option<String>,
     pub no_color: bool,
+    pub json: bool,
     pub legacy_environment_present: bool,
 }
 
@@ -48,13 +49,33 @@ pub(crate) fn check_session_route(operation: &se_core::ops::AnyOp) -> Result<()>
 impl Bootstrap {
     /// A session handle is opaque here. Only the native admission adapter may
     /// verify it; its presence must never fall through to owner authentication.
-    pub fn resolve(home: Option<PathBuf>, project: Option<String>, no_color: bool) -> Result<Self> {
+    pub fn resolve(
+        home: Option<PathBuf>,
+        project: Option<String>,
+        no_color: bool,
+        json: bool,
+        operation: &se_core::ops::AnyOp,
+    ) -> Result<Self> {
         let home = state_home(home)?;
-        let selected_config = variable("SE_CONFIG")?;
-        let config_explicit = selected_config.is_some();
-        let config_path = match selected_config {
-            Some(path) => absolute(PathBuf::from(path), "SE_CONFIG")?,
-            None => home.join("config.toml"),
+        let config = if matches!(
+            operation,
+            se_core::ops::AnyOp::DoctorInspect(_) | se_core::ops::AnyOp::DoctorRepair(_)
+        ) {
+            // Doctor uses explicit named repairs, not runtime configuration.
+            // In particular, root recovery must not read config through the
+            // loose directory before its metadata-only tightening.
+            crate::config::Loaded {
+                value: se_core::config_policy::ConfigFile::default(),
+                origin: crate::config::Origin::BuiltIn,
+            }
+        } else {
+            let selected = variable("SE_CONFIG")?;
+            let explicit = selected.is_some();
+            let path = match selected {
+                Some(path) => absolute(PathBuf::from(path), "SE_CONFIG")?,
+                None => home.join("config.toml"),
+            };
+            crate::config::load::<se_core::config_policy::ConfigFile>(&path, explicit)?
         };
         let session = session_input(&home)?;
         let project = match project {
@@ -62,10 +83,6 @@ impl Bootstrap {
             None if session.is_none() => text_variable("SE_PROJECT")?,
             None => None,
         };
-        let config = crate::config::load::<se_core::config_policy::ConfigFile>(
-            &config_path,
-            config_explicit,
-        )?;
         config.value.validate()?;
         let cwd = std::env::current_dir().map_err(|error| {
             unreadable(
@@ -84,6 +101,7 @@ impl Bootstrap {
             log: text_variable("SE_LOG")?,
             no_color: no_color
                 || std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
+            json,
             // Inspect names only. Legacy values never participate in resolution.
             legacy_environment_present: std::env::vars_os().any(|(name, _)| {
                 name.to_str()
