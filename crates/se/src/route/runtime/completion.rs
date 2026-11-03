@@ -6,11 +6,40 @@ use se_store::StateFiles;
 use se_types::Read;
 use std::{fs::TryLockError, time::Duration};
 
-pub(super) fn witness(files: &Files, endpoint: &EndpointRecord, bound: &Deadline) -> Result<()> {
-    if endpoint.kind != se_host::HostKind::Standalone {
+pub(super) fn report(
+    files: &Files,
+    endpoint: &EndpointRecord,
+    key: &se_types::IdempotencyKey,
+    bound: &Deadline,
+) -> Result<Option<se_host::client::closure::RuntimeClosure>> {
+    loop {
+        bound.remaining()?;
+        if let Some(record) = se_host::client::closure::read(files, files.0.root())?
+            && record.matches(endpoint, key)
+        {
+            return Ok(Some(record));
+        }
+        // Legacy standalone hosts have no close-receipt producer. Once the
+        // exact owner exited it cannot publish later; final OS checks still apply.
+        if endpoint.kind == se_host::HostKind::Standalone && exited(endpoint, bound)? {
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(10).min(bound.remaining()?));
+    }
+}
+pub(super) fn witness(
+    files: &Files,
+    endpoint: &EndpointRecord,
+    key: &se_types::IdempotencyKey,
+    bound: &Deadline,
+) -> Result<()> {
+    let fields = endpoint.epoch.owner.fields();
+    let current = se_proc::current_runtime_identity(fields.machine.clone())
+        .map_err(|e| scope::unreadable("shutdown native boot", &format!("{e:?}")))?;
+    if current.boot_id != fields.boot {
         return Err(scope::unreadable(
-            "embedded shutdown completion",
-            "the application remains alive; its independent close receipt is required before claiming final resource and lease release",
+            "shutdown native boot",
+            "native boot changed since authenticated stop admission",
         ));
     }
     let lock = scope::require_present(
@@ -22,18 +51,32 @@ pub(super) fn witness(files: &Files, endpoint: &EndpointRecord, bound: &Deadline
     )?;
     loop {
         bound.remaining()?;
-        if exited(endpoint, bound)? {
+        if endpoint.kind != se_host::HostKind::Standalone || exited(endpoint, bound)? {
             match lock.try_lock() {
                 Ok(()) => {
                     // Hold the observed exclusive lock while checking publication:
                     // a racing successor cannot be mistaken for this old owner.
-                    return match execute::endpoint(files)? {
-                        Read::Absent { .. } => Ok(()),
+                    match execute::endpoint(files)? {
+                        Read::Absent { .. } => (),
                         _ => Err(scope::unreadable(
                             "shutdown endpoint retirement",
-                            "the authenticated host exited but its protected endpoint is still present",
-                        )),
-                    };
+                            "the authenticated runtime's protected endpoint is still present under the exclusive lease",
+                        ))?,
+                    }
+                    match se_host::client::closure::read(files, files.0.root())? {
+                        Some(record)
+                            if record.matches(endpoint, key) && record.resources_closed =>
+                        {
+                            return Ok(());
+                        }
+                        None if endpoint.kind == se_host::HostKind::Standalone => return Ok(()),
+                        _ => {
+                            return Err(scope::unreadable(
+                                "runtime close receipt",
+                                "the original stop key, epoch and generation have no successful protected post-transport receipt; the lease and endpoint observations alone do not prove embedded closure",
+                            ));
+                        }
+                    }
                 }
                 Err(TryLockError::WouldBlock) => (),
                 Err(TryLockError::Error(error)) => {

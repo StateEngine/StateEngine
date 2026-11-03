@@ -53,6 +53,7 @@ pub trait RuntimeFilesystem: Send + Sync {
 }
 
 pub mod auth;
+pub mod closure;
 pub mod endpoint;
 pub mod lease;
 pub mod presence;

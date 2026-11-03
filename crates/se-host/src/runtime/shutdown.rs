@@ -7,6 +7,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
+mod agents;
 mod facts;
 
 pub struct HostShutdown {
@@ -39,7 +40,7 @@ impl HostServeExit {
             Ok(value) => Some(value),
             Err(error) => {
                 pending.push(format!(
-                    "Shutdown resume inventory remains unreadable: {error}"
+                    "Shutdown resume inventory remains unreadable: {error}. Storage drain is withheld; this fenced host retains its writer and lease after retiring the endpoint, so another down cannot retry it. Preserve the data home and repair the original session metadata before controlled application restart/recovery."
                 ));
                 errors.push(error);
                 None
@@ -83,6 +84,24 @@ impl HostServeExit {
             pending.push("Native custody shutdown is incomplete or its observer is unavailable; retain the lease and writer.".into());
             false
         };
+        let stops = if let Some(before) = &before {
+            agents::observe(&self.runtime, &before.targets, &drain_deadline).await
+        } else {
+            Vec::new()
+        };
+        for target in &stops {
+            if target.witness.is_none() {
+                pending.push(format!(
+                    "Agent {} lifecycle {} exit remains unproved: {}",
+                    target.agent,
+                    target.lifecycle,
+                    target
+                        .reason
+                        .as_deref()
+                        .unwrap_or("no native exit checkpoint")
+                ));
+            }
+        }
         let drained = if agents_stopped && before.is_some() {
             Some(self.runtime.drain_storage(&drain_deadline).await)
         } else {
@@ -140,6 +159,13 @@ impl HostServeExit {
                 ));
             }
         }
+        let close_request = self.stop.as_ref().map(|stop| {
+            (
+                stop.request().expected_epoch.clone(),
+                stop.request().generation,
+                stop.request().key.clone(),
+            )
+        });
         if let Some(stop) = self.stop.take() {
             let mut achieved = Vec::new();
             if agents_stopped {
@@ -198,6 +224,31 @@ impl HostServeExit {
         ] {
             if let Err(error) = result {
                 pending.push(format!("{stage} remains pending: {error}"));
+                errors.push(error);
+            }
+        }
+        if let Some((epoch, generation, key)) = close_request {
+            let record = crate::client::closure::RuntimeClosure {
+                schema: 1,
+                epoch,
+                generation,
+                key,
+                resources_closed: pending.is_empty()
+                    && transport_closed
+                    && endpoint_retired
+                    && writer_joined
+                    && agents_stopped,
+                stops,
+                pending: pending.clone(),
+            };
+            let lease = self.runtime.lease.clone();
+            let result = pool
+                .run_owned(&drain_deadline, move || {
+                    crate::client::closure::publish(&lease.files, lease.files.0.root(), &record)
+                })
+                .await;
+            if let Err(error) = result {
+                pending.push(format!("Protected post-transport close receipt remains unproved: {error}; retain this runtime's lease."));
                 errors.push(error);
             }
         }

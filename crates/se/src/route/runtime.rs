@@ -18,6 +18,8 @@ use std::num::NonZeroU32;
 #[cfg(any(target_os = "linux", windows))]
 #[path = "runtime/completion.rs"]
 mod completion;
+#[path = "runtime/stops.rs"]
+mod stops;
 
 #[cfg(any(target_os = "linux", windows))]
 pub fn up(
@@ -189,6 +191,7 @@ pub(super) fn down_endpoint(
         )
         .ok_or_else(|| SeError::invalid("stop deadline", "representable microseconds"))?;
     options.timeout = bound.remaining()?;
+    let original_key = input.idempotency_key.clone();
     let reply = BlockingIpcClient::stop(
         endpoint,
         &super::credential::require(files)?,
@@ -206,52 +209,58 @@ pub(super) fn down_endpoint(
             retained_resume,
             mut pending,
         } => {
-            // The fixed reply certifies only the stages finished before its
-            // own channel closes. Never infer final release from decoding it.
+            // The fixed reply precedes native closure. A protected post-transport
+            // record supplies per-lifecycle facts without changing stop/v1.
+            let mut report = None;
+            #[cfg(any(target_os = "linux", windows))]
+            match completion::report(files, endpoint, &original_key, &bound) {
+                Ok(value) => report = value,
+                Err(error) => pending.push(format!(
+                    "Post-transport shutdown facts remain unproved: {error}"
+                )),
+            }
+            if let Some(report) = &report {
+                for reason in &report.pending {
+                    if !pending.contains(reason) {
+                        pending.push(reason.clone());
+                    }
+                }
+                if !report.resources_closed {
+                    pending.push("The original stop's post-transport receipt does not prove complete runtime resource closure.".into());
+                }
+            }
             #[cfg(any(target_os = "linux", windows))]
             if pending.is_empty() {
-                match completion::witness(files, endpoint, &bound) {
+                match completion::witness(files, endpoint, &original_key, &bound) {
                     Ok(()) => achieved.extend([Fact::ResourcesClosed, Fact::LeaseReleased]),
                     Err(error) => pending.push(format!(
                         "Final native resource/lease release remains unproved: {error}"
                     )),
                 }
             }
-            let complete = pending.is_empty()
-                && [
-                    Fact::AgentsStopped,
-                    Fact::ResumeSaved,
-                    Fact::CaptureFlushed,
-                    Fact::DebtFlushed,
-                    Fact::WriterJoined,
-                    Fact::ResourcesClosed,
-                    Fact::LeaseReleased,
-                ]
-                .iter()
-                .all(|fact| achieved.contains(fact));
+            let observed_at = receipt::timestamp(execute::now_us()?)?;
+            let retained_count = retained_resume.len();
+            let stops = stops::render(report.as_ref(), retained_resume, &observed_at, &mut pending);
+            let missing: Vec<_> = [
+                Fact::AgentsStopped,
+                Fact::ResumeSaved,
+                Fact::CaptureFlushed,
+                Fact::DebtFlushed,
+                Fact::WriterJoined,
+                Fact::ResourcesClosed,
+                Fact::LeaseReleased,
+            ]
+            .into_iter()
+            .filter(|fact| !achieved.contains(fact))
+            .collect();
+            if !missing.is_empty() {
+                pending.push(format!("Shutdown did not report these required facts: {missing:?}. Their absence is not a successful stop; preserve this data home and inspect the named obligations."));
+            }
+            let complete = pending.is_empty() && stops.iter().all(|stop| stop.complete);
             let detail = format!(
-                "Achieved: {achieved:?}; retained resume references: {}; pending: {}",
-                retained_resume.len(),
+                "Achieved: {achieved:?}; retained resume references: {retained_count}; pending: {}",
                 pending.join("; ")
             );
-            let observed_at = receipt::timestamp(execute::now_us()?)?;
-            let stops = retained_resume.into_iter().map(|retained| StopFact {
-                target: retained.agent.to_string(),
-                complete: achieved.contains(&Fact::AgentsStopped),
-                witness: Witness {
-                    state: if achieved.contains(&Fact::AgentsStopped) { WitnessState::Witnessed } else { WitnessState::Unknown },
-                    method: "authenticated shutdown coordinator and saved original conversation".into(),
-                    observed_at: observed_at.clone(),
-                    detail: Some(format!("project={}; agent={}; conversation={}", retained.project, retained.agent, retained.conversation)),
-                },
-                resume: ResumeCommand {
-                    ready: false,
-                    mode: "unknown".into(),
-                    reason: Some("The host retained this conversation reference; no provider resume command was witnessed.".into()),
-                    command: None,
-                    argv: None,
-                },
-            }).collect();
             Ok(RuntimeStop {
                 complete,
                 stops,

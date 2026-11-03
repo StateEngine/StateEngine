@@ -5,6 +5,7 @@ use se_store::{Actor, Admission, EventBody, ReadScope, ReadStore, Scope, Snapsho
 
 pub(super) struct Before {
     pub resumes: Vec<RuntimeStopResume>,
+    pub targets: Vec<crate::client::closure::AgentClosure>,
     pub had_process_records: bool,
 }
 
@@ -37,6 +38,7 @@ fn read_before(
         .owner_guard(&lease.files, budget)
         .map_err(|e| store_error(&e))?;
     let mut resumes = Vec::new();
+    let mut targets = Vec::new();
     for process in &inventory.processes {
         let (Actor::Agent(agent), Some(session)) =
             (&process.identity.principal, &process.identity.session)
@@ -100,12 +102,28 @@ fn read_before(
                     resumes.push(retained);
                 }
             }
+            targets.push(crate::client::closure::AgentClosure {
+                project: process.project.clone(),
+                agent: agent.clone(),
+                session: session.clone(),
+                conversation: if native_ref.is_empty() {
+                    None
+                } else {
+                    Some(se_types::ProviderSessionId::new(native_ref.clone())?)
+                },
+                lifecycle: process.identity.record.clone(),
+                witness: None,
+                reason: Some(
+                    "No per-lifecycle exit checkpoint has been read after shutdown.".into(),
+                ),
+            });
             Ok(())
         })();
         super::super::executor::close_read(result, read.close())?;
     }
     Ok(Before {
         resumes,
+        targets,
         had_process_records: inventory.has_process_records,
     })
 }

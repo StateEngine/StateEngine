@@ -55,13 +55,26 @@ pub(super) fn owner_thread(
                         // Pending obligations and close errors stay unresolved;
                         // the writer counts as flushed only when storage drained.
                         let unresolved = (report.pending.len() + report.errors.len()) as u64;
-                        api::DrainReceipt {
+                        let receipt = api::DrainReceipt {
                             generation,
                             pending_notices: 0,
                             unresolved_effects: unresolved,
-                            writer_flushed: matches!(report.storage, core::Read::Present { .. })
+                            writer_flushed: matches!(&report.storage, core::Read::Present { value } if value.writer_joined && value.pending.is_empty())
                                 && unresolved == 0,
+                        };
+                        if !receipt.writer_flushed {
+                            // A failed embedded drain cannot drop native custody or
+                            // free its lease while the application keeps running.
+                            // The returned incomplete receipt requires controlled
+                            // application restart; this dedicated owner thread parks.
+                            let _ = exited.send(receipt);
+                            let _retained = report;
+                            loop { std::thread::park(); }
                         }
+                        // Drop the successfully closed runtime before publishing
+                        // drain completion; the external CLI checks the actual lock.
+                        drop(report);
+                        receipt
                     }
                     Err(_) => api::DrainReceipt {
                         generation,
