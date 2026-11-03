@@ -154,7 +154,11 @@ pub(crate) fn native_error(cause: se_proc::native_ipc::IpcNativeError) -> SeErro
             ),
         }),
     };
-    SeError::new(detail).with_cause(cause)
+    let mut error = SeError::new(detail);
+    if cause.code == se_proc::native_ipc::IpcNativeErrorCode::PeerChanged {
+        error.body = error.body.with_retry(se_types::Retry::AfterReread);
+    }
+    error.with_cause(cause)
 }
 fn native_connect(
     endpoint: &crate::EndpointRecord,
@@ -372,5 +376,46 @@ impl BlockingConnection {
             crate::IpcResult::Output(output) => Ok(*output),
             crate::IpcResult::Error(error) => Err(error.body().clone().into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod peer_error_tests {
+    use super::native_error;
+    use se_proc::native_ipc::{IpcNativeError, IpcNativeErrorCode};
+    use se_types::Retry;
+    #[test]
+    fn changed_peer_requests_rediscovery_and_preserves_its_native_failure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let error = native_error(IpcNativeError {
+            code: IpcNativeErrorCode::PeerChanged,
+            operation: "pin IPC peer process",
+            source: std::io::Error::from_raw_os_error(87),
+        });
+        assert_eq!(error.body.retry(), &Retry::AfterReread);
+        let native = error
+            .cause
+            .as_ref()
+            .and_then(|cause| cause.downcast_ref::<IpcNativeError>())
+            .ok_or("native cause was discarded")?;
+        assert_eq!(native.source.raw_os_error(), Some(87));
+        Ok(())
+    }
+    #[test]
+    fn unreadable_peer_preserves_access_denial_without_a_retry_promise()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let error = native_error(IpcNativeError {
+            code: IpcNativeErrorCode::Unreadable,
+            operation: "pin IPC peer process",
+            source: std::io::Error::from_raw_os_error(5),
+        });
+        assert_eq!(error.body.retry(), &Retry::Never);
+        let native = error
+            .cause
+            .as_ref()
+            .and_then(|cause| cause.downcast_ref::<IpcNativeError>())
+            .ok_or("native cause was discarded")?;
+        assert_eq!(native.source.raw_os_error(), Some(5));
+        Ok(())
     }
 }
