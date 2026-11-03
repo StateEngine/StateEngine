@@ -2,10 +2,10 @@
     dead_code,
     reason = "Shared native fixtures compile the unchanged production adapters."
 )]
-#[path = "../src/compat.rs"]
-mod compat;
 #[path = "../src/route/clock.rs"]
 mod clock;
+#[path = "../src/compat.rs"]
+mod compat;
 #[path = "../src/route/direct.rs"]
 mod direct;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
