@@ -51,7 +51,13 @@ fn exact_turn_retains_original_event_and_source_evidence() -> Check {
     assert_eq!(actual, turn);
     assert_eq!(text, "captured exact-turn");
     assert_eq!(vendor_ref, "exact-turn");
-    assert_eq!(evidence.path.to_local()?, f.home.join("transcript.jsonl"));
+    assert_eq!(
+        evidence
+            .path
+            .ok_or("file-backed turn lost its source path")?
+            .to_local()?,
+        f.home.join("transcript.jsonl")
+    );
     assert_eq!(evidence.incarnation, b"first");
     assert_eq!((evidence.offset, evidence.length), (0, 10));
     assert_eq!(
