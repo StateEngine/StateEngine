@@ -17,6 +17,7 @@ use std::future::Future;
 type Step = OpStep<AnyOutput, Then, CustodyPlan>;
 struct Planned {
     step: Step,
+    observations: Vec<crate::AgentObservationPlan>,
     kernel: Kernel,
     admission: Admission,
     operation: &'static str,
@@ -53,19 +54,38 @@ pub fn execute(
             .await?;
         let Planned {
             step,
+            observations,
             kernel,
             admission,
             operation,
             natural_key,
         } = planned;
         match step {
-            OpStep::Complete(output) => Ok(ExecutedCall {
-                output,
-                write_timings: None,
-                committed: None,
-                capture_commits: Vec::new(),
-                capture_keys: Vec::new(),
-            }),
+            OpStep::Complete(mut output) => {
+                if !observations.is_empty() {
+                    let observe_deadline = deadline.clone();
+                    output = context
+                        .blocking
+                        .run(BlockingClass::Foreground, &deadline, move || {
+                            observe_deadline.remaining()?;
+                            crate::agent_observation::output::observe(
+                                &mut output,
+                                observations,
+                                observe_deadline.at(),
+                            )?;
+                            observe_deadline.remaining()?;
+                            Ok(output)
+                        })
+                        .await?;
+                }
+                Ok(ExecutedCall {
+                    output,
+                    write_timings: None,
+                    committed: None,
+                    capture_commits: Vec::new(),
+                    capture_keys: Vec::new(),
+                })
+            }
             OpStep::Commit { batch, then } => {
                 let identity = WriteIdentity {
                     operation,
@@ -189,9 +209,19 @@ fn plan(phase: se_store::ReadPhase, call: HostedCall) -> Result<Planned> {
             }
         }
     })();
-    let step = close_read(result, read.close())?;
+    let result = result.and_then(|step| {
+        let observations = match &step {
+            OpStep::Complete(output) => {
+                crate::agent_observation::output::prepare(&admission.scope, output, &mut read)?
+            }
+            _ => Vec::new(),
+        };
+        Ok((step, observations))
+    });
+    let (step, observations) = close_read(result, read.close())?;
     Ok(Planned {
         step,
+        observations,
         kernel,
         admission,
         operation,
