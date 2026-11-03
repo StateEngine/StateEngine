@@ -31,6 +31,8 @@ impl HostedRuntime {
         }
         self.fenced
             .store(true, std::sync::atomic::Ordering::Release);
+        self.capture_fenced
+            .store(true, std::sync::atomic::Ordering::Release);
         self.phase = crate::HostPhase::Draining;
         // Clean-close backup uses the SqliteHost's own two-slot reader budget,
         // rather than the runtime's configurable reader. Drain foreground work

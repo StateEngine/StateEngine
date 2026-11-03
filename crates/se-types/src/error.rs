@@ -274,10 +274,11 @@ pub struct ErrorBody {
 }
 impl ErrorBody {
     pub fn new(detail: Detail) -> Self {
-        Self {
-            detail,
-            retry: Retry::Never,
-        }
+        let retry = match &detail {
+            Detail::SessionNotActive(_) => Retry::AfterReread,
+            _ => Retry::Never,
+        };
+        Self { detail, retry }
     }
     pub fn with_retry(mut self, retry: Retry) -> Self {
         self.retry = retry;

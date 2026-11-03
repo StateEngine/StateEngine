@@ -646,29 +646,48 @@ impl ProcessRuntime for NativeProcessRuntime {
         release: &UnwitnessedRelease,
     ) -> ProcResult<ReleasedOwnership> {
         self.inner.apply(&process.key, true, |s| {
-            if s.phase != LifecycleState::StopUnproved {
+            if s.phase != LifecycleState::StopUnproved
+                && !(s.record.is_none()
+                    && matches!(
+                        s.phase,
+                        LifecycleState::Reserved | LifecycleState::Starting | LifecycleState::Lost
+                    ))
+            {
                 return Err(state(
                     &process.key.lifecycle,
                     s.phase,
                     "release_uncontained",
                 ));
             }
+            let scope = if let Some(native) = s.native.as_ref() {
+                native.scope.clone()
+            } else if let Some(checkpoint) = &s.checkpoint {
+                checkpoint.scope.clone()
+            } else {
+                crate::platform::uncreated_scope(&s.reservation)?.0.scope
+            };
             if release.lifecycle != s.reservation.lifecycle
                 || release.generation != s.generation
-                || s.native()?.scope != release.scope
+                || scope != release.scope
                 || !matches!(
-                    release.scope,
-                    ScopeIdentity::LinuxTracked { .. } | ScopeIdentity::MacOsTracked { .. }
+                    scope,
+                    ScopeIdentity::LinuxPrepared { .. }
+                        | ScopeIdentity::LinuxTracked { .. }
+                        | ScopeIdentity::MacOsPrepared { .. }
+                        | ScopeIdentity::MacOsTracked { .. }
                 )
             {
                 return Err(input(
                     "release",
-                    "exact tracked lifecycle, generation and scope required",
+                    "exact uncontained lifecycle, generation and retained scope required",
                 ));
             }
-            // Host has committed its human-only CAS and drained dispatch. Native
-            // retirement sends no signal and never constructs an exit witness.
-            s.native()?.release(false)?;
+            // The host already committed its explicit human-only release CAS.
+            // Closing query/readiness custody sends no signal and proves no exit.
+            if let Some(native) = s.native.as_mut() {
+                native.release(false)?;
+            }
+            s.set_phase(LifecycleState::StopUnproved)?;
             s.released = true;
             s.hub.disable();
             if let Some(record) = &mut s.record {

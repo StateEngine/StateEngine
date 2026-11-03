@@ -14,7 +14,7 @@ use std::num::NonZeroU64;
 pub fn credential_id(plan: &LaunchPlan, purpose: &str) -> Result<RecordId> {
     session_credential_id(&plan.session, purpose)
 }
-fn session_credential_id(session: &se_types::SessionId, purpose: &str) -> Result<RecordId> {
+pub fn session_credential_id(session: &se_types::SessionId, purpose: &str) -> Result<RecordId> {
     let bytes = session
         .canonical_bytes()?
         .ok_or_else(|| scope::unreadable("launch session", "noncanonical identity"))?;
@@ -227,13 +227,37 @@ pub fn transition<R: Snapshot>(
 }
 /// C3: native exec plus the owned stdout init echo have both been witnessed.
 /// Running, session activation and both capabilities become visible atomically.
+pub struct CaptureActivation {
+    pub source: RecordId,
+    pub native_ref: String,
+    pub incarnation: Vec<u8>,
+}
+pub struct CredentialActivation {
+    pub session_request: RecordId,
+    pub http_request: RecordId,
+}
+pub struct Activation {
+    pub capture: Option<CaptureActivation>,
+    pub credentials: CredentialActivation,
+}
 pub fn activate<R: Snapshot>(
     kernel: &Kernel,
     plan: &LaunchPlan,
     previous: &se_store::ProjectionRecord,
     identity: ProcessIdentityRecord,
+    activation: Activation,
     cx: &Cx<'_, R>,
 ) -> Result<AtomicBatch> {
+    let Activation {
+        capture,
+        credentials,
+    } = activation;
+    if plan.capture != capture.is_some() {
+        return Err(se_types::SeError::invalid(
+            "capture activation",
+            "a trusted native transcript pin exactly when capture was consented",
+        ));
+    }
     let containment = identity.containment.clone();
     let observation = previous.current.header.event.clone();
     let mut bodies = vec![
@@ -256,12 +280,26 @@ pub fn activate<R: Snapshot>(
             witnesses: vec![observation],
         })?,
     ];
+    if let Some(capture) = capture {
+        bodies.push(EventBody::CaptureSource {
+            source: capture.source,
+            session: plan.session.clone(),
+            consent: se_store::Consent::Capture,
+            native_ref: capture.native_ref,
+            incarnation: capture.incarnation,
+            expected: Expected::Absent,
+        });
+    }
     for purpose in ["session", "http"] {
         bodies.push(EventBody::CredentialActivated {
             credential: credential_id(plan, purpose)?,
             session: plan.session.clone(),
             expected: revision(1)?,
-            first_request: credential_id(plan, "first-request")?,
+            first_request: if purpose == "session" {
+                credentials.session_request
+            } else {
+                credentials.http_request
+            },
         });
     }
     batch(
@@ -282,17 +320,26 @@ pub fn retire_session<R: Snapshot>(
     reason: String,
     cx: &Cx<'_, R>,
 ) -> Result<AtomicBatch> {
+    retire_binding(kernel, plan.session.clone(), active, reason, cx)
+}
+pub fn retire_binding<R: Snapshot>(
+    kernel: &Kernel,
+    session: se_types::SessionId,
+    active: bool,
+    reason: String,
+    cx: &Cx<'_, R>,
+) -> Result<AtomicBatch> {
     let mut bodies = Vec::with_capacity(3);
     for purpose in ["session", "http"] {
         bodies.push(EventBody::CredentialRevoked {
-            credential: credential_id(plan, purpose)?,
+            credential: session_credential_id(&session, purpose)?,
             expected: revision(if active { 2 } else { 1 })?,
             reason: InputText::Inline(reason.clone()),
         });
     }
     bodies.push(if active {
         EventBody::SessionEnded {
-            session: plan.session.clone(),
+            session: session.clone(),
             expected: revision(2)?,
             reason: InputText::Inline(reason),
             final_turn: None,
@@ -300,7 +347,7 @@ pub fn retire_session<R: Snapshot>(
         }
     } else {
         EventBody::SessionRevoked {
-            session: plan.session.clone(),
+            session: session.clone(),
             expected: revision(1)?,
             reason: InputText::Inline(reason),
         }
@@ -308,9 +355,66 @@ pub fn retire_session<R: Snapshot>(
     batch(
         kernel,
         "agent.launch",
-        phase_key(&plan.input.idempotency_key, "retire-session")?,
-        serde_json::json!({"session":plan.session,"phase":"retire-session"}),
+        phase_key(&session.as_str().parse()?, "retire-session")?,
+        serde_json::json!({"session":session,"phase":"retire-session"}),
         bodies,
+        cx,
+    )
+}
+
+/// Close external admission before potentially failing final transcript capture.
+pub fn revoke_binding<R: Snapshot>(
+    kernel: &Kernel,
+    session: se_types::SessionId,
+    active: bool,
+    cx: &Cx<'_, R>,
+) -> Result<AtomicBatch> {
+    let mut bodies = Vec::with_capacity(2);
+    for purpose in ["session", "http"] {
+        bodies.push(EventBody::CredentialRevoked {
+            credential: session_credential_id(&session, purpose)?,
+            expected: revision(if active { 2 } else { 1 })?,
+            reason: InputText::Inline("native lifecycle cleanup; external admission closed".into()),
+        });
+    }
+    batch(
+        kernel,
+        "agent.launch",
+        phase_key(&session.as_str().parse()?, "revoke-credentials")?,
+        serde_json::json!({"session":session,"phase":"revoke-credentials"}),
+        bodies,
+        cx,
+    )
+}
+/// End the externally revoked session after its final capture completed.
+pub fn end_binding<R: Snapshot>(
+    kernel: &Kernel,
+    session: se_types::SessionId,
+    active: bool,
+    reason: String,
+    cx: &Cx<'_, R>,
+) -> Result<AtomicBatch> {
+    let body = if active {
+        EventBody::SessionEnded {
+            session: session.clone(),
+            expected: revision(2)?,
+            reason: InputText::Inline(reason),
+            final_turn: None,
+            final_cursor: None,
+        }
+    } else {
+        EventBody::SessionRevoked {
+            session: session.clone(),
+            expected: revision(1)?,
+            reason: InputText::Inline(reason),
+        }
+    };
+    batch(
+        kernel,
+        "agent.launch",
+        phase_key(&session.as_str().parse()?, "end-session")?,
+        serde_json::json!({"session":session,"phase":"end-session"}),
+        vec![body],
         cx,
     )
 }
@@ -355,6 +459,89 @@ pub fn advance<R: Snapshot>(
             outcome: change.phase.into(),
             containment,
         }],
+        cx,
+    )
+}
+
+/// Publish reconciliation under successor ownership. Lost is an internal
+/// transition in the same FULL batch, so no caller observes a temporary grant.
+pub fn reconcile<R: Snapshot>(
+    kernel: &Kernel,
+    previous: se_store::ProjectionRecord,
+    identity: ProcessIdentityRecord,
+    target: ProcessState,
+    reason: String,
+    cx: &Cx<'_, R>,
+) -> Result<AtomicBatch> {
+    let from = match previous.current.body {
+        EventBody::ProcessRegistered { initial, .. } => initial,
+        EventBody::ProcessTransition { to, .. } => to,
+        _ => {
+            return Err(scope::unreadable(
+                "reconciliation projection",
+                "wrong process event",
+            ));
+        }
+    };
+    if !matches!(
+        target,
+        ProcessState::Running | ProcessState::StopUnproved | ProcessState::Exited
+    ) {
+        return Err(se_types::SeError::invalid(
+            "reconciliation result",
+            "running, proved exited or explicitly unproved",
+        ));
+    }
+    let key: IdempotencyKey =
+        format!("reconcile-{}-{}", cx.admission.generation, identity.record).parse()?;
+    let mut bodies = Vec::new();
+    let mut expected = previous.revision;
+    let mut observation = previous.current.header.event;
+    let mut current = from;
+    if target != ProcessState::Exited
+        && from != ProcessState::Lost
+        && !(from == ProcessState::StopRequested && target == ProcessState::StopUnproved)
+    {
+        bodies.push(EventBody::ProcessTransition {
+            process: identity.record.clone(),
+            identity: Box::new(identity.clone()),
+            expected: Expected::Revision(expected),
+            from,
+            to: ProcessState::Lost,
+            observation,
+            outcome: "successor host reconciling retained custody".into(),
+            containment: identity.containment.clone(),
+        });
+        expected = Revision {
+            value: NonZeroU64::new(
+                expected
+                    .value
+                    .get()
+                    .checked_add(1)
+                    .ok_or_else(|| scope::unreadable("recovery revision", "exhausted"))?,
+            )
+            .ok_or_else(|| scope::unreadable("recovery revision", "zero"))?,
+        };
+        observation = kernel.facts()?.event.clone();
+        current = ProcessState::Lost;
+    }
+    let lifecycle = identity.record.clone();
+    bodies.push(EventBody::ProcessTransition {
+        process: lifecycle.clone(),
+        identity: Box::new(identity.clone()),
+        expected: Expected::Revision(expected),
+        from: current,
+        to: target,
+        observation,
+        outcome: reason,
+        containment: identity.containment,
+    });
+    batch(
+        kernel,
+        "agent.reconcile",
+        key,
+        serde_json::json!({"lifecycle":lifecycle,"generation":cx.admission.generation,"result":format!("{target:?}")}),
+        bodies,
         cx,
     )
 }

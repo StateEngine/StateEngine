@@ -52,6 +52,16 @@ impl Deadline {
     pub(crate) fn next_call(&self) -> Result<Self> {
         Self::new(CALL_TIMEOUT, Arc::clone(&self.cancelled))
     }
+    /// Retained native supervision keeps the original absolute deadline while
+    /// a disconnected client can no longer cancel its cleanup ownership.
+    #[cfg(feature = "listener")]
+    pub(crate) fn retained(&self) -> Self {
+        Self {
+            at: self.at,
+            budget: self.budget,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
     pub fn at(&self) -> Instant {
         self.at
     }

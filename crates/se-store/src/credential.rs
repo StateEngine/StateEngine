@@ -67,3 +67,34 @@ pub(crate) fn read_at(
     drop(q);
     Ok(value)
 }
+/// Whether a later launch was prepared for this credential's agent after its
+/// session: a still-prepared credential is then no longer the current launch.
+pub(crate) fn superseded_at(
+    c: &rusqlite::Connection,
+    info: &StoreInfo,
+    hash: [u8; 32],
+) -> StoreResult<bool> {
+    if info.state != StoreState::Ready {
+        return Err(fail(
+            StoreErrorCode::NotReady,
+            "credential lookup store is in maintenance",
+        ));
+    }
+    c.query_row("SELECT EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.project_id=c.project_id AND s.session_id=c.session_id JOIN sessions later ON later.project_id=s.project_id AND later.agent_id=s.agent_id AND later.first_seq>s.first_seq WHERE c.secret_sha256=?)",[hash.as_slice()],|r|r.get(0)).map_err(sql)
+}
+/// Whether this credential's agent, in any of its sessions, has a process
+/// whose stop reconciliation could not prove and the owner has not released:
+/// every credential of that agent stays fenced, a successor launch included.
+pub(crate) fn stop_unproved_at(
+    c: &rusqlite::Connection,
+    info: &StoreInfo,
+    hash: [u8; 32],
+) -> StoreResult<bool> {
+    if info.state != StoreState::Ready {
+        return Err(fail(
+            StoreErrorCode::NotReady,
+            "credential lookup store is in maintenance",
+        ));
+    }
+    c.query_row("SELECT EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.project_id=c.project_id AND s.session_id=c.session_id JOIN processes p ON p.project_id=c.project_id AND p.state='stop-unproved' AND p.ownership_released=0 JOIN process_data d ON d.event_seq=p.last_seq AND d.principal_id=s.agent_id WHERE c.secret_sha256=?)",[hash.as_slice()],|r|r.get(0)).map_err(sql)
+}

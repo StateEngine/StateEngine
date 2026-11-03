@@ -170,6 +170,53 @@ pub fn launch<R: Snapshot>(
             .map(|_| unreachable!());
         }
     };
+    let conversation = if input.fresh {
+        Read::Absent {
+            checked: "an explicitly new provider conversation was requested".into(),
+        }
+    } else {
+        match &control.latest_session {
+            Read::Absent { checked } => Read::Absent {
+                checked: checked.clone(),
+            },
+            Read::Present { value } => {
+                // Only an activated conversation is resumable. A revoked
+                // preparation is not silently replaced with a new conversation.
+                if !matches!(
+                    value.current.body,
+                    EventBody::SessionActivated { .. } | EventBody::SessionEnded { .. }
+                ) {
+                    return Err(SeError::invalid(
+                        "resume conversation",
+                        "the last session never activated; use --new to explicitly start another conversation",
+                    ));
+                }
+                let original = value.original.as_deref().unwrap_or(&value.current);
+                match &original.body {
+                    EventBody::SessionPrepared {
+                        agent: owner,
+                        provider,
+                        native_ref,
+                        ..
+                    } if owner == &agent && *provider == profile.provider => Read::Present {
+                        value: native_ref.parse()?,
+                    },
+                    _ => {
+                        return Err(scope::unreadable(
+                            "resume conversation",
+                            "the original provider binding is unavailable or changed",
+                        ));
+                    }
+                }
+            }
+            Read::Unreadable { .. } | Read::Unknown { .. } => {
+                return Err(scope::unreadable(
+                    "resume conversation",
+                    "the latest provider binding is unreadable; repair it or choose --new explicitly",
+                ));
+            }
+        }
+    };
     let bytes = seed
         .canonical_bytes()?
         .ok_or_else(|| SeError::invalid("launch allocation", "canonical UUIDv7 event identity"))?;
@@ -184,9 +231,7 @@ pub fn launch<R: Snapshot>(
         cwd,
         profile,
         resolved,
-        conversation: Read::Absent {
-            checked: "no previous provider session selected".into(),
-        },
+        conversation,
         capture: true,
         control,
         seed,

@@ -397,6 +397,8 @@ impl HostedRuntime {
         self.phase = crate::HostPhase::Ready;
         self.fenced
             .store(false, std::sync::atomic::Ordering::Release);
+        self.capture_fenced
+            .store(false, std::sync::atomic::Ordering::Release);
     }
     async fn publish_listener(
         &mut self,

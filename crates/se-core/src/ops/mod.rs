@@ -9,6 +9,7 @@ pub mod agent_stop;
 pub mod process_commit;
 pub mod process_plan;
 pub mod project_remove;
+pub mod remove_commit;
 pub mod session_commit;
 pub mod stop_plan;
 pub use agent_launch::{AgentLaunch, LaunchResult};

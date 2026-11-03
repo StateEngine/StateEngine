@@ -63,6 +63,9 @@ pub struct HostedRuntime {
     pub(crate) connection_failures: Option<u64>,
     pub(crate) last_connection_error: Option<se_types::ErrorBody>,
     pub(crate) fenced: Arc<std::sync::atomic::AtomicBool>,
+    /// Trusted capture stays open after request admission closes, so the
+    /// coordinator's shutdown can make its final capture; storage drain fences it.
+    pub(crate) capture_fenced: Arc<std::sync::atomic::AtomicBool>,
     pub(crate) response_bytes: std::num::NonZeroU32,
     pub(crate) limits: crate::HostLimits,
     pub(crate) state_directory: PathBuf,
@@ -315,6 +318,7 @@ fn prepare(
         connection_failures: Some(0),
         last_connection_error: None,
         fenced: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        capture_fenced: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         sources: TranscriptBindings::new(options.limits.sessions.get() as usize),
         response_bytes: options.limits.response_bytes,
         limits: options.limits,

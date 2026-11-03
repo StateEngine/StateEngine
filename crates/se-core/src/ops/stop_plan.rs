@@ -16,7 +16,7 @@ pub struct StopPlan {
     pub projects: Vec<Named<ProjectId>>,
     pub targets: Vec<ControlAgent>,
 }
-fn budget(after: Option<se_types::Cursor>) -> Result<ReadBudget> {
+pub(crate) fn budget(after: Option<se_types::Cursor>) -> Result<ReadBudget> {
     Ok(ReadBudget {
         page: PageRequest {
             after,

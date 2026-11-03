@@ -59,6 +59,10 @@ impl NativeProcessRuntime {
     }
 }
 impl ProviderStdioApi for NativeProcessRuntime {
+    fn stdio_identity(&self, owner: &OwnedProcess) -> ProcResult<StdioIdentity> {
+        self.inner
+            .apply(&owner.key, false, |slot| Ok(identity(slot)))
+    }
     fn create_stdio(&self, owner: &OwnedProcess, config: StdioConfig) -> ProcResult<ProviderStdio> {
         self.inner.apply(&owner.key, false, |slot| {
             let result = (|| {

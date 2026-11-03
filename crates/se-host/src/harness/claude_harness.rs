@@ -344,28 +344,37 @@ impl Harness for ClaudeHarness {
             })
         })
     }
-    fn close_binding<'a>(&'a self, binding: HarnessBinding, cx: CallContext) -> HostFuture<'a, ()> {
+    fn close_binding<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: CallContext,
+    ) -> HostFuture<'a, ()> {
         Box::pin(async move {
-            let binding = binding
-                .claude
-                .ok_or_else(|| SeError::invalid("provider binding", "a headless Claude binding"))?;
-            // A reader holds its stream across a pending read, so stop the
-            // readers before releasing the streams they hold.
+            let binding = claude_binding(binding)?;
+            // A reader holds its stream across a pending read, so stop every
+            // reader before releasing the streams they hold. Both steps are
+            // repeatable: a retry finds no readers and closes what is left.
             let readers = std::mem::take(&mut *binding.drains.lock().map_err(|_| poisoned())?);
-            for reader in readers {
+            for reader in &readers {
                 reader.abort();
+            }
+            let mut failed = None;
+            for reader in readers {
                 match reader.await {
                     Ok(()) => {}
                     Err(joined) if joined.is_cancelled() => {}
                     Err(joined) => {
-                        return Err(se_core::scope::unreadable(
-                            "provider stream reader",
-                            &joined.to_string(),
-                        ));
+                        failed.get_or_insert_with(|| {
+                            se_core::scope::unreadable(
+                                "provider stream reader",
+                                &joined.to_string(),
+                            )
+                        });
                     }
                 }
             }
-            binding.io.close(&binding.transport, cx).await
+            binding.io.close(&binding.transport, cx).await?;
+            failed.map_or(Ok(()), Err)
         })
     }
 }

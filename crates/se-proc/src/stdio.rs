@@ -127,6 +127,16 @@ pub trait StdioSink: Send + Sync {
 }
 /// Bounded native steps only. Future/caller drop never frees kernel-owned buffers.
 pub trait ProviderStdioApi: ProcessRuntime {
+    /// Metadata of the retained lifecycle, including a prepared scope before
+    /// a root is published. A native implementation must fence the reference.
+    fn stdio_identity(&self, owner: &OwnedProcess) -> ProcResult<StdioIdentity> {
+        let record = self.describe(owner)?;
+        Ok(StdioIdentity {
+            lifecycle: record.lifecycle,
+            host: record.host,
+            generation: record.generation,
+        })
+    }
     fn create_stdio(&self, owner: &OwnedProcess, config: StdioConfig) -> ProcResult<ProviderStdio>;
     /// Rebind an existing/recovered/staged port; creates no pipe and starts no I/O.
     fn attach_stdio(&self, owner: &OwnedProcess, config: StdioConfig) -> ProcResult<StdioState>;

@@ -86,6 +86,18 @@ impl ReadPhase {
         crate::credential::read_at(&self.db, &self.info, hash)
     }
 
+    /// On this pin: whether the agent prepared a later launch after this
+    /// credential's session, so a still-prepared credential is superseded.
+    pub fn credential_superseded(&self, hash: [u8; 32]) -> StoreResult<bool> {
+        crate::credential::superseded_at(&self.db, &self.info, hash)
+    }
+
+    /// On this pin: whether this credential's agent has an unreleased
+    /// StopUnproved process in any session, which fences all its operations.
+    pub fn credential_stop_unproved(&self, hash: [u8; 32]) -> StoreResult<bool> {
+        crate::credential::stop_unproved_at(&self.db, &self.info, hash)
+    }
+
     /// Transfer this exact pin and its reservation to the admitted snapshot.
     /// This consumes the pre-admission phase; it cannot be reused afterward.
     pub fn into_snapshot(self, scope: ReadScope) -> StoreResult<SqliteSnapshot> {

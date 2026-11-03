@@ -49,6 +49,18 @@ pub trait CustodyExecutor: Send + Sync {
         admission: Admission,
         deadline: &'a Deadline,
     ) -> crate::HostFuture<'a, se_core::ops::AnyOutput>;
+    /// At host shutdown, after request admission closed and before capture is
+    /// fenced and storage drains: fence new launches, stop native lifecycles
+    /// with their final capture, and join monitors. An incomplete report keeps
+    /// the host's lease and writer.
+    fn shutdown<'a>(&'a self, deadline: &'a Deadline) -> crate::HostFuture<'a, CustodyShutdown>;
+}
+/// What the coordinator's shutdown proved: `complete` only when every native
+/// lifecycle it held stopped or was handed back; `pending` names the rest.
+#[derive(Clone, Debug, Default)]
+pub struct CustodyShutdown {
+    pub complete: bool,
+    pub pending: Vec<String>,
 }
 pub struct ExecutionCall {
     pub admitted: HostedCall,
