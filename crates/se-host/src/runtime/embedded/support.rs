@@ -9,7 +9,7 @@ use secode_stateengine_api as api;
 use sha2::{Digest, Sha256 as Hasher};
 use std::{
     num::{NonZeroU16, NonZeroU32},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicBool},
     time::Duration,
 };
@@ -143,4 +143,41 @@ fn positive(value: u32) -> Result<NonZeroU32> {
 }
 fn native(error: impl std::fmt::Debug) -> SeError {
     se_core::scope::unreadable("native host self", &format!("{error:?}"))
+}
+
+const STORE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Read-only: the store's identity/schema and the next owner generation.
+pub(super) fn observe_store(home: PathBuf) -> se_types::Result<Option<(se_store::StoreInfo, u64)>> {
+    use se_store::ReadStore;
+    let options = se_store::StoreOptions {
+        state_directory: home,
+        busy_timeout: STORE_BUSY_TIMEOUT,
+    };
+    let capacity = std::num::NonZeroU32::MIN.saturating_add(1);
+    let store = |e: Box<se_store::StoreError>| se_core::store_error::store_error(&e);
+    let reader = match se_store::SqliteFactory::open_reader_with_capacity(&options, capacity)
+        .map_err(store)?
+    {
+        se_types::Read::Present { value } => value,
+        se_types::Read::Absent { .. } => return Ok(None),
+        se_types::Read::Unreadable { reason, .. } => {
+            return Err(se_core::scope::unreadable("state store", &reason));
+        }
+        se_types::Read::Unknown { what } => {
+            return Err(se_core::scope::unreadable("state store", &what));
+        }
+    };
+    let info = reader.info().map_err(store)?;
+    let next = match reader.runtime_owner().map_err(store)? {
+        se_types::Read::Present { value } => value.generation.get().saturating_add(1),
+        se_types::Read::Absent { .. } => 1,
+        se_types::Read::Unreadable { reason, .. } => {
+            return Err(se_core::scope::unreadable("runtime owner", &reason));
+        }
+        se_types::Read::Unknown { what } => {
+            return Err(se_core::scope::unreadable("runtime owner", &what));
+        }
+    };
+    Ok(Some((info, next)))
 }

@@ -225,7 +225,12 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
             let until = Instant::now() + cx.timeout;
             let mut writer = bounded(&cx, port.stdin.lock()).await?;
             if !writer.open {
-                return Err(SeError::invalid("provider input", "an open stdin stream"));
+                let expected = if writer.pending.is_some() {
+                    "close the streams: a previous write did not finish"
+                } else {
+                    "an open stdin stream"
+                };
+                return Err(SeError::invalid("provider input", expected));
             }
             let ticket = match self.runtime.begin_write(&port.port, bytes) {
                 Ok(ticket) => ticket,
@@ -317,6 +322,8 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
             let Some(completion) = self.settle(port, ticket, until).await? else {
                 return Err(deadline_exceeded(&cx));
             };
+            // Stdin closure can succeed while an abandoned write's terminal
+            // ticket remains in pending; All-close still owns that release.
             self.release(port, writer.closing.take().ok_or_else(poisoned)?, true);
             match completion {
                 StdioCompletion::Close { result: Ok(_), .. } => {

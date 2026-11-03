@@ -15,17 +15,15 @@ use owner::{OwnerInputs, Started, owner_thread};
 use se_types as core;
 use secode_stateengine_api as api;
 use std::{
-    path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
-use support::{api_error, refused, unavailable};
+use support::{api_error, observe_store, refused, unavailable};
 use tokio::{runtime::Handle, sync::oneshot};
 
 /// se-store verifies this exact `PRAGMA application_id` before `info()`
 /// returns (se-store connection.rs `APP`), so a successful read implies it.
 const STORE_APPLICATION_ID: u32 = 0x5345_4e47;
-const STORE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Configured with SE Code's runtime; creates no runtime of its own.
 pub struct EmbeddedFactory {
@@ -165,41 +163,6 @@ impl api::HostFactory for EmbeddedFactory {
     ) -> api::HostFuture<'a, api::Receipt<api::HandoverReport>> {
         Box::pin(async { Err(unavailable("live handover")) })
     }
-}
-
-/// Read-only: the store's identity/schema and the next owner generation.
-fn observe_store(home: PathBuf) -> core::Result<Option<(se_store::StoreInfo, u64)>> {
-    use se_store::ReadStore;
-    let options = se_store::StoreOptions {
-        state_directory: home,
-        busy_timeout: STORE_BUSY_TIMEOUT,
-    };
-    let capacity = std::num::NonZeroU32::MIN.saturating_add(1);
-    let store = |e: Box<se_store::StoreError>| se_core::store_error::store_error(&e);
-    let reader = match se_store::SqliteFactory::open_reader_with_capacity(&options, capacity)
-        .map_err(store)?
-    {
-        core::Read::Present { value } => value,
-        core::Read::Absent { .. } => return Ok(None),
-        core::Read::Unreadable { reason, .. } => {
-            return Err(se_core::scope::unreadable("state store", &reason));
-        }
-        core::Read::Unknown { what } => {
-            return Err(se_core::scope::unreadable("state store", &what));
-        }
-    };
-    let info = reader.info().map_err(store)?;
-    let next = match reader.runtime_owner().map_err(store)? {
-        core::Read::Present { value } => value.generation.get().saturating_add(1),
-        core::Read::Absent { .. } => 1,
-        core::Read::Unreadable { reason, .. } => {
-            return Err(se_core::scope::unreadable("runtime owner", &reason));
-        }
-        core::Read::Unknown { what } => {
-            return Err(se_core::scope::unreadable("runtime owner", &what));
-        }
-    };
-    Ok(Some((info, next)))
 }
 
 impl EmbeddedHost {
