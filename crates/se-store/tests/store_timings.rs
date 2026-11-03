@@ -77,6 +77,7 @@ fn group_promotion_and_replay_attempt_timings_keep_distinct_durability() -> Chec
             session: sid.clone(),
             agent: f.a.clone(),
             provider: Provider::Claude,
+            surface: None,
             native_ref: "timing-session".into(),
             consent: Consent::Capture,
             generation: 1,

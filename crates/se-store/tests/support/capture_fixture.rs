@@ -15,6 +15,7 @@ pub fn prepared(_f: &Fixture, id: &SessionId, agent: &se_types::AgentId) -> Even
         session: id.clone(),
         agent: agent.clone(),
         provider: Provider::Claude,
+        surface: None,
         native_ref: format!("provider-{}", agent.as_str()),
         consent: Consent::Capture,
         generation: 1,
