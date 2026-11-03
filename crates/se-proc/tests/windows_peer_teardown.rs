@@ -188,6 +188,7 @@ impl PipeChild {
     }
 }
 
+/// Protects: G6 — an exited real pipe peer requests rediscovery without inventing process absence.
 #[test]
 fn exited_pipe_peer_is_changed_even_when_its_process_pin_cannot_be_read() -> Check {
     let mut fixture = PipeChild::new()?;
@@ -214,6 +215,7 @@ fn exited_pipe_peer_is_changed_even_when_its_process_pin_cannot_be_read() -> Che
     Ok(())
 }
 
+/// Protects: G4/G6 — a live access-denied pipe peer retains its native error instead of becoming absent.
 #[test]
 fn a_live_but_denied_peer_stays_unreadable_and_never_becomes_absent() -> Check {
     let mut fixture = PipeChild::new()?;
@@ -273,6 +275,7 @@ fn a_live_but_denied_peer_stays_unreadable_and_never_becomes_absent() -> Check {
     Ok(())
 }
 
+/// Protects: G6 — bounded observation joins each real child teardown to the same birth identity and exit.
 #[test]
 fn bounded_read_joins_real_child_teardown_to_the_exact_native_exit() -> Check {
     for _ in 0..32 {
@@ -315,6 +318,7 @@ fn bounded_read_joins_real_child_teardown_to_the_exact_native_exit() -> Check {
     Ok(())
 }
 
+/// Protects: G6 — native consumer children connect a real pipe and exit only on their own stdin EOF.
 #[test]
 #[ignore = "Spawned only by the real native peer teardown consumers"]
 fn windows_pipe_child() -> Check {
