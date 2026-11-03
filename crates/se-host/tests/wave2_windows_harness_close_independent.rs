@@ -1,6 +1,8 @@
 //! Native Windows process-boundary judge; a tiny protocol fixture emits one
 //! Claude init echo, then idles. The real ClaudeHarness aborts its drain tasks.
 //! This is transport custody evidence, not real-provider journey qualification.
+//! Build with cargo, then run the produced test exe DIRECTLY: cargo's Windows
+//! job object denies the breakaway required by the native process boundary.
 #![cfg(windows)]
 use se_host::{
     CallContext, ClaudeHarness, Harness, HarnessAttach, HarnessKind, HarnessRequest, ProbeRequest,
@@ -15,11 +17,64 @@ use std::{
     time::{Duration, Instant},
 };
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
+trait Step<T> {
+    fn step(self, step: impl std::fmt::Display) -> Check<T>;
+}
+impl<T, E: std::fmt::Display> Step<T> for Result<T, E> {
+    fn step(self, step: impl std::fmt::Display) -> Check<T> {
+        self.map_err(|error| format!("{step}: {error}").into())
+    }
+}
+fn phase(step: &str) {
+    eprintln!("native harness judge: {step}");
+}
+fn clean_files(root: &std::path::Path) -> Check {
+    // rustc on MSVC may also emit a PDB. Inspect every immediate entry before
+    // removing any; never recurse or follow a link, and preserve surprises.
+    let entries = fs::read_dir(root)
+        .step(format!("inspect fixture {}", root.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .step("read fixture directory entries")?;
+    let names = entries
+        .iter()
+        .map(|entry| entry.file_name())
+        .collect::<Vec<_>>();
+    eprintln!(
+        "native harness judge: cleanup {} entries {names:?}",
+        root.display()
+    );
+    for entry in &entries {
+        let path = entry.path();
+        let kind = entry
+            .file_type()
+            .step(format!("inspect fixture entry {}", path.display()))?;
+        if !kind.is_file()
+            || !matches!(
+                entry.file_name().to_str(),
+                Some("provider.rs" | "provider.exe" | "provider.pdb")
+            )
+        {
+            return Err(format!(
+                "fixture cleanup preserved unexpected entry {} (all entries {names:?})",
+                path.display()
+            )
+            .into());
+        }
+    }
+    for entry in entries {
+        let path = entry.path();
+        fs::remove_file(&path).step(format!("remove owned fixture file {}", path.display()))?;
+    }
+    fs::remove_dir(root).step(format!("remove empty owned fixture {}", root.display()))
+}
 fn native(e: ProcError) -> String {
     format!("{e:?}")
 }
 fn context() -> Check<CallContext> {
-    Ok(CallContext::new(se_types::Generation::new(1)?, Duration::from_secs(10)))
+    Ok(CallContext::new(
+        se_types::Generation::new(1)?,
+        Duration::from_secs(10),
+    ))
 }
 struct Exit;
 impl ExitSink for Exit {
@@ -136,13 +191,15 @@ fn main(){
  std::io::stdout().flush().unwrap();
  loop{std::thread::park_timeout(std::time::Duration::from_secs(60));}
 }"#,
-    )?;
+    )
+    .step(format!("write native helper source {}", source.display()))?;
     let status = std::process::Command::new("rustc")
         .arg("--edition=2024")
         .arg(&source)
         .arg("-o")
         .arg(&exe)
-        .status()?;
+        .status()
+        .step(format!("run rustc for {}", exe.display()))?;
     if !status.success() {
         return Err("native protocol helper compilation failed".into());
     }
@@ -153,10 +210,22 @@ fn main(){
 #[test]
 fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Check {
     let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
+    let root = std::env::temp_dir().join(format!(
+        "5d-harness-close-{}-{}",
+        std::process::id(),
+        se_types::hex_lower(&nonce)
+    ));
+    eprintln!(
+        "native harness judge: exclusively creating fresh fixture {}",
+        root.display()
+    );
+    fs::create_dir(&root).step(format!(
+        "create fresh fixture {}; existing directories are never reused",
+        root.display()
+    ))?;
     let root =
-        std::env::temp_dir().join(format!("5d-harness-close-{}", se_types::hex_lower(&nonce)));
-    fs::create_dir(&root)?;
-    let root = fs::canonicalize(root)?;
+        fs::canonicalize(&root).step(format!("canonicalize fresh fixture {}", root.display()))?;
+    phase("compile helper");
     let executable = helper(&root)?;
     let machine = MachineId::new("independent-harness-close")?;
     let host = HostInstanceId(nonce);
@@ -165,7 +234,8 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
         NativeProcessRuntime::open(HostConfig {
             machine: machine.clone(),
             instance: host,
-            helper_executable: std::env::current_exe()?,
+            helper_executable: std::env::current_exe()
+                .step("resolve native runtime helper executable")?,
             linux_delegation: LinuxDelegation::CurrentScope,
             limits: ResourceLimits {
                 max_lifecycles: 2,
@@ -259,13 +329,23 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
         generation,
         released: false,
     };
-    let streams = io.open(&scope.process, &identity)?;
+    phase("open native stdio");
+    let streams = io
+        .open(&scope.process, &identity)
+        .step("open native stdio")?;
     runtime
         .bind_stdio(&prepared.prepared, streams.child)
         .map_err(native)?;
+    phase("begin native child launch");
     let ticket = match runtime.begin_launch(prepared.prepared) {
         LaunchStart::Pending { ticket, .. } => ticket,
-        LaunchStart::Failed(failure) => return Err(native(failure.error).into()),
+        LaunchStart::Failed(failure) => {
+            return Err(format!(
+                "begin native child launch (run this exe directly outside cargo job): {:?}",
+                failure.error
+            )
+            .into());
+        }
     };
     let end = Instant::now() + Duration::from_secs(10);
     let launched = loop {
@@ -280,9 +360,16 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
     let engine = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .max_blocking_threads(2)
-        .build()?;
+        .build()
+        .step("build current-thread Tokio runtime")?;
     engine.block_on(async {
-        let harness = ClaudeHarness::new(io, std::env::current_exe()?, root.clone(), 43210);
+        phase("probe actual ClaudeHarness");
+        let harness = ClaudeHarness::new(
+            io,
+            std::env::current_exe().step("resolve harness hook executable")?,
+            root.clone(),
+            43210,
+        );
         harness
             .probe(
                 ProbeRequest {
@@ -291,7 +378,9 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
                 },
                 context()?,
             )
-            .await?;
+            .await
+            .step("probe actual ClaudeHarness")?;
+        phase("attach actual ClaudeHarness");
         let outcome = harness
             .attach(
                 HarnessAttach {
@@ -305,7 +394,9 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
                 },
                 context()?,
             )
-            .await?;
+            .await
+            .step("attach actual ClaudeHarness")?;
+        phase("observe both idle drain tickets");
         let until = Instant::now() + Duration::from_secs(5);
         let pending = loop {
             let state = runtime
@@ -327,13 +418,17 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
         // Single-thread runtime: stop/witness the child synchronously without polling
         // either drain again. Native completion can arrive, but its future still owns
         // the ticket when the real harness aborts and joins both tasks next.
-        let _witness = scope.stop()?;
+        phase("stop exact native child before polling drains");
+        let _witness = scope.stop().step("stop exact native child")?;
+        phase("abort and join actual harness drains");
         let closed = harness.close_binding(&outcome.binding, context()?).await;
         let released = runtime
             .stdio_state(&scope.process)
             .map_err(native)?
             .is_none();
-        scope.cleanup()?; // even a red result cannot leak kernel operations or a child
+        scope
+            .cleanup()
+            .step("release exact native fixture custody")?; // even a red result cannot leak kernel operations or a child
         assert!(
             closed.is_ok(),
             "real harness close lost idle operations {pending:?}: {closed:?}"
@@ -345,8 +440,6 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
     // Only ordinary files were created here. Preserve the fixture on any failure.
-    fs::remove_file(root.join("provider.exe"))?;
-    fs::remove_file(root.join("provider.rs"))?;
-    fs::remove_dir(root)?;
+    clean_files(&root)?;
     Ok(())
 }
