@@ -21,7 +21,7 @@ impl SqliteFactory {
     ) -> StoreResult<Read<(SqliteReader, ReadPhase)>> {
         Self::existing_finish(o, crate::read_slots::ReadSlots::default(), |reader, db| {
             let slot = reader.slots.acquire()?;
-            let phase = reader.read_phase_on(db, slot)?;
+            let phase = reader.read_phase_on(slot, db)?;
             Ok((reader, phase))
         })
     }
