@@ -104,7 +104,9 @@ impl LaunchCoordinator {
                 if controls.len() >= 128
                     && let Some(old) = controls
                         .iter()
-                        .find(|(_, c)| c.ready.borrow().is_some())
+                        .find(|(_, c)| {
+                            c.ready.borrow().is_some() && !c.retryable.load(Ordering::Acquire)
+                        })
                         .map(|(k, _)| k.clone())
                 {
                     controls.remove(&old);
