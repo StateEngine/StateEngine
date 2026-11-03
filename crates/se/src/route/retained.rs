@@ -23,12 +23,13 @@ pub(super) fn select<R: ReadStore>(
                 "current directory exceeds the 64-ancestor lookup budget",
             ));
         }
+        let root = se_proc::canonicalize_path(ancestor).map_err(|error| {
+            se_core::scope::unreadable("retained project root", &error.to_string())
+        })?;
         let records = super::select::inventory(
             reader,
             admission,
-            Some(RemovedProjectQuery::Root(NativePath::from_local(
-                ancestor.into(),
-            )?)),
+            Some(RemovedProjectQuery::Root(NativePath::from_local(root)?)),
         )?;
         if !records.is_empty() {
             return Ok(records);

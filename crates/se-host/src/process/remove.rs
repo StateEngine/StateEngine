@@ -18,7 +18,15 @@ impl LaunchCoordinator {
             "{:?}/{:?}/{}",
             admission.scope, admission.actor, plan.input.idempotency_key
         );
-        let intent=Sha256::digest(serde_json::to_vec(&serde_json::json!({"operation":"project.remove","input":plan.input,"scope":format!("{:?}",admission.scope)})).map_err(|e|error("removal request intent",e))?).into();
+        let intent = Sha256::digest(
+            serde_json::to_vec(&serde_json::json!({
+                "operation": "project.remove",
+                "input": plan.input,
+                "scope": format!("{:?}", admission.scope),
+            }))
+            .map_err(|e| error("removal request intent", e))?,
+        )
+        .into();
         let coordinator = Arc::downgrade(self);
         match self
             .supervise_control(key, intent, deadline, move |deadline| {
@@ -96,8 +104,18 @@ impl LaunchCoordinator {
             idempotency_key:plan.input.idempotency_key,scope:scope.into(),
             outcome:if partial{"partial"}else if projects.is_empty(){"absent"}else{"removed"}.into(),projects,
             runtime:RemovedRuntime{action:"left-running".into(),process,witness:runtime_witness},
-            machine_credential:RemovedMachineCredential{state:"kept".into(),witness:unobserved("not-applicable","The outside CLI retires the machine credential only after standalone exit is witnessed.")},
-            next:RemovalNext{text:"Come back later with se init, or remove the installed executable with se uninstall.".into(),command:"se init".into(),argv:vec!["se".into(),"init".into()]},
+            machine_credential: RemovedMachineCredential {
+                state: "kept".into(),
+                witness: unobserved(
+                    "not-applicable",
+                    "The outside CLI retires the machine credential only after standalone exit is witnessed.",
+                ),
+            },
+            next: RemovalNext {
+                text: "Come back later with se init, or remove the installed executable with se uninstall.".into(),
+                command: "se init".into(),
+                argv: vec!["se".into(), "init".into()],
+            },
         })
     }
     async fn remove_project(
@@ -404,7 +422,11 @@ impl LaunchCoordinator {
             });
         }
         if !inventory.effects.is_empty() {
-            row.remaining.push(obligation("pending effects","Pre-existing effect delivery or settlement remains outstanding; registration is preserved.",None));
+            row.remaining.push(obligation(
+                "pending effects",
+                "Pre-existing effect delivery or settlement remains outstanding; registration is preserved.",
+                None,
+            ));
         }
         if !row.remaining.is_empty() {
             return Ok(());
@@ -464,7 +486,11 @@ impl LaunchCoordinator {
             Err(error) => {
                 row.event_id = Some(receipt.primary_event);
                 row.outcome = "partial".into();
-                row.remaining.push(obligation("committed registration removal",&format!("The removal committed, but its receipt time is unavailable: {error}; retry the original key."),None));
+                row.remaining.push(obligation(
+                    "committed registration removal",
+                    &format!("The removal committed, but its receipt time is unavailable: {error}; retry the original key."),
+                    None,
+                ));
                 return Ok(());
             }
         };

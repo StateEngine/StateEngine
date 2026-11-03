@@ -156,7 +156,12 @@ pub fn apply<R: ReadStore>(
             }
         }
     }
-    let cwd = std::fs::canonicalize(&cx.cwd)
+    let cwd = se_proc::canonicalize_path(&cx.cwd)
+        .map_err(|e| scope::unreadable("current directory", &e.to_string()))?;
+    // Ancestry comparisons need one prefix form, including verbatim-only
+    // Windows children of ordinary roots. Retained exact lookup uses the
+    // ordinary-consumer representation above, matching init's stored paths.
+    let ancestry_cwd = std::fs::canonicalize(&cwd)
         .map_err(|e| scope::unreadable("current directory", &e.to_string()))?;
     let mut candidates = Vec::new();
     let mut choices = Vec::new();
@@ -209,7 +214,7 @@ pub fn apply<R: ReadStore>(
                         ));
                     }
                 };
-                if cwd.starts_with(&root) {
+                if ancestry_cwd.starts_with(&root) {
                     nearest = Some(nearest.unwrap_or(0).max(root.components().count()));
                 }
             }
