@@ -36,6 +36,11 @@ pub mod inputs;
 pub use inbox::MessageInbox;
 pub mod installation;
 pub mod listing;
+pub mod mail;
+pub mod message_mark;
+pub use message_mark::{
+    DispositionReceipt, MessageAck, MessageDismiss, MessageRead, MessageReadOutput,
+};
 pub mod message;
 pub use listing::{AgentList, AgentPage};
 mod meta;
@@ -143,6 +148,9 @@ ops! {
     EventRead => EventRead, EventOutput, ("history.event_read",CliExposure::Leaf {path:&["history"],hidden:false,select:Selector::Flag("event")},tool("stateengine_event_read","Read a committed event","Read one committed event by ID in the authorized project, with its public payload and provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
     HistoryList => HistoryList, HistoryPage, ("history.list",leaf(&["history"]),no_mcp("Sessions use event_read for exact public records; owner CLI history is read-only inspection."),Either,false,Never,Read,Project,None,"se.history-page",HistoryPage,&["J3"]);
     MessageSend => MessageSend, MessageOutput, ("message.send",leaf(&["msg","send"]),tool("stateengine_msg_send","Send a message","Commit a message to another project agent or owner; committed does not mean read."),Either,false,Never,Write,Project,HostForWrites,"se.message-receipt",MessageReceipt,&["J4"]);
+    MessageRead => MessageRead, MessageReadOutput, ("message.read",leaf(&["msg","read"]),tool("stateengine_msg_read","Read one complete message","Read the complete message within its response budget and mark it read only as its recipient; inspection never acknowledges another recipient."),Either,false,Never,Write,Project,HostForWrites,"se.message-read",MessagePage,&["J4"]);
+    MessageAck => MessageAck, DispositionReceipt, ("message.ack",leaf(&["msg","ack"]),tool("stateengine_msg_ack","Acknowledge a message","Explicitly mark your received message read without returning its body."),Either,false,Never,Write,Project,HostForWrites,"se.disposition-receipt",MessageReceipt,&["J4"]);
+    MessageDismiss => MessageDismiss, DispositionReceipt, ("message.dismiss",leaf(&["msg","dismiss"]),tool("stateengine_msg_dismiss","Dismiss a message","Dismiss your received message without marking it read; retain its history."),Either,false,Never,Write,Project,HostForWrites,"se.disposition-receipt",MessageReceipt,&["J4"]);
     MessageList => MessageList, MessagePage, ("message.list",leaf(&["msg","list"]),tool("stateengine_msg_list","List your messages","List authorized messages with explicit completeness; listing never marks mail read."),Either,false,Never,Read,Project,None,"se.message-page",MessagePage,&["J4"]);
     MessageInbox => MessageInbox, MessagePage, ("message.inbox",leaf(&["msg","inbox"]),no_mcp("Bound agents use stateengine_msg_list with its unread inbox view."),Either,false,Never,Read,Project,None,"se.message-page",MessagePage,&["J3","J4"]);
     WorkingStateGet => WorkingStateGet, WorkingStateOutput, ("working_state.get",leaf(&["working-state"]),tool("stateengine_working_state_get","Read working state","Read your saved note and entity revision."),Either,false,Never,Read,Session,None,"se.working-state",WorkingState,&["J3"]);

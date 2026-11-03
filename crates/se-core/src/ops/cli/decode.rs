@@ -169,6 +169,24 @@ pub fn from_matches_with_key(
             "history.event_read" => AnyOp::EventRead(EventRead {
                 event_id: required(m, "event")?,
             }),
+            "message.read" => AnyOp::MessageRead(MessageRead {
+                msg_id: required(m, "msg_id")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("message ID", "a canonical msg_ ID"))?,
+                budget: required(m, "budget")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("budget", "512..1048576 bytes"))?,
+            }),
+            "message.ack" => AnyOp::MessageAck(MessageAck {
+                msg_id: required(m, "msg_id")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("message ID", "a canonical msg_ ID"))?,
+            }),
+            "message.dismiss" => AnyOp::MessageDismiss(MessageDismiss {
+                msg_id: required(m, "msg_id")?
+                    .parse()
+                    .map_err(|_| SeError::invalid("message ID", "a canonical msg_ ID"))?,
+            }),
             "message.send" => AnyOp::MessageSend(MessageSend {
                 to: required(m, "to")?,
                 body: required(m, "body")?,

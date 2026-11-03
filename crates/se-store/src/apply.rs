@@ -4,6 +4,7 @@ pub(crate) mod credential;
 pub(crate) mod cursor;
 pub(crate) mod decision;
 pub(crate) mod effect;
+mod mail;
 pub(crate) mod process;
 pub(crate) mod project;
 pub(crate) mod session;
@@ -686,7 +687,7 @@ pub(crate) fn apply(
         b @ (EffectRequested { .. }
         | EffectOffered { .. }
         | EffectSettled { .. }
-        | IntegrationRecorded { .. }) => effect::apply(c, header, b, seq, revision, facts)?,
+        | IntegrationRecorded { .. }) => effect::apply(c, header, b, seq, revision, facts, lease)?,
         b @ ProjectRemoved { .. } => project::apply(c, header, b, seq, revision, facts)?,
         b @ (CursorRecorded { .. } | CursorAcknowledged { .. }) => {
             cursor::apply(c, header, b, seq, revision, facts)?

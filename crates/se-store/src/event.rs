@@ -545,7 +545,7 @@ pub enum EventBody<T> {
         effect: RecordId,
         principal: Actor,
         attempt: RecordId,
-        evidence: EventId,
+        evidence: crate::mail::OfferEvidence,
     },
     EffectSettled {
         effect: RecordId,
@@ -665,6 +665,7 @@ pub enum EventBody<T> {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffectIntent {
+    MailNotice(Box<crate::mail::MailNotice>),
     Mail {
         message: MessageId,
         recipient: Actor,

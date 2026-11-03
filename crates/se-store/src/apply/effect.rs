@@ -87,8 +87,10 @@ pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
 fn intent_matches(kind: EffectKind, intent: &EffectIntent) -> bool {
     matches!(
         (kind, intent),
-        (EffectKind::Bell, EffectIntent::Mail { .. })
-            | (EffectKind::Packet, EffectIntent::Packet { .. })
+        (
+            EffectKind::Bell,
+            EffectIntent::Mail { .. } | EffectIntent::MailNotice(_)
+        ) | (EffectKind::Packet, EffectIntent::Packet { .. })
             | (
                 EffectKind::IntegrationWrite,
                 EffectIntent::Integration { .. }
@@ -212,6 +214,7 @@ pub(super) fn apply(
     seq: i64,
     rev: u64,
     facts: Value,
+    lease: &LeaseIdentity,
 ) -> StoreResult<()> {
     let p = project_id(c, &h.scope, false)?;
     let scope = scope_key(c, &h.scope, false)?;
@@ -233,6 +236,9 @@ pub(super) fn apply(
                 .map(|a| principal_key(c, a, &scope))
                 .transpose()?;
             authorize(c, h, &p, &scope, a.as_deref())?;
+            if let EffectIntent::MailNotice(notice) = &intent {
+                super::mail::validate(c, h, &principal, notice)?;
+            }
             let k = a.as_ref().map(|a| principal_kind(c, &p, a)).transpose()?;
             c.execute(
                 "INSERT INTO effects(effect_id,project_id,kind,principal_id,requested_seq,revision,last_seq,state) VALUES(?,?,?,?,?,?,?,'pending')",
@@ -272,7 +278,17 @@ pub(super) fn apply(
                     "offer principal differs from the requested principal",
                 ));
             }
-            after_request(c, &p, &scope, &id, &evidence)?;
+            match &evidence {
+                crate::mail::OfferEvidence::Committed(event) => {
+                    if event == &h.event {
+                        return Err(invalid("an effect offer cannot witness itself"));
+                    }
+                    after_request(c, &p, &scope, &id, event)?
+                }
+                crate::mail::OfferEvidence::Observed(observation) => {
+                    super::mail::validate_offer(c, h, &effect, observation, lease)?
+                }
+            }
             let reused: bool = c
                 .query_row(
                     "SELECT EXISTS(SELECT 1 FROM aux_data a JOIN events e ON e.seq=a.event_seq WHERE json_extract(a.facts,'$.attempt') IS NOT NULL AND json_extract(a.facts,'$.effect')=? AND json_extract(a.facts,'$.attempt')=? AND e.project_id=? AND e.kind='effect.offered')",

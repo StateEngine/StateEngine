@@ -13,6 +13,7 @@ mod control;
 mod cursor;
 mod decision;
 mod decision_heads;
+mod mail;
 mod message;
 mod message_count;
 mod page;

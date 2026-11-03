@@ -372,6 +372,7 @@ impl Engine {
                 "batch incarnation/generation differs",
             ));
         }
+        crate::mail::validate_offer_batch(&batch)?;
         apply::capture::canonicalize(&self.db, &mut batch)?;
         let mut descriptors = Vec::new();
         let mut total = 0usize;

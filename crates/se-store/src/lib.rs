@@ -12,6 +12,7 @@ mod credential;
 mod error;
 mod event;
 mod identity;
+pub mod mail;
 mod migration;
 mod model;
 mod open;

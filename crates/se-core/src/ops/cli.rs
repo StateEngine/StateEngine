@@ -262,6 +262,8 @@ fn input_command(name: &str, c: Command) -> Command {
             )
             .arg(value("limit").default_value("20"))
             .arg(value("cursor")),
+        "message.read" => c.arg(positional("msg_id",1,true)).arg(value("budget").default_value("262144").help("Maximum serialized reply bytes, checked before marking read")),
+        "message.ack" | "message.dismiss" => c.arg(positional("msg_id",1,true)),
         "message.send" => c
             .arg(positional("to", 1, true))
             .arg(positional("body", 2, true))
