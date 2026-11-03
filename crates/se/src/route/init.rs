@@ -96,10 +96,9 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
             },
         )));
     }
-    // The existing installation claim serializes explicit setup with another
-    // setup or installer, independent of environment-selected state homes.
-    let _claim = se_proc::NativeInstallationClaim::acquire()
-        .map_err(|e| scope::unreadable("setup ownership", &e.to_string()))?;
+    // Ordinary setup changes only this state home. Its no-replace publication
+    // and direct writer lease coordinate setup without blocking other homes
+    // behind an unrelated account-wide install or PATH edit.
     let before = setup::inspect(&cx.home, receipt::timestamp(execute::now_us()?)?)?;
     let observed = match &before {
         setup::Setup::Absent(_) => owner::observe(&[])?,
