@@ -7,7 +7,12 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(crate) mod effects;
+mod permissions;
 pub(crate) mod source;
+pub use permissions::{
+    PermissionKind, PermissionProtection, PermissionRepairPin, PermissionRepairWitness,
+    PermissionSnapshot,
+};
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]

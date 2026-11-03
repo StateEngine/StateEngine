@@ -97,6 +97,33 @@ impl SecurityDescriptor {
         Ok(control)
     }
 
+    pub fn sddl(&self, information: u32) -> io::Result<String> {
+        let (mut raw, mut length) = (ptr::null_mut(), 0);
+        // SAFETY: retained native descriptor and writable LocalFree-owned string
+        // output; the API reports the UTF-16 extent including its terminating NUL.
+        if unsafe {
+            ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                self.allocation.0,
+                SDDL_REVISION_1,
+                information,
+                &mut raw,
+                &mut length,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let allocation = Allocation(raw.cast());
+        if length == 0 || length > 65536 || allocation.0.is_null() {
+            return Err(io::Error::other("native security text has invalid length"));
+        }
+        // SAFETY: successful native conversion owns exactly length initialized
+        // UTF-16 units, retained by allocation through the copy below.
+        let units = unsafe { std::slice::from_raw_parts(raw, length as usize) };
+        String::from_utf16(&units[..units.len() - 1])
+            .map_err(|_| io::Error::other("native security text is invalid UTF-16"))
+    }
+
     pub fn dacl(&self) -> Option<Acl<'_>> {
         self.acl(self.dacl)
     }

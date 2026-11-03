@@ -34,7 +34,9 @@ pub use uninstall::{
 mod ownership;
 mod state_files;
 pub use state_files::{
-    NativeStateFiles, ProtectedStateStaging, StateFileError, StateFileErrorCode,
+    NativeStateFiles, PermissionKind, PermissionProtection, PermissionRepairPin,
+    PermissionRepairWitness, PermissionSnapshot, ProtectedStateStaging, StateFileError,
+    StateFileErrorCode,
 };
 #[cfg(windows)]
 mod stdio;

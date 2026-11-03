@@ -1,6 +1,9 @@
 use super::{components, name, owned};
 #[path = "unix_metadata.rs"]
 mod metadata;
+#[cfg(target_os = "linux")]
+#[path = "permissions_linux.rs"]
+pub(in crate::state_files) mod permissions;
 use crate::state_files::effects::{DirectoryRemoval, absent, changed, digest, verify};
 use crate::state_files::{Result, io_error, unsafe_path};
 use std::{

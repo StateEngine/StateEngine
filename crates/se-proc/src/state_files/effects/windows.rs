@@ -12,6 +12,9 @@ use std::{
 };
 use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
+#[path = "permissions_windows.rs"]
+pub(in crate::state_files) mod permissions;
+
 fn open(path: &Path, directory: bool, access: u32, create: bool) -> Result<File> {
     open_shared(path, directory, access, create, true)
 }
