@@ -137,7 +137,9 @@ fn distinct_native_turns_at_one_timestamp_commit_and_replay_independently() {
     let capture = |vendor: &str, key: &str| {
         let mut turn = captured(api::TurnRole::User, timestamp, key);
         turn.vendor_turn = vendor.into();
-        judge.capture_with(&host, &issued.session, generation, turn)
+        judge
+            .capture_with(&host, &issued.session, generation, turn)
+            .map_err(|error| format!("{error:?}"))
     };
     let first = capture("native-distinct-a", "distinct-first");
     let head_first = witness(&judge, generation.0, |snapshot| {
