@@ -343,9 +343,9 @@ def missing_profile_cannot_complete_with_broken_readers(f):
     assert agents["read"] > 0, "judge did not reach the recorded agent"
     assert before == f.snapshot_sources(), "import changed retained registration history"
     failures = imported_agent_reader_failures(f)
-    if receipt["complete"]:
-        assert imported.returncode == 0, "complete import returned a failed command"
-        assert not failures, ("complete import left unreadable or dishonest agent readers", failures)
+    assert receipt["complete"] is True, ("valid missing-profile fixture did not complete", receipt)
+    assert imported.returncode == 0, "complete import returned a failed command"
+    assert not failures, ("complete import left unreadable or dishonest agent readers", failures)
 
 
 def user_history_families(f):
