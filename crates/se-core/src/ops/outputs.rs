@@ -248,6 +248,12 @@ pub struct IntegrationEffect {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct SessionView {
     pub state: String,
+    /// Immutable session projection state, separate from current native life.
+    pub recorded_state: Option<String>,
+    #[serde(default = "unobserved_session_process")]
+    pub process_state: Read<String>,
+    #[serde(default = "unobserved_session_process")]
+    pub liveness: Read<String>,
     pub session_id: Option<SessionId>,
     pub launch_id: Option<se_types::LaunchId>,
     pub surface: Option<String>,
@@ -256,6 +262,11 @@ pub struct SessionView {
     pub observed_at: Option<String>,
     pub containment: Option<String>,
     pub containment_cause: Option<String>,
+}
+fn unobserved_session_process() -> Read<String> {
+    Read::Unknown {
+        what: "No native session-process observation accompanied this read".into(),
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ConversationView {

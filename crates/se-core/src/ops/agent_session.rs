@@ -4,11 +4,19 @@ use super::{ConversationView, ResumeCommand, SessionView, receipt};
 use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{EventBody, Snapshot};
 use se_types::{AgentId, Read, Result};
+mod recorded;
 
 type Views = (SessionView, ConversationView, ResumeCommand);
 pub(super) fn read<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views> {
     let mut session = SessionView {
         state: "unknown".into(),
+        recorded_state: None,
+        process_state: Read::Absent {
+            checked: "No session process selected yet".into(),
+        },
+        liveness: Read::Unknown {
+            what: "A recorded session is not a fresh native liveness observation".into(),
+        },
         session_id: None,
         launch_id: None,
         surface: None,
@@ -25,6 +33,9 @@ pub(super) fn read<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<V
     let latest = match latest {
         Read::Absent { .. } => {
             session.state = "never-launched".into();
+            session.liveness = Read::Absent {
+                checked: "No recorded session exists for this agent".into(),
+            };
             return Ok((
                 session,
                 ConversationView {
@@ -143,6 +154,7 @@ pub(super) fn read<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<V
     }
     session.session_id = Some(id.clone());
     session.since = Some(receipt::timestamp(latest.current.recorded_at_us)?);
+    recorded::apply(agent, id, &latest.current.body, &mut session, cx)?;
     Ok((
         session,
         ConversationView {
