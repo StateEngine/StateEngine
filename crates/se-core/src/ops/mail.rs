@@ -318,5 +318,16 @@ pub fn committed<S: MailSnapshot>(
         "committed mail reservation",
         scope::COMMITTED_READ_RECOVERY,
     )?;
+    // A stable request receipt remains history after settlement. Replaying it
+    // must not promote its old, resolved descriptor into live delivery work.
+    if matches!(record.current.body, EventBody::EffectSettled { .. }) {
+        return Err(SeError::new(se_types::Detail::StateConflict(
+            se_types::details::StateConflict {
+                subject: "mail reservation retry".into(),
+                reason: "this request's original reservation is already settled".into(),
+                next_step: "Use a fresh reservation request and fresh notice/effect identities for remaining unread mail; preserve the settled receipt as history".into(),
+            },
+        )));
+    }
     readback(cx, &then.target, record)
 }
