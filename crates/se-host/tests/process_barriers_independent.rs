@@ -240,6 +240,7 @@ fn embedded_session_bind_is_atomic_and_credential_free() -> Check {
     let build = |case: &str| -> Result<(SessionPreparation, SessionActivation), Box<dyn std::error::Error>> {
         Ok((SessionPreparation { session: session.clone(), agent: h.target.clone(),
             provider: if case == "provider" { Provider::Claude } else { Provider::SeCode },
+            surface: None,
             native_ref: "real-embedded-session-fixture".into(), consent: Consent::Capture,
             generation: if case == "generation" { 2 } else { 1 }, expected: Expected::Absent },
             SessionActivation { session: if case == "session" { capture::session()? } else { session.clone() },

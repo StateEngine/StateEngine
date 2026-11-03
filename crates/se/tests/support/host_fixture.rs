@@ -268,6 +268,7 @@ pub(super) fn prepare_session(
                     session: session.clone(),
                     agent: f.a.clone(),
                     provider: Provider::Claude,
+                    surface: None,
                     native_ref: conversation.as_str().into(),
                     consent: Consent::Capture,
                     generation: 1,
