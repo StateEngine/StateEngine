@@ -85,7 +85,9 @@ pub fn settle_resolved<S: MailSnapshot>(
     let mut markers = Vec::new();
     for id in evidence {
         let event = scope::require_present(
-            cx.read.event(id).map_err(|error| store_error(&error))?,
+            cx.read
+                .mail_disposition(id, then.target.agent.clone())
+                .map_err(|error| store_error(&error))?,
             "committed recipient disposition",
             scope::COMMITTED_READ_RECOVERY,
         )?;
