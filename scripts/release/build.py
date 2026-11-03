@@ -121,7 +121,8 @@ def main():
            (k.startswith("CARGO_TARGET_") and k.endswith(("_RUSTFLAGS", "_LINKER"))) for k in os.environ):
         parser.error("unset Cargo profile, target rustflags and target linker overrides before the pinned release build")
     overrides = ["--config", 'build.rustc-wrapper=""', "--config", 'build.rustc-workspace-wrapper=""',
-                 "--config", 'profile.release.panic="unwind"']
+                 "--config", 'profile.release.panic="unwind"',
+                 "--config", 'profile.distribution.panic="unwind"']
     metadata = json.loads(run("cargo", "+" + toolchain, *overrides, "metadata", "--offline", "--locked",
                               "--format-version=1"))
     source = run("git", "rev-parse", "HEAD")
@@ -129,7 +130,7 @@ def main():
     sysroot = Path(run("rustc", "+" + toolchain, "--print", "sysroot"))
     config = tomllib.loads((ROOT / ".cargo/config.toml").read_text())
     flags = config.get("target", {}).get(args.target, {}).get("rustflags", [])
-    argv = ["cargo", "+" + toolchain, *overrides, "build", "--offline", "--locked", "--release",
+    argv = ["cargo", "+" + toolchain, *overrides, "build", "--offline", "--locked", "--profile", "distribution",
             "--package", inputs["package"], "--no-default-features", "--target", args.target,
             "--jobs", "1", "--message-format=json-render-diagnostics"]
     if inputs["features"]:
@@ -191,6 +192,7 @@ def main():
         "source_timestamp": epoch,
         "version": cargo["workspace"]["package"]["version"], "target": args.target,
         "toolchain": toolchain, "compiler": compiler, "panic": "unwind",
+        "profile": "distribution",
         "rustflags": flags, "source_date_epoch": epoch, "fresh_target": True,
         "cargo_config_overrides": overrides,
         "path_remap": {name: value for name, (_, value) in zip(("source", "cargo", "toolchain", "target"), mappings)},

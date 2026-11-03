@@ -36,6 +36,10 @@ expect_used = "deny"
 
 [profile.release]
 panic = "unwind"
+
+# Archive builds pay the link cost; ordinary release tests keep their usual profile.
+[profile.distribution]
+inherits = "release"
 lto = "thin"
 codegen-units = 1
 
