@@ -27,6 +27,7 @@ pub struct CallFacts {
 pub struct Kernel {
     facts: Option<CallFacts>,
     configuration: Option<crate::config_policy::ConfigFile>,
+    read_at: Option<se_types::UnixMicros>,
 }
 impl Kernel {
     pub fn new(facts: CallFacts) -> Result<Self> {
@@ -39,12 +40,35 @@ impl Kernel {
         Ok(Self {
             facts: Some(facts),
             configuration: None,
+            read_at: None,
         })
     }
     pub const fn read_only() -> Self {
         Self {
             facts: None,
             configuration: None,
+            read_at: None,
+        }
+    }
+    pub fn read_only_at(at: se_types::UnixMicros) -> Self {
+        Self {
+            facts: None,
+            configuration: None,
+            read_at: Some(at),
+        }
+    }
+    fn observed_at(&self) -> Result<se_types::UnixMicros> {
+        match (self.read_at, self.facts.as_ref()) {
+            (Some(at), _) => Ok(at),
+            (_, Some(facts)) => {
+                se_types::UnixMicros::new(u64::try_from(facts.occurred_at_us).map_err(|_| {
+                    SeError::invalid("observation clock", "nonnegative Unix microseconds")
+                })?)
+            }
+            _ => Err(SeError::invalid(
+                "continuity clock",
+                "an adapter-supplied observation time on this read-only kernel",
+            )),
         }
     }
     /// Already resolved file policy from the admitted native route. This is not
@@ -295,6 +319,32 @@ impl Kernel {
             crate::admission::require_human_terminal(op.meta().name, cx.admission, terminal)?;
         }
         Ok(match op {
+            AnyOp::Resume(input) => OpStep::Complete(
+                crate::ops::continuity::resume(input, self.observed_at()?, cx)?.into(),
+            ),
+            AnyOp::SessionContext(input) => OpStep::Complete(
+                crate::ops::continuity::context(input, self.observed_at()?, cx)?.into(),
+            ),
+            AnyOp::AgentList(input) => {
+                OpStep::Complete(crate::ops::listing::agents(input, cx)?.into())
+            }
+            AnyOp::AgentLaunch(input) => {
+                let configuration = self.configuration.as_ref().ok_or_else(|| {
+                    scope::unreadable(
+                        "launch configuration",
+                        "adapter-resolved ConfigFile is not bound",
+                    )
+                })?;
+                OpStep::Custody(CustodyPlan::Launch(Box::new(
+                    crate::ops::process_plan::launch(self, input, configuration, cx)?,
+                )))
+            }
+            AnyOp::AgentStop(input) => OpStep::Custody(CustodyPlan::Stop(Box::new(
+                crate::ops::stop_plan::plan(input, cx)?,
+            ))),
+            AnyOp::ProjectRemove(input) => OpStep::Custody(CustodyPlan::Remove(Box::new(
+                crate::ops::project_remove::plan(input, cx)?,
+            ))),
             AnyOp::AgentShow(input) => {
                 OpStep::Complete(crate::ops::agent_status::show(input, cx)?.into())
             }
@@ -390,6 +440,9 @@ impl Kernel {
             ),
             AnyOp::DecisionShow(input) => {
                 OpStep::Complete(crate::ops::decision_show::read(input, cx)?.into())
+            }
+            AnyOp::HistoryList(input) => {
+                OpStep::Complete(crate::ops::history::list(input, cx)?.into())
             }
             AnyOp::EventRead(input) => OpStep::Complete(crate::ops::event::read(input, cx)?.into()),
             AnyOp::MessageList(input) => {

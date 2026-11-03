@@ -75,6 +75,13 @@ pub enum CheckpointKind {
         source: Box<CheckpointSource>,
         witness: StopWitness,
     },
+    /// Explicit owner release of uncontained custody without a closure claim.
+    /// Keeping the original source permits pre-root release without inventing
+    /// a ProcessRecord, PID, birth identity or exit witness.
+    Released {
+        source: Box<CheckpointSource>,
+        release: UnwitnessedRelease,
+    },
     FailedReservation {
         reservation: LaunchReservation,
         error: ProcError,
@@ -122,6 +129,7 @@ impl Checkpoint {
         match &self.checkpoint {
             CheckpointKind::Process(record) => Ok(Some(record)),
             CheckpointKind::Exit { .. }
+            | CheckpointKind::Released { .. }
             | CheckpointKind::FailedReservation { .. }
             | CheckpointKind::Historical(_) => Ok(None),
             _ => Err(invalid(

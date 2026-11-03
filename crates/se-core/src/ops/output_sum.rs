@@ -71,12 +71,15 @@ macro_rules! output_types {
     }
 }
 output_types! {
+Resume => Resume, ResumeOutput;
+SessionContext => SessionContextRequest, SessionContextOutput;
 MetaVersion => MetaVersion, VersionOutput;
 MetaHelp => MetaHelp, HelpOutput;
 MetaSchema => MetaSchema, SchemaCatalogue;
 ProjectInit => ProjectInit, InitOutput;
 ProjectStatus => ProjectStatus, StatusOutput;
 EventRead => EventRead, EventOutput;
+HistoryList => HistoryList, HistoryPage;
 MessageSend => MessageSend, MessageOutput;
 MessageList => MessageList, MessagePage;
 WorkingStateGet => WorkingStateGet, WorkingStateOutput;
@@ -86,7 +89,11 @@ RuntimeUp => RuntimeUp, RuntimeStart;
 RuntimeDown => RuntimeDown, RuntimeStop;
 Uninstall => Uninstall, UninstallOutput;
 AgentCreate => AgentCreate, AgentReceipt;
+AgentLaunch => AgentLaunch, LaunchResult;
+AgentStop => AgentStop, StopResult;
+ProjectRemove => ProjectRemove, RemoveResult;
 AgentShow => AgentShow, AgentStatusOutput;
+AgentList => AgentList, AgentPage;
 ConfigGet => ConfigGet, ConfigValueOutput;
 ConfigSet => ConfigSet, AgentConfigReceipt;
 DecisionShow => DecisionShow, DecisionOutput;

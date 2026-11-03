@@ -1,4 +1,6 @@
 mod administration;
+mod continuity;
+mod control;
 mod decision;
 pub mod error;
 mod event;
@@ -19,6 +21,10 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
         writeln!(out)?;
     } else if !quiet || value.exit_code() != 0 || matches!(value.human_kind(), HumanKind::Help) {
         match (value.human_kind(), value) {
+            (HumanKind::Resume, AnyOutput::Resume(value)) => continuity::resume(&value.value, out)?,
+            (HumanKind::SessionContext, AnyOutput::SessionContext(value)) => {
+                write!(out, "{}", value.value.assembled_model_input)?
+            }
             (HumanKind::Version, AnyOutput::MetaVersion(value)) => {
                 writeln!(out, "stateengine {}", value.value.version)?
             }
@@ -34,6 +40,16 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::ConfigValue, AnyOutput::ConfigGet(value)) => {
                 administration::config_value(&value.value, out)?
             }
+            (HumanKind::AgentPage, AnyOutput::AgentList(value)) => {
+                administration::agents(&value.value, out)?
+            }
+            (HumanKind::Launch, AnyOutput::AgentLaunch(value)) => {
+                control::launch(&value.value, out)?
+            }
+            (HumanKind::Stop, AnyOutput::AgentStop(value)) => control::stop(&value.value, out)?,
+            (HumanKind::Remove, AnyOutput::ProjectRemove(value)) => {
+                control::remove(&value.value, out)?
+            }
             (HumanKind::AgentStatus, AnyOutput::AgentShow(value)) => {
                 administration::agent_status(&value.value, out)?
             }
@@ -45,6 +61,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             }
             (HumanKind::DecisionReceipt, AnyOutput::Decision(value)) => {
                 administration::decision(&value.value, out)?
+            }
+            (HumanKind::HistoryPage, AnyOutput::HistoryList(value)) => {
+                event::page(&value.value, out)?
             }
             (HumanKind::Event, AnyOutput::EventRead(value)) => event::output(&value.value, out)?,
             (HumanKind::MessageReceipt, AnyOutput::MessageSend(value)) => {

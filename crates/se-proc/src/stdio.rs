@@ -24,7 +24,8 @@ pub struct StdioConfig {
 }
 /// A revocable arena reference, never a raw handle or an independent native owner.
 pub struct StdioPort {
-    pub(crate) _private: (),
+    pub(crate) key: crate::runtime::Reference,
+    pub(crate) binding: u64,
 }
 pub struct ProviderStdio {
     /// Move into LaunchSpec; no parent copies of these child endpoints survive launch.
@@ -43,6 +44,8 @@ pub struct StdioOperationId(pub u64);
 pub struct StdioTicket {
     pub operation: StdioOperationId,
     pub identity: StdioIdentity,
+    pub(crate) key: crate::runtime::Reference,
+    pub(crate) binding: u64,
 }
 pub struct StdioState {
     pub port: StdioPort,
@@ -102,7 +105,10 @@ pub enum StdioCloseScope {
 /// Selected endpoints closed and their kernel requests drained; results need release.
 /// release_stdio accepts only a matching All witness, never a Stdin witness.
 pub struct StdioClosed {
-    pub(crate) _private: (),
+    pub(crate) native: std::sync::Weak<crate::platform::NativeStdio>,
+    pub(crate) identity: StdioIdentity,
+    pub(crate) binding: u64,
+    pub(crate) scope: StdioCloseScope,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StdioNotice {
@@ -121,6 +127,16 @@ pub trait StdioSink: Send + Sync {
 }
 /// Bounded native steps only. Future/caller drop never frees kernel-owned buffers.
 pub trait ProviderStdioApi: ProcessRuntime {
+    /// Metadata of the retained lifecycle, including a prepared scope before
+    /// a root is published. A native implementation must fence the reference.
+    fn stdio_identity(&self, owner: &OwnedProcess) -> ProcResult<StdioIdentity> {
+        let record = self.describe(owner)?;
+        Ok(StdioIdentity {
+            lifecycle: record.lifecycle,
+            host: record.host,
+            generation: record.generation,
+        })
+    }
     fn create_stdio(&self, owner: &OwnedProcess, config: StdioConfig) -> ProcResult<ProviderStdio>;
     /// Rebind an existing/recovered/staged port; creates no pipe and starts no I/O.
     fn attach_stdio(&self, owner: &OwnedProcess, config: StdioConfig) -> ProcResult<StdioState>;

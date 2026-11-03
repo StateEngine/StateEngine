@@ -15,10 +15,26 @@ mod environment;
 #[path = "host/launch.rs"]
 mod launch;
 #[cfg(any(target_os = "linux", windows))]
-pub use launch::{StartedHost, StartupFailure, start};
+pub use launch::{StartedHost, StartupFailure, start, start_with_origin};
 
 use se_types::{Result, SeError};
 use std::ffi::OsString;
+/// Authenticated private-frame policy, never selected from an environment flag.
+#[cfg(any(target_os = "linux", windows))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StartupOrigin {
+    Explicit,
+    Automatic,
+}
+#[cfg(any(target_os = "linux", windows))]
+impl StartupOrigin {
+    fn frame(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::Automatic => "automatic",
+        }
+    }
+}
 #[cfg(any(target_os = "linux", windows))]
 use std::{
     sync::{Arc, atomic::AtomicBool},

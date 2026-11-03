@@ -372,6 +372,9 @@ pub trait ProcessRuntime: Send + Sync {
         reservation: LaunchReservation,
         spec: LaunchSpec,
     ) -> ProcResult<PreparedScope>;
+    /// Install provider child endpoints once, after native scope preparation.
+    /// Rejection leaves the prepared scope owned and prevents vendor execution.
+    fn bind_stdio(&self, prepared: &PreparedLaunch, child: StandardIo) -> ProcResult<()>;
     fn begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart;
     fn poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress>;
     fn authorize_exec(&self, ticket: &LaunchTicket) -> ProcResult<()>;
@@ -445,6 +448,8 @@ pub struct ScopeCheckpoint {
     pub guarantee: ContainmentGuarantee,
 }
 pub struct PreparedScope {
+    /// Validated native argv digest, reused by pre-exec protected indices.
+    pub argv_sha256: [u8; 32],
     pub prepared: PreparedLaunch,
     pub process: OwnedProcess,
     pub checkpoint: ScopeCheckpoint,
@@ -546,6 +551,9 @@ pub trait NativeReadiness: Send + Sync {
     fn ready(&self);
 }
 pub trait NativeRegistration: Send {
+    /// Re-arm after native state has consumed readiness. Level-ready exit and
+    /// EOF descriptors must not produce repeated callbacks without this step.
+    fn rearm(&self);
     /// Disable future sink calls. In-flight callbacks retain their Arc state
     /// until drained; cancellation must not block an async runtime thread.
     fn cancel(&mut self);

@@ -34,6 +34,17 @@ pub fn start(
     machine: MachineId,
     bound: &se_host::client::lease::Deadline,
 ) -> std::result::Result<StartedHost, Box<StartupFailure>> {
+    start_with_origin(home, configuration, machine, StartupOrigin::Explicit, bound)
+}
+/// Automatic callers select the same native handshake and custody protocol;
+/// only the empty-host residency policy differs after authenticated readiness.
+pub fn start_with_origin(
+    home: &Path,
+    configuration: &Path,
+    machine: MachineId,
+    origin: StartupOrigin,
+    bound: &se_host::client::lease::Deadline,
+) -> std::result::Result<StartedHost, Box<StartupFailure>> {
     let setup = (|| -> Result<_> {
         bound.remaining()?;
         if !home.is_absolute() || !configuration.is_absolute() {
@@ -66,6 +77,7 @@ pub fn start(
             se_types::hex_lower(&instance.0).into(),
             generation.get().to_string().into(),
             configuration.as_os_str().into(),
+            origin.frame().into(),
         ];
         #[cfg(unix)]
         let arguments = {

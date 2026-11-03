@@ -15,6 +15,8 @@ const SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
 pub(super) struct OwnerInputs {
     pub(super) runtime: Handle,
     pub(super) home: PathBuf,
+    pub(super) helper_executable: PathBuf,
+    pub(super) linux_delegation: api::LinuxDelegation,
     pub(super) limits: api::Limits,
     pub(super) generation: api::Generation,
     pub(super) epoch: api::HostEpoch,
@@ -117,6 +119,24 @@ async fn take_ownership(
     }
     host.restore_transcripts(&deadline).await?;
     host.configure(config)?;
+    let linux_delegation = match inputs.linux_delegation {
+        api::LinuxDelegation::AutoUserManager => se_proc::LinuxDelegation::AutoUserManager,
+        api::LinuxDelegation::CurrentScope => se_proc::LinuxDelegation::CurrentScope,
+        api::LinuxDelegation::ExplicitRoot(path) => se_proc::LinuxDelegation::ExplicitRoot(path),
+    };
+    let (_coordinator, reconciliation) = crate::LaunchCoordinator::install(
+        &mut host,
+        crate::ProcessOptions {
+            helper_executable: core::NativePath::from_local(inputs.helper_executable)?,
+            linux_delegation,
+            maximum_sessions: crate::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
+        },
+        &deadline,
+    )
+    .await?;
+    for failure in &reconciliation.unproved {
+        eprintln!("Agent recovery incomplete; its custody remains fenced: {failure}");
+    }
     let stop = host.local_stop();
     let listener = host.listen(inputs.runtime, &deadline).await?;
     let router = host.router()?;

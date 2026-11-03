@@ -31,23 +31,33 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         instance,
         generation,
         configuration,
+        origin,
         runtime_directory,
         temporary_directory,
     ] = args.as_slice()
     else {
         return Err(invalid(
-            "the closed host/home/instance/generation/configuration/socket-paths frame",
+            "the closed host/home/instance/generation/configuration/origin/socket-paths frame",
         ));
     };
     #[cfg(windows)]
-    let [tag, home, instance, generation, configuration] = args.as_slice() else {
+    let [tag, home, instance, generation, configuration, origin] = args.as_slice() else {
         return Err(invalid(
-            "the closed host/home/instance/generation/configuration frame",
+            "the closed host/home/instance/generation/configuration/origin frame",
         ));
     };
     if tag != "host" {
         return Err(invalid("the private host frame discriminator"));
     }
+    let auto_start = if origin == "automatic" {
+        true
+    } else if origin == "explicit" {
+        false
+    } else {
+        return Err(invalid(
+            "an explicit or automatic authenticated startup origin",
+        ));
+    };
     let home = PathBuf::from(home);
     let configuration = PathBuf::from(configuration);
     if !home.is_absolute() || !configuration.is_absolute() {
@@ -105,6 +115,10 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         .map_err(|e| {
             se_core::scope::unreadable("native host epoch", &e.to_string()).with_cause(e)
         })?;
+    // The same native image was just verified against the bootstrap and peer;
+    // no PATH/cwd lookup may select a different helper for owned agent custody.
+    let helper_executable = epoch.owner.fields().executable.clone();
+    let maximum_sessions = positive(256)?;
     // Standalone owns one runtime; all library methods below use this Handle.
     let engine = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -131,7 +145,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
                     group_bytes: positive(1024 * 1024)?,
                 },
                 limits: se_host::HostLimits {
-                    sessions: positive(256)?,
+                    sessions: maximum_sessions,
                     active_connections: positive(64)?,
                     // Admit the supported 20-client burst with bounded headroom.
                     preauth_connections: positive(32)?,
@@ -150,6 +164,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         let restored=host.restore_transcripts(&bound).await?;
         if !restored.unavailable.is_empty() {eprintln!("capture recovery: {} binding(s) unavailable; their original cursors remain protected",restored.unavailable.len());}
         host.configure(config.value)?;
+        host.configure_auto_start(auto_start)?;
         #[cfg(unix)]
         host.configure_unix_socket_paths(se_proc::native_ipc::UnixSocketPaths {
             runtime_directory: (!runtime_directory.is_empty())
@@ -157,6 +172,19 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
             temporary_directory: (!temporary_directory.is_empty())
                 .then(|| PathBuf::from(temporary_directory)),
         })?;
+        let (_coordinator, reconciliation) = se_host::LaunchCoordinator::install(
+            &mut host,
+            se_host::ProcessOptions {
+                helper_executable,
+                linux_delegation: se_proc::LinuxDelegation::CurrentScope,
+                maximum_sessions: se_host::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
+            },
+            &bound,
+        )
+        .await?;
+        for failure in &reconciliation.unproved {
+            eprintln!("Agent recovery incomplete; its custody remains fenced: {failure}");
+        }
         let bootstrap = guard
             .take()
             .ok_or_else(|| invalid("the retained bootstrap before listener admission"))?;

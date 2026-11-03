@@ -1,8 +1,8 @@
 //! Native process contracts, protected files, owner observations and uninstall custody.
 //!
 //! See docs/design/30-process-ownership.md for normative semantics. The public
-//! process traits remain declarations; NativeStateFiles supplies the real
-//! protected staging/readback/publication adapter. Owner observations and the
+//! process runtime and Windows provider streams share one native custody arena.
+//! NativeStateFiles supplies protected staging/readback/publication. Owner observations and the
 //! Windows private uninstall handoff have concrete native implementations. Native
 //! resource layouts are intentionally opaque; no handle is Clone or Default.
 
@@ -91,3 +91,8 @@ pub use birth_time::{ProcessBirthTime, observe_process_birth};
 #[cfg(all(test, windows))]
 #[path = "../tests/support/windows_policy_fixture.rs"]
 mod windows_policy_fixture;
+
+mod session_pin;
+pub use session_pin::{
+    publish_session_pin, read_session_pin, remove_session_pin, session_launch_id,
+};

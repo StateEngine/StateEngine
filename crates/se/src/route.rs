@@ -2,14 +2,25 @@
 //! reads configuration and before a worker or store is opened.
 #[path = "route/admit.rs"]
 mod admit;
+#[cfg(any(target_os = "linux", windows))]
+#[path = "route/autostart.rs"]
+mod autostart;
+#[path = "route/clock.rs"]
+mod clock;
 #[path = "route/credential.rs"]
 pub mod credential;
 #[path = "route/direct.rs"]
 pub mod direct;
+#[path = "route/empty_home.rs"]
+mod empty_home;
 #[path = "route/execute.rs"]
 pub mod execute;
 #[path = "route/files.rs"]
 pub mod files;
+#[path = "route/hook.rs"]
+mod hook;
+#[path = "route/hosted.rs"]
+mod hosted;
 #[path = "route/identity.rs"]
 pub mod identity;
 #[path = "route/init.rs"]
@@ -20,6 +31,8 @@ mod init_config;
 pub mod owner;
 #[path = "route/process.rs"]
 mod process;
+#[path = "route/remove.rs"]
+mod remove;
 #[path = "route/runtime.rs"]
 mod runtime_control;
 #[path = "route/select.rs"]

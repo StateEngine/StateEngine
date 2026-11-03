@@ -1,19 +1,37 @@
 //! The operation list for the executable wave-one surface. Later waves add their
 //! production operations here; no placeholder handlers or phantom tools are exposed.
 pub mod administration;
+pub mod continuity;
+pub use continuity::{Resume, ResumeOutput, SessionContextOutput, SessionContextRequest};
 pub mod agent;
+pub mod agent_launch;
+pub mod agent_stop;
+pub mod process_commit;
+pub mod process_plan;
+pub mod project_remove;
+pub mod remove_commit;
+pub mod session_commit;
+pub mod stop_plan;
+pub use agent_launch::{AgentLaunch, LaunchResult};
+pub use agent_stop::{AgentStop, StopResult};
+pub use project_remove::{ProjectRemove, RemoveResult};
 pub mod agent_config;
 pub mod agent_config_receipt;
+mod agent_session;
 pub mod agent_status;
 mod cli;
 pub mod decision;
 pub mod decision_show;
 pub use decision_show::{DecisionDetail, DecisionOutput, DecisionShow, DecisionTransition};
 pub mod event;
+pub mod history;
+pub use history::{HistoryList, HistoryPage};
 pub mod hook;
 pub mod inputs;
 pub mod installation;
+pub mod listing;
 pub mod message;
+pub use listing::{AgentList, AgentPage};
 mod meta;
 pub mod outputs;
 pub mod project;
@@ -114,7 +132,8 @@ ops! {
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
     ProjectStatus => ProjectStatus, StatusOutput, ("project.status",leaf(&["status"]),tool("stateengine_status","Project status","Read setup, agent and runtime facts without changing state."),Either,false,Never,Read,ProjectOrAll,None,"se.status",Status,&["J1","J2"]);
-    EventRead => EventRead, EventOutput, ("history.event_read",leaf(&["history"]),tool("stateengine_event_read","Read a committed event","Read one committed event by ID in the authorized project, with its public payload and provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
+    EventRead => EventRead, EventOutput, ("history.event_read",CliExposure::Leaf {path:&["history"],hidden:false,select:Selector::Flag("event")},tool("stateengine_event_read","Read a committed event","Read one committed event by ID in the authorized project, with its public payload and provenance."),Either,false,Never,Read,Project,None,"se.event",Event,&["E3","J3","J4"]);
+    HistoryList => HistoryList, HistoryPage, ("history.list",leaf(&["history"]),no_mcp("Sessions use event_read for exact public records; owner CLI history is read-only inspection."),Either,false,Never,Read,Project,None,"se.history-page",HistoryPage,&["J3"]);
     MessageSend => MessageSend, MessageOutput, ("message.send",leaf(&["msg","send"]),tool("stateengine_msg_send","Send a message","Commit a message to another project agent or owner; committed does not mean read."),Either,false,Never,Write,Project,HostForWrites,"se.message-receipt",MessageReceipt,&["J4"]);
     MessageList => MessageList, MessagePage, ("message.list",leaf(&["msg","list"]),tool("stateengine_msg_list","List your messages","List authorized messages with explicit completeness; listing never marks mail read."),Either,false,Never,Read,Project,None,"se.message-page",MessagePage,&["J4"]);
     WorkingStateGet => WorkingStateGet, WorkingStateOutput, ("working_state.get",leaf(&["working-state"]),tool("stateengine_working_state_get","Read working state","Read your saved note and entity revision."),Either,false,Never,Read,Session,None,"se.working-state",WorkingState,&["J3"]);
@@ -124,6 +143,12 @@ ops! {
     RuntimeDown => RuntimeDown, RuntimeStop, ("runtime.down",leaf(&["down"]),no_mcp("Runtime custody is an owner operation."),Owner,false,Never,Custody,Home,None,"se.runtime-stop",RuntimeStop,&["J3"]);
     Uninstall => Uninstall, UninstallOutput, ("installation.uninstall",leaf(&["uninstall"]),no_mcp("Installation removal requires the owner at a human terminal."),Owner,false,Always,Custody,Home,None,"se.uninstall",Uninstall,&["J5"]);
     AgentCreate => AgentCreate, AgentReceipt, ("agent.create",leaf(&["agent","add"]),tool("stateengine_agent_create","Create an agent","Create a durable agent identity and safe saved profile without launching a process; sessions require their current create grant."),Either,false,Never,Write,Project,HostForWrites,"se.agent-receipt",AgentReceipt,&["E3","J2","J4"]);
+    Resume => Resume, ResumeOutput, ("continuity.resume",leaf(&["resume"]),tool("stateengine_resume","Restore your context","Restore your own working state, unread mail, governing decisions and recent captured turns; omissions name explicit full reads. This read acknowledges nothing."),Either,false,Never,Read,Project,None,"se.resume",Resume,&["J3","J4"]);
+    SessionContext => SessionContextRequest, SessionContextOutput, ("session.context",CliExposure::Leaf{path:&["session","context"],hidden:true,select:Selector::Always},no_mcp("Harness/SE Code context uses the verified bound session; model tools use stateengine_resume."),Session,false,Never,Read,Session,None,"secode.session-context",SessionContext,&["J2","J3"]);
+    AgentList => AgentList, AgentPage, ("agent.list",leaf(&["agent","list"]),no_mcp("Owner overview; bound agents use status for their own saved identity."),Owner,false,Never,Read,Project,None,"se.agent-page",AgentPage,&["J2","J3"]);
+    AgentLaunch => AgentLaunch, LaunchResult, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Launch your own saved agent or a directly created agent you currently control; readiness and process custody are witnessed."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
+    AgentStop => AgentStop, StopResult, ("agent.stop",leaf(&["stop"]),tool("stateengine_agent_stop","Stop an agent","Stop your own agent or a directly created agent you currently control; returns the command that resumes its saved conversation."),Either,false,Never,Custody,ProjectOrAll,HostAutoStart,"se.stop",Stop,&["J3","J5"]);
+    ProjectRemove => ProjectRemove, RemoveResult, ("project.remove",leaf(&["remove"]),no_mcp("Project removal requires the verified owner at a human terminal."),Owner,false,Always,Custody,ProjectOrAll,HostAutoStart,"se.remove",Remove,&["J5"]);
     AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);
     ConfigGet => ConfigGet, ConfigValueOutput, ("config.get",leaf(&["config","get"]),no_mcp("Saved agent settings are inspected by the owner CLI."),Owner,false,Never,Read,Project,None,"se.config-value",ConfigValue,&["E3"]);
     ConfigSet => ConfigSet, AgentConfigReceipt, ("config.set",leaf(&["config","set"]),no_mcp("Saved agent metadata changes are owner CLI operations."),Owner,false,ConfigKey,Write,Project,HostForWrites,"se.config-receipt",ConfigReceipt,&["E3"]);
@@ -137,6 +162,9 @@ ops! {
 impl AnyOp {
     /// Shared per-operation/per-key classification for CLI and host admission.
     pub fn requires_human_terminal(&self) -> Result<bool> {
+        if matches!(self, Self::AgentStop(input) if input.release) {
+            return Ok(true);
+        }
         match self.meta().human_only {
             HumanPolicy::Always => Ok(true),
             HumanPolicy::Never => Ok(false),
@@ -160,6 +188,9 @@ impl AnyOp {
             Self::RuntimeDown(v) => Some(&v.idempotency_key),
             Self::Uninstall(v) => Some(&v.idempotency_key),
             Self::AgentCreate(v) => Some(&v.idempotency_key),
+            Self::AgentLaunch(v) => Some(&v.idempotency_key),
+            Self::AgentStop(v) => Some(&v.idempotency_key),
+            Self::ProjectRemove(v) => Some(&v.idempotency_key),
             Self::ConfigSet(v) => Some(&v.idempotency_key),
             Self::DecisionPropose(v) => Some(&v.idempotency_key),
             Self::DecisionRatify(v) => Some(&v.idempotency_key),
@@ -197,6 +228,10 @@ impl AnyOutput {
     pub fn exit_code(&self) -> u8 {
         match self {
             Self::Uninstall(v) if !v.value.complete => 2,
+            Self::AgentStop(v) if !v.value.complete => 2,
+            Self::ProjectRemove(v) if !matches!(v.value.outcome.as_str(), "removed" | "absent") => {
+                2
+            }
             Self::RuntimeDown(v) if !v.value.complete => 2,
             Self::RuntimeUp(v) if v.value.state == "pending" => 2,
             Self::EventRead(v) => match &v.value {
@@ -207,6 +242,14 @@ impl AnyOutput {
             Self::ConfigGet(v) => v.value.value.exit_code(),
             Self::DecisionShow(v) => v.value.decision.exit_code(),
             Self::AgentShow(v) => v.value.agent.exit_code(),
+            Self::Resume(v)
+                if !v.value.complete || v.value.resume_status == "integrity_blocked" =>
+            {
+                2
+            }
+            Self::SessionContext(v) if v.value.truncated || !v.value.failures.is_empty() => 2,
+            Self::AgentList(v) => v.value.page.window().exit_code(false),
+            Self::HistoryList(v) => v.value.page.window().exit_code(false),
             Self::ProjectStatus(v) => {
                 let project = v.value.project.exit_code();
                 if project != 0 {

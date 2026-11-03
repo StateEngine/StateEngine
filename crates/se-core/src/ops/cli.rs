@@ -1,12 +1,14 @@
 //! Clap consumes the operation catalogue; no filesystem or ambient configuration is read here.
 use super::*;
-use crate::{
-    commit::{AbsentRevision, ExpectedRevision},
-    registry::{CliExposure, Scope},
-};
+use crate::registry::{CliExposure, Scope};
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use se_types::{Cursor, Detail, IdempotencyKey, Result, SeError, details};
 use std::path::PathBuf;
+
+mod decode;
+mod selections;
+pub use decode::{from_matches, from_matches_with_key};
+pub use selections::CliSelections;
 
 #[derive(Clone, Debug, Default)]
 pub struct CommonArgs {
@@ -18,29 +20,43 @@ pub struct CommonArgs {
     pub key: Option<IdempotencyKey>,
     pub selections: CliSelections,
 }
-/// Authenticated CLI routing metadata, separate from model-facing operation DTOs.
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct CliSelections {
-    /// Resolved from CLI project policy before forwarding; never an authority.
-    /// The host must select/check this scope before opening an admitted snapshot.
-    pub project: Option<se_types::ProjectId>,
-    pub agent: Option<String>,
-    pub mail_to: Option<String>,
-    pub mail_list: bool,
-    pub status_all: bool,
-}
 impl CommonArgs {
     pub fn from_matches(matches: &ArgMatches) -> Result<Self> {
         let (path, m) = deepest(matches);
         let name = selected_meta(matches)?.name;
         let selections = match name {
+            "continuity.resume" => CliSelections {
+                preview: text(m, "preview"),
+                ..CliSelections::default()
+            },
             "project.status" => CliSelections {
                 status_all: !path.is_empty() && flag(m, "all"),
                 ..CliSelections::default()
             },
-            "working_state.get" | "working_state.set" | "agent.show" => CliSelections {
+            "working_state.get" | "working_state.set" | "agent.show" | "history.list" => {
+                CliSelections {
+                    agent: text(m, "agent"),
+                    ..CliSelections::default()
+                }
+            }
+            "agent.launch" => CliSelections {
                 agent: text(m, "agent"),
+                launch_provider: text(m, "provider")
+                    .map(|value| {
+                        serde_json::from_value(serde_json::Value::String(value))
+                            .map_err(|_| SeError::invalid("provider", "claude or codex"))
+                    })
+                    .transpose()?,
+                ..CliSelections::default()
+            },
+            "agent.stop" => CliSelections {
+                agent: text(m, "agent"),
+                control_all: flag(m, "all"),
+                stop_release: flag(m, "release"),
+                ..CliSelections::default()
+            },
+            "project.remove" => CliSelections {
+                control_all: flag(m, "all"),
                 ..CliSelections::default()
             },
             "message.list" => CliSelections {
@@ -137,7 +153,16 @@ pub fn cli_command() -> Command {
             root = insert(root, path, meta.name, hidden);
         }
     }
-    root
+    // MCP is a streaming transport for the registered operations, not another
+    // store operation with a fabricated product output family.
+    root.subcommand(
+        Command::new("mcp")
+            .about("Serve session tools over newline-delimited JSON-RPC on stdin/stdout")
+            .disable_help_flag(true)
+            .disable_version_flag(true)
+            .disable_help_subcommand(true)
+            .arg(toggle("stdio")),
+    )
 }
 fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> Command {
     let Some((head, tail)) = path.split_first() else {
@@ -177,7 +202,48 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("launch"))
             .arg(toggle("adopt")),
         "project.status" => c.arg(toggle("all")),
-        "history.event_read" => c.arg(value("event").required(true)),
+        "agent.launch" => c
+            .about("Start or resume a saved agent; this release supports headless --detach")
+            .arg(positional("agent", 1, true))
+            .arg(toggle("new"))
+            .arg(value("provider"))
+            .arg(value("model"))
+            .arg(value("task"))
+            .arg(toggle("detach")),
+        "agent.stop" => c
+            .arg(positional("agent", 1, false).conflicts_with("all"))
+            .arg(toggle("all").conflicts_with("release"))
+            .arg(toggle("release")),
+        "continuity.resume" => c
+            .about("Restore your saved context without acknowledging packets or mail")
+            .arg(value("since").help("An opaque cursor from resume for this same agent"))
+            .arg(value("budget").default_value("32768").help("Maximum UTF-8 bytes in the JSON reply (1024..1048576)"))
+            .arg(value("limit").default_value("20").help("Maximum recent turns and governing decisions per section (1..100)"))
+            .arg(value("governing_cursor").long("governing-cursor").help("Continue project rulings from decisions.next_cursor"))
+            .arg(value("preview").help("Owner: inspect this saved agent without binding or acknowledging it")),
+        "session.context" => c
+            .arg(value("since"))
+            .arg(value("budget").default_value("32768"))
+            .arg(value("governing_cursor").long("governing-cursor"))
+            .arg(value("limit").default_value("20")),
+        "project.remove" => c
+            .arg(toggle("all").conflicts_with("project"))
+            .arg(toggle("keep-integrations")),
+        "history.event_read" => c.arg(
+            value("event")
+                .conflicts_with_all(["agent", "session", "kind", "since", "limit", "cursor"]),
+        ),
+        "history.list" => c
+            .about("Read the public timeline: conversations, mail, decisions, working state and saved identity changes")
+            .arg(value("agent"))
+            .arg(value("session"))
+            .arg(value("kind").action(ArgAction::Append))
+            .arg(
+                value("since")
+                    .help("An event position from se history, scoped to this caller and project"),
+            )
+            .arg(value("limit").default_value("20"))
+            .arg(value("cursor")),
         "message.send" => c
             .arg(positional("to", 1, true))
             .arg(positional("body", 2, true))
@@ -204,6 +270,9 @@ fn input_command(name: &str, c: Command) -> Command {
             ),
         "working_state.get" => c.arg(value("agent")),
         "agent.show" => c.arg(positional("agent", 1, true)),
+        "agent.list" => c
+            .arg(value("limit").default_value("20"))
+            .arg(value("cursor")),
         "config.get" => c
             .arg(positional("setting_key", 1, true))
             .arg(toggle("origin")),
@@ -257,360 +326,35 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::O
     if path.is_empty() {
         return Ok(&ProjectStatus::META);
     }
-    CATALOGUE.iter().copied().find(|meta|matches!(meta.cli,CliExposure::Leaf{path:p,..} if p.iter().copied().eq(path.iter().map(String::as_str))))
-        .ok_or_else(||unknown(&path.join(" ")))
-}
-pub fn from_matches(matches: &ArgMatches) -> Result<AnyOp> {
-    from_matches_with_key(matches, None)
-}
-pub fn from_matches_with_key(
-    matches: &ArgMatches,
-    generated: Option<IdempotencyKey>,
-) -> Result<AnyOp> {
-    let (path, m) = deepest(matches);
-    let meta = selected_meta(matches)?;
-    let common = CommonArgs::from_matches(matches)?;
-    if meta.scope == Scope::None && common.home.is_some() {
-        return Err(unknown_flag(
-            "--home",
-            meta.name,
-            "metadata does not select a state home",
-        ));
-    }
-    if !matches!(
-        meta.scope,
-        Scope::Project | Scope::ProjectOrAll | Scope::Session
-    ) && common.project.is_some()
-    {
-        return Err(unknown_flag(
-            "--project",
-            meta.name,
-            "this operation has no project selector",
-        ));
-    }
-    if !meta.mutates() && common.key.is_some() {
-        return Err(unknown_flag(
-            "--key",
-            meta.name,
-            "read-only calls do not accept a mutation key",
-        ));
-    }
-    if meta.name == "hook.claude" && (common.key.is_some() || common.project.is_some()) {
-        return Err(SeError::invalid(
-            "hook flags",
-            "bound session project and the existing natural capture identity; no --project or --key; --json selects the explicit receipt",
-        ));
-    }
-    if meta.name == "meta.version"
-        && (!path.is_empty() || common.quiet || common.no_color || flag(m, "help"))
-    {
-        return Err(SeError::invalid(
-            "--version",
-            "only --json alongside the version flag",
-        ));
-    }
-    let key = || {
-        common
-            .key
-            .clone()
-            .or_else(|| generated.clone())
-            .ok_or_else(|| {
-                SeError::new(Detail::UsageMissingArgument(
-                    details::UsageMissingArgument {
-                        command: meta.name.into(),
-                        argument:
-                            "request identity generated before first send (or --key for retry)"
-                                .into(),
-                    },
-                ))
-            })
+    let same_path = |meta: &crate::registry::OpMeta| {
+        matches!(meta.cli,
+        CliExposure::Leaf {path: registered, ..} if registered.iter().copied().eq(path.iter().map(String::as_str)))
     };
-    let op =
-        match meta.name {
-            "agent.show" => AnyOp::AgentShow(AgentShow {
-                target_agent_id: None,
-            }),
-            "config.get" => AnyOp::ConfigGet(ConfigGet {
-                key: required(m, "setting_key")?,
-                origin: flag(m, "origin"),
-            }),
-            "config.set" => AnyOp::ConfigSet(ConfigSet {
-                key: required(m, "setting_key")?,
-                value: required(m, "setting_value")?,
-                idempotency_key: key()?,
-            }),
-            "meta.version" => AnyOp::MetaVersion(MetaVersion {}),
-            "meta.help" => AnyOp::MetaHelp(MetaHelp {
-                path: if flag(m, "help") {
-                    path
-                } else {
-                    many(m, "path")
-                },
-                all: if flag(m, "help") {
-                    false
-                } else {
-                    flag(m, "all")
-                },
-            }),
-            "meta.schema" => AnyOp::MetaSchema(MetaSchema { op: text(m, "op") }),
-            "project.status" => AnyOp::ProjectStatus(ProjectStatus {
-                all: if path.is_empty() {
-                    false
-                } else {
-                    flag(m, "all")
-                },
-            }),
-            "hook.claude" => AnyOp::HookClaude(HookClaude {
-                event: serde_json::from_value(serde_json::Value::String(required(m, "event")?))
-                    .map_err(|_| SeError::invalid("event", "a fixed Claude hook event"))?,
-            }),
-            "project.init" => AnyOp::ProjectInit(ProjectInit {
-                repo: text(m, "repo"),
-                name: text(m, "name"),
-                agent: required(m, "agent")?,
-                provider: text(m, "provider")
-                    .map(|v| {
-                        serde_json::from_value(serde_json::Value::String(v))
-                            .map_err(|_| SeError::invalid("provider", "claude or codex"))
-                    })
-                    .transpose()?,
-                model: text(m, "model"),
-                launch: flag(m, "launch"),
-                adopt: flag(m, "adopt"),
-                idempotency_key: key()?,
-            }),
-            "history.event_read" => AnyOp::EventRead(EventRead {
-                event_id: required(m, "event")?,
-            }),
-            "message.send" => AnyOp::MessageSend(MessageSend {
-                to: required(m, "to")?,
-                body: required(m, "body")?,
-                kind: serde_json::from_value(serde_json::Value::String(required(m, "kind")?))
-                    .map_err(|_| SeError::invalid("kind", "a registered message kind"))?,
-                refs: many(m, "refs"),
-                reply_to: text(m, "reply_to")
-                    .map(se_types::MessageId::from_legacy)
-                    .transpose()?,
-                idempotency_key: key()?,
-            }),
-            "message.list" => AnyOp::MessageList(MessageList {
-                cli_list: true,
-                view: if flag(m, "all") {
-                    MessageView::All
-                } else {
-                    MessageView::Unread
-                },
-                mailbox: if text(m, "box").as_deref() == Some("sent") {
-                    MessageBox::Sent
-                } else {
-                    MessageBox::Inbox
-                },
-                from: text(m, "from"),
-                kind: text(m, "kind")
-                    .map(|v| {
-                        serde_json::from_value(serde_json::Value::String(v))
-                            .map_err(|_| SeError::invalid("kind", "a registered message kind"))
-                    })
-                    .transpose()?,
-                full: flag(m, "full"),
-                limit: number(m, "limit")?,
-                preview_chars: text(m, "preview_chars")
-                    .map(|v| {
-                        v.parse()
-                            .map_err(|_| SeError::invalid("preview-chars", "0..4000"))
-                    })
-                    .transpose()?,
-                cursor: text(m, "cursor").map(Cursor::new).transpose()?,
-                owner_to: text(m, "to"),
-            }),
-            "working_state.get" => AnyOp::WorkingStateGet(WorkingStateGet { owner_agent: None }),
-            "agent.create" => AnyOp::AgentCreate(AgentCreate {
-                name: required(m, "name")?,
-                provider: text(m, "provider")
-                    .map(|value| {
-                        serde_json::from_value(serde_json::Value::String(value))
-                            .map_err(|_| SeError::invalid("provider", "claude or codex"))
-                    })
-                    .transpose()?,
-                model: text(m, "model"),
-                idempotency_key: key()?,
-            }),
-            "decision.show" => AnyOp::DecisionShow(DecisionShow {
-                decision_id: required(m, "decision_id")?,
-            }),
-            "decision.propose" => AnyOp::DecisionPropose(DecisionPropose {
-                key: required(m, "decision_key")?,
-                statement: required(m, "statement")?,
-                rationale: text(m, "rationale"),
-                supersedes: text(m, "supersedes")
-                    .map(se_types::DecisionId::from_legacy)
-                    .transpose()?,
-                idempotency_key: key()?,
-            }),
-            "decision.ratify" => AnyOp::DecisionRatify(DecisionRatify {
-                decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
-                expect: text(m, "expect")
-                    .map(|value| {
-                        value
-                            .parse()
-                            .map_err(|_| SeError::invalid("expect", "positive entity revision"))
-                    })
-                    .transpose()?,
-                idempotency_key: key()?,
-            }),
-            "decision.reject" => AnyOp::DecisionReject(DecisionReject {
-                decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
-                reason: required(m, "reason")?,
-                expect: text(m, "expect")
-                    .map(|value| {
-                        value
-                            .parse()
-                            .map_err(|_| SeError::invalid("expect", "positive entity revision"))
-                    })
-                    .transpose()?,
-                idempotency_key: key()?,
-            }),
-            "decision.retract" => AnyOp::DecisionRetract(DecisionRetract {
-                decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
-                reason: required(m, "reason")?,
-                expect: text(m, "expect")
-                    .map(|value| {
-                        value
-                            .parse()
-                            .map_err(|_| SeError::invalid("expect", "positive entity revision"))
-                    })
-                    .transpose()?,
-                idempotency_key: key()?,
-            }),
-            "decision.supersede" => AnyOp::DecisionSupersede(DecisionSupersede {
-                decision_id: se_types::DecisionId::from_legacy(required(m, "decision_id")?)?,
-                replacement_id: se_types::DecisionId::from_legacy(required(m, "replacement_id")?)?,
-                expect: text(m, "expect")
-                    .map(|value| {
-                        value
-                            .parse()
-                            .map_err(|_| SeError::invalid("expect", "positive entity revision"))
-                    })
-                    .transpose()?,
-                replacement_expect: None,
-                idempotency_key: key()?,
-            }),
-            "working_state.set" => {
-                let expect = required(m, "expect")?;
-                AnyOp::WorkingStateSet(WorkingStateSet {
-                    text: required(m, "text")?,
-                    expect: if expect == "absent" {
-                        ExpectedRevision::Absent(AbsentRevision::Absent)
-                    } else {
-                        ExpectedRevision::Revision(expect.parse().map_err(|_| {
-                            SeError::invalid("expect", "positive revision or absent")
-                        })?)
-                    },
-                    idempotency_key: key()?,
-                    owner_agent: None,
-                })
-            }
-            "runtime.up" => AnyOp::RuntimeUp(RuntimeUp {
-                foreground: flag(m, "foreground"),
-                idempotency_key: key()?,
-            }),
-            "runtime.down" => AnyOp::RuntimeDown(RuntimeDown {
-                idempotency_key: key()?,
-            }),
-            "installation.uninstall" => AnyOp::Uninstall(Uninstall {
-                idempotency_key: key()?,
-            }),
-            _ => return Err(unknown(meta.name)),
-        };
-    Ok(op)
+    CATALOGUE
+        .iter()
+        .copied()
+        .find(|meta| {
+            same_path(meta)
+                && matches!(meta.cli,
+        CliExposure::Leaf {select: Selector::Flag(flag), ..}
+            if m.value_source(flag) == Some(clap::parser::ValueSource::CommandLine))
+        })
+        .or_else(|| {
+            CATALOGUE.iter().copied().find(|meta| {
+                same_path(meta)
+                    && matches!(
+                        meta.cli,
+                        CliExposure::Leaf {
+                            select: Selector::Always,
+                            ..
+                        }
+                    )
+            })
+        })
+        .ok_or_else(|| unknown(&path.join(" ")))
 }
 fn number(m: &ArgMatches, id: &str) -> Result<u16> {
     required(m, id)?
         .parse()
         .map_err(|_| SeError::invalid(id, "a bounded positive integer"))
-}
-
-impl CliSelections {
-    pub fn validate(&self) -> Result<()> {
-        for (name, selector) in [("agent", &self.agent), ("to", &self.mail_to)] {
-            if let Some(selector) = selector {
-                bounded(name, selector, 512, false)?;
-            }
-        }
-        if self.status_all && self.project.is_some() {
-            return Err(SeError::invalid(
-                "--all",
-                "no simultaneous project selector",
-            ));
-        }
-        Ok(())
-    }
-    /// Called only by the authenticated CLI route inside its admitted finite read.
-    /// The same metadata crosses IPC separately; MCP arguments never carry it.
-    pub fn apply<R: se_store::Snapshot>(
-        &self,
-        op: &mut AnyOp,
-        cx: &mut crate::commit::Cx<'_, R>,
-    ) -> Result<()> {
-        self.validate()?;
-        if let Some(project) = &self.project
-            && cx.admission.scope != se_store::Scope::Project(project.clone())
-        {
-            return Err(SeError::invalid(
-                "CLI project routing",
-                "the resolved project must match the verified admission scope before reading",
-            ));
-        }
-        if self.status_all {
-            match op {
-                AnyOp::ProjectStatus(input) => input.all = true,
-                _ => {
-                    return Err(unknown_flag(
-                        "--all",
-                        op.meta().name,
-                        "only status accepts all-project routing",
-                    ));
-                }
-            }
-        }
-        if let Some(selector) = &self.agent {
-            if !matches!(
-                op,
-                AnyOp::WorkingStateGet(_) | AnyOp::WorkingStateSet(_) | AnyOp::AgentShow(_)
-            ) {
-                return Err(unknown_flag(
-                    "--agent",
-                    op.meta().name,
-                    "this operation has no agent selector",
-                ));
-            }
-            let actor = crate::scope::actor_selector(cx.read, selector)?;
-            let se_store::Actor::Agent(agent) = actor else {
-                return Err(SeError::invalid("agent", "a project agent, not the owner"));
-            };
-            crate::scope::working_agent(cx.admission, Some(&agent), op.meta().name)?;
-            match op {
-                AnyOp::AgentShow(input) => input.target_agent_id = Some(agent),
-                AnyOp::WorkingStateGet(input) => input.owner_agent = Some(agent),
-                AnyOp::WorkingStateSet(input) => input.owner_agent = Some(agent),
-                _ => (),
-            }
-        }
-        if self.mail_list || self.mail_to.is_some() {
-            match op {
-                AnyOp::MessageList(input) => {
-                    input.cli_list = self.mail_list;
-                    input.owner_to = self.mail_to.clone();
-                }
-                _ => {
-                    return Err(unknown_flag(
-                        "--to",
-                        op.meta().name,
-                        "this operation has no mail filter",
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
 }

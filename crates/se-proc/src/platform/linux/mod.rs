@@ -284,6 +284,11 @@ impl Scope {
             .as_mut()
             .ok_or_else(|| input("launch", "child not created"))?;
         child.drain()?;
+        if !child.eof
+            && let Some(registration) = self.registrations.first()
+        {
+            registration.rearm();
+        }
         let offset = usize::from(child.protocol.first() == Some(&b'R'));
         if child.protocol.get(offset) == Some(&b'E') {
             if child.protocol.len() < offset + 5 {
@@ -383,10 +388,16 @@ impl Scope {
         // procfs may mark our retained child a zombie just before waitid
         // exposes its status. Preserve that observation as pending, then use
         // the cached native status for every complete witness and release.
-        match &mut self.child {
-            Some(child) => Ok(child.peek_status()?.is_some()),
-            None => Ok(true),
+        let ready = match &mut self.child {
+            Some(child) => child.peek_status()?.is_some(),
+            None => true,
+        };
+        if !ready {
+            for registration in self.registrations.iter().skip(1) {
+                registration.rearm();
+            }
         }
+        Ok(ready)
     }
     pub fn root(&mut self) -> ProcResult<Option<ProcessObservation>> {
         let Some(expected) = self.root_identity() else {

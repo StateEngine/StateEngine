@@ -40,7 +40,7 @@ impl Bootstrap {
             Some(path) => absolute(PathBuf::from(path), "SE_CONFIG")?,
             None => home.join("config.toml"),
         };
-        let session = session_input()?;
+        let session = session_input(&home)?;
         let project = match project {
             Some(project) => Some(project),
             None if session.is_none() => text_variable("SE_PROJECT")?,
@@ -90,20 +90,27 @@ pub(crate) fn state_home(home: Option<PathBuf>) -> Result<PathBuf> {
     absolute(home, "state home")
 }
 
-fn session_input() -> Result<Option<Secret>> {
+pub(crate) fn session_input(home: &std::path::Path) -> Result<Option<Secret>> {
     let Some(value) = std::env::var_os("SE_SESSION") else {
         return Ok(None);
     };
-    let invalid = || {
+    let invalid = |reason: String| {
         SeError::new(Detail::CapabilityInvalid(details::CapabilityInvalid {
-        subject: "SE_SESSION".into(),
-        reason: "must contain the opaque handle supplied to a launched session".into(),
-        next_step: "Use the environment of the launched agent; invalid session input cannot grant owner authority".into(),
+        subject: "SE_SESSION".into(), reason,
+        next_step: "Use the opaque session handle supplied to a launched agent; invalid session input cannot grant owner authority".into(),
     }))
     };
-    let value = value.into_string().map_err(|_| invalid())?;
-    let session = Secret::new(value.into_bytes()).map_err(|_| invalid())?;
-    Ok(Some(session))
+    let handle = value
+        .to_str()
+        .ok_or_else(|| invalid("must be a canonical session handle".into()))?;
+    let _: se_types::SessionId = handle.parse().map_err(|_| {
+        invalid("must be a canonical ses_ UUID handle, never credential bytes".into())
+    })?;
+    let files =
+        se_proc::NativeStateFiles::open(home).map_err(|error| invalid(error.to_string()))?;
+    se_proc::read_session_pin(&files, handle)
+        .map(Some)
+        .map_err(|error| invalid(error.to_string()))
 }
 
 fn variable(name: &str) -> Result<Option<OsString>> {

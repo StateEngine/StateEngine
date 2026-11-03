@@ -6,6 +6,10 @@
 extern crate self as se_host;
 pub mod client;
 mod harness;
+#[cfg(feature = "runtime")]
+mod launch_proofs;
+#[cfg(feature = "runtime")]
+pub use launch_proofs::{PreparedFirstRequests, PreparedRequestProofs, VerifiedPreparedRequest};
 #[cfg(feature = "listener")]
 mod http;
 #[cfg(feature = "listener")]
@@ -14,7 +18,11 @@ mod ipc;
 pub mod mcp;
 pub use mcp::{McpBackend, McpReply};
 mod model;
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+mod process;
 mod runtime;
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+pub use process::{ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation};
 mod session;
 pub mod state_files;
 pub use harness::*;

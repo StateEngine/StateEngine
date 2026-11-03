@@ -14,8 +14,8 @@ use crate::{
     SessionIdentity, StreamRead, StreamWrite,
 };
 use se_proc::{
-    ProcError, ProviderStdioApi, StdioCloseScope, StdioCompletion, StdioConfig, StdioIdentity,
-    StdioLimits, StdioNotice, StdioOutcome, StdioPort, StdioReadStream, StdioSink, StdioTicket,
+    ProcError, ProviderStdioApi, StdioCloseScope, StdioCompletion, StdioConfig, StdioLimits,
+    StdioNotice, StdioOutcome, StdioPort, StdioReadStream, StdioSink, StdioTicket,
 };
 use se_types::{Result, SeError};
 use std::{num::NonZeroU32, pin::pin, sync::Arc, time::Duration};
@@ -87,9 +87,9 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
         owner: &se_proc::OwnedProcess,
         _identity: &SessionIdentity,
     ) -> Result<ProviderIo> {
-        let record = self
+        let identity = self
             .runtime
-            .describe(owner)
+            .stdio_identity(owner)
             .map_err(|e| native("provider process", &e))?;
         let wake = Arc::new(Wake(Notify::new()));
         let stdio = self
@@ -97,11 +97,7 @@ impl<R: ProviderStdioApi + Send + Sync + 'static> ProviderIoPlatform for Windows
             .create_stdio(
                 owner,
                 StdioConfig {
-                    identity: StdioIdentity {
-                        lifecycle: record.lifecycle,
-                        host: record.host,
-                        generation: record.generation,
-                    },
+                    identity,
                     limits: self.limits,
                     notifications: Arc::clone(&wake) as Arc<dyn StdioSink>,
                 },

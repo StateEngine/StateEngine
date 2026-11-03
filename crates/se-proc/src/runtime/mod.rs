@@ -17,3 +17,6 @@ impl NativeProcessRuntime {
         read_process(machine, pid)
     }
 }
+
+#[cfg(windows)]
+mod stdio;

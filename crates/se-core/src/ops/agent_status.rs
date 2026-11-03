@@ -1,6 +1,6 @@
 //! Saved identity readback. Native lifecycle and provider conversation facts are
 //! deliberately unknown until the runtime observation adapter supplies them.
-use super::{AgentRow, AgentShow, AgentStatusOutput, ConversationView, ResumeCommand, SessionView};
+use super::{AgentRow, AgentShow, AgentStatusOutput};
 use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{Actor, EventBody, Snapshot};
 use se_types::{Read, Result, SeError};
@@ -35,7 +35,7 @@ pub fn page<R: Snapshot>(
         if matches!(&cx.admission.actor,Actor::Agent(bound) if bound!=&agent) {
             continue;
         }
-        let mut row = scope::require_present(
+        let row = scope::require_present(
             show(
                 AgentShow {
                     target_agent_id: Some(agent.clone()),
@@ -46,17 +46,6 @@ pub fn page<R: Snapshot>(
             "saved agent page row",
             "Read the saved agent by its exact ID in this project, then refresh the agent list.",
         )?;
-        row.unread = Some(
-            cx.read
-                .message_count(se_store::MessageQuery {
-                    recipient: Some(Actor::Agent(agent)),
-                    sender: None,
-                    kind: None,
-                    unread_only: true,
-                    full_body: false,
-                })
-                .map_err(|e| store_error(&e))?,
-        );
         rows.push(row);
     }
     fields.returned = rows.len() as u64;
@@ -181,10 +170,32 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
             ));
         }
     };
-    Ok(AgentStatusOutput{agent:Read::Present{value:AgentRow{
-        id:agent,name,role,provider,model:profile.model,profile:profile.named_profile,
-        session:SessionView{state:"unknown".into(),session_id:None,launch_id:None,surface:"unknown".into(),process:None,since:None,observed_at:None,containment:None,containment_cause:Some("No native lifecycle observation was supplied to this saved-identity read.".into())},
-        conversation:ConversationView{id:None,state:"unknown".into()},
-        resume:ResumeCommand{ready:false,mode:"unknown".into(),reason:Some("Provider conversation and process custody have not been observed by this read.".into()),command:None,argv:None},unread:None,last_activity_at:None,
-    }}})
+    let (session, conversation, resume) = super::agent_session::read(&agent, cx)?;
+    let unread = cx
+        .read
+        .message_count(se_store::MessageQuery {
+            recipient: Some(Actor::Agent(agent.clone())),
+            sender: None,
+            kind: None,
+            unread_only: true,
+            full_body: false,
+        })
+        .map_err(|error| store_error(&error))?;
+    Ok(AgentStatusOutput {
+        agent: Read::Present {
+            value: AgentRow {
+                id: agent,
+                name,
+                role,
+                provider,
+                model: profile.model,
+                profile: profile.named_profile,
+                session,
+                conversation,
+                resume,
+                unread: Some(unread),
+                last_activity_at: None,
+            },
+        },
+    })
 }

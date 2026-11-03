@@ -5,6 +5,8 @@ mod grammar;
 mod hook;
 mod installer;
 mod ipc;
+mod mcp;
+mod mcp_stdio;
 mod private_entry;
 mod render;
 mod route;
@@ -67,7 +69,10 @@ pub fn run(
             });
         }
     }
-    if let Err(error) = operation.resolve_stdin(&mut bootstrap::text_input) {
+    if let Err(error) = operation
+        .resolve_stdin(&mut bootstrap::text_input)
+        .and_then(|()| operation.validate())
+    {
         return render::error::write(
             &error,
             &RenderCx::default(),
@@ -225,6 +230,9 @@ fn main() -> std::process::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
     if let Err(error) = bootstrap::initialize_file_owner() {
         return finish(Err(error), &args);
+    }
+    if let Some(result) = mcp::entry(&args) {
+        return finish(result, &args);
     }
     if let Some(result) = runtime::host::dispatch(&args) {
         return finish(result, &args);

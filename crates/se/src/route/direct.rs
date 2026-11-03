@@ -114,7 +114,11 @@ pub fn read<S: ReadStore>(
         store,
         admission,
         terminal,
-        &Kernel::read_only(),
+        &Kernel::read_only_at(se_types::UnixMicros::new(
+            u64::try_from(super::clock::now_us()?).map_err(|_| {
+                SeError::invalid("read observation clock", "nonnegative Unix microseconds")
+            })?,
+        )?),
         op,
         selections,
     )? {

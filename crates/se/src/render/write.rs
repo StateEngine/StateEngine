@@ -50,7 +50,7 @@ pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
     Ok(())
 }
 
-fn profile(value: &ResolvedProfile, out: &mut impl Write) -> io::Result<()> {
+pub(super) fn profile(value: &ResolvedProfile, out: &mut impl Write) -> io::Result<()> {
     let sandbox = match value.sandbox {
         EffectiveSandbox::ReadOnly => "read-only",
         EffectiveSandbox::WorkspaceWrite => "workspace-write",
@@ -76,7 +76,7 @@ fn profile(value: &ResolvedProfile, out: &mut impl Write) -> io::Result<()> {
     Ok(())
 }
 
-fn provider(value: Provider) -> &'static str {
+pub(super) fn provider(value: Provider) -> &'static str {
     match value {
         Provider::Claude => "Claude Code",
         Provider::Codex => "Codex",
@@ -302,7 +302,7 @@ fn stops(values: &[StopFact], out: &mut impl Write) -> io::Result<()> {
     Ok(())
 }
 
-fn witness(value: &Witness, out: &mut impl Write) -> io::Result<()> {
+pub(super) fn witness(value: &Witness, out: &mut impl Write) -> io::Result<()> {
     let state = match value.state {
         WitnessState::Witnessed => "witnessed",
         WitnessState::Unknown => "unknown",

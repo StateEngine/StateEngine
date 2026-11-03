@@ -129,6 +129,7 @@ pub trait ProcessRuntime: Send + Sync {
         reservation: LaunchReservation,
         spec: LaunchSpec,
     ) -> ProcResult<PreparedScope>;
+    fn bind_stdio(&self, prepared: &PreparedLaunch, child: StandardIo) -> ProcResult<()>;
     fn begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart;
     fn poll_launch(&self, ticket: &LaunchTicket) -> ProcResult<LaunchProgress>;
     fn authorize_exec(&self, ticket: &LaunchTicket) -> ProcResult<()>;
@@ -245,10 +246,10 @@ lifetime/readiness and provider readiness remain separate facts.
 
 ### 2.3 Windows provider-stdio port (narrow amendment)
 
-`stdio.rs` is the compile-only safe native counterpart of section 40's
-`ProviderIoPlatform`; it adds no backend or thread. `ProviderStdioApi` extends
-the existing `ProcessRuntime`, so every port uses that host's one arena and
-one IOCP collector. It is Windows-only; Unix keeps nonblocking descriptors on
+`stdio.rs` is the safe native counterpart of section 40's
+`ProviderIoPlatform`. `NativeProcessRuntime` implements `ProviderStdioApi`
+on Windows through its existing arena and IOCP collector, with no additional
+collector or per-stream thread. It is Windows-only; Unix keeps nonblocking descriptors on
 the host's existing AsyncFd reactor.
 
 | Native method | Safe host contract |
@@ -504,8 +505,13 @@ are batched into C1/C3 instead of adding serial security transactions.
 
 `prepare_launch` consumes LaunchSpec as well as the committed reservation,
 so mode, selected terminal/broker and containment requirement are known before
-native preparation. PreparedLaunch retains that unchanged spec; begin_launch
-cannot substitute a different launch mode or policy after C2. It inserts its
+native preparation. PreparedLaunch retains that spec; begin_launch
+cannot substitute a different launch mode or policy after C2. For headless provider I/O,
+`bind_stdio(&PreparedLaunch, StandardIo)` installs the child endpoints once after
+`create_stdio`/the host's Unix reactor preparation, before `begin_launch`.
+It refuses preexisting streams or a second binding and fences execution after a
+failed binding; the prepared scope remains available for ordinary cleanup.
+The host registers its transport for reads before beginning the launch. It inserts its
 Starting arena slot **before** any native effect, creates an exclusive scope (no vendor child) and returns PreparedScope with an opaque
 PreparedLaunch, OwnedProcess reference and ScopeCheckpoint. The checkpoint
 contains reservation, resolved parent, exact ScopeIdentity and achieved guarantee. The host
@@ -768,7 +774,11 @@ the public NativeReactor/NativeReadiness/NativeRegistration and ExitSink
 boundaries prevent unsafe code leaking into se-host. NativeReactor wraps the
 provided owned File in the existing host AsyncFd/kqueue driver with Readable
 or Priority interest; its task calls NativeReadiness::ready, and se-proc assigns
-the lifecycle/generation/sequence nudge. NativeRegistration cancellation
+the lifecycle/generation/sequence nudge. NativeRegistration::rearm is called
+after native state consumes readiness; until then a terminal pidfd or EOF
+produces only one callback, preventing an idle readiness spin. PreparedScope
+also returns the native-validated argv_sha256 so the pre-exec root index and
+the eventual vendor record use exactly the same digest. NativeRegistration cancellation
 disables callbacks without blocking an async thread; in-flight callbacks hold
 Arc state until drained. There is no hidden tokio runtime or collector inside
 the Unix backend.

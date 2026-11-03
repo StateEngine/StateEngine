@@ -39,7 +39,7 @@ pub enum EventOutput {
 }
 pub fn read<R: Snapshot>(input: EventRead, cx: &mut Cx<'_, R>) -> Result<EventOutput> {
     input.validate()?;
-    let project = scope::project(cx.admission)?.clone();
+    scope::project(cx.admission)?;
     let registry = cx.read.legacy_registry().map_err(|e| store_error(&e))?;
     let id = EventId::from_legacy(input.event_id.clone())
         .or_else(|_| EventId::from_registered_legacy(input.event_id, &registry))?;
@@ -60,6 +60,13 @@ pub fn read<R: Snapshot>(input: EventRead, cx: &mut Cx<'_, R>) -> Result<EventOu
         }
         Read::Unknown { what } => return Ok(EventOutput::Other(Read::Unknown { what })),
     };
+    Ok(EventOutput::Present(project_event(event, cx)?))
+}
+
+/// Shared complete public projection for exact reads and paged history. The
+/// input must come from this same admitted snapshot; scope is checked again.
+pub fn project_event<R: Snapshot>(event: StoredEvent, cx: &mut Cx<'_, R>) -> Result<HistoryEvent> {
+    let project = scope::project(cx.admission)?.clone();
     if event.header.scope != Scope::Project(project.clone()) {
         return Err(scope::unreadable(
             "event scope",
@@ -101,7 +108,7 @@ pub fn read<R: Snapshot>(input: EventRead, cx: &mut Cx<'_, R>) -> Result<EventOu
             host_generation: generation.to_string(),
         },
     };
-    Ok(EventOutput::Present(HistoryEvent {
+    Ok(HistoryEvent {
         event_id: event.header.event,
         position,
         kind: kind.into(),
@@ -111,7 +118,7 @@ pub fn read<R: Snapshot>(input: EventRead, cx: &mut Cx<'_, R>) -> Result<EventOu
         writer,
         read_at,
         payload,
-    }))
+    })
 }
 
 #[path = "event/payload.rs"]

@@ -102,6 +102,9 @@ impl ProcessRuntime for NativeProcessRuntime {
             spec.notifications.clone(),
         ));
         let deadline = spec.deadline;
+        let stdio_bound = spec.stdio.stdin.is_some()
+            || spec.stdio.stdout.is_some()
+            || spec.stdio.stderr.is_some();
         let slot = Arc::new(Mutex::new(Slot {
             reservation: reservation.clone(),
             checkpoint: None,
@@ -109,6 +112,9 @@ impl ProcessRuntime for NativeProcessRuntime {
             record: None,
             native: None,
             spec: Some(spec),
+            stdio_bound,
+            #[cfg(windows)]
+            stdio: None,
             deadline,
             argv_sha256: digest,
             hub: hub.clone(),
@@ -177,6 +183,7 @@ impl ProcessRuntime for NativeProcessRuntime {
         });
         match result {
             Ok(checkpoint) => Ok(PreparedScope {
+                argv_sha256: digest,
                 prepared: PreparedLaunch { key: key.clone() },
                 process: OwnedProcess { key },
                 checkpoint,
@@ -192,11 +199,69 @@ impl ProcessRuntime for NativeProcessRuntime {
             }
         }
     }
+    fn bind_stdio(&self, prepared: &PreparedLaunch, child: StandardIo) -> ProcResult<()> {
+        let key = &prepared.key;
+        self.inner.apply(key, false, |slot| {
+            if slot.launched || slot.phase != LifecycleState::Starting {
+                return Err(state(&key.lifecycle, slot.phase, "bind_stdio"));
+            }
+            let result = (|| {
+                if let Some(failure) = &slot.failure {
+                    return Err(failure.clone());
+                }
+                if Instant::now() >= slot.deadline {
+                    return Err(error(
+                        ProcErrorCode::LaunchTimedOut,
+                        ProcErrorDetail::Input {
+                            field: "deadline".into(),
+                            reason: "launch deadline elapsed before stream binding".into(),
+                        },
+                    ));
+                }
+                if slot.stdio_bound {
+                    return Err(input(
+                        "stdio",
+                        "prepared launch already owns stream bindings",
+                    ));
+                }
+                let spec = slot
+                    .spec
+                    .as_mut()
+                    .ok_or_else(|| input("stdio", "prepared launch spec is unavailable"))?;
+                if spec.mode != LaunchMode::Headless {
+                    return Err(input(
+                        "stdio",
+                        "provider stream binding requires headless mode",
+                    ));
+                }
+                spec.stdio = child;
+                slot.stdio_bound = true;
+                Ok(())
+            })();
+            if let Err(failure) = &result {
+                slot.failure = Some(failure.clone());
+            }
+            result
+        })
+    }
     fn begin_launch(&self, prepared: PreparedLaunch) -> LaunchStart {
         let key = prepared.key;
         let result = self.inner.apply(&key, false, |s| {
             if s.launched || s.phase != LifecycleState::Starting {
                 return Err(state(&key.lifecycle, s.phase, "begin_launch"));
+            }
+            if let Some(failure) = &s.failure {
+                return Err(failure.clone());
+            }
+            #[cfg(windows)]
+            if let Some(stdio) = &s.stdio {
+                if !s.stdio_bound {
+                    return Err(input(
+                        "stdio",
+                        "created provider streams must bind before vendor execution",
+                    ));
+                }
+                stdio.launch_ready()?;
             }
             if Instant::now() >= s.deadline {
                 return Err(error(
@@ -443,6 +508,12 @@ impl ProcessRuntime for NativeProcessRuntime {
             {
                 return Err(input("generation", "same or next generation required"));
             }
+            #[cfg(windows)]
+            if to != from
+                && let Some(stdio) = &s.stdio
+            {
+                stdio.fence(to)?;
+            }
             s.generation = to;
             if let Some(record) = &mut s.record {
                 record.generation = to;
@@ -553,6 +624,13 @@ impl ProcessRuntime for NativeProcessRuntime {
                     "witness differs from retained native custody",
                 ));
             }
+            #[cfg(windows)]
+            if s.stdio.as_ref().is_some_and(|stdio| !stdio.released()) {
+                return Err(input(
+                    "release",
+                    "close/drain provider streams and release every operation and port first",
+                ));
+            }
             if let Some(native) = &mut s.native {
                 native.release(true)?;
             }
@@ -568,29 +646,48 @@ impl ProcessRuntime for NativeProcessRuntime {
         release: &UnwitnessedRelease,
     ) -> ProcResult<ReleasedOwnership> {
         self.inner.apply(&process.key, true, |s| {
-            if s.phase != LifecycleState::StopUnproved {
+            if s.phase != LifecycleState::StopUnproved
+                && !(s.record.is_none()
+                    && matches!(
+                        s.phase,
+                        LifecycleState::Reserved | LifecycleState::Starting | LifecycleState::Lost
+                    ))
+            {
                 return Err(state(
                     &process.key.lifecycle,
                     s.phase,
                     "release_uncontained",
                 ));
             }
+            let scope = if let Some(native) = s.native.as_ref() {
+                native.scope.clone()
+            } else if let Some(checkpoint) = &s.checkpoint {
+                checkpoint.scope.clone()
+            } else {
+                crate::platform::uncreated_scope(&s.reservation)?.0.scope
+            };
             if release.lifecycle != s.reservation.lifecycle
                 || release.generation != s.generation
-                || s.native()?.scope != release.scope
+                || scope != release.scope
                 || !matches!(
-                    release.scope,
-                    ScopeIdentity::LinuxTracked { .. } | ScopeIdentity::MacOsTracked { .. }
+                    scope,
+                    ScopeIdentity::LinuxPrepared { .. }
+                        | ScopeIdentity::LinuxTracked { .. }
+                        | ScopeIdentity::MacOsPrepared { .. }
+                        | ScopeIdentity::MacOsTracked { .. }
                 )
             {
                 return Err(input(
                     "release",
-                    "exact tracked lifecycle, generation and scope required",
+                    "exact uncontained lifecycle, generation and retained scope required",
                 ));
             }
-            // Host has committed its human-only CAS and drained dispatch. Native
-            // retirement sends no signal and never constructs an exit witness.
-            s.native()?.release(false)?;
+            // The host already committed its explicit human-only release CAS.
+            // Closing query/readiness custody sends no signal and proves no exit.
+            if let Some(native) = s.native.as_mut() {
+                native.release(false)?;
+            }
+            s.set_phase(LifecycleState::StopUnproved)?;
             s.released = true;
             s.hub.disable();
             if let Some(record) = &mut s.record {

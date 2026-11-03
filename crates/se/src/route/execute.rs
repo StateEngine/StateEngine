@@ -9,7 +9,7 @@ use crate::bootstrap::Bootstrap;
 use se_core::{
     dispatch::{CallFacts, Kernel},
     ops::{AnyOp, AnyOutput},
-    registry::Effect,
+    registry::{Effect, RuntimeNeed},
     scope,
     store_error::store_error,
 };
@@ -22,16 +22,10 @@ use se_types::{AgentId, EventId, MessageId, Read, Result, SeError, Secret};
 use std::{
     io::Read as _,
     sync::{Arc, atomic::AtomicBool},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
-pub fn now_us() -> Result<i64> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| scope::unreadable("system clock", &e.to_string()))?;
-    i64::try_from(elapsed.as_micros())
-        .map_err(|_| SeError::invalid("system clock", "representable Unix microseconds"))
-}
+pub use super::clock::now_us;
 pub fn facts() -> Result<CallFacts> {
     let now = now_us()?;
     let random = se_proc::random_secret()
@@ -136,20 +130,14 @@ pub fn dispatch(
         return super::status::observe(cx, &reader, &files, &caller.admission);
     }
     if let AnyOp::HookClaude(hook) = &op {
-        let target = scope::require_present(
-            endpoint(&files)?,
-            "live runtime endpoint",
-            "Run se up for this same data home before repeating the hook with its original session/provider/turn identities.",
-        )?;
         let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
-        return crate::ipc::forward_hook(
-            &target,
-            credential(cx, &files)?,
-            input,
-            &forwarding_options(&cx.home, &target)?,
-        );
+        return super::hook::forward(cx, &files, input, diagnostic);
     }
-    if op.meta().effect == Effect::Read {
+    let host_required = matches!(
+        op.meta().runtime,
+        RuntimeNeed::Host | RuntimeNeed::HostAutoStart
+    );
+    if op.meta().effect == Effect::Read && !host_required {
         return complete(direct::read(
             &reader,
             &caller.admission,
@@ -168,8 +156,16 @@ pub fn dispatch(
             &caller.terminal,
         )?;
     }
+    if let AnyOp::ProjectRemove(input) = &op
+        && let Some(absent) = super::remove::absent(&files, &reader, &caller.admission, input)?
+    {
+        return Ok(absent);
+    }
     if let AnyOp::RuntimeDown(input) = op {
         return super::runtime_control::down(&files, input);
+    }
+    if host_required && !matches!(op, AnyOp::RuntimeUp(_)) {
+        return super::hosted::forward(cx, &files, &reader, &caller, op, &selections, diagnostic);
     }
     let identity = LeaseIdentity {
         store: Some(reader.info().map_err(|e| store_error(&e))?.id),
@@ -268,6 +264,9 @@ fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
                     se_core::ports::CustodyPlan::RuntimeUp(_) => "runtime.up",
                     se_core::ports::CustodyPlan::RuntimeDown(_) => "runtime.down",
                     se_core::ports::CustodyPlan::Uninstall(_) => "uninstall",
+                    se_core::ports::CustodyPlan::Launch(_) => "host launch coordinator",
+                    se_core::ports::CustodyPlan::Stop(_) => "host stop coordinator",
+                    se_core::ports::CustodyPlan::Remove(_) => "host removal coordinator",
                 }
                 .into(),
             },

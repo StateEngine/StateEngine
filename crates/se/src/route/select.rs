@@ -101,6 +101,7 @@ pub fn apply<R: ReadStore>(
         op.meta().scope,
         registry::Scope::Project | registry::Scope::ProjectOrAll | registry::Scope::Session
     ) || cx.selections.status_all
+        || (cx.selections.control_all && cx.project.is_none())
     {
         return Ok(());
     }

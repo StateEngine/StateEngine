@@ -16,9 +16,12 @@ pub struct SecodeAdapter {
 pub struct HandoverCoordinator {
     pub(crate) _private: (),
 }
+#[cfg(not(all(feature = "listener", any(target_os = "linux", windows))))]
 pub struct LaunchCoordinator {
     pub(crate) _private: (),
 }
+#[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
+pub use crate::process::LaunchCoordinator;
 pub struct ExitBridge {
     pub(crate) _private: (),
 }
@@ -105,7 +108,7 @@ mod call;
 #[cfg(feature = "listener")]
 pub use call::*;
 #[cfg(feature = "listener")]
-mod start;
+pub(crate) mod start;
 #[cfg(feature = "listener")]
 pub use start::*;
 
@@ -137,7 +140,7 @@ mod inventory;
 pub use inventory::decode_owner_inventory;
 
 #[cfg(feature = "listener")]
-mod executor;
+pub(crate) mod executor;
 #[cfg(feature = "listener")]
 pub use executor::execute;
 
@@ -153,10 +156,12 @@ pub use serve::{HostServeExit, LocalStop};
 #[cfg(feature = "listener")]
 mod capture;
 #[cfg(feature = "listener")]
-pub use capture::{CaptureRestoreReport, CaptureUnavailable, TranscriptBindings};
+pub use capture::{CaptureHandle, CaptureRestoreReport, CaptureUnavailable, TranscriptBindings};
 
 #[cfg(feature = "listener")]
 mod failure;
+#[cfg(feature = "listener")]
+pub(crate) use failure::{PendingWrites, WriteIdentity};
 #[cfg(feature = "listener")]
 mod shutdown;
 #[cfg(feature = "listener")]

@@ -258,6 +258,8 @@ impl EmbeddedHost {
         OwnerInputs {
             runtime: self.runtime.clone(),
             home: self.config.state_home.clone(),
+            helper_executable: self.config.helper_executable.clone(),
+            linux_delegation: self.config.linux_delegation.clone(),
             limits: self.config.limits.clone(),
             generation: self.negotiated.generation,
             epoch,

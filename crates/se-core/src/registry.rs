@@ -53,7 +53,12 @@ pub struct Family {
 }
 impl Family {
     pub fn schema(self) -> String {
-        format!("{}/v{}", self.name, self.major)
+        if self.name == "secode.session-context" && self.major == 1 {
+            // Existing SE Code decoders own this frozen contract spelling.
+            "secode.session-context-v1".into()
+        } else {
+            format!("{}/v{}", self.name, self.major)
+        }
     }
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]

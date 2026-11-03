@@ -12,6 +12,9 @@ pub enum Then {
     WorkingStateSet(WorkingStateSetThen),
 }
 pub enum CustodyPlan {
+    Launch(Box<crate::ops::agent_launch::LaunchPlan>),
+    Stop(Box<crate::ops::stop_plan::StopPlan>),
+    Remove(Box<crate::ops::project_remove::RemovePlan>),
     ClaudeHook(crate::ops::hook::HookClaude),
     Initialize(ProjectInit),
     /// A read-only native observation, followed by core status construction.

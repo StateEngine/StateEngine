@@ -319,6 +319,68 @@ pub(super) fn checkpoint(value: &Checkpoint) -> Result<()> {
             process(v, &value.lifecycle)?;
             RootPublication::Identified
         }
+        CheckpointKind::Released {
+            source: retained,
+            release,
+        } => {
+            source(retained, &value.lifecycle)?;
+            remaining(&release.remaining)?;
+            scope(&release.scope)?;
+            let (expected, generation, publication) = match retained.as_ref() {
+                CheckpointSource::Reservation(v) => {
+                    let scope = match v.parent {
+                        ReservationParent::LinuxTracked => ScopeIdentity::LinuxPrepared {
+                            nonce: v.scope_nonce,
+                        },
+                        ReservationParent::MacOs => ScopeIdentity::MacOsPrepared {
+                            nonce: v.scope_nonce,
+                        },
+                        _ => {
+                            return Err(invalid(
+                                "owner release cannot relinquish a kernel-contained reservation",
+                            ));
+                        }
+                    };
+                    (scope, v.generation, RootPublication::NoChildCreated)
+                }
+                CheckpointSource::Scope(v) => (
+                    v.scope.clone(),
+                    v.reservation.generation,
+                    RootPublication::Unpublished,
+                ),
+                CheckpointSource::Root(v) => (
+                    v.scope.scope.clone(),
+                    v.scope.reservation.generation,
+                    RootPublication::Identified,
+                ),
+                CheckpointSource::Process(v) => {
+                    require(
+                        v.ownership_release.is_none(),
+                        "release source already carries a release marker",
+                    )?;
+                    (v.scope.clone(), v.generation, RootPublication::Identified)
+                }
+            };
+            require(
+                matches!(
+                    expected,
+                    ScopeIdentity::LinuxPrepared { .. }
+                        | ScopeIdentity::LinuxTracked { .. }
+                        | ScopeIdentity::MacOsPrepared { .. }
+                        | ScopeIdentity::MacOsTracked { .. }
+                ),
+                "owner release cannot relinquish a kernel job or cgroup",
+            )?;
+            require(
+                release.lifecycle == value.lifecycle
+                    && release.scope == expected
+                    && release.generation.get() >= generation.get()
+                    && release.released_at_unix_ns != 0
+                    && release.remaining.observed_at_unix_ns <= release.released_at_unix_ns,
+                "owner release lifecycle/scope/generation/time differs from retained custody",
+            )?;
+            publication
+        }
         CheckpointKind::Exit {
             source: retained,
             witness,
