@@ -39,9 +39,11 @@ fn record(cx: &Bootstrap) -> Result<Option<Installation>> {
     installed.plan()?;
     Ok(Some(installed))
 }
-pub(super) fn checks(cx: &Bootstrap, at: &str) -> Result<Vec<DiagnosisCheck>> {
-    let Some(installed) = record(cx)? else {
-        return Ok(vec![check("installation.record","Owned installation record",CheckState::NotApplicable,"No standalone installation record in this state home; no installation repair is inferred".into(),at)]);
+pub(super) fn checks(cx: &Bootstrap, at: &str) -> Vec<DiagnosisCheck> {
+    let installed = match record(cx) {
+        Ok(Some(installed)) => installed,
+        Ok(None) => return vec![check("installation.record","Owned installation record",CheckState::NotApplicable,"No standalone installation record in this state home; no installation repair is inferred".into(),at)],
+        Err(error) => return vec![unmeasured("installation.record", "Owned installation record", error, at)],
     };
     let mut checks = vec![check(
         "installation.record",
@@ -52,7 +54,13 @@ pub(super) fn checks(cx: &Bootstrap, at: &str) -> Result<Vec<DiagnosisCheck>> {
     )];
     for (index, edit) in installed.record.path_edits.iter().enumerate() {
         let id = format!("installation.path.{}", index + 1);
-        let observed = observe(edit)?;
+        let observed = match observe(edit) {
+            Ok(observed) => observed,
+            Err(error) => {
+                checks.push(unmeasured(&id, "Owned PATH integration", error, at));
+                continue;
+            }
+        };
         let mut item = check(
             &id,
             "Owned PATH integration",
@@ -72,7 +80,14 @@ pub(super) fn checks(cx: &Bootstrap, at: &str) -> Result<Vec<DiagnosisCheck>> {
         }
         checks.push(item);
     }
-    Ok(checks)
+    checks
+}
+fn unmeasured(id: &str, title: &str, error: SeError, at: &str) -> DiagnosisCheck {
+    let mut value = check(id, title, CheckState::Unmeasured, error.to_string(), at);
+    value.measured_at = None;
+    value.reason = value.observed.take();
+    value.code = Some("source-unreadable".into());
+    value
 }
 struct Observation {
     present: bool,
@@ -185,7 +200,7 @@ pub(super) fn repair(
     super::plan::emit(&plan, cx.json, diagnostic)?;
     apply(edit)?;
     let at = se_core::ops::receipt::timestamp(super::super::execute::now_us()?)?;
-    let after = checks(cx, &at)?;
+    let after = checks(cx, &at);
     let complete = after
         .iter()
         .any(|value| value.id == id && value.state == CheckState::Ok);

@@ -102,6 +102,8 @@ impl Diagnosis {
             "problems"
         } else if summary.unmeasured > 0 {
             "incomplete"
+        } else if summary.warning > 0 {
+            "warnings"
         } else {
             "healthy"
         };

@@ -56,12 +56,17 @@ fn raw_endpoint(files: &Files) -> Result<Option<Vec<u8>>> {
 }
 fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
     let at = se_core::ops::receipt::timestamp(super::execute::now_us()?)?;
+    // These two checks report measurements already required by dispatch:
+    // setup::inspect_phase opens NativeStateFiles and validates the store;
+    // admit::observe completes the owner inventory, then dispatch opens and
+    // closes its snapshot before calling execute here. Permission recovery
+    // and uninitialized diagnosis take their separate, unmeasured paths.
     let home = if cfg!(any(target_os = "linux", windows)) {
         check(
             "home.permissions",
             "Protected state home",
             CheckState::Ok,
-            "Native owner-only root checks passed".into(),
+            "Native owner-only root checks passed during protected setup admission".into(),
             &at,
         )
     } else {
@@ -73,7 +78,8 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
             "store.open",
             "Initialized store",
             CheckState::Ok,
-            "Protected store and complete owner inventory opened successfully".into(),
+            "Protected store and complete owner inventory opened successfully before diagnosis"
+                .into(),
             &at,
         ),
     ];
@@ -92,7 +98,7 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
     if loose_file {
         checks.push(check("runtime.endpoint", "Runtime endpoint", CheckState::Unmeasured,
             "Restore the named file protection before inspecting endpoint contents; unreadable bytes are not an absent endpoint".into(), &at));
-        checks.extend(installation::checks(cx, &at)?);
+        checks.extend(installation::checks(cx, &at));
         return Ok(Observed {
             diagnosis: Diagnosis::new(
                 at,
@@ -168,7 +174,7 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
     }
     checks.push(endpoint_check);
     drop(lock);
-    checks.extend(installation::checks(cx, &at)?);
+    checks.extend(installation::checks(cx, &at));
     Ok(Observed {
         diagnosis: Diagnosis::new(
             at,
@@ -197,7 +203,7 @@ pub(super) fn uninitialized(cx: &Bootstrap, op: &AnyOp) -> Result<AnyOutput> {
     let at = se_core::ops::receipt::timestamp(super::execute::now_us()?)?;
     let mut checks = vec![setup_check(cx, &at)];
     match std::fs::symlink_metadata(&cx.home) {
-        Ok(_) => checks.extend(installation::checks(cx, &at)?),
+        Ok(_) => checks.extend(installation::checks(cx, &at)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             checks.push(check(
                 "home.permissions",
