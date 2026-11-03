@@ -793,4 +793,4 @@ impl Snapshot for SqliteSnapshot {
 }
 
 pub(crate) use crate::codec::event::load_event;
-pub(crate) use cursor::window_end;
+pub(crate) use cursor::checked_window_end;

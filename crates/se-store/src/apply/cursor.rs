@@ -112,9 +112,20 @@ fn confirmed_end(c: &Connection, issued: i64) -> StoreResult<Option<u64>> {
         .map_err(invalid)?
         .flatten();
     let Some(end) = end else { return Ok(None) };
-    checked_end(c, &end)
+    match checked_end(c, &end) {
+        Ok(end) => Ok(Some(end)),
+        Err(error)
+            if matches!(
+                error.code,
+                StoreErrorCode::CursorInvalid | StoreErrorCode::CursorStale
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
-fn checked_end(c: &Connection, end: &Cursor) -> StoreResult<Option<u64>> {
+fn checked_end(c: &Connection, end: &Cursor) -> StoreResult<u64> {
     let (store, incarnation): (Vec<u8>, u64) = c
         .query_row(
             "SELECT store_id,incarnation FROM store_info WHERE singleton=1",
@@ -122,7 +133,7 @@ fn checked_end(c: &Connection, end: &Cursor) -> StoreResult<Option<u64>> {
             |r| Ok((r.get(0)?, crate::sql_value::value(r, 1)?)),
         )
         .map_err(sql)?;
-    Ok(crate::read::window_end(end.as_str(), &store, incarnation))
+    crate::read::checked_window_end(end.as_str(), &store, incarnation)
 }
 /// The window's snapshot bounds as stored columns: (from, to, returned, complete, omitted).
 fn bounds(window: &Window) -> StoreResult<(u64, u64, u64, bool, Option<u64>)> {
@@ -182,13 +193,14 @@ pub(super) fn apply(
             }
             // Validate a supplied opaque end when issuing, before it can become
             // durable cursor history. Later frontier fallback is not admission.
-            if let Some(end) = cursor.window.fields().and_then(|f| f.end_cursor.as_ref())
-                && checked_end(c, end)?.is_none()
-            {
-                return Err(fail(
-                    StoreErrorCode::CursorInvalid,
-                    "cursor window end belongs to another store/incarnation or is invalid",
-                ));
+            if let Some(end) = cursor.window.fields().and_then(|f| f.end_cursor.as_ref()) {
+                let end = checked_end(c, end)?;
+                if !(from..=to).contains(&end) {
+                    return Err(fail(
+                        StoreErrorCode::CursorInvalid,
+                        "cursor end is outside its window bounds",
+                    ));
+                }
             }
             // The window cannot claim events this store has not committed.
             if to >= seq as u64 {

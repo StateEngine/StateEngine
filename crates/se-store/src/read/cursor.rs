@@ -124,18 +124,26 @@ impl SqliteSnapshot {
         Ok((if live { h } else { prior }, last))
     }
 }
-/// The last returned position a page cursor issued by this store and
-/// incarnation carries; None for any other text.
-pub(crate) fn window_end(text: &str, store: &[u8], incarnation: u64) -> Option<u64> {
-    let bytes = decode(text).ok()?;
-    if bytes.len() != 74
-        || bytes[0] != 1
-        || &bytes[2..18] != store
-        || u64::from_be_bytes(bytes[18..26].try_into().ok()?) != incarnation
-    {
-        return None;
+/// Decode an end cursor without erasing malformed versus stale failures.
+pub(crate) fn checked_window_end(text: &str, store: &[u8], incarnation: u64) -> StoreResult<u64> {
+    let bytes = decode(text)?;
+    if bytes.len() != 74 || bytes[0] != 1 || !matches!(bytes[1], 1..=3) {
+        return Err(fail(
+            StoreErrorCode::CursorInvalid,
+            "cursor end version/mode/length differs",
+        ));
     }
-    Some(u64::from_be_bytes(bytes[34..42].try_into().ok()?))
+    if &bytes[2..18] != store
+        || u64::from_be_bytes(bytes[18..26].try_into().map_err(invalid)?) != incarnation
+    {
+        return Err(fail(
+            StoreErrorCode::CursorStale,
+            "cursor end store/incarnation changed",
+        ));
+    }
+    Ok(u64::from_be_bytes(
+        bytes[34..42].try_into().map_err(invalid)?,
+    ))
 }
 impl SqliteSnapshot {
     pub(super) fn position_binding(&self, purpose: PositionPurpose) -> StoreResult<String> {
