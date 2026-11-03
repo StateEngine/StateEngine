@@ -97,7 +97,7 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
     let EventBody::SessionPrepared {
         session: id,
         agent: recorded_agent,
-        provider,
+        surface,
         native_ref,
         ..
     } = &first.body
@@ -113,6 +113,11 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
             "the recorded agent differs from the selected agent",
         ));
     }
+    session.surface = Some(
+        surface
+            .map_or("unrecorded", se_store::SessionSurface::as_str)
+            .into(),
+    );
     let (current, reason) = match &latest.current.body {
         EventBody::SessionPrepared { session, .. } => (
             session,
@@ -121,12 +126,8 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
         EventBody::SessionActivated {
             session: current,
             containment,
-            process,
             ..
         } => {
-            if process.is_none() && *provider == se_store::Provider::SeCode {
-                session.surface = Some("secode".into());
-            }
             match containment {
                 se_store::ContainmentFact::Contained { kind, .. } => {
                     session.containment = Some(

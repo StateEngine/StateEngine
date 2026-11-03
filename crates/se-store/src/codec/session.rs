@@ -64,6 +64,7 @@ pub(crate) fn decode(
                 session,
                 agent,
                 provider: parse_provider(&row.get::<_, String>("provider").map_err(sql)?)?,
+                surface: prepared_surface(c, seq)?,
                 native_ref: String::from_utf8(reference).map_err(invalid)?,
                 consent: parse_consent(&row.get::<_, String>("consent").map_err(sql)?)?,
                 generation: u64::try_from(row.get::<_, i64>("generation").map_err(sql)?)
@@ -126,4 +127,30 @@ pub(crate) fn decode(
         },
         _ => return Err(invalid("session kind")),
     })
+}
+
+// Legacy preparations have no aux row. Missing metadata is unrecorded, while
+// malformed or unknown present values remain unreadable.
+fn prepared_surface(c: &Connection, seq: i64) -> StoreResult<Option<SessionSurface>> {
+    #[derive(serde::Deserialize)]
+    struct Metadata {
+        #[serde(default)]
+        surface: Option<SessionSurface>,
+    }
+    let facts: Option<String> = c
+        .query_row(
+            "SELECT facts FROM aux_data WHERE event_seq=?",
+            [seq],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(sql)?;
+    facts
+        .map(|facts| {
+            serde_json::from_str::<Metadata>(&facts)
+                .map(|value| value.surface)
+                .map_err(invalid)
+        })
+        .transpose()
+        .map(Option::flatten)
 }

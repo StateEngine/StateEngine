@@ -21,6 +21,24 @@ pub enum Provider {
     Codex,
     SeCode,
 }
+/// The surface chosen by the session's actual launch/bind path, never a liveness fact.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSurface {
+    Headless,
+    Window,
+    #[serde(rename = "secode")]
+    SeCode,
+}
+impl SessionSurface {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Headless => "headless",
+            Self::Window => "window",
+            Self::SeCode => "secode",
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PermissionProfile {
     ReadOnly,
@@ -342,6 +360,7 @@ pub enum EventBody<T> {
         session: SessionId,
         agent: AgentId,
         provider: Provider,
+        surface: Option<SessionSurface>,
         native_ref: String,
         consent: Consent,
         generation: u64,

@@ -287,6 +287,7 @@ impl EmbeddedHost {
                     session: session.clone(),
                     agent,
                     provider: se_store::Provider::SeCode,
+                    surface: Some(se_store::SessionSurface::SeCode),
                     native_ref: draft.conversation.0,
                     consent: if draft.capture_consent {
                         se_store::Consent::Capture

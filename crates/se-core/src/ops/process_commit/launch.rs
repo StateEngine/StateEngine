@@ -23,6 +23,11 @@ pub fn reserve<R: Snapshot>(
             session: plan.session.clone(),
             agent: plan.agent.id.clone(),
             provider: plan.profile.provider,
+            surface: Some(if plan.input.detach {
+                se_store::SessionSurface::Headless
+            } else {
+                se_store::SessionSurface::Window
+            }),
             native_ref: match &plan.conversation {
                 se_types::Read::Present { value } => value.to_string(),
                 _ => plan.session.as_str()[se_types::SessionId::PREFIX.len()..].into(),
