@@ -224,6 +224,9 @@ impl SqliteFactory {
                 .map_err(sql)?;
             c.execute_batch(include_str!("../migrations/001.sql"))
                 .map_err(sql)?;
+            for step in crate::migration::fresh() {
+                c.execute_batch(step).map_err(sql)?;
+            }
             c.execute("INSERT INTO store_info(singleton,store_id,incarnation,created_at_us,state) VALUES(1,?,1,?,'ready')",crate::sql_value::sql_params![crate::identity::canonical(id.as_str()).ok_or_else(||invalid("canonical store identity required"))?,created_at]).map_err(sql)?;
             c.execute_batch("COMMIT; PRAGMA wal_checkpoint(TRUNCATE)")
                 .map_err(sql)?;
@@ -340,6 +343,13 @@ impl StoreFactory for SqliteFactory {
                 let db = connection::connect(&reader.path, true, o.busy_timeout)?;
                 let info = connection::info_at(&db, &reader.path)?;
                 let identity = connection::validate_lease(&info, lease, LeaseMode::Host)?;
+                let context = BackupContext::bound(
+                    &info,
+                    identity.generation,
+                    reader.path.clone(),
+                    reader.slots.clone(),
+                );
+                crate::migration::upgrade(&db, o, lease, context)?;
                 Ok(Read::Present {
                     value: SqliteHost::maintenance(
                         reader,

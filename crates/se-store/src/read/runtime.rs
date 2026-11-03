@@ -137,7 +137,7 @@ impl SqliteSnapshot {
         let a = self.agent_bytes(agent)?;
         self.db
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM cursor_data d JOIN events e ON e.seq=d.event_seq WHERE e.project_id=? AND d.cursor_id=? AND d.agent_id=?)",
+                "SELECT EXISTS(SELECT 1 FROM cursor_data d CROSS JOIN events e ON e.seq=d.event_seq WHERE e.project_id=? AND d.cursor_id=? AND d.agent_id=?)",
                 rusqlite::params![p, cursor.as_bytes().as_slice(), a],
                 |r| r.get(0),
             )

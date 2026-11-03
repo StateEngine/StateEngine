@@ -124,11 +124,15 @@ impl SqliteSnapshot {
         Ok((if live { h } else { prior }, last))
     }
 }
-/// The last returned position a store-issued page cursor carries; None for
-/// any text that is not a version-1 store cursor.
-pub(crate) fn window_end(text: &str) -> Option<u64> {
+/// The last returned position a page cursor issued by this store and
+/// incarnation carries; None for any other text.
+pub(crate) fn window_end(text: &str, store: &[u8], incarnation: u64) -> Option<u64> {
     let bytes = decode(text).ok()?;
-    if bytes.len() != 74 || bytes[0] != 1 {
+    if bytes.len() != 74
+        || bytes[0] != 1
+        || &bytes[2..18] != store
+        || u64::from_be_bytes(bytes[18..26].try_into().ok()?) != incarnation
+    {
         return None;
     }
     Some(u64::from_be_bytes(bytes[34..42].try_into().ok()?))

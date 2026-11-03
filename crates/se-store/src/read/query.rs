@@ -118,12 +118,13 @@ impl SqliteSnapshot {
     ) -> StoreResult<Page<StoredEvent>> {
         let s = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let binding = format!(
-            "history:{}:{:?}:{:?}:{:?}:{:?}",
+            "history:{}:{:?}:{:?}:{:?}:{:?}:{:?}",
             codec::encode(&s)?,
             self.scope.admission.actor,
             query.agent,
             query.session,
-            (&query.kinds, &query.families)
+            (&query.kinds, &query.families),
+            query.since.as_ref().map(StorePosition::sequence)
         );
         let (h, mut after) = self.window(&budget, &binding, false)?;
         if let Some(position) = query.since {

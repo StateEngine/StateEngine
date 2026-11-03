@@ -78,7 +78,7 @@ fn filename(id: RecordId) -> String {
 impl Entry {
     fn generation(&self, root: &Path) -> StoreResult<BackupGeneration> {
         if self.file != filename(self.id)
-            || self.schema != connection::SCHEMA
+            || !(connection::MIN_SCHEMA..=connection::SCHEMA).contains(&self.schema)
             || self.application != connection::APP
             || self.incarnation == 0
             || !self.validated
