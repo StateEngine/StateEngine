@@ -44,6 +44,39 @@ fn value(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Error>
     );
     Ok(serde_json::from_slice(&output.stdout)?)
 }
+// Linux can retire /proc/PID/exe before stat reports the final exited state.
+// Retry only that typed observation failure, within the original cleanup bound;
+// an unreadable process is never evidence of absence or permission to kill it.
+fn read_exit_until(
+    until: Instant,
+    mut read: impl FnMut() -> se_proc::ProcResult<se_proc::ProcessRead>,
+) -> Result<se_proc::ProcessRead, Box<dyn std::error::Error>> {
+    let mut reported = false;
+    loop {
+        match read() {
+            Ok(observation) => return Ok(observation),
+            Err(error) => {
+                let retiring_image = cfg!(target_os = "linux")
+                    && error.code == se_proc::ProcErrorCode::IdentityUnreadable
+                    && error.native.as_ref().is_some_and(|native| {
+                        native.api == "read proc executable" && native.code == Some(2)
+                    });
+                if !retiring_image || Instant::now() >= until {
+                    return Err(format!("outside host exit: {error:?}").into());
+                }
+                if !reported {
+                    eprintln!("awaiting a readable native exit observation: {error:?}");
+                    reported = true;
+                }
+                std::thread::park_timeout(
+                    until
+                        .saturating_duration_since(Instant::now())
+                        .min(Duration::from_millis(10)),
+                );
+            }
+        }
+    }
+}
 struct Host {
     image: PathBuf,
     home: PathBuf,
@@ -82,13 +115,13 @@ impl Host {
             stopped: false,
         })
     }
-    fn exited(&self) -> Result<bool, Box<dyn std::error::Error>> {
-        match se_proc::NativeProcessRuntime::read_process(
-            self.identity.machine.clone(),
-            self.identity.pid,
-        )
-        .map_err(|e| format!("outside host exit: {e:?}"))?
-        {
+    fn exited(&self, until: Instant) -> Result<bool, Box<dyn std::error::Error>> {
+        match read_exit_until(until, || {
+            se_proc::NativeProcessRuntime::read_process(
+                self.identity.machine.clone(),
+                self.identity.pid,
+            )
+        })? {
             se_proc::ProcessRead::Absent { .. } => Ok(true),
             se_proc::ProcessRead::ExitedRecord {
                 pid, boot, start, ..
@@ -108,7 +141,8 @@ impl Host {
         if self.stopped {
             return Ok(());
         }
-        if !self.exited()? {
+        let until = Instant::now() + Duration::from_secs(15);
+        if !self.exited(until)? {
             let output = command(&self.image, &self.home, &self.root)
                 .arg("down")
                 .output()?;
@@ -118,14 +152,76 @@ impl Host {
                 String::from_utf8_lossy(&output.stdout)
             );
         }
-        let until = Instant::now() + Duration::from_secs(15);
-        while !self.exited()? {
+        while !self.exited(until)? {
             if Instant::now() >= until {
                 return Err("exact allocation host did not exit after graceful down".into());
             }
             std::thread::park_timeout(Duration::from_millis(10));
         }
         self.stopped = true;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod cleanup_observations {
+    use super::*;
+
+    fn failure(code: i64) -> se_proc::ProcError {
+        se_proc::ProcError {
+            code: se_proc::ProcErrorCode::IdentityUnreadable,
+            detail: Box::new(se_proc::ProcErrorDetail::Input {
+                field: "native operation".into(),
+                reason: "read proc executable".into(),
+            }),
+            native: Some(se_proc::NativeFailure {
+                api: "read proc executable".into(),
+                code: Some(code),
+                reason: "controlled native read failure".into(),
+            }),
+        }
+    }
+
+    #[test]
+    fn cleanup_retries_retiring_image_until_actual_absence() -> Check {
+        let mut calls = 0;
+        let observed = read_exit_until(Instant::now() + Duration::from_secs(1), || {
+            calls += 1;
+            if calls == 1 {
+                Err(failure(2))
+            } else {
+                Ok(se_proc::ProcessRead::Absent {
+                    pid: se_proc::ProcessId(17),
+                    observed_at_unix_ns: 1,
+                })
+            }
+        })?;
+        assert_eq!(calls, 2);
+        assert!(matches!(observed, se_proc::ProcessRead::Absent { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_persistent_unreadability_fails_with_its_native_cause() -> Check {
+        let error = read_exit_until(Instant::now(), || Err(failure(2)))
+            .err()
+            .ok_or("unreadable exit became absence")?;
+        assert!(error.to_string().contains("IdentityUnreadable"));
+        assert!(error.to_string().contains("Some(2)"));
+        Ok(())
+    }
+
+    #[test]
+    fn cleanup_permission_failure_is_not_retried() -> Check {
+        let mut calls = 0;
+        let error = read_exit_until(Instant::now() + Duration::from_secs(1), || {
+            calls += 1;
+            Err(failure(13))
+        })
+        .err()
+        .ok_or("permission failure became absence")?;
+        assert_eq!(calls, 1);
+        assert!(error.to_string().contains("Some(13)"));
         Ok(())
     }
 }
