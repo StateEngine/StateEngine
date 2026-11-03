@@ -237,7 +237,7 @@ fn check_case(case: &str) -> Check {
     if case == "superseded" {
         bodies.push(session::prepared(&f, &session::session()?, &f.a));
     }
-    let receipt = writer.append(f.batch(f.owner_project(), None, bodies)?, &*lease)?;
+    let receipt = writer.append(f.batch(f.owner_project(), None, bodies)?, &lease)?;
     if case == "stop-unproved" {
         let mut identity = process::identity(&f.a)?;
         identity.session = Some(id.clone());
@@ -247,7 +247,7 @@ fn check_case(case: &str) -> Check {
                 None,
                 vec![process::registration(&identity, ProcessState::Starting)],
             )?,
-            &*lease,
+            &lease,
         )?;
         writer.append(
             f.batch(
@@ -270,7 +270,7 @@ fn check_case(case: &str) -> Check {
                     )?,
                 ],
             )?,
-            &*lease,
+            &lease,
         )?;
     }
     writer.close()?;
