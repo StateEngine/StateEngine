@@ -150,6 +150,9 @@ pub fn dispatch(
             &caller.terminal,
             op,
             &selections,
+            se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
+                SeError::invalid("read observation clock", "nonnegative Unix microseconds")
+            })?)?,
         )?);
     }
     se_core::admission::authorize(op.meta(), &caller.admission)?;

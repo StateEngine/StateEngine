@@ -17,6 +17,10 @@ mod executor_judge;
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 #[path = "../src/runtime/host.rs"]
+#[allow(
+    unused_imports,
+    reason = "This native fixture uses explicit startup; the production host also exports automatic startup."
+)]
 mod host;
 #[path = "support/host_fixture.rs"]
 mod host_fixture;

@@ -103,6 +103,7 @@ pub fn read<S: ReadStore>(
     terminal: &HumanTerminal,
     op: AnyOp,
     selections: &se_core::ops::CliSelections,
+    observed_at: se_types::UnixMicros,
 ) -> Result<Outcome> {
     if op.meta().effect != se_core::registry::Effect::Read {
         return Err(se_types::SeError::invalid(
@@ -114,11 +115,7 @@ pub fn read<S: ReadStore>(
         store,
         admission,
         terminal,
-        &Kernel::read_only_at(se_types::UnixMicros::new(
-            u64::try_from(super::execute::now_us()?).map_err(|_| {
-                SeError::invalid("read observation clock", "nonnegative Unix microseconds")
-            })?,
-        )?),
+        &Kernel::read_only_at(observed_at),
         op,
         selections,
     )? {

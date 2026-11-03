@@ -8,7 +8,7 @@ use crate::{
     scope,
     store_error::store_error,
 };
-use se_store::{EventBody, ReadBudget, Snapshot, StoredText};
+use se_store::{Actor, EventBody, ReadBudget, Snapshot, StoredText};
 use se_types::{OmissionReason, PageRequest, Read, Result, SeError, Window};
 use std::{num::NonZeroU32, time::Duration};
 
@@ -74,12 +74,17 @@ pub(super) fn gather<R: Snapshot>(
         .map(|cursor| cx.read.cursor_position(cursor, purpose.clone()))
         .transpose()
         .map_err(|e| store_error(&e))?;
-    let head = cx.read.info().head.ok_or_else(|| {
-        scope::unreadable(
-            "continuity snapshot",
-            "the initialized project snapshot has no committed head",
-        )
-    })?;
+    // The store's global head may be another agent's private event. The
+    // target's resume head advances with its own turns, state, sessions and
+    // mail, and is the admitted checkpoint for this target-bound cursor.
+    let head = scope::require_present(
+        cx.read
+            .resume_head(Actor::Agent(agent.clone()))
+            .map_err(|e| store_error(&e))?,
+        "continuity checkpoint",
+        "Restore the selected agent's registered resume head before retrying context.",
+    )?
+    .through;
     let cursor = cx
         .read
         .position_cursor(&head, purpose)
