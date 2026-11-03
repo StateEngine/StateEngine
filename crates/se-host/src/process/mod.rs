@@ -18,6 +18,7 @@ mod remove;
 mod remove_receipt;
 mod requests;
 mod shutdown;
+mod status;
 mod stop;
 mod store;
 mod supervisor;
@@ -51,6 +52,7 @@ pub struct ProcessConfiguration {
     pub maximum_sessions: u32,
 }
 pub struct LaunchCoordinator {
+    kind: crate::HostKind,
     native: Arc<NativeProcessRuntime>,
     io: Arc<dyn ProviderIoPlatform>,
     harness: Arc<ClaudeHarness>,
@@ -167,6 +169,7 @@ impl LaunchCoordinator {
             options.http_port,
         ));
         Ok(Arc::new(Self {
+            kind: host_runtime.kind,
             native,
             io,
             harness,

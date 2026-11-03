@@ -62,6 +62,13 @@ impl LaunchCoordinator {
             ));
         }
         work.binding = Some(outcome.binding);
+        if let Some(binding) = work
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.claude.as_ref())
+        {
+            binding.completion.arm(&work.wake.event)?;
+        }
         work.meta.conversation = Read::Present {
             value: outcome.witness.conversation.clone(),
         };

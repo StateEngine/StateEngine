@@ -8,6 +8,18 @@ impl LaunchCoordinator {
         if work.capture_flushed || !work.meta.capture || !work.active {
             return Ok(());
         }
+        self.capture_progress(work, deadline).await?;
+        work.capture_flushed = true;
+        Ok(())
+    }
+    pub(super) async fn capture_progress(
+        &self,
+        work: &mut Work,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        if work.capture_flushed || !work.meta.capture || !work.active {
+            return Ok(());
+        }
         if work.transcript.is_none() {
             let restored = self.capture.binding(crate::SessionIdentity {
                 project: work.meta.project.id.clone(),
@@ -64,7 +76,6 @@ impl LaunchCoordinator {
             }
             Read::Unknown { what } => return Err(error("final transcript capture", what)),
         }
-        work.capture_flushed = true;
         Ok(())
     }
 }

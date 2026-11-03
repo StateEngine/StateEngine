@@ -30,6 +30,25 @@ impl LaunchCoordinator {
                         return;
                     }
                 };
+                if let Some(binding) = state
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| binding.claude.as_ref())
+                {
+                    match binding.completion.take() {
+                        Ok(true) => {
+                            let result = match deadline.stage(Duration::from_secs(10)) {
+                                Ok(bound) => self.capture_progress(&mut state, &bound).await,
+                                Err(error) => Err(error),
+                            };
+                            if let Err(error) = result {
+                                state.cleanup_failure = Some(error.body);
+                            }
+                        }
+                        Ok(false) => (),
+                        Err(error) => state.cleanup_failure = Some(error.body),
+                    }
+                }
                 let result = self.exit_observation(&state, &deadline).await;
                 match result {
                     Ok(StopObservation::Complete(witness)) => {
