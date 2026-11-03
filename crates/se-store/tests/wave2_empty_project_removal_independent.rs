@@ -91,8 +91,17 @@ fn never_launched_project_removes_with_its_current_registry_registration() -> Ch
         present(outside.project(id)?)?.current.body,
         EventBody::ProjectRemoved { .. }
     ));
+    let scoped = outside.event(registered.primary_event.clone());
+    let scoped = scoped
+        .err()
+        .ok_or("project event reader gained Registry scope")?;
+    assert_eq!(scoped.code, StoreErrorCode::ScopeMismatch);
+    let mut registry = present(SqliteFactory::open_reader(&f.options)?)?.snapshot(ReadScope {
+        admission: f.admission(Scope::Registry, Actor::Human(f.owner.clone())),
+        visibility: Visibility::Owner,
+    })?;
     assert!(matches!(
-        outside.event(registered.primary_event)?,
+        registry.event(registered.primary_event)?,
         se_types::Read::Present { .. }
     ));
     Ok(())
