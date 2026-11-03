@@ -2,7 +2,10 @@
 //! bounded inventory must finish before absence or ambiguity is concluded.
 use crate::bootstrap::Bootstrap;
 use se_core::{admission::read_scope, registry, scope, store_error::store_error};
-use se_store::{Admission, EventBody, ProjectionRecord, ReadBudget, ReadStore, Scope, Snapshot};
+use se_store::{
+    Admission, EventBody, ProjectionRecord, ReadBudget, ReadStore, RemovedProjectQuery, Scope,
+    Snapshot,
+};
 use se_types::{Detail, PageRequest, PathEncoding, ProjectChoice, Result, SeError, details};
 use std::{num::NonZeroU32, time::Duration};
 
@@ -19,6 +22,13 @@ pub fn budget(after: Option<se_types::Cursor>) -> Result<ReadBudget> {
     })
 }
 pub fn projects<R: ReadStore>(reader: &R, admission: &Admission) -> Result<Vec<ProjectionRecord>> {
+    inventory(reader, admission, None)
+}
+pub(super) fn inventory<R: ReadStore>(
+    reader: &R,
+    admission: &Admission,
+    query: Option<RemovedProjectQuery>,
+) -> Result<Vec<ProjectionRecord>> {
     let mut snapshot = reader
         .snapshot(read_scope(admission))
         .map_err(|e| store_error(&e))?;
@@ -26,9 +36,11 @@ pub fn projects<R: ReadStore>(reader: &R, admission: &Admission) -> Result<Vec<P
         let mut records = Vec::new();
         let mut after = None;
         for _ in 0..64 {
-            let page = snapshot
-                .projects(budget(after)?)
-                .map_err(|e| store_error(&e))?;
+            let page = match &query {
+                Some(query) => snapshot.removed_projects(query.clone(), budget(after)?),
+                None => snapshot.projects(budget(after)?),
+            }
+            .map_err(|e| store_error(&e))?;
             let next = page.next().cloned();
             let complete = page.window().complete();
             records.extend(page.into_items());
@@ -205,6 +217,25 @@ pub fn apply<R: ReadStore>(
         };
         if let Some(depth) = depth {
             candidates.push((depth, id));
+        }
+    }
+    if candidates.is_empty()
+        && (op.meta().effect == registry::Effect::Read
+            || matches!(op, se_core::ops::AnyOp::ProjectRemove(_)))
+    {
+        for record in super::retained::select(reader, admission, requested, &cwd)? {
+            let view = se_core::ops::project_remove::removed_view(&record)?.ok_or_else(|| {
+                scope::unreadable(
+                    "retained project selection",
+                    "lookup returned an active project",
+                )
+            })?;
+            candidates.push((0, view.project.id.clone()));
+            choices.push(ProjectChoice {
+                id: view.project.id,
+                name: view.project.name,
+                root: view.root,
+            });
         }
     }
     let nearest = candidates.iter().map(|(depth, _)| *depth).max();

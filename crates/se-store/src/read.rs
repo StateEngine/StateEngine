@@ -15,6 +15,7 @@ mod decision;
 mod message;
 mod message_count;
 mod page;
+mod project;
 mod query;
 mod runtime;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
@@ -629,6 +630,13 @@ impl Snapshot for SqliteSnapshot {
             ));
         }
         self.list_heads("projects", "first_seq", "state='active'", vec![], _budget)
+    }
+    fn removed_projects(
+        &mut self,
+        query: RemovedProjectQuery,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<ProjectionRecord>> {
+        self.read_removed_projects(query, budget)
     }
     fn principals(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         if self.scope.admission.scope == Scope::Registry {

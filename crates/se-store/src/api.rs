@@ -369,6 +369,12 @@ pub struct ControlTarget {
     /// Newest process in any state, exited or ownership-released included.
     pub latest_process: Read<ProjectionRecord>,
 }
+/// Exact retained registration selector; active project lists remain separate.
+#[derive(Clone, Debug)]
+pub enum RemovedProjectQuery {
+    Name(String),
+    Root(se_types::NativePath),
+}
 /// One finite read transaction. No method mutates a marker/cursor or repairs data.
 pub trait Snapshot {
     type LegacyRegistry<'a>: se_types::LegacyIdRegistry
@@ -403,6 +409,13 @@ pub trait Snapshot {
     fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<Page<SearchHit>>;
     /// Non-mail mutable lists are labelled live keysets; Page describes this read only.
     fn projects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
+    /// Owner-only targeted lookup of removed registrations, retaining all matches
+    /// so callers cannot silently resolve reused names or roots.
+    fn removed_projects(
+        &mut self,
+        query: RemovedProjectQuery,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<ProjectionRecord>>;
     fn project(&mut self, id: ProjectId) -> StoreResult<Read<ProjectionRecord>>;
     fn principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn principal(&mut self, id: Actor) -> StoreResult<Read<ProjectionRecord>>;
