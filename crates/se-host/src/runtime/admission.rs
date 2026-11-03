@@ -54,10 +54,12 @@ pub(crate) struct OperationMetadata {
 impl AdmissionContext {
     fn lease(&self) -> Result<Arc<HostLease>> {
         self.lease.upgrade().ok_or_else(|| {
-            SeError::invalid(
-                "host admission",
-                "a runtime that still owns its native lease",
-            )
+            SeError::new(se_types::Detail::RuntimeNotRunning(
+                se_types::details::RuntimeNotRunning {
+                    op: "host admission".into(),
+                    reason: "this retained handle's original host lease has been released".into(),
+                },
+            ))
         })
     }
     pub fn handshake(&self, pending: &mut PendingIpcHandshake) -> Result<ConnectionGrant> {
