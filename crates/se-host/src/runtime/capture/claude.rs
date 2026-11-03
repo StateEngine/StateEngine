@@ -89,7 +89,8 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         {
             return Ok(None);
         }
-        return Err(invalid(
+        return Err(SeError::invalid(
+            &format!("pinned Claude transcript record type {kind:?}"),
             "a supported transcript record; preserve the old cursor on schema drift",
         ));
     }

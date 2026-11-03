@@ -125,7 +125,7 @@ pub fn dispatch(
     // End this finite read pin before stdin or forwarding; ordinary operations
     // still require active-session admission below.
     if let AnyOp::HookClaude(hook) = &op {
-        phase.close().map_err(|e| store_error(&e))?;
+        admit::hook_session(cx, phase)?;
         drop(reader);
         let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
         return super::hook::forward(cx, &files, input, diagnostic);
