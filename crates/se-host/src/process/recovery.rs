@@ -131,9 +131,21 @@ impl LaunchCoordinator {
                     Ok(RecoveryOutcome::Unproved { error, .. }) => format!("{error:?}"),
                     _ => "native outcome does not confirm the committed exit".into(),
                 };
+                let credential_debt = retained
+                    .identity
+                    .session
+                    .as_ref()
+                    .map(|session| {
+                        format!(
+                            "session {session}: session/http credential revocation remains unproved"
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        "session binding absent; credential cleanup scope is unknown".into()
+                    });
                 self.retain_orphan(&lifecycle)?;
                 report.unproved.push(format!(
-                    "{lifecycle}: committed exit retained; cleanup unproved: {reason}"
+                    "{lifecycle}: committed exit retained; cleanup unproved: {reason}; {credential_debt}"
                 ));
                 continue;
             }
