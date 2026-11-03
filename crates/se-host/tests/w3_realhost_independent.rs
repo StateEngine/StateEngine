@@ -35,6 +35,9 @@ use std::{
 const TEST_AGENT: &str = "w3judge";
 const TEST_NAME: &str = "w3judge";
 
+#[path = "support/w3_timestamp_replay.rs"]
+mod timestamp_replay;
+
 // ---------------------------------------------------------------- helpers
 
 fn require_se() -> Result<PathBuf, ()> {
