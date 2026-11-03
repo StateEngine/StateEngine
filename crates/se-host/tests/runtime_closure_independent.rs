@@ -6,7 +6,9 @@ use se_host::{
     EndpointRecord, HostKind, IpcEndpoint,
     client::closure::{self, RuntimeClosure},
 };
-use se_types::{API_VERSION, Generation, HostGeneration, IdempotencyKey, NativePath};
+#[cfg(unix)]
+use se_types::NativePath;
+use se_types::{API_VERSION, Generation, HostGeneration, IdempotencyKey};
 use std::io::Write;
 use support::*;
 
