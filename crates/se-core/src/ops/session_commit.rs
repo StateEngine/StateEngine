@@ -12,6 +12,7 @@ pub struct SessionPreparation {
     pub session: SessionId,
     pub agent: AgentId,
     pub provider: Provider,
+    pub surface: Option<se_store::SessionSurface>,
     pub native_ref: String,
     pub consent: Consent,
     pub generation: u64,
@@ -36,6 +37,7 @@ pub fn prepare(input: SessionPreparation) -> Result<EventBody<InputText>> {
         session: input.session,
         agent: input.agent,
         provider: input.provider,
+        surface: input.surface,
         native_ref: input.native_ref,
         consent: input.consent,
         generation: input.generation,
@@ -67,7 +69,7 @@ pub fn activate(input: SessionActivation) -> Result<EventBody<InputText>> {
 pub fn bind<R: Snapshot>(
     kernel: &Kernel,
     key: IdempotencyKey,
-    prepared: SessionPreparation,
+    mut prepared: SessionPreparation,
     activated: SessionActivation,
     cx: &Cx<'_, R>,
 ) -> Result<AtomicBatch> {
@@ -81,6 +83,7 @@ pub fn bind<R: Snapshot>(
             "one SE Code session under the admitted generation, without process or credential issuance",
         ));
     }
+    prepared.surface = Some(se_store::SessionSurface::SeCode);
     let intent = serde_json::json!({"agent":prepared.agent,"provider":"secode","session":prepared.session,"native_ref":prepared.native_ref,"consent":prepared.consent,"incumbent":activated.incumbent});
     scope::project(cx.admission)?;
     super::process_commit::batch(

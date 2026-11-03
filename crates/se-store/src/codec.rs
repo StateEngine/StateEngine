@@ -371,13 +371,14 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             session,
             agent,
             provider,
+            surface,
             native_ref,
             consent,
             generation,
             expected,
         } => (
             "session.prepared",
-            json!({"session":session,"agent":agent,"provider":provider,"native_ref":native_ref,"consent":consent,"generation":generation,"expected":expected}),
+            json!({"session":session,"agent":agent,"provider":provider,"surface":surface,"native_ref":native_ref,"consent":consent,"generation":generation,"expected":expected}),
         ),
         SessionActivated {
             session,

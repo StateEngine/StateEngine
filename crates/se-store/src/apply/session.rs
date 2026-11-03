@@ -93,6 +93,7 @@ pub(super) fn apply(
         SessionPrepared {
             agent,
             provider: backend,
+            surface,
             native_ref,
             consent: capture,
             generation,
@@ -104,6 +105,7 @@ pub(super) fn apply(
             if generation != lease.generation || native_ref.is_empty() || native_ref.len() > 32768 {
                 return Err(invalid("session generation/native reference bounds"));
             }
+            codec::aux(c, seq, serde_json::json!({"surface": surface}))?;
             let a = key(c, "agent", agent.as_str(), &scope, false)?;
             let owner:Option<Vec<u8>>=c.query_row("SELECT owner_id FROM principals WHERE project_id=? AND principal_id=? AND principal_kind='agent'",rusqlite::params![p,a],|r|r.get(0)).optional().map_err(sql)?;
             let owner = owner
