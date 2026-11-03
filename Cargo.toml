@@ -36,6 +36,8 @@ expect_used = "deny"
 
 [profile.release]
 panic = "unwind"
+lto = "thin"
+codegen-units = 1
 
 # The embedding workspace overrides this unpublished permissive package with
 # its own API crate, keeping one package identity across the linked boundary.
