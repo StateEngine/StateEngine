@@ -10,7 +10,7 @@ use crate::runtime::notify::Hub;
 use crate::support::*;
 use crate::*;
 use identity::*;
-pub(crate) use identity::{read_process, verify_live_identity};
+pub(crate) use identity::{read_process, read_process_until, verify_live_identity};
 use std::{mem::zeroed, ptr, sync::Arc};
 pub(crate) use stdio::NativeStdio;
 use windows_sys::Win32::{Foundation::*, System::JobObjects::*};

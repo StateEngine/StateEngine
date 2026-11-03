@@ -104,9 +104,10 @@ pub(super) fn witness_exit(instance: &se_types::ProcessInstance, bound: &Deadlin
         if native.boot_id != expected.boot {
             return Ok(());
         }
-        let observed = se_proc::read_process(
+        let observed = se_proc::read_process_until(
             expected.machine.clone(),
             se_proc::ProcessId(expected.pid.get()),
+            bound.at(),
         )
         .map_err(|e| scope::unreadable("remove host exit", &format!("{e:?}")))?;
         match observed {

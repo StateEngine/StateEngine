@@ -134,7 +134,11 @@ fn exited(endpoint: &EndpointRecord, bound: &Deadline) -> Result<bool> {
                 ),
             )
         })?;
-        match se_proc::read_process(fields.machine.clone(), se_proc::ProcessId(fields.pid.get())) {
+        match se_proc::read_process_until(
+            fields.machine.clone(),
+            se_proc::ProcessId(fields.pid.get()),
+            bound.at(),
+        ) {
             Ok(observed) => break observed,
             Err(error) => {
                 // A process may exit between the native reader's birth and
