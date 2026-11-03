@@ -25,7 +25,7 @@ pub fn observe<R: ReadStore>(
     match result {
         Ok(value) => {
             closed?;
-            super::session_observation::finish(value)
+            super::session_observation::finish(value, &cx.home)
         }
         Err(error) => Err(match closed {
             Ok(()) => error,

@@ -64,6 +64,15 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
             session.liveness = Read::Absent {
                 checked: "No recorded session exists for this agent".into(),
             };
+            let command = super::AgentCommand::launch(
+                agent,
+                None,
+                match &cx.admission.scope {
+                    se_store::Scope::Project(project) => Some(project),
+                    _ => None,
+                },
+                true,
+            );
             return Ok((
                 session,
                 ConversationView {
@@ -76,14 +85,8 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
                     reason: Some(
                         "No provider conversation has been recorded for this agent.".into(),
                     ),
-                    command: Some(format!("se launch {agent} --detach --new")),
-                    argv: Some(vec![
-                        "se".into(),
-                        "launch".into(),
-                        agent.to_string(),
-                        "--detach".into(),
-                        "--new".into(),
-                    ]),
+                    command: Some(command.command),
+                    argv: Some(command.argv),
                 },
             ));
         }

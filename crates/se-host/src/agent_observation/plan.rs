@@ -14,6 +14,8 @@ pub fn prepare_agent_observation<S: Snapshot>(
             let mut row = row.clone();
             degrade(&mut row, &error);
             Ok(AgentObservationPlan {
+                project: project.clone(),
+                command_home: None,
                 identity: row
                     .session
                     .session_id
@@ -37,6 +39,8 @@ fn prepare<S: Snapshot>(
 ) -> Result<AgentObservationPlan> {
     let Some(session) = row.session.session_id.clone() else {
         return Ok(AgentObservationPlan {
+            project: project.clone(),
+            command_home: None,
             identity: None,
             row: row.clone(),
             process: Read::Absent {
@@ -100,6 +104,8 @@ fn prepare<S: Snapshot>(
     let capture = capture_evidence(project, &session, row, read)
         .unwrap_or_else(|error| unreadable("committed conversation capture", error));
     Ok(AgentObservationPlan {
+        project: project.clone(),
+        command_home: None,
         identity: Some(crate::SessionIdentity {
             project: project.clone(),
             agent: row.id.clone(),

@@ -37,13 +37,14 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
                 Some("The captured conversation prefix is verified; stop or reconcile the existing scope before resuming its saved conversation.".into())
             };
             if stopped {
-                plan.row.resume.command = Some(format!("se launch {} --detach", target.agent));
-                plan.row.resume.argv = Some(vec![
-                    "se".into(),
-                    "launch".into(),
-                    target.agent.to_string(),
-                    "--detach".into(),
-                ]);
+                let command = se_core::ops::AgentCommand::launch(
+                    &target.agent,
+                    None,
+                    Some(&target.project),
+                    false,
+                );
+                plan.row.resume.command = Some(command.command);
+                plan.row.resume.argv = Some(command.argv);
             }
         }
         Err(error) => {

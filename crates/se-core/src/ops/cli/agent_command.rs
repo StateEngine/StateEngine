@@ -1,0 +1,61 @@
+//! CLI receipt commands use the same positional selectors as the live grammar.
+use se_types::{AgentId, ProjectId};
+
+pub struct AgentCommand {
+    pub command: String,
+    pub argv: Vec<String>,
+}
+impl AgentCommand {
+    pub fn launch(
+        agent: &AgentId,
+        home: Option<&str>,
+        project: Option<&ProjectId>,
+        new: bool,
+    ) -> Self {
+        let mut argv = Self::arguments("launch", agent, home, project);
+        argv.push("--detach".into());
+        if new {
+            argv.push("--new".into());
+        }
+        Self::from_argv(argv)
+    }
+    pub fn stop(agent: &AgentId, home: Option<&str>, project: Option<&ProjectId>) -> Self {
+        Self::from_argv(Self::arguments("stop", agent, home, project))
+    }
+    fn arguments(
+        verb: &str,
+        agent: &AgentId,
+        home: Option<&str>,
+        project: Option<&ProjectId>,
+    ) -> Vec<String> {
+        let mut argv = vec!["se".into()];
+        if let Some(home) = home {
+            argv.extend(["--home".into(), home.into()]);
+        }
+        if let Some(project) = project {
+            argv.extend(["--project".into(), project.to_string()]);
+        }
+        argv.extend([verb.into(), agent.to_string()]);
+        argv
+    }
+    fn from_argv(argv: Vec<String>) -> Self {
+        let command = argv
+            .iter()
+            .map(|word| {
+                if !word.is_empty()
+                    && word
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_-.:/".contains(&byte))
+                {
+                    word.clone()
+                } else if cfg!(windows) {
+                    format!("'{}'", word.replace('\'', "''"))
+                } else {
+                    format!("'{}'", word.replace('\'', "'\"'\"'"))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        Self { command, argv }
+    }
+}

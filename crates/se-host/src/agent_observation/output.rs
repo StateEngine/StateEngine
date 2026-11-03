@@ -31,10 +31,11 @@ pub(crate) fn observe(
     output: &mut AnyOutput,
     plans: Vec<AgentObservationPlan>,
     deadline: Instant,
+    home: &std::path::Path,
 ) -> Result<()> {
     let mut observations = plans
         .into_iter()
-        .map(|plan| observe_agent(plan, deadline))
+        .map(|plan| observe_agent(plan.with_command_home(home), deadline))
         .collect::<Result<Vec<_>>>()?
         .into_iter();
     match output {

@@ -64,7 +64,7 @@ pub(super) fn deadline() -> Result<std::time::Instant> {
         .checked_add(super::execute::options().timeout)
         .ok_or_else(|| SeError::invalid("agent observation deadline", "a finite native deadline"))
 }
-pub(super) fn finish(prepared: Prepared) -> Result<AnyOutput> {
+pub(super) fn finish(prepared: Prepared, home: &std::path::Path) -> Result<AnyOutput> {
     let Prepared {
         mut output,
         plans,
@@ -79,7 +79,7 @@ pub(super) fn finish(prepared: Prepared) -> Result<AnyOutput> {
         let plan = observations
             .next()
             .ok_or_else(|| scope::unreadable("agent observation", "prepared row is absent"))?;
-        se_host::observe_agent(plan, deadline)?.apply(row)
+        se_host::observe_agent(plan.with_command_home(home), deadline)?.apply(row)
     };
     match &mut output {
         AnyOutput::ProjectStatus(value) => {
