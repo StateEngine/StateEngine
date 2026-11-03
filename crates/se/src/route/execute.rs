@@ -120,6 +120,14 @@ pub fn dispatch(
         setup::Setup::Present(reader) => reader,
     };
     let files = Files::open(&cx.home).map_err(|e| store_error(&e))?;
+    // A prepared launch's fixed hook must reach the host verifier to witness
+    // possession. Only that verifier may admit the hook after C3; ordinary CLI
+    // reads and writes still require the active session below.
+    if let AnyOp::HookClaude(hook) = &op {
+        drop(reader);
+        let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
+        return super::hook::forward(cx, &files, input, diagnostic);
+    }
     let mut caller = admit::observe(cx, &reader, &files)?;
     select::apply(cx, &reader, &mut caller.admission, &op)?;
     let mut selections = cx.selections.clone();
@@ -128,10 +136,6 @@ pub fn dispatch(
     }
     if matches!(op, AnyOp::ProjectStatus(_)) {
         return super::status::observe(cx, &reader, &files, &caller.admission);
-    }
-    if let AnyOp::HookClaude(hook) = &op {
-        let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
-        return super::hook::forward(cx, &files, input, diagnostic);
     }
     let host_required = matches!(
         op.meta().runtime,
