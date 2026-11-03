@@ -258,14 +258,31 @@ fn public_http_admission_precedes_anonymous_and_private_routes() -> Check {
                 body["id"], 1,
                 "missing-session reply changed the actual request id"
             );
-            assert_eq!(
-                body["result"]["isError"], true,
-                "anonymous private call succeeded"
-            );
-            assert_eq!(
-                body["result"]["structuredContent"]["code"], "session-required",
-                "anonymous private call lacked the session-required refusal"
-            );
+            if body.get("error").is_some() {
+                assert!(
+                    body.get("result").is_none(),
+                    "refusal also carried a success result: {body}"
+                );
+                assert_eq!(
+                    body["error"]["code"], -32001,
+                    "wrong missing-session RPC refusal: {body}"
+                );
+                assert!(
+                    body["error"]["message"]
+                        .as_str()
+                        .is_some_and(|text| text.starts_with("session-required:")),
+                    "missing-session RPC refusal lost its reason: {body}"
+                );
+            } else {
+                assert_eq!(
+                    body["result"]["isError"], true,
+                    "anonymous private call succeeded: {body}"
+                );
+                assert_eq!(
+                    body["result"]["structuredContent"]["code"], "session-required",
+                    "anonymous private call lacked the session-required refusal: {body}"
+                );
+            }
         } else {
             assert!(
                 (400..500).contains(&response.status),
