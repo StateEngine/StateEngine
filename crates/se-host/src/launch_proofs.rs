@@ -115,6 +115,7 @@ impl PreparedRequestProofs {
         deadline: &Deadline,
     ) -> Result<PreparedFirstRequests> {
         loop {
+            deadline.remaining()?;
             let changed = self.0.changed.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
@@ -144,6 +145,7 @@ impl PreparedRequestProofs {
             .lock()
             .map_err(|_| proof_error("credential readiness", "poisoned verifier registry"))?
             .remove(session);
+        self.0.changed.notify_waiters();
         Ok(())
     }
 }

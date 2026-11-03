@@ -18,14 +18,21 @@ impl LaunchCoordinator {
             "{:?}/{:?}/{}",
             admission.scope, admission.actor, plan.input.idempotency_key
         );
-        let intent=Sha256::digest(serde_json::to_vec(&serde_json::json!({"operation":"project.remove","input":plan.input,"projects":plan.projects})).map_err(|e|error("removal request intent",e))?).into();
-        let coordinator = self.clone();
+        let intent=Sha256::digest(serde_json::to_vec(&serde_json::json!({"operation":"project.remove","input":plan.input,"scope":format!("{:?}",admission.scope)})).map_err(|e|error("removal request intent",e))?).into();
+        let coordinator = Arc::downgrade(self);
         match self
-            .supervise_control(key, intent, deadline, move |deadline| async move {
-                coordinator
-                    .remove_selected(plan, admission, &deadline)
-                    .await
-                    .map(AnyOutput::from)
+            .supervise_control(key, intent, deadline, move |deadline| {
+                let coordinator = coordinator.clone();
+                let plan = plan.clone();
+                let admission = admission.clone();
+                async move {
+                    coordinator
+                        .upgrade()
+                        .ok_or_else(|| error("removal retry", "the original host has retired"))?
+                        .remove_selected(plan, admission, &deadline)
+                        .await
+                        .map(AnyOutput::from)
+                }
             })
             .await?
         {

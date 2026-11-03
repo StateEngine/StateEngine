@@ -80,7 +80,8 @@ pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_pro
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
     let path = PathBuf::from(command);
     if path.is_absolute() {
-        return se_proc::canonicalize_path(path).map_err(|e| error("provider executable", e));
+        let resolved = native_executable(&path).unwrap_or(path);
+        return se_proc::canonicalize_path(resolved).map_err(|e| error("provider executable", e));
     }
     if path.components().count() != 1 {
         return Err(se_types::SeError::invalid(
@@ -98,8 +99,7 @@ pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
         if !directory.is_absolute() {
             continue;
         }
-        let candidate = directory.join(command);
-        if candidate.is_file() {
+        if let Some(candidate) = native_executable(&directory.join(command)) {
             return se_proc::canonicalize_path(candidate)
                 .map_err(|e| error("provider executable", e));
         }
@@ -108,6 +108,21 @@ pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
         "provider executable",
         "configured provider command was not found in absolute PATH entries",
     ))
+}
+// Match native Windows executable lookup without invoking a command shell or
+// treating an npm batch shim as an executable process image.
+fn native_executable(path: &std::path::Path) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    #[cfg(windows)]
+    if path.extension().is_none() {
+        let executable = path.with_extension("exe");
+        if executable.is_file() {
+            return Some(executable);
+        }
+    }
+    None
 }
 pub(super) fn view(
     root: &se_proc::ProcessIdentity,

@@ -11,6 +11,7 @@ pub struct ControlAgent {
     pub target: StopTarget,
     pub control: ControlTarget,
 }
+#[derive(Clone)]
 pub struct StopPlan {
     pub input: AgentStop,
     pub projects: Vec<Named<ProjectId>>,

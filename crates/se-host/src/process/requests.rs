@@ -4,12 +4,24 @@ use super::*;
 use crate::client::lease::Deadline;
 use se_core::ops::AnyOutput;
 use se_types::{ErrorBody, Result, SeError};
-use std::{collections::BTreeMap, future::Future, sync::Mutex};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 use tokio::sync::watch;
 #[derive(Default)]
 pub(super) struct Controls(Mutex<BTreeMap<String, Arc<Control>>>);
+type Retry =
+    dyn Fn(Deadline) -> Pin<Box<dyn Future<Output = Result<AnyOutput>> + Send>> + Send + Sync;
 struct Control {
     intent: [u8; 32],
+    execute: Arc<Retry>,
+    retryable: AtomicBool,
     ready: watch::Sender<Option<std::result::Result<AnyOutput, ErrorBody>>>,
     task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -60,12 +72,18 @@ impl LaunchCoordinator {
         key: String,
         intent: [u8; 32],
         deadline: &Deadline,
-        execute: impl FnOnce(Deadline) -> F,
+        execute: impl Fn(Deadline) -> F + Send + Sync + 'static,
     ) -> Result<AnyOutput> {
         let (control, new) = {
             let mut controls = self.controls.0.lock().map_err(|_| {
                 SeError::invalid("process request registry", "an unpoisoned registry")
             })?;
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(error(
+                    "process request admission",
+                    "shutdown is joining retained cleanup; reconnect after it completes",
+                ));
+            }
             if let Some(control) = controls.get(&key) {
                 if control.intent != intent {
                     return Err(SeError::invalid(
@@ -73,7 +91,15 @@ impl LaunchCoordinator {
                         "the original operation, target and options",
                     ));
                 }
-                (control.clone(), false)
+                let retry =
+                    control.ready.borrow().is_some() && control.retryable.load(Ordering::Acquire);
+                if retry {
+                    // Clear under the registry lock: another caller joins this
+                    // attempt instead of starting a second cleanup concurrently.
+                    control.ready.send_replace(None);
+                    control.retryable.store(false, Ordering::Release);
+                }
+                (control.clone(), retry)
             } else {
                 if controls.len() >= 128
                     && let Some(old) = controls
@@ -91,6 +117,8 @@ impl LaunchCoordinator {
                 }
                 let control = Arc::new(Control {
                     intent,
+                    execute: Arc::new(move |deadline| Box::pin(execute(deadline))),
+                    retryable: AtomicBool::new(false),
                     ready: watch::channel(None).0,
                     task: Mutex::new(None),
                 });
@@ -100,11 +128,30 @@ impl LaunchCoordinator {
         };
         if new {
             let owned = control.clone();
-            let job = execute(deadline.retained());
+            let previous = control
+                .task
+                .lock()
+                .map_err(|_| error("process request retry", "poisoned task slot"))?
+                .take();
+            let job = (control.execute)(deadline.retained());
             let task = self.store.pool.handle().spawn(async move {
-                owned
-                    .ready
-                    .send_replace(Some(job.await.map_err(|e| e.body)));
+                if let Some(previous) = previous
+                    && let Err(failure) = previous.await
+                {
+                    owned.retryable.store(true, Ordering::Release);
+                    owned
+                        .ready
+                        .send_replace(Some(Err(error("retained request join", failure).body)));
+                    return;
+                }
+                let result = job.await;
+                let retry = match &result {
+                    Ok(AnyOutput::AgentStop(output)) => !output.value.complete,
+                    Err(_) => true,
+                    _ => false,
+                };
+                owned.retryable.store(retry, Ordering::Release);
+                owned.ready.send_replace(Some(result.map_err(|e| e.body)));
             });
             *control
                 .task

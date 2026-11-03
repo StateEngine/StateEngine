@@ -24,13 +24,20 @@ impl LaunchCoordinator {
             admission.scope, admission.actor, plan.input.idempotency_key
         );
         let intent=Sha256::digest(serde_json::to_vec(&serde_json::json!({"operation":"agent.stop","input":plan.input,"selector":plan.input.owner_agent,"all":plan.input.all,"release":plan.input.release,"scope":format!("{:?}",admission.scope)})).map_err(|e|error("stop request intent",e))?).into();
-        let coordinator = self.clone();
+        let coordinator = Arc::downgrade(self);
         match self
-            .supervise_control(key, intent, deadline, move |deadline| async move {
-                coordinator
-                    .stop_selected(plan, admission, &deadline)
-                    .await
-                    .map(se_core::ops::AnyOutput::from)
+            .supervise_control(key, intent, deadline, move |deadline| {
+                let coordinator = coordinator.clone();
+                let plan = plan.clone();
+                let admission = admission.clone();
+                async move {
+                    coordinator
+                        .upgrade()
+                        .ok_or_else(|| error("stop retry", "the original host has retired"))?
+                        .stop_selected(plan, admission, &deadline)
+                        .await
+                        .map(se_core::ops::AnyOutput::from)
+                }
             })
             .await?
         {

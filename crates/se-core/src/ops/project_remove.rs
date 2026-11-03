@@ -125,6 +125,7 @@ pub struct RemoveResult {
 
 /// Selected registered projects only. Each project is re-read in its own
 /// admitted snapshot before stopping processes or preparing a tombstone.
+#[derive(Clone)]
 pub struct RemovePlan {
     pub input: ProjectRemove,
     pub projects: Vec<Named<ProjectId>>,
