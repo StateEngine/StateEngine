@@ -38,6 +38,7 @@ mod retained;
 mod runtime_control;
 #[path = "route/select.rs"]
 mod select;
+mod session_observation;
 #[path = "route/setup.rs"]
 pub mod setup;
 #[path = "route/status.rs"]

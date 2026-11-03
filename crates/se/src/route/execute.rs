@@ -104,6 +104,7 @@ pub fn dispatch(
     op: AnyOp,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<AnyOutput> {
+    let observation_deadline = super::session_observation::deadline()?;
     if let AnyOp::ProjectInit(input) = op {
         return super::init::execute(cx, input);
     }
@@ -150,8 +151,17 @@ pub fn dispatch(
     }
     if matches!(op, AnyOp::ProjectStatus(_)) {
         let result =
-            super::status::observe_snapshot(cx, &mut snapshot, owner, &files, &caller.admission);
-        return finish_read(result, snapshot.close().map_err(|e| store_error(&e)));
+            super::status::observe_snapshot(cx, &mut snapshot, owner, &files, &caller.admission)
+                .and_then(|output| {
+                    super::session_observation::prepare(
+                        output,
+                        &mut snapshot,
+                        &caller.admission,
+                        observation_deadline,
+                    )
+                });
+        let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
+        return super::session_observation::finish(prepared);
     }
     let host_required = matches!(
         op.meta().runtime,
@@ -175,8 +185,17 @@ pub fn dispatch(
                 "direct read plan",
                 "a read without commit or custody",
             )),
+        })
+        .and_then(|output| {
+            super::session_observation::prepare(
+                output,
+                &mut snapshot,
+                &caller.admission,
+                observation_deadline,
+            )
         });
-        return finish_read(result, snapshot.close().map_err(|e| store_error(&e)));
+        let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
+        return super::session_observation::finish(prepared);
     }
     // End the finite auth/selection pin before stdin, IPC, writer or custody work.
     snapshot.close().map_err(|e| store_error(&e))?;
@@ -285,7 +304,7 @@ pub fn dispatch(
         }),
     }
 }
-fn finish_read(result: Result<AnyOutput>, closed: Result<()>) -> Result<AnyOutput> {
+fn finish_read<T>(result: Result<T>, closed: Result<()>) -> Result<T> {
     match result {
         Ok(value) => {
             closed?;

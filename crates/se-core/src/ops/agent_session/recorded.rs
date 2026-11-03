@@ -29,6 +29,7 @@ pub(super) fn apply<R: Snapshot>(
     if recorded == "prepared" {
         session.state = "starting".into();
     }
+    let expected = process.clone();
     let process = match process {
         Some(process) => cx
             .read
@@ -47,7 +48,7 @@ pub(super) fn apply<R: Snapshot>(
         },
     };
     session.process_state = match process {
-        Read::Present { value } => projection(agent, id, value, session)?,
+        Read::Present { value } => projection(agent, id, expected.as_ref(), value, session)?,
         other => other.map(|_| String::new()),
     };
     Ok(())
@@ -55,6 +56,7 @@ pub(super) fn apply<R: Snapshot>(
 fn projection(
     agent: &AgentId,
     id: &SessionId,
+    expected: Option<&se_types::LifecycleId>,
     record: ProjectionRecord,
     session: &mut SessionView,
 ) -> Result<Read<String>> {
@@ -73,6 +75,12 @@ fn projection(
             ));
         }
     };
+    if expected.is_some_and(|expected| expected != &identity.record) {
+        return Err(scope::unreadable(
+            "session process projection",
+            "the lifecycle differs from the activated session's exact process reference",
+        ));
+    }
     if identity.principal != Actor::Agent(agent.clone()) {
         return Err(scope::unreadable(
             "session process projection",
