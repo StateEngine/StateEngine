@@ -176,6 +176,19 @@ pub fn from_matches_with_key(
                     .transpose()?,
                 idempotency_key: key()?,
             }),
+            "message.inbox" => AnyOp::MessageInbox(MessageInbox {
+                agent: text(m, "agent"),
+                full: flag(m, "full"),
+                limit: number(m, "limit")?,
+                preview_chars: text(m, "preview_chars")
+                    .map(|value| {
+                        value
+                            .parse()
+                            .map_err(|_| SeError::invalid("preview-chars", "0..4000"))
+                    })
+                    .transpose()?,
+                cursor: text(m, "cursor").map(Cursor::new).transpose()?,
+            }),
             "message.list" => AnyOp::MessageList(MessageList {
                 cli_list: true,
                 view: if flag(m, "all") {

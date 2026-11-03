@@ -268,6 +268,12 @@ fn input_command(name: &str, c: Command) -> Command {
                     .value_parser(["inbox", "sent"])
                     .default_value("inbox"),
             ),
+        "message.inbox" => c
+            .arg(positional("agent", 1, false))
+            .arg(toggle("full"))
+            .arg(value("limit").default_value("20"))
+            .arg(value("preview_chars").long("preview-chars"))
+            .arg(value("cursor")),
         "working_state.get" => c.arg(value("agent")),
         "agent.show" => c.arg(positional("agent", 1, true)),
         "agent.list" => c

@@ -448,6 +448,9 @@ impl Kernel {
             AnyOp::MessageList(input) => {
                 OpStep::Complete(crate::ops::message::list(input, cx)?.into())
             }
+            AnyOp::MessageInbox(input) => {
+                OpStep::Complete(crate::ops::inbox::read(input, cx)?.into())
+            }
             AnyOp::ProjectInit(input) => OpStep::Custody(CustodyPlan::Initialize(input)),
             AnyOp::ProjectStatus(input) => OpStep::Custody(CustodyPlan::ObserveStatus(input)),
             AnyOp::RuntimeUp(input) => OpStep::Custody(CustodyPlan::RuntimeUp(input)),
