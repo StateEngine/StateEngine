@@ -1,7 +1,8 @@
 //! Join the one native checkpoint codec to protected store indices. This adapter
 //! neither deserializes a second format nor reconstructs native handles.
 use se_proc::{
-    CheckpointKind, CheckpointPrincipal, LifecycleState, ProcessRecord, RootPublication,
+    CheckpointKind, CheckpointPrincipal, CheckpointSource, LifecycleState, ProcessRecord,
+    RootPublication,
 };
 use se_store::{Actor, OwnerGuardInventory, ProcessState, RecordedIdentity, RootIdentityState};
 use se_types::{Result, StartIdentity};
@@ -60,10 +61,36 @@ pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<Pro
                 .into());
             }
         }
-        let record = checkpoint.owner_guard_record()
+        let (record, terminal_cleanup) = match checkpoint
+            .owner_guard_record()
             .map_err(|error| unreadable(&error.to_string()))?
-            .ok_or_else(|| unreadable("terminal checkpoint contradicts an unresolved process index; reconcile the index before owner admission"))?;
-        if !state_matches(record.state, entry.state) || record.ownership_release.is_some() {
+        {
+            Some(record) => (record, false),
+            None => match (&checkpoint.checkpoint, entry.state) {
+                // Native exit is committed before final capture/session cleanup.
+                // Keep the original process in the ancestry inventory while that
+                // debt is reconciled; do not turn a terminal marker into absence
+                // or use its old witness as a fresh native observation.
+                (CheckpointKind::Exit { source, .. }, ProcessState::Exited) => {
+                    match source.as_ref() {
+                        CheckpointSource::Process(record) => (record, true),
+                        _ => {
+                            return Err(unreadable(
+                                "terminal cleanup lacks an identified process source for owner ancestry",
+                            ));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(unreadable(
+                        "terminal checkpoint contradicts an unresolved process index; reconcile the index before owner admission",
+                    ));
+                }
+            },
+        };
+        if (!terminal_cleanup && !state_matches(record.state, entry.state))
+            || record.ownership_release.is_some()
+        {
             return Err(unreadable(
                 "checkpoint state/release differs from the protected unresolved process index",
             ));

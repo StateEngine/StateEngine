@@ -142,29 +142,13 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
                     Some("tool_result") if kind == "user" => {
                         // Tool replies stay in the pinned source evidence;
                         // the public chat family contains user/assistant turns.
-                        match block.get("content") {
-                            Some(Value::String(_)) => (),
-                            Some(Value::Array(parts)) => {
-                                for part in parts {
-                                    if part.get("type").and_then(Value::as_str) != Some("text")
-                                        || part.get("text").and_then(Value::as_str).is_none()
-                                    {
-                                        return Err(invalid("supported tool-result text blocks"));
-                                    }
-                                }
-                            }
-                            _ => return Err(invalid("supported tool-result content")),
-                        }
+                        tool_result(block.get("content"))?;
                     }
                     // These known blocks carry no visible chat prose. They remain
                     // in the source evidence digest; no text prefix is truncated.
                     Some("thinking" | "tool_use" | "fallback") if kind == "assistant" => (),
                     Some("image") if kind == "user" => (),
-                    _ => {
-                        return Err(invalid(
-                            "supported content blocks; unknown blocks retain the cursor",
-                        ));
-                    }
+                    _ => return Err(unknown_block("content", block)),
                 }
             }
         }
@@ -182,6 +166,53 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         },
         text: Body::new(text)?,
     }))
+}
+fn tool_result(content: Option<&Value>) -> Result<()> {
+    match content {
+        Some(Value::String(_)) => Ok(()),
+        Some(Value::Array(parts)) => {
+            for part in parts {
+                match part.get("type").and_then(Value::as_str) {
+                    Some("text") if part.get("text").and_then(Value::as_str).is_some() => (),
+                    // Tool search returns references to discovered tools. These
+                    // remain source evidence, just like tool text; neither is
+                    // a human message or public conversation prose.
+                    Some("tool_reference")
+                        if part
+                            .get("tool_name")
+                            .and_then(Value::as_str)
+                            .is_some_and(|name| {
+                                !name.is_empty()
+                                    && name.len() <= 512
+                                    && !name.chars().any(char::is_control)
+                            }) => {}
+                    Some("text" | "tool_reference") => {
+                        return Err(invalid(
+                            "a tool-result text string or bounded tool reference name",
+                        ));
+                    }
+                    _ => return Err(unknown_block("tool-result", part)),
+                }
+            }
+            Ok(())
+        }
+        _ => Err(invalid("supported tool-result content")),
+    }
+}
+fn unknown_block(context: &str, block: &Value) -> SeError {
+    let Some(kind) = block.get("type").and_then(Value::as_str) else {
+        return invalid("an explicit content block type");
+    };
+    let name: String = kind.chars().take(128).collect();
+    let truncated = if name.len() < kind.len() {
+        " (truncated)"
+    } else {
+        ""
+    };
+    SeError::invalid(
+        &format!("pinned Claude transcript {context} block type {name:?}{truncated}"),
+        "a supported content block; preserve the old cursor on schema drift",
+    )
 }
 fn append(target: &mut String, value: &str) -> Result<()> {
     let length = target
