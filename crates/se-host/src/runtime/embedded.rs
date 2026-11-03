@@ -8,7 +8,12 @@
 //! `drain` stops serving through the in-process stop and joins every
 //! obligation; `close` returns that same result. Methods outside the W3 slice
 //! refuse by name instead of inventing an outcome.
+mod binding;
+mod capture;
+mod context;
 mod owner;
+mod revoke;
+mod store;
 mod support;
 use super::{HostedRouter, LocalStop};
 use owner::{OwnerInputs, Started, Stopped, owner_thread};
@@ -42,10 +47,6 @@ pub fn embedded_factory(runtime: Handle) -> Arc<dyn api::HostFactory> {
 
 /// One activated generation: its router, stop and shutdown report.
 struct Serving {
-    #[allow(
-        dead_code,
-        reason = "bound tool calls and capture use it in the next W3 slice"
-    )]
     router: HostedRouter,
     stop: LocalStop,
     exited: oneshot::Receiver<Stopped>,
@@ -71,6 +72,8 @@ struct EmbeddedHost {
     lifecycle: tokio::sync::Mutex<Lifecycle>,
     health: Mutex<api::GenerationHealth>,
     changed: tokio::sync::Notify,
+    bindings: binding::Bindings,
+    binding_gate: tokio::sync::Mutex<()>,
 }
 
 impl api::HostFactory for EmbeddedFactory {
@@ -131,6 +134,8 @@ impl api::HostFactory for EmbeddedFactory {
                 lifecycle: tokio::sync::Mutex::new(Lifecycle::Prepared),
                 health: Mutex::new(api::GenerationHealth::Prepared),
                 changed: tokio::sync::Notify::new(),
+                bindings: binding::Bindings::new().map_err(|e| api_error(&e))?,
+                binding_gate: tokio::sync::Mutex::new(()),
             });
             Ok(api::Read::Present {
                 value: api::OpenedHost {
@@ -166,6 +171,34 @@ impl api::HostFactory for EmbeddedFactory {
 }
 
 impl EmbeddedHost {
+    async fn ready(
+        &self,
+        options: &api::CallOptions,
+    ) -> core::Result<(
+        HostedRouter,
+        crate::client::lease::Deadline,
+        support::CallCancellation,
+    )> {
+        if options.generation != self.negotiated.generation {
+            return Err(core::SeError::invalid(
+                "linked call",
+                "the negotiated generation and an uncancelled request",
+            ));
+        }
+        let (deadline, cancellation) = support::call_deadline(&self.runtime, options)?;
+        let lifecycle = super::pool::within(&deadline, self.lifecycle.lock()).await?;
+        match &*lifecycle {
+            Lifecycle::Ready(serving)
+                if api::Host::health(self) == api::GenerationHealth::Ready =>
+            {
+                Ok((serving.router.clone(), deadline, cancellation))
+            }
+            _ => Err(core::SeError::invalid(
+                "linked call",
+                "a ready embedded host before drain",
+            )),
+        }
+    }
     fn set_health(&self, health: api::GenerationHealth) {
         if let Ok(mut current) = self.health.lock() {
             *current = health;
@@ -322,19 +355,27 @@ impl api::Host for EmbeddedHost {
     }
     fn bind_session<'a>(
         &'a self,
-        _authority: &'a api::BindingAuthority,
-        _request: api::BindingRequest,
-        _options: api::CallOptions,
+        authority: &'a api::BindingAuthority,
+        request: api::BindingRequest,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::IssuedSession> {
-        Box::pin(async { Err(unavailable("embedded session binding")) })
+        Box::pin(async move {
+            self.bind(authority, request, options)
+                .await
+                .map_err(|e| api_error(&e))
+        })
     }
     fn revoke_session<'a>(
         &'a self,
-        _authority: &'a api::Authority,
-        _request: api::RevokeRequest,
-        _options: api::CallOptions,
+        authority: &'a api::Authority,
+        request: api::RevokeRequest,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Receipt<api::SessionIdentity>> {
-        Box::pin(async { Err(unavailable("embedded session revocation")) })
+        Box::pin(async move {
+            self.revoke(authority, request, options)
+                .await
+                .map_err(|e| api_error(&e))
+        })
     }
     fn tools<'a>(
         &'a self,
@@ -354,19 +395,27 @@ impl api::Host for EmbeddedHost {
     }
     fn continuity<'a>(
         &'a self,
-        _session: &'a api::BoundSession,
-        _request: api::ContinuityRequest,
-        _options: api::CallOptions,
+        session: &'a api::BoundSession,
+        request: api::ContinuityRequest,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::SessionContext> {
-        Box::pin(async { Err(unavailable("session continuity")) })
+        Box::pin(async move {
+            self.context(session, request, options)
+                .await
+                .map_err(|e| api_error(&e))
+        })
     }
     fn capture_turn<'a>(
         &'a self,
-        _session: &'a api::BoundSession,
-        _turn: api::CapturedTurn,
-        _options: api::CallOptions,
+        session: &'a api::BoundSession,
+        turn: api::CapturedTurn,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Receipt<api::EventRef>> {
-        Box::pin(async { Err(unavailable("embedded turn capture")) })
+        Box::pin(async move {
+            self.capture(session, turn, options)
+                .await
+                .map_err(|e| api_error(&e))
+        })
     }
     fn native_state_changed<'a>(
         &'a self,

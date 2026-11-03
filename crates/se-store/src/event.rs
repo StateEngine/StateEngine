@@ -105,7 +105,8 @@ pub enum GrantKey {
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SourceEvidence {
-    pub path: NativePath,
+    /// File-backed transcripts have a path; native event capture has none.
+    pub path: Option<NativePath>,
     pub incarnation: Vec<u8>,
     pub offset: u64,
     pub length: u64,

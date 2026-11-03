@@ -173,7 +173,7 @@ fn cursor(
                     } if id == *last_turn
                         && agent == source.binding.identity.agent
                         && session == source.binding.identity.session
-                        && prior.path == source.binding.path
+                        && prior.path.as_ref() == Some(&source.binding.path)
                         && prior.incarnation.as_slice() == source.pin.identity()
                         && prior.offset == *old_offset
                         && prior.offset.checked_add(prior.length) == Some(*new_offset)
@@ -244,7 +244,7 @@ fn scan(
                             role: record.role,
                             text: record.text,
                             evidence: se_store::SourceEvidence {
-                                path: source.binding.path.clone(),
+                                path: Some(source.binding.path.clone()),
                                 incarnation: source.pin.identity().to_vec(),
                                 offset,
                                 length: consumed - offset,

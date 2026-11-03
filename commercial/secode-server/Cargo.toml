@@ -44,3 +44,8 @@ panic = "unwind"
 debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
+
+# Match the public workspace: native executable proofs hash the linked image
+# within a finite deadline, including in developer and consumer builds.
+[profile.dev.package.sha2]
+opt-level = 3

@@ -127,7 +127,7 @@ pub(crate) fn decode(
             |r| r.get(0),
         )
         .map_err(sql)?;
-    let path: NativePath = serde_json::from_slice(&path).map_err(invalid)?;
+    let path: Option<NativePath> = serde_json::from_slice(&path).map_err(invalid)?;
     let metadata = facts(c, seq)?;
     Ok(EventBody::SessionTurn {
         turn: record(row.get("turn_id").map_err(sql)?)?,
