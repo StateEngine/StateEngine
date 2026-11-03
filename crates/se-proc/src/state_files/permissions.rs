@@ -70,6 +70,31 @@ impl PermissionRepairPin {
         &self.observed
     }
 
+    /// Read-only native policy observation. Unreadable metadata and changed
+    /// ownership remain errors; a readable loose mode/DACL is false.
+    pub fn is_owner_only(&self) -> Result<bool> {
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            self.pin.check()?;
+            let before = self.pin.snapshot()?;
+            let private = self.pin.is_owner_only()?;
+            self.pin.check()?;
+            if before != self.pin.snapshot()? {
+                return Err(changed(
+                    "permission metadata changed during observation",
+                    &self.path,
+                ));
+            }
+            Ok(private)
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        Err(failure(
+            StateFileErrorCode::Unsupported,
+            "permission observation requires Linux or Windows",
+            &self.path,
+        ))
+    }
+
     /// Compare on the held object and an independently reopened name before
     /// changing only permissions. A post-effect replacement is SourceChanged,
     /// not success: the original pinned object may already have been tightened.

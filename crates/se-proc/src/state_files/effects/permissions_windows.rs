@@ -2,7 +2,7 @@
 //! delete sharing is requested, and DACL repair never visits descendants.
 use super::{Parent, metadata, security, wide};
 use crate::state_files::{
-    Result,
+    Result, StateFileErrorCode,
     effects::{absent, changed},
     io_error,
     permissions::{PermissionKind, PermissionProtection, PermissionSnapshot},
@@ -164,5 +164,13 @@ impl Pin {
             &self.path,
             self.snapshot()?.kind != PermissionKind::Directory,
         )
+    }
+    pub(in crate::state_files) fn is_owner_only(&self) -> Result<bool> {
+        self.snapshot()?;
+        match self.verify_private() {
+            Ok(()) => Ok(true),
+            Err(error) if error.code == StateFileErrorCode::LocationUnsafe => Ok(false),
+            Err(error) => Err(error),
+        }
     }
 }

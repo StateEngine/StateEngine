@@ -180,4 +180,15 @@ impl Pin {
         }
         super::super::metadata(&self.file, &self.path, directory).map(|_| ())
     }
+    pub(in crate::state_files) fn is_owner_only(&self) -> Result<bool> {
+        let snapshot = self.snapshot()?;
+        let target = if snapshot.kind == PermissionKind::Directory {
+            0o700
+        } else {
+            0o600
+        };
+        Ok(
+            matches!(snapshot.protection, PermissionProtection::UnixMode { mode, .. } if mode == target),
+        )
+    }
 }
