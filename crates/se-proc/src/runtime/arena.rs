@@ -14,8 +14,21 @@ pub(crate) struct Arena {
     pub config: HostConfig,
     pub owner: ProcessIdentity,
     pub driver: crate::platform::Driver,
-    pub slots: Mutex<HashMap<LifecycleId, Arc<Mutex<Slot>>>>,
+    pub slots: Mutex<HashMap<LifecycleId, SlotEntry>>,
     pub revision: AtomicU64,
+}
+pub(crate) enum SlotEntry {
+    Owned(Arc<Mutex<Slot>>),
+    // Keep a bounded fence until this host closes; a late prepare must refuse.
+    Retired(Box<LaunchReservation>),
+}
+impl SlotEntry {
+    pub fn owned(&self) -> Option<Arc<Mutex<Slot>>> {
+        match self {
+            Self::Owned(slot) => Some(Arc::clone(slot)),
+            Self::Retired(_) => None,
+        }
+    }
 }
 #[derive(Clone)]
 pub(crate) struct Reference {
@@ -167,7 +180,8 @@ impl Arena {
         })?;
         if map
             .get(&key.lifecycle)
-            .is_some_and(|slot| Weak::ptr_eq(&Arc::downgrade(slot), &key.slot))
+            .and_then(SlotEntry::owned)
+            .is_some_and(|slot| Weak::ptr_eq(&Arc::downgrade(&slot), &key.slot))
         {
             map.remove(&key.lifecycle);
             self.bump();

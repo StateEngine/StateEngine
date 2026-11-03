@@ -64,11 +64,11 @@ impl NativeProcessRuntime {
             }
             if slots.len() >= self.inner.config.limits.max_lifecycles as usize {
                 return Err(capacity(
-                    "active native lifecycles",
+                    "native lifecycle entries",
                     self.inner.config.limits.max_lifecycles as u64,
                 ));
             }
-            slots.insert(lifecycle.clone(), slot.clone());
+            slots.insert(lifecycle.clone(), SlotEntry::Owned(slot.clone()));
             self.inner.bump();
         }
         let key = self.inner.reference(&slot, lifecycle.clone(), generation);
