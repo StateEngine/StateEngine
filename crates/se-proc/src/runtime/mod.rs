@@ -5,7 +5,7 @@ mod recovery;
 mod validate;
 
 use crate::*;
-pub(crate) use arena::{Arena, Reference, Slot};
+pub(crate) use arena::{Arena, Reference, Slot, SlotEntry};
 
 pub fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
     crate::platform::read_process(machine, pid)

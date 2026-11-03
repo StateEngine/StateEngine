@@ -1,3 +1,4 @@
+use super::SlotEntry;
 #[cfg(target_os = "linux")]
 use super::{Slot, notify::Hub};
 use crate::support::*;
@@ -114,13 +115,53 @@ pub(super) fn recover(
     if reservation.owner.machine != runtime.inner.config.machine {
         return Err(input("recovery", "record belongs to another machine"));
     }
-    let existing = runtime
-        .inner
-        .slots
-        .lock()
-        .map_err(|_| input("recovery", "arena map poisoned"))?
-        .get(&reservation.lifecycle)
-        .cloned();
+    let existing = {
+        let mut slots = runtime
+            .inner
+            .slots
+            .lock()
+            .map_err(|_| input("recovery", "arena map poisoned"))?;
+        if let Some(slot) = slots.get(&reservation.lifecycle).and_then(SlotEntry::owned) {
+            Some(slot)
+        } else if let RecoverySource::Reservation(reserved) = &checked.source
+            && reserved.host == runtime.inner.config.instance
+            && reserved.owner == runtime.inner.owner
+            && reserved.generation == generation
+        {
+            if let Some(SlotEntry::Retired(previous)) = slots.get(&reservation.lifecycle)
+                && previous != reserved
+            {
+                return Err(input(
+                    "reservation retirement",
+                    "retained reservation differs",
+                ));
+            }
+            if !slots.contains_key(&reservation.lifecycle)
+                && slots.len() >= runtime.inner.config.limits.max_lifecycles as usize
+            {
+                return Err(capacity(
+                    "native lifecycle entries",
+                    runtime.inner.config.limits.max_lifecycles as u64,
+                ));
+            }
+            // The same lock arbitrates prepare_launch. Retain the exact C1
+            // reservation so a late prepare cannot follow this empty witness.
+            let outcome = uncreated(reserved)?;
+            slots.insert(
+                reservation.lifecycle.clone(),
+                SlotEntry::Retired(reserved.clone()),
+            );
+            runtime.inner.bump();
+            return Ok(outcome);
+        } else if slots.contains_key(&reservation.lifecycle) {
+            return Err(input(
+                "reservation retirement",
+                "this lifecycle is already retired",
+            ));
+        } else {
+            None
+        }
+    };
     if let Some(slot) = existing {
         let from = slot
             .lock()
@@ -249,15 +290,7 @@ fn cold_linux(
             }
         };
         if gone {
-            let (scope_exit, guarantee) = crate::platform::uncreated_scope(reserved)?;
-            return Ok(RecoveryOutcome::Exited(Box::new(StopWitness {
-                lifecycle: reserved.lifecycle.clone(),
-                root: RootWitness::NoChildCreated,
-                scope: scope_exit.scope.clone(),
-                scope_exit,
-                guarantee,
-                observed_at_unix_ns: now()?,
-            })));
+            return uncreated(reserved);
         }
         return Ok(unproved(
             checked.source,
@@ -327,11 +360,11 @@ fn cold_linux(
         }
         if slots.len() >= runtime.inner.config.limits.max_lifecycles as usize {
             return Err(capacity(
-                "active native lifecycles",
+                "native lifecycle entries",
                 runtime.inner.config.limits.max_lifecycles as u64,
             ));
         }
-        slots.insert(record.lifecycle.clone(), slot.clone());
+        slots.insert(record.lifecycle.clone(), SlotEntry::Owned(slot.clone()));
         runtime.inner.bump();
     }
     let key = runtime
@@ -376,4 +409,16 @@ fn unproved(source: RecoverySource, reason: &str) -> RecoveryOutcome {
             },
         ),
     }
+}
+
+fn uncreated(reservation: &LaunchReservation) -> ProcResult<RecoveryOutcome> {
+    let (scope_exit, guarantee) = crate::platform::uncreated_scope(reservation)?;
+    Ok(RecoveryOutcome::Exited(Box::new(StopWitness {
+        lifecycle: reservation.lifecycle.clone(),
+        root: RootWitness::NoChildCreated,
+        scope: scope_exit.scope.clone(),
+        scope_exit,
+        guarantee,
+        observed_at_unix_ns: now()?,
+    })))
 }

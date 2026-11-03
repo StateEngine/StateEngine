@@ -1,7 +1,7 @@
 //! ProcessRuntime adapter, arena observation and same-host adoption.
 mod launch;
 mod stop;
-use super::{Arena, Slot, notify::Hub, validate};
+use super::{Arena, Slot, SlotEntry, notify::Hub, validate};
 use crate::platform::Progress;
 use crate::support::*;
 use crate::*;
@@ -61,7 +61,7 @@ impl ProcessRuntime for NativeProcessRuntime {
                     )
                 })?
                 .values()
-                .cloned()
+                .filter_map(SlotEntry::owned)
                 .collect::<Vec<_>>();
             let mut entries = Vec::with_capacity(slots.len());
             for slot in slots {
@@ -171,7 +171,7 @@ impl ProcessRuntime for NativeProcessRuntime {
             .lock()
             .map_err(|_| input("arena", "map poisoned"))?
             .get(&record.lifecycle)
-            .cloned()
+            .and_then(SlotEntry::owned)
             .ok_or_else(|| input("re_adopt", "not in this arena; use cold recovery"))?;
         let key = self.inner.reference(&slot, record.lifecycle.clone(), from);
         self.inner.apply(&key, false, |s| {

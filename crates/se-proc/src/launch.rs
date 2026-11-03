@@ -22,6 +22,7 @@ pub enum LinuxDelegation {
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ResourceLimits {
+    /// Active entries plus unprepared-retirement fences retained until host close.
     pub max_lifecycles: u32,
     pub max_diagnostic_members: u32,
     pub max_observation_bytes: u64,
