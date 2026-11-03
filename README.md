@@ -35,6 +35,7 @@ Imported agents without a usable saved profile adopt the current owner's safe de
 provider profile after source configuration is processed. This is current configuration,
 not a claim about their historical provider or permissions. Floor broadcasts and messages
 with floor or unmapped human senders retain their recorded sender, audience and text in history;
+replies and replacements referencing retained mail keep their recorded links without native message identities;
 they do not create a sender identity or a new native recipient-read fact.
 
 Imported conversations remain ended. Saved Claude and Codex references are retained

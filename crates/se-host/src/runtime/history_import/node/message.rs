@@ -1,4 +1,6 @@
 use super::*;
+mod reference;
+use reference::MessageReference;
 pub(super) fn decode<R: ImportSnapshot>(
     cx: &NodeContext,
     read: &mut R,
@@ -67,36 +69,23 @@ pub(super) fn decode<R: ImportSnapshot>(
         }
     }
     if matches!(kind, "read-marker" | "dismiss")
-        && matches!(read.message(id.clone())?, Read::Absent { .. })
+        && matches!(
+            reference::lookup(cx, read, &id)?,
+            MessageReference::Retained(_)
+        )
     {
-        let owned = event_id(&cx.admission.scope, &format!("owned:messages:message:{id}"))?;
-        match read.event(owned)? {
-            Read::Present { value } if matches!(&value.body, EventBody::LegacyRetained {mapped_id: LegacyTarget::Message(message), ..} if message==&id) =>
-            {
-                return retained(
-                    row,
-                    id.clone(),
-                    format!(
-                        "{kind}:{id}:{}:{}",
-                        str_at(row, "seat")?,
-                        str_at(row, "ts")?
-                    ),
-                    "source marker for retained mail; no native recipient fact inferred",
-                );
-            }
-            Read::Present { .. } => {
-                return Err(invalid(
-                    "retained source message correspondence has the wrong kind",
-                ));
-            }
-            Read::Absent { .. } => (),
-            Read::Unreadable { reason, .. } => {
-                return Err(fail(StoreErrorCode::Unreadable, reason));
-            }
-            Read::Unknown { what } => return Err(fail(StoreErrorCode::Unreadable, what)),
-        }
+        return retained(
+            row,
+            id.clone(),
+            format!(
+                "{kind}:{id}:{}:{}",
+                str_at(row, "seat")?,
+                str_at(row, "ts")?
+            ),
+            "source marker for retained mail; no native recipient fact inferred",
+        );
     }
-    let mut retained = None;
+    let mut retained_fields = serde_json::Map::new();
     let (by, key, body) = match kind {
         "message" => {
             if row.get("from_project").is_some_and(|v|!v.is_null() && !matches!(&cx.admission.scope,Scope::Project(p) if v.as_str()==Some(p.as_str()))) {
@@ -118,20 +107,7 @@ pub(super) fn decode<R: ImportSnapshot>(
                         .as_str()
                         .ok_or_else(|| invalid("Node message ref must be an ID"))?;
                     if let Ok(id) = MessageId::from_legacy(text) {
-                        return match read.message(id.clone())? {
-                            Read::Present { value } => Ok(value.event),
-                            Read::Absent { .. } => {
-                                let owned = event_id(
-                                    &cx.admission.scope,
-                                    &format!("owned:messages:message:{id}"),
-                                )?;
-                                require(read.event(owned)?).map(|e| e.header.event)
-                            }
-                            Read::Unreadable { reason, .. } => {
-                                Err(fail(StoreErrorCode::Unreadable, reason))
-                            }
-                            Read::Unknown { what } => Err(fail(StoreErrorCode::Unreadable, what)),
-                        };
+                        return reference::lookup(cx, read, &id).map(|value| value.event());
                     }
                     if let Ok(id) = DecisionId::from_legacy(text) {
                         let record = require(read.decision(id)?)?;
@@ -163,15 +139,23 @@ pub(super) fn decode<R: ImportSnapshot>(
             ) {
                 original_kind
             } else {
-                retained = Some(json!({"original_kind":original_kind}));
+                retained_fields.insert("original_kind".into(), json!(original_kind));
                 "note"
             };
-            let reply_to = optional(row, "reply_to")
+            let mut reply_to = optional(row, "reply_to")
                 .map(MessageId::from_legacy)
                 .transpose()
                 .map_err(invalid)?;
-            if let Some(reply) = &reply_to {
-                require(read.message(reply.clone())?)?;
+            if let Some(reply) = &reply_to
+                && let MessageReference::Retained(owned) = reference::lookup(cx, read, reply)?
+            {
+                // Retained mail has no native message identity. Keep its source
+                // reply relation beside the native text with its real event ID.
+                retained_fields.insert(
+                    "recorded_reply_to".into(),
+                    json!({"message":reply,"event":owned}),
+                );
+                reply_to = None;
             }
             (
                 by,
@@ -228,6 +212,7 @@ pub(super) fn decode<R: ImportSnapshot>(
             .filter(|v| v.len() <= 32)
             .ok_or_else(|| invalid("bounded source supersedes list required"))?;
         let mut unique = std::collections::BTreeSet::new();
+        let mut recorded = Vec::new();
         for value in values {
             let old = MessageId::from_legacy(
                 value
@@ -240,7 +225,15 @@ pub(super) fn decode<R: ImportSnapshot>(
                     "source replacement contains its own ID or repeated references",
                 ));
             }
-            let prior = require(read.message(old.clone())?)?;
+            let prior = match reference::lookup(cx, read, &old)? {
+                MessageReference::Native(prior) => prior,
+                MessageReference::Retained(owned) => {
+                    // This is recorded source history, not a native mark or a
+                    // replacement of a fabricated sender/recipient identity.
+                    recorded.push(json!({"message":old,"event":owned}));
+                    continue;
+                }
+            };
             if prior.superseded_by.as_ref() == Some(&id) {
                 continue;
             }
@@ -263,13 +256,16 @@ pub(super) fn decode<R: ImportSnapshot>(
                 },
             )?);
         }
+        if !recorded.is_empty() {
+            retained_fields.insert("recorded_supersedes".into(), Value::Array(recorded));
+        }
     }
     Ok(DecodedRow {
         events,
         family: ImportFamily::Messages,
         legacy_id: key,
         target: LegacyTarget::Message(id),
-        retained,
+        retained: (!retained_fields.is_empty()).then_some(Value::Object(retained_fields)),
         resume: Vec::new(),
         duplicate,
         dropped_by_policy: false,
