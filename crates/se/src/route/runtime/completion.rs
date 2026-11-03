@@ -123,9 +123,29 @@ fn exited(endpoint: &EndpointRecord, bound: &Deadline) -> Result<bool> {
             "native boot changed since authenticated stop admission",
         ));
     }
-    let observed =
-        se_proc::read_process(fields.machine.clone(), se_proc::ProcessId(fields.pid.get()))
-            .map_err(|e| scope::unreadable("shutdown exact native owner", &format!("{e:?}")))?;
+    let mut last_read_failure = None;
+    let observed = loop {
+        bound.remaining().map_err(|deadline| {
+            scope::unreadable(
+                "shutdown exact native owner",
+                &format!(
+                    "No conclusive native observation within the original shutdown bound: {}; {deadline}",
+                    last_read_failure.as_deref().unwrap_or("no completed observation")
+                ),
+            )
+        })?;
+        match se_proc::read_process(fields.machine.clone(), se_proc::ProcessId(fields.pid.get())) {
+            Ok(observed) => break observed,
+            Err(error) => {
+                // A process may exit between the native reader's birth and
+                // executable samples. Reobserve; unreadable is never absent.
+                last_read_failure = Some(format!("{error:?}"));
+                std::thread::sleep(
+                    Duration::from_millis(10).min(bound.remaining().unwrap_or(Duration::ZERO)),
+                );
+            }
+        }
+    };
     Ok(match observed {
         se_proc::ProcessRead::Absent { .. } | se_proc::ProcessRead::ExitedRecord { .. } => true,
         se_proc::ProcessRead::Present(value) => {
