@@ -56,6 +56,29 @@ const LIVE: [(&str, &str); 5] = [
         "remove the project's installed integrations or record them as conflicts first",
     ),
 ];
+/// A project with no outside effects cites its current registration. That
+/// metadata lives in Registry scope; the projection binds it to this exact
+/// target without admitting any other Registry event or widening event reads.
+fn removal_reference(
+    c: &Connection,
+    project: &[u8],
+    scope: &[u8],
+    witness: &se_types::EventId,
+) -> StoreResult<()> {
+    let registry_id = key(c, "event", witness.as_str(), &[0], false)?;
+    let current_registration: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM projects p JOIN events e ON e.seq=p.last_seq WHERE p.project_id=? AND e.event_id=? AND e.project_id IS NULL AND e.kind IN ('project.registered','project.updated'))",
+            rusqlite::params![project, registry_id],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if current_registration {
+        Ok(())
+    } else {
+        session::reference(c, project, scope, witness)
+    }
+}
 pub(super) fn apply(
     c: &Connection,
     h: &EventHeader,
@@ -96,7 +119,7 @@ pub(super) fn apply(
         return Err(invalid("preserved-history fact bounds"));
     }
     for witness in &witnesses {
-        session::reference(c, &p, &scope, witness)?;
+        removal_reference(c, &p, &scope, witness)?;
     }
     for (query, remedy) in LIVE {
         let live: bool = c.query_row(query, [&p], |r| r.get(0)).map_err(sql)?;

@@ -213,6 +213,17 @@ pub fn mcp_tools() -> Result<Vec<McpTool>> {
     Ok(tools)
 }
 pub fn decode_tool(name: &str, arguments: serde_json::Value) -> Result<AnyOp> {
+    // Removal is deliberately absent from tools/list. A caller attempting the
+    // ordinary operation/CLI spelling still gets its legal owner route, never
+    // an executable model tool or an invitation to supply OwnerProof over MCP.
+    if matches!(name, "stateengine_project_remove" | "stateengine_remove") {
+        return Err(SeError::new(Detail::HumanTerminalRequired(
+            details::HumanTerminalRequired {
+                op: ProjectRemove::META.name.into(),
+                reason: "MCP cannot supply human owner presence. Run `se remove --project PROJECT` or `se remove --all` from your own terminal outside an agent tree; repository files and retained history are preserved.".into(),
+            },
+        )));
+    }
     let meta = CATALOGUE
         .iter()
         .find(|meta| matches!(meta.mcp,McpExposure::Tool {name:registered,..} if registered==name))
