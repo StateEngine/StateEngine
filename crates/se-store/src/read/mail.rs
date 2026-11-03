@@ -1,5 +1,78 @@
 use super::*;
 impl crate::mail::MailSnapshot for SqliteSnapshot {
+    fn mail_disposition(
+        &mut self,
+        event: EventId,
+        recipient: AgentId,
+    ) -> StoreResult<Read<StoredEvent>> {
+        if !matches!((&self.scope.admission.actor, &self.scope.visibility, &self.scope.admission.scope),
+            (Actor::Agent(actor), Visibility::SelfOnly(visible), Scope::Project(_))
+                if *actor == recipient && *visible == recipient)
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "mail disposition requires this verified recipient's project read scope",
+            ));
+        }
+        let Some(seq) = self.event_seq(&event)? else {
+            return Ok(self.absent("mail disposition event ID"));
+        };
+        // Decode this exact committed fact only after project exclusion. Ordinary
+        // event/history readers continue through their existing visibility checks.
+        let fact = load_event(&self.db, seq, &self.info)
+            .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
+        let who = Actor::Agent(recipient);
+        let (message, supersession) = match &fact.body {
+            EventBody::MessageRead { message, recipient }
+            | EventBody::MessageDismissed { message, recipient }
+                if *recipient == who && fact.header.actor == who =>
+            {
+                (message, false)
+            }
+            EventBody::MessageSuperseded { message, .. } => (message, true),
+            _ => {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "event is not a committed read, dismiss or supersession for this recipient",
+                ));
+            }
+        };
+        let project = self.project_bytes()?;
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let message_key = key(&self.db, "message", message.as_str(), &scope, false)?;
+        let original: Option<i64> = self
+            .db
+            .query_row(
+                "SELECT sent_seq FROM messages WHERE project_id=? AND message_id=?",
+                rusqlite::params![project, message_key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|error| self.read_sql(error))?;
+        let original = load_event(
+            &self.db,
+            original.ok_or_else(|| {
+                fail(
+                    StoreErrorCode::Corrupt,
+                    "committed mail disposition has no original message",
+                )
+            })?,
+            &self.info,
+        )
+        .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
+        if fact.header.scope != self.scope.admission.scope
+            || original.header.scope != self.scope.admission.scope
+            || !matches!(&original.body, EventBody::MessageSent {message: actual, recipient, ..} if actual == message && *recipient == who)
+            || supersession && fact.header.actor != original.header.actor
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "mail disposition's original message belongs to another recipient or sender",
+            ));
+        }
+        Ok(Read::Present { value: fact })
+    }
+
     fn mail_cursor(&self, through: &crate::mail::MailThrough) -> StoreResult<Cursor> {
         if !matches!((&self.scope.admission.actor, &self.scope.visibility),
             (Actor::Agent(actor), Visibility::SelfOnly(recipient)) if actor == recipient)

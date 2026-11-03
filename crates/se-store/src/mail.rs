@@ -177,6 +177,13 @@ impl MailNotice {
 /// The core mail planner adds this bound to Snapshot; ordinary readers and
 /// pre-existing Snapshot implementations need no new capability.
 pub trait MailSnapshot: Snapshot {
+    /// Read only a committed recipient read/dismiss or sender supersession
+    /// concerning this verified recipient, without broad event visibility.
+    fn mail_disposition(
+        &mut self,
+        event: se_types::EventId,
+        recipient: AgentId,
+    ) -> StoreResult<se_types::Read<StoredEvent>>;
     /// Recreate a checked-through cursor under the verified recipient's read
     /// scope. Owner maintenance may reserve, but cannot mint an agent cursor
     /// under the owner's unrelated principal binding.
