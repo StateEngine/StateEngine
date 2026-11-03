@@ -23,7 +23,11 @@ pub fn launch(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(out, "Containment: {}", value.containment)?;
     if let Some(reason) = &value.containment_cause {
-        writeln!(out, "Containment reason: {}", containment_cause(reason))?;
+        writeln!(
+            out,
+            "Containment reason: {}",
+            se_core::ops::containment_cause_description(reason)
+        )?;
     }
     write::profile(&value.permission_profile, out)?;
     writeln!(out, "Conversation: {}", value.conversation_id)?;
@@ -244,16 +248,4 @@ pub fn remove(value: &RemoveResult, out: &mut impl Write) -> io::Result<()> {
     removal_witness(&value.machine_credential.witness, out)?;
     writeln!(out, "{}: {}", value.next.text, value.next.command)?;
     writeln!(out, "Request key: {}", value.idempotency_key)
-}
-
-// Both launch and status show the same explanation; JSON retains the stable code.
-pub(super) fn containment_cause(code: &str) -> &str {
-    match code {
-        "no-user-manager" => "No user service manager is available for containment.",
-        "no-delegation" => "The OS has not delegated a containment scope to this user.",
-        "cgroup-v2-absent" => "The OS does not provide cgroup v2 containment.",
-        "cgroup-unreadable" => "The OS containment configuration cannot be read.",
-        "scope-create-failed" => "The OS could not create the containment scope.",
-        other => other,
-    }
 }

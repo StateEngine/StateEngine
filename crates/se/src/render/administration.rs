@@ -144,7 +144,7 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
                 writeln!(
                     out,
                     "Containment reason: {}",
-                    super::control::containment_cause(reason)
+                    se_core::ops::containment_cause_description(reason)
                 )?;
             }
             writeln!(out, "Conversation: {}", value.conversation.state)?;

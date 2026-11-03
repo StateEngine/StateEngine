@@ -81,3 +81,15 @@ pub fn containment_cause_code(cause: &se_store::ContainmentCause) -> &'static st
         se_store::ContainmentCause::ScopeCreateFailed => "scope-create-failed",
     }
 }
+
+/// Shared plain explanation of the stable containment code.
+pub fn containment_cause_description(code: &str) -> &str {
+    match code {
+        "no-user-manager" => "No user service manager is available for containment.",
+        "no-delegation" => "The OS has not delegated a containment scope to this user.",
+        "cgroup-v2-absent" => "The OS does not provide cgroup v2 containment.",
+        "cgroup-unreadable" => "The OS containment configuration cannot be read.",
+        "scope-create-failed" => "The OS could not create the containment scope.",
+        other => other,
+    }
+}

@@ -62,7 +62,7 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                 writeln!(
                     out,
                     "    Containment reason: {}",
-                    super::control::containment_cause(reason)
+                    se_core::ops::containment_cause_description(reason)
                 )?;
             }
             if let Some(reason) = &agent.resume.reason {
