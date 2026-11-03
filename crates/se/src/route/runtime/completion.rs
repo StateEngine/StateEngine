@@ -12,24 +12,34 @@ pub(super) fn report(
     key: &se_types::IdempotencyKey,
     bound: &Deadline,
 ) -> Result<Option<se_host::client::closure::RuntimeClosure>> {
+    let mut last_issue = None;
     loop {
-        bound.remaining()?;
+        report_remaining(bound, last_issue.as_deref())?;
         // Observe exit before reading: a publication followed by exit between
         // these samples must not turn a completed per-agent report into None.
         let already_exited =
             endpoint.kind == se_host::HostKind::Standalone && exited(endpoint, bound)?;
-        if let Some(record) = se_host::client::closure::read(files, files.0.root())?
-            && record.matches(endpoint, key)
-        {
-            return Ok(Some(record));
+        match se_host::client::closure::read(files, files.0.root()) {
+            Ok(Some(record)) if record.matches(endpoint, key) => return Ok(Some(record)),
+            Err(error) if already_exited => return Err(error),
+            Err(error) => last_issue = Some(error.to_string()),
+            _ => (),
         }
         // Legacy standalone hosts have no close-receipt producer. Once the
         // exact owner exited it cannot publish later; final OS checks still apply.
         if already_exited {
             return Ok(None);
         }
-        std::thread::sleep(Duration::from_millis(10).min(bound.remaining()?));
+        std::thread::sleep(
+            Duration::from_millis(10).min(report_remaining(bound, last_issue.as_deref())?),
+        );
     }
+}
+fn report_remaining(bound: &Deadline, issue: Option<&str>) -> Result<Duration> {
+    bound.remaining().map_err(|error| match issue {
+        Some(issue) => scope::unreadable("runtime close receipt", &format!("Receipt remained unreadable while waiting for the original shutdown: {issue}; {error}")),
+        None => error,
+    })
 }
 pub(super) fn witness(
     files: &Files,

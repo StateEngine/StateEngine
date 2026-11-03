@@ -40,11 +40,8 @@ impl RuntimeClosure {
     }
 }
 
-fn bytes(files: &dyn StateFiles, root: &Path) -> Result<Option<Vec<u8>>> {
-    let file = match files
-        .readback(&root.join(FILE))
-        .map_err(|e| store_error(&e))?
-    {
+fn read_bytes(files: &dyn StateFiles, path: &Path) -> Result<Option<Vec<u8>>> {
+    let file = match files.readback(path).map_err(|e| store_error(&e))? {
         Read::Absent { .. } => return Ok(None),
         value => scope::require_present(
             value,
@@ -64,6 +61,9 @@ fn bytes(files: &dyn StateFiles, root: &Path) -> Result<Option<Vec<u8>>> {
         ));
     }
     Ok(Some(bytes))
+}
+fn bytes(files: &dyn StateFiles, root: &Path) -> Result<Option<Vec<u8>>> {
+    read_bytes(files, &root.join(FILE))
 }
 fn decode(bytes: &[u8]) -> Result<RuntimeClosure> {
     let record: RuntimeClosure = serde_json::from_slice(bytes)
@@ -92,8 +92,24 @@ pub(crate) fn publish(files: &dyn StateFiles, root: &Path, record: &RuntimeClosu
     }
     let old = self::bytes(files, root)?;
     if let Some(old) = &old {
-        let previous = decode(old)?;
-        if previous.generation >= record.generation && old != &bytes {
+        let previous = match decode(old) {
+            Ok(previous) => Some(previous),
+            Err(error) => {
+                // A supported corrupt derived receipt is recoverable without
+                // erasing its bytes. Never downgrade a newer receipt schema.
+                let schema = serde_json::from_slice::<serde_json::Value>(old)
+                    .ok()
+                    .and_then(|value| value.get("schema").and_then(|value| value.as_u64()));
+                if schema.is_some_and(|schema| schema != 1) {
+                    return Err(error);
+                }
+                preserve_corrupt(files, root, old)?;
+                None
+            }
+        };
+        if previous.is_some_and(|previous| previous.generation >= record.generation)
+            && old != &bytes
+        {
             return Err(scope::unreadable(
                 "runtime close receipt",
                 "an equal or newer generation already published different facts; its receipt was preserved",
@@ -111,6 +127,30 @@ pub(crate) fn publish(files: &dyn StateFiles, root: &Path, record: &RuntimeClosu
         return Err(scope::unreadable(
             "runtime close receipt",
             "protected publication readback differs from the completed stages",
+        ));
+    }
+    Ok(())
+}
+fn preserve_corrupt(files: &dyn StateFiles, root: &Path, prior: &[u8]) -> Result<()> {
+    let digest = Sha256::digest(prior);
+    let name: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    let path = root.join(format!("runtime-close-unreadable-{name}.json"));
+    match read_bytes(files, &path)? {
+        Some(bytes) if bytes == prior => (),
+        Some(_) => {
+            return Err(scope::unreadable(
+                "corrupt close receipt archive",
+                "a different owned archive already occupies the digest name; both originals were preserved",
+            ));
+        }
+        None => files
+            .replace_owned(&path, None, prior)
+            .map_err(|e| store_error(&e))?,
+    }
+    if read_bytes(files, &path)?.as_deref() != Some(prior) {
+        return Err(scope::unreadable(
+            "corrupt close receipt archive",
+            "the preserved original bytes could not be read back; current receipt was not replaced",
         ));
     }
     Ok(())

@@ -34,28 +34,33 @@ pub(super) fn render(
             if witness.is_none() {
                 pending.push(format!("Per-agent exit remains unproved: {detail}"));
             }
-            result.push(StopFact {
-                target: target.agent.to_string(),
-                complete: witness.is_some(),
-                witness: Witness {
-                    state: if witness.is_some() {
-                        WitnessState::Witnessed
-                    } else {
-                        WitnessState::Unknown
+            merge(
+                &mut result,
+                &target.project,
+                &target.agent,
+                StopFact {
+                    target: target.agent.to_string(),
+                    complete: witness.is_some(),
+                    witness: Witness {
+                        state: if witness.is_some() {
+                            WitnessState::Witnessed
+                        } else {
+                            WitnessState::Unknown
+                        },
+                        method: witness
+                            .map(|w| {
+                                format!(
+                                    "native lifecycle exit checkpoint: {:?}, {:?}",
+                                    w.guarantee, w.scope_exit.exit_basis
+                                )
+                            })
+                            .unwrap_or_else(|| "individual native exit not witnessed".into()),
+                        observed_at: observed_at.into(),
+                        detail: Some(detail),
                     },
-                    method: witness
-                        .map(|w| {
-                            format!(
-                                "native lifecycle exit checkpoint: {:?}, {:?}",
-                                w.guarantee, w.scope_exit.exit_basis
-                            )
-                        })
-                        .unwrap_or_else(|| "individual native exit not witnessed".into()),
-                    observed_at: observed_at.into(),
-                    detail: Some(detail),
+                    resume: unavailable(),
                 },
-                resume: unavailable(),
-            });
+            );
         }
     }
     for saved in retained {
@@ -73,19 +78,54 @@ pub(super) fn render(
             saved.agent, saved.conversation
         );
         pending.push(reason.clone());
-        result.push(StopFact {
-            target: saved.agent.to_string(),
-            complete: false,
-            witness: Witness {
-                state: WitnessState::Unknown,
-                method: "individual native exit not witnessed".into(),
-                observed_at: observed_at.into(),
-                detail: Some(reason),
+        merge(
+            &mut result,
+            &saved.project,
+            &saved.agent,
+            StopFact {
+                target: saved.agent.to_string(),
+                complete: false,
+                witness: Witness {
+                    state: WitnessState::Unknown,
+                    method: "individual native exit not witnessed".into(),
+                    observed_at: observed_at.into(),
+                    detail: Some(reason),
+                },
+                resume: unavailable(),
             },
-            resume: unavailable(),
-        });
+        );
     }
-    result
+    result.into_iter().map(|(_, _, fact)| fact).collect()
+}
+fn merge(
+    groups: &mut Vec<(se_types::ProjectId, se_types::AgentId, StopFact)>,
+    project: &se_types::ProjectId,
+    agent: &se_types::AgentId,
+    fact: StopFact,
+) {
+    if let Some(index) = groups
+        .iter()
+        .position(|(p, a, _)| p == project && a == agent)
+    {
+        let (_, _, prior) = &mut groups[index];
+        prior.complete &= fact.complete;
+        prior.witness.state = if prior.complete {
+            WitnessState::Witnessed
+        } else {
+            WitnessState::Unknown
+        };
+        prior.witness.detail = Some(format!(
+            "{}: {}; {}: {}",
+            prior.witness.method,
+            prior.witness.detail.as_deref().unwrap_or("unavailable"),
+            fact.witness.method,
+            fact.witness.detail.as_deref().unwrap_or("unavailable")
+        ));
+        prior.witness.method =
+            "per-lifecycle native exit checkpoints; each lifecycle and bound retained below".into();
+    } else {
+        groups.push((project.clone(), agent.clone(), fact));
+    }
 }
 fn unavailable() -> ResumeCommand {
     ResumeCommand { ready: false, mode: "unknown".into(), reason: Some("The original conversation is retained when available; no provider resume command was independently verified. Runtime shutdown completion does not imply resume readiness.".into()), command: None, argv: None }

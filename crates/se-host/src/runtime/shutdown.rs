@@ -92,7 +92,7 @@ impl HostServeExit {
         for target in &stops {
             if target.witness.is_none() {
                 pending.push(format!(
-                    "Agent {} lifecycle {} exit remains unproved: {}",
+                    "Agent {} lifecycle {} exit remains unproved: {}. After endpoint retirement this fenced runtime retains the lease; preserve the data home and use controlled application restart/recovery.",
                     target.agent,
                     target.lifecycle,
                     target
