@@ -160,7 +160,7 @@ def main():
             require(ack["data"]["sessionID"] == conversation and "queued" not in ack, "task was not admitted for this session")
             history = None
             while True:
-                history = request("GET", session + "/message")
+                history = request("GET", session + "/message?order=asc&limit=100")
                 messages = history["data"]
                 require(isinstance(messages, list), "native history is not a message list")
                 require(not any(m.get("error") or m.get("finish") == "error" for m in messages), "native task failed")
@@ -203,7 +203,7 @@ def main():
             witness = {"outcome": "captured", "branch_tip": branch, "nonce": args.nonce,
                 "conversation": conversation, "task_message_id": message_id,
                 "task_text": task, "expected_text": expected,
-                "public_history": records, "native_history_path": session + "/message",
+                "public_history": records, "native_history_path": session + "/message?order=asc&limit=100",
                 "native_profile": str(profile), "state_home": str(args.state_home),
                 "repository": str(args.repo), "project": args.project, "agent": args.agent,
                 "file_effect": {"path": str(effect), "text": text}, "ready_endpoint": endpoint,
