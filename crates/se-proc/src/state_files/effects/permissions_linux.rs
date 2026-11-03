@@ -126,14 +126,28 @@ impl Pin {
                 &self.path,
             ));
         };
+        let target = if expected.kind == PermissionKind::Directory {
+            0o700
+        } else {
+            0o600
+        };
+        if mode & target != target {
+            return Err(unsafe_path(
+                "documented owner-only mode would add missing owner access; tighten-only repair refused",
+                &self.path,
+            ));
+        }
+        if mode == target {
+            return Ok(());
+        }
         // SAFETY: retained O_PATH descriptor, empty literal pathname and a mode
-        // that removes all special/group/other bits without adding owner rights.
+        // that only removes bits and restores the exact documented 0700/0600.
         let result = unsafe {
             libc::syscall(
                 libc::SYS_fchmodat2,
                 self.file.as_raw_fd(),
                 c"".as_ptr(),
-                mode & 0o700,
+                target,
                 libc::AT_EMPTY_PATH,
             )
         };
@@ -154,7 +168,16 @@ impl Pin {
         Ok(())
     }
     pub(in crate::state_files) fn verify_private(&self) -> Result<()> {
-        let directory = self.snapshot()?.kind == PermissionKind::Directory;
+        let snapshot = self.snapshot()?;
+        let directory = snapshot.kind == PermissionKind::Directory;
+        let target = if directory { 0o700 } else { 0o600 };
+        if !matches!(snapshot.protection, PermissionProtection::UnixMode { mode, .. } if mode == target)
+        {
+            return Err(changed(
+                "exact documented owner-only mode was not retained",
+                &self.path,
+            ));
+        }
         super::super::metadata(&self.file, &self.path, directory).map(|_| ())
     }
 }
