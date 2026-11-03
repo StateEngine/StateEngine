@@ -54,7 +54,11 @@ fn verify(evidence: &SourceEvidence, deadline: Instant) -> Result<()> {
             "a nonempty committed capture range within the 4 MiB native status bound",
         ));
     }
-    let path = evidence.path.to_local()?;
+    let path = evidence
+        .path
+        .as_ref()
+        .ok_or_else(|| invalid("native turn evidence has no provider transcript file to verify"))?
+        .to_local()?;
     let mut pin = se_proc::NativeSourcePin::open(&path)
         .map_err(|e| invalid(&e.to_string()))?
         .ok_or_else(|| invalid("the original captured provider file is absent"))?;
