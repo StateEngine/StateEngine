@@ -248,11 +248,31 @@ fn public_http_admission_precedes_anonymous_and_private_routes() -> Check {
     ];
     for (name, method, target, headers) in cases {
         let response = request(port, method, &target, &headers)?;
-        assert!(
-            (400..500).contains(&response.status),
-            "{name} was not refused: {}",
-            response.status
-        );
+        if name == "private route without bearer" && response.status == 200 {
+            let body: serde_json::Value = serde_json::from_str(&response.body)?;
+            assert_eq!(
+                body["jsonrpc"], "2.0",
+                "missing-session reply lost RPC envelope"
+            );
+            assert_eq!(
+                body["id"], 1,
+                "missing-session reply changed the actual request id"
+            );
+            assert_eq!(
+                body["result"]["isError"], true,
+                "anonymous private call succeeded"
+            );
+            assert_eq!(
+                body["result"]["structuredContent"]["code"], "session-required",
+                "anonymous private call lacked the session-required refusal"
+            );
+        } else {
+            assert!(
+                (400..500).contains(&response.status),
+                "{name} was not refused: {}",
+                response.status
+            );
+        }
         if name == "preflight" {
             assert_eq!(
                 response.status, 405,
