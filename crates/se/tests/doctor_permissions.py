@@ -41,6 +41,7 @@ class DoctorPermissions(unittest.TestCase):
         bundle, = (cls.out / 'archive').iterdir()
         cls.run_process('install', ['/bin/sh', str(bundle / 'install.sh')], expected=0)
         cls.run_process('git-init', ['git', 'init', '--quiet'], expected=0)
+        cls.before_init = cls.call('before-init', ['doctor'])
         cls.call('init', ['init', '--repo', str(cls.repo), '--name', 'doctor-judge', '--agent', 'main', '--provider', 'claude'], expected=0)
         cls.db = cls.state / 'state.db'
         cls.credential = cls.state / 'credential'
@@ -79,6 +80,17 @@ class DoctorPermissions(unittest.TestCase):
     def unchanged(self):
         self.assertEqual({str(path): digest(path) for path in self.protected}, self.before)
         self.assertEqual(stat.S_IMODE(self.child.stat().st_mode), 0o640)
+
+    def test_installed_before_init_preserves_installation_and_path_diagnosis(self):
+        completed, diagnosis = self.before_init
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIsInstance(diagnosis.get('checks'), list)
+        checks = {row['id']: row for row in diagnosis['checks']}
+        self.assertEqual(checks['store.open']['code'], 'setup-required')
+        self.assertIn('init', checks['store.open']['fix']['argv'])
+        self.assertEqual(checks['installation.record']['state'], 'ok')
+        self.assertTrue(any(name.startswith('installation.path.') for name in checks))
+        self.assertNotIn(b'repair-refused', completed.stderr)
 
     def tighten(self, target, check, mode, expected_mode):
         identity = (target.stat().st_dev, target.stat().st_ino, target.stat().st_uid)
