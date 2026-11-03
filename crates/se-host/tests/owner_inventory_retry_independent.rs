@@ -174,10 +174,10 @@ fn actual_unreadable_native_owner_stays_closed() -> Check {
     let mut child = ChildOwner::new()?;
     let identity = child.identity.clone();
     child.seal()?;
-    assert!(
-        matches!(read_process(identity.machine.clone(), identity.pid), Err(_)),
-        "fixture did not make the real native identity unreadable"
-    );
+    let native_error = read_process(identity.machine.clone(), identity.pid)
+        .err()
+        .ok_or("fixture did not make the real native identity unreadable")?;
+    assert_eq!(native_error.code, ProcErrorCode::IdentityUnreadable);
     let (_f, inventory) = inventory(identity)?;
     let error = refusal(&inventory)?;
     child.finish()?;
@@ -198,5 +198,17 @@ fn corrupt_and_mismatched_custody_never_become_retryable_or_empty() -> Check {
         assert_eq!(error.body.code(), Code::SourceUnreadable);
         assert_eq!(error.body.retry(), &Retry::Never);
     }
+    Ok(())
+}
+
+/// A live PID with a different recorded executable remains stale custody.
+#[test]
+fn changed_owner_image_never_gets_live_host_retry() -> Check {
+    let mut stale = owner()?;
+    stale.image = std::path::PathBuf::from("/usr/bin/false");
+    let (_f, inventory) = inventory(stale)?;
+    let error = refusal(&inventory)?;
+    assert_eq!(error.body.code(), Code::SourceUnreadable);
+    assert_eq!(error.body.retry(), &Retry::Never);
     Ok(())
 }
