@@ -124,6 +124,8 @@ mod recovery;
 pub use recovery::{EndpointRoute, route_endpoint};
 #[cfg(feature = "listener")]
 mod admission;
+#[cfg(feature = "listener")]
+mod activation;
 
 #[cfg(feature = "listener")]
 mod drain;

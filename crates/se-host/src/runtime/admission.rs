@@ -35,6 +35,7 @@ pub(crate) struct AdmissionContext {
     pub generation: se_types::Generation,
     pub state_directory: std::path::PathBuf,
     pub configuration: Option<se_core::config_policy::ConfigFile>,
+    pub prepared_requests: Arc<std::sync::OnceLock<crate::PreparedRequestProofs>>,
 }
 /// A successful owner MAC is channel-bound. Its digest lets each subsequent
 /// call detect machine-key replacement without retaining another secret copy.
@@ -246,7 +247,7 @@ impl AdmissionContext {
         &self,
         phase: &se_store::ReadPhase,
         secret: &se_types::Secret,
-        purpose: &str,
+        purpose: &'static str,
     ) -> Result<Admission> {
         self.credential_in(phase, secret, purpose, Pending::Refuse)
     }
@@ -254,7 +255,7 @@ impl AdmissionContext {
         &self,
         phase: &se_store::ReadPhase,
         secret: &se_types::Secret,
-        purpose: &str,
+        purpose: &'static str,
         pending: Pending,
     ) -> Result<Admission> {
         let hash: [u8; 32] = Hasher::digest(secret.expose()).into();
@@ -314,14 +315,17 @@ impl AdmissionContext {
                 {
                     Some(("superseded by a later launch of this agent".to_owned(), RELAUNCH))
                 }
-                se_store::CredentialState::Prepared if pending == Pending::Refuse => {
-                    return Err(SeError::new(se_types::Detail::SessionNotActive(
-                        se_types::details::SessionNotActive {
-                            subject: credential.session.as_str().to_owned(),
-                        },
-                    )));
+                se_store::CredentialState::Prepared => {
+                    self.observe_prepared(phase, &credential, hash, purpose)?;
+                    if pending == Pending::Refuse {
+                        return Err(SeError::new(se_types::Detail::SessionNotActive(
+                            se_types::details::SessionNotActive {
+                                subject: credential.session.as_str().to_owned(),
+                            },
+                        )));
+                    }
+                    None
                 }
-                se_store::CredentialState::Prepared => None,
             }
             };
         if let Some((reason, next_step)) = refusal {
@@ -461,6 +465,7 @@ impl HostedRuntime {
     pub(crate) fn admission_context(&self) -> AdmissionContext {
         AdmissionContext {
             configuration: self.configuration.clone(),
+            prepared_requests: self.prepared_requests.clone(),
             reader: Arc::clone(&self.execution.reader),
             lease: Arc::clone(&self.lease),
             owner: self.owner.clone(),

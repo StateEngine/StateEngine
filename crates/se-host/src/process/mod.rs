@@ -81,6 +81,7 @@ impl LaunchCoordinator {
     ) -> Result<(Arc<Self>, Reconciliation)> {
         host_runtime.bind_loopback()?;
         let coordinator = Self::open(host_runtime, requested, deadline).await?;
+        host_runtime.install_prepared_request_proofs(coordinator.prepared_request_proofs())?;
         host_runtime.install_custody(
             Arc::new(coordinator.clone()),
             coordinator.subscribe_activity(),
