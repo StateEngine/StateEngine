@@ -173,7 +173,7 @@ pub fn remove_path_entry(current: Option<&str>, edit: &PathEdit) -> Result<Entry
     }
 }
 
-fn matches_before(value: &str, expected: Option<&Sha256>) -> bool {
+pub(crate) fn matches_before(value: &str, expected: Option<&Sha256>) -> bool {
     match expected {
         Some(expected) => Hasher::digest(value.as_bytes()).as_slice() == expected.as_bytes(),
         None => value.is_empty(),

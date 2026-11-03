@@ -89,7 +89,13 @@ pub fn run(
         });
     }
     let mut context = match bootstrap::check_session_route(&operation).and_then(|()| {
-        bootstrap::Bootstrap::resolve(common.home, common.project, common.no_color, &operation)
+        bootstrap::Bootstrap::resolve(
+            common.home,
+            common.project,
+            common.no_color,
+            common.json,
+            &operation,
+        )
     }) {
         Ok(context) => context,
         Err(error) => {

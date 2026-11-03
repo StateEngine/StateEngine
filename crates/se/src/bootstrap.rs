@@ -26,6 +26,7 @@ pub struct Bootstrap {
     pub session: Option<Secret>,
     pub log: Option<String>,
     pub no_color: bool,
+    pub json: bool,
     pub legacy_environment_present: bool,
 }
 
@@ -52,6 +53,7 @@ impl Bootstrap {
         home: Option<PathBuf>,
         project: Option<String>,
         no_color: bool,
+        json: bool,
         operation: &se_core::ops::AnyOp,
     ) -> Result<Self> {
         let home = state_home(home)?;
@@ -99,6 +101,7 @@ impl Bootstrap {
             log: text_variable("SE_LOG")?,
             no_color: no_color
                 || std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
+            json,
             // Inspect names only. Legacy values never participate in resolution.
             legacy_environment_present: std::env::vars_os().any(|(name, _)| {
                 name.to_str()

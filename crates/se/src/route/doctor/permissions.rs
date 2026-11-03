@@ -28,6 +28,20 @@ fn target(path: &Path, id: &str, title: &str, kind: PermissionKind, at: &str) ->
         })?;
     describe(pin, id, title, kind, at)
 }
+fn open(path: &Path) -> Result<Option<PermissionRepairPin>> {
+    match PermissionRepairPin::open(path) {
+        Ok(pin) => Ok(pin),
+        Err(error) if error.code == se_proc::StateFileErrorCode::Unsupported => Ok(None),
+        Err(error) => Err(native(error)),
+    }
+}
+pub(super) fn unsupported(id: &str, title: &str, at: &str) -> DiagnosisCheck {
+    let mut value = check(id, title, CheckState::Unmeasured,
+        "Native metadata-only permission repair is unavailable on this platform; other diagnosis checks continue".into(), at);
+    value.measured_at = None;
+    value.reason = value.observed.clone();
+    value
+}
 fn describe(
     pin: PermissionRepairPin,
     id: &str,
@@ -88,9 +102,11 @@ const REGULAR: [(&str, &str, &str, bool); 2] = [
 pub(super) fn checks(cx: &Bootstrap, at: &str) -> Result<Vec<DiagnosisCheck>> {
     REGULAR.iter().map(|(id, title, leaf, required)| {
         let path = cx.home.join(leaf);
-        match PermissionRepairPin::open(&path).map_err(native)? {
-            Some(pin) => Ok(describe(pin, id, title, PermissionKind::File, at)?.check),
-            None => Ok(check(id, title, if *required { CheckState::Failed } else { CheckState::NotApplicable },
+        match PermissionRepairPin::open(&path) {
+            Err(error) if error.code == se_proc::StateFileErrorCode::Unsupported => Ok(unsupported(id, title, at)),
+            Err(error) => Err(native(error)),
+            Ok(Some(pin)) => Ok(describe(pin, id, title, PermissionKind::File, at)?.check),
+            Ok(None) => Ok(check(id, title, if *required { CheckState::Failed } else { CheckState::NotApplicable },
                 if *required { "The machine credential is absent; permission repair never creates or rotates it" } else { "No endpoint file is present; no permission repair is needed" }.into(), at)),
         }
     }).collect()
@@ -121,7 +137,7 @@ pub(super) fn repair(
     )?;
     let at = se_core::ops::receipt::timestamp(crate::route::execute::now_us()?)?;
     let mut current = target(&cx.home.join(leaf), id, title, PermissionKind::File, &at)?;
-    let (fact, readback, changed) = tighten(&mut current, id, &at, diagnostic)?;
+    let (plan, fact, readback, changed) = tighten(&mut current, id, &at, cx.json, diagnostic)?;
     let after = super::observe(cx, files)?.diagnosis;
     let complete = after
         .checks
@@ -129,6 +145,7 @@ pub(super) fn repair(
         .any(|check| check.id == id && check.state == CheckState::Ok);
     Ok(RepairOutput {
         check_id: id.into(),
+        plan,
         complete,
         applied: if changed { vec![fact.clone()] } else { vec![] },
         skipped: if changed { vec![] } else { vec![fact] },
@@ -144,12 +161,41 @@ fn tighten(
     current: &mut Target,
     id: &str,
     at: &str,
+    json_output: bool,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
-) -> Result<(RepairFact, RepairFact, bool)> {
+) -> Result<(RepairPlan, RepairFact, RepairFact, bool)> {
     let before = current.pin.snapshot().clone();
     let path = current.pin.path().to_owned();
-    diagnostic(&format!("Plan: repair {id} only; tighten {} to exact owner-only protection; contents changed 0, owners changed 0, descendants changed 0, processes signalled 0, store authority granted 0.",path.display()))
-        .map_err(|error|scope::unreadable("doctor plan output",&error.to_string()).with_cause(error))?;
+    let protection = match &before.protection {
+        se_proc::PermissionProtection::UnixMode { mode, group } => PermissionProtection::Unix {
+            mode: *mode,
+            group: *group,
+        },
+        se_proc::PermissionProtection::WindowsDacl { sddl, control } => {
+            PermissionProtection::Windows {
+                sddl: sddl.clone(),
+                control: *control,
+            }
+        }
+    };
+    let plan = RepairPlan::TightenPermissions(PermissionRepairPlan {
+        check_id: id.into(),
+        target: path.display().to_string(),
+        expected_before: PermissionBefore {
+            native_object: se_types::hex_lower(&before.object),
+            owner: before.owner.clone(),
+            protection,
+        },
+        expected_after: PermissionAfter {
+            same_native_object: true,
+            same_owner: true,
+            owner_only: true,
+            retain_existing_owner_execute: before.kind == PermissionKind::File,
+            contents_unchanged: true,
+            descendants_unchanged: true,
+        },
+    });
+    super::plan::emit(&plan, json_output, diagnostic)?;
     let witness = current.pin.tighten_owner_only(&before).map_err(native)?;
     let after = target(&path, id, &current.check.title, before.kind, at)?;
     if after.check.state != CheckState::Ok
@@ -162,7 +208,7 @@ fn tighten(
         ));
     }
     let changed = witness.before != witness.after;
-    Ok((RepairFact {
+    Ok((plan, RepairFact {
         subject: path.display().to_string(),
         outcome: if changed { "tightened" } else { "already-correct" }.into(),
         detail: serde_json::to_string(&witness).map_err(|error| scope::unreadable("doctor metadata witness", &error.to_string()))?,
@@ -216,8 +262,18 @@ pub(in crate::route) fn recover(
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<Option<AnyOutput>> {
     let at = se_core::ops::receipt::timestamp(crate::route::execute::now_us()?)?;
-    let mut root = target(
-        &cx.home,
+    // A missing ancestor is measured by the ordinary setup reader, which also
+    // supplies se init. Do not turn it into a permission mutation target.
+    if let Err(error) = std::fs::symlink_metadata(&cx.home)
+        && error.kind() == std::io::ErrorKind::NotFound
+    {
+        return Ok(None);
+    }
+    let Some(pin) = open(&cx.home)? else {
+        return Ok(None);
+    };
+    let mut root = describe(
+        pin,
         "home.permissions",
         "Protected state home",
         PermissionKind::Directory,
@@ -232,8 +288,11 @@ pub(in crate::route) fn recover(
     let mut database = if root_loose {
         None
     } else {
-        Some(target(
-            &cx.home.join("state.db"),
+        let Some(pin) = open(&cx.home.join("state.db"))? else {
+            return Ok(None);
+        };
+        Some(describe(
+            pin,
             "store.permissions",
             "Protected database",
             PermissionKind::File,
@@ -305,7 +364,7 @@ pub(in crate::route) fn recover(
             )
         })?
     };
-    let (fact, readback, changed) = tighten(current, id, &at, diagnostic)?;
+    let (plan, fact, readback, changed) = tighten(current, id, &at, cx.json, diagnostic)?;
     if id == "home.permissions" {
         // The regular file reader is usable only after root protection has
         // been independently witnessed. A failed record check leaves the
@@ -329,16 +388,14 @@ pub(in crate::route) fn recover(
                 remaining.push(unmeasured(&at, &error.to_string()));
             }
         }
-        Ok(super::super::setup::Setup::Absent(_)) => remaining.push(unmeasured(
-            &at,
-            "The normal protected setup reader measured store absence",
-        )),
+        Ok(super::super::setup::Setup::Absent(_)) => remaining.push(super::setup_check(cx, &at)),
         Err(error) => remaining.push(unmeasured(&at, &error.to_string())),
     }
     Ok(Some(
         RepairOutput {
             check_id: id.into(),
-            complete: true,
+            plan,
+            complete: remaining.is_empty(),
             applied: if changed { vec![fact.clone()] } else { vec![] },
             skipped: if changed { vec![] } else { vec![fact] },
             readbacks: vec![readback],

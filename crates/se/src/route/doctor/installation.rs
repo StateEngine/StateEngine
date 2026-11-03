@@ -81,8 +81,8 @@ struct Observation {
 }
 fn original(current: Option<&str>, edit: &crate::runtime::PathEdit) -> bool {
     match (&edit.before_sha256, current) {
-        (Some(expected), Some(current)) => {
-            expected.as_bytes() == &<[u8; 32]>::from(Sha256::digest(current.as_bytes()))
+        (Some(_), Some(current)) => {
+            crate::runtime::matches_before(current, edit.before_sha256.as_ref())
         }
         (None, None) | (None, Some("")) => true,
         _ => false,
@@ -166,10 +166,23 @@ pub(super) fn repair(
     if !observe(edit)?.repairable {
         return Err(refused(
             id,
-            "the current PATH value changed or has no supported exact repair; user edits were preserved",
+            "the complete profile or user PATH changed since installation; user edits were preserved. Manually add the recorded StateEngine PATH entry while keeping those edits, or rerun the matching installer; do not replace the whole profile",
         ));
     }
-    diagnostic(&format!("Plan: repair {id} only; restore the exact recorded StateEngine PATH entry at {}; user work replaced 0, agents stopped 0, credentials changed 0; existing terminals retain their current environment.",edit.target)).map_err(|error|se_core::scope::unreadable("doctor plan output",&error.to_string()))?;
+    let plan = RepairPlan::RestoreRecordedPath(PathRepairPlan {
+        check_id: id.into(),
+        target: edit.target.clone(),
+        expected_before: PathBefore {
+            complete_value_sha256: edit.before_sha256.as_ref().map(se_types::Sha256::hex),
+            recorded_entry_absent: true,
+        },
+        expected_after: PathAfter {
+            recorded_entry_sha256: se_types::hex_lower(&Sha256::digest(edit.block.as_bytes())),
+            exact_entry_count: 1,
+            existing_value_preserved: true,
+        },
+    });
+    super::plan::emit(&plan, cx.json, diagnostic)?;
     apply(edit)?;
     let at = se_core::ops::receipt::timestamp(super::super::execute::now_us()?)?;
     let after = checks(cx, &at)?;
@@ -178,6 +191,7 @@ pub(super) fn repair(
         .any(|value| value.id == id && value.state == CheckState::Ok);
     Ok(RepairOutput {
         check_id: id.into(),
+        plan,
         complete,
         applied: vec![RepairFact {
             subject: edit.target.clone(),

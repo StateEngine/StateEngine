@@ -120,6 +120,11 @@ pub fn dispatch(
             setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
                 return Ok((*output).into());
             }
+            setup::Setup::Absent(_)
+                if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) =>
+            {
+                return super::doctor::uninitialized(cx, &op);
+            }
             setup::Setup::Absent(_) => {
                 return Err(setup::required(cx));
             }

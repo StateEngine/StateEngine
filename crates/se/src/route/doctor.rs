@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{fs::TryLockError, io::Read};
 mod installation;
 pub(super) mod permissions;
+mod plan;
 
 struct Observed {
     diagnosis: Diagnosis,
@@ -55,14 +56,19 @@ fn raw_endpoint(files: &Files) -> Result<Option<Vec<u8>>> {
 }
 fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
     let at = se_core::ops::receipt::timestamp(super::execute::now_us()?)?;
-    let mut checks = vec![
+    let home = if cfg!(any(target_os = "linux", windows)) {
         check(
             "home.permissions",
             "Protected state home",
             CheckState::Ok,
             "Native owner-only root checks passed".into(),
             &at,
-        ),
+        )
+    } else {
+        permissions::unsupported("home.permissions", "Protected state home", &at)
+    };
+    let mut checks = vec![
+        home,
         check(
             "store.open",
             "Initialized store",
@@ -71,6 +77,13 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
             &at,
         ),
     ];
+    if !cfg!(any(target_os = "linux", windows)) {
+        checks.push(permissions::unsupported(
+            "store.permissions",
+            "Protected database",
+            &at,
+        ));
+    }
     let permission_checks = permissions::checks(cx, &at)?;
     let loose_file = permission_checks
         .iter()
@@ -154,8 +167,8 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
         endpoint_check.fix=Some(CheckFix{text:"Retain only the exact stale endpoint under an exclusive lease, then reopen both names".into(),command:None,argv:Some(argv)});
     }
     checks.push(endpoint_check);
-    checks.extend(installation::checks(cx, &at)?);
     drop(lock);
+    checks.extend(installation::checks(cx, &at)?);
     Ok(Observed {
         diagnosis: Diagnosis::new(
             at,
@@ -167,6 +180,70 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
         )?,
         endpoint,
     })
+}
+/// Called only after the ordinary setup reader measured store absence. No
+/// endpoint observation or permission-repair failure supplies that fact.
+pub(super) fn uninitialized(cx: &Bootstrap, op: &AnyOp) -> Result<AnyOutput> {
+    let owner = super::owner::observe(&[])?;
+    owner.authorize(
+        op.meta().name,
+        owner.os_owner(),
+        cx.session.is_some(),
+        false,
+    )?;
+    if matches!(op, AnyOp::DoctorRepair(_)) {
+        return Err(super::setup::required(cx));
+    }
+    let at = se_core::ops::receipt::timestamp(super::execute::now_us()?)?;
+    let mut checks = vec![setup_check(cx, &at)];
+    match std::fs::symlink_metadata(&cx.home) {
+        Ok(_) => checks.extend(installation::checks(cx, &at)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            checks.push(check(
+                "home.permissions",
+                "Protected state home",
+                CheckState::NotApplicable,
+                "Absent: se init creates the selected state home; there is no object to repair"
+                    .into(),
+                &at,
+            ));
+            checks.push(check("installation.record", "Owned installation record", CheckState::NotApplicable,
+                "No installation record can exist in the absent state home; no PATH edits are inferred".into(), &at));
+        }
+        Err(error) => return Err(scope::unreadable("state home metadata", &error.to_string())),
+    }
+    Ok(Diagnosis::new(
+        at,
+        DiagnosisScope {
+            home: cx.home.display().to_string(),
+            project: None,
+        },
+        checks,
+    )?
+    .into())
+}
+fn setup_check(cx: &Bootstrap, at: &str) -> DiagnosisCheck {
+    let mut setup = check(
+        "store.open",
+        "Initialized store",
+        CheckState::Failed,
+        "Absent: no initialized store in this state home; run se init".into(),
+        at,
+    );
+    setup.code = Some("setup-required".into());
+    setup.fix = Some(CheckFix {
+        text: "Run se init to set up this workspace and launch your first agent".into(),
+        command: None,
+        argv: Some(vec![
+            "se".into(),
+            "--home".into(),
+            cx.home.display().to_string(),
+            "init".into(),
+            "--repo".into(),
+            cx.cwd.display().to_string(),
+        ]),
+    });
+    setup
 }
 pub fn execute(
     cx: &Bootstrap,
@@ -191,10 +268,10 @@ pub fn execute(
     if permissions::is_regular(&input.check_id) {
         return Ok(permissions::repair(cx, files, caller, &input.check_id, diagnostic)?.into());
     }
-    observed.diagnosis.repair_check(&input.check_id)?;
     if input.check_id.starts_with("installation.path.") {
         return Ok(installation::repair(cx, caller, &input.check_id, diagnostic)?.into());
     }
+    observed.diagnosis.repair_check(&input.check_id)?;
     if input.check_id != "runtime.endpoint" {
         return Err(refused(
             &input.check_id,
@@ -212,8 +289,21 @@ pub fn execute(
         se_types::hex_lower(&random.expose()[..16])
     ));
     let source = cx.home.join("endpoint.json");
-    diagnostic(&format!("Plan: repair runtime.endpoint only; retain {} as {} after exclusive-lease and exact-byte checks; agents ended 0, credentials rotated 0, events lost 0.",source.display(),retained.display()))
-        .map_err(|error|scope::unreadable("doctor plan output",&error.to_string()).with_cause(error))?;
+    let plan = RepairPlan::RetainEndpoint(EndpointRetentionPlan {
+        check_id: input.check_id.clone(),
+        target: source.display().to_string(),
+        expected_before: EndpointBefore {
+            sha256: se_types::hex_lower(&digest),
+            bytes: expected.len() as u64,
+            exclusive_runtime_lease_required: true,
+        },
+        expected_after: EndpointAfter {
+            original_absent: true,
+            retained: retained.display().to_string(),
+            sha256: se_types::hex_lower(&digest),
+        },
+    });
+    plan::emit(&plan, cx.json, diagnostic)?;
     let lock = files
         .0
         .readback(&cx.home.join("runtime.lock"))
@@ -230,58 +320,14 @@ pub fn execute(
             &format!("exclusive lease could not be acquired; the endpoint was preserved: {error}"),
         )
     })?;
-    let mut pin = se_proc::OwnedFile::open(&source)
-        .map_err(|error| scope::unreadable("doctor endpoint pin", &error.to_string()))?
-        .ok_or_else(|| {
-            refused(
-                &input.check_id,
-                "the diagnosed endpoint disappeared; run doctor again",
-            )
-        })?;
-    if pin
-        .read(se_host::client::wire::MAX_ENDPOINT_BYTES)
-        .map_err(|error| scope::unreadable("doctor endpoint compare", &error.to_string()))?
-        != expected
-    {
-        return Err(refused(
-            &input.check_id,
-            "endpoint changed after the plan; the new bytes were preserved",
-        ));
-    }
-    pin.restore_to(&retained, digest)
-        .map_err(|error| scope::unreadable("doctor endpoint retention", &error.to_string()))?;
-    let reopened = files
-        .0
-        .readback(&retained)
-        .map_err(|error| scope::unreadable("doctor retained endpoint", &error.to_string()))?
-        .ok_or_else(|| {
-            scope::unreadable(
-                "doctor retained endpoint",
-                "retained file is absent after the repair",
-            )
-        })?;
-    let mut bytes = Vec::new();
-    reopened
-        .take(se_host::client::wire::MAX_ENDPOINT_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| scope::unreadable("doctor endpoint readback", &error.to_string()))?;
-    if bytes != expected || raw_endpoint(files)?.is_some() {
-        return Err(scope::unreadable(
-            "doctor endpoint readback",
-            &format!(
-                "Repair verification is incomplete; preserve {} and {}",
-                source.display(),
-                retained.display()
-            ),
-        ));
-    }
+    se_host::retain_endpoint_at(&files.0, &expected, &retained)?;
     drop(lock);
     let after = observe(cx, files)?.diagnosis;
     let complete = after
         .checks
         .iter()
         .any(|check| check.id == input.check_id && check.state == CheckState::Ok);
-    Ok(RepairOutput {check_id:input.check_id,complete,
+    Ok(RepairOutput {check_id:input.check_id,plan,complete,
         applied:vec![RepairFact{subject:source.display().to_string(),outcome:"retained".into(),detail:retained.display().to_string()}],
         skipped:vec![],readbacks:vec![RepairFact{subject:source.display().to_string(),outcome:"absent".into(),detail:format!("Exact original bytes reopened at {}; exclusive lease held throughout retention and readback",retained.display())}],
         remaining_checks:after.checks.into_iter().filter(|check|!matches!(check.state,CheckState::Ok|CheckState::NotApplicable)).collect(),

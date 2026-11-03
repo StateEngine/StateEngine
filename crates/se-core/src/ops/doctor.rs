@@ -3,6 +3,8 @@ use super::{Named, inputs::Validate};
 use schemars::JsonSchema;
 use se_types::{Detail, ProjectId, Result, SeError, details};
 use serde::{Deserialize, Serialize};
+mod plan;
+pub use plan::*;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -144,6 +146,7 @@ pub struct RepairFact {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RepairOutput {
     pub check_id: String,
+    pub plan: RepairPlan,
     pub complete: bool,
     pub applied: Vec<RepairFact>,
     pub skipped: Vec<RepairFact>,
