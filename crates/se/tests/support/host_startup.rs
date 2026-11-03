@@ -66,6 +66,13 @@ pub fn private_startup_serves_and_retires() -> Check {
     ] {
         command.env_remove(name);
     }
+    for name in [
+        "STATEENGINE_STARTUP_FIXTURE",
+        "CODEX_STARTUP_FIXTURE",
+        "CLAUDE_STARTUP_FIXTURE",
+    ] {
+        command.env(name, "must-not-enter-the-detached-host");
+    }
     let output = command.output()?;
     print!("{}", String::from_utf8_lossy(&output.stdout));
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
@@ -162,17 +169,81 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
         use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
         assert_eq!(std::fs::metadata(&temporary)?.mode() & 0o777, 0o700);
         let environment = std::fs::read(format!("/proc/{}/environ", ready.ready.identity.pid.0))?;
-        let entries: Vec<_> = environment
+        // Independent contract list: do not ask the production collector what
+        // it decided to forward. Values are compared without printing secrets.
+        const APPROVED: &[&str] = &[
+            "PATH",
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "SHELL",
+            "LANG",
+            "TZ",
+            "TERM",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_STATE_HOME",
+            "XDG_RUNTIME_DIR",
+            "CLAUDE_CONFIG_DIR",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "ComSpec",
+            "PATHEXT",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "ProgramData",
+            "ProgramFiles",
+        ];
+        let mut expected = std::collections::BTreeMap::new();
+        for (name, value) in std::env::vars_os() {
+            let text = name.to_string_lossy();
+            if APPROVED.iter().any(|key| key.eq_ignore_ascii_case(&text)) || text.starts_with("LC_")
+            {
+                expected.insert(name.as_bytes().to_vec(), value.as_bytes().to_vec());
+            }
+        }
+        expected.insert(
+            b"TMPDIR".to_vec(),
+            temporary.as_os_str().as_bytes().to_vec(),
+        );
+        let mut observed = std::collections::BTreeMap::new();
+        for entry in environment
             .split(|byte| *byte == 0)
             .filter(|entry| !entry.is_empty())
-            .collect();
-        let mut expected = b"TMPDIR=".to_vec();
-        expected.extend_from_slice(temporary.as_os_str().as_bytes());
+        {
+            let separator = entry
+                .iter()
+                .position(|byte| *byte == b'=')
+                .ok_or("native environment entry has no separator")?;
+            let (name, value) = (&entry[..separator], &entry[separator + 1..]);
+            let upper = name.to_ascii_uppercase();
+            assert!(
+                !upper.starts_with(b"STATEENGINE_")
+                    && upper != b"SE_SESSION"
+                    && !upper.starts_with(b"CODEX_")
+                    && (!upper.starts_with(b"CLAUDE_") || upper == b"CLAUDE_CONFIG_DIR"),
+                "fleet/session environment leaked through {}",
+                String::from_utf8_lossy(name)
+            );
+            assert!(
+                observed.insert(name.to_vec(), value.to_vec()).is_none(),
+                "duplicate native environment name"
+            );
+        }
         assert_eq!(
-            entries,
-            vec![expected.as_slice()],
-            "native host environment is not the fixed protected-temp block"
+            observed.keys().collect::<Vec<_>>(),
+            expected.keys().collect::<Vec<_>>(),
+            "native host environment names differ from the approved provider and protected-temp block"
         );
+        for (name, value) in expected {
+            assert!(
+                observed.get(&name) == Some(&value),
+                "native host changed approved environment value for {}",
+                String::from_utf8_lossy(&name)
+            );
+        }
     }
     assert_eq!(ready.ready.identity.machine, machine);
     assert_eq!(ready.endpoint.epoch.owner.fields().machine, machine);
