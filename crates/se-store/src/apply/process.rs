@@ -1,5 +1,6 @@
 //! Persist witnessed launch/custody facts; no native observation or process action.
 use super::*;
+mod release;
 use crate::codec::process::{name, state};
 pub(super) fn revision(c: &Connection, event: &NewEvent) -> StoreResult<u64> {
     let (id, want) = match &event.body {
@@ -36,59 +37,6 @@ fn legal(from: ProcessState, to: ProcessState) -> bool {
             | (StopUnproved, StopUnproved | StopRequested | Exited | Lost)
             | (Lost, Running | LeaderExited | StopUnproved | Exited)
     )
-}
-/// The owner's release of an uncontained StopUnproved process whose stop
-/// could not be proved: its custody must be a process record carrying an
-/// ownership release for this lifecycle, host generation and resulting
-/// revision. The state stays StopUnproved; no exit is invented.
-fn release(
-    c: &Connection,
-    h: &EventHeader,
-    p: &[u8],
-    identity: &ProcessIdentityRecord,
-    rev: u64,
-    lease: &LeaseIdentity,
-) -> StoreResult<()> {
-    let refuse = |why: &str| {
-        Err(fail(
-            StoreErrorCode::InvalidTransition,
-            format!(
-                "StopUnproved to StopUnproved is only the owner's uncontained ownership release: {why}"
-            ),
-        ))
-    };
-    if !super::project::is_owner(c, h, p)? {
-        return refuse("the actor is not the project owner");
-    }
-    if !matches!(identity.containment, ContainmentFact::Uncontained { .. }) {
-        return refuse("the process is not an uncontained tracked group");
-    }
-    // se-proc owns the custody codec and se-store does not link it; read only
-    // the release marker fields that section 20 says the store projects.
-    let v: Value = serde_json::from_slice(&identity.custody.record).map_err(|e| {
-        invalid(format!(
-            "release custody is not the versioned JSON record: {e}"
-        ))
-    })?;
-    let lifecycle = serde_json::to_value(&identity.record).map_err(invalid)?;
-    let checkpoint = &v["checkpoint"];
-    if identity.custody.format_version != 1
-        || v["lifecycle"] != lifecycle
-        || checkpoint["kind"] != "process"
-    {
-        return refuse("custody is not this lifecycle's version-1 process record");
-    }
-    let marker = &checkpoint["value"]["ownership_release"];
-    if !marker.is_object() {
-        return refuse("custody carries no ownership release");
-    }
-    if marker["lifecycle"] != lifecycle
-        || marker["generation"].as_u64() != Some(lease.generation)
-        || marker["revision"].as_u64() != Some(rev)
-    {
-        return refuse("the release names another lifecycle, host generation or revision");
-    }
-    Ok(())
 }
 /// The one authorized image change: a checkpointed pre-exec root publishing
 /// its verified vendor image (Starting → Running). Machine, boot, PID, native
@@ -291,7 +239,7 @@ pub(super) fn apply(
         }
         let old = codec::process::identity(c, old_seq, &p, &id, rev - 1, &old_state, false)?;
         if from == ProcessState::StopUnproved && to == ProcessState::StopUnproved {
-            release(c, h, &p, &identity, rev, lease)?;
+            release::apply(c, h, &p, &old, &identity, rev, lease)?;
         }
         if from == ProcessState::Starting
             && to == ProcessState::Starting

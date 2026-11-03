@@ -12,6 +12,7 @@ mod credential;
 mod error;
 mod event;
 mod identity;
+mod migration;
 mod model;
 mod open;
 mod owner_guard;

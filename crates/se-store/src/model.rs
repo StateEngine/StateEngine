@@ -65,6 +65,8 @@ pub struct OwnerGuardInventory {
     /// Any process row across this home, including exited, historical and released records.
     /// Read under the same protected snapshot as the unresolved native inventory.
     pub has_process_records: bool,
+    /// Unreleased nonterminal heads, plus Exited heads whose exact session is
+    /// still Prepared/Active and therefore owes startup capture/session cleanup.
     pub processes: Vec<OwnerGuardProcess>,
 }
 #[derive(Clone, Debug)]

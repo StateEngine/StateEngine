@@ -2,7 +2,10 @@ use crate::{error::*, identity, *};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, functions::FunctionFlags};
 use std::{path::Path, time::Duration};
 pub(crate) const APP: u32 = 0x53454e47;
-pub(crate) const SCHEMA: u32 = 1;
+pub(crate) const SCHEMA: u32 = 2;
+/// Oldest schema still served: 002 only adds indexes, so the same SQL reads
+/// schema 1 correctly while its host migrates it.
+pub(crate) const MIN_SCHEMA: u32 = 1;
 pub(crate) fn connect(path: &Path, writable: bool, timeout: Duration) -> StoreResult<Connection> {
     let flags = if writable {
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -99,7 +102,7 @@ pub(crate) fn info(c: &Connection) -> StoreResult<StoreInfo> {
     let version: u32 = c
         .query_row("PRAGMA user_version", [], |r| crate::sql_value::value(r, 0))
         .map_err(sql)?;
-    if version != SCHEMA {
+    if !(MIN_SCHEMA..=SCHEMA).contains(&version) {
         return Err(fail(
             if version > SCHEMA {
                 StoreErrorCode::TooNew

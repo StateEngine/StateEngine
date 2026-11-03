@@ -127,9 +127,17 @@ ProjectRegistered.history_from is an optional closed fact in aux_data, never a g
 
 Internal event kinds do not add CLI/MCP operations. Read-only `status`, `history`, `resume`, `search`, `decision.list`, `doctor.inspect` and all Atlas queries emit no events. `runtime.up/down` do not append periodic liveness; they record only actual custody/effect boundaries. Failed unauthenticated calls and normal refusals are not events (the synthesized plan drops refusal history). Cursor persistence is a separate explicit capture/settlement action, not a hidden write by every reader.
 
-## SQLite schema version 1
+## SQLite schema: initial version 1, current version 2
 
 `application_id = 0x53454E47` (`SENG`), `user_version = 1`. Loading the complete initial DDL below creates 41 application tables (including resume_heads, excluding SQLite's sqlite_sequence) and 30 triggers; the catalogue contains 52 event kinds. This DDL is a design artifact; migrations will embed the approved bytes, not execute a Markdown parser. Every `*_data` table is an immutable component of an event. `payloads` owns content; `*_data` owns per-kind facts. The `facts` object in `aux_data` is a **closed typed per-kind versioned object excluding the envelope and payload bytes**, used for lower-frequency setup/import/effect facts; hot message/turn/decision/session/process/working-state/cursor records have typed columns. A projection may duplicate a small lookup key, not user text or an entire event serialization.
+
+The shipped current schema is **2**. Fresh creation applies `migrations/001.sql`
+then the additive `migrations/002.sql` in its initial FULL transaction; the version-1
+DDL below remains the initial schema. A sole host upgrades schema 1 only after a
+verified backup, then publishes all five new indexes and `user_version=2` together
+under EXCLUSIVE/FULL. Readers accept both versions and never migrate. The indexes
+cover cursor IDs, process principals, effect offer attempts, live-session cleanup
+and exact session process history; they change no event or projection contents.
 
 ```sql
 PRAGMA application_id=0x53454E47;

@@ -1,5 +1,6 @@
 //! Reconcile the protected inventory once, before listener readiness. A bad
 //! observation fences its own agent; it never grants a new launch or signal.
+mod metadata;
 use super::{
     owned::{LifecycleMetadata, Work},
     supervisor::Job,
@@ -59,138 +60,6 @@ impl LaunchCoordinator {
         work.files = files;
         work.cleanup_files_known = true;
         Ok(())
-    }
-    pub(super) async fn recovery_metadata(
-        &self,
-        retained: &OwnerGuardProcess,
-        admission: Admission,
-        deadline: &Deadline,
-    ) -> Result<(LifecycleMetadata, bool, bool, bool)> {
-        let agent = match &retained.identity.principal {
-            Actor::Agent(agent) => agent.clone(),
-            _ => {
-                return Err(error(
-                    "managed recovery",
-                    "record is not an agent lifecycle",
-                ));
-            }
-        };
-        let session = retained
-            .identity
-            .session
-            .clone()
-            .ok_or_else(|| error("managed recovery", "session identity absent"))?;
-        let lifecycle = retained.identity.record.clone();
-        let project_id = retained.project.clone();
-        self.store
-            .read(admission, deadline, move |cx| {
-                let project = se_core::scope::require_present(
-                    cx.read
-                        .project(project_id.clone())
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
-                    "recovery project",
-                    "Keep the registered project metadata.",
-                )?;
-                let original = project.original.as_deref().unwrap_or(&project.current);
-                let owner = match &original.body {
-                    EventBody::ProjectRegistered { owner, .. } => owner.clone(),
-                    _ => {
-                        return Err(error(
-                            "recovery project",
-                            "original registration unavailable",
-                        ));
-                    }
-                };
-                let project_name = match &project.current.body {
-                    EventBody::ProjectRegistered { name, .. }
-                    | EventBody::ProjectUpdated { name, .. } => name.clone(),
-                    _ => return Err(error("recovery project", "project is no longer active")),
-                };
-                let control = se_core::scope::require_present(
-                    cx.read
-                        .control_target(agent.clone())
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
-                    "recovery principal",
-                    "Keep its exact control metadata.",
-                )?;
-                let name = match &control.principal.current.body {
-                    EventBody::PrincipalRegistered { name, .. }
-                    | EventBody::PrincipalRenamed { name, .. } => name.clone(),
-                    _ => return Err(error("recovery principal", "current name unavailable")),
-                };
-                let session_head = se_core::scope::require_present(
-                    cx.read
-                        .session(session.clone())
-                        .map_err(|e| se_core::store_error::store_error(&e))?,
-                    "recovery session",
-                    "Keep the original session preparation.",
-                )?;
-                let prepared = session_head
-                    .original
-                    .as_deref()
-                    .unwrap_or(&session_head.current);
-                let (conversation, capture) = match &prepared.body {
-                    EventBody::SessionPrepared {
-                        session: found,
-                        agent: principal,
-                        native_ref,
-                        consent,
-                        provider: se_store::Provider::Claude,
-                        ..
-                    } if found == &session && principal == &agent => (
-                        Read::Present {
-                            value: native_ref.parse()?,
-                        },
-                        *consent == se_store::Consent::Capture,
-                    ),
-                    _ => {
-                        return Err(error(
-                            "recovery session",
-                            "original Claude preparation differs from retained identity",
-                        ));
-                    }
-                };
-                let active = matches!(
-                    session_head.current.body,
-                    EventBody::SessionActivated { .. }
-                );
-                let activated =
-                    active || matches!(session_head.current.body, EventBody::SessionEnded { .. });
-                let retired = matches!(
-                    session_head.current.body,
-                    EventBody::SessionEnded { .. } | EventBody::SessionRevoked { .. }
-                );
-                let model = match control.profile {
-                    Read::Present { value } => match value.current.body {
-                        EventBody::ProfileSaved { profile, .. } => profile.model,
-                        _ => None,
-                    },
-                    _ => None,
-                };
-                // Recovery phase keys are bound to the original session rather
-                // than inventing the disconnected caller's request identity.
-                let request = format!("recovered-{session}").parse()?;
-                Ok((
-                    LifecycleMetadata {
-                        project: se_types::Named {
-                            id: project_id,
-                            name: project_name,
-                        },
-                        agent: se_types::Named { id: agent, name },
-                        owner,
-                        session,
-                        lifecycle,
-                        request,
-                        conversation,
-                        model,
-                        capture,
-                    },
-                    active,
-                    retired,
-                    activated,
-                ))
-            })
-            .await
     }
     /// The caller must pass the inventory taken from HostedRuntime after the
     /// writer and this executor have been installed, and before serving.
@@ -252,6 +121,34 @@ impl LaunchCoordinator {
                 }
                 Err(error) => Err(error),
             };
+            // A committed exit is terminal. A failed or contradictory new probe
+            // leaves cleanup debt; it cannot resurrect the process through Lost.
+            if retained.state == ProcessState::Exited
+                && !matches!(&outcome, Ok(RecoveryOutcome::Exited(_)))
+            {
+                let reason = match &outcome {
+                    Err(error) => error.to_string(),
+                    Ok(RecoveryOutcome::Unproved { error, .. }) => format!("{error:?}"),
+                    _ => "native outcome does not confirm the committed exit".into(),
+                };
+                let credential_debt = retained
+                    .identity
+                    .session
+                    .as_ref()
+                    .map(|session| {
+                        format!(
+                            "session {session}: session/http credential revocation remains unproved"
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        "session binding absent; credential cleanup scope is unknown".into()
+                    });
+                self.retain_orphan(&lifecycle)?;
+                report.unproved.push(format!(
+                    "{lifecycle}: committed exit retained; cleanup unproved: {reason}; {credential_debt}"
+                ));
+                continue;
+            }
             let metadata = self
                 .recovery_metadata(&retained, admission.clone(), deadline)
                 .await;
@@ -272,14 +169,7 @@ impl LaunchCoordinator {
                         deadline,
                     )
                     .await?;
-                    let mut orphans = self
-                        .orphans
-                        .lock()
-                        .map_err(|_| super::error("orphan custody", "poisoned registry"))?;
-                    if orphans.insert(lifecycle.clone()) {
-                        self.activity
-                            .send_modify(|count| *count = count.saturating_add(1));
-                    }
+                    self.retain_orphan(&lifecycle)?;
                     report
                         .unproved
                         .push(format!("{lifecycle}: metadata unavailable: {error}"));
@@ -441,6 +331,17 @@ impl LaunchCoordinator {
         }
         Ok(report)
     }
+    fn retain_orphan(&self, lifecycle: &se_types::LifecycleId) -> Result<()> {
+        let mut orphans = self
+            .orphans
+            .lock()
+            .map_err(|_| super::error("orphan custody", "poisoned registry"))?;
+        if orphans.insert(lifecycle.clone()) {
+            self.activity
+                .send_modify(|count| *count = count.saturating_add(1));
+        }
+        Ok(())
+    }
     async fn mark_recovery_unproved(
         &self,
         previous: se_store::ProjectionRecord,
@@ -449,6 +350,16 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
     ) -> Result<()> {
+        // Session metadata failure also leaves a witnessed exit intact.
+        if matches!(
+            &previous.current.body,
+            EventBody::ProcessTransition {
+                to: ProcessState::Exited,
+                ..
+            }
+        ) {
+            return Ok(());
+        }
         self.store
             .commit(admission, deadline, None, move |kernel, cx| {
                 process_commit::reconcile(

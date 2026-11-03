@@ -58,8 +58,8 @@ impl SqliteSnapshot {
             &load,
         )?;
         let latest_process = self.head_with(
-            "processes",
-            "project_id=? AND first_seq=(SELECT MAX(h.first_seq) FROM processes h JOIN process_data d ON d.event_seq=h.first_seq WHERE h.project_id=? AND d.principal_id=?)",
+            "processes INDEXED BY processes_order",
+            "project_id=? AND first_seq=(SELECT MAX(d.event_seq) FROM process_data d CROSS JOIN processes h ON h.first_seq=d.event_seq AND h.project_id=? WHERE d.principal_id=?)",
             &[&p, &p, &a],
             Some("first_seq"),
             &load,

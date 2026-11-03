@@ -133,7 +133,19 @@ fn inventory(
         owners.push(owner.parse().map_err(invalid)?);
     }
     let mut processes = Vec::new();
-    let mut q = db.prepare("SELECT project_id,process_id,revision,last_seq,state FROM processes INDEXED BY processes_live WHERE ownership_released=0 AND state NOT IN ('exited','historical') LIMIT ?").map_err(sql)?;
+    // A durable exit can precede final capture/session closure. Include that
+    // exact session's terminal process so startup resumes cleanup before ready.
+    // Start the second arm from live sessions, rather than walking exit history.
+    let mut q = db.prepare(
+        "SELECT project_id,process_id,revision,last_seq,state FROM processes INDEXED BY processes_live
+         WHERE ownership_released=0 AND state NOT IN ('exited','historical')
+         UNION ALL
+         SELECT h.project_id,h.process_id,h.revision,h.last_seq,h.state
+         FROM sessions s CROSS JOIN process_data d ON d.target_session_id=s.session_id
+         CROSS JOIN processes h ON h.project_id=s.project_id AND h.process_id=d.process_id AND h.last_seq=d.event_seq
+         WHERE s.state IN ('prepared','active') AND h.state='exited' AND h.ownership_released=0
+         LIMIT ?"
+    ).map_err(sql)?;
     let mut rows = q
         .query([i64::from(budget.page.limit.get()) + 1])
         .map_err(sql)?;

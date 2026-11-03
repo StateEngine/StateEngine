@@ -275,8 +275,8 @@ pub(super) fn apply(
             after_request(c, &p, &scope, &id, &evidence)?;
             let reused: bool = c
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM aux_data a JOIN events e ON e.seq=a.event_seq WHERE e.project_id=? AND e.kind='effect.offered' AND json_extract(a.facts,'$.effect')=? AND json_extract(a.facts,'$.attempt')=?)",
-                    rusqlite::params![p, codec::encode(&effect)?.trim_matches('"'), codec::encode(&attempt)?.trim_matches('"')],
+                    "SELECT EXISTS(SELECT 1 FROM aux_data a JOIN events e ON e.seq=a.event_seq WHERE json_extract(a.facts,'$.attempt') IS NOT NULL AND json_extract(a.facts,'$.effect')=? AND json_extract(a.facts,'$.attempt')=? AND e.project_id=? AND e.kind='effect.offered')",
+                    rusqlite::params![codec::encode(&effect)?.trim_matches('"'), codec::encode(&attempt)?.trim_matches('"'), p],
                     |r| r.get(0),
                 )
                 .map_err(sql)?;

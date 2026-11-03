@@ -111,7 +111,29 @@ fn confirmed_end(c: &Connection, issued: i64) -> StoreResult<Option<u64>> {
         .transpose()
         .map_err(invalid)?
         .flatten();
-    Ok(end.and_then(|cursor| crate::read::window_end(cursor.as_str())))
+    let Some(end) = end else { return Ok(None) };
+    match checked_end(c, &end) {
+        Ok(end) => Ok(Some(end)),
+        Err(error)
+            if matches!(
+                error.code,
+                StoreErrorCode::CursorInvalid | StoreErrorCode::CursorStale
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+fn checked_end(c: &Connection, end: &Cursor) -> StoreResult<u64> {
+    let (store, incarnation): (Vec<u8>, u64) = c
+        .query_row(
+            "SELECT store_id,incarnation FROM store_info WHERE singleton=1",
+            [],
+            |r| Ok((r.get(0)?, crate::sql_value::value(r, 1)?)),
+        )
+        .map_err(sql)?;
+    crate::read::checked_window_end(end.as_str(), &store, incarnation)
 }
 /// The window's snapshot bounds as stored columns: (from, to, returned, complete, omitted).
 fn bounds(window: &Window) -> StoreResult<(u64, u64, u64, bool, Option<u64>)> {
@@ -169,6 +191,17 @@ pub(super) fn apply(
                     ));
                 }
             }
+            // Validate a supplied opaque end when issuing, before it can become
+            // durable cursor history. Later frontier fallback is not admission.
+            if let Some(end) = cursor.window.fields().and_then(|f| f.end_cursor.as_ref()) {
+                let end = checked_end(c, end)?;
+                if !(from..=to).contains(&end) {
+                    return Err(fail(
+                        StoreErrorCode::CursorInvalid,
+                        "cursor end is outside its window bounds",
+                    ));
+                }
+            }
             // The window cannot claim events this store has not committed.
             if to >= seq as u64 {
                 return Err(invalid(
@@ -195,16 +228,14 @@ pub(super) fn apply(
                 .optional()
                 .map_err(sql)?;
             if let Some((issued, prior_from, prior_to, complete, acked)) = prior {
-                // Without a store end cursor, a complete window returned
-                // everything up to `to`; an incomplete one confirms only `from`.
-                let limit = if acked.is_some() {
-                    confirmed_end(c, issued)?.unwrap_or(if complete {
-                        prior_to
-                    } else {
-                        prior_from
-                    })
-                } else {
-                    prior_from
+                // A complete window returned everything up to `to`. An
+                // incomplete one confirms its last returned item, clamped into
+                // its own bounds, or only `from` without this store's cursor.
+                let limit = match (acked, complete) {
+                    (None, _) => prior_from,
+                    (Some(_), true) => prior_to,
+                    (Some(_), false) => confirmed_end(c, issued)?
+                        .map_or(prior_from, |last| last.clamp(prior_from, prior_to)),
                 };
                 if from > limit {
                     return Err(fail(
@@ -218,7 +249,7 @@ pub(super) fn apply(
             let id = cursor.id.as_bytes().to_vec();
             let reused: bool = c
                 .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM cursor_data d JOIN events e ON e.seq=d.event_seq WHERE e.project_id=? AND d.cursor_id=?)",
+                    "SELECT EXISTS(SELECT 1 FROM cursor_data d CROSS JOIN events e ON e.seq=d.event_seq WHERE e.project_id=? AND d.cursor_id=?)",
                     rusqlite::params![p, id],
                     |r| r.get(0),
                 )
