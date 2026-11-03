@@ -1,7 +1,9 @@
 //! Store barriers for one owned native lifecycle. All batches use the ordinary
 //! admitted writer and its canonical FULL commit; native effects occur between
 //! these barriers, never inside a snapshot.
+mod capture;
 mod launch;
+pub use capture::capture_failure;
 pub use launch::{
     Activation, CaptureActivation, CredentialActivation, activate, reserve, transition,
 };

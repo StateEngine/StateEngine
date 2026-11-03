@@ -20,10 +20,19 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
     match verified {
         Ok(()) => {
             plan.row.conversation.state = "saved".into();
-            let stopped = plan.row.session.state == "stopped";
+            let stopped = plan.row.session.state == "stopped"
+                && matches!(
+                    plan.row.session.recorded_state.as_deref(),
+                    Some("ended" | "revoked")
+                )
+                && matches!(&plan.row.session.process_state, Read::Present { value } if value == "exited");
             plan.row.resume.ready = stopped;
             plan.row.resume.reason = if stopped {
                 None
+            } else if plan.row.session.state == "stopped" {
+                Some("The exact provider process exited; session or native-scope cleanup is still pending. Reconcile before resuming the saved conversation.".into())
+            } else if let Read::Unreadable { reason, .. } = &plan.row.session.liveness {
+                Some(reason.clone())
             } else {
                 Some("The captured conversation prefix is verified; stop or reconcile the existing scope before resuming its saved conversation.".into())
             };

@@ -171,15 +171,22 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
         i64::try_from(at / 1000).map_err(|_| invalid("a representable native observation time"))?,
     )?);
     let live = matches!(&life,Read::Present {value} if value=="live");
+    if live
+        && matches!(&plan.row.session.process_state, Read::Present { value } if value == "exited")
+    {
+        plan.row.session.state = "unknown".into();
+        plan.row.session.liveness = unreadable(
+            "session process contradiction",
+            "the exact original process is live despite its recorded exit; owner diagnosis is required",
+        );
+        return Ok(());
+    }
     let recorded = plan.row.session.recorded_state.as_deref();
     plan.row.session.state = match (&plan.row.session.process_state, recorded, live) {
         (Read::Present { value }, _, _) if value == "stop-unproved" || value == "lost" => "lost",
         (Read::Present { value }, _, true) if value == "stop-requested" => "stopping",
         (_, Some("activated"), true) => "running",
-        (Read::Present { value }, Some("ended" | "revoked"), false) if value == "exited" => {
-            "stopped"
-        }
-        (_, _, false) => "lost",
+        (_, _, false) => "stopped",
         _ => "unknown",
     }
     .into();

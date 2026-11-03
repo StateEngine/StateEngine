@@ -17,6 +17,41 @@ impl LaunchCoordinator {
         work: &mut Work,
         deadline: &Deadline,
     ) -> Result<()> {
+        let result = self.capture_progress_inner(work, deadline).await;
+        if let Err(error) = &result {
+            self.report_capture_failure(work, error, deadline).await?;
+        }
+        result
+    }
+    pub(super) async fn report_capture_failure(
+        &self,
+        work: &Work,
+        failure: &se_types::SeError,
+        _deadline: &Deadline,
+    ) -> Result<()> {
+        if !work.meta.capture || !work.active {
+            return Ok(());
+        }
+        // The supervisor retains the failed capture after its caller's bound.
+        // Give only this durable diagnostic its own short, finite write bound.
+        let diagnostic = Deadline::idle()?.stage(std::time::Duration::from_secs(2))?;
+        let session = work.meta.session.clone();
+        let admission = se_store::Admission {
+            scope: se_store::Scope::Project(work.meta.project.id.clone()),
+            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
+            session: Some(session.clone()),
+            generation: self.store.generation.get(),
+        };
+        let body = failure.body.clone();
+        self.store
+            .commit(admission, &diagnostic, None, move |kernel, cx| {
+                se_core::ops::process_commit::capture_failure(kernel, session, body, cx)
+            })
+            .await
+            .map_err(|cause| error("live capture diagnostic", format!("capture failed: {failure}; retaining its public failure also failed: {cause}")).with_cause(cause))?;
+        Ok(())
+    }
+    async fn capture_progress_inner(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
         if work.capture_flushed || !work.meta.capture || !work.active {
             return Ok(());
         }

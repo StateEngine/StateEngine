@@ -8,7 +8,32 @@ mod recorded;
 
 type Views = (SessionView, ConversationView, ResumeCommand);
 pub(super) fn read<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views> {
-    let mut session = SessionView {
+    Ok(read_inner(agent, cx).unwrap_or_else(|error| {
+        let mut session = empty_session();
+        session.liveness = Read::Unreadable {
+            source: "recorded agent session".into(),
+            reason: error.to_string(),
+            error: Some(Box::new(error.body.clone())),
+        };
+        session.process_state = session.liveness.clone();
+        (
+            session,
+            ConversationView {
+                id: None,
+                state: "unverifiable".into(),
+            },
+            ResumeCommand {
+                ready: false,
+                mode: "unavailable".into(),
+                reason: Some(error.to_string()),
+                command: None,
+                argv: None,
+            },
+        )
+    }))
+}
+fn empty_session() -> SessionView {
+    SessionView {
         state: "unknown".into(),
         recorded_state: None,
         process_state: Read::Absent {
@@ -25,7 +50,10 @@ pub(super) fn read<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<V
         observed_at: None,
         containment: None,
         containment_cause: None,
-    };
+    }
+}
+fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views> {
+    let mut session = empty_session();
     let latest = cx
         .read
         .latest_session(agent.clone())

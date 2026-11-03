@@ -85,7 +85,7 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
                     value: value.principal,
                 }
             }
-            other => other.map(|_| unreachable!("present control target handled above")),
+            other => other.map(|target| target.principal),
         }
     } else {
         cx.read

@@ -8,6 +8,33 @@ pub fn prepare_agent_observation<S: Snapshot>(
     row: &AgentRow,
     read: &mut S,
 ) -> Result<AgentObservationPlan> {
+    match prepare(project, row, read) {
+        Ok(plan) => Ok(plan),
+        Err(error) => {
+            let mut row = row.clone();
+            degrade(&mut row, &error);
+            Ok(AgentObservationPlan {
+                identity: row
+                    .session
+                    .session_id
+                    .clone()
+                    .map(|session| crate::SessionIdentity {
+                        project: project.clone(),
+                        agent: row.id.clone(),
+                        session,
+                    }),
+                row,
+                process: unreadable("agent session preparation", &error),
+                capture: unreadable("agent session preparation", &error),
+            })
+        }
+    }
+}
+fn prepare<S: Snapshot>(
+    project: &ProjectId,
+    row: &AgentRow,
+    read: &mut S,
+) -> Result<AgentObservationPlan> {
     let Some(session) = row.session.session_id.clone() else {
         return Ok(AgentObservationPlan {
             identity: None,
@@ -46,7 +73,7 @@ pub fn prepare_agent_observation<S: Snapshot>(
             .map_err(|e| store_error(&e))?
         {
             Read::Present { value } => value.latest_process,
-            other => other.map(|_| unreachable!("present handled above")),
+            other => missing(other),
         },
     };
     let process = match process {
@@ -56,18 +83,22 @@ pub fn prepare_agent_observation<S: Snapshot>(
                 | EventBody::ProcessTransition { identity, .. } => *identity,
                 _ => return Err(invalid("the matching immutable process projection")),
             };
-            if identity.session.as_ref() != Some(&session)
-                || identity.principal != Actor::Agent(row.id.clone())
-            {
+            if identity.session.as_ref() != Some(&session) {
+                Read::Absent {
+                    checked: "the latest recorded process belongs to a different session; it is not substituted for this session".into(),
+                }
+            } else if identity.principal != Actor::Agent(row.id.clone()) {
                 return Err(invalid(
                     "a process projection belonging to this exact agent session",
                 ));
+            } else {
+                Read::Present { value: identity }
             }
-            Read::Present { value: identity }
         }
-        other => other.map(|_| unreachable!("present handled above")),
+        other => missing(other),
     };
-    let capture = capture_evidence(project, &session, row, read)?;
+    let capture = capture_evidence(project, &session, row, read)
+        .unwrap_or_else(|error| unreadable("committed conversation capture", error));
     Ok(AgentObservationPlan {
         identity: Some(crate::SessionIdentity {
             project: project.clone(),
@@ -85,10 +116,13 @@ fn capture_evidence<S: Snapshot>(
     row: &AgentRow,
     read: &mut S,
 ) -> Result<Read<SourceEvidence>> {
-    let source = process_commit::session_credential_id(session, "capture-source")?;
-    let source = match read.capture_source(source).map_err(|e| store_error(&e))? {
+    let source_id = process_commit::session_credential_id(session, "capture-source")?;
+    let source = match read
+        .capture_source(source_id)
+        .map_err(|e| store_error(&e))?
+    {
         Read::Present { value } => value,
-        other => return Ok(other.map(|_| unreachable!("present handled above"))),
+        other => return Ok(missing(other)),
     };
     let first = source.original.as_deref().unwrap_or(&source.current);
     if first.header.scope != se_store::Scope::Project(project.clone()) {
@@ -102,6 +136,48 @@ fn capture_evidence<S: Snapshot>(
         return Ok(Read::Unknown {
             what: "No capture consent and source are bound to this session".into(),
         });
+    }
+    // A terminal session was published only after final capture succeeded.
+    // While active, preserve errors newer than the last committed progress.
+    if row.session.recorded_state.as_deref() == Some("activated") {
+        let failures = read
+            .history(
+                se_store::HistoryQuery {
+                    agent: None,
+                    session: Some(session.clone()),
+                    kinds: vec![se_store::EventKind::CaptureFailed],
+                    families: Vec::new(),
+                    since: Some(source.current.position.clone()),
+                },
+                se_store::ReadBudget {
+                    page: se_types::PageRequest {
+                        after: None,
+                        limit: std::num::NonZeroU32::new(1)
+                            .ok_or_else(|| invalid("positive diagnostic limit"))?,
+                        max_bytes: std::num::NonZeroU32::new(32 * 1024)
+                            .ok_or_else(|| invalid("positive diagnostic byte bound"))?,
+                    },
+                    deadline: std::time::Duration::from_secs(1),
+                },
+            )
+            .map_err(|e| store_error(&e))?;
+        if let Some(failure) = failures.items().first() {
+            return match &failure.body {
+                EventBody::CaptureFailed {
+                    source,
+                    session: found,
+                    cause,
+                    code,
+                    ..
+                } if *source == source_id && found == session => Ok(unreadable(
+                    "live transcript capture",
+                    format!(
+                        "Capture failed since the last committed turn ({code:?}): {cause}. The saved cursor is preserved; retry capture or stop to reconcile."
+                    ),
+                )),
+                _ => Err(invalid("the exact session/source capture failure")),
+            };
+        }
     }
     let (incarnation, from, to, turn) = match &source.current.body {
         EventBody::CaptureProgress {
@@ -119,7 +195,7 @@ fn capture_evidence<S: Snapshot>(
     };
     let turn = match read.turn(turn).map_err(|e| store_error(&e))? {
         Read::Present { value } => value,
-        other => return Ok(other.map(|_| unreachable!("present handled above"))),
+        other => return Ok(missing(other)),
     };
     match turn.body {
         EventBody::SessionTurn {

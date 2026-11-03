@@ -46,7 +46,11 @@ impl LaunchCoordinator {
                             }
                         }
                         Ok(false) => (),
-                        Err(error) => state.cleanup_failure = Some(error.body),
+                        Err(error) => {
+                            let reported =
+                                self.report_capture_failure(&state, &error, &deadline).await;
+                            state.cleanup_failure = Some(reported.err().unwrap_or(error).body);
+                        }
                     }
                 }
                 let result = self.exit_observation(&state, &deadline).await;

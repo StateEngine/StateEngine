@@ -28,9 +28,11 @@ impl AgentObservation {
         if row.id != self.agent
             || row.session.session_id.as_ref() != self.identity.as_ref().map(|id| &id.session)
         {
-            return Err(invalid(
-                "the exact agent and session from the observed SQL snapshot",
-            ));
+            degrade(
+                row,
+                &invalid("the exact agent and session from the observed SQL snapshot"),
+            );
+            return Ok(());
         }
         row.session = self.session;
         row.conversation = self.conversation;
@@ -42,10 +44,16 @@ pub fn observe_agent(
     mut plan: AgentObservationPlan,
     deadline: Instant,
 ) -> Result<AgentObservation> {
-    bound(deadline)?;
-    if plan.identity.is_some() {
-        native::observe(&mut plan, deadline)?;
-        capture::observe(&mut plan, deadline)?;
+    let observed = (|| {
+        bound(deadline)?;
+        if plan.identity.is_some() && !matches!(&plan.process, Read::Unreadable { .. }) {
+            native::observe(&mut plan, deadline)?;
+            capture::observe(&mut plan, deadline)?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = observed {
+        degrade(&mut plan.row, &error);
     }
     Ok(AgentObservation {
         identity: plan.identity,
@@ -72,4 +80,41 @@ fn bound(deadline: Instant) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+// Keep a malformed or unreadable agent local to its row. Other agents and the
+// finite page's continuation remain available to both hosted and CLI readers.
+fn degrade(row: &mut AgentRow, error: &SeError) {
+    row.session.state = "unknown".into();
+    row.session.process = None;
+    row.session.observed_at = None;
+    row.session.liveness = Read::Unreadable {
+        source: "agent session observation".into(),
+        reason: error.to_string(),
+        error: Some(Box::new(error.body.clone())),
+    };
+    row.conversation.state = "unverifiable".into();
+    row.resume.ready = false;
+    row.resume.mode = "unavailable".into();
+    row.resume.reason = Some(error.to_string());
+    row.resume.command = None;
+    row.resume.argv = None;
+}
+fn missing<T, U>(read: Read<T>) -> Read<U> {
+    match read {
+        Read::Present { .. } => {
+            unreadable("agent session observation", "expected a non-present read")
+        }
+        Read::Absent { checked } => Read::Absent { checked },
+        Read::Unknown { what } => Read::Unknown { what },
+        Read::Unreadable {
+            source,
+            reason,
+            error,
+        } => Read::Unreadable {
+            source,
+            reason,
+            error,
+        },
+    }
 }
