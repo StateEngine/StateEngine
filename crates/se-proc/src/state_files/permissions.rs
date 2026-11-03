@@ -119,7 +119,16 @@ impl PermissionRepairPin {
                     &self.path,
                 ));
             }
-            self.pin.tighten(expected)?;
+            let already_private = self.pin.is_owner_only()?;
+            if self.pin.snapshot()? != *expected {
+                return Err(changed(
+                    "permission metadata changed before native repair",
+                    &self.path,
+                ));
+            }
+            if !already_private {
+                self.pin.tighten(expected)?;
+            }
             self.pin.check()?;
             let after = Self::open(&self.path)?.ok_or_else(|| {
                 changed(
@@ -128,6 +137,12 @@ impl PermissionRepairPin {
                 )
             })?;
             let actual = after.snapshot();
+            if already_private && actual != expected {
+                return Err(changed(
+                    "permission metadata changed during no-op repair",
+                    &self.path,
+                ));
+            }
             if actual.object != expected.object
                 || actual.owner != expected.owner
                 || actual.kind != expected.kind
