@@ -134,7 +134,9 @@ impl Case {
             ],
         )?)?)??;
         assert_eq!(receipt.durability, CommitDurability::Full);
-        let receipt = host::wait(client.submit(capture::capture(
+        // Capture uses NORMAL commits; the drain below checkpoints and closes
+        // the actual writer before any CLI consumer is invoked.
+        host::wait(client.submit(capture::capture(
             &f,
             &session,
             source,
@@ -143,7 +145,6 @@ impl Case {
             1,
             "public-cli-turn",
         )?)?)??;
-        assert_eq!(receipt.durability, CommitDurability::Full);
         let owner = match se_proc::observe_owner_self(&[])?.owner() {
             se_proc::NativeOwner::Unix {
                 real_uid,
@@ -178,12 +179,11 @@ impl Case {
     }
     fn write(&self, events: Vec<EventBody<InputText>>) -> Check {
         let writer = self.writer.as_ref().ok_or("writer already drained")?;
-        let receipt = host::wait(writer.client().submit(self.f.batch(
+        host::wait(writer.client().submit(self.f.batch(
             self.f.owner_project(),
             None,
             events,
         )?)?)??;
-        assert_eq!(receipt.durability, CommitDurability::Full);
         Ok(())
     }
     fn transition(&self, rev: u64, from: ProcessState, to: ProcessState) -> Check {
@@ -230,12 +230,18 @@ impl Case {
         }])
     }
     fn drain(&mut self) -> Check {
-        host::wait(
+        let head = self.retained_head()?;
+        let drained = host::wait(
             self.writer
                 .take()
                 .ok_or("writer already drained")?
                 .drain(Duration::from_secs(2)),
         )??;
+        assert_eq!(drained.report.through, head);
+        assert_eq!(drained.report.pending_requests, 0);
+        assert!(drained.report.indeterminate.is_empty());
+        assert!(!drained.report.maintenance_pending);
+        drop(drained);
         Ok(())
     }
     fn retained_head(&self) -> Result<Option<StorePosition>, Box<dyn std::error::Error>> {
