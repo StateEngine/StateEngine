@@ -166,17 +166,24 @@ impl LaunchCoordinator {
                 }
                 "already-stopped" => (),
                 "ownership-released" => row.processes_may_remain.push(stop),
-                _ => row.remaining.push(obligation(
-                    "agent process",
-                    stop.population_reason
-                        .as_deref()
-                        .unwrap_or("Native exit or capture cleanup remains unproved."),
-                    Some(se_core::ops::AgentCommand::stop(
+                _ => {
+                    let command = se_core::ops::AgentCommand::stop_in_home(
                         &stop.target.agent.id,
-                        Some(&self.options.home.display().to_string()),
-                        Some(&stop.target.project.id),
-                    )),
-                )),
+                        &self.options.home,
+                        &stop.target.project.id,
+                    );
+                    let mut reason = stop
+                        .population_reason
+                        .as_deref()
+                        .unwrap_or("Native exit or capture cleanup remains unproved.")
+                        .to_owned();
+                    if command.is_none() {
+                        reason.push(' ');
+                        reason.push_str(se_core::ops::AgentCommand::HOME_UNAVAILABLE);
+                    }
+                    row.remaining
+                        .push(obligation("agent process", &reason, command));
+                }
             }
         }
         if let Some(reason) = stopped.population_reason {

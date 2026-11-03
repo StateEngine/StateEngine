@@ -12,7 +12,7 @@ pub use plan::prepare_agent_observation;
 
 pub struct AgentObservationPlan {
     project: ProjectId,
-    command_home: Option<String>,
+    command_home: Option<std::path::PathBuf>,
     identity: Option<crate::SessionIdentity>,
     row: AgentRow,
     process: Read<ProcessIdentityRecord>,
@@ -21,7 +21,7 @@ pub struct AgentObservationPlan {
 impl AgentObservationPlan {
     /// Presentation context only; native observation authority is unchanged.
     pub fn with_command_home(mut self, home: &std::path::Path) -> Self {
-        self.command_home = Some(home.display().to_string());
+        self.command_home = Some(home.to_owned());
         self
     }
 }
@@ -65,14 +65,29 @@ pub fn observe_agent(
         degrade(&mut plan.row, &error);
     }
     if plan.row.resume.argv.is_some() {
-        let command = se_core::ops::AgentCommand::launch(
-            &plan.row.id,
-            plan.command_home.as_deref(),
-            Some(&plan.project),
-            plan.row.resume.mode == "new",
-        );
-        plan.row.resume.command = Some(command.command);
-        plan.row.resume.argv = Some(command.argv);
+        let command = match &plan.command_home {
+            Some(home) => se_core::ops::AgentCommand::launch_in_home(
+                &plan.row.id,
+                home,
+                &plan.project,
+                plan.row.resume.mode == "new",
+            ),
+            None => Some(se_core::ops::AgentCommand::launch(
+                &plan.row.id,
+                None,
+                Some(&plan.project),
+                plan.row.resume.mode == "new",
+            )),
+        };
+        if let Some(command) = command {
+            plan.row.resume.command = Some(command.command);
+            plan.row.resume.argv = Some(command.argv);
+        } else {
+            plan.row.resume.ready = false;
+            plan.row.resume.reason = Some(se_core::ops::AgentCommand::HOME_UNAVAILABLE.into());
+            plan.row.resume.command = None;
+            plan.row.resume.argv = None;
+        }
     }
     Ok(AgentObservation {
         identity: plan.identity,
