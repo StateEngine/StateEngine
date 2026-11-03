@@ -39,11 +39,17 @@ impl LaunchCoordinator {
         let kind = self.kind;
         let generation = self.store.generation.get();
         let bound = deadline.clone();
+        let command_home = self.options.home.clone();
         self.store
             .pool
             .run(BlockingClass::Foreground, deadline, move || {
                 bound.remaining()?;
-                crate::agent_observation::output::observe(&mut output, plans, bound.at())?;
+                crate::agent_observation::output::observe(
+                    &mut output,
+                    plans,
+                    bound.at(),
+                    &command_home,
+                )?;
                 let observed = se_proc::read_process(owner.machine.clone(), owner.pid)
                     .map_err(|cause| error("host process observation", cause))?;
                 let se_proc::ProcessRead::Present(observed) = observed else {

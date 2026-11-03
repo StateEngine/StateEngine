@@ -171,7 +171,7 @@ pub fn dispatch(
                     )
                 });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
-        return super::session_observation::finish(prepared);
+        return super::session_observation::finish(prepared, &cx.home);
     }
     if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) {
         snapshot.close().map_err(|e| store_error(&e))?;
@@ -209,7 +209,7 @@ pub fn dispatch(
             )
         });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
-        return super::session_observation::finish(prepared);
+        return super::session_observation::finish(prepared, &cx.home);
     }
     // End the finite auth/selection pin before stdin, IPC, writer or custody work.
     snapshot.close().map_err(|e| store_error(&e))?;

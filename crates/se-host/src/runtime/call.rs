@@ -31,6 +31,7 @@ pub struct HostedCall {
 }
 #[derive(Clone)]
 pub struct ExecutionContext {
+    pub(crate) state_directory: std::path::PathBuf,
     pub reader: Arc<SqliteReader>,
     pub writer: SqliteClient,
     pub blocking: BlockingPool,

@@ -295,6 +295,7 @@ fn prepare(
         .start_writer(options.writer, lease.clone())
         .map_err(|e| store_error(&e))?;
     let execution = ExecutionContext {
+        state_directory: options.state_directory.clone(),
         reader: Arc::new(reader),
         writer: writer.client(),
         blocking,

@@ -171,12 +171,11 @@ impl LaunchCoordinator {
                     stop.population_reason
                         .as_deref()
                         .unwrap_or("Native exit or capture cleanup remains unproved."),
-                    Some(vec![
-                        "se".into(),
-                        "stop".into(),
-                        "--agent".into(),
-                        stop.target.agent.id.to_string(),
-                    ]),
+                    Some(se_core::ops::AgentCommand::stop(
+                        &stop.target.agent.id,
+                        Some(&self.options.home.display().to_string()),
+                        Some(&stop.target.project.id),
+                    )),
                 )),
             }
         }

@@ -11,10 +11,19 @@ mod plan;
 pub use plan::prepare_agent_observation;
 
 pub struct AgentObservationPlan {
+    project: ProjectId,
+    command_home: Option<String>,
     identity: Option<crate::SessionIdentity>,
     row: AgentRow,
     process: Read<ProcessIdentityRecord>,
     capture: Read<SourceEvidence>,
+}
+impl AgentObservationPlan {
+    /// Presentation context only; native observation authority is unchanged.
+    pub fn with_command_home(mut self, home: &std::path::Path) -> Self {
+        self.command_home = Some(home.display().to_string());
+        self
+    }
 }
 pub struct AgentObservation {
     identity: Option<crate::SessionIdentity>,
@@ -54,6 +63,16 @@ pub fn observe_agent(
     })();
     if let Err(error) = observed {
         degrade(&mut plan.row, &error);
+    }
+    if plan.row.resume.argv.is_some() {
+        let command = se_core::ops::AgentCommand::launch(
+            &plan.row.id,
+            plan.command_home.as_deref(),
+            Some(&plan.project),
+            plan.row.resume.mode == "new",
+        );
+        plan.row.resume.command = Some(command.command);
+        plan.row.resume.argv = Some(command.argv);
     }
     Ok(AgentObservation {
         identity: plan.identity,

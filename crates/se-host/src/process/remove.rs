@@ -148,11 +148,19 @@ fn unobserved(state: &str, detail: &str) -> RemovalWitness {
         detail: Some(detail.into()),
     }
 }
-fn obligation(what: &str, reason: &str, argv: Option<Vec<String>>) -> RemovalObligation {
+fn obligation(
+    what: &str,
+    reason: &str,
+    command: Option<se_core::ops::AgentCommand>,
+) -> RemovalObligation {
+    let (command, argv) = match command {
+        Some(value) => (Some(value.command), Some(value.argv)),
+        None => (None, None),
+    };
     RemovalObligation {
         what: what.into(),
         reason: reason.into(),
-        command: argv.as_ref().map(|args| args.join(" ")),
+        command,
         argv,
     }
 }

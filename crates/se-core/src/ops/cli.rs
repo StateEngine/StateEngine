@@ -5,6 +5,8 @@ use clap::{Arg, ArgAction, ArgMatches, Command};
 use se_types::{Cursor, Detail, IdempotencyKey, Result, SeError, details};
 use std::path::PathBuf;
 
+mod agent_command;
+pub use agent_command::AgentCommand;
 mod decode;
 mod selections;
 pub use decode::{from_matches, from_matches_with_key};

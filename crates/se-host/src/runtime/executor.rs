@@ -64,6 +64,7 @@ pub fn execute(
             OpStep::Complete(mut output) => {
                 if !observations.is_empty() {
                     let observe_deadline = deadline.clone();
+                    let command_home = context.state_directory.clone();
                     output = context
                         .blocking
                         .run(BlockingClass::Foreground, &deadline, move || {
@@ -72,6 +73,7 @@ pub fn execute(
                                 &mut output,
                                 observations,
                                 observe_deadline.at(),
+                                &command_home,
                             )?;
                             observe_deadline.remaining()?;
                             Ok(output)

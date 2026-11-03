@@ -219,6 +219,12 @@ impl LaunchCoordinator {
                 )
                 .await?;
         }
+        let resume = se_core::ops::AgentCommand::launch(
+            &plan.agent.id,
+            Some(&self.options.home.display().to_string()),
+            Some(&plan.project.id),
+            false,
+        );
         Ok(LaunchResult {
             idempotency_key: plan.input.idempotency_key.clone(),
             event_id: receipt.primary_event,
@@ -250,14 +256,8 @@ impl LaunchCoordinator {
                 ready: true,
                 mode: "resume".into(),
                 reason: None,
-                command: Some(format!("se launch --agent {} --detach", plan.agent.id)),
-                argv: Some(vec![
-                    "se".into(),
-                    "launch".into(),
-                    "--agent".into(),
-                    plan.agent.id.to_string(),
-                    "--detach".into(),
-                ]),
+                command: Some(resume.command),
+                argv: Some(resume.argv),
             },
         })
     }

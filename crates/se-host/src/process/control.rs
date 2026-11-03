@@ -152,7 +152,7 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> AgentStopResult {
         let retained = self.find_job(&target.target.project.id, &target.target.agent.id);
-        let mut row = empty_row(target);
+        let mut row = empty_row(target, &self.options.home);
         let result=async{
             // A refused target becomes one result row; it cannot suppress the
             // independent targets selected by --all.
@@ -214,7 +214,7 @@ impl LaunchCoordinator {
             .cloned())
     }
 }
-fn empty_row(target: ControlAgent) -> AgentStopResult {
+fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
     let profile = match target.control.profile {
         se_types::Read::Present { value } => match value.current.body {
             EventBody::ProfileSaved { profile, .. } => Some(profile),
@@ -222,14 +222,12 @@ fn empty_row(target: ControlAgent) -> AgentStopResult {
         },
         _ => None,
     };
-    let command = format!("se launch --agent {} --detach", target.target.agent.id);
-    let argv = vec![
-        "se".into(),
-        "launch".into(),
-        "--agent".into(),
-        target.target.agent.id.to_string(),
-        "--detach".into(),
-    ];
+    let resume = se_core::ops::AgentCommand::launch(
+        &target.target.agent.id,
+        Some(&home.display().to_string()),
+        Some(&target.target.project.id),
+        false,
+    );
     AgentStopResult {
         resume: StopResume {
             state: "unavailable".into(),
@@ -237,8 +235,8 @@ fn empty_row(target: ControlAgent) -> AgentStopResult {
             conversation_id: None,
             provider: target.target.provider,
             model: profile.and_then(|p| p.model),
-            command,
-            argv,
+            command: resume.command,
+            argv: resume.argv,
         },
         target: target.target,
         result: "unwitnessed".into(),
