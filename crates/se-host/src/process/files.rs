@@ -154,6 +154,7 @@ pub(super) fn publish(
         .write_all(&manifest.1)
         .and_then(|()| staging.file.sync_all())
         .map_err(|e| error("launch custody durability", e))?;
+    drop(staging.file);
     files
         .publish_no_replace(&staging.path, &manifest.0)
         .map_err(|e| error("launch custody publication", e))?;
@@ -184,6 +185,7 @@ pub(super) fn publish(
             .write_all(item.contents.expose())
             .and_then(|()| staged.file.sync_all())
             .map_err(|e| error("durable launch configuration", e))?;
+        drop(staged.file);
         files
             .publish_no_replace(&staged.path, &path)
             .map_err(|e| error("launch configuration publication", e))?;
