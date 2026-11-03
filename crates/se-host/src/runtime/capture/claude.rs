@@ -29,6 +29,34 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("a recognized record type"))?;
     if kind != "user" && kind != "assistant" {
+        // Claude's request cache repeats API messages, including system text;
+        // these are not conversation records and have no vendor turn uuid.
+        // Recognize its explicit envelope without accepting arbitrary records
+        // carrying message text as metadata.
+        if kind == "api-request-blob"
+            && !object.contains_key("uuid")
+            && !object.contains_key("content")
+            && object
+                .get("hash")
+                .and_then(Value::as_str)
+                .is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+            && object
+                .get("message")
+                .and_then(Value::as_object)
+                .is_some_and(|message| {
+                    matches!(
+                        message.get("role").and_then(Value::as_str),
+                        Some("system" | "user" | "assistant")
+                    ) && matches!(
+                        message.get("content"),
+                        Some(Value::String(_) | Value::Array(_))
+                    )
+                })
+        {
+            return Ok(None);
+        }
         // Known non-turn metadata contains no message/body. Unknown kinds stop
         // the cursor so a future schema change cannot silently discard text.
         if matches!(
@@ -52,6 +80,10 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
                 | "artifact-autoreact-ledger"
                 | "relocated"
                 | "worktree-state"
+                | "session-owner"
+                | "tools-used"
+                | "api-request-shape"
+                | "api-request"
         ) && !object.contains_key("message")
             && !object.contains_key("content")
         {
