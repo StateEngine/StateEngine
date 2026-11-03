@@ -4,7 +4,13 @@
 //! The separately owned permissive linked API remains section 10's contract.
 #[cfg(test)]
 extern crate self as se_host;
+#[cfg(feature = "runtime")]
+mod agent_observation;
 pub mod client;
+#[cfg(feature = "runtime")]
+pub use agent_observation::{
+    AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,
+};
 mod harness;
 #[cfg(feature = "runtime")]
 mod launch_proofs;
