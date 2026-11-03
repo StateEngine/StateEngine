@@ -108,6 +108,10 @@ pub fn from_matches_with_key(
                 value: required(m, "setting_value")?,
                 idempotency_key: key()?,
             }),
+            "doctor.inspect" => AnyOp::DoctorInspect(DoctorInspect {}),
+            "doctor.repair" => AnyOp::DoctorRepair(DoctorRepair {
+                check_id: required(m, "fix")?,
+            }),
             "meta.version" => AnyOp::MetaVersion(MetaVersion {}),
             "meta.help" => AnyOp::MetaHelp(MetaHelp {
                 path: if flag(m, "help") {

@@ -217,6 +217,8 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("model"))
             .arg(toggle("launch"))
             .arg(toggle("adopt")),
+        "doctor.inspect" => c.about("Check this installation and name exact supported repairs"),
+        "doctor.repair" => c.arg(value("fix").help("Apply only this currently diagnosed CHECK-ID after printing its plan")),
         "project.status" => c.arg(toggle("all")),
         "agent.launch" => c
             .about("Start or resume a saved agent; this release supports headless --detach")

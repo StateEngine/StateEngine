@@ -454,6 +454,12 @@ impl Kernel {
             AnyOp::MessageInbox(input) => {
                 OpStep::Complete(crate::ops::inbox::read(input, cx)?.into())
             }
+            AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_) => {
+                return Err(SeError::invalid(
+                    "doctor adapter",
+                    "the installed owner CLI with current native observations",
+                ));
+            }
             AnyOp::ProjectInit(input) => OpStep::Custody(CustodyPlan::Initialize(input)),
             AnyOp::ProjectStatus(input) => OpStep::Custody(CustodyPlan::ObserveStatus(input)),
             AnyOp::RuntimeUp(input) => OpStep::Custody(CustodyPlan::RuntimeUp(input)),
