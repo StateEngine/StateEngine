@@ -94,7 +94,8 @@ def main():
          "server_sha256": hashlib.sha256(server.read_bytes()).hexdigest(),
          "se_sha256": hashlib.sha256(helper.read_bytes()).hexdigest()})
     run(root, "profile-init", [str(server), "init-local", "--service", str(profile)], env, args.repo)
-    effect = args.repo / ("w3-native-" + args.nonce + ".txt")
+    fixture_id = hashlib.sha256(str(root).encode()).hexdigest()[:8]
+    effect = args.repo / ("w3-native-" + args.nonce + "-" + fixture_id + ".txt")
     require(not effect.exists(), "the nonce-specific task file already exists")
     text = f"W3 native task {args.nonce}: π and café\n"
     task = f"Write {effect.name} containing the exact requested nonce {args.nonce} (π, café), then read it back."
