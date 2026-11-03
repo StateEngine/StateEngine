@@ -72,7 +72,7 @@ pub fn capture(
                 role: Role::Assistant,
                 text: InputText::Inline(format!("captured {vendor}")),
                 evidence: SourceEvidence {
-                    path: NativePath::from_local(f.home.join("transcript.jsonl"))?,
+                    path: Some(NativePath::from_local(f.home.join("transcript.jsonl"))?),
                     incarnation: incarnation.into(),
                     offset,
                     length: evidence.len() as u64,

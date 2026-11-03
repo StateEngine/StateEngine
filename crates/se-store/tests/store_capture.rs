@@ -297,7 +297,7 @@ fn native_capture_replay_preserves_original_source_and_rejects_changed_content()
     }
     d.append(
         f.batch(f.owner_project(), None, vec![prepared, activated(&id)?])?,
-        &lease,
+        &*lease,
     )?;
     let attempt = |key: &str| -> Result<AtomicBatch, Box<dyn std::error::Error>> {
         let mut batch = capture(&f, &id, source_id, b"native-turn", 0, 1, "native-one")?;
@@ -309,9 +309,11 @@ fn native_capture_replay_preserves_original_source_and_rejects_changed_content()
             evidence.path = None;
         }
         let source = source(source_id, &id, b"native-turn", Expected::Absent);
-        let mut member = batch.events[0].clone();
-        member.header.event = event()?;
-        member.body = source;
+        let mut member = f
+            .batch(batch.admission.clone(), None, vec![source])?
+            .events
+            .remove(0);
+        member.header.session = Some(id.clone());
         if let EventBody::CaptureSource { native_ref, .. } = &mut member.body {
             *native_ref = serde_json::json!({
                 "source_cli":"secode", "conversation":"native-conversation",
@@ -322,11 +324,11 @@ fn native_capture_replay_preserves_original_source_and_rejects_changed_content()
         batch.events.insert(0, member);
         Ok(batch)
     };
-    let first = d.append(attempt("first-delivery")?, &lease)?;
+    let first = d.append(attempt("first-delivery")?, &*lease)?;
     assert_eq!(first.events.len(), 3);
     let head = d.info()?.head;
     for key in ["first-delivery", "reconnect-delivery"] {
-        let replay = d.append(attempt(key)?, &lease)?;
+        let replay = d.append(attempt(key)?, &*lease)?;
         assert_eq!(replay.state, CommitState::NaturalKeyReplay);
         same_receipt(&first, &replay);
         assert_eq!(d.info()?.head, head);
@@ -354,7 +356,7 @@ fn native_capture_replay_preserves_original_source_and_rejects_changed_content()
             _ => unreachable!(),
         }
         let refused = d
-            .append(changed, &lease)
+            .append(changed, &*lease)
             .err()
             .ok_or("changed native content replayed")?;
         assert!(matches!(
