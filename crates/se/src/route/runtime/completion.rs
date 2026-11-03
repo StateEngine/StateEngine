@@ -14,6 +14,10 @@ pub(super) fn report(
 ) -> Result<Option<se_host::client::closure::RuntimeClosure>> {
     loop {
         bound.remaining()?;
+        // Observe exit before reading: a publication followed by exit between
+        // these samples must not turn a completed per-agent report into None.
+        let already_exited =
+            endpoint.kind == se_host::HostKind::Standalone && exited(endpoint, bound)?;
         if let Some(record) = se_host::client::closure::read(files, files.0.root())?
             && record.matches(endpoint, key)
         {
@@ -21,7 +25,7 @@ pub(super) fn report(
         }
         // Legacy standalone hosts have no close-receipt producer. Once the
         // exact owner exited it cannot publish later; final OS checks still apply.
-        if endpoint.kind == se_host::HostKind::Standalone && exited(endpoint, bound)? {
+        if already_exited {
             return Ok(None);
         }
         std::thread::sleep(Duration::from_millis(10).min(bound.remaining()?));

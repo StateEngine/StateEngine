@@ -76,12 +76,12 @@ pub(super) fn owner_thread(
                         drop(report);
                         receipt
                     }
-                    Err(_) => api::DrainReceipt {
-                        generation,
-                        pending_notices: 0,
-                        unresolved_effects: 1,
-                        writer_flushed: false,
-                    },
+                    Err(error) => {
+                        eprintln!("Embedded shutdown budget could not be created; preserve this data home and use controlled application restart: {error}");
+                        let _ = exited.send(api::DrainReceipt { generation, pending_notices: 0, unresolved_effects: 1, writer_flushed: false });
+                        let _retained = exit;
+                        loop { std::thread::park(); }
+                    }
                 };
                 let _ = exited.send(receipt);
             });
