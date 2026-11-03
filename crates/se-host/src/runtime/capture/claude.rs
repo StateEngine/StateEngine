@@ -89,8 +89,14 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         {
             return Ok(None);
         }
+        let name: String = kind.chars().take(128).collect();
+        let truncated = if name.len() < kind.len() {
+            " (truncated)"
+        } else {
+            ""
+        };
         return Err(SeError::invalid(
-            &format!("pinned Claude transcript record type {kind:?}"),
+            &format!("pinned Claude transcript record type {name:?}{truncated}"),
             "a supported transcript record; preserve the old cursor on schema drift",
         ));
     }
