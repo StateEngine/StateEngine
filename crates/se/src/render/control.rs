@@ -37,7 +37,6 @@ pub fn launch(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
     if let Some(reason) = &value.resume.reason {
         writeln!(out, "Resume: {reason}")?;
     }
-    writeln!(out, "Stop: se stop {}", value.agent.name)?;
     writeln!(
         out,
         "Event: {}; request key: {}",
