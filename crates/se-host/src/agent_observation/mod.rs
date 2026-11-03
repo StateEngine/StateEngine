@@ -6,6 +6,7 @@ use se_types::{ProjectId, Read, Result, SeError};
 use std::time::Instant;
 mod capture;
 mod native;
+pub(crate) mod output;
 mod plan;
 pub use plan::prepare_agent_observation;
 
