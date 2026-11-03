@@ -450,6 +450,13 @@ pub trait Snapshot {
         id: DecisionId,
         budget: ReadBudget,
     ) -> StoreResult<Read<Page<StoredEvent>>>;
+    /// Exact public decision detail under the selected head's law visibility,
+    /// including retired law; never widens the generic immutable event reader.
+    fn decision_detail_transitions(
+        &mut self,
+        id: DecisionId,
+        budget: ReadBudget,
+    ) -> StoreResult<Read<Page<StoredEvent>>>;
     fn decisions(
         &mut self,
         query: DecisionQuery,

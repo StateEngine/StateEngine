@@ -38,6 +38,7 @@ impl SqliteSnapshot {
         &self,
         query: DecisionQuery,
         governing: bool,
+        history_visibility: bool,
     ) -> StoreResult<(String, Vec<Value>)> {
         let mut filter = String::from("project_id=?");
         let mut keys = vec![Value::Blob(self.project_bytes()?)];
@@ -49,7 +50,15 @@ impl SqliteSnapshot {
             filter.push_str(" AND state IN ('proposed','ratified')");
         }
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
-            filter.push_str(" AND (state='ratified' OR EXISTS(SELECT 1 FROM events proposal WHERE proposal.seq=decisions.proposed_seq AND proposal.actor_id=?))");
+            // The closed transition graph makes superseded heads once-ratified;
+            // retracted revision 3 is proposal -> ratify -> retract. A revision-2
+            // withdrawal was never governing and remains private to its author.
+            let law = if history_visibility {
+                "state IN ('ratified','superseded') OR (state='retracted' AND revision=3)"
+            } else {
+                "state='ratified'"
+            };
+            filter.push_str(&format!(" AND ({law} OR EXISTS(SELECT 1 FROM events proposal WHERE proposal.seq=decisions.proposed_seq AND proposal.actor_id=?))"));
             keys.push(Value::Blob(self.agent_bytes(agent)?));
         }
         if let Some(id) = query.id {
@@ -66,7 +75,7 @@ impl SqliteSnapshot {
         Ok((filter, keys))
     }
     /// This narrow decision reader may read another agent's proposal only
-    /// through a current governing head. Generic event visibility stays intact.
+    /// through a current or once-governing head. Generic event visibility stays intact.
     pub(super) fn decision_event(&self, seq: i64, id: &DecisionId) -> StoreResult<StoredEvent> {
         let event = load_event(&self.db, seq, &self.info)
             .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
@@ -98,6 +107,7 @@ impl SqliteSnapshot {
                 history: true,
             },
             false,
+            true,
         )?;
         let visible: bool = self
             .db
@@ -123,7 +133,8 @@ impl SqliteSnapshot {
     ) -> StoreResult<Page<Read<ProjectionRecord>>> {
         let deadline = Instant::now() + budget.deadline;
         let selectors = format!("{query:?}:{governing}");
-        let (filter, keys) = self.decision_filter(query, governing)?;
+        let history_visibility = query.history;
+        let (filter, keys) = self.decision_filter(query, governing, history_visibility)?;
         let binding = format!("live:decision-heads:{selectors}:{filter}:{keys:?}");
         let (h, after) = self.window(&budget, &binding, true)?;
         let mut params = keys.clone();
@@ -300,6 +311,7 @@ impl SqliteSnapshot {
                 pending_only,
                 history: true,
             },
+            false,
             false,
         )?;
         self.query_seqs(

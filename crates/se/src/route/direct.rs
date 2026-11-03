@@ -95,66 +95,18 @@ pub fn execute<S: DirectStore>(
     }
 }
 
-/// Current-schema WAL reads use an admitted finite Snapshot while the host may
-/// retain its exclusive writer lease. This path cannot append or start a writer.
-pub fn read<S: ReadStore>(
-    store: &S,
-    admission: &Admission,
-    terminal: &HumanTerminal,
-    op: AnyOp,
-    selections: &se_core::ops::CliSelections,
-    observed_at: se_types::UnixMicros,
-) -> Result<Outcome> {
-    if op.meta().effect != se_core::registry::Effect::Read {
-        return Err(se_types::SeError::invalid(
-            "direct read route",
-            "a registered read operation",
-        ));
-    }
-    match plan(
-        store,
-        admission,
-        terminal,
-        &Kernel::read_only_at(observed_at),
-        op,
-        selections,
-    )? {
-        OpStep::Complete(output) => Ok(Outcome::Complete(output)),
-        OpStep::Custody(plan) => Ok(Outcome::Custody(plan)),
-        OpStep::Commit { .. } => Err(se_types::SeError::invalid(
-            "direct read plan",
-            "a read without a commit step",
-        )),
-    }
-}
 fn plan<S: ReadStore>(
     store: &S,
     admission: &Admission,
     terminal: &HumanTerminal,
     kernel: &Kernel,
-    mut op: AnyOp,
+    op: AnyOp,
     selections: &se_core::ops::CliSelections,
 ) -> Result<OpStep<AnyOutput, Then, CustodyPlan>> {
     let mut snapshot = store
         .snapshot(read_scope(admission))
         .map_err(|e| store_error(&e))?;
-    let selected = selections.apply(
-        &mut op,
-        &mut Cx {
-            read: &mut snapshot,
-            admission,
-        },
-    );
-    let planned = selected.and_then(|()| {
-        kernel.plan(
-            op,
-            &mut Cx {
-                read: &mut snapshot,
-                admission,
-            },
-            terminal,
-        )
-    });
+    let planned = plan_snapshot(&mut snapshot, admission, terminal, kernel, op, selections);
     let closed = snapshot.close().map_err(|e| store_error(&e));
     let step = match planned {
         Ok(step) => {
@@ -169,6 +121,33 @@ fn plan<S: ReadStore>(
         }
     };
     Ok(step)
+}
+
+pub fn plan_snapshot<R: Snapshot>(
+    snapshot: &mut R,
+    admission: &Admission,
+    terminal: &HumanTerminal,
+    kernel: &Kernel,
+    mut op: AnyOp,
+    selections: &se_core::ops::CliSelections,
+) -> Result<OpStep<AnyOutput, Then, CustodyPlan>> {
+    let selected = selections.apply(
+        &mut op,
+        &mut Cx {
+            read: snapshot,
+            admission,
+        },
+    );
+    selected.and_then(|()| {
+        kernel.plan(
+            op,
+            &mut Cx {
+                read: snapshot,
+                admission,
+            },
+            terminal,
+        )
+    })
 }
 
 /// A received append receipt is definitive even if later readback/cleanup fails.

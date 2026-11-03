@@ -1,5 +1,5 @@
 //! Display birth time never becomes process authority. The endpoint has already
-//! passed native IPC authentication; this read binds its native start again.
+//! passed protected file and store-owner checks; this read binds its native start.
 #[cfg(any(target_os = "linux", windows))]
 use se_core::ops::receipt;
 use se_core::{ops::ProcessView, scope};
@@ -53,7 +53,7 @@ pub fn observe(endpoint: &EndpointRecord, bound: &Deadline) -> Result<ProcessVie
     if !matches || live.identity.image != fields.executable.to_local()? {
         return Err(scope::unreadable(
             "host birth identity",
-            "native start or executable changed since authenticated endpoint verification",
+            "native start or executable changed since protected endpoint publication",
         ));
     }
     from_identity(&live.identity, bound)

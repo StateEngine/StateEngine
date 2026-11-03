@@ -15,8 +15,8 @@ use se_core::{
 };
 use se_host::client::{ClientOptions, lease::ClientCredential};
 use se_store::{
-    DirectStore, LeaseIdentity, LeaseMode, ReadStore, SqliteFactory, StateFiles, StoreFactory,
-    StoreOptions,
+    DirectStore, LeaseIdentity, LeaseMode, ReadStore, Snapshot, SqliteFactory, StateFiles,
+    StoreFactory, StoreOptions,
 };
 use se_types::{AgentId, EventId, MessageId, Read, Result, SeError, Secret};
 use std::{
@@ -126,34 +126,61 @@ pub fn dispatch(
         setup::Setup::Present(reader) => reader,
     };
     let files = Files::open(&cx.home).map_err(|e| store_error(&e))?;
-    let mut caller = admit::observe(cx, &reader, &files)?;
-    select::apply(cx, &reader, &mut caller.admission, &op)?;
+    let phase = reader.read_phase().map_err(|e| store_error(&e))?;
+    let owner = if matches!(op, AnyOp::ProjectStatus(_)) {
+        Some(phase.runtime_owner().map_err(|e| store_error(&e))?)
+    } else {
+        None
+    };
+    let mut caller = admit::observe(cx, &phase, &files)?;
+    let mut snapshot = phase
+        .into_snapshot(se_core::admission::read_scope(&caller.admission))
+        .map_err(|e| store_error(&e))?;
+    select::apply(cx, &mut snapshot, &mut caller.admission, &op)?;
+    if let se_store::Scope::Project(project) = &caller.admission.scope {
+        snapshot
+            .select_project(project.clone())
+            .map_err(|e| store_error(&e))?;
+    }
     let mut selections = cx.selections.clone();
     if let se_store::Scope::Project(project) = &caller.admission.scope {
         selections.project = Some(project.clone());
     }
     if matches!(op, AnyOp::ProjectStatus(_)) {
-        return super::status::observe(cx, &reader, &files, &caller.admission);
-    }
-    if let AnyOp::HookClaude(hook) = &op {
-        let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
-        return super::hook::forward(cx, &files, input, diagnostic);
+        let result =
+            super::status::observe_snapshot(cx, &mut snapshot, owner, &files, &caller.admission);
+        return finish_read(result, snapshot.close().map_err(|e| store_error(&e)));
     }
     let host_required = matches!(
         op.meta().runtime,
         RuntimeNeed::Host | RuntimeNeed::HostAutoStart
     );
     if op.meta().effect == Effect::Read && !host_required {
-        return complete(direct::read(
-            &reader,
+        let observed = se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
+            SeError::invalid("read observation clock", "nonnegative Unix microseconds")
+        })?)?;
+        let result = direct::plan_snapshot(
+            &mut snapshot,
             &caller.admission,
             &caller.terminal,
+            &Kernel::read_only_at(observed),
             op,
             &selections,
-            se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
-                SeError::invalid("read observation clock", "nonnegative Unix microseconds")
-            })?)?,
-        )?);
+        )
+        .and_then(|step| match step {
+            se_core::commit::OpStep::Complete(output) => Ok(output),
+            _ => Err(SeError::invalid(
+                "direct read plan",
+                "a read without commit or custody",
+            )),
+        });
+        return finish_read(result, snapshot.close().map_err(|e| store_error(&e)));
+    }
+    // End the finite auth/selection pin before stdin, IPC, writer or custody work.
+    snapshot.close().map_err(|e| store_error(&e))?;
+    if let AnyOp::HookClaude(hook) = &op {
+        let input = crate::hook::read_native(hook.event, &mut std::io::stdin().lock())?;
+        return super::hook::forward(cx, &files, input, diagnostic);
     }
     se_core::admission::authorize(op.meta(), &caller.admission)?;
     // Refuse before acquiring writer custody or looking for a busy host's
@@ -260,6 +287,19 @@ pub fn dispatch(
         }),
     }
 }
+fn finish_read(result: Result<AnyOutput>, closed: Result<()>) -> Result<AnyOutput> {
+    match result {
+        Ok(value) => {
+            closed?;
+            Ok(value)
+        }
+        Err(error) => Err(match closed {
+            Ok(()) => error,
+            Err(close) => error.with_cause(close),
+        }),
+    }
+}
+
 fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
     match outcome {
         direct::Outcome::Complete(output) | direct::Outcome::Committed { output, .. } => Ok(output),

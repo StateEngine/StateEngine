@@ -65,7 +65,7 @@ pub fn read<R: Snapshot>(input: DecisionShow, cx: &mut Cx<'_, R>) -> Result<Deci
             },
             deadline: std::time::Duration::from_millis(250),
         };
-        let page = match read_result(cx.read.decision_transitions(id.clone(), budget))? {
+        let page = match read_result(cx.read.decision_detail_transitions(id.clone(), budget))? {
             Read::Present { value } => value,
             other => {
                 return Ok(DecisionOutput {

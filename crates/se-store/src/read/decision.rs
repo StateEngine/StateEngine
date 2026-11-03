@@ -28,8 +28,12 @@ impl SqliteSnapshot {
         &self,
         id: DecisionId,
         budget: ReadBudget,
+        public_detail: bool,
     ) -> StoreResult<Read<Page<StoredEvent>>> {
-        let binding = format!("history:decision-transitions:{}", id.as_str());
+        let binding = format!(
+            "history:decision-transitions:{}:{public_detail}",
+            id.as_str()
+        );
         let (h, after) = self.window(&budget, &binding, false)?;
         let deadline = Instant::now() + budget.deadline;
         self.db
@@ -74,7 +78,14 @@ impl SqliteSnapshot {
                 }
                 return Ok(self.absent("decision transitions"));
             };
-            let original = self.record(proposed)?;
+            let load = |seq| {
+                if public_detail {
+                    self.decision_event(seq, &id)
+                } else {
+                    self.record(seq)
+                }
+            };
+            let original = load(proposed)?;
             let resolved = match &original.body {
                 EventBody::DecisionProposed {
                     decision: resolved, ..
@@ -125,7 +136,7 @@ impl SqliteSnapshot {
                     stop = StopReason::ItemLimit;
                     break;
                 }
-                let event = self.record(seq)?;
+                let event = load(seq)?;
                 if event.header.scope != self.scope.admission.scope || !relates(&event, resolved) {
                     return Err(fail(
                         StoreErrorCode::ProjectionInconsistent,

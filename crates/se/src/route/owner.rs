@@ -10,22 +10,20 @@ use std::{num::NonZeroU32, time::Duration};
 /// closed the read transaction; no Owner visibility is assumed to establish Owner.
 pub fn inventory<R: ReadStore>(store: &R, files: &dyn StateFiles) -> Result<OwnerGuardInventory> {
     store
-        .owner_guard(
-            files,
-            ReadBudget {
-                page: se_types::PageRequest {
-                    after: None,
-                    limit: NonZeroU32::new(1000).ok_or_else(|| {
-                        SeError::invalid("owner inventory", "positive item budget")
-                    })?,
-                    max_bytes: NonZeroU32::new(2 * 1024 * 1024).ok_or_else(|| {
-                        SeError::invalid("owner inventory", "positive byte budget")
-                    })?,
-                },
-                deadline: Duration::from_secs(5),
-            },
-        )
+        .owner_guard(files, budget()?)
         .map_err(|error| se_core::store_error::store_error(&error))
+}
+pub(super) fn budget() -> Result<ReadBudget> {
+    Ok(ReadBudget {
+        page: se_types::PageRequest {
+            after: None,
+            limit: NonZeroU32::new(1000)
+                .ok_or_else(|| SeError::invalid("owner inventory", "positive item budget"))?,
+            max_bytes: NonZeroU32::new(2 * 1024 * 1024)
+                .ok_or_else(|| SeError::invalid("owner inventory", "positive byte budget"))?,
+        },
+        deadline: Duration::from_secs(5),
+    })
 }
 
 pub struct FileOwner {

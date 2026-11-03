@@ -52,6 +52,25 @@ impl SqliteSnapshot {
             _local: phase.local,
         })
     }
+    /// Narrow one owner Registry read pin after CLI project selection. This
+    /// changes no principal, visibility, generation or snapshot boundary.
+    pub fn select_project(&mut self, project: ProjectId) -> StoreResult<()> {
+        if self.scope.admission.scope == Scope::Project(project.clone()) {
+            return Ok(());
+        }
+        if !matches!(self.scope.admission.scope, Scope::Registry)
+            || !matches!(self.scope.visibility, Visibility::Owner)
+            || !matches!(self.scope.admission.actor, Actor::Human(_))
+            || self.scope.admission.session.is_some()
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "only an owner Registry pin can narrow to a selected project",
+            ));
+        }
+        self.scope.admission.scope = Scope::Project(project);
+        Ok(())
+    }
     fn read_sql(&self, error: rusqlite::Error) -> Box<StoreError> {
         let interrupted =
             error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted);
@@ -715,7 +734,14 @@ impl Snapshot for SqliteSnapshot {
         id: DecisionId,
         budget: ReadBudget,
     ) -> StoreResult<Read<Page<StoredEvent>>> {
-        self.read_decision_transitions(id, budget)
+        self.read_decision_transitions(id, budget, false)
+    }
+    fn decision_detail_transitions(
+        &mut self,
+        id: DecisionId,
+        budget: ReadBudget,
+    ) -> StoreResult<Read<Page<StoredEvent>>> {
+        self.read_decision_transitions(id, budget, true)
     }
     fn decisions(
         &mut self,

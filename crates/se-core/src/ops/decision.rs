@@ -296,11 +296,13 @@ pub(super) fn row<R: Snapshot>(
         supersedes: if state == DecisionState::Pending {
             prior.clone()
         } else {
-            match cx
-                .read
-                .decision_predecessor(id.clone())
-                .map_err(|error| store_error(&error))?
-            {
+            match cx.read.decision_predecessor(id.clone()).map_err(|error| {
+                if error.code == se_store::StoreErrorCode::ProjectionInconsistent {
+                    scope::unreadable("decision predecessor", &error.cause)
+                } else {
+                    store_error(&error)
+                }
+            })? {
                 se_types::Read::Present { value } => Some(value),
                 se_types::Read::Absent { .. } => None,
                 other => Some(scope::require_present(

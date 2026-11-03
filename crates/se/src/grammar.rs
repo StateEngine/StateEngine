@@ -25,8 +25,8 @@ pub fn parse(args: Vec<OsString>) -> std::result::Result<Invocation, Failure> {
         if let Some(error) = crate::compat::refusal(arguments) {
             return Err(error);
         }
-        let command = ops::cli_command();
-        let matches = match command.clone().try_get_matches_from(&args) {
+        let mut command = ops::cli_command();
+        let matches = match command.try_get_matches_from_mut(&args) {
             Ok(matches) => matches,
             Err(error)
                 if error.kind() == ErrorKind::MissingRequiredArgument

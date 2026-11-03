@@ -3,7 +3,7 @@
 use super::{files::Files, owner};
 use crate::bootstrap::Bootstrap;
 use se_core::{admission::HumanTerminal, scope, store_error::store_error};
-use se_store::{Actor, Admission, CredentialState, ReadStore, Scope};
+use se_store::{Actor, Admission, CredentialState, ReadPhase, Scope};
 use se_types::{Read, Result, SeError};
 use sha2::{Digest, Sha256};
 
@@ -12,10 +12,10 @@ pub struct Caller {
     pub terminal: HumanTerminal,
     pub owner: Option<owner::FileOwner>,
 }
-pub fn observe<R: ReadStore>(cx: &Bootstrap, reader: &R, files: &Files) -> Result<Caller> {
+pub fn observe(cx: &Bootstrap, phase: &ReadPhase, files: &Files) -> Result<Caller> {
     if let Some(secret) = &cx.session {
         let record = scope::require_present(
-            reader
+            phase
                 .credential(Sha256::digest(secret.expose()).into())
                 .map_err(|e| store_error(&e))?,
             "session credential",
@@ -30,7 +30,7 @@ pub fn observe<R: ReadStore>(cx: &Bootstrap, reader: &R, files: &Files) -> Resul
                 "an active unexpired session-purpose credential; no owner fallback",
             ));
         }
-        let generation = match reader.runtime_owner().map_err(|e| store_error(&e))? {
+        let generation = match phase.runtime_owner().map_err(|e| store_error(&e))? {
             Read::Present { value } => value.generation.get(),
             _ => {
                 return Err(scope::unreadable(
@@ -52,7 +52,9 @@ pub fn observe<R: ReadStore>(cx: &Bootstrap, reader: &R, files: &Files) -> Resul
             owner: None,
         });
     }
-    let inventory = owner::inventory(reader, files)?;
+    let inventory = phase
+        .owner_guard(files, owner::budget()?)
+        .map_err(|error| store_error(&error))?;
     let [human] = inventory.owners.as_slice() else {
         return Err(scope::unreadable(
             "store owner",

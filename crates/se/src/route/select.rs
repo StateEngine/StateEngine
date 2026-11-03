@@ -32,29 +32,7 @@ pub(super) fn inventory<R: ReadStore>(
     let mut snapshot = reader
         .snapshot(read_scope(admission))
         .map_err(|e| store_error(&e))?;
-    let result = (|| {
-        let mut records = Vec::new();
-        let mut after = None;
-        for _ in 0..64 {
-            let page = match &query {
-                Some(query) => snapshot.removed_projects(query.clone(), budget(after)?),
-                None => snapshot.projects(budget(after)?),
-            }
-            .map_err(|e| store_error(&e))?;
-            let next = page.next().cloned();
-            let complete = page.window().complete();
-            records.extend(page.into_items());
-            match next {
-                Some(cursor) => after = Some(cursor),
-                None if complete => return Ok(records),
-                None => break,
-            }
-        }
-        Err(scope::unreadable(
-            "project selection",
-            "bounded registered-project inventory is incomplete",
-        ))
-    })();
+    let result = inventory_at(&mut snapshot, query);
     let closed = snapshot.close().map_err(|e| store_error(&e));
     match result {
         Ok(value) => {
@@ -67,9 +45,36 @@ pub(super) fn inventory<R: ReadStore>(
         }),
     }
 }
-pub fn apply<R: ReadStore>(
+pub(super) fn inventory_at<S: Snapshot>(
+    snapshot: &mut S,
+    query: Option<RemovedProjectQuery>,
+) -> Result<Vec<ProjectionRecord>> {
+    let mut records = Vec::new();
+    let mut after = None;
+    for _ in 0..64 {
+        let page = match &query {
+            Some(query) => snapshot.removed_projects(query.clone(), budget(after)?),
+            None => snapshot.projects(budget(after)?),
+        }
+        .map_err(|e| store_error(&e))?;
+        let next = page.next().cloned();
+        let complete = page.window().complete();
+        records.extend(page.into_items());
+        match next {
+            Some(cursor) => after = Some(cursor),
+            None if complete => return Ok(records),
+            None => break,
+        }
+    }
+    Err(scope::unreadable(
+        "project selection",
+        "bounded registered-project inventory is incomplete",
+    ))
+}
+
+pub fn apply<S: Snapshot>(
     cx: &Bootstrap,
-    reader: &R,
+    snapshot: &mut S,
     admission: &mut Admission,
     op: &se_core::ops::AnyOp,
 ) -> Result<()> {
@@ -79,17 +84,13 @@ pub fn apply<R: ReadStore>(
     });
     if let Scope::Project(bound) = &admission.scope {
         if let Some(selector) = cx.project.as_deref() {
-            let mut snap = reader
-                .snapshot(read_scope(admission))
-                .map_err(|e| store_error(&e))?;
-            let record = snap.project(bound.clone()).map_err(|e| store_error(&e));
-            let closed = snap.close().map_err(|e| store_error(&e));
             let record = scope::require_present(
-                record?,
+                snapshot
+                    .project(bound.clone())
+                    .map_err(|e| store_error(&e))?,
                 "bound project",
                 "Select an existing project in this data home with --project, or restore its original project binding.",
             )?;
-            closed?;
             let name = match &record.current.body {
                 EventBody::ProjectRegistered { name, .. }
                 | EventBody::ProjectUpdated { name, .. } => name,
@@ -124,23 +125,7 @@ pub fn apply<R: ReadStore>(
         || matches!(op, se_core::ops::AnyOp::ProjectRemove(_)))
         && let Some(id) = requested.and_then(|value| value.parse::<se_types::ProjectId>().ok())
     {
-        let mut snapshot = reader
-            .snapshot(read_scope(admission))
-            .map_err(|e| store_error(&e))?;
-        let record = snapshot.project(id.clone()).map_err(|e| store_error(&e));
-        let closed = snapshot.close().map_err(|e| store_error(&e));
-        let record = match record {
-            Ok(record) => {
-                closed?;
-                record
-            }
-            Err(error) => {
-                return Err(match closed {
-                    Ok(()) => error,
-                    Err(close) => error.with_cause(close),
-                });
-            }
-        };
+        let record = snapshot.project(id.clone()).map_err(|e| store_error(&e))?;
         match record {
             se_types::Read::Present { .. } => {
                 admission.scope = Scope::Project(id);
@@ -165,7 +150,7 @@ pub fn apply<R: ReadStore>(
         .map_err(|e| scope::unreadable("current directory", &e.to_string()))?;
     let mut candidates = Vec::new();
     let mut choices = Vec::new();
-    for record in projects(reader, admission)? {
+    for record in inventory_at(snapshot, None)? {
         let (id, name, roots) = match record.current.body {
             EventBody::ProjectRegistered {
                 project,
@@ -228,7 +213,7 @@ pub fn apply<R: ReadStore>(
         && (op.meta().effect == registry::Effect::Read
             || matches!(op, se_core::ops::AnyOp::ProjectRemove(_)))
     {
-        for record in super::retained::select(reader, admission, requested, &cwd)? {
+        for record in super::retained::select(snapshot, requested, &cwd)? {
             let view = se_core::ops::project_remove::removed_view(&record)?.ok_or_else(|| {
                 scope::unreadable(
                     "retained project selection",

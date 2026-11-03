@@ -1,14 +1,39 @@
-//! Finite store reads and authenticated endpoint observations for public status.
+//! Finite store reads and protected endpoint/native identity observations for status.
 use super::{execute, files::Files};
 use crate::bootstrap::Bootstrap;
 use se_core::{admission::read_scope, ops::*, scope, store_error::store_error};
-use se_store::{Actor, Admission, EventBody, MessageQuery, ReadStore, Scope, Snapshot};
+use se_store::{
+    Actor, Admission, EventBody, MessageQuery, ReadStore, RuntimeOwnerHead, Scope, Snapshot,
+};
 use se_types::{Read, Result};
-use std::num::NonZeroU32;
 
 pub fn observe<R: ReadStore>(
     cx: &Bootstrap,
     reader: &R,
+    files: &Files,
+    admission: &Admission,
+) -> Result<AnyOutput> {
+    let owner = Some(reader.runtime_owner().map_err(|e| store_error(&e))?);
+    let mut snapshot = reader
+        .snapshot(read_scope(admission))
+        .map_err(|e| store_error(&e))?;
+    let result = observe_snapshot(cx, &mut snapshot, owner, files, admission);
+    let closed = snapshot.close().map_err(|e| store_error(&e));
+    match result {
+        Ok(value) => {
+            closed?;
+            Ok(value)
+        }
+        Err(error) => Err(match closed {
+            Ok(()) => error,
+            Err(close) => error.with_cause(close),
+        }),
+    }
+}
+pub fn observe_snapshot<S: Snapshot>(
+    cx: &Bootstrap,
+    snap: &mut S,
+    owner: Option<Read<RuntimeOwnerHead>>,
     files: &Files,
     admission: &Admission,
 ) -> Result<AnyOutput> {
@@ -29,7 +54,7 @@ pub fn observe<R: ReadStore>(
         Files::open(&cx.home).map_err(|e| store_error(&e))?,
         &cx.home.join("runtime.lock"),
         se_store::LeaseIdentity {
-            store: Some(reader.info().map_err(|e| store_error(&e))?.id),
+            store: Some(snap.info().id),
             generation: admission.generation,
             mode: se_store::LeaseMode::DirectClient,
         },
@@ -40,25 +65,9 @@ pub fn observe<R: ReadStore>(
     }
     if cx.selections.status_all {
         output.scope = "all".into();
-        let mut snapshot = reader
-            .snapshot(read_scope(admission))
-            .map_err(|e| store_error(&e))?;
-        let projects = snapshot
+        let projects = snap
             .projects(super::select::budget(None)?)
-            .map_err(|e| store_error(&e));
-        let closed = snapshot.close().map_err(|e| store_error(&e));
-        let projects = match projects {
-            Ok(projects) => {
-                closed?;
-                projects
-            }
-            Err(error) => {
-                return Err(match closed {
-                    Ok(()) => error,
-                    Err(close) => error.with_cause(close),
-                });
-            }
-        };
+            .map_err(|e| store_error(&e))?;
         // Empty registration is a measured fact; no per-project runtime
         // counts need to be guessed to render the post-remove --all answer.
         if projects.items().is_empty() && projects.window().complete() {
@@ -70,9 +79,6 @@ pub fn observe<R: ReadStore>(
         }
     }
     if let Scope::Project(project) = &admission.scope {
-        let mut snap = reader
-            .snapshot(read_scope(admission))
-            .map_err(|e| store_error(&e))?;
         let result = (|| {
             let record = scope::require_present(
                 snap.project(project.clone()).map_err(|e| store_error(&e))?,
@@ -147,7 +153,7 @@ pub fn observe<R: ReadStore>(
             output.agents = Some(agent_status::page(
                 super::select::budget(None)?,
                 &mut se_core::commit::Cx {
-                    read: &mut snap,
+                    read: snap,
                     admission,
                 },
             )?);
@@ -155,7 +161,7 @@ pub fn observe<R: ReadStore>(
                 Actor::Human(_) => output.inbox.owner_unread = Some(unread),
                 Actor::Agent(agent) => {
                     output.inbox.self_unread = Some(unread);
-                    let selected = receipt::named_agent(&mut snap, agent)?;
+                    let selected = receipt::named_agent(snap, agent)?;
                     if let Some(session) = &admission.session {
                         output.principal = Some(PrincipalView {
                             project: Named {
@@ -170,14 +176,17 @@ pub fn observe<R: ReadStore>(
             }
             Ok(())
         })();
-        let closed = snap.close().map_err(|e| store_error(&e));
         result?;
-        closed?;
     }
     match execute::endpoint(files) {
         Ok(Read::Present { value: endpoint }) => {
             let owner = scope::require_present(
-                reader.runtime_owner().map_err(|e| store_error(&e))?,
+                owner.ok_or_else(|| {
+                    scope::unreadable(
+                        "runtime owner",
+                        "status has no same-pin ownership observation",
+                    )
+                })?,
                 "recorded runtime owner",
                 "Restore access to the recorded runtime owner in this data home; do not treat an unreadable owner as a stopped host.",
             )?;
@@ -192,15 +201,10 @@ pub fn observe<R: ReadStore>(
                 return Ok(output.into());
             }
             let options = execute::options();
-            let verified = se_host::client::BlockingIpcClient::connect_authenticated(
-                &endpoint,
-                execute::credential(cx, files)?,
-                NonZeroU32::new(se_host::client::wire::DEFAULT_REPLY_BYTES)
-                    .ok_or_else(|| se_types::SeError::invalid("status reply bound", "positive"))?,
-                &options,
-            );
+            let observation_bound = se_host::client::lease::Deadline::from_options(&options)?;
+            let verified = super::process::observe(&endpoint, &observation_bound);
             match verified {
-                Ok(connection) => {
+                Ok(process) => {
                     output.runtime.state = "running".into();
                     output.runtime.host = Some(
                         match endpoint.kind {
@@ -209,15 +213,11 @@ pub fn observe<R: ReadStore>(
                         }
                         .into(),
                     );
-                    output.runtime.generation = Some(connection.negotiated().generation.get());
+                    output.runtime.generation = Some(endpoint.generation.get());
                     output.runtime.endpoint = Some(endpoint_name(&endpoint)?);
                     output.runtime.version = Some(endpoint.package_version.clone());
                     output.runtime.observed_at = Some(generated);
-                    let observation_bound =
-                        se_host::client::lease::Deadline::from_options(&options)?;
-                    output.runtime.process =
-                        Some(super::process::observe(&endpoint, &observation_bound)?);
-                    drop(connection);
+                    output.runtime.process = Some(process);
                     #[cfg(any(target_os = "linux", windows))]
                     {
                         let bound = se_host::client::lease::Deadline::from_options(&options)?;
