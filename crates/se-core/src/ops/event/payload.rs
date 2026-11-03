@@ -23,6 +23,10 @@ pub(super) fn public<R: Snapshot>(
     use EventBody::*;
     Ok(match &event.body {
         MessageSent { message, recipient, kind, body, refs, reply_to } => ("message.sent", json!({"message_id":message,"to":receipt::actor_ref(read,recipient)?,"kind":kind,"body":text(body)?,"refs":refs,"reply_to":reply_to})),
+        MessageRead{message,recipient}=>("message.read",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?})),
+        MessageDismissed{message,recipient}=>("message.dismissed",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?})),
+        MessageDelivered{message,recipient,evidence}=>("message.delivered",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?,"evidence":evidence})),
+        MessageSuperseded{message,replacement,..}=>("message.superseded",json!({"message_id":message,"replacement":replacement})),
         WorkingStateSet { agent, text: body, .. } => ("working_state.set", json!({"agent":receipt::named_agent(read,agent)?,"body":text(body)?,"revision":event.revision.value})),
         PrincipalRegistered { principal, name, role, .. } => ("principal.registered", json!({"principal":receipt::actor_ref(read,principal)?,"name":name,"role":role})),
         PrincipalRenamed { principal, name, .. } => ("principal.renamed", json!({"principal":receipt::actor_ref(read,principal)?,"name":name})),
@@ -36,6 +40,7 @@ pub(super) fn public<R: Snapshot>(
         SessionTurn { session, provider, vendor_ref, role, text: body, evidence, .. } => {
             let source = match (event.header.door, provider, evidence.path.as_ref()) {
                 (se_store::Door::Hook, _, _) => "hook",
+                (se_store::Door::Import, _, _) => "node-import",
                 (se_store::Door::Host, se_store::Provider::SeCode, None) => "app-server",
                 _ => return Err(scope::unreadable("turn provenance", "this adapter cannot infer a capture source from an unlabelled legacy door")),
             };
@@ -55,6 +60,15 @@ pub(super) fn public<R: Snapshot>(
             ("session.turn", json!({"session_id":session,"turn_id":if vendor_ref.is_empty() {None} else {Some(vendor_ref)},"provider":provider,"provider_session":if native_ref.is_empty() {None} else {Some(native_ref)},"role":role,"source":source,"occurred_at":receipt::timestamp(event.header.occurred_at_us)?,"body":text(body)?}))
         }
         CaptureSuppressed { session, count, reason, .. } => ("capture.suppressed", json!({"session_id":session,"count":count,"reason":reason})),
+        LegacyRetained{family,legacy_id,bytes,retained_from,..} => {
+            let body=bytes.as_ref().map(|content|String::from_utf8(content.bytes.clone()).map_err(|e|scope::unreadable("retained user history",&e.to_string()))).transpose()?;
+            ("legacy.retained",json!({"family":family,"legacy_id":legacy_id,"retained_from":retained_from,"body":body.as_ref().map(|body|text(&StoredText::Present(body.clone()))).transpose()?}))
+        }
+        AliasImported{alias,principal,source,..}=>("alias.imported",json!({"alias":alias,"principal":receipt::actor_ref(read,principal)?,"source":source})),
+        ImportStarted{format,policy_version,..}=>("import.started",json!({"format":format,"policy_version":policy_version})),
+        ImportProgress{checkpoint,counts}=>("import.progress",json!({"family":checkpoint.family,"source_rows":checkpoint.row_offset,"counts":counts})),
+        ImportFinished{counts,complete,..}=>("import.finished",json!({"complete":complete,"counts":counts})),
+        ImportUnreadable{family,code,evidence,..}=>("import.unreadable",json!({"family":family,"reason":code,"source_range":evidence})),
         // Later-wave event families require their own complete public projection;
         // they cannot expose raw native/credential fields as a shortcut.
         _ => return Err(SeError::new(Detail::FeatureUnavailable(details::FeatureUnavailable {

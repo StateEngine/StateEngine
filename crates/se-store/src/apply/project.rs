@@ -3,16 +3,17 @@
 //! authority or unsettled work left in the project refuses by name.
 use super::*;
 pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
-    let EventBody::ProjectRemoved {
-        project,
-        expected: want,
-        ..
-    } = &e.body
-    else {
-        return Err(invalid("project removal revision dispatch"));
+    let (project, want) = match &e.body {
+        EventBody::ProjectRemoved {
+            project, expected, ..
+        }
+        | EventBody::ProjectUpdated {
+            project, expected, ..
+        } => (project, *expected),
+        _ => return Err(invalid("project metadata revision dispatch")),
     };
     let p = key(c, "project", project.as_str(), &[0], false)?;
-    expected(c, "projects", "project_id=?", &[&p], *want)
+    expected(c, "projects", "project_id=?", &[&p], want)
 }
 /// The project's registered owner, from its immutable registration facts.
 pub(super) fn owner(c: &Connection, p: &[u8]) -> StoreResult<Option<String>> {
@@ -141,5 +142,60 @@ pub(super) fn apply(
     }
     c.execute("DELETE FROM roots WHERE project_id=?", [&p])
         .map_err(sql)?;
+    codec::aux(c, seq, facts)
+}
+
+/// Imported root/name revisions use the ordinary owner and live-custody rules.
+pub(super) fn update(
+    c: &Connection,
+    h: &EventHeader,
+    body: EventBody<InputText>,
+    seq: i64,
+    rev: u64,
+    facts: Value,
+) -> StoreResult<()> {
+    let EventBody::ProjectUpdated { project, roots, .. } = body else {
+        return Err(invalid("project update dispatch"));
+    };
+    if h.scope != Scope::Registry || h.door != Door::Import {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "historical project revisions require the owner import in registry scope",
+        ));
+    }
+    let p = key(c, "project", project.as_str(), &[0], false)?;
+    if !is_owner(c, h, &p)? {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "only the current project owner adopts a historical root revision",
+        ));
+    }
+    for (query, remedy) in LIVE {
+        if c.query_row(query, [&p], |r| r.get::<_, bool>(0))
+            .map_err(sql)?
+        {
+            return Err(fail(StoreErrorCode::InvalidTransition, remedy));
+        }
+    }
+    if roots.is_empty() || roots.len() > 64 {
+        return Err(invalid("project revision needs bounded roots"));
+    }
+    let changed=c.execute("UPDATE projects SET revision=?,last_seq=? WHERE project_id=? AND revision=? AND state='active'",crate::sql_value::sql_params![rev,seq,p,rev-1]).map_err(sql)?;
+    if changed != 1 {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "historical root revision requires the current active registration",
+        ));
+    }
+    c.execute("DELETE FROM roots WHERE project_id=?", [&p])
+        .map_err(sql)?;
+    for root in roots {
+        let encoded = symbol(c, codec::encode(&root.path)?.as_bytes())?;
+        c.execute(
+            "INSERT INTO roots(project_id,canonical_key,encoded_path,last_seq) VALUES(?,?,?,?)",
+            crate::sql_value::sql_params![p, root.canonical_key, encoded, seq],
+        )
+        .map_err(sql)?;
+    }
     codec::aux(c, seq, facts)
 }

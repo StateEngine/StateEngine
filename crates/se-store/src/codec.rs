@@ -94,18 +94,30 @@ pub(crate) fn body(
 ) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
     Ok(match kind {
+        "import.started" | "import.progress" | "import.finished" | "import.unreadable"
+        | "legacy.retained" | "alias.imported" => crate::import::decode(c, seq, kind)?,
         "process.registered" | "process.transition" => process::body(c, seq, kind, scope)?,
+        "message.superseded" => {
+            let v = facts(c, seq)?;
+            MessageSuperseded {
+                message: field(&v, "message")?,
+                replacement: field(&v, "replacement")?,
+                expected: field(&v, "expected")?,
+            }
+        }
         "message.sent" => {
             let (message,recipient,kind,refs,reply):(Vec<u8>,Vec<u8>,String,String,Option<Vec<u8>>)=c.prepare_cached("SELECT message_id,recipient_id,message_kind,refs,reply_to FROM message_data WHERE event_seq=?").map_err(sql)?.query_row([seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).map_err(sql)?;
             let s = scope_key(c, scope, false)?;
             MessageSent {
-                message: wire(c, "message", &message, &s)?.parse().map_err(invalid)?,
+                message: wire(c, "message", &message, &s)?
+                    .try_into()
+                    .map_err(invalid)?,
                 recipient: actor(c, &recipient, &s)?,
                 kind,
                 body: stored_text(c, seq, "body")?,
                 refs: serde_json::from_str(&refs).map_err(invalid)?,
                 reply_to: reply
-                    .map(|v| wire(c, "message", &v, &s).and_then(|v| v.parse().map_err(invalid)))
+                    .map(|v| wire(c, "message", &v, &s).and_then(|v| v.try_into().map_err(invalid)))
                     .transpose()?,
             }
         }
@@ -113,7 +125,9 @@ pub(crate) fn body(
             let (message,recipient,evidence):(Vec<u8>,Vec<u8>,Option<Vec<u8>>)=c.query_row("SELECT d.message_id,m.recipient_id,m.evidence_event FROM mark_data m JOIN message_data d
                     ON d.event_seq=m.message_seq WHERE m.event_seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).map_err(sql)?;
             let s = scope_key(c, scope, false)?;
-            let message = wire(c, "message", &message, &s)?.parse().map_err(invalid)?;
+            let message = wire(c, "message", &message, &s)?
+                .try_into()
+                .map_err(invalid)?;
             let recipient = actor(c, &recipient, &s)?;
             match kind {
                 "message.read" => MessageRead { message, recipient },
@@ -127,7 +141,7 @@ pub(crate) fn body(
                         &evidence.ok_or_else(|| invalid("delivered without evidence"))?,
                         &s,
                     )?
-                    .parse()
+                    .try_into()
                     .map_err(invalid)?,
                 },
             }
@@ -146,9 +160,11 @@ pub(crate) fn body(
                 )
                 .map_err(sql)?;
             WorkingStateSet {
-                agent: wire(c, "agent", &agent, &scope_key(c, scope, false)?)?
-                    .parse()
-                    .map_err(invalid)?,
+                agent: decode_agent(
+                    c,
+                    wire(c, "agent", &agent, &scope_key(c, scope, false)?)?,
+                    &scope_key(c, scope, false)?,
+                )?,
                 text: stored_text(c, seq, "body")?,
                 expected: expected
                     .map(revision)
@@ -170,6 +186,12 @@ pub(crate) fn body(
         _ => {
             let v = facts(c, seq)?;
             match kind {
+                "project.updated" => ProjectUpdated {
+                    project: field(&v, "project")?,
+                    name: field(&v, "name")?,
+                    roots: field(&v, "roots")?,
+                    expected: field(&v, "expected")?,
+                },
                 "project.registered" => ProjectRegistered {
                     project: field(&v, "project")?,
                     name: field(&v, "name")?,
@@ -179,26 +201,45 @@ pub(crate) fn body(
                     expected: field(&v, "expected")?,
                 },
                 "principal.registered" => PrincipalRegistered {
-                    principal: field(&v, "principal")?,
+                    principal: actor_value(
+                        c,
+                        v.get("principal")
+                            .ok_or_else(|| invalid("principal metadata absent"))?,
+                        &scope_key(c, scope, false)?,
+                    )?,
                     kind: field(&v, "kind")?,
                     owner: field(&v, "owner")?,
-                    created_by: field(&v, "created_by")?,
+                    created_by: v
+                        .get("created_by")
+                        .filter(|v| !v.is_null())
+                        .map(|v| actor_value(c, v, &scope_key(c, scope, false)?))
+                        .transpose()?,
                     name: field(&v, "name")?,
                     role: field(&v, "role")?,
                     expected: field(&v, "expected")?,
                 },
                 "principal.renamed" => PrincipalRenamed {
-                    principal: field(&v, "principal")?,
+                    principal: actor_value(
+                        c,
+                        v.get("principal")
+                            .ok_or_else(|| invalid("principal metadata absent"))?,
+                        &scope_key(c, scope, false)?,
+                    )?,
                     name: field(&v, "name")?,
                     expected: field(&v, "expected")?,
                 },
                 "profile.saved" => ProfileSaved {
-                    agent: field(&v, "agent")?,
+                    agent: decode_agent(c, field(&v, "agent")?, &scope_key(c, scope, false)?)?,
                     profile: field(&v, "profile")?,
                     expected: field(&v, "expected")?,
                 },
                 "grant.recorded" => GrantRecorded {
-                    principal: field(&v, "principal")?,
+                    principal: actor_value(
+                        c,
+                        v.get("principal")
+                            .ok_or_else(|| invalid("principal metadata absent"))?,
+                        &scope_key(c, scope, false)?,
+                    )?,
                     key: field(&v, "key")?,
                     active: field(&v, "active")?,
                     expected: field(&v, "expected")?,
@@ -251,7 +292,11 @@ pub(crate) fn body(
                         })?;
                     }
                     EffectRequested {
-                        principal: field(&v, "principal")?,
+                        principal: v
+                            .get("principal")
+                            .filter(|v| !v.is_null())
+                            .map(|v| actor_value(c, v, &scope_key(c, scope, false)?))
+                            .transpose()?,
                         effect: field(&v, "effect")?,
                         kind: field(&v, "kind")?,
                         intent,
@@ -271,7 +316,12 @@ pub(crate) fn body(
                     }
                     EffectOffered {
                         effect: field(&v, "effect")?,
-                        principal: field(&v, "principal")?,
+                        principal: actor_value(
+                            c,
+                            v.get("principal")
+                                .ok_or_else(|| invalid("principal metadata absent"))?,
+                            &scope_key(c, scope, false)?,
+                        )?,
                         attempt: field(&v, "attempt")?,
                         evidence,
                     }
@@ -334,6 +384,15 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         } => (
             "project.registered",
             json!({"project":project,"name":name,"roots":roots,"owner":owner,"history_from":history_from,"expected":expected}),
+        ),
+        ProjectUpdated {
+            project,
+            name,
+            roots,
+            expected,
+        } => (
+            "project.updated",
+            json!({"project":project,"name":name,"roots":roots,"expected":expected}),
         ),
         PrincipalRegistered {
             principal,
@@ -528,6 +587,14 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "message.sent",
             json!({"message":message,"recipient":recipient,"kind":kind,"refs":refs,"reply_to":reply_to}),
         ),
+        MessageSuperseded {
+            message,
+            replacement,
+            expected,
+        } => (
+            "message.superseded",
+            json!({"message":message,"replacement":replacement,"expected":expected}),
+        ),
         MessageRead { message, recipient } => (
             "message.read",
             json!({"message":message,"recipient":recipient}),
@@ -667,6 +734,12 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "integration.recorded",
             json!({"integration":integration,"path":path,"key":key,"marker":marker,"prior_sha256":prior_sha256,"written_sha256":written_sha256,"state":state,"witness":witness,"expected":expected}),
         ),
+        ImportStarted { .. }
+        | ImportProgress { .. }
+        | ImportFinished { .. }
+        | ImportUnreadable { .. }
+        | LegacyRetained { .. }
+        | AliasImported { .. } => crate::import::metadata(body)?,
         _ => return later("this event kind"),
     })
 }

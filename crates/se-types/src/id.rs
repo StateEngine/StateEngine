@@ -93,6 +93,12 @@ ids!(ProjectId=>"prj_",AgentId=>"ag_",HumanId=>"hu_",SessionId=>"ses_",MessageId
 /// The result permits representing history, not launching or authenticating it.
 pub trait LegacyIdRegistry {
     fn contains(&self, kind: IdKind, text: &str) -> Result<bool>;
+    /// Exact source-recorded correspondence, never a label-derived identity.
+    /// Static registries have no aliases; store registries must query their
+    /// scoped mapping or return its read error.
+    fn resolve_alias(&self, _kind: IdKind, _alias: &str) -> Result<Option<String>> {
+        Ok(None)
+    }
 }
 fn hex(value: &str, count: Option<usize>) -> bool {
     count.is_none_or(|count| value.len() == count)

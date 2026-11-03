@@ -104,21 +104,23 @@ pub(crate) fn decode(
         .map_err(sql)?
         .ok_or_else(|| invalid("turn fact absent"))?;
     let s = scope_key(c, scope, false)?;
-    let agent: AgentId = wire(
+    let agent: AgentId = decode_agent(
         c,
-        "agent",
-        &row.get::<_, Vec<u8>>("agent_id").map_err(sql)?,
+        wire(
+            c,
+            "agent",
+            &row.get::<_, Vec<u8>>("agent_id").map_err(sql)?,
+            &s,
+        )?,
         &s,
-    )?
-    .parse()
-    .map_err(invalid)?;
+    )?;
     let session: SessionId = wire(
         c,
         "session",
         &row.get::<_, Vec<u8>>("session_id").map_err(sql)?,
         &s,
     )?
-    .parse()
+    .try_into()
     .map_err(invalid)?;
     let path: Vec<u8> = c
         .query_row(

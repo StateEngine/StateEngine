@@ -179,6 +179,21 @@ pub fn launch<R: Snapshot>(
             Read::Absent { checked } => Read::Absent {
                 checked: checked.clone(),
             },
+            Read::Present { value }
+                if value
+                    .original
+                    .as_deref()
+                    .unwrap_or(&value.current)
+                    .header
+                    .door
+                    == se_store::Door::Import =>
+            {
+                Read::Absent {
+                    checked:
+                        "imported sessions are historical; start a fresh provider conversation"
+                            .into(),
+                }
+            }
             Read::Present { value } => {
                 // Only an activated conversation is resumable. A revoked
                 // preparation is not silently replaced with a new conversation.

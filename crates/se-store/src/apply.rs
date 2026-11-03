@@ -5,6 +5,7 @@ pub(crate) mod cursor;
 pub(crate) mod decision;
 pub(crate) mod effect;
 mod mail;
+mod message;
 pub(crate) mod process;
 pub(crate) mod project;
 pub(crate) mod session;
@@ -209,6 +210,21 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
                 Expected::Absent,
             )
         }
+        MessageSuperseded {
+            message,
+            expected: want,
+            ..
+        } => {
+            let p = project_id(c, &e.header.scope, false)?;
+            let m = key(c, "message", message.as_str(), &s, false)?;
+            expected(
+                c,
+                "messages",
+                "project_id=? AND message_id=?",
+                &[&p, &m],
+                *want,
+            )
+        }
         MessageRead { message, .. }
         | MessageDismissed { message, .. }
         | MessageDelivered { message, .. } => {
@@ -257,8 +273,14 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         | EffectOffered { .. }
         | EffectSettled { .. }
         | IntegrationRecorded { .. } => effect::revision(c, e),
-        ProjectRemoved { .. } => project::revision(c, e),
+        ProjectRemoved { .. } | ProjectUpdated { .. } => project::revision(c, e),
         CursorRecorded { .. } | CursorAcknowledged { .. } => cursor::revision(c, e),
+        ImportStarted { .. }
+        | ImportProgress { .. }
+        | ImportFinished { .. }
+        | ImportUnreadable { .. }
+        | LegacyRetained { .. }
+        | AliasImported { .. } => crate::import::revision(c, e),
         _ => later("event revision"),
     }
 }
@@ -286,7 +308,9 @@ pub(crate) fn apply(
             )
             .optional()
             .map_err(sql)?;
-        if let (Some(at), Scope::Project(project)) = (removed_at, &header.scope) {
+        if let (Some(at), Scope::Project(project)) = (removed_at, &header.scope)
+            && header.door != Door::Import
+        {
             let mut e = fail(
                 StoreErrorCode::ProjectRemoved,
                 format!("project {project} was removed; its history is retained"),
@@ -411,7 +435,8 @@ pub(crate) fn apply(
                 }
                 c.execute("INSERT INTO owners(human_id,display_name,first_seq,revision,last_seq) VALUES(?,?,?,?,?)",crate::sql_value::sql_params![a,name,seq,revision,seq]).map_err(sql)?;
             } else {
-                if header.actor != Actor::Human(owner.clone())
+                if header.door != Door::Import
+                    && header.actor != Actor::Human(owner.clone())
                     && created_by.as_ref() != Some(&header.actor)
                 {
                     return Err(fail(
@@ -536,6 +561,9 @@ pub(crate) fn apply(
             .map_err(sql)?;
             count(c, project()?, &recipient, 1, seq)?;
         }
+        body @ MessageSuperseded { .. } => {
+            message::supersede(c, header, body, seq, revision, facts)?
+        }
         body @ (MessageRead { .. } | MessageDismissed { .. } | MessageDelivered { .. }) => {
             let (message, recipient, column, tag, evidence) = match body {
                 MessageRead { message, recipient } => {
@@ -567,7 +595,7 @@ pub(crate) fn apply(
             }
             let (sent, unread): (i64, bool) = c
                 .query_row(
-                    "SELECT d.sent_seq,(m.read_seq IS NULL AND m.dismissed_seq IS NULL)
+                    "SELECT d.sent_seq,(m.read_seq IS NULL AND m.dismissed_seq IS NULL AND d.superseded_by IS NULL)
                  FROM messages d JOIN marks m ON m.message_seq=d.sent_seq
                  WHERE d.project_id=? AND d.message_id=? AND d.recipient_id=?",
                     crate::sql_value::sql_params![project()?, m, a],
@@ -688,10 +716,17 @@ pub(crate) fn apply(
         | EffectOffered { .. }
         | EffectSettled { .. }
         | IntegrationRecorded { .. }) => effect::apply(c, header, b, seq, revision, facts, lease)?,
+        b @ ProjectUpdated { .. } => project::update(c, header, b, seq, revision, facts)?,
         b @ ProjectRemoved { .. } => project::apply(c, header, b, seq, revision, facts)?,
         b @ (CursorRecorded { .. } | CursorAcknowledged { .. }) => {
             cursor::apply(c, header, b, seq, revision, facts)?
         }
+        b @ (ImportStarted { .. }
+        | ImportProgress { .. }
+        | ImportFinished { .. }
+        | ImportUnreadable { .. }
+        | LegacyRetained { .. }
+        | AliasImported { .. }) => crate::import::apply(c, header, b, seq, revision, facts)?,
         _ => return later("projection"),
     }
     Ok(())

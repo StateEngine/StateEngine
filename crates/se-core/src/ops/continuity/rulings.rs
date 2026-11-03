@@ -48,6 +48,6 @@ pub(super) fn decode(record: ProjectionRecord, admitted: &Scope) -> Result<Gover
         id: decision.clone(),
         key: key.clone(),
         statement: text.clone(),
-        ratified_at: receipt::timestamp(record.current.recorded_at_us)?,
+        ratified_at: receipt::timestamp(receipt::event_time(&record.current))?,
     })
 }

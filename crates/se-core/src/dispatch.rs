@@ -478,6 +478,7 @@ impl Kernel {
                 ));
             }
             AnyOp::ProjectInit(input) => OpStep::Custody(CustodyPlan::Initialize(input)),
+            AnyOp::ImportNode(input) => OpStep::Custody(CustodyPlan::ImportNode(input)),
             AnyOp::ProjectStatus(input) => OpStep::Custody(CustodyPlan::ObserveStatus(input)),
             AnyOp::RuntimeUp(input) => OpStep::Custody(CustodyPlan::RuntimeUp(input)),
             AnyOp::RuntimeDown(input) => OpStep::Custody(CustodyPlan::RuntimeDown(input)),

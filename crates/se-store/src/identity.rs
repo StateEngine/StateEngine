@@ -143,10 +143,19 @@ pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<
             })
             .optional()
             .map_err(sql)?;
-        if kind.as_deref() == Some("agent") {
-            return Ok(Actor::Agent(
-                wire(db, "agent", bytes, scope)?.parse().map_err(invalid)?,
+        if kind.as_deref() == Some("human") {
+            return Ok(Actor::Human(
+                wire(db, "human", bytes, &[0])?
+                    .try_into()
+                    .map_err(invalid)?,
             ));
+        }
+        if kind.as_deref() == Some("agent") {
+            return Ok(Actor::Agent(decode_agent(
+                db,
+                wire(db, "agent", bytes, scope)?,
+                scope,
+            )?));
         }
     }
     let owner: bool = db
@@ -156,10 +165,90 @@ pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<
         .map_err(sql)?;
     if owner {
         return Ok(Actor::Human(
-            wire(db, "human", bytes, &[0])?.parse().map_err(invalid)?,
+            wire(db, "human", bytes, &[0])?
+                .try_into()
+                .map_err(invalid)?,
         ));
     }
-    Ok(Actor::Agent(
-        wire(db, "agent", bytes, scope)?.parse().map_err(invalid)?,
-    ))
+    Ok(Actor::Agent(decode_agent(
+        db,
+        wire(db, "agent", bytes, scope)?,
+        scope,
+    )?))
+}
+
+/// A contextual decoder for source-registered custom agent spellings. This
+/// capability is never ambient serde and requires retained import provenance.
+pub(crate) struct StoredLegacyRegistry<'a> {
+    pub db: &'a Connection,
+    pub scope: &'a [u8],
+}
+impl se_types::LegacyIdRegistry for StoredLegacyRegistry<'_> {
+    fn contains(&self, kind: se_types::IdKind, text: &str) -> se_types::Result<bool> {
+        if kind != se_types::IdKind::AgentId {
+            return Ok(false);
+        }
+        self.db.query_row("SELECT EXISTS(SELECT 1 FROM identities i JOIN legacy_ids l ON l.typed_id=i.storage_key JOIN events e ON e.seq=l.imported_seq WHERE i.kind='agent' AND i.scope_key=? AND i.wire_id=? AND i.encoding='registered-exception' AND e.project_id=? AND e.door='import')",rusqlite::params![self.scope,text,self.scope.get(1..).unwrap_or(&[])],|r|r.get(0)).map_err(|e|se_types::SeError::invalid("source-scoped legacy agent",&e.to_string()))
+    }
+}
+pub(crate) fn decode_agent(
+    c: &Connection,
+    text: String,
+    scope: &[u8],
+) -> StoreResult<se_types::AgentId> {
+    match se_types::AgentId::from_legacy(text.clone()) {
+        Ok(id) => Ok(id),
+        Err(_) => {
+            se_types::AgentId::from_registered_legacy(text, &StoredLegacyRegistry { db: c, scope })
+                .map_err(invalid)
+        }
+    }
+}
+pub(crate) fn actor_value(
+    c: &Connection,
+    v: &serde_json::Value,
+    scope: &[u8],
+) -> StoreResult<Actor> {
+    if let Some(text) = v.get("Agent").and_then(serde_json::Value::as_str) {
+        return Ok(Actor::Agent(decode_agent(c, text.into(), scope)?));
+    }
+    serde_json::from_value(v.clone()).map_err(invalid)
+}
+
+/// Only identities already admitted in the credential's exact storage scope
+/// may supplement canonical IDs. This does not change uncontextualized serde.
+struct RegisteredIds<'a> {
+    db: &'a rusqlite::Connection,
+    scope: &'a [u8],
+}
+impl se_types::LegacyIdRegistry for RegisteredIds<'_> {
+    fn contains(&self, kind: se_types::IdKind, text: &str) -> se_types::Result<bool> {
+        let (kind, scope) = match kind {
+            se_types::IdKind::ProjectId => ("project", &[0][..]),
+            se_types::IdKind::AgentId => ("agent", self.scope),
+            se_types::IdKind::SessionId => ("session", self.scope),
+            _ => return Ok(false),
+        };
+        self.db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM identities WHERE kind=? AND scope_key=? AND wire_id=?)",
+                rusqlite::params![kind, scope, text],
+                |row| row.get(0),
+            )
+            .map_err(|error| se_types::SeError::invalid("stored identity registry", &error.to_string()))
+    }
+}
+pub(crate) fn registered_ids<'a>(
+    db: &'a Connection,
+    scope: &'a [u8],
+) -> impl se_types::LegacyIdRegistry + 'a {
+    RegisteredIds { db, scope }
+}
+/// Recover a project only through its exact registry storage key and spelling.
+pub(crate) fn project_from_key(db: &Connection, key: &[u8]) -> StoreResult<se_types::ProjectId> {
+    se_types::ProjectId::from_registered_legacy(
+        wire(db, "project", key, &[0])?,
+        &registered_ids(db, &[0]),
+    )
+    .map_err(invalid)
 }

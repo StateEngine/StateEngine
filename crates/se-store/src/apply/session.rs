@@ -102,7 +102,10 @@ pub(super) fn apply(
             if want != Expected::Absent {
                 return Err(invalid("session preparation requires an absent session"));
             }
-            if generation != lease.generation || native_ref.is_empty() || native_ref.len() > 32768 {
+            if generation != lease.generation
+                || native_ref.is_empty() && h.door != Door::Import
+                || native_ref.len() > 32768
+            {
                 return Err(invalid("session generation/native reference bounds"));
             }
             codec::aux(c, seq, serde_json::json!({"surface": surface}))?;
@@ -194,7 +197,7 @@ pub(super) fn apply(
             ..
         } => {
             let data = codec::session::head(c, &p, &id)?;
-            if data.state != "active" {
+            if data.state != "active" && !(h.door == Door::Import && data.state == "prepared") {
                 return Err(fail(
                     StoreErrorCode::InvalidTransition,
                     "only an active session can end",

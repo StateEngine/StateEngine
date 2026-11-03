@@ -317,7 +317,7 @@ pub(super) fn apply(
                     "acknowledgment evidence must be committed after the cursor was issued",
                 ));
             }
-            let agent = wire(c, "agent", &a, &s)?.parse().map_err(invalid)?;
+            let agent = wire(c, "agent", &a, &s)?.try_into().map_err(invalid)?;
             permitted(c, h, &p, &agent, &a)?;
             let evidence_key = key(c, "event", evidence.as_str(), &s, false)?;
             c.execute(

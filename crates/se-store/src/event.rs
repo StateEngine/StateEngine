@@ -617,9 +617,12 @@ pub enum EventBody<T> {
         family: crate::ImportFamily,
         format_version: u32,
         legacy_id: String,
-        mapped_id: RecordId,
+        mapped_id: crate::import::LegacyTarget,
         source: SourceEvidence,
         bytes: Option<LegacyBytes>,
+        /// Duplicate history refers to the original owning payload instead of
+        /// making another undeclared text copy.
+        retained_from: Option<EventId>,
     },
     TurnErased {
         target: EventId,

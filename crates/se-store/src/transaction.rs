@@ -304,11 +304,10 @@ impl Engine {
         full: bool,
         maintenance: bool,
     ) -> StoreResult<CommitReceipt> {
-        if batch.events.is_empty() || batch.events.len() > 64 || batch.import_checkpoint.is_some() {
-            return Err(invalid(
-                "wave-1 batch needs 1..64 events and no import checkpoint",
-            ));
+        if batch.events.is_empty() || batch.events.len() > 64 {
+            return Err(invalid("atomic batch needs 1..64 events"));
         }
+        let importing = crate::import::validate_batch(&batch)?;
         let scope = scope_key(&self.db, &batch.admission.scope, true)?;
         let actor = key(
             &self.db,
@@ -323,8 +322,8 @@ impl Engine {
         )?;
         for e in &batch.events {
             if e.header.scope != batch.admission.scope
-                || e.header.actor != batch.admission.actor
-                || e.header.session != batch.admission.session
+                || !importing && e.header.actor != batch.admission.actor
+                || !importing && e.header.session != batch.admission.session
                 || e.header.origin != info.id
             {
                 return Err(fail(
@@ -373,6 +372,7 @@ impl Engine {
             ));
         }
         crate::mail::validate_offer_batch(&batch)?;
+        crate::import::validate_checkpoint(&batch)?;
         apply::capture::canonicalize(&self.db, &mut batch)?;
         let mut descriptors = Vec::new();
         let mut total = 0usize;
@@ -489,13 +489,24 @@ impl Engine {
                     .as_ref()
                     .map(|v| key(&self.db, "event", v.as_str(), &scope, false))
                     .transpose()?;
+                let event_actor = key(
+                    &self.db,
+                    e.header.actor.kind(),
+                    e.header.actor.wire(),
+                    if e.header.actor.kind() == "human" {
+                        &[0]
+                    } else {
+                        &scope
+                    },
+                    true,
+                )?;
                 self.db.execute(
                     "INSERT INTO events(event_id,project_id,actor_id,session_id,origin_id,door,kind,
                      schema_version,recorded_incarnation,entity_revision,writer_mode,host_generation,
                      durability,operation_id,occurred_at_us,recorded_at_us,cause_event_id,supersedes_event_id)
                      VALUES(?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?)",
                     crate::sql_value::sql_params![
-                        event, p, actor, session,
+                        event, p, event_actor, session,
                         canonical(info.id.as_str()).ok_or_else(|| invalid("canonical StoreId required"))?,
                         door(e.header.door), kind, info.incarnation, revision, mode, generation,
                         if full { "full" } else { "normal" }, op,
@@ -620,6 +631,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
             | RuntimeOwnerEstablished { .. }
             | RuntimeHandoverRecorded { .. }
             | ProjectRegistered { .. }
+            | ProjectUpdated { .. }
             | ProjectRemoved { .. }
             | PrincipalRegistered { .. }
             | GrantRecorded { .. }

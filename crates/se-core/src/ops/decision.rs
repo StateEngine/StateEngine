@@ -281,14 +281,16 @@ pub(super) fn row<R: Snapshot>(
             .map(|value| text(value, "decision rationale"))
             .transpose()?,
         proposed_by: super::receipt::actor_ref(cx.read, &proposal.header.actor)?,
-        proposed_at: super::receipt::timestamp(proposal.recorded_at_us)?,
+        proposed_at: super::receipt::timestamp(super::receipt::event_time(proposal))?,
         decided_by: if decided {
             Some(super::receipt::actor_ref(cx.read, &latest.header.actor)?)
         } else {
             None
         },
         decided_at: if decided {
-            Some(super::receipt::timestamp(latest.recorded_at_us)?)
+            Some(super::receipt::timestamp(super::receipt::event_time(
+                latest,
+            ))?)
         } else {
             None
         },

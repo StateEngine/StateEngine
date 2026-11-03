@@ -163,9 +163,7 @@ fn inventory(
         let identity =
             process::identity(db, seq, &project, &id, revision.value.get(), &state, true)?;
         processes.push(OwnerGuardProcess {
-            project: identity::wire(db, "project", &project, &[0])?
-                .parse()
-                .map_err(invalid)?,
+            project: identity::project_from_key(db, &project)?,
             revision,
             state: process::state(&state)?,
             identity,

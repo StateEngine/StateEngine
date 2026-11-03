@@ -74,4 +74,6 @@ pub struct InitOutput {
     pub changed: Vec<String>,
     pub next: NextStep,
     pub launch: Option<LaunchOutput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_hint: Option<String>,
 }

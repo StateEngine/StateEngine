@@ -34,16 +34,18 @@ pub(crate) fn decode(
         &row.get::<_, Vec<u8>>("session_id").map_err(sql)?,
         &s,
     )?
-    .parse()
+    .try_into()
     .map_err(invalid)?;
-    let agent: AgentId = wire(
+    let agent: AgentId = decode_agent(
         c,
-        "agent",
-        &row.get::<_, Vec<u8>>("agent_id").map_err(sql)?,
+        wire(
+            c,
+            "agent",
+            &row.get::<_, Vec<u8>>("agent_id").map_err(sql)?,
+            &s,
+        )?,
         &s,
-    )?
-    .parse()
-    .map_err(invalid)?;
+    )?;
     let expected = row
         .get::<_, Option<i64>>("expected_revision")
         .map_err(sql)?
@@ -78,7 +80,7 @@ pub(crate) fn decode(
                 .map_err(sql)?
                 .map(|id| -> StoreResult<_> {
                     Ok((
-                        wire(c, "session", &id, &s)?.parse().map_err(invalid)?,
+                        wire(c, "session", &id, &s)?.try_into().map_err(invalid)?,
                         revision(
                             u64::try_from(
                                 row.get::<_, i64>("incumbent_expected_revision")
@@ -97,7 +99,7 @@ pub(crate) fn decode(
                     .get::<_, Option<Vec<u8>>>("process_id")
                     .map_err(sql)?
                     .map(|id| {
-                        wire(c, "lifecycle", &id, &s).and_then(|v| v.parse().map_err(invalid))
+                        wire(c, "lifecycle", &id, &s).and_then(|v| v.try_into().map_err(invalid))
                     })
                     .transpose()?,
                 containment: serde_json::from_str(

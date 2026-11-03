@@ -128,7 +128,17 @@ pub fn project_event<R: Snapshot>(event: StoredEvent, cx: &mut Cx<'_, R>) -> Res
         .read
         .position_cursor(&event.position, PositionPurpose::Checked)
         .map_err(|e| store_error(&e))?;
-    let (kind, payload) = payload::public(&event, cx.read)?;
+    let (kind, mut payload) = payload::public(&event, cx.read)?;
+    if event.header.door == se_store::Door::Import {
+        let fields = payload.as_object_mut().ok_or_else(|| {
+            scope::unreadable("imported history", "public payload is not an object")
+        })?;
+        fields.insert(
+            "occurred_at".into(),
+            serde_json::to_value(receipt::timestamp(event.header.occurred_at_us)?)
+                .map_err(|e| scope::unreadable("historical source time", &e.to_string()))?,
+        );
+    }
     let writer = match event.writer.kind() {
         se_store::WriterKind::Direct => Writer::Direct,
         se_store::WriterKind::Host { generation } => Writer::Host {

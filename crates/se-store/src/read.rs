@@ -13,6 +13,7 @@ mod control;
 mod cursor;
 mod decision;
 mod decision_heads;
+mod import;
 mod mail;
 mod message;
 mod message_count;
@@ -356,6 +357,22 @@ impl SqliteSnapshot {
             return Err(invalid("message head points to another event kind"));
         };
         let pos = |s| StorePosition::new_internal(self.info.id.clone(), self.info.incarnation, s);
+        let replacement: Option<Vec<u8>> = self
+            .db
+            .query_row(
+                "SELECT superseded_by FROM messages WHERE sent_seq=?",
+                [sent],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        let scope = scope_key(&self.db, &e.header.scope, false)?;
+        let superseded_by = replacement
+            .map(|bytes| {
+                wire(&self.db, "message", &bytes, &scope)?
+                    .try_into()
+                    .map_err(invalid)
+            })
+            .transpose()?;
         Ok(MessageRecord {
             message,
             event: e.header.event,
@@ -370,6 +387,7 @@ impl SqliteSnapshot {
             delivered: delivered.map(pos).transpose()?,
             read: read.map(pos).transpose()?,
             dismissed: dismissed.map(pos).transpose()?,
+            superseded_by,
             body_complete: true,
         })
     }
@@ -383,6 +401,31 @@ pub struct LegacyRegistry<'a> {
     snapshot: &'a SqliteSnapshot,
 }
 impl se_types::LegacyIdRegistry for LegacyRegistry<'_> {
+    fn resolve_alias(
+        &self,
+        kind: se_types::IdKind,
+        alias: &str,
+    ) -> se_types::Result<Option<String>> {
+        if kind != se_types::IdKind::AgentId {
+            return Ok(None);
+        }
+        let p = self
+            .snapshot
+            .project_bytes()
+            .map_err(|e| se_types::SeError::invalid("imported alias scope", &e.cause))?;
+        let scope = scope_key(
+            &self.snapshot.db,
+            &self.snapshot.scope.admission.scope,
+            false,
+        )
+        .map_err(|e| se_types::SeError::invalid("imported alias scope", &e.cause))?;
+        let id:Option<Vec<u8>>=self.snapshot.db.query_row("SELECT a.principal_id FROM aliases a JOIN events e ON e.seq=a.imported_seq JOIN principals p ON p.project_id=a.project_id AND p.principal_id=a.principal_id WHERE a.project_id=? AND a.alias=? AND p.principal_kind='agent' AND e.door='import'",rusqlite::params![p,alias],|r|r.get(0)).optional().map_err(|e|se_types::SeError::invalid("imported alias lookup",&e.to_string()))?;
+        id.map(|id| {
+            wire(&self.snapshot.db, "agent", &id, &scope)
+                .map_err(|e| se_types::SeError::invalid("imported alias target", &e.cause))
+        })
+        .transpose()
+    }
     fn contains(&self, kind: se_types::IdKind, text: &str) -> se_types::Result<bool> {
         let scope = scope_key(
             &self.snapshot.db,
@@ -400,7 +443,17 @@ impl se_types::LegacyIdRegistry for LegacyRegistry<'_> {
             se_types::IdKind::SessionId => "session",
             _ => return Ok(false),
         };
-        self.snapshot.db.query_row("SELECT EXISTS(SELECT 1 FROM identities WHERE kind=? AND wire_id=? AND scope_key=? AND encoding='registered-exception')",rusqlite::params![kind,text,scope],|r|crate::sql_value::value(r,0)).map_err(|e|se_types::SeError::invalid("legacy registry",&e.to_string()))
+        if kind != "agent" {
+            return Ok(false);
+        }
+        se_types::LegacyIdRegistry::contains(
+            &crate::identity::StoredLegacyRegistry {
+                db: &self.snapshot.db,
+                scope: &scope,
+            },
+            se_types::IdKind::AgentId,
+            text,
+        )
     }
 }
 impl Snapshot for SqliteSnapshot {
@@ -812,10 +865,10 @@ impl Snapshot for SqliteSnapshot {
     }
     fn import_progress(
         &mut self,
-        _import: RecordId,
-        _budget: ReadBudget,
+        import: RecordId,
+        budget: ReadBudget,
     ) -> StoreResult<Page<ImportCheckpoint>> {
-        later("import_progress")
+        self.read_import_progress(import, budget)
     }
 }
 

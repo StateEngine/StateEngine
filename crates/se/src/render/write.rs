@@ -40,6 +40,9 @@ pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(launched) = &value.launch {
         launch(launched, out)?;
     }
+    if let Some(hint) = &value.import_hint {
+        writeln!(out, "{hint}")?;
+    }
     next_step(&value.next, out)?;
     if value.repo.files_touched == 0 && value.integrations.is_empty() {
         writeln!(

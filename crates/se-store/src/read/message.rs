@@ -290,5 +290,8 @@ pub(super) fn mail_sql(
     if query.unread_only && !unread {
         statement.push_str(" AND m.read_seq IS NULL AND m.dismissed_seq IS NULL");
     }
+    if query.unread_only {
+        statement.push_str(" AND d.superseded_by IS NULL");
+    }
     (statement, args)
 }

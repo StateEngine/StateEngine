@@ -77,6 +77,7 @@ MetaVersion => MetaVersion, VersionOutput;
 MetaHelp => MetaHelp, HelpOutput;
 MetaSchema => MetaSchema, SchemaCatalogue;
 ProjectInit => ProjectInit, InitOutput;
+ImportNode => ImportNode, ImportReceipt;
 ProjectStatus => ProjectStatus, StatusOutput;
 DoctorInspect => DoctorInspect, Diagnosis;
 DoctorRepair => DoctorRepair, RepairOutput;

@@ -143,6 +143,8 @@ pub use inventory::decode_owner_inventory;
 
 #[cfg(feature = "listener")]
 pub(crate) mod executor;
+#[cfg(feature = "listener")]
+mod history_import;
 #[cfg(feature = "runtime")]
 mod submit;
 #[cfg(feature = "listener")]

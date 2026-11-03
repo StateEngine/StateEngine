@@ -199,7 +199,14 @@ pub(super) fn finish(
         "show".into(),
         agent.id.to_string(),
     ];
+    let node_source = repository.path.join(".stateengine/projects.jsonl");
+    let import_hint=match se_proc::NativeSourcePin::open(&node_source) {
+        Ok(Some(_))=>Some("Node history detected. Preserve an immutable source copy, then run se import --from-node PATH.".into()),
+        Ok(None)=>None,
+        Err(error)=>Some(format!("Node history could not be inspected: {error}; preserve its source before importing.")),
+    };
     Ok(InitOutput {
+        import_hint,
         idempotency_key: input.idempotency_key.clone(),
         outcome: if created {
             if repository.nonempty || repository.git.is_some() {

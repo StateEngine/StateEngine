@@ -47,8 +47,53 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
         )?;
         return Ok(actor);
     }
+    let (registered, alias) = {
+        let registry = read.legacy_registry().map_err(|e| store_error(&e))?;
+        let registered = if se_types::LegacyIdRegistry::contains(
+            &registry,
+            se_types::IdKind::AgentId,
+            selector,
+        )? {
+            Some(AgentId::from_registered_legacy(
+                selector.to_owned(),
+                &registry,
+            )?)
+        } else {
+            None
+        };
+        let alias = se_types::LegacyIdRegistry::resolve_alias(
+            &registry,
+            se_types::IdKind::AgentId,
+            selector,
+        )?;
+        let alias = alias
+            .map(|wire| {
+                AgentId::from_legacy(wire.clone())
+                    .or_else(|_| AgentId::from_registered_legacy(wire, &registry))
+            })
+            .transpose()?;
+        (registered, alias)
+    };
+    if let Some(id) = registered {
+        let actor = Actor::Agent(id);
+        require_present(
+            read.principal(actor.clone()).map_err(|e| store_error(&e))?,
+            selector,
+            "Select an exact source-registered principal in this project.",
+        )?;
+        return Ok(actor);
+    }
     let mut after = None;
     let mut matches = Vec::new();
+    if let Some(agent) = alias {
+        let actor = Actor::Agent(agent);
+        require_present(
+            read.principal(actor.clone()).map_err(|e| store_error(&e))?,
+            selector,
+            "Restore the exact imported alias principal.",
+        )?;
+        matches.push(actor);
+    }
     // A finite bound is explicit; exhausting it is never reported as absence.
     for _ in 0..64 {
         let page = read
@@ -70,8 +115,9 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
                 }
                 | EventBody::PrincipalRenamed {
                     principal, name, ..
-                } if name == selector
-                    || (selector == "owner" && matches!(principal, Actor::Human(_))) =>
+                } if (selector != "owner" && name == selector)
+                    || (selector == "owner"
+                        && matches!(&record.original.as_deref().unwrap_or(&record.current).body,EventBody::PrincipalRegistered{principal:Actor::Human(human),owner,..} if human==owner)) =>
                 {
                     matches.push(principal.clone())
                 }
@@ -88,6 +134,8 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
                 "the finite principal read was incomplete",
             ));
         }
+        matches.sort_by_key(actor_id);
+        matches.dedup();
         return match matches.as_slice() {
             [actor] => Ok(actor.clone()),
             [] => Err(unknown(
