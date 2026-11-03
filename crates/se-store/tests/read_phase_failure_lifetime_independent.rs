@@ -1,0 +1,90 @@
+//! Independent public-surface judge for the failed read-phase lifetime.
+//! The `read_phase` failure contract (slot returned, connection closed)
+//! landed with 5b's single-open e60e45191b3034ea1d0676ee2ac19b37fbebf35d;
+//! this judge is built at 0bb3ca3b66959fa7c9850679ca601e98707365d7, landed
+//! rust-se main, rebased from eef5a356 where the contract is unchanged.
+//!
+//! Prime 2026-11-03: "add a small judge that fails BEGIN and then checks
+//! reader capacity, to pin the slot-before-connection order."
+//!
+//! A failed phase open must (1) return its shared slot — repeated attempts
+//! see the real failure, never Backpressure — and (2) close the failed
+//! SQLite connection, observed from outside through the kernel
+//! file-descriptor table on Linux.
+
+use se_store::*;
+use std::{fs, num::NonZeroU32, path::Path};
+#[path = "support/store_fixture.rs"]
+mod fixture;
+use fixture::*;
+
+fn capacity(value: u32) -> Result<NonZeroU32, Box<dyn std::error::Error>> {
+    NonZeroU32::new(value).ok_or_else(|| "zero capacity".into())
+}
+
+fn db_path(f: &Fixture) -> std::path::PathBuf {
+    f.options.state_directory.join("state.db")
+}
+
+#[cfg(target_os = "linux")]
+fn open_db_handles(path: &Path) -> Result<usize, Box<dyn std::error::Error>> {
+    let canonical = fs::canonicalize(path)?;
+    let mut handles = 0;
+    for entry in fs::read_dir("/proc/self/fd")? {
+        let entry = entry?;
+        if let Ok(target) = fs::read_link(entry.path()) {
+            if target == canonical {
+                handles += 1;
+            }
+        }
+    }
+    Ok(handles)
+}
+
+/// Protects: a failed phase open (a replaced database file refuses its
+/// BEGIN/header read) returns the shared slot and closes its connection, so
+/// the full configured capacity is available again after restore.
+#[test]
+fn failed_phase_open_returns_slot_and_closes_connection() -> Check {
+    let f = Fixture::new()?;
+    let (writer, _lease) = f.direct()?;
+    let db = db_path(&f);
+    let original = fs::read(&db)?;
+    writer.close()?;
+    let reader = present(SqliteFactory::open_reader_with_capacity(&f.options, capacity(8)?)?)?;
+    fs::write(&db, b"judge-replaced-database-not-sqlite")?;
+    for attempt in 1..=16 {
+        let error = reader
+            .read_phase()
+            .err()
+            .ok_or("failed phase open admitted a phase")?;
+        assert_eq!(
+            error.code,
+            StoreErrorCode::Corrupt,
+            "attempt {attempt}: {error}"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            open_db_handles(&db)?,
+            0,
+            "attempt {attempt}: failed phase open retained a connection"
+        );
+    }
+    fs::write(&db, &original)?;
+    let mut phases = Vec::new();
+    for _ in 0..8 {
+        phases.push(reader.read_phase()?);
+    }
+    assert_eq!(
+        reader
+            .read_phase()
+            .err()
+            .ok_or("ninth phase admitted after failures")?
+            .code,
+        StoreErrorCode::Backpressure
+    );
+    for phase in phases {
+        phase.close()?;
+    }
+    Ok(())
+}
