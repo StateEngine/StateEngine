@@ -69,6 +69,30 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
                 event::page(&value.value, out)?
             }
             (HumanKind::Event, AnyOutput::EventRead(value)) => event::output(&value.value, out)?,
+            (_, AnyOutput::MessageRead(value)) => {
+                writeln!(
+                    out,
+                    "{} → {} [{}]",
+                    value.value.message.from.name,
+                    value.value.message.to.name,
+                    value.value.message.id
+                )?;
+                writeln!(out, "{}", value.value.message.body.text)?;
+                writeln!(
+                    out,
+                    "{}",
+                    if value.value.marked_read {
+                        "Marked read."
+                    } else {
+                        "Inspection; recipient read mark unchanged."
+                    }
+                )?;
+            }
+            (_, AnyOutput::MessageDisposition(value)) => writeln!(
+                out,
+                "{}: {}.",
+                value.value.disposition, value.value.message_id
+            )?,
             (HumanKind::MessageReceipt, AnyOutput::MessageSend(value)) => {
                 write::message(&value.value, out)?
             }

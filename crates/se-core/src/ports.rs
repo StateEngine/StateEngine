@@ -9,6 +9,7 @@ pub enum Then {
     Decision(crate::ops::decision::DecisionThen),
     Capture(crate::ops::hook::CaptureThen),
     MessageSend(MessageSendThen),
+    MessageMark(crate::ops::message_mark::MarkThen),
     WorkingStateSet(WorkingStateSetThen),
 }
 pub enum CustodyPlan {

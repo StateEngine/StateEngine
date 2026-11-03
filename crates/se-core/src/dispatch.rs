@@ -407,6 +407,23 @@ impl Kernel {
                     then: Then::Decision(then),
                 }
             }
+            AnyOp::MessageRead(input) => {
+                map_mark(crate::ops::message_mark::read(self, cx, input)?)?
+            }
+            AnyOp::MessageAck(input) => map_mark(crate::ops::message_mark::plan(
+                self,
+                cx,
+                input.msg_id,
+                crate::ops::message_mark::Mark::Read,
+                None,
+            )?)?,
+            AnyOp::MessageDismiss(input) => map_mark(crate::ops::message_mark::plan(
+                self,
+                cx,
+                input.msg_id,
+                crate::ops::message_mark::Mark::Dismiss,
+                None,
+            )?)?,
             AnyOp::MessageSend(input) => match self.message_send(input, cx)? {
                 OpStep::Complete(raw) => {
                     OpStep::Complete(crate::ops::receipt::message(raw, cx)?.into())
@@ -483,6 +500,7 @@ impl Kernel {
             Then::AgentCreate(then) => Ok(crate::ops::agent::committed(then, receipt, cx)?.into()),
             Then::Decision(then) => Ok(crate::ops::decision::committed(then, receipt, cx)?.into()),
             Then::Capture(then) => Ok(crate::ops::hook::committed(then, receipt, cx)?.into()),
+            Then::MessageMark(then) => crate::ops::message_mark::committed(cx, then, receipt),
             Then::MessageSend(then) => {
                 let raw = self.message_committed(then, receipt, cx)?;
                 Ok(crate::ops::receipt::message(raw, cx)?.into())
@@ -494,4 +512,17 @@ impl Kernel {
         };
         output.map(|value| value.with_maintenance_pending(maintenance_pending))
     }
+}
+
+fn map_mark(
+    step: OpStep<crate::ops::AnyOutput, crate::ops::message_mark::MarkThen>,
+) -> Result<OpStep<crate::ops::AnyOutput, crate::ports::Then, crate::ports::CustodyPlan>> {
+    Ok(match step {
+        OpStep::Complete(output) => OpStep::Complete(output),
+        OpStep::Commit { batch, then } => OpStep::Commit {
+            batch,
+            then: crate::ports::Then::MessageMark(then),
+        },
+        OpStep::Custody(never) => match never {},
+    })
 }

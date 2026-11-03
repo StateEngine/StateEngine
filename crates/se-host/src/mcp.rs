@@ -177,7 +177,37 @@ async fn call(
     // A domain refusal, including a bad argument, is a typed tool result the
     // model can read and act on, never an empty success.
     let outcome = match se_core::ops::decode_tool(name, arguments) {
-        Ok(operation) => backend.call(capability, operation).await,
+        Ok(mut operation) => {
+            if let se_core::ops::AnyOp::MessageRead(input) = &mut operation {
+                // A JSON value contributes one structured copy and at most two
+                // encoded copies inside the text string. Reserve fixed space
+                // for marker/transport diagnostics before any recipient mark.
+                let id_bytes = serde_json::to_vec(&id)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(usize::MAX);
+                let available = backend
+                    .response_limit()
+                    .saturating_sub(id_bytes)
+                    .saturating_sub(8192)
+                    / 3;
+                if available < 512 {
+                    return rpc_error(
+                        id,
+                        -32603,
+                        &SeError::too_large(
+                            "MCP reply metadata before message read",
+                            backend.response_limit(),
+                            id_bytes.saturating_add(8192),
+                        )
+                        .to_string(),
+                    );
+                }
+                input.budget = input
+                    .budget
+                    .min(u32::try_from(available).unwrap_or(u32::MAX));
+            }
+            backend.call(capability, operation).await
+        }
         Err(error) => Err(error),
     };
     let result = match outcome {
