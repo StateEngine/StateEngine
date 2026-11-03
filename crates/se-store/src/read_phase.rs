@@ -32,6 +32,13 @@ impl SqliteReader {
     pub fn read_phase(&self) -> StoreResult<ReadPhase> {
         let slot = self.slots.acquire()?;
         let db = self.connect()?;
+        self.read_phase_on(db, slot)
+    }
+    pub(crate) fn read_phase_on(
+        &self,
+        db: Connection,
+        slot: crate::read_slots::ReadSlot,
+    ) -> StoreResult<ReadPhase> {
         connection::begin_snapshot(&db, &self.path)?;
         let info = connection::info_at(&db, &self.path)?;
         Ok(ReadPhase {

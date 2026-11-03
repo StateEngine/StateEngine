@@ -116,17 +116,17 @@ pub fn dispatch(
     if let AnyOp::Uninstall(input) = op {
         return Ok(super::uninstall::execute(cx, input, diagnostic)?.into());
     }
-    let reader = match setup::inspect(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
-        setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
-            return Ok((*output).into());
-        }
-        setup::Setup::Absent(_) => {
-            return Err(setup::required(cx));
-        }
-        setup::Setup::Present(reader) => reader,
-    };
+    let (reader, phase) =
+        match setup::inspect_phase(&cx.home, se_core::ops::receipt::timestamp(now_us()?)?)? {
+            setup::Setup::Absent(output) if matches!(op, AnyOp::ProjectStatus(_)) => {
+                return Ok((*output).into());
+            }
+            setup::Setup::Absent(_) => {
+                return Err(setup::required(cx));
+            }
+            setup::Setup::Present(reader) => reader,
+        };
     let files = Files::open(&cx.home).map_err(|e| store_error(&e))?;
-    let phase = reader.read_phase().map_err(|e| store_error(&e))?;
     let owner = if matches!(op, AnyOp::ProjectStatus(_)) {
         Some(phase.runtime_owner().map_err(|e| store_error(&e))?)
     } else {
