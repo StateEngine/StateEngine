@@ -68,7 +68,7 @@ mod support;
 #[cfg(windows)]
 mod windows_native;
 #[cfg(any(target_os = "linux", windows))]
-pub use runtime::read_process;
+pub use runtime::{read_process, read_process_until};
 mod creation_owner;
 pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
 

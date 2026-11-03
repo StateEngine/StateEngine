@@ -185,24 +185,80 @@ pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<Pro
             observed_at_unix_ns: now()?,
         });
     };
-    if let Some(status) = exit_status(&handle)? {
+    read_pinned_process(machine, pid, &handle)
+}
+
+pub(crate) fn read_process_until(
+    machine: MachineId,
+    pid: ProcessId,
+    deadline: std::time::Instant,
+) -> ProcResult<ProcessRead> {
+    let Some(handle) = lookup(pid)? else {
+        return Ok(ProcessRead::Absent {
+            pid,
+            observed_at_unix_ns: now()?,
+        });
+    };
+    loop {
+        let mut original = match read_pinned_process(machine.clone(), pid, &handle) {
+            Ok(observed) => return Ok(observed),
+            Err(error)
+                if error.native.as_ref().is_some_and(|failure| {
+                    failure.api == "QueryFullProcessImageNameW"
+                        && failure.code == Some(i64::from(ERROR_ACCESS_DENIED))
+                }) =>
+            {
+                error
+            }
+            Err(error) => return Err(error),
+        };
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            if let ProcErrorDetail::Input { reason, .. } = original.detail.as_mut() {
+                reason.push_str("; inconclusive process teardown at original observation deadline");
+            }
+            return Err(original);
+        }
+        let millis = remaining
+            .min(std::time::Duration::from_millis(10))
+            .as_millis() as u32;
+        // SAFETY: the original query/synchronize handle stays owned across all
+        // retries. Denial is only a possible teardown race, never exit evidence.
+        match unsafe { WaitForSingleObject(handle.0, millis) } {
+            WAIT_OBJECT_0 | WAIT_TIMEOUT => {}
+            _ => {
+                return Err(last(
+                    ProcErrorCode::IdentityUnreadable,
+                    "WaitForSingleObject",
+                ));
+            }
+        }
+    }
+}
+
+fn read_pinned_process(
+    machine: MachineId,
+    pid: ProcessId,
+    handle: &Handle,
+) -> ProcResult<ProcessRead> {
+    if let Some(status) = exit_status(handle)? {
         return Ok(ProcessRead::ExitedRecord {
             pid,
             boot: BootIdentity::WindowsAbsoluteCreationClock,
-            start: birth(&handle)?,
+            start: birth(handle)?,
             state: NativeState::Exited,
             status,
             observed_at_unix_ns: now()?,
         });
     }
-    let expected = match identity(machine, pid, &handle) {
+    let expected = match identity(machine, pid, handle) {
         Ok(expected) => expected,
         Err(original) => {
-            if let Some(status) = exit_status(&handle)? {
+            if let Some(status) = exit_status(handle)? {
                 return Ok(ProcessRead::ExitedRecord {
                     pid,
                     boot: BootIdentity::WindowsAbsoluteCreationClock,
-                    start: birth(&handle)?,
+                    start: birth(handle)?,
                     state: NativeState::Exited,
                     status,
                     observed_at_unix_ns: now()?,
@@ -211,7 +267,7 @@ pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<Pro
             return Err(original);
         }
     };
-    match observe(&expected, &handle)? {
+    match observe(&expected, handle)? {
         ProcessObservation::Live(live) => Ok(ProcessRead::Present(live)),
         ProcessObservation::Exited {
             status,
