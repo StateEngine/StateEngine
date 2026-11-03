@@ -130,6 +130,9 @@ pub fn publish_session_pin(
         .file
         .write_all(token.expose())
         .map_err(|e| io_error("write managed session pin", &staged.path, e))?;
+    // Publication pins and flushes its own writer; the staging handle denies
+    // a second Windows writer until it closes.
+    drop(staged.file);
     files.publish_no_replace(&staged.path, &path)?;
     let observed = read_session_pin(state, session.as_str())?;
     if Sha256::digest(observed.expose()) != Sha256::digest(token.expose()) {
