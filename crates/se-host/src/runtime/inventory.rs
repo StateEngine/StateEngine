@@ -1,6 +1,8 @@
 //! Join the one native checkpoint codec to protected store indices. This adapter
 //! neither deserializes a second format nor reconstructs native handles.
-use se_proc::{CheckpointPrincipal, LifecycleState, ProcessRecord, RootPublication};
+use se_proc::{
+    CheckpointKind, CheckpointPrincipal, LifecycleState, ProcessRecord, RootPublication,
+};
 use se_store::{Actor, OwnerGuardInventory, ProcessState, RecordedIdentity, RootIdentityState};
 use se_types::{Result, StartIdentity};
 
@@ -33,6 +35,30 @@ pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<Pro
             return Err(unreadable(
                 "checkpoint lifecycle/principal/session/root publication differs from the protected process index",
             ));
+        }
+        let pending_owner = match &checkpoint.checkpoint {
+            CheckpointKind::Reservation(value) => Some(&value.owner),
+            CheckpointKind::Scope(value) => Some(&value.reservation.owner),
+            CheckpointKind::Root(value) => Some(&value.scope.reservation.owner),
+            _ => None,
+        };
+        if let Some(owner) = pending_owner {
+            let observed = se_proc::read_process(owner.machine.clone(), owner.pid)
+                .map_err(|error| unreadable(&format!("{error:?}")))?;
+            if matches!(observed, se_proc::ProcessRead::Present(value)
+                if value.identity == *owner
+                    && matches!(value.state, se_proc::NativeState::Running | se_proc::NativeState::Stopped))
+            {
+                return Err(se_types::ErrorBody::new(se_types::Detail::StateConflict(
+                    se_types::details::StateConflict {
+                        subject: "native launch custody".into(),
+                        reason: "The original host is still alive and launch custody has not finished publication or retirement; owner admission remains withheld.".into(),
+                        next_step: "Wait one second, then retry the same command with its original request key. If this persists, inspect the original host; do not delete custody records.".into(),
+                    },
+                ))
+                .with_retry(se_types::Retry::After(std::time::Duration::from_secs(1)))
+                .into());
+            }
         }
         let record = checkpoint.owner_guard_record()
             .map_err(|error| unreadable(&error.to_string()))?
