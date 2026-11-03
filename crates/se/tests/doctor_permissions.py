@@ -75,6 +75,16 @@ class DoctorPermissions(unittest.TestCase):
                 value = json.loads(line)
             except ValueError:
                 pass
+        if terminal and json_output and isinstance(value, dict) and 'plan' in value:
+            objects = []
+            for line in completed.stdout.decode(errors='replace').splitlines():
+                try:
+                    objects.append(json.loads(line))
+                except ValueError:
+                    pass
+            assert objects.count(value['plan']) == 1, (label, 'pre-effect typed plan differs from receipt', objects)
+            assert objects.index(value['plan']) < objects.index(value), (label, 'plan must precede receipt')
+            assert ('Plan: repair ' + value['check_id']).encode() in completed.stdout + completed.stderr
         return completed, value
 
     def unchanged(self):
@@ -168,6 +178,21 @@ class DoctorPermissions(unittest.TestCase):
                 config.unlink()
             else:
                 config.write_bytes(original)
+
+    def test_root_repair_leaves_unreadable_store_incomplete(self):
+        self.db.chmod(0)
+        self.state.chmod(0o755)
+        try:
+            _, result = self.call('root-store-unreadable', ['doctor', '--fix', 'home.permissions'], terminal=True, expected=2)
+            self.assertFalse(result['complete'])
+            self.assertTrue(any(row['id'] == 'store.open' and row['state'] == 'unmeasured'
+                                for row in result['remaining_checks']))
+            self.assertEqual(stat.S_IMODE(self.state.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(self.db.stat().st_mode), 0)
+        finally:
+            self.state.chmod(0o700)
+            self.db.chmod(0o600)
+        self.unchanged()
 
     def test_missing_owner_rights_are_never_added(self):
         self.db.chmod(0o400)
