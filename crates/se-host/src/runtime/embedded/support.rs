@@ -107,6 +107,37 @@ pub(super) fn deadline(timeout: Duration) -> Result<Deadline> {
     })
 }
 
+/// Link the public cancellation callback to the same absolute deadline used
+/// by blocking admission and the accepted-write completion observer.
+pub(super) struct CallCancellation {
+    flag: Arc<AtomicBool>,
+    task: tokio::task::JoinHandle<()>,
+}
+impl Drop for CallCancellation {
+    fn drop(&mut self) {
+        self.flag.store(true, std::sync::atomic::Ordering::Release);
+        self.task.abort();
+    }
+}
+pub(super) fn call_deadline(
+    runtime: &tokio::runtime::Handle,
+    options: &api::CallOptions,
+) -> Result<(Deadline, CallCancellation)> {
+    let flag = Arc::new(AtomicBool::new(options.cancellation.is_cancelled()));
+    let deadline = Deadline::from_options(&ClientOptions {
+        expected_generation: None,
+        timeout: options.timeout,
+        cancelled: flag.clone(),
+    })?;
+    let signal = flag.clone();
+    let cancellation = options.cancellation.clone();
+    let task = runtime.spawn(async move {
+        cancellation.cancelled().await;
+        signal.store(true, std::sync::atomic::Ordering::Release);
+    });
+    Ok((deadline, CallCancellation { flag, task }))
+}
+
 /// The canonical rendered error; a rendering failure is reported, not hidden.
 pub(super) fn api_error(error: &SeError) -> api::ApiError {
     crate::linked::error_body(&error.body, &se_types::RenderCx::default()).unwrap_or_else(

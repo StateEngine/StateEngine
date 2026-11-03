@@ -53,7 +53,7 @@ pub struct AdmittedExchange {
 pub struct HostedRouter {
     pub(crate) execution: ExecutionContext,
     pub(crate) sources: TranscriptBindings,
-    context: AdmissionContext,
+    pub(super) context: AdmissionContext,
     response_bytes: std::num::NonZeroU32,
     pub(crate) fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     http_port: std::sync::Arc<std::sync::OnceLock<u16>>,
