@@ -7,6 +7,10 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
         .identity
         .as_ref()
         .ok_or_else(|| invalid("a launched session target"))?;
+    let running = matches!(plan.row.session.state.as_str(), "running" | "stopping");
+    plan.row.resume.mode = if running { "running" } else { "resume" }.into();
+    plan.row.resume.command = None;
+    plan.row.resume.argv = None;
     let verified = match &plan.capture {
         Read::Present { value } => verify(value, deadline),
         Read::Absent { checked } => Err(invalid(checked)),
@@ -15,22 +19,23 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
     };
     match verified {
         Ok(()) => {
-            plan.row.conversation.state = "verified".into();
+            plan.row.conversation.state = "saved".into();
             let stopped = plan.row.session.state == "stopped";
             plan.row.resume.ready = stopped;
-            plan.row.resume.mode = "resume".into();
             plan.row.resume.reason = if stopped {
                 None
             } else {
                 Some("The captured conversation prefix is verified; stop or reconcile the existing scope before resuming its saved conversation.".into())
             };
-            plan.row.resume.command = Some(format!("se launch {} --detach", target.agent));
-            plan.row.resume.argv = Some(vec![
-                "se".into(),
-                "launch".into(),
-                target.agent.to_string(),
-                "--detach".into(),
-            ]);
+            if stopped {
+                plan.row.resume.command = Some(format!("se launch {} --detach", target.agent));
+                plan.row.resume.argv = Some(vec![
+                    "se".into(),
+                    "launch".into(),
+                    target.agent.to_string(),
+                    "--detach".into(),
+                ]);
+            }
         }
         Err(error) => {
             plan.row.conversation.state = "unverifiable".into();
