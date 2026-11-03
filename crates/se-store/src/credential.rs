@@ -96,5 +96,5 @@ pub(crate) fn stop_unproved_at(
             "credential lookup store is in maintenance",
         ));
     }
-    c.query_row("SELECT EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.project_id=c.project_id AND s.session_id=c.session_id JOIN processes p ON p.project_id=c.project_id AND p.state='stop-unproved' AND p.ownership_released=0 JOIN process_data d ON d.event_seq=p.last_seq AND d.principal_id=s.agent_id WHERE c.secret_sha256=?)",[hash.as_slice()],|r|r.get(0)).map_err(sql)
+    c.query_row("SELECT EXISTS(SELECT 1 FROM credentials c JOIN sessions s ON s.project_id=c.project_id AND s.session_id=c.session_id JOIN processes p INDEXED BY processes_live ON p.project_id=c.project_id AND p.state='stop-unproved' AND p.ownership_released=0 AND p.state NOT IN ('exited','historical') JOIN process_data d ON d.event_seq=p.last_seq AND d.principal_id=s.agent_id WHERE c.secret_sha256=?)",[hash.as_slice()],|r|r.get(0)).map_err(sql)
 }
