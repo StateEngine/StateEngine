@@ -141,7 +141,11 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
                 writeln!(out, "Recorded containment: {containment}")?;
             }
             if let Some(reason) = &value.session.containment_cause {
-                writeln!(out, "Containment reason: {reason}")?;
+                writeln!(
+                    out,
+                    "Containment reason: {}",
+                    super::control::containment_cause(reason)
+                )?;
             }
             writeln!(out, "Conversation: {}", value.conversation.state)?;
             if let Some(conversation) = &value.conversation.id {

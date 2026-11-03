@@ -70,3 +70,14 @@ impl AgentStatusOutput {
         )
     }
 }
+
+/// Stable cause codes shared by launch receipts and saved-session readback.
+pub fn containment_cause_code(cause: &se_store::ContainmentCause) -> &'static str {
+    match cause {
+        se_store::ContainmentCause::NoUserManager => "no-user-manager",
+        se_store::ContainmentCause::NoDelegation => "no-delegation",
+        se_store::ContainmentCause::CgroupV2Absent => "cgroup-v2-absent",
+        se_store::ContainmentCause::CgroupUnreadable => "cgroup-unreadable",
+        se_store::ContainmentCause::ScopeCreateFailed => "scope-create-failed",
+    }
+}

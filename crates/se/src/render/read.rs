@@ -58,6 +58,13 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                 agent.session.state,
                 count(agent.unread)
             )?;
+            if let Some(reason) = &agent.session.containment_cause {
+                writeln!(
+                    out,
+                    "    Containment reason: {}",
+                    super::control::containment_cause(reason)
+                )?;
+            }
             if let Some(reason) = &agent.resume.reason {
                 writeln!(out, "    Resume: {reason}")?;
             }

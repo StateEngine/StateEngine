@@ -19,7 +19,7 @@ impl LaunchCoordinator {
     ) -> Result<()> {
         let result = self.capture_progress_inner(work, deadline).await;
         if let Err(error) = &result {
-            self.report_capture_failure(work, error, deadline).await?;
+            self.report_capture_failure(work, error).await?;
         }
         result
     }
@@ -27,7 +27,6 @@ impl LaunchCoordinator {
         &self,
         work: &Work,
         failure: &se_types::SeError,
-        _deadline: &Deadline,
     ) -> Result<()> {
         if !work.meta.capture || !work.active {
             return Ok(());
