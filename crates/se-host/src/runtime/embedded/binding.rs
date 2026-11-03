@@ -12,6 +12,8 @@ use secode_stateengine_api as api;
 use sha2::Sha256;
 use std::{collections::BTreeMap, sync::Mutex};
 
+mod recovery;
+
 #[derive(Clone)]
 pub(super) struct Binding {
     pub identity: api::SessionIdentity,
@@ -267,16 +269,14 @@ impl EmbeddedHost {
                 .ok_or_else(|| SeError::invalid("session allocation", "a fresh UUIDv7"))?;
             let session = se_types::SessionId::from_bytes(bytes)?;
             let agent = se_types::AgentId::from_linked(draft.agent)?;
-            if !replay {
-                match read.latest_session(agent.clone()).map_err(|e| store_error(&e))? {
-                    Read::Present { value } if matches!(value.current.body,
-                        EventBody::SessionActivated { .. } | EventBody::SessionPrepared { .. }) =>
-                        return Err(SeError::invalid("linked bind target", "no existing active or prepared session; revoke the previous native binding through Owner control first")),
-                    Read::Unreadable { source, reason, .. } => return Err(scope::unreadable(&source, &reason)),
-                    Read::Unknown { what } => return Err(scope::unreadable("linked bind target", &what)),
-                    _ => {}
-                }
-            }
+            let previous = if replay {
+                None
+            } else {
+                recovery::previous(read, &admission, agent.clone())?
+            };
+            let incumbent = previous
+                .as_ref()
+                .map(|(_, session, revision)| (session.clone(), *revision));
 
             let prepared = store::event(
                 read,
@@ -307,17 +307,22 @@ impl EmbeddedHost {
                     expected: Expected::Revision(se_store::Revision {
                         value: std::num::NonZeroU64::MIN,
                     }),
-                    incumbent: None,
+                    incumbent,
                     process: None,
                     containment: se_store::ContainmentFact::NotLaunched,
                     witnesses: Vec::new(),
                 },
             );
+            let mut events = vec![prepared];
+            if let Some((revoked, _, _)) = previous {
+                events.push(revoked);
+            }
+            events.push(activated);
             Ok(se_store::AtomicBatch {
                 expected_incarnation: read.info().incarnation,
                 admission,
                 request: Some(identity),
-                events: vec![prepared, activated],
+                events,
                 import_checkpoint: None,
             })
         })

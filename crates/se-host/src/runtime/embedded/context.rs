@@ -28,21 +28,25 @@ impl EmbeddedHost {
                 .after
                 .map(se_types::Cursor::from_linked)
                 .transpose()?,
-            limit: NonZeroU32::new(request.page.limit.min(self.config.limits.page_items.get()))
-                .ok_or_else(|| SeError::invalid("continuity limit", "a positive page limit"))?,
+            limit: NonZeroU32::new(
+                request
+                    .page
+                    .limit
+                    .min(self.config.limits.page_items.get())
+                    .min(1000),
+            )
+            .ok_or_else(|| SeError::invalid("continuity limit", "a positive page limit"))?,
             max_bytes: NonZeroU32::new(
                 request
                     .page
                     .max_bytes
-                    .min(self.config.limits.payload_bytes.get()),
+                    .min(self.config.limits.payload_bytes.get())
+                    .min(2 * 1024 * 1024),
             )
             .ok_or_else(|| SeError::invalid("continuity bytes", "a positive byte budget"))?,
         };
         let maximum = page.max_bytes.get() as usize;
-        let budget = se_store::ReadBudget {
-            page,
-            deadline: options.timeout,
-        };
+        let read_deadline = deadline.clone();
         let scope = binding::session_scope(session)?;
         let checked = scope.clone();
         let revision = session.binding_revision;
@@ -91,6 +95,14 @@ impl EmbeddedHost {
                 Read::Unknown { what } => {
                     return Err(scope::unreadable("linked working state", &what));
                 }
+            };
+            // Queue time consumes the caller's clock. The store also has its
+            // own five-second read ceiling, independent of the API timeout.
+            let budget = se_store::ReadBudget {
+                page,
+                deadline: read_deadline
+                    .remaining()?
+                    .min(std::time::Duration::from_secs(5)),
             };
             let turns = read.turns(agent, budget).map_err(|e| store_error(&e))?;
             let mut latest = None;
