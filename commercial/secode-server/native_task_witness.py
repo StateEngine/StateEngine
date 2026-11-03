@@ -155,7 +155,8 @@ def main():
             session = "/api/session/" + conversation
             binding = {"project_id": args.project, "agent_id": args.agent, "capture_consent": True, "scope": "project"}
             request("PUT", session + "/instructions/entries/stateengine-identity", {"value": binding})
-            ack = request("POST", session + "/prompt", {"id": "msg_w3_" + args.nonce, "text": task})
+            message_id = "msg_w3_" + hashlib.sha256(args.nonce.encode()).hexdigest()[:32]
+            ack = request("POST", session + "/prompt", {"id": message_id, "text": task})
             require(ack["data"]["sessionID"] == conversation and "queued" not in ack, "task was not admitted for this session")
             history = None
             while True:
@@ -200,7 +201,8 @@ def main():
                 record["public_argv"] = [str(helper), "--home", str(args.state_home), "--project", args.project,
                                          "history", "--event", record["event_id"], "--json"]
             witness = {"outcome": "captured", "branch_tip": branch, "nonce": args.nonce,
-                "conversation": conversation, "task_text": task, "expected_text": expected,
+                "conversation": conversation, "task_message_id": message_id,
+                "task_text": task, "expected_text": expected,
                 "public_history": records, "native_history_path": session + "/message",
                 "native_profile": str(profile), "state_home": str(args.state_home),
                 "repository": str(args.repo), "project": args.project, "agent": args.agent,
