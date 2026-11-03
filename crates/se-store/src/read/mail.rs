@@ -22,18 +22,17 @@ impl crate::mail::MailSnapshot for SqliteSnapshot {
         let fact = load_event(&self.db, seq, &self.info)
             .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
         let who = Actor::Agent(recipient);
-        let (message, supersession) = match &fact.body {
+        let message = match &fact.body {
             EventBody::MessageRead { message, recipient }
             | EventBody::MessageDismissed { message, recipient }
                 if *recipient == who && fact.header.actor == who =>
             {
-                (message, false)
+                message
             }
-            EventBody::MessageSuperseded { message, .. } => (message, true),
             _ => {
                 return Err(fail(
                     StoreErrorCode::ScopeMismatch,
-                    "event is not a committed read, dismiss or supersession for this recipient",
+                    "event is not a committed read or dismiss for this recipient",
                 ));
             }
         };
@@ -63,11 +62,10 @@ impl crate::mail::MailSnapshot for SqliteSnapshot {
         if fact.header.scope != self.scope.admission.scope
             || original.header.scope != self.scope.admission.scope
             || !matches!(&original.body, EventBody::MessageSent {message: actual, recipient, ..} if actual == message && *recipient == who)
-            || supersession && fact.header.actor != original.header.actor
         {
             return Err(fail(
                 StoreErrorCode::ScopeMismatch,
-                "mail disposition's original message belongs to another recipient or sender",
+                "mail disposition's original message belongs to another recipient",
             ));
         }
         Ok(Read::Present { value: fact })

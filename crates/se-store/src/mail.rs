@@ -177,7 +177,7 @@ impl MailNotice {
 /// The core mail planner adds this bound to Snapshot; ordinary readers and
 /// pre-existing Snapshot implementations need no new capability.
 pub trait MailSnapshot: Snapshot {
-    /// Read only a committed recipient read/dismiss or sender supersession
+    /// Read only a committed recipient read or dismiss
     /// concerning this verified recipient, without broad event visibility.
     fn mail_disposition(
         &mut self,

@@ -1,5 +1,5 @@
-//! Reconcile a notice from committed recipient dispositions or supersession.
-//! Neither supersession nor settlement invents delivery or recipient read.
+//! Reconcile a notice from committed recipient read or dismiss dispositions.
+//! Settlement never invents delivery or recipient read.
 use super::*;
 use se_store::{EffectOutcome, Expected};
 #[derive(Clone, Debug)]
@@ -24,7 +24,7 @@ pub struct SettleResolved {
 }
 
 /// The host calls this before reusing/selecting a pending notice after real
-/// read/dismiss/supersession triggers. Transport or capture alone cannot resolve debt.
+/// read/dismiss triggers. Transport or capture alone cannot resolve debt.
 pub fn settle_resolved<S: MailSnapshot>(
     kernel: &Kernel,
     cx: &mut Cx<'_, S>,
@@ -104,11 +104,10 @@ pub fn settle_resolved<S: MailSnapshot>(
             EventBody::MessageRead { message, recipient }
             | EventBody::MessageDismissed { message, recipient }
                 if recipient == &cx.admission.actor && notice.ids.contains(message) => {}
-            EventBody::MessageSuperseded { message, .. } if notice.ids.contains(message) => {}
             _ => {
                 return Err(SeError::invalid(
                     "mail resolution evidence",
-                    "actual recipient read/dismiss or committed supersession events for original notice IDs",
+                    "actual recipient read/dismiss events for original notice IDs",
                 ));
             }
         }
@@ -127,15 +126,6 @@ pub fn settle_resolved<S: MailSnapshot>(
                 "mail settlement",
                 "all original messages belong to this actual recipient",
             ));
-        }
-        // Supersession is a committed monotonic fact for this exact original
-        // message. It retires notification debt without asserting a recipient
-        // marker, queue acceptance or captured delivery.
-        let superseded = markers.iter().any(|event| {
-            matches!(&event.body, EventBody::MessageSuperseded { message, .. } if message == id)
-        });
-        if superseded {
-            continue;
         }
         if message.read.is_none() && message.dismissed.is_none() {
             return Ok(OpStep::Complete(Read::Absent {
