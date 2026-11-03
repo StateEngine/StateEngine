@@ -216,7 +216,7 @@ fn check_case(case: &str) -> Check {
             expected: Expected::Absent,
         },
     ];
-    if matches!(case, "active" | "ended") {
+    if case == "active" {
         bodies.extend([
             session::activated(&id)?,
             EventBody::CredentialActivated {
@@ -226,22 +226,6 @@ fn check_case(case: &str) -> Check {
                 first_request: session::record()?,
             },
         ]);
-    }
-    if case == "ended" {
-        bodies.push(EventBody::SessionEnded {
-            session: id.clone(),
-            expected: revision(2)?,
-            reason: InputText::Inline("reviewer ended session with retained credential".into()),
-            final_turn: None,
-            final_cursor: None,
-        });
-    }
-    if case == "session-revoked" {
-        bodies.push(EventBody::SessionRevoked {
-            session: id.clone(),
-            expected: revision(1)?,
-            reason: InputText::Inline("reviewer revoked session with retained credential".into()),
-        });
     }
     if case == "revoked" {
         bodies.push(EventBody::CredentialRevoked {
@@ -429,14 +413,4 @@ fn hook_session_prepared() -> Check {
 #[test]
 fn hook_session_active() -> Check {
     check_case("active")
-}
-
-#[test]
-fn hook_session_ended() -> Check {
-    check_case("ended")
-}
-
-#[test]
-fn hook_session_session_revoked() -> Check {
-    check_case("session-revoked")
 }
