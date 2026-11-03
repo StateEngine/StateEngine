@@ -1,7 +1,7 @@
 //! Independent public-surface judge for the failed read-phase lifetime.
 //! The `read_phase` failure contract (slot returned, connection closed)
 //! landed with 5b's single-open e60e45191b3034ea1d0676ee2ac19b37fbebf35d;
-//! this judge is built at 0eb1b7de58e63df62579bdddc5ba8ae945af027a, landed
+//! this judge is built at 8ddbe0dd0c018e661e8d0b006c3f33f9b0679cf7, landed
 //! rust-se main, rebased from eef5a356 where the contract is unchanged.
 //!
 //! Prime 2026-11-03: "add a small judge that fails BEGIN and then checks
