@@ -7,6 +7,12 @@ use se_types::{Result, SeError};
 use secode_stateengine_api as api;
 use sha2::{Digest, Sha256};
 
+/// Delivery identity belongs to the current reply, never the immutable source.
+struct CaptureBatch {
+    batch: se_store::AtomicBatch,
+    delivery_key: api::IdempotencyKey,
+}
+
 impl EmbeddedHost {
     pub(super) async fn capture(
         &self,
@@ -65,7 +71,6 @@ impl EmbeddedHost {
                 se_core::ops::inputs::bounded("native nesting identity", value, 512, false)?;
             }
         }
-        let key = turn.idempotency_key.clone();
         // One immutable event is a native source, not a file byte offset. A
         // per-event source keeps replay independent of later captured turns.
         let digest: [u8; 32] = Sha256::digest(
@@ -84,7 +89,7 @@ impl EmbeddedHost {
         let incarnation = digest.to_vec();
         let metadata = serde_json::to_string(&serde_json::json!({
             "conversation":turn.conversation.0,"event":turn.vendor_event,"source_ref":turn.source_ref,
-            "source_cli":turn.source_cli,"machine_id":turn.machine_id,"request_key":turn.idempotency_key.0,
+            "source_cli":turn.source_cli,"machine_id":turn.machine_id,
             "nesting":turn.nesting.map(|n| serde_json::json!({"parent_session":n.parent_session.map(|v|v.0),"nested_agent":n.nested_agent.map(|v|v.0),"depth":n.depth}))
         })).map_err(|e| scope::unreadable("native source metadata", &e.to_string()))?;
         se_core::ops::inputs::bounded("native source metadata", &metadata, 32768, false)?;
@@ -92,7 +97,10 @@ impl EmbeddedHost {
         let admission = scope.admission.clone();
         let revision = session.binding_revision;
         let check_scope = scope.clone();
-        let batch = store::read(&router, scope.clone(), &deadline, move |read| {
+        let CaptureBatch {
+            batch,
+            delivery_key,
+        } = store::read(&router, scope.clone(), &deadline, move |read| {
             binding::check(read, &check_scope, revision)?;
             let text = se_types::Body::new(turn.content.text)?;
             if *text.digest().as_bytes() != turn.source_sha256.0 {
@@ -172,12 +180,15 @@ impl EmbeddedHost {
                     },
                 ),
             ];
-            Ok(se_store::AtomicBatch {
-                expected_incarnation: read.info().incarnation,
-                admission,
-                request: None,
-                events,
-                import_checkpoint: None,
+            Ok(CaptureBatch {
+                batch: se_store::AtomicBatch {
+                    expected_incarnation: read.info().incarnation,
+                    admission,
+                    request: None,
+                    events,
+                    import_checkpoint: None,
+                },
+                delivery_key: turn.idempotency_key,
             })
         })
         .await?;
@@ -206,7 +217,7 @@ impl EmbeddedHost {
             store::receipt(
                 read,
                 receipt,
-                key,
+                delivery_key,
                 turn.ok_or_else(|| {
                     SeError::invalid("capture receipt", "its original committed turn")
                 })?,

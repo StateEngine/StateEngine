@@ -283,10 +283,21 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
     Ok(())
 }
 
-/// Protects: a reconnect's delivery key cannot change a retained native turn,
-/// its original source provenance or the three-event atomic receipt.
+/// Protects: immutable source provenance and the three-event atomic receipt
+/// replay without interpreting host metadata.
 #[test]
 fn native_capture_replay_preserves_original_source_and_rejects_changed_content() -> Check {
+    native_capture_metadata(None)
+}
+
+/// Protects: pre-alpha metadata stays readable and opaque; delivery-shaped
+/// fields are immutable source bytes, not a store-level replay exception.
+#[test]
+fn legacy_native_capture_metadata_is_readable_but_not_rewritten_on_replay() -> Check {
+    native_capture_metadata(Some("first-delivery"))
+}
+
+fn native_capture_metadata(request_key: Option<&str>) -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;
     let id = session()?;
@@ -299,7 +310,7 @@ fn native_capture_replay_preserves_original_source_and_rejects_changed_content()
         f.batch(f.owner_project(), None, vec![prepared, activated(&id)?])?,
         &*lease,
     )?;
-    let attempt = |key: &str| -> Result<AtomicBatch, Box<dyn std::error::Error>> {
+    let attempt = || -> Result<AtomicBatch, Box<dyn std::error::Error>> {
         let mut batch = capture(&f, &id, source_id, b"native-turn", 0, 1, "native-one")?;
         if let EventBody::SessionTurn {
             provider, evidence, ..
@@ -315,26 +326,38 @@ fn native_capture_replay_preserves_original_source_and_rejects_changed_content()
             .remove(0);
         member.header.session = Some(id.clone());
         if let EventBody::CaptureSource { native_ref, .. } = &mut member.body {
-            *native_ref = serde_json::json!({
+            let mut metadata = serde_json::json!({
                 "source_cli":"secode", "conversation":"native-conversation",
-                "source_ref":"native-one", "request_key":key,
-            })
-            .to_string();
+                "source_ref":"native-one",
+            });
+            if let Some(key) = request_key {
+                metadata["request_key"] = key.into();
+            }
+            *native_ref = metadata.to_string();
         }
         batch.events.insert(0, member);
         Ok(batch)
     };
-    let first = d.append(attempt("first-delivery")?, &*lease)?;
+    let first = d.append(attempt()?, &*lease)?;
     assert_eq!(first.events.len(), 3);
     let head = d.info()?.head;
-    for key in ["first-delivery", "reconnect-delivery"] {
-        let replay = d.append(attempt(key)?, &*lease)?;
+    for _ in 0..2 {
+        let replay = d.append(attempt()?, &*lease)?;
         assert_eq!(replay.state, CommitState::NaturalKeyReplay);
         same_receipt(&first, &replay);
         assert_eq!(d.info()?.head, head);
     }
-    for field in ["text", "role", "source"] {
-        let mut changed = attempt("changed-delivery")?;
+    for field in [
+        "text",
+        "role",
+        "source",
+        "request_key",
+        "remove_request_key",
+    ] {
+        if field == "remove_request_key" && request_key.is_none() {
+            continue;
+        }
+        let mut changed = attempt()?;
         match field {
             "text" => {
                 if let EventBody::SessionTurn { text, .. } = &mut changed.events[1].body {
@@ -346,10 +369,20 @@ fn native_capture_replay_preserves_original_source_and_rejects_changed_content()
                     *role = Role::User;
                 }
             }
-            "source" => {
+            "source" | "request_key" | "remove_request_key" => {
                 if let EventBody::CaptureSource { native_ref, .. } = &mut changed.events[0].body {
                     let mut value: serde_json::Value = serde_json::from_str(native_ref)?;
-                    value["source_ref"] = "different native source".into();
+                    match field {
+                        "source" => value["source_ref"] = "different native source".into(),
+                        "request_key" => value["request_key"] = "changed-delivery".into(),
+                        "remove_request_key" => {
+                            value
+                                .as_object_mut()
+                                .ok_or("source metadata is not an object")?
+                                .remove("request_key");
+                        }
+                        _ => unreachable!(),
+                    }
                     *native_ref = value.to_string();
                 }
             }
@@ -374,8 +407,10 @@ fn native_capture_replay_preserves_original_source_and_rejects_changed_content()
         return Err("source registration changed kind".into());
     };
     assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&native_ref)?["request_key"],
-        "first-delivery"
+        serde_json::from_str::<serde_json::Value>(&native_ref)?
+            .get("request_key")
+            .and_then(serde_json::Value::as_str),
+        request_key
     );
     assert_eq!(
         snap.turns(f.a.clone(), budget(10, 65536, None)?)?
