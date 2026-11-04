@@ -165,7 +165,10 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
                     first.capture_commits.len() == if broken.is_some() { 1 } else { 28 },
                     "capture lost records or promoted tool data",
                 )?;
-                let replay = capture
+                let mut before_replay = execution.reader.snapshot(scope.clone())?;
+                let committed = present(before_replay.capture_source(source)?)?;
+                before_replay.close()?;
+                capture
                     .catch_up(
                         admitted.clone(),
                         conversation.clone(),
@@ -173,12 +176,18 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
                         &bound()?,
                     )
                     .await?;
+                let mut snapshot = execution.reader.snapshot(scope.clone())?;
+                let repeated = present(snapshot.capture_source(source)?)?;
                 require(
-                    replay.capture_commits.is_empty(),
+                    repeated.revision == committed.revision
+                        && repeated.current.header.event == committed.current.header.event,
+                    "capture replay advanced durable progress",
+                )?;
+                let page = snapshot.turns(f.a.clone(), budget(100, 200_000, None)?)?;
+                require(
+                    page.items().len() == if broken.is_some() { 1 } else { 28 },
                     "capture replay duplicated durable events",
                 )?;
-                let mut snapshot = execution.reader.snapshot(scope.clone())?;
-                let page = snapshot.turns(f.a.clone(), budget(100, 200_000, None)?)?;
                 let mut chat_text = Vec::new();
                 let mut metadata = 0;
                 for event in page.items() {
