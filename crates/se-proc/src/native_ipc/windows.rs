@@ -26,6 +26,10 @@ fn wide(name: &OsStr) -> IpcNativeResult<Vec<u16>> {
         || value.len() <= prefix.len()
         || value.len() > 1024
         || value.contains(&0)
+        || value[prefix.len()..]
+            .iter()
+            .any(|unit| *unit == b'\\' as u16 || *unit == b'/' as u16)
+        || matches!(&value[prefix.len()..], [46] | [46, 46])
     {
         return Err(refuse(
             IpcNativeErrorCode::UnsafeEndpoint,
@@ -34,7 +38,7 @@ fn wide(name: &OsStr) -> IpcNativeResult<Vec<u16>> {
     }
     Ok(value.into_iter().chain(Some(0)).collect())
 }
-fn create(name: &OsStr, first: bool) -> IpcNativeResult<OwnedHandle> {
+fn create(name: &OsStr) -> IpcNativeResult<OwnedHandle> {
     let name = wide(name)?;
     let descriptor = security::descriptor()?;
     let attributes = SECURITY_ATTRIBUTES {
@@ -42,13 +46,7 @@ fn create(name: &OsStr, first: bool) -> IpcNativeResult<OwnedHandle> {
         lpSecurityDescriptor: descriptor.0,
         bInheritHandle: 0,
     };
-    let flags = PIPE_ACCESS_DUPLEX
-        | FILE_FLAG_OVERLAPPED
-        | if first {
-            FILE_FLAG_FIRST_PIPE_INSTANCE
-        } else {
-            0
-        };
+    let flags = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | FILE_FLAG_FIRST_PIPE_INSTANCE;
     // SAFETY: the descriptor/string/attributes remain allocated for this call;
     // the returned noninheritable handle receives unique ownership below.
     let raw = unsafe {
@@ -63,7 +61,7 @@ fn create(name: &OsStr, first: bool) -> IpcNativeResult<OwnedHandle> {
             &attributes,
         )
     };
-    if raw == INVALID_HANDLE_VALUE && first {
+    if raw == INVALID_HANDLE_VALUE {
         let creation_error = io::Error::last_os_error();
         if matches!(creation_error.raw_os_error(), Some(code)
             if code == ERROR_ACCESS_DENIED as i32 || code == ERROR_PIPE_BUSY as i32)
@@ -73,7 +71,7 @@ fn create(name: &OsStr, first: bool) -> IpcNativeResult<OwnedHandle> {
                 Ok(sid) => (
                     IpcNativeErrorCode::AlreadyExists,
                     format!(
-                        "first-instance pipe {display:?} is owned by SID {sid}; ask that owner to close its endpoint or use an unused protected name; this host will not adopt or remove it"
+                        "first-instance pipe {display:?} already exists (owner SID {sid}); if it is yours, run se down for its data home, otherwise choose an unused protected name; this host will not adopt or remove it"
                     ),
                 ),
                 Err(owner_error) => (
@@ -299,7 +297,7 @@ pub struct NativePipeReservation {
 }
 impl NativePipeReservation {
     pub fn create(name: &OsStr) -> IpcNativeResult<Self> {
-        let server = create(name, true)?;
+        let server = create(name)?;
         let path = wide(name)?;
         // SAFETY: the private first instance is held above, the native string
         // lives through CreateFile, and identification precedes connection.

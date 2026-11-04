@@ -116,10 +116,10 @@ pub use start::*;
 
 #[cfg(feature = "listener")]
 mod endpoint;
+#[cfg(all(feature = "listener", unix))]
+pub use endpoint::runtime_endpoint_address;
 #[cfg(feature = "listener")]
-pub use endpoint::{
-    HostedListener, RetainedEndpoint, endpoint_recovery_error, runtime_endpoint_address,
-};
+pub use endpoint::{HostedListener, RetainedEndpoint, endpoint_recovery_error};
 #[cfg(feature = "listener")]
 mod recovery;
 #[cfg(feature = "listener")]

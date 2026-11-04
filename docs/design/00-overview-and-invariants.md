@@ -359,7 +359,7 @@ se-store and costs nothing until multiplayer.
 | State (`state.db`, backups, pins, launch files, `atlas.db`) | `%LOCALAPPDATA%\StateEngine` | `$XDG_STATE_HOME/stateengine` (`~/.local/state/stateengine`) | `~/Library/Application Support/StateEngine` |
 | Config `config.toml` | state dir (`$SE_HOME`) | state dir (`$SE_HOME`) | state dir (`$SE_HOME`) |
 | Logs | `<state>\logs` | `<state>/logs` | `~/Library/Logs/StateEngine` |
-| Run (`runtime.lock`, `endpoint.json`) | `<state>\run`; pipe `\\.\pipe\stateengine-<sid-and-canonical-state-home-hash>` | `$XDG_RUNTIME_DIR/stateengine`, else `<state>/run` (0700) | `<state>/run`; socket falls back to `$TMPDIR/se-<uid>/` when the path exceeds 104 bytes |
+| Run (`runtime.lock`, `endpoint.json`) | `<state>\run`; pipe `\\.\pipe\stateengine-<per-start-random>` published in protected `endpoint.json` | `$XDG_RUNTIME_DIR/stateengine`, else `<state>/run` (0700) | `<state>/run`; socket falls back to `$TMPDIR/se-<uid>/` when the path exceeds 104 bytes |
 | `se` on PATH | `%LOCALAPPDATA%\StateEngine\bin\se.exe` | `~/.local/bin/se` | `~/.local/bin/se` |
 
 `SE_HOME` puts all of it under one directory. Never inside a repository. The store refuses a network

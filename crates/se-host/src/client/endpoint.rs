@@ -55,7 +55,10 @@ fn validate(record: &RecordWire) -> Result<()> {
             if matches!(path.encoded(), PathEncoding::UnixBytes(_)) => {}
         AddressWire::WindowsPipe { name }
             if name.strip_prefix(r"\\.\pipe\").is_some_and(|tail| {
-                !tail.is_empty() && !tail.contains('\0') && tail.len() <= 1024
+                !tail.is_empty()
+                    && !tail.contains(['\0', '\\', '/'])
+                    && !matches!(tail, "." | "..")
+                    && name.encode_utf16().count() <= 1024
             }) => {}
         _ => return Err(invalid()),
     }

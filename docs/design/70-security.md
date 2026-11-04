@@ -244,9 +244,13 @@ claim that an original URL proves the final origin.
 - **Unix:** socket in a 0700 directory (00 §5.4) whose owner is checked before bind; a stale socket is
   replaced only under `runtime.lock`. Peer check: `SO_PEERCRED` (Linux), `LOCAL_PEERCRED` +
   `LOCAL_PEERPID` (macOS); another uid refuses.
-- **Windows:** `\\.\pipe\stateengine-<sid-and-canonical-state-home-hash>` hashes the user SID and
-  the canonical state-home path (lossless UTF-16), so separate homes can host concurrently.
-  Publication and discovery use the same derivation; resolving an unreadable home refuses.
+- **Windows:** `\\.\pipe\stateengine-<per-start-random>` uses fresh 256-bit CSPRNG entropy
+  under the home's exclusive runtime lease, preventing predictable-name squatting and
+  allowing separate homes to host concurrently. Clients obtain the local single-component
+  name only from protected `endpoint.json`, then authenticate its exact native server,
+  epoch, image and generation; a held lease alone never authenticates the record.
+  Both native pipe operations and the record codec reject NUL, separators and dot segments
+  after the local pipe prefix, with a 1024 UTF-16-unit total name bound.
   Created with `FILE_FLAG_FIRST_PIPE_INSTANCE` (if
   someone else created it first, the host refuses and names it), `PIPE_REJECT_REMOTE_CLIENTS`, and a
   DACL granting only the user's SID. The host reads `GetNamedPipeClientProcessId`, opens the client's

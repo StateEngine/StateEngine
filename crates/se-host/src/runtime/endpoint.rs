@@ -258,7 +258,7 @@ impl HostedRuntime {
                         .map_err(crate::client::lease::native_error)?,
                 )?);
                 #[cfg(windows)]
-                let address = address(&directory)?;
+                let address = address()?;
                 let record = EndpointRecord {
                     schema: 1,
                     address,
@@ -325,48 +325,26 @@ impl HostedRuntime {
 /// Default address for an embedding without explicit Unix platform roots.
 /// A CLI with resolved Unix inputs uses UnixSocketPaths::expected_path instead;
 /// both comparisons precede any connection to a busy home's endpoint record.
+#[cfg(unix)]
 pub fn runtime_endpoint_address(directory: &std::path::Path) -> Result<IpcEndpoint> {
-    #[cfg(unix)]
-    {
-        Ok(IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
-            se_proc::native_ipc::UnixSocketPaths::default()
-                .expected_path(directory)
-                .map_err(crate::client::lease::native_error)?,
-        )?))
-    }
-    #[cfg(windows)]
-    {
-        address(directory)
-    }
+    Ok(IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
+        se_proc::native_ipc::UnixSocketPaths::default()
+            .expected_path(directory)
+            .map_err(crate::client::lease::native_error)?,
+    )?))
 }
 #[cfg(windows)]
-fn address(directory: &std::path::Path) -> Result<IpcEndpoint> {
-    {
-        use sha2::Digest;
-        use std::os::windows::ffi::OsStrExt;
-        let peer =
-            se_proc::native_ipc::observe_ipc_self().map_err(crate::client::lease::native_error)?;
-        let se_proc::native_ipc::IpcPrincipal::Windows { sid } = peer.principal() else {
-            return Err(SeError::invalid("IPC owner", "a native Windows SID"));
-        };
-        // Both publication and discovery resolve the same existing state home.
-        // Hash native UTF-16 losslessly; this name routes, never grants access.
-        let home = se_proc::canonicalize_path(directory).map_err(|error| {
-            se_core::scope::unreadable("canonical runtime state home", &error.to_string())
-                .with_cause(error)
-        })?;
-        let mut digest = sha2::Sha256::new();
-        digest.update(b"stateengine-runtime-home-v1\0");
-        digest.update(sid.as_bytes());
-        digest.update([0]);
-        for unit in home.as_os_str().encode_wide() {
-            digest.update(unit.to_le_bytes());
-        }
-        let hash: String = se_types::hex_lower(&digest.finalize());
-        Ok(IpcEndpoint::WindowsPipe(format!(
-            r"\\.\pipe\stateengine-{hash}"
-        )))
-    }
+fn address() -> Result<IpcEndpoint> {
+    // Allocate only under this home's retained exclusive lease, immediately
+    // before first-instance reservation and protected endpoint publication.
+    let random = se_proc::random_secret().map_err(|error| {
+        se_core::scope::unreadable("runtime pipe name entropy", &error.to_string())
+            .with_cause(error)
+    })?;
+    Ok(IpcEndpoint::WindowsPipe(format!(
+        r"\\.\pipe\stateengine-{}",
+        se_types::hex_lower(random.expose())
+    )))
 }
 
 #[derive(Debug)]
