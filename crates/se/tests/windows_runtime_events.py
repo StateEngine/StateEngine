@@ -121,9 +121,15 @@ def worker(args):
         with args.out.joinpath('foreground.log').open('wb') as log:
             child = subprocess.Popen([str(args.se), '--home', str(args.home), 'up', '--foreground', '--json'],
                                      stdin=input_stream, stdout=log, stderr=log)
+            window = require(kernel.GetConsoleWindow(), 'native console window')
+            user = ctypes.WinDLL('user32', use_last_error=True)
+            user.GetWindowThreadProcessId.argtypes = [w.HWND, ctypes.POINTER(w.DWORD)]
+            user.GetWindowThreadProcessId.restype = w.DWORD
+            owner = w.DWORD()
+            require(user.GetWindowThreadProcessId(window, ctypes.byref(owner)), 'console window owner')
             atomic_json(args.out.joinpath('worker-ready.json'), {
                 'host_pid': child.pid, 'worker_pid': os.getpid(),
-                'console_window': int(require(kernel.GetConsoleWindow(), 'native console window'))})
+                'console_window': int(window), 'console_owner_pid': owner.value})
             code = child.wait()
             atomic_json(args.out / 'worker-exit.json', {'host_pid': child.pid, 'exit': code})
             return code
@@ -185,8 +191,13 @@ std::process::exit(s.code().unwrap_or(1));}'''
     user_file.write_bytes(b'Keep Windows user work.\r\n')
     pins, failures, cleanup, members = [], [], [], []
     progress['stage'] = 'start separate native console worker'
+    conhost = (Path(os.environ['SystemRoot']) / 'System32/conhost.exe').resolve(strict=True)
+    # Microsoft's ConsoleArguments.cpp: -ForceNoHandoff prevents delegation to
+    # the default terminal; -- introduces the actual console client command.
+    # https://github.com/microsoft/terminal/blob/main/src/host/ConsoleArguments.cpp
     with (fixture.root / 'worker.stderr').open('wb') as worker_log:
-        launcher = subprocess.Popen([sys.executable, '-I', str(Path(__file__).resolve()), '--worker',
+        launcher = subprocess.Popen([str(conhost), '-ForceNoHandoff', '--',
+            sys.executable, '-I', str(Path(__file__).resolve()), '--worker',
             '--se', str(fixture.se), '--home', str(fixture.home), '--out', str(fixture.root)],
             stdin=subprocess.DEVNULL, stdout=worker_log, stderr=worker_log,
             cwd=fixture.repo, env=fixture.env, creationflags=subprocess.CREATE_NEW_CONSOLE)
@@ -195,6 +206,14 @@ std::process::exit(s.code().unwrap_or(1));}'''
         ready_path = fixture.root / 'worker-ready.json'
         ready = read_json(ready_path)
         pins.append(Pin(kernel, ready['host_pid']))
+        console_pin = Pin(kernel, ready['console_owner_pid'])
+        try:
+            progress['console_owner'] = console_pin.record
+            if (console_pin.record['pid'] != launcher.pid
+                    or Path(console_pin.record['image']).resolve() != conhost):
+                raise AssertionError('NOT REACHED: console window is not owned by the explicit classic conhost')
+        finally:
+            console_pin.close()
         progress['stage'] = 'read complete protected endpoint publication'
         endpoint = read_json(fixture.home / 'endpoint.json')
         if endpoint['epoch']['owner']['pid'] != ready['host_pid']:
