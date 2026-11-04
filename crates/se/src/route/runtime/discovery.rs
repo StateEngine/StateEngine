@@ -12,9 +12,11 @@ pub(super) fn route(cx: &Bootstrap) -> Result<se_host::EndpointRoute> {
                     .with_cause(error)
             })?,
     )?);
+    #[cfg(unix)]
+    let expected = Some(&expected);
     #[cfg(windows)]
-    let expected = se_host::runtime_endpoint_address(&cx.home)?;
-    se_host::route_endpoint(&cx.home, &expected)
+    let expected = None;
+    se_host::route_endpoint(&cx.home, expected)
 }
 
 pub(super) fn authenticate(

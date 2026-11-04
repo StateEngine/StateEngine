@@ -26,8 +26,10 @@ pub(super) fn endpoint(
                     .with_cause(error)
             })?,
     )?);
+    #[cfg(unix)]
+    let expected = Some(&expected);
     #[cfg(windows)]
-    let expected = se_host::runtime_endpoint_address(&cx.home)?;
+    let expected = None;
     let configuration = match &cx.config.origin {
         Origin::File(path) => path.clone(),
         Origin::BuiltIn => cx.home.join("config.toml"),
@@ -47,7 +49,7 @@ pub(super) fn endpoint(
                 failure,
             ));
         }
-        let route = match se_host::route_endpoint(&cx.home, &expected) {
+        let route = match se_host::route_endpoint(&cx.home, expected) {
             Ok(route) => route,
             Err(error) => {
                 // A held lease with no publication is a concurrent bootstrap

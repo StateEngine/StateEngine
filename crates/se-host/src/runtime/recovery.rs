@@ -14,8 +14,19 @@ pub enum EndpointRoute {
 }
 /// The CLI has released its shared direct lease. This port takes the exclusive
 /// native lease before retaining a record; a busy lease never grants mutation.
-/// The address is selected by the caller without connecting to the old record.
-pub fn route_endpoint(directory: &Path, expected_address: &IpcEndpoint) -> Result<EndpointRoute> {
+/// Unix callers supply their selected socket address. Windows callers use None:
+/// the protected record supplies the per-start name, and authentication still
+/// checks its exact native server, epoch, image and generation before use.
+pub fn route_endpoint(
+    directory: &Path,
+    expected_address: Option<&IpcEndpoint>,
+) -> Result<EndpointRoute> {
+    if cfg!(unix) && expected_address.is_none() {
+        return Err(SeError::invalid(
+            "runtime socket route",
+            "the selected Unix socket address",
+        ));
+    }
     let files = NativeStateFiles::open(directory).map_err(native_error)?;
     let lock_path = directory.join("runtime.lock");
     let lock = files
@@ -45,7 +56,11 @@ pub fn route_endpoint(directory: &Path, expected_address: &IpcEndpoint) -> Resul
                     "a host or writer holds the lease but no endpoint is published",
                 )
             })?;
-            if &record.address != expected_address {
+            let matches = match expected_address {
+                Some(expected) => &record.address == expected,
+                None => cfg!(windows) && matches!(&record.address, IpcEndpoint::WindowsPipe(_)),
+            };
+            if !matches {
                 return Err(busy(
                     directory,
                     "the lease is held and the protected endpoint names a mismatched address",
