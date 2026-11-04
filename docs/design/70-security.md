@@ -259,8 +259,8 @@ claim that an original URL proves the final origin.
   socket before reading process metadata and check that original process remains
   live before and after the proof, retaining the pidfd with the observation.
   Only `ENOPROTOOPT` selects the older-kernel `SO_PEERCRED` plus birth/image-recheck
-  behavior; access and resource errors refuse. `NativeIpcPeer::retains_process_pin`
-  reports this distinction. macOS and Linux self observations retain their existing
+  behavior; access and resource errors refuse. macOS and Linux self observations
+  retain their existing
   native birth/image checks without a socket peer pidfd.
 - All peer and ACL calls live in se-proc, the only crate allowed `unsafe`.
 

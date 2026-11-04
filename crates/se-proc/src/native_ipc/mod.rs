@@ -97,29 +97,11 @@ pub struct NativeIpcPeer {
     image: NativePath,
     image_sha256: Sha256,
     #[cfg(windows)]
-    process: std::os::windows::io::OwnedHandle,
+    _process: std::os::windows::io::OwnedHandle,
     #[cfg(target_os = "linux")]
-    peer_pidfd: Option<std::os::fd::OwnedFd>,
+    _peer_pidfd: Option<std::os::fd::OwnedFd>,
 }
 impl NativeIpcPeer {
-    /// Whether this observation retains a native process object. Connected
-    /// Linux peers use SO_PEERPIDFD when available; older kernels, macOS and
-    /// Linux self observations retain the existing birth/image checks instead.
-    pub fn retains_process_pin(&self) -> bool {
-        #[cfg(windows)]
-        {
-            use std::os::windows::io::AsRawHandle;
-            !self.process.as_raw_handle().is_null()
-        }
-        #[cfg(target_os = "linux")]
-        {
-            self.peer_pidfd.is_some()
-        }
-        #[cfg(target_os = "macos")]
-        {
-            false
-        }
-    }
     pub fn principal(&self) -> &IpcPrincipal {
         &self.principal
     }

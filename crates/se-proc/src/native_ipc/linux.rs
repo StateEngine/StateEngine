@@ -106,7 +106,7 @@ pub(super) fn observe(pid: u32, uid: u32, bound: &IpcIoBound) -> IpcNativeResult
         },
         image: native_path(&image)?,
         image_sha256,
-        peer_pidfd: None,
+        _peer_pidfd: None,
     })
 }
 
@@ -120,7 +120,7 @@ pub(super) fn observe_connected(
     pin_live(pin.as_ref())?;
     let mut peer = observe(pid, uid, bound)?;
     pin_live(pin.as_ref())?;
-    peer.peer_pidfd = pin;
+    peer._peer_pidfd = pin;
     Ok(peer)
 }
 
