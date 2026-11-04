@@ -52,7 +52,7 @@ std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.
             .replace("HELPER,SE,HOME", ",".join(json.dumps(str(p)) for p in [helper, self.se, self.home])))
         executable = self.root / ("provider.exe" if os.name == "nt" else "provider")
         subprocess.run(["rustc", "--edition=2024", str(source), "-o", str(executable)],
-                       capture_output=True, check=True, timeout=60)
+                       stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=60)
         config.write_text(text.replace("[providers.claude]", "[providers.claude]\ncommand = " +
                                        json.dumps(str(executable)), 1))
 
@@ -63,7 +63,7 @@ std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.
             assert self.session
             environment["SE_SESSION"] = self.session
         result = subprocess.run([str(self.se), "--json", "--home", str(self.home), *args],
-                                env=environment, capture_output=True, timeout=90)
+                                stdin=subprocess.DEVNULL, env=environment, capture_output=True, timeout=90)
         base = self.root / f"call-{self.calls:02}"
         base.with_suffix(".stdout").write_bytes(result.stdout)
         base.with_suffix(".stderr").write_bytes(result.stderr)
