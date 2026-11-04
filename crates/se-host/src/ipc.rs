@@ -132,10 +132,6 @@ pub struct RawOperation {
     /// natural-key capture/marker exception, never an admitted keyless write.
     pub key: Option<IdempotencyKey>,
 }
-/// Only the core registry decoder can construct this admitted operation.
-pub struct AdmittedOperation {
-    pub(crate) _private: (),
-}
 pub struct OperationOutput {
     pub schema: String,
     pub value: serde_json::Value,
@@ -168,14 +164,6 @@ pub struct IpcResponse {
 pub enum IpcResult {
     Output(Box<OperationOutput>),
     Error(se_types::ErrorEnvelope),
-}
-/// Concrete common adapters; authorization/dispatch signatures remain the
-/// canonical core/linked-API contract, not parallel public service traits.
-pub struct AdmissionAdapter {
-    pub(crate) _private: (),
-}
-pub struct Dispatcher {
-    pub(crate) _private: (),
 }
 
 #[cfg(feature = "listener")]
