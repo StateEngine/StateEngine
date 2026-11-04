@@ -149,9 +149,10 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             old_offset,
             new_offset,
             last_turn,
+            replay_evidence,
         } => (
             "capture.progress",
-            json!({"capture_kind":"progress","source":source,"expected":expected,"incarnation":incarnation,"old_offset":old_offset,"new_offset":new_offset,"last_turn":last_turn}),
+            json!({"capture_kind":"progress","source":source,"expected":expected,"incarnation":incarnation,"old_offset":old_offset,"new_offset":new_offset,"last_turn":last_turn,"replay_evidence":replay_evidence}),
         ),
         CaptureFailed {
             source,

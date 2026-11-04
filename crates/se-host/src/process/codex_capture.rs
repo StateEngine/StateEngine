@@ -42,13 +42,12 @@ impl LaunchCoordinator {
                 continue;
             };
             let session = work.meta.session.clone();
-            let turn = crate::codex_capture::turn_id(&session, &record.vendor)?;
             let matched = self.store.read(admission.clone(), deadline, move |cx| {
-                match cx.read.turn(turn).map_err(|cause| se_core::store_error::store_error(&cause))? {
+                match cx.read.native_turn(session, se_store::Provider::Codex, &record.vendor).map_err(|cause| se_core::store_error::store_error(&cause))? {
                     Read::Absent { .. } => Ok(false),
                     Read::Present { value } => match value.body {
-                        EventBody::SessionTurn {session: found, provider: se_store::Provider::Codex, vendor_ref, role, text: StoredText::Present(text), ..}
-                            if found == session && vendor_ref == record.vendor && role == record.role && text == record.text.as_str() => Ok(true),
+                        EventBody::SessionTurn {provider: se_store::Provider::Codex, vendor_ref, role, text: StoredText::Present(text), ..}
+                            if vendor_ref == record.vendor && role == record.role && text == record.text.as_str() => Ok(true),
                         _ => Err(error("Codex capture acknowledgement", "the immutable item differs or was erased; preserve its original identity")),
                     },
                     Read::Unreadable { reason, .. } => Err(error("Codex committed item", reason)),

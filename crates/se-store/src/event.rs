@@ -124,7 +124,7 @@ pub enum IntegrationState {
 pub enum GrantKey {
     AgentCanCreate(AgentId),
 }
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SourceEvidence {
     /// File-backed transcripts have a path; native event capture has none.
     pub path: Option<NativePath>,

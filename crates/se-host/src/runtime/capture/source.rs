@@ -191,6 +191,7 @@ fn cursor(
                 old_offset,
                 new_offset,
                 last_turn,
+                replay_evidence,
                 ..
             } if id == &source.source && incarnation.as_slice() == source.pin.identity() => {
                 let turn = scope::require_present(
@@ -198,6 +199,36 @@ fn cursor(
                     "last committed capture turn",
                     "Read the last committed turn for this original capture source; preserve its session/provider/turn identities and saved cursor.",
                 )?;
+                if let Some(range) = replay_evidence {
+                    let EventBody::SessionTurn {
+                        provider: se_store::Provider::Codex,
+                        vendor_ref,
+                        ..
+                    } = &turn.body
+                    else {
+                        return Err(scope::unreadable(
+                            "capture replay",
+                            "only a bound Codex item can retain an earlier session's turn",
+                        ));
+                    };
+                    let original = scope::require_present(
+                        read.native_turn(
+                            source.binding.identity.session.clone(),
+                            se_store::Provider::Codex,
+                            vendor_ref,
+                        )
+                        .map_err(|error| store_error(&error))?,
+                        "resumed native item",
+                        scope::COMMITTED_READ_RECOVERY,
+                    )?;
+                    if original.header.event != turn.header.event {
+                        return Err(scope::unreadable(
+                            "capture replay",
+                            "last turn differs from the current native conversation",
+                        ));
+                    }
+                    evidence = Some(range.clone());
+                }
                 match turn.body {
                     EventBody::SessionTurn {
                         turn: id,
@@ -208,14 +239,23 @@ fn cursor(
                         ..
                     } if id == *last_turn
                         && agent == source.binding.identity.agent
-                        && session == source.binding.identity.session
-                        && prior.path.as_ref() == Some(&source.binding.path)
-                        && prior.incarnation.as_slice() == source.pin.identity()
-                        && prior.offset == *old_offset
-                        && prior.offset.checked_add(prior.length) == Some(*new_offset)
-                        && prior.sha256.is_some() =>
+                        && (session == source.binding.identity.session
+                            || replay_evidence.is_some()) =>
                     {
-                        evidence = Some(prior)
+                        let prior = evidence.take().unwrap_or(prior);
+                        if prior.path.as_ref() == Some(&source.binding.path)
+                            && prior.incarnation.as_slice() == source.pin.identity()
+                            && prior.offset == *old_offset
+                            && prior.offset.checked_add(prior.length) == Some(*new_offset)
+                            && prior.sha256.is_some()
+                        {
+                            evidence = Some(prior);
+                        } else {
+                            return Err(scope::unreadable(
+                                "committed capture prefix",
+                                "the current source range differs from its saved cursor",
+                            ));
+                        }
                     }
                     _ => {
                         return Err(scope::unreadable(

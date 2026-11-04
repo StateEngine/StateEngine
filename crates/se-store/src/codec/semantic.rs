@@ -41,6 +41,9 @@ pub(crate) fn descriptor<T, S: Serialize>(
         }
         CaptureSource { .. } | CaptureProgress { .. } => {
             fields.remove("expected");
+            if fields.get("replay_evidence").is_some_and(Value::is_null) {
+                fields.remove("replay_evidence");
+            }
         }
         RecoveryRecorded { receipt, .. } => {
             fields.insert("receipt".into(), json!(text(receipt)?));

@@ -1,3 +1,4 @@
+pub(crate) mod native;
 use super::*;
 use rusqlite::OptionalExtension;
 use se_types::{AgentId, NativePath, SessionId};
@@ -73,6 +74,11 @@ pub(crate) fn decode(
                 old_offset: field(&v, "old_offset")?,
                 new_offset: field(&v, "new_offset")?,
                 last_turn: field(&v, "last_turn")?,
+                replay_evidence: v
+                    .get("replay_evidence")
+                    .map(|v| serde_json::from_value(v.clone()).map_err(invalid))
+                    .transpose()?
+                    .flatten(),
             },
             "capture.failed" => EventBody::CaptureFailed {
                 source: field(&v, "source")?,
@@ -155,12 +161,9 @@ pub(crate) fn decode(
     })
 }
 pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> {
-    let p = crate::connection::project_id(c, &e.header.scope, false)?;
-    let scope = scope_key(c, &e.header.scope, false)?;
     match &e.body {
         EventBody::SessionTurn {session,provider:backend,vendor_ref,..} => {
-            let session=key(c,"session",session.as_str(),&scope,false)?;
-            c.query_row("SELECT event_seq FROM turn_data WHERE project_id=? AND session_id=? AND provider=? AND vendor_ref=?",rusqlite::params![p,session,provider(*backend),vendor_ref],|r|r.get(0)).optional().map_err(sql)
+            native::find(c, &e.header.scope, session, *backend, vendor_ref)
         },
         EventBody::CaptureSource {source,session,consent,native_ref,incarnation,..} => c.query_row("SELECT event_seq FROM aux_data INDEXED BY capture_source_natural WHERE json_extract(facts,'$.capture_kind')='source' AND json_extract(facts,'$.project')=? AND json_extract(facts,'$.source')=? AND json_extract(facts,'$.incarnation')=? AND json_extract(facts,'$.session')=? AND json_extract(facts,'$.consent')=? AND json_extract(facts,'$.native_ref')=?",rusqlite::params![crate::identity::project(&e.header.scope)?.as_str(),encode(source)?,encode(incarnation)?,session.as_str(),encode(consent)?.trim_matches('"'),native_ref],|r|r.get(0)).optional().map_err(sql),
         EventBody::CaptureProgress {source,incarnation,old_offset,new_offset,last_turn,..} => c.query_row("SELECT event_seq FROM aux_data INDEXED BY capture_progress_natural WHERE json_extract(facts,'$.capture_kind')='progress' AND json_extract(facts,'$.project')=? AND json_extract(facts,'$.source')=? AND json_extract(facts,'$.incarnation')=? AND json_extract(facts,'$.old_offset')=? AND json_extract(facts,'$.new_offset')=? AND json_extract(facts,'$.last_turn')=?",crate::sql_value::sql_params![crate::identity::project(&e.header.scope)?.as_str(),encode(source)?,encode(incarnation)?,old_offset,new_offset,encode(last_turn)?],|r|r.get(0)).optional().map_err(sql),

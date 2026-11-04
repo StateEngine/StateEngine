@@ -245,6 +245,8 @@ pub(super) fn decode<R: Snapshot>(
                     .checked_add(cx.source.length)
                     .ok_or_else(|| invalid("source range overflow"))?,
                 last_turn,
+
+                replay_evidence: None,
             },
         )?);
     } else if had_text {

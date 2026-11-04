@@ -199,14 +199,21 @@ fn capture_evidence<S: Snapshot>(
             };
         }
     }
-    let (incarnation, from, to, turn) = match &source.current.body {
+    let (incarnation, from, to, turn, replay) = match &source.current.body {
         EventBody::CaptureProgress {
             incarnation,
             old_offset,
             new_offset,
             last_turn,
+            replay_evidence,
             ..
-        } => (incarnation, *old_offset, *new_offset, *last_turn),
+        } => (
+            incarnation,
+            *old_offset,
+            *new_offset,
+            *last_turn,
+            replay_evidence,
+        ),
         _ => {
             return Ok(Read::Unknown {
                 what: "No committed captured turn has established a conversation cursor yet".into(),
@@ -217,6 +224,38 @@ fn capture_evidence<S: Snapshot>(
         Read::Present { value } => value,
         other => return Ok(missing(other)),
     };
+    if let Some(evidence) = replay {
+        let EventBody::SessionTurn {
+            agent,
+            provider: se_store::Provider::Codex,
+            vendor_ref,
+            text: StoredText::Present(_),
+            ..
+        } = &turn.body
+        else {
+            return Err(invalid("a retained Codex conversation item"));
+        };
+        let original = scope::require_present(
+            read.native_turn(session.clone(), se_store::Provider::Codex, vendor_ref)
+                .map_err(|e| store_error(&e))?,
+            "resumed native item",
+            scope::COMMITTED_READ_RECOVERY,
+        )?;
+        if *agent == row.id
+            && original.header.event == turn.header.event
+            && &evidence.incarnation == incarnation
+            && evidence.offset == from
+            && evidence.offset.checked_add(evidence.length) == Some(to)
+            && evidence.sha256.is_some()
+        {
+            return Ok(Read::Present {
+                value: evidence.clone(),
+            });
+        }
+        return Err(invalid(
+            "the current native conversation and verified replay range",
+        ));
+    }
     match turn.body {
         EventBody::SessionTurn {
             session: found,

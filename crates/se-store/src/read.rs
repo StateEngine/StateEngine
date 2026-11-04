@@ -529,6 +529,26 @@ impl Snapshot for SqliteSnapshot {
     fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>> {
         self.read_turn(id)
     }
+    fn native_turn(
+        &mut self,
+        session: SessionId,
+        provider: Provider,
+        vendor: &str,
+    ) -> StoreResult<Read<StoredEvent>> {
+        self.read_session(session.clone())?;
+        match codec::capture::native::find(
+            &self.db,
+            &self.scope.admission.scope,
+            &session,
+            provider,
+            vendor,
+        )? {
+            Some(seq) => Ok(Read::Present {
+                value: self.record(seq)?,
+            }),
+            None => Ok(self.absent("native conversation item")),
+        }
+    }
     fn recent_turns(
         &mut self,
         agent: AgentId,

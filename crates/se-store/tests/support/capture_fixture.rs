@@ -87,6 +87,7 @@ pub fn capture(
                 old_offset: offset,
                 new_offset: offset + evidence.len() as u64,
                 last_turn: turn,
+                replay_evidence: None,
             },
         ],
     )?;

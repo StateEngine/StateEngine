@@ -252,6 +252,8 @@ pub enum EventBody<T> {
         old_offset: u64,
         new_offset: u64,
         last_turn: RecordId,
+        /// Current source range when the turn was retained from an earlier engine session.
+        replay_evidence: Option<SourceEvidence>,
     },
     CaptureFailed {
         source: RecordId,

@@ -177,6 +177,7 @@ impl EmbeddedHost {
                         old_offset: 0,
                         new_offset: bytes,
                         last_turn: turn_id,
+                        replay_evidence: None,
                     },
                 ),
             ];
