@@ -2,6 +2,13 @@ use se_core::ops::continuity::ResumeOutput;
 use se_types::Read;
 use std::io::{self, Write};
 pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
+    resume_at(value, None, out)
+}
+pub(super) fn resume_at(
+    value: &ResumeOutput,
+    home: Option<&std::path::Path>,
+    out: &mut impl Write,
+) -> io::Result<()> {
     writeln!(out, "Who am I?")?;
     writeln!(
         out,
@@ -65,6 +72,20 @@ pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
             out,
             "Recent context; use --since with the returned cursor for later changes."
         )?;
+    } else if value.since.as_ref() == Some(&value.cursor)
+        && value.resume_status != "integrity_blocked"
+    {
+        writeln!(out, "Nothing changed since that cursor.")?;
+    } else if value.recent_turns.is_empty()
+        && !value
+            .omissions
+            .iter()
+            .any(|item| item.section == "recent_turns")
+    {
+        writeln!(
+            out,
+            "No new captured turns since that cursor; pending work and omissions follow."
+        )?;
     }
     super::transcript::render(&value.transcript, out)?;
     for turn in &value.recent_turns {
@@ -91,10 +112,14 @@ pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
             omitted.section,
             omitted
                 .count
-                .map(|count| format!("{count} item(s)"))
+                .map(|count| format!("{count} {}", omitted.unit.as_deref().unwrap_or("item(s)")))
                 .unwrap_or_else(|| "count unavailable".into()),
             omitted.reason,
-            omitted.command
+            if omitted.command.is_empty() {
+                "use the expanded resume command below"
+            } else {
+                &omitted.command
+            }
         )?;
     }
     for attention in &value.attention {
@@ -105,9 +130,18 @@ pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
         "Context bytes: {} of {}; complete: {}",
         value.budget.used_bytes, value.budget.limit_bytes, value.complete
     )?;
+    write!(out, "Continue: se")?;
+    if let Some(home) = home {
+        let home = home.display().to_string();
+        #[cfg(windows)]
+        let home = home.replace('\'', "''");
+        #[cfg(not(windows))]
+        let home = home.replace('\'', "'\"'\"'");
+        write!(out, " --home '{home}'")?;
+    }
     write!(
         out,
-        "Continue: se --project {} resume --since {}",
+        " --project {} resume --since {}",
         value.principal.project.id, value.cursor
     )?;
     if value.principal.preview {

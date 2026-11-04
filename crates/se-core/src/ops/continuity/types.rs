@@ -119,6 +119,8 @@ pub struct RecentTurn {
 pub struct Omission {
     pub section: String,
     pub count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
     pub reason: String,
     pub tool: String,
     pub command: String,

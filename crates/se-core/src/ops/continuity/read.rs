@@ -343,6 +343,7 @@ pub(super) fn omission(
     Omission {
         section: section.into(),
         count,
+        unit: None,
         reason: reason.into(),
         tool: tool.into(),
         argv: command.split(' ').map(str::to_owned).collect(),

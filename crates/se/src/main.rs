@@ -232,7 +232,13 @@ pub fn run(
         return Ok(runtime::uninstall_completion::DEFERRED_EXIT);
     }
     match result {
-        Ok(output) => render::output(&output, common.json, common.quiet, &mut stdout),
+        Ok(output) => render::output_at(
+            &output,
+            common.json,
+            common.quiet,
+            &context.home,
+            &mut stdout,
+        ),
         Err(error) => render::error::write(
             &error,
             &render_context,
