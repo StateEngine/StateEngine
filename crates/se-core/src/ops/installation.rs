@@ -144,13 +144,13 @@ impl UninstallPlan {
             ));
         }
         if self.files.is_empty()
-            || self.files.len() > 256
+            || self.files.len() > 512
             || self.created_directories.len() > 128
             || self.path_edits.len() > 16
         {
             return Err(SeError::invalid(
                 "installation manifest",
-                "1..256 exact owned files, at most 128 created directories and 16 PATH edits",
+                "1..512 exact owned files, at most 128 created directories and 16 PATH edits",
             ));
         }
         let protected_files = [
