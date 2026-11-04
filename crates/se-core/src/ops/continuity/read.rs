@@ -399,3 +399,60 @@ pub(super) fn resume_command(identity: &Identity, governing: Option<&se_types::C
     }
     command
 }
+
+struct BudgetRecovery<'a> {
+    identity: &'a Identity,
+    input: &'a Resume,
+    needed: usize,
+}
+impl se_types::OperationCommand for BudgetRecovery<'_> {
+    fn cli_argv(&self) -> Vec<String> {
+        let mut argv = vec![
+            "se".into(),
+            "--project".into(),
+            self.identity.principal.project.id.to_string(),
+            "resume".into(),
+            "--budget".into(),
+            self.needed.to_string(),
+        ];
+        if self.identity.principal.preview {
+            argv.extend([
+                "--preview".into(),
+                self.identity.principal.agent.id.to_string(),
+            ]);
+        }
+        for (flag, cursor) in [
+            ("--since", self.input.since.as_ref()),
+            ("--governing-cursor", self.input.governing_cursor.as_ref()),
+        ] {
+            if let Some(cursor) = cursor {
+                argv.extend([flag.into(), cursor.to_string()]);
+            }
+        }
+        argv
+    }
+}
+pub(super) fn budget_refusal(
+    identity: &Identity,
+    input: &Resume,
+    needed: usize,
+) -> Result<SeError> {
+    let mut error = SeError::too_large(
+        &format!(
+            "continuity structural metadata and first unread item (retry with --budget {needed})"
+        ),
+        input.byte_budget as usize,
+        needed,
+    );
+    error.body = error.body.with_remedy(se_types::Remedy {
+        text: format!("Retry with --budget {needed} using the same selected agent and cursor."),
+        command: Some(se_types::Cmd::Se {
+            argv: se_types::Argv::from_op(&BudgetRecovery {
+                identity,
+                input,
+                needed,
+            })?,
+        }),
+    });
+    Ok(error)
+}

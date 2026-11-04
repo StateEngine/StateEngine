@@ -268,9 +268,11 @@ pub enum Retry {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ErrorBody {
     #[serde(flatten)]
-    detail: Detail,
+    detail: Box<Detail>,
     #[serde(default)]
     retry: Retry,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery: Option<Box<Remedy>>,
 }
 impl ErrorBody {
     pub fn new(detail: Detail) -> Self {
@@ -278,11 +280,24 @@ impl ErrorBody {
             Detail::SessionNotActive(_) => Retry::AfterReread,
             _ => Retry::Never,
         };
-        Self { detail, retry }
+        Self {
+            detail: Box::new(detail),
+            retry,
+            recovery: None,
+        }
     }
     pub fn with_retry(mut self, retry: Retry) -> Self {
         self.retry = retry;
         self
+    }
+    pub fn with_remedy(mut self, remedy: Remedy) -> Self {
+        self.recovery = Some(Box::new(remedy));
+        self
+    }
+    pub fn recovery_command(&self) -> Option<&Cmd> {
+        self.recovery
+            .as_ref()
+            .and_then(|remedy| remedy.command.as_ref())
     }
     pub fn code(&self) -> Code {
         self.detail.code()
@@ -300,7 +315,15 @@ impl ErrorBody {
         self.detail.message()
     }
     pub fn remedy(&self, cx: &RenderCx<'_>) -> crate::Result<Remedy> {
-        self.code().remedy(&self.detail, cx)
+        let Some(mut remedy) = self.recovery.clone() else {
+            return self.code().remedy(&self.detail, cx);
+        };
+        if let Some(commands) = cx.commands
+            && let Some(command) = commands.for_error(self)?
+        {
+            remedy.command = Some(command);
+        }
+        Ok(*remedy)
     }
 }
 impl fmt::Display for ErrorBody {
@@ -402,14 +425,14 @@ impl<'de> Deserialize<'de> for Argv {
         Self::validate(args).map_err(serde::de::Error::custom)
     }
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Cmd {
     Se { argv: Argv },
     Tool { name: String, args: Value },
     Manual,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Remedy {
     pub text: String,
     pub command: Option<Cmd>,

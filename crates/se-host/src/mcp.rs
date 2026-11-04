@@ -6,6 +6,7 @@
 use se_types::{Result, SeError, Secret};
 use serde_json::{Value, json};
 use std::{future::Future, sync::Arc};
+mod resume;
 
 /// Protocol revisions spoken here, newest first. An unknown requested
 /// revision is answered with the newest, as the MCP lifecycle prescribes.
@@ -178,6 +179,9 @@ async fn call(
     // model can read and act on, never an empty success.
     let outcome = match se_core::ops::decode_tool(name, arguments) {
         Ok(mut operation) => {
+            if let se_core::ops::AnyOp::Resume(input) = operation {
+                return resume::call(backend, capability, id, input).await;
+            }
             if let se_core::ops::AnyOp::MessageRead(input) = &mut operation {
                 // A JSON value contributes one structured copy and at most two
                 // encoded copies inside the text string. Reserve fixed space

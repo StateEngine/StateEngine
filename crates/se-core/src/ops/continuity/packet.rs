@@ -333,13 +333,7 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                 continue;
             }
         }
-        return Err(SeError::too_large(
-            &format!(
-                "continuity structural metadata and first unread item (retry with --budget {needed})"
-            ),
-            input.byte_budget as usize,
-            needed,
-        ));
+        return Err(read::budget_refusal(identity, input, needed)?);
     }
     Err(scope::unreadable(
         "continuity budget",
