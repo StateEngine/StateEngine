@@ -257,7 +257,7 @@ fn input_command(name: &str, c: Command) -> Command {
         "store.import_node" => c.about("Import supported user history without changing the original Node state").arg(value("from_node").long("from-node").required(true)).arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner")).arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),
         "project.status" => c.arg(toggle("all")),
         "agent.launch" => c
-            .about("Start or resume a saved agent; this release supports headless --detach")
+            .about("Start or resume a saved agent in a window; --detach runs headless")
             .arg(positional("agent", 1, true))
             .arg(toggle("new"))
             .arg(value("provider"))

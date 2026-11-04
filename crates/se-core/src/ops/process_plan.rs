@@ -54,12 +54,6 @@ pub fn launch<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<LaunchPlan> {
     input.validate()?;
-    if !input.detach {
-        return Err(SeError::invalid(
-            "launch surface",
-            "--detach for headless launch; window support is not available in this release",
-        ));
-    }
     let agent = target(
         input.target_agent_id.as_ref(),
         input.owner_agent.as_deref(),
@@ -113,7 +107,7 @@ pub fn launch<R: Snapshot>(
             "the saved agent's provider; create another agent to use a different provider",
         ));
     }
-    let resolved = configuration.resolve_profile(&profile.named_profile, provider, true)?;
+    let resolved = configuration.resolve_profile(&profile.named_profile, provider, input.detach)?;
     let permission = match resolved.sandbox {
         EffectiveSandbox::ReadOnly => PermissionProfile::ReadOnly,
         EffectiveSandbox::WorkspaceWrite => PermissionProfile::WorkspaceWrite,

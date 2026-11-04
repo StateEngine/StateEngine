@@ -23,6 +23,12 @@ impl ClaudeHarness {
         cx: CallContext,
     ) -> std::result::Result<(), MailWriteFailure> {
         let binding = claude_binding(binding).map_err(MailWriteFailure::unsent)?;
+        if binding.attended {
+            return Err(MailWriteFailure::unsent(SeError::invalid(
+                "Claude attended mail",
+                "the provider-native attended mail route; console input is never manufactured",
+            )));
+        }
         if &binding.conversation != conversation {
             return Err(MailWriteFailure::unsent(SeError::invalid(
                 "mail target",

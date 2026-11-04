@@ -124,6 +124,304 @@ fn empty() -> StandardIo {
         stderr: None,
     }
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "child fixture for the explicitly selected desktop smoke"]
+fn window_console_child() -> Check {
+    use std::io::IsTerminal;
+    assert!(std::io::stdin().is_terminal());
+    assert!(std::io::stdout().is_terminal());
+    assert!(std::io::stderr().is_terminal());
+    let root =
+        PathBuf::from(std::env::var_os("STDIO_BINDING_JUDGE_ROOT").ok_or("missing fixture home")?);
+    fs::write(root.join("console-ready"), b"real controlling PTY")?;
+    println!("StateEngine terminal smoke: real provider console");
+    let until = Instant::now() + Duration::from_secs(15);
+    while !root.join("console-done").try_exists()? {
+        if Instant::now() >= until {
+            return Err("desktop smoke did not finish".into());
+        }
+        std::thread::park_timeout(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a logged-in X desktop and xterm"]
+fn native_window_owns_provider_pty_and_viewer_until_exact_stop() -> Check {
+    let home = Home::new()?;
+    let machine = MachineId::new("window-console-smoke")?;
+    let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
+    let host = HostInstanceId(nonce);
+    let generation = GenerationId::new(1)?;
+    let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
+    let runtime = open_runtime(machine.clone(), host)?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut entries: Vec<_> = std::env::vars_os()
+        .filter(|(name, _)| {
+            matches!(
+                name.to_str(),
+                Some("DISPLAY" | "XAUTHORITY" | "HOME" | "PATH")
+            )
+        })
+        .collect();
+    entries.push(("STDIO_BINDING_JUDGE_ROOT".into(), home.0.as_os_str().into()));
+    let prepared = runtime
+        .prepare_launch(
+            LaunchReservation {
+                format_version: 1,
+                lifecycle: lifecycle.clone(),
+                host,
+                owner: current_process_identity(machine).map_err(error)?,
+                generation,
+                scope_nonce: nonce,
+                parent: ReservationParent::LinuxTracked,
+                created_at_unix_ns: 1,
+            },
+            LaunchSpec {
+                lifecycle,
+                generation,
+                executable: std::env::current_exe()?,
+                arguments: [
+                    "--exact",
+                    "window_console_child",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ]
+                .map(Into::into)
+                .into(),
+                cwd: home.0.clone(),
+                environment: Environment { entries },
+                stdio: empty(),
+                mode: LaunchMode::Window,
+                window: Some(WindowSpec::UnixTerminal {
+                    executable: "/usr/bin/xterm".into(),
+                    adapter: TerminalAdapter::Xterm,
+                }),
+                policy: LaunchPolicy {
+                    containment: ContainmentRequirement::BestAvailable,
+                    writes: WritePolicy::Workspace {
+                        roots: vec![home.0.clone()],
+                        scratch: home.0.clone(),
+                    },
+                    network: NetworkPolicy::Allow,
+                    hardening: OptionalHardening::Off,
+                },
+                deadline,
+                notifications: Arc::new(Notices),
+            },
+        )
+        .map_err(error)?;
+    let mut scope = Scope {
+        runtime: &runtime,
+        process: prepared.process,
+        generation,
+        released: false,
+    };
+    let ticket = match runtime.begin_launch(prepared.prepared) {
+        LaunchStart::Pending { ticket, .. } => ticket,
+        LaunchStart::Failed(failure) => {
+            return Err(format!("window start: {:?}", failure.error).into());
+        }
+    };
+    loop {
+        match runtime.poll_launch(&ticket).map_err(error)? {
+            LaunchProgress::Started(_) => break,
+            LaunchProgress::AwaitingExecCommit(_) => {
+                runtime.authorize_exec(&ticket).map_err(error)?
+            }
+            LaunchProgress::Failed(failure) => {
+                return Err(format!("window exec: {:?}", failure.error).into());
+            }
+            LaunchProgress::Pending if Instant::now() < deadline => {
+                std::thread::park_timeout(Duration::from_millis(5))
+            }
+            _ => return Err("window launch exceeded deadline".into()),
+        }
+    }
+    while !home.0.join("console-ready").try_exists()? {
+        if Instant::now() >= deadline {
+            return Err("provider console witness absent".into());
+        }
+        std::thread::park_timeout(Duration::from_millis(5));
+    }
+    let observed = runtime.observe(&scope.process).map_err(error)?;
+    println!("window native witness: {observed:?}");
+    fs::write(home.0.join("console-done"), b"done")?;
+    scope.release()?;
+    assert!(runtime.arena_snapshot().map_err(error)?.entries.is_empty());
+    Ok(())
+}
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "backend child fixture for the explicitly selected desktop smoke"]
+fn window_backend_child() -> Check {
+    use std::io::IsTerminal;
+    assert!(!std::io::stdin().is_terminal());
+    assert!(!std::io::stdout().is_terminal());
+    assert!(!std::io::stderr().is_terminal());
+    let root =
+        PathBuf::from(std::env::var_os("STDIO_BINDING_JUDGE_ROOT").ok_or("missing fixture home")?);
+    println!("backend-pipe-ready");
+    fs::write(root.join("backend-ready"), b"native backend")?;
+    let until = Instant::now() + Duration::from_secs(15);
+    while !root.join("console-done").try_exists()? {
+        if Instant::now() >= until {
+            return Err("backend smoke did not finish".into());
+        }
+        std::thread::park_timeout(Duration::from_millis(5));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires a logged-in X desktop and xterm"]
+fn native_window_backend_and_console_share_custody() -> Check {
+    let home = Home::new()?;
+    let machine = MachineId::new("window-console-smoke")?;
+    let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
+    let host = HostInstanceId(nonce);
+    let generation = GenerationId::new(1)?;
+    let lifecycle = LifecycleId::from_parts(1_700_000_000_000, nonce[..10].try_into()?)?;
+    let runtime = open_runtime(machine.clone(), host)?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut entries: Vec<_> = std::env::vars_os()
+        .filter(|(name, _)| {
+            matches!(
+                name.to_str(),
+                Some("DISPLAY" | "XAUTHORITY" | "HOME" | "PATH")
+            )
+        })
+        .collect();
+    entries.push(("STDIO_BINDING_JUDGE_ROOT".into(), home.0.as_os_str().into()));
+    let prepared = runtime
+        .prepare_launch(
+            LaunchReservation {
+                format_version: 1,
+                lifecycle: lifecycle.clone(),
+                host,
+                owner: current_process_identity(machine).map_err(error)?,
+                generation,
+                scope_nonce: nonce,
+                parent: ReservationParent::LinuxTracked,
+                created_at_unix_ns: 1,
+            },
+            LaunchSpec {
+                lifecycle,
+                generation,
+                executable: std::env::current_exe()?,
+                arguments: [
+                    "--exact",
+                    "window_backend_child",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ]
+                .map(Into::into)
+                .into(),
+                cwd: home.0.clone(),
+                environment: Environment { entries },
+                stdio: empty(),
+                mode: LaunchMode::Window,
+                window: Some(WindowSpec::UnixTerminalWithBackend {
+                    executable: "/usr/bin/xterm".into(),
+                    adapter: TerminalAdapter::Xterm,
+                }),
+                policy: LaunchPolicy {
+                    containment: ContainmentRequirement::BestAvailable,
+                    writes: WritePolicy::Workspace {
+                        roots: vec![home.0.clone()],
+                        scratch: home.0.clone(),
+                    },
+                    network: NetworkPolicy::Allow,
+                    hardening: OptionalHardening::Off,
+                },
+                deadline,
+                notifications: Arc::new(Notices),
+            },
+        )
+        .map_err(error)?;
+    runtime
+        .bind_stdio(&prepared.prepared, home.endpoints("backend")?)
+        .map_err(error)?;
+    let mut scope = Scope {
+        runtime: &runtime,
+        process: prepared.process,
+        generation,
+        released: false,
+    };
+    let ticket = match runtime.begin_launch(prepared.prepared) {
+        LaunchStart::Pending { ticket, .. } => ticket,
+        LaunchStart::Failed(failure) => {
+            return Err(format!("window start: {:?}", failure.error).into());
+        }
+    };
+    loop {
+        match runtime.poll_launch(&ticket).map_err(error)? {
+            LaunchProgress::Started(_) => break,
+            LaunchProgress::AwaitingExecCommit(_) => {
+                runtime.authorize_exec(&ticket).map_err(error)?;
+                while !home.0.join("backend-ready").try_exists()? {
+                    if Instant::now() >= deadline {
+                        return Err("backend did not start".into());
+                    }
+                    std::thread::park_timeout(Duration::from_millis(5));
+                }
+                assert!(!home.0.join("console-ready").try_exists()?);
+                assert!(matches!(
+                    runtime.poll_launch(&ticket).map_err(error)?,
+                    LaunchProgress::Pending
+                ));
+                let (_, digest) = runtime
+                    .prepare_window_exec(
+                        &scope.process,
+                        [
+                            "--exact",
+                            "window_console_child",
+                            "--ignored",
+                            "--nocapture",
+                            "--test-threads=1",
+                        ]
+                        .map(Into::into)
+                        .into(),
+                    )
+                    .map_err(error)?;
+                assert_ne!(digest, prepared.argv_sha256);
+                runtime
+                    .authorize_window_exec(&scope.process)
+                    .map_err(error)?;
+            }
+            LaunchProgress::Failed(failure) => {
+                return Err(format!("window exec: {:?}", failure.error).into());
+            }
+            LaunchProgress::Pending if Instant::now() < deadline => {
+                std::thread::park_timeout(Duration::from_millis(5))
+            }
+            _ => return Err("window launch exceeded deadline".into()),
+        }
+    }
+    while !home.0.join("console-ready").try_exists()? {
+        if Instant::now() >= deadline {
+            return Err("provider console witness absent".into());
+        }
+        std::thread::park_timeout(Duration::from_millis(5));
+    }
+    let observed = runtime.observe(&scope.process).map_err(error)?;
+    assert!(fs::read_to_string(home.0.join("output-backend"))?.contains("backend-pipe-ready"));
+    assert!(
+        observed.scope.remaining.known_live.len() >= 3,
+        "{observed:?}"
+    );
+    println!("window native witness: {observed:?}");
+    fs::write(home.0.join("console-done"), b"done")?;
+    scope.release()?;
+    assert!(runtime.arena_snapshot().map_err(error)?.entries.is_empty());
+    Ok(())
+}
 fn open_runtime(machine: MachineId, instance: HostInstanceId) -> Check<NativeProcessRuntime> {
     Ok(NativeProcessRuntime::open(HostConfig {
         machine,

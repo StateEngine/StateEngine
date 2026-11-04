@@ -5,6 +5,7 @@
 //! Capture arrives through the pinned hook path; this harness reads nothing
 //! a hook claims.
 use super::claude::{self, ClaudeLaunch, Readiness};
+mod attended;
 mod completion;
 mod io;
 mod mail;
@@ -81,6 +82,7 @@ impl ClaudeHarness {
 
 /// Retained for the provider's lifetime: host stream ends and the drain.
 pub(crate) struct Binding {
+    pub(crate) attended: bool,
     io: Arc<dyn ProviderIoPlatform>,
     transport: ProviderTransport,
     conversation: ProviderSessionId,
@@ -162,6 +164,9 @@ impl Harness for ClaudeHarness {
         cx: CallContext,
     ) -> HostFuture<'a, LaunchOutcome> {
         Box::pin(async move {
+            if request.request.mode == se_proc::LaunchMode::Window {
+                return self.attach_attended(request, cx).await;
+            }
             let provider = self
                 .probed
                 .lock()
@@ -177,6 +182,7 @@ impl Harness for ClaudeHarness {
                 &conversation,
             );
             let binding = Arc::new(Binding {
+                attended: false,
                 io: Arc::clone(&self.io),
                 transport: request.transport,
                 conversation: conversation.clone(),
@@ -289,6 +295,10 @@ impl Harness for ClaudeHarness {
     ) -> HostFuture<'a, ProviderInterrupt> {
         Box::pin(async move {
             let binding = claude_binding(binding)?;
+            if binding.attended {
+                return Ok(ProviderInterrupt { conversation: binding.conversation.clone(), requested: false,
+                    vendor_event: Read::Absent { checked: "attended Claude owns its console; native scope stop supplies the exit witness".into() } });
+            }
             // Closing stdin ends a headless session after its current turn.
             binding.io.finish_input(&binding.transport, cx).await?;
             Ok(ProviderInterrupt {
@@ -307,6 +317,9 @@ impl Harness for ClaudeHarness {
     ) -> HostFuture<'a, ()> {
         Box::pin(async move {
             let binding = claude_binding(binding)?;
+            if binding.attended {
+                return Ok(());
+            }
             // A reader holds its stream across a pending read, so stop every
             // reader before releasing the streams they hold. Both steps are
             // repeatable: a retry finds no readers and closes what is left.

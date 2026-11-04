@@ -1,0 +1,271 @@
+//! An xterm viewer for the provider's own controlling PTY. Both processes
+//! remain in the reserved group; no terminal broker creates an escaped child.
+use crate::{support::*, *};
+use std::{
+    ffi::CString,
+    fs::File,
+    io,
+    os::fd::{AsRawFd, FromRawFd},
+    os::unix::ffi::OsStrExt,
+};
+
+pub(super) struct Terminal {
+    pub master: File,
+    pub slave: File,
+    executable: CString,
+    arguments: Vec<CString>,
+    deadline_ns: i128,
+    saved: libc::termios,
+}
+fn descriptor(value: i32, api: &str) -> ProcResult<File> {
+    if value < 0 {
+        return Err(native(
+            ProcErrorCode::LaunchFailed,
+            api,
+            io::Error::last_os_error(),
+        ));
+    }
+    // SAFETY: the successful allocation returned a new owned descriptor.
+    Ok(unsafe { File::from_raw_fd(value) })
+}
+impl Terminal {
+    pub fn prepare(spec: &LaunchSpec) -> ProcResult<Option<Self>> {
+        if spec.mode == LaunchMode::Headless {
+            return Ok(None);
+        }
+        let Some(
+            WindowSpec::UnixTerminal {
+                executable,
+                adapter: TerminalAdapter::Xterm,
+            }
+            | WindowSpec::UnixTerminalWithBackend {
+                executable,
+                adapter: TerminalAdapter::Xterm,
+            },
+        ) = &spec.window
+        else {
+            return Err(unsupported("Linux windows require the xterm PTY adapter"));
+        };
+        if !executable.is_absolute() {
+            return Err(input(
+                "terminal executable",
+                "an absolute native path is required",
+            ));
+        }
+        if !matches!(
+            spec.window,
+            Some(WindowSpec::UnixTerminalWithBackend { .. })
+        ) && (spec.stdio.stdin.is_some()
+            || spec.stdio.stdout.is_some()
+            || spec.stdio.stderr.is_some())
+        {
+            return Err(input(
+                "window streams",
+                "the provider must own its console, without pipe redirections",
+            ));
+        }
+        let executable = CString::new(executable.as_os_str().as_bytes())
+            .map_err(|_| input("terminal", "NUL in executable"))?;
+        // SAFETY: posix_openpt allocates one private close-on-exec master.
+        let master = descriptor(
+            unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) },
+            "open terminal master",
+        )?;
+        // SAFETY: both functions operate on our live private PTY master.
+        if unsafe {
+            libc::grantpt(master.as_raw_fd()) < 0 || libc::unlockpt(master.as_raw_fd()) < 0
+        } {
+            return Err(native(
+                ProcErrorCode::LaunchFailed,
+                "unlock private PTY",
+                io::Error::last_os_error(),
+            ));
+        }
+        let mut name = [0i8; 256];
+        // SAFETY: the bounded initialized output has its exact capacity.
+        let code = unsafe { libc::ptsname_r(master.as_raw_fd(), name.as_mut_ptr(), name.len()) };
+        if code != 0 {
+            return Err(native(
+                ProcErrorCode::LaunchFailed,
+                "private PTY name",
+                io::Error::from_raw_os_error(code),
+            ));
+        }
+        // SAFETY: successful ptsname_r supplies a NUL-terminated name in name.
+        let name = unsafe { std::ffi::CStr::from_ptr(name.as_ptr()) };
+        // SAFETY: the prepared native path is NUL terminated and opened without acquiring a controlling tty here.
+        let slave = descriptor(
+            unsafe {
+                libc::open(
+                    name.as_ptr(),
+                    libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+                )
+            },
+            "open terminal slave",
+        )?;
+        // SAFETY: termios is POD, and tcgetattr initializes it before use.
+        let mut saved: libc::termios = unsafe { std::mem::zeroed() };
+        // SAFETY: live owned slave descriptor and valid output.
+        if unsafe { libc::tcgetattr(slave.as_raw_fd(), &mut saved) } < 0 {
+            return Err(native(
+                ProcErrorCode::LaunchFailed,
+                "read terminal settings",
+                io::Error::last_os_error(),
+            ));
+        }
+        let mut handshake = saved;
+        // Disable echo only while consuming xterm's native WINDOWID handshake.
+        handshake.c_lflag &= !libc::ECHO;
+        // SAFETY: live slave and initialized settings, before any child exists.
+        if unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &handshake) } < 0 {
+            return Err(native(
+                ProcErrorCode::LaunchFailed,
+                "set terminal handshake",
+                io::Error::last_os_error(),
+            ));
+        }
+        let option = format!("-S{}/{}", name.to_string_lossy(), master.as_raw_fd());
+        let arguments = [
+            executable.clone(),
+            CString::new(option).map_err(|_| input("terminal", "invalid PTY option"))?,
+            c"-title".into(),
+            c"StateEngine agent".into(),
+            c"-geometry".into(),
+            c"120x40".into(),
+        ];
+        // SAFETY: initialized native clock output, read before fork.
+        let mut clock: libc::timespec = unsafe { std::mem::zeroed() };
+        // SAFETY: CLOCK_MONOTONIC fills a valid timespec output.
+        if unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut clock) } < 0 {
+            return Err(native(
+                ProcErrorCode::LaunchFailed,
+                "terminal deadline",
+                io::Error::last_os_error(),
+            ));
+        }
+        let deadline_ns = i128::from(clock.tv_sec) * 1_000_000_000
+            + i128::from(clock.tv_nsec)
+            + spec
+                .deadline
+                .saturating_duration_since(std::time::Instant::now())
+                .as_nanos()
+                .min(i128::MAX as u128) as i128;
+        Ok(Some(Self {
+            master,
+            slave,
+            executable,
+            arguments: arguments.into(),
+            saved,
+            deadline_ns,
+        }))
+    }
+    pub fn arguments(&self) -> Vec<*const libc::c_char> {
+        self.arguments
+            .iter()
+            .map(|value| value.as_ptr())
+            .chain(Some(std::ptr::null()))
+            .collect()
+    }
+    /// Called only in the already-authorized fork child. No allocator or lock.
+    /// The caller reports an errno on the retained exec channel on failure.
+    pub unsafe fn start(
+        &self,
+        arguments: &[*const libc::c_char],
+        environment: &[*const libc::c_char],
+        error_fd: i32,
+    ) -> i32 {
+        // SAFETY: all descriptors and pointer arrays are prepared before fork;
+        // this branch uses native async-signal-safe calls and never unwinds.
+        unsafe {
+            if libc::ioctl(0, libc::TIOCSCTTY, 0) < 0 {
+                return *libc::__errno_location();
+            }
+            let viewer = libc::fork();
+            if viewer < 0 {
+                return *libc::__errno_location();
+            }
+            if viewer == 0 {
+                // The viewer must not keep a slave endpoint alive after the
+                // provider closes its console. Only its inherited master lives.
+                let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+                if null < 0 {
+                    libc::_exit(127);
+                }
+                for stream in 0..3 {
+                    if libc::dup2(null, stream) < 0 {
+                        libc::_exit(127);
+                    }
+                }
+                if null > 2 {
+                    libc::close(null);
+                }
+                if libc::fcntl(self.master.as_raw_fd(), libc::F_SETFD, 0) < 0 {
+                    libc::_exit(127);
+                }
+                libc::execve(
+                    self.executable.as_ptr(),
+                    arguments.as_ptr(),
+                    environment.as_ptr(),
+                );
+                let number = *libc::__errno_location();
+                let packet = [
+                    b'E',
+                    number as u8,
+                    (number >> 8) as u8,
+                    (number >> 16) as u8,
+                    (number >> 24) as u8,
+                ];
+                libc::write(error_fd, packet.as_ptr().cast(), packet.len());
+                libc::_exit(127);
+            }
+            libc::close(self.master.as_raw_fd());
+            // xterm -S writes its mapped window ID to the slave. A successful
+            // exec alone cannot claim the viewer opened a usable terminal.
+            let mut ready = libc::pollfd {
+                fd: 0,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            let mut name = [0u8; 128];
+            let mut length = 0;
+            loop {
+                let mut clock: libc::timespec = std::mem::zeroed();
+                if libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut clock) < 0 {
+                    return *libc::__errno_location();
+                }
+                let remaining = self.deadline_ns
+                    - (i128::from(clock.tv_sec) * 1_000_000_000 + i128::from(clock.tv_nsec));
+                if remaining <= 0 {
+                    return libc::ETIMEDOUT;
+                }
+                let timeout = ((remaining + 999_999) / 1_000_000).min(i128::from(i32::MAX)) as i32;
+                let observed = libc::poll(&mut ready, 1, timeout);
+                if observed < 0 && *libc::__errno_location() == libc::EINTR {
+                    continue;
+                }
+                if observed <= 0 {
+                    return libc::ETIMEDOUT;
+                }
+                let mut byte = 0u8;
+                if libc::read(0, (&mut byte as *mut u8).cast(), 1) != 1 {
+                    return libc::EIO;
+                }
+                if byte == b'\n' {
+                    break;
+                }
+                if length == name.len() || !byte.is_ascii_hexdigit() {
+                    return libc::EPROTO;
+                }
+                name[length] = byte;
+                length += 1;
+            }
+            if length == 0 {
+                return libc::EPROTO;
+            }
+            if libc::tcsetattr(0, libc::TCSANOW, &self.saved) < 0 {
+                return *libc::__errno_location();
+            }
+            0
+        }
+    }
+}

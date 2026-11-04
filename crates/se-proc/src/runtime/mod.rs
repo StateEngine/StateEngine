@@ -3,6 +3,8 @@ mod launch_stop;
 pub(crate) mod notify;
 mod recovery;
 mod validate;
+#[cfg(target_os = "linux")]
+mod window;
 
 use crate::*;
 pub(crate) use arena::{Arena, Reference, Slot, SlotEntry};

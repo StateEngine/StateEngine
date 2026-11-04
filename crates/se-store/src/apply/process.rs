@@ -1,5 +1,6 @@
 //! Persist witnessed launch/custody facts; no native observation or process action.
 use super::*;
+mod console;
 mod release;
 use crate::codec::process::{name, state};
 pub(super) fn revision(c: &Connection, event: &NewEvent) -> StoreResult<u64> {
@@ -26,8 +27,8 @@ fn legal(from: ProcessState, to: ProcessState) -> bool {
     matches!(
         (from, to),
         (Reserved, Starting | Exited | Lost)
-            // Starting → Starting is only the pre-exec RootCheckpoint; apply
-            // checks that it publishes the root of an unpublished scope.
+            // Pre-exec root publication and its single console argv handoff;
+            // apply checks the exact retained identity and custody.
             | (Starting, Starting | Running | StopRequested | Exited | Lost)
             | (Running, LeaderExited | StopRequested | Exited | Lost)
             | (LeaderExited, StopRequested | Exited | Lost)
@@ -241,20 +242,22 @@ pub(super) fn apply(
         if from == ProcessState::StopUnproved && to == ProcessState::StopUnproved {
             release::apply(c, h, &p, &old, &identity, rev, lease)?;
         }
+        let console = console::argv(c, old_seq, (from, to), &old, &identity, outcome.as_deref())?;
         if from == ProcessState::Starting
             && to == ProcessState::Starting
             && !(old.root_identity == RootIdentityState::Unpublished
                 && matches!(old.instance, RecordedIdentity::Absent { .. })
                 && identity.root_identity == RootIdentityState::Identified)
+            && !console
         {
             return Err(fail(
                 StoreErrorCode::InvalidTransition,
-                "Starting to Starting is only the pre-exec RootCheckpoint publishing an unpublished scope's root",
+                "Starting to Starting requires a pre-exec root publication or one console argv handoff with unchanged native custody",
             ));
         }
         if old.principal != identity.principal
             || old.session != identity.session
-            || matches!((&old.instance,&identity.instance),(RecordedIdentity::Present(a),RecordedIdentity::Present(b)) if a != b && !exec_image(from, to, a, b))
+            || matches!((&old.instance,&identity.instance),(RecordedIdentity::Present(a),RecordedIdentity::Present(b)) if a != b && !exec_image(from, to, a, b) && !console)
             || matches!(
                 (&old.instance, &identity.instance),
                 (

@@ -18,6 +18,20 @@ impl LaunchCoordinator {
                 "a recovered lifecycle cannot create another provider",
             )
         })?;
+        let configuration = self.options.configuration.clone();
+        let selected = plan.clone();
+        let window = self
+            .store
+            .pool
+            .run_owned(deadline, move || {
+                super::window::select(&selected, &configuration)
+            })
+            .await?;
+        let mode = if window.is_some() {
+            se_proc::LaunchMode::Window
+        } else {
+            se_proc::LaunchMode::Headless
+        };
         let harness = self.harness_for(plan.profile.provider)?;
         if !plan.control.processes.is_empty()
             || plan
@@ -77,7 +91,7 @@ impl LaunchCoordinator {
             cwd: plan.cwd.clone(),
             profile: plan.profile.clone(),
             policy: policy.clone(),
-            mode: se_proc::LaunchMode::Headless,
+            mode,
             resume: plan.conversation.clone(),
             initial_input: Body::new(plan.input.task.clone().unwrap_or_else(|| {
                 "Read your StateEngine context and continue your assigned work.".into()
@@ -89,9 +103,21 @@ impl LaunchCoordinator {
         let configuration = harness
             .configuration(&request, call(self.store.generation, deadline)?)
             .await?;
-        let invocation = harness
+        let mut invocation = harness
             .invocation(&request, call(self.store.generation, deadline)?)
             .await?;
+        if mode == se_proc::LaunchMode::Window && cfg!(target_os = "linux") {
+            invocation
+                .environment
+                .entries
+                .retain(|(key, _)| key != "TERM");
+            invocation
+                .environment
+                .entries
+                .push(("TERM".into(), "xterm-256color".into()));
+        }
+        let provider_pipes = mode == se_proc::LaunchMode::Headless
+            || plan.profile.provider == se_store::Provider::Codex;
         let mut nonce = [0; 16];
         se_proc::fill_entropy(&mut nonce).map_err(|e| error("launch scope entropy", e))?;
         let reservation = se_proc::LaunchReservation {
@@ -194,8 +220,8 @@ impl LaunchCoordinator {
                 stdout: None,
                 stderr: None,
             },
-            mode: se_proc::LaunchMode::Headless,
-            window: None,
+            mode,
+            window,
             policy,
             deadline: deadline.at(),
             notifications: work.wake.clone(),
@@ -230,22 +256,34 @@ impl LaunchCoordinator {
         let io = self.io.clone();
         let identity = request.identity.clone();
         let runtime = self.store.pool.handle();
-        let io = self
-            .store
-            .pool
-            .run_owned(deadline, move || {
-                let _entered = runtime.enter();
-                io.open(&owner, &identity)
-            })
-            .await?;
+        let io = if !provider_pipes {
+            crate::ProviderIo {
+                child: se_proc::StandardIo {
+                    stdin: None,
+                    stdout: None,
+                    stderr: None,
+                },
+                host: crate::ProviderTransport::console(),
+            }
+        } else {
+            self.store
+                .pool
+                .run_owned(deadline, move || {
+                    let _entered = runtime.enter();
+                    io.open(&owner, &identity)
+                })
+                .await?
+        };
         let native = self.native.clone();
         let ticket = self
             .store
             .pool
             .run_owned(deadline, move || {
-                native
-                    .bind_stdio(&prepared.prepared, io.child)
-                    .map_err(|e| error("provider stream binding", e))?;
+                if provider_pipes {
+                    native
+                        .bind_stdio(&prepared.prepared, io.child)
+                        .map_err(|e| error("provider stream binding", e))?;
+                }
                 match native.begin_launch(prepared.prepared) {
                     LaunchStart::Pending { ticket, .. } => {
                         Ok((ticket, io.host, prepared.argv_sha256))
@@ -267,6 +305,10 @@ impl LaunchCoordinator {
         argv: [u8; 32],
         deadline: &Deadline,
     ) -> Result<LaunchResult> {
+        #[allow(unused_mut)]
+        let mut transport = Some(transport);
+        #[allow(unused_mut)]
+        let mut prepared = None;
         let record = loop {
             let native = self.native.clone();
             let (returned, progress) = self
@@ -317,6 +359,22 @@ impl LaunchCoordinator {
                             Ok(ticket)
                         })
                         .await?;
+                    #[cfg(target_os = "linux")]
+                    if request.mode == se_proc::LaunchMode::Window
+                        && work.meta.provider == se_store::Provider::Codex
+                    {
+                        prepared = Some(
+                            self.join_codex_window(
+                                work,
+                                &request,
+                                transport.take().ok_or_else(|| {
+                                    error("Codex window", "backend transport was already consumed")
+                                })?,
+                                deadline,
+                            )
+                            .await?,
+                        );
+                    }
                 }
                 LaunchProgress::Pending => wait(&work.wake, deadline).await?,
             }
@@ -329,8 +387,15 @@ impl LaunchCoordinator {
                 .run_owned(deadline, move || super::launch_util::view(&root, bound))
                 .await?,
         );
-        self.attach(work, request, transport, record, deadline)
-            .await
+        self.attach(
+            work,
+            request,
+            transport.unwrap_or_else(crate::ProviderTransport::console),
+            record,
+            prepared,
+            deadline,
+        )
+        .await
     }
     pub(super) async fn head(&self, work: &Work, deadline: &Deadline) -> Result<ProjectionRecord> {
         let target = work.meta.agent.id.clone();

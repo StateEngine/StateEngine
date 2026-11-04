@@ -244,6 +244,12 @@ pub enum WindowSpec {
         executable: PathBuf,
         adapter: TerminalAdapter,
     },
+    /// Start a pipe-bound backend in the reserved group, then authorize the
+    /// root's console exec after the host has bound the backend's session.
+    UnixTerminalWithBackend {
+        executable: PathBuf,
+        adapter: TerminalAdapter,
+    },
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TerminalAdapter {

@@ -86,6 +86,18 @@ pub struct ProviderTransport {
     pub(crate) windows: Option<windows_io::Port>,
     pub(crate) _private: (),
 }
+impl ProviderTransport {
+    /// A provider console is owned by the native process, with no host pipes.
+    pub(crate) fn console() -> Self {
+        Self {
+            #[cfg(all(unix, feature = "listener"))]
+            unix: None,
+            #[cfg(all(windows, feature = "listener"))]
+            windows: None,
+            _private: (),
+        }
+    }
+}
 pub struct ProviderIo {
     pub child: se_proc::StandardIo,
     pub host: ProviderTransport,

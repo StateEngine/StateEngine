@@ -421,3 +421,100 @@ fn saved_native_identity_survives_loss_and_recovery() -> Check {
     drop(wait(owner.drain(Duration::from_secs(2)))??);
     Ok(())
 }
+
+/// A console's second C2 may change only argv, once, on the same pre-exec root.
+#[test]
+fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
+    let f = Fixture::new()?;
+    let (host, lease) = host(&f)?;
+    let owner = host.start_writer(options(256)?, lease)?;
+    let client = owner.client();
+    let mut i = identity(&f, false)?;
+    let mut last = wait(client.submit(f.batch(
+        f.owner_project(),
+        None,
+        vec![registration(&i, ProcessState::Reserved)],
+    )?)?)??
+    .primary_event;
+    i.root_identity = RootIdentityState::Unpublished;
+    let mut scope = transition(&i, 1, ProcessState::Reserved, ProcessState::Starting, last)?;
+    if let EventBody::ProcessTransition { outcome, .. } = &mut scope {
+        *outcome = "scope-prepared".into();
+    }
+    last = wait(client.submit(f.batch(f.owner_project(), None, vec![scope])?)?)??.primary_event;
+    i.root_identity = RootIdentityState::Identified;
+    i.instance = RecordedIdentity::Present(epoch()?.owner);
+    let mut root = transition(&i, 2, ProcessState::Starting, ProcessState::Starting, last)?;
+    if let EventBody::ProcessTransition { outcome, .. } = &mut root {
+        *outcome = "root-prepared".into();
+    }
+    last = wait(client.submit(f.batch(f.owner_project(), None, vec![root])?)?)??.primary_event;
+    let RecordedIdentity::Present(original) = &i.instance else {
+        return Err("missing root".into());
+    };
+    let mut fields = original.fields().clone();
+    fields.argv_sha256 = se_types::Sha256::from_bytes([42; 32]);
+    let mut console = i.clone();
+    console.instance =
+        RecordedIdentity::Present(se_types::ProcessInstance::from_observation(fields.clone())?);
+    let mut changed_pid = console.clone();
+    fields.pid = std::num::NonZeroU32::new(fields.pid.get() + 1).ok_or("pid overflow")?;
+    changed_pid.instance =
+        RecordedIdentity::Present(se_types::ProcessInstance::from_observation(fields)?);
+    let mut changed_custody = console.clone();
+    changed_custody.custody.record.push(0);
+    for (drift, phase) in [
+        (changed_pid, "console-prepared"),
+        (changed_custody, "console-prepared"),
+        (console.clone(), "other-phase"),
+    ] {
+        let mut event = transition(
+            &drift,
+            3,
+            ProcessState::Starting,
+            ProcessState::Starting,
+            last.clone(),
+        )?;
+        if let EventBody::ProcessTransition { outcome, .. } = &mut event {
+            *outcome = phase.into();
+        }
+        assert!(wait(client.submit(f.batch(f.owner_project(), None, vec![event])?)?)?.is_err());
+        assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 3);
+    }
+    let mut event = transition(
+        &console,
+        3,
+        ProcessState::Starting,
+        ProcessState::Starting,
+        last,
+    )?;
+    if let EventBody::ProcessTransition { outcome, .. } = &mut event {
+        *outcome = "console-prepared".into();
+    }
+    last = wait(client.submit(f.batch(f.owner_project(), None, vec![event])?)?)??.primary_event;
+    let mut repeat = transition(
+        &i,
+        4,
+        ProcessState::Starting,
+        ProcessState::Starting,
+        last.clone(),
+    )?;
+    if let EventBody::ProcessTransition { outcome, .. } = &mut repeat {
+        *outcome = "console-prepared".into();
+    }
+    assert!(wait(client.submit(f.batch(f.owner_project(), None, vec![repeat])?)?)?.is_err());
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        None,
+        vec![transition(
+            &console,
+            4,
+            ProcessState::Starting,
+            ProcessState::Running,
+            last,
+        )?],
+    )?)?)??;
+    assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 5);
+    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    Ok(())
+}

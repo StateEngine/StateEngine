@@ -172,6 +172,9 @@ pub(super) async fn read(
             Ok(Some(wire::Message::Notification { method, params })) => {
                 binding.observe(method, params)
             }
+            // The remote TUI is subscribed to the same thread and answers its
+            // interactive requests. This observer must not race it with a refusal.
+            Ok(Some(wire::Message::Request { .. })) if binding.attended => Ok(()),
             Ok(Some(wire::Message::Request { id, .. })) => {
                 let refused = wire::refusal(
                     &id,

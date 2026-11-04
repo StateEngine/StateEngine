@@ -215,6 +215,19 @@ impl LaunchCoordinator {
     }
 }
 fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
+    let latest = match &target.control.latest_session {
+        se_types::Read::Present { value } => Some(value),
+        _ => None,
+    };
+    let window = target.control.sessions.iter().chain(latest).any(|session| {
+        matches!(
+            &session.original.as_deref().unwrap_or(&session.current).body,
+            EventBody::SessionPrepared {
+                surface: Some(se_store::SessionSurface::Window),
+                ..
+            }
+        )
+    });
     let profile = match target.control.profile {
         se_types::Read::Present { value } => match value.current.body {
             EventBody::ProfileSaved { profile, .. } => Some(profile),
@@ -227,7 +240,8 @@ fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
         home,
         &target.target.project.id,
         false,
-    );
+    )
+    .map(|command| command.with_detach(!window));
     AgentStopResult {
         resume: StopResume {
             state: "unavailable".into(),

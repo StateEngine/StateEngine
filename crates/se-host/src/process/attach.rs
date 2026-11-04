@@ -11,6 +11,7 @@ impl LaunchCoordinator {
         request: HarnessRequest,
         transport: crate::ProviderTransport,
         record: se_proc::ProcessRecord,
+        prepared: Option<crate::BindingWitness>,
         deadline: &Deadline,
     ) -> Result<LaunchResult> {
         let plan = work.plan.clone().ok_or_else(|| {
@@ -35,21 +36,30 @@ impl LaunchCoordinator {
                     .map_err(|e| error("attach process reference", e))
             })
             .await?;
-        let outcome = self
-            .harness_for(plan.profile.provider)?
-            .attach(
-                HarnessAttach {
-                    request,
-                    process: attach_owner,
-                    record: record.clone(),
-                    transport,
-                    transcript: Read::Absent {
-                        checked: "transcript pin is published after session activation".into(),
+        let outcome = if let Some(witness) = prepared {
+            crate::LaunchOutcome {
+                witness,
+                binding: work
+                    .binding
+                    .take()
+                    .ok_or_else(|| error("Codex console", "prepared backend binding is absent"))?,
+            }
+        } else {
+            self.harness_for(plan.profile.provider)?
+                .attach(
+                    HarnessAttach {
+                        request,
+                        process: attach_owner,
+                        record: record.clone(),
+                        transport,
+                        transcript: Read::Absent {
+                            checked: "transcript pin is published after session activation".into(),
+                        },
                     },
-                },
-                call(self.store.generation, deadline)?,
-            )
-            .await?;
+                    call(self.store.generation, deadline)?,
+                )
+                .await?
+        };
         if outcome.witness.identity.session != plan.session
             || outcome.witness.identity.project != plan.project.id
             || outcome.witness.identity.agent != plan.agent.id
@@ -300,7 +310,8 @@ impl LaunchCoordinator {
             &self.options.home,
             &plan.project.id,
             false,
-        );
+        )
+        .map(|command| command.with_detach(plan.input.detach));
         Ok(LaunchResult {
             idempotency_key: plan.input.idempotency_key.clone(),
             event_id: receipt.primary_event,
@@ -318,7 +329,12 @@ impl LaunchCoordinator {
             permission_profile: plan.resolved.clone(),
             conversation_id: outcome.witness.conversation,
             state: "running".into(),
-            surface: "headless".into(),
+            surface: if plan.input.detach {
+                "headless"
+            } else {
+                "window"
+            }
+            .into(),
             process: work.process_view.clone().ok_or_else(|| {
                 se_core::scope::unreadable(
                     "launch receipt",

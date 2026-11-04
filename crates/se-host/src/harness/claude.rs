@@ -81,17 +81,21 @@ pub fn invocation(
 ) -> Result<ProviderInvocation> {
     let request = launch.request;
     let path = |name: &str| launch.launch_directory.join(name).into_os_string();
-    let mut arguments: Vec<OsString> = [
-        "-p",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-    ]
-    .into_iter()
-    .map(OsString::from)
-    .collect();
+    let mut arguments: Vec<OsString> = if request.mode == se_proc::LaunchMode::Window {
+        Vec::new()
+    } else {
+        [
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect()
+    };
     arguments.extend([
         "--settings".into(),
         path(SETTINGS_FILE),
@@ -113,6 +117,11 @@ pub fn invocation(
     ]);
     if let Some(model) = &request.profile.model {
         arguments.extend(["--model".into(), model.into()]);
+    }
+    if request.mode == se_proc::LaunchMode::Window {
+        // Task text is a positional prompt, even when it resembles a permission
+        // flag. Keep every host-owned option before the end-of-options marker.
+        arguments.extend(["--".into(), request.initial_input.as_str().into()]);
     }
     let mut entries: Vec<_> = environment
         .into_iter()
@@ -252,6 +261,9 @@ const ENVIRONMENT: &[&str] = &[
     "TZ",
     "TMPDIR",
     "TERM",
+    "DISPLAY",
+    "XAUTHORITY",
+    "WAYLAND_DISPLAY",
     "XDG_CONFIG_HOME",
     "XDG_DATA_HOME",
     "XDG_CACHE_HOME",

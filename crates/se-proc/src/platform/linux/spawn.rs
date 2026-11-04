@@ -21,6 +21,8 @@ pub(super) struct Child {
     pub status: Option<ExitStatus>,
     pub protocol: Vec<u8>,
     pub authorized: bool,
+    pub deferred: bool,
+    pub window_payload: Option<Vec<u8>>,
     pub eof: bool,
 }
 fn fd(rc: i32, api: &str) -> ProcResult<File> {
@@ -95,6 +97,12 @@ fn cstring(value: &[u8], field: &str) -> ProcResult<CString> {
     CString::new(value).map_err(|_| input(field, "NUL is not permitted"))
 }
 pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
+    let deferred = matches!(
+        spec.window,
+        Some(WindowSpec::UnixTerminalWithBackend { .. })
+    );
+    let terminal = super::terminal::Terminal::prepare(&spec)?;
+    let terminal_arguments = terminal.as_ref().map(|window| window.arguments());
     let executable = cstring(spec.executable.as_os_str().as_bytes(), "executable")?;
     let cwd = cstring(spec.cwd.as_os_str().as_bytes(), "cwd")?;
     let mut args = Vec::with_capacity(spec.arguments.len() + 1);
@@ -124,15 +132,36 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
         .write(true)
         .open("/dev/null")
         .map_err(|e| native(ProcErrorCode::LaunchFailed, "open null device", e))?;
-    let streams = [spec.stdio.stdin, spec.stdio.stdout, spec.stdio.stderr]
-        .map(|f| f.map_or_else(|| duplicate(&null), |f| duplicate(&f)));
+    let streams = [spec.stdio.stdin, spec.stdio.stdout, spec.stdio.stderr].map(|f| {
+        f.map_or_else(
+            || duplicate(terminal.as_ref().map_or(&null, |window| &window.slave)),
+            |f| duplicate(&f),
+        )
+    });
     let [stdin, stdout, stderr] = streams;
     let streams = [stdin?, stdout?, stderr?];
     let stream_fds = streams.each_ref().map(AsRawFd::as_raw_fd);
+    let console_fds = if deferred {
+        [terminal
+            .as_ref()
+            .ok_or_else(|| input("console backend", "requires a terminal"))?
+            .slave
+            .as_raw_fd(); 3]
+    } else {
+        stream_fds
+    };
     let (events, error) = pipe()?;
     let (authorization, send) = socket()?;
     let error_fd = error.as_raw_fd();
     let authorization_fd = authorization.as_raw_fd();
+    let mut kept = vec![error_fd, authorization_fd];
+    if deferred {
+        kept.extend_from_slice(&stream_fds);
+    }
+    if let Some(window) = &terminal {
+        kept.push(window.master.as_raw_fd());
+    }
+    kept.sort_unstable();
     // SAFETY: rlimit is native POD and getrlimit fills both initialized scalar fields.
     let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
     // SAFETY: valid output pointer, read-only process query before fork.
@@ -174,20 +203,19 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
             if libc::setsid() < 0 {
                 die(*libc::__errno_location());
             }
-            for (target, source) in stream_fds.iter().enumerate() {
+            for (target, source) in console_fds.iter().enumerate() {
                 if libc::dup2(*source, target as i32) < 0 {
                     die(*libc::__errno_location());
                 }
             }
-            let first = error_fd.min(authorization_fd) as u32;
-            let last = error_fd.max(authorization_fd) as u32;
-            let ranges = [
-                (3, first.saturating_sub(1)),
-                (first + 1, last.saturating_sub(1)),
-                (last + 1, u32::MAX),
-            ];
-            for (low, high) in ranges {
+            let mut low = 3;
+            for high in kept
+                .iter()
+                .map(|fd| (*fd as u32).saturating_sub(1))
+                .chain(Some(u32::MAX))
+            {
                 if low > high {
+                    low = high.saturating_add(2);
                     continue;
                 }
                 if libc::syscall(libc::SYS_close_range, low, high, 0u32) < 0 {
@@ -195,12 +223,13 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
                         die(*libc::__errno_location());
                     }
                     for descriptor in 3..fd_limit {
-                        if descriptor != error_fd && descriptor != authorization_fd {
+                        if !kept.contains(&descriptor) {
                             libc::close(descriptor);
                         }
                     }
                     break;
                 }
+                low = high.saturating_add(2);
             }
             let mut mask: libc::sigset_t = std::mem::zeroed();
             libc::sigemptyset(&mut mask);
@@ -236,6 +265,29 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
                 }
                 libc::_exit(126);
             }
+            if let (Some(window), Some(arguments)) = (&terminal, &terminal_arguments) {
+                let number = window.start(arguments, &envp, error_fd);
+                if number != 0 {
+                    die(number);
+                }
+            }
+            if deferred {
+                let number = super::deferred::start_backend(
+                    &stream_fds,
+                    executable.as_ptr(),
+                    &argv,
+                    &envp,
+                    error_fd,
+                );
+                if number != 0 {
+                    die(number);
+                }
+                die(super::deferred::exec_console(
+                    authorization_fd,
+                    executable.as_ptr(),
+                    &envp,
+                ));
+            }
             libc::execve(executable.as_ptr(), argv.as_ptr(), envp.as_ptr());
             die(*libc::__errno_location());
         }
@@ -256,6 +308,8 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
         status: None,
         protocol: Vec::with_capacity(8),
         authorized: false,
+        deferred,
+        window_payload: None,
         eof: false,
     })
 }
@@ -301,7 +355,9 @@ impl Child {
                 io::Error::last_os_error(),
             ));
         }
-        self.authorization = None;
+        if !self.deferred {
+            self.authorization = None;
+        }
         self.authorized = true;
         Ok(())
     }

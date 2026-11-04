@@ -327,13 +327,21 @@ impl LaunchCoordinator {
                     }
                 }
                 Ok(_) => {
-                    work.stop_failure = Some(
-                        se_core::scope::unreadable(
-                            "graceful stop",
-                            "provider did not accept stdin closure",
+                    if binding
+                        .claude
+                        .as_ref()
+                        .is_some_and(|binding| binding.attended)
+                    {
+                        work.stop_method = Some("native-window-scope".into());
+                    } else {
+                        work.stop_failure = Some(
+                            se_core::scope::unreadable(
+                                "graceful stop",
+                                "provider did not accept stdin closure",
+                            )
+                            .body,
                         )
-                        .body,
-                    )
+                    }
                 }
                 Err(failure) => work.stop_failure = Some(failure.body),
             }

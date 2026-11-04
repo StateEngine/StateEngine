@@ -1,6 +1,8 @@
+mod deferred;
 mod group;
 mod identity;
 mod spawn;
+mod terminal;
 use crate::platform::{Progress, empty};
 use crate::runtime::notify::Hub;
 use crate::support::*;
@@ -47,9 +49,7 @@ impl Driver {
         };
         PlatformCapabilities {
             headless: Capability::Supported,
-            window: Capability::Unavailable {
-                error: Box::new(unsupported("Unix terminal attach joins before alpha")),
-            },
+            window: Capability::Supported,
             kernel_scope: unavailable(),
             tracked_tree: Capability::Supported,
             kernel_exit_notification: notification,
@@ -68,8 +68,23 @@ impl Driver {
                 "strict kernel scope requested; Linux scopes join in wave 4",
             ));
         }
-        if spec.mode != LaunchMode::Headless {
-            return Err(unsupported("Unix terminal attach is not yet available"));
+        if spec.mode == LaunchMode::Window
+            && !matches!(
+                spec.window,
+                Some(
+                    WindowSpec::UnixTerminal {
+                        adapter: TerminalAdapter::Xterm,
+                        ..
+                    } | WindowSpec::UnixTerminalWithBackend {
+                        adapter: TerminalAdapter::Xterm,
+                        ..
+                    }
+                )
+            )
+        {
+            return Err(unsupported(
+                "Linux window launch requires the xterm PTY adapter",
+            ));
         }
         if !matches!(
             reservation.parent,

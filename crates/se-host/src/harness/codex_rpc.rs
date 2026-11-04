@@ -1,6 +1,9 @@
 //! Stock Codex headless launch, one retained RPC connection, and exact-turn
 //! interruption. The coordinator alone publishes activation and native exit.
+mod attach;
 mod channel;
+#[cfg(target_os = "linux")]
+mod console;
 mod location;
 mod mail;
 mod probe;
@@ -53,6 +56,7 @@ pub struct Binding {
     initial: tokio::sync::Mutex<Option<Value>>,
     input: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    attended: bool,
 }
 impl CodexHarness {
     pub fn new(
@@ -323,121 +327,13 @@ impl Harness for CodexHarness {
         cx: CallContext,
     ) -> HostFuture<'a, LaunchOutcome> {
         Box::pin(async move {
-            let until = std::time::Instant::now() + cx.timeout;
-            let provider = self
-                .probed
-                .lock()
-                .map_err(|_| poisoned())?
-                .clone()
-                .ok_or_else(|| {
-                    SeError::invalid("Codex attach", "an actual successful executable probe")
-                })?;
-            let socket = self.socket(&request.request)?;
-            let port = Arc::new(request.transport);
-            let (sender, receiver) =
-                channel::open(self.io.clone(), port.clone(), socket.as_deref(), &cx).await?;
-            if let Some(socket) = &socket {
-                let socket = socket.clone();
-                let runtime_record = self
-                    .directory(&request.request.identity.session)?
-                    .join("codex-runtime.json");
-                let session = request.request.identity.session.clone();
-                let deadline = crate::client::lease::Deadline::idle()?
-                    .stage(until.saturating_duration_since(std::time::Instant::now()))?;
-                self.pool
-                    .run_owned(&deadline, move || {
-                        Self::validate_socket(&socket, &runtime_record, &session)
-                    })
-                    .await?;
-            }
-            let cx = context(
-                cx.generation,
-                until.saturating_duration_since(std::time::Instant::now()),
-            );
-            let binding = Arc::new(Binding {
-                io: self.io.clone(),
-                port: port.clone(),
-                sender: tokio::sync::Mutex::new(sender),
-                state: Mutex::new(state::State {
-                    capture: self.configuration.capture.enabled,
-                    ..Default::default()
-                }),
-                completion: Default::default(),
-                rollout: Mutex::new(None),
-                initial: tokio::sync::Mutex::new(None),
-                input: tokio::sync::Mutex::new(()),
-                tasks: Mutex::new(vec![]),
-            });
-            let mut tasks = vec![
-                tokio::spawn(rpc::read(Arc::downgrade(&binding), receiver, cx.generation)),
-                tokio::spawn(channel::drain(
-                    self.io.clone(),
-                    port.clone(),
-                    ProviderStream::Error,
-                    cx.generation,
-                )),
-            ];
-            if socket.is_some() {
-                tasks.push(tokio::spawn(channel::drain(
-                    self.io.clone(),
-                    port,
-                    ProviderStream::Output,
-                    cx.generation,
-                )));
-            }
-            *binding.tasks.lock().map_err(|_| poisoned())? = tasks;
-            let handshake = tokio::time::timeout(cx.timeout, async {
-                binding
-                    .request("initialize", input::initialize(), &cx)
-                    .await?;
-                binding.notify("initialized", json!({}), &cx).await?;
-                let resolved = self.resolved(&request.request)?;
-                let plan = self.plan(&request.request, &resolved, socket.as_deref());
-                let (method, params) = input::thread(&plan)?;
-                let response = binding.request(method, params, &cx).await?;
-                let conversation = input::verify_thread(&plan, &response)?;
-                binding.state.lock().map_err(|_| poisoned())?.conversation =
-                    Some(conversation.clone());
-                if let Some(path) = response.pointer("/thread/path").and_then(Value::as_str) {
-                    *binding.rollout.lock().map_err(|_| poisoned())? =
-                        Some(NativePath::from_local(PathBuf::from(path))?);
-                }
-                let mut initial =
-                    input::turn(&plan, &conversation, &request.request.initial_input)?;
-                initial["clientUserMessageId"] = json!(format!(
-                    "se-{}",
-                    se_types::hex_lower(&Sha256::digest(request.request.key.as_str().as_bytes()))
-                ));
-                *binding.initial.lock().await = Some(initial);
-                Ok::<_, SeError>(conversation)
-            })
+            self.attach_transport(
+                &request.request,
+                request.transport,
+                request.record.lifecycle,
+                cx,
+            )
             .await
-            .unwrap_or_else(|_| {
-                Err(incompatible(
-                    "provider handshake exceeded the original readiness deadline",
-                    "Inspect the retained lifecycle and retry only after its cleanup.",
-                ))
-            });
-            let conversation = match handshake {
-                Ok(conversation) => conversation,
-                Err(error) => {
-                    let _ = close(&binding, &cx).await;
-                    return Err(error);
-                }
-            };
-            Ok(LaunchOutcome {
-                witness: BindingWitness {
-                    identity: request.request.identity,
-                    conversation,
-                    lifecycle: request.record.lifecycle,
-                    provider,
-                },
-                binding: HarnessBinding {
-                    claude: None,
-                    codex: Some(binding),
-                    _private: (),
-                },
-            })
         })
     }
     fn graceful_stop<'a>(

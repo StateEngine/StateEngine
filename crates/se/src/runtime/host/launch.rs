@@ -122,6 +122,17 @@ pub fn start_with_origin(
         }
     };
     let proof = (|| -> Result<_> {
+        // The exclusive host publishes this protected file-identity hint before
+        // its endpoint. Reuse it under the original deadline, just as ordinary
+        // forwarding does; the native peer proof still rechecks the live image.
+        se_proc::native_ipc::restore_image_cache(
+            home,
+            endpoint.image_sha256,
+            &bound.native_bound(),
+        )
+        .map_err(|error| {
+            se_core::scope::unreadable("protected executable cache", &error.to_string())
+        })?;
         #[cfg(unix)]
         let stream = match &endpoint.address {
             se_host::IpcEndpoint::UnixSocket(path) => {

@@ -80,6 +80,8 @@ pub fn observe_agent(
             )),
         };
         if let Some(command) = command {
+            let command =
+                command.with_detach(plan.row.session.surface.as_deref() != Some("window"));
             plan.row.resume.command = Some(command.command);
             plan.row.resume.argv = Some(command.argv);
         } else {

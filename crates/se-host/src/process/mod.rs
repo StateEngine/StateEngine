@@ -26,6 +26,9 @@ mod stop;
 mod store;
 mod supervisor;
 mod tasks;
+mod window;
+#[cfg(target_os = "linux")]
+mod window_join;
 pub use recovery::Reconciliation;
 pub use shutdown::ProcessDrain;
 

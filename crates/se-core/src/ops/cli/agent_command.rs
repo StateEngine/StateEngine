@@ -19,6 +19,16 @@ impl AgentCommand {
     pub fn home_argument(home: &std::path::Path) -> Option<&str> {
         home.to_str().filter(|value| !value.contains(['\r', '\n']))
     }
+    /// Preserve the selected launch surface and re-render its existing words.
+    pub fn with_detach(self, detach: bool) -> Self {
+        let mut argv = self.argv;
+        argv.retain(|value| value != "--detach");
+        if detach {
+            argv.push("--detach".into());
+        }
+        // No caller-supplied word is introduced by changing this fixed flag.
+        Self::render(argv)
+    }
     pub fn launch_in_home(
         agent: &AgentId,
         home: &std::path::Path,
