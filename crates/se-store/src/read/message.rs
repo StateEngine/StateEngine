@@ -2,6 +2,7 @@ use super::*;
 use crate::sql_value::value;
 use rusqlite::types::Value;
 pub(super) type MarkRow = (i64, u64, Option<u64>, Option<u64>, Option<u64>);
+type DeliveryRow = (i64, u64, Option<u64>, Option<u64>, Option<u64>, Vec<u8>);
 impl SqliteSnapshot {
     pub(super) fn read_messages(
         &self,
@@ -55,7 +56,7 @@ impl SqliteSnapshot {
         self.db
             .progress_handler(1000, Some(move || Instant::now() >= deadline))
             .map_err(|error| self.read_sql(error))?;
-        let result: StoreResult<Vec<MarkRow>> = (|| {
+        let result: StoreResult<Vec<DeliveryRow>> = (|| {
             let mut rows = if let Some(own) = own {
                 // A sent-or-received view is two index streams, not a broad page
                 // followed by a visibility filter that can hide eligible rows.
@@ -109,12 +110,12 @@ impl SqliteSnapshot {
         self.db
             .progress_handler(0, None::<fn() -> bool>)
             .map_err(|error| self.read_sql(error))?;
-        let rows: Vec<MarkRow> = result?;
+        let rows: Vec<DeliveryRow> = result?;
         let mut items = Vec::new();
         let mut bytes = 0;
         let mut last = after;
         let mut stop = StopReason::Exhausted;
-        for (sent, revision, d, r, x) in rows {
+        for (sent, revision, d, r, x, recipient) in rows {
             if items.len() == budget.page.limit.get() as usize {
                 stop = StopReason::ItemLimit;
                 break;
@@ -125,7 +126,7 @@ impl SqliteSnapshot {
                     "mail read deadline exhausted",
                 ));
             }
-            let mut message = self.message_at(sent, revision, d, r, x, query.recipient.as_ref())?;
+            let mut message = self.message_at(sent, revision, d, r, x, Some(&recipient))?;
             if !query.full_body
                 && let StoredText::Present(s) = &mut message.body
             {
@@ -227,7 +228,7 @@ impl SqliteSnapshot {
         after: u64,
         budget: &ReadBudget,
         pending: bool,
-    ) -> StoreResult<Vec<MarkRow>> {
+    ) -> StoreResult<Vec<DeliveryRow>> {
         let (mut statement, mut args) = mail_sql(
             p,
             to,
@@ -235,7 +236,9 @@ impl SqliteSnapshot {
             query,
             h,
             after,
-            "d.sent_seq,d.revision,d.delivered_seq,d.read_seq,d.dismissed_seq",
+            // The single MIN aggregate pins SQLite's accompanying bare columns
+            // to one matching delivery, including an unfiltered unread view.
+            "d.sent_seq,d.revision,d.delivered_seq,d.read_seq,d.dismissed_seq,MIN(d.recipient_id)",
             self.info.schema_version,
         );
         if pending {
@@ -258,6 +261,7 @@ impl SqliteSnapshot {
                 value(r, 2)?,
                 value(r, 3)?,
                 value(r, 4)?,
+                value(r, 5)?,
             ))
         })
         .map_err(|error| self.read_sql(error))?

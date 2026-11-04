@@ -273,7 +273,7 @@ impl SqliteSnapshot {
         delivered: Option<u64>,
         read: Option<u64>,
         dismissed: Option<u64>,
-        selected_recipient: Option<&Actor>,
+        selected_recipient: Option<&[u8]>,
     ) -> StoreResult<MessageRecord> {
         let e = self.record(sent)?;
         let (message, recipient, work, kind, body, refs, reply_to) = match e.body {
@@ -297,13 +297,30 @@ impl SqliteSnapshot {
                     Visibility::SelfOnly(agent) => Some(Actor::Agent(agent.clone())),
                     _ => None,
                 };
-                let agent = match selected_recipient.or(preview.as_ref()) {
-                    Some(Actor::Agent(agent)) if work.addressees.contains(agent) => agent.clone(),
-                    _ => work
-                        .addressees
-                        .first()
-                        .cloned()
-                        .ok_or_else(|| invalid("work message has no addressees"))?,
+                let agent = if let Some(selected) = selected_recipient {
+                    let agent = wire(
+                        &self.db,
+                        "agent",
+                        selected,
+                        &scope_key(&self.db, &e.header.scope, false)?,
+                    )?
+                    .try_into()
+                    .map_err(invalid)?;
+                    if !work.addressees.contains(&agent) {
+                        return Err(invalid("work delivery names an unaddressed recipient"));
+                    }
+                    agent
+                } else {
+                    match preview.as_ref() {
+                        Some(Actor::Agent(agent)) if work.addressees.contains(agent) => {
+                            agent.clone()
+                        }
+                        _ => work
+                            .addressees
+                            .first()
+                            .cloned()
+                            .ok_or_else(|| invalid("work message has no addressees"))?,
+                    }
                 };
                 (
                     message,

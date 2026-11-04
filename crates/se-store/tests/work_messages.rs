@@ -81,6 +81,13 @@ fn one_work_message_has_independent_recipient_dispositions_and_natural_replays()
     assert!(present(b.message(id.clone())?)?.read.is_none());
     b.close()?;
     let mut owner = store.snapshot(f.scoped(Visibility::Owner))?;
+    let unread = owner.messages(query(None, true), budget(10, 65536, None)?)?;
+    let row = unread
+        .items()
+        .first()
+        .ok_or("missing shared unread delivery")?;
+    assert_eq!(row.recipient, Actor::Agent(f.b.clone()));
+    assert!(row.read.is_none());
     for (agent, was_read) in [(&f.a, true), (&f.b, false)] {
         let page = owner.messages(
             query(Some(Actor::Agent(agent.clone())), false),
