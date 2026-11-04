@@ -300,6 +300,10 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
                         &mut cx,
                     )?)?;
                     summary(&resumed, compact_offset)?;
+                    require(
+                        resumed["complete"] == true,
+                        "exact bounded metadata window became partial",
+                    )?;
                     let recent = resumed["recent_turns"]
                         .as_array()
                         .ok_or("recent turns absent")?;
