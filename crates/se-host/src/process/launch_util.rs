@@ -63,7 +63,7 @@ pub(super) fn stabilize_alias(
     let mut arguments = vec![
         "-c".into(),
         concat!(
-            "\"$@\" <&0 & se_provider_pid=$!; ",
+            "exec 3<&0; \"$@\" <&3 3<&- & se_provider_pid=$!; exec 3<&-; ",
             "trap 'kill -TERM \"$se_provider_pid\"; wait \"$se_provider_pid\"; exit $?' TERM; ",
             "trap 'kill -INT \"$se_provider_pid\"; wait \"$se_provider_pid\"; exit $?' INT; ",
             "wait \"$se_provider_pid\"; se_provider_status=$?; trap - TERM INT; exit \"$se_provider_status\""
