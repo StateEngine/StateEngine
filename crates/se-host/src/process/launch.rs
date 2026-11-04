@@ -70,6 +70,46 @@ impl LaunchCoordinator {
                 resolve_provider_command(&command, provider, configuration_file.as_deref())
             })
             .await?;
+        #[cfg(unix)]
+        let alias_parent = {
+            let selected = executable.clone();
+            let image = self
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    se_proc::canonicalize_path(&selected)
+                        .map_err(|e| error("provider alias image", e))
+                })
+                .await?;
+            if image == executable {
+                false
+            } else {
+                // A plain native-provider symlink qualifies through its image
+                // too. Only argv[0]-dependent multicall dispatch needs a parent.
+                match harness
+                    .probe(
+                        ProbeRequest {
+                            kind: harness.kind(),
+                            command: image,
+                        },
+                        call(self.store.generation, deadline)?,
+                    )
+                    .await
+                {
+                    Ok(_) => false,
+                    Err(error)
+                        if matches!(
+                            error.body.detail(),
+                            se_types::Detail::ProviderIncompatible(_)
+                                | se_types::Detail::UsageInvalidValue(_)
+                        ) =>
+                    {
+                        true
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        };
         harness
             .probe(
                 ProbeRequest {
@@ -116,7 +156,7 @@ impl LaunchCoordinator {
                 .store
                 .pool
                 .run_owned(deadline, move || {
-                    super::launch_util::stabilize_alias(invocation)
+                    super::launch_util::stabilize_alias(invocation, alias_parent)
                 })
                 .await?;
         }

@@ -103,7 +103,7 @@ def run(options):
     def check(text):
         checks.append(text)
         print(f'ok {len(checks)} - {text}', flush=True)
-    for case in ['alias', 'socket']:
+    for case in (['alias', 'socket'] if options.expect_red else ['alias', 'plain-symlink', 'socket']):
         directory = options.output / case
         f = Fixture(options.se, directory)
         model = Model(directory, f.repo)
@@ -114,6 +114,10 @@ def run(options):
             if case == 'alias':
                 f.env['XDG_RUNTIME_DIR'] = str(short)
                 command = options.alias
+            elif case == 'plain-symlink':
+                f.env['XDG_RUNTIME_DIR'] = str(short)
+                command = directory / 'codex'
+                command.symlink_to(options.codex.resolve(strict=True))
             else:
                 command = options.codex
             f.env['PATH'] = str(command.parent) + os.pathsep + os.environ['PATH']
@@ -189,7 +193,12 @@ def run(options):
                     assert task_file.read_text() == '5\n' and model.readback, (case, 'native work/readback incomplete')
                     check(case + ': ' + ('JSON' if as_json else 'plain') + ' launch performs and reads back the real task')
                     stopped = f.ok('--project', f.project, 'stop', f.agent)
-                    assert stopped['complete'] and stopped['witness']['state'] == 'witnessed'
+                    assert stopped['complete'] and stopped['witness']['state'] == 'witnessed' and stopped['method'] == 'graceful', stopped
+                    if case == 'plain-symlink':
+                        assert stopped['target']['process']['exe'] == str(options.codex.resolve(strict=True)), stopped
+                    elif case == 'alias':
+                        assert stopped['target']['process']['exe'] == str(Path('/bin/sh').resolve(strict=True)), stopped
+                    check(case + ': public stop is graceful with no force fallback')
                     f.close()
             if not options.expect_red:
                 f.close()

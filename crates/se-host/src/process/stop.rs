@@ -314,6 +314,35 @@ impl LaunchCoordinator {
                 .await
             {
                 Ok(interrupt) if interrupt.requested => {
+                    // Codex's WebSocket close ends this client's transport,
+                    // not its persistent app-server listener. Ask the exact
+                    // owned Linux scope to terminate before the force interval.
+                    #[cfg(target_os = "linux")]
+                    if binding.codex.is_some() {
+                        let owner = work.process.clone().ok_or_else(|| {
+                            error("graceful stop", "owned native reference is absent")
+                        })?;
+                        let native = self.native.clone();
+                        let generation = self.options.epoch.generation;
+                        let at = graceful.at();
+                        let attempt = self
+                            .store
+                            .pool
+                            .run_owned(&graceful, move || {
+                                let prepared = native
+                                    .prepare_stop(&owner, generation, at)
+                                    .map_err(|e| error("graceful stop preparation", e))?;
+                                native
+                                    .request_termination(prepared)
+                                    .map_err(|e| error("graceful termination", e))?
+                                    .dispatch
+                                    .map_err(|e| error("graceful termination dispatch", e))
+                            })
+                            .await;
+                        if let Err(error) = attempt {
+                            work.stop_failure = Some(error.body);
+                        }
+                    }
                     work.stop_method = Some("graceful".into());
                     loop {
                         if let StopObservation::Complete(witness) =

@@ -220,6 +220,12 @@ impl Scope {
         })
     }
     pub fn stop(&mut self, deadline: std::time::Instant) -> ProcResult<()> {
+        self.signal(deadline, libc::SIGKILL)
+    }
+    pub fn terminate(&mut self, deadline: std::time::Instant) -> ProcResult<()> {
+        self.signal(deadline, libc::SIGTERM)
+    }
+    fn signal(&mut self, deadline: std::time::Instant, signal: libc::c_int) -> ProcResult<()> {
         if let Some(child) = &mut self.child {
             child.authorization = None;
         }
@@ -238,7 +244,7 @@ impl Scope {
                 libc::syscall(
                     libc::SYS_pidfd_send_signal,
                     pin.as_raw_fd(),
-                    libc::SIGKILL,
+                    signal,
                     std::ptr::null::<libc::siginfo_t>(),
                     0u32,
                 )
@@ -275,7 +281,7 @@ impl Scope {
         check_stop_deadline(deadline)?;
         // SAFETY: exact native group just bracketed against an original member.
         // Linux tracked groups retain the documented non-atomic check/signal bound.
-        if unsafe { libc::kill(-(group.0 as i32), libc::SIGKILL) } < 0
+        if unsafe { libc::kill(-(group.0 as i32), signal) } < 0
             && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
         {
             return Err(native(

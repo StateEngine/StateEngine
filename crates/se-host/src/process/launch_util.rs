@@ -48,13 +48,12 @@ pub(super) fn token(prefix: &str) -> Result<Secret> {
 #[cfg(unix)]
 pub(super) fn stabilize_alias(
     mut invocation: crate::ProviderInvocation,
+    required: bool,
 ) -> Result<crate::ProviderInvocation> {
-    let selected = invocation.executable.to_local()?;
-    let image =
-        se_proc::canonicalize_path(&selected).map_err(|e| error("provider executable", e))?;
-    if image == selected {
+    if !required {
         return Ok(invocation);
     }
+    let selected = invocation.executable.to_local()?;
     // A native alias can exec an interpreter after its first image is observed.
     // Keep a stable parent in the owned scope instead of weakening root identity.
     // The fixed program passes separate argv words through "$@"; provider paths,
@@ -63,7 +62,12 @@ pub(super) fn stabilize_alias(
         se_proc::canonicalize_path("/bin/sh").map_err(|e| error("provider alias supervisor", e))?;
     let mut arguments = vec![
         "-c".into(),
-        "\"$@\"; se_provider_status=$?; exit \"$se_provider_status\"".into(),
+        concat!(
+            "\"$@\" <&0 & se_provider_pid=$!; ",
+            "trap 'kill -TERM \"$se_provider_pid\"; wait \"$se_provider_pid\"; exit $?' TERM; ",
+            "trap 'kill -INT \"$se_provider_pid\"; wait \"$se_provider_pid\"; exit $?' INT; ",
+            "wait \"$se_provider_pid\"; se_provider_status=$?; trap - TERM INT; exit \"$se_provider_status\""
+        ).into(),
         "se-provider-alias".into(),
         selected.into_os_string(),
     ];
