@@ -55,7 +55,7 @@ pub(super) async fn measured(
                             Err(_) => pending.failed_attempt(&submitted),
                         };
                         let notified = if receipt.is_ok() {
-                            mail_waits.committed().and_then(|()| {
+                            mail_waits.committed(&recipients).and_then(|()| {
                                 custody
                                     .as_ref()
                                     .map_or(Ok(()), |custody| custody.notify_mail(&recipients))

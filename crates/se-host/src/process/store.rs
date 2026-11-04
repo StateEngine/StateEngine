@@ -78,6 +78,7 @@ impl Store {
             natural_events: Vec::new(),
         };
         let submitted = identity.clone();
+        let recipients = crate::runtime::mail::recipients(&batch);
         let writer = self.writer.clone();
         let pending = self.pending.clone();
         let mail_waits = self.mail_waits.clone();
@@ -99,7 +100,7 @@ impl Store {
                             Err(_) => pending.failed_attempt(&submitted),
                         };
                         let notified = if receipt.is_ok() {
-                            mail_waits.committed()
+                            mail_waits.committed(&recipients)
                         } else {
                             Ok(())
                         };

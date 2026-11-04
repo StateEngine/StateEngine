@@ -8,7 +8,7 @@ pub struct MailRecipient {
     pub project: ProjectId,
     pub agent: AgentId,
 }
-pub(super) fn recipients(batch: &AtomicBatch) -> Vec<MailRecipient> {
+pub(crate) fn recipients(batch: &AtomicBatch) -> Vec<MailRecipient> {
     let mut result = Vec::new();
     for event in &batch.events {
         let Scope::Project(project) = &event.header.scope else {

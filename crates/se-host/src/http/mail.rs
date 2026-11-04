@@ -23,6 +23,7 @@ pub(crate) struct Waits {
 struct Signal {
     changed: Notify,
     cancelled: AtomicBool,
+    recipient: crate::runtime::MailRecipient,
 }
 struct Wait {
     registry: Arc<Waits>,
@@ -39,7 +40,11 @@ impl Waits {
             closed: AtomicBool::new(false),
         })
     }
-    fn register(self: &Arc<Self>, session: SessionId) -> Result<Wait> {
+    fn register(
+        self: &Arc<Self>,
+        session: SessionId,
+        recipient: crate::runtime::MailRecipient,
+    ) -> Result<Wait> {
         let permit = Arc::clone(&self.retained)
             .try_acquire_owned()
             .map_err(|_| {
@@ -61,6 +66,7 @@ impl Waits {
         let signal = Arc::new(Signal {
             changed: Notify::new(),
             cancelled: AtomicBool::new(false),
+            recipient,
         });
         if let Some(previous) = sessions.insert(session.clone(), Arc::clone(&signal)) {
             previous.cancelled.store(true, Ordering::Release);
@@ -73,9 +79,14 @@ impl Waits {
             _permit: permit,
         })
     }
-    pub(crate) fn committed(&self) -> Result<()> {
+    pub(crate) fn committed(&self, recipients: &[crate::runtime::MailRecipient]) -> Result<()> {
+        if recipients.is_empty() {
+            return Ok(());
+        }
         for signal in self.sessions.lock().map_err(|_| poisoned())?.values() {
-            signal.changed.notify_one();
+            if recipients.contains(&signal.recipient) {
+                signal.changed.notify_one();
+            }
         }
         Ok(())
     }
@@ -107,6 +118,8 @@ fn poisoned() -> SeError {
 pub(crate) struct Page {
     #[serde(skip)]
     pub session: SessionId,
+    #[serde(skip)]
+    pub recipient: crate::runtime::MailRecipient,
     pub ids: Vec<se_types::MessageId>,
     pub cursor: se_types::Cursor,
     pub complete: bool,
@@ -133,7 +146,10 @@ impl HostedRouter {
         let first = self.mail_page(Arc::clone(&secret), deadline).await?;
         // Subscribe before the deciding read so a committed change cannot fall
         // between the snapshot and installing the event waiter.
-        let wait = self.execution.mail_waits.register(first.session)?;
+        let wait = self
+            .execution
+            .mail_waits
+            .register(first.session, first.recipient)?;
         active.lock().map_err(|_| poisoned())?.take();
         loop {
             if wait.signal.cancelled.load(Ordering::Acquire) {
@@ -161,25 +177,60 @@ impl HostedRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn recipient() -> Result<crate::runtime::MailRecipient> {
+        Ok(crate::runtime::MailRecipient {
+            project: se_types::ProjectId::from_parts(1, [1; 10])?,
+            agent: se_types::AgentId::from_parts(1, [2; 10])?,
+        })
+    }
+    #[test]
+    fn commits_wake_only_sessions_for_the_exact_recipient() -> Result<()> {
+        use std::{
+            future::Future,
+            task::{Context, Waker},
+        };
+        let registry = Waits::new(3);
+        let own = recipient()?;
+        let foreign = crate::runtime::MailRecipient {
+            project: se_types::ProjectId::from_parts(1, [3; 10])?,
+            agent: own.agent.clone(),
+        };
+        let first = registry.register(SessionId::from_parts(1, [4; 10])?, own.clone())?;
+        let second = registry.register(SessionId::from_parts(1, [5; 10])?, own.clone())?;
+        let other = registry.register(SessionId::from_parts(1, [6; 10])?, foreign)?;
+        let mut context = Context::from_waker(Waker::noop());
+        registry.committed(&[])?;
+        let mut a = Box::pin(first.signal.changed.notified());
+        let mut b = Box::pin(second.signal.changed.notified());
+        let mut c = Box::pin(other.signal.changed.notified());
+        assert!(a.as_mut().poll(&mut context).is_pending());
+        assert!(b.as_mut().poll(&mut context).is_pending());
+        assert!(c.as_mut().poll(&mut context).is_pending());
+        registry.committed(&[own])?;
+        assert!(a.as_mut().poll(&mut context).is_ready());
+        assert!(b.as_mut().poll(&mut context).is_ready());
+        assert!(c.as_mut().poll(&mut context).is_pending());
+        Ok(())
+    }
     #[test]
     fn replacement_cancels_only_its_predecessor_and_keeps_capacity_bounded() -> Result<()> {
         let registry = Waits::new(1);
         let session = SessionId::from_parts(1, [1; 10])?;
         let other = SessionId::from_parts(1, [2; 10])?;
-        let first = registry.register(session.clone())?;
-        assert!(registry.register(other.clone()).is_err());
-        let second = registry.register(session.clone())?;
+        let first = registry.register(session.clone(), recipient()?)?;
+        assert!(registry.register(other.clone(), recipient()?).is_err());
+        let second = registry.register(session.clone(), recipient()?)?;
         assert!(first.signal.cancelled.load(Ordering::Acquire));
         assert!(!second.signal.cancelled.load(Ordering::Acquire));
-        assert!(registry.register(session.clone()).is_err());
+        assert!(registry.register(session.clone(), recipient()?).is_err());
         drop(first);
-        assert!(registry.register(other.clone()).is_err());
+        assert!(registry.register(other.clone(), recipient()?).is_err());
         assert_eq!(registry.retained.available_permits(), 1);
         drop(second);
-        let last = registry.register(other)?;
+        let last = registry.register(other, recipient()?)?;
         registry.close()?;
         assert!(last.signal.cancelled.load(Ordering::Acquire));
-        assert!(registry.register(session).is_err());
+        assert!(registry.register(session, recipient()?).is_err());
         drop(last);
         assert_eq!(registry.retained.available_permits(), 2);
         Ok(())

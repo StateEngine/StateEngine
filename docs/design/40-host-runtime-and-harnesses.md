@@ -1146,6 +1146,16 @@ as client authority. Token/credential bytes never enter query/argv/environment,
 model context, telemetry, errors or support bundles; SE_SESSION is only a handle,
 with actual secret in the accepted owner-only pin or protected native channel.
 
+Server-proof disclosure decision: the anonymous challenge response intentionally
+discloses the current runtime epoch (including its native owner process identity
+and executable path), generation and executable image hash, bound to the supplied
+nonce and exact local origin. These fields let a local client
+authenticate this server against its protected native endpoint before sending a
+bearer. They carry no client authority; credentials, inbox state and private
+counts remain outside this response. Retain at most 64 proof
+nonces for five seconds, so a burst cannot occupy every challenge slot for the
+ordinary request's full timeout.
+
 Limits from shared 70/80: 16 KiB headers, 1 MiB body, depth 64, ten-second headers,
 30-second ordinary request; reject duplicate length/ambiguous framing/coding and
 count actual bytes regardless of Content-Length. **64 active connections plus a

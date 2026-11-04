@@ -27,6 +27,19 @@ impl AdmissionContext {
                 phase.close(),
             );
         };
+        let Scope::Project(project) = &admission.scope else {
+            return super::super::executor::close_read(
+                Err(SeError::invalid(
+                    "mail authority",
+                    "one bound recipient project",
+                )),
+                phase.close(),
+            );
+        };
+        let recipient = super::super::mail::MailRecipient {
+            project: project.clone(),
+            agent: agent.clone(),
+        };
         let session = admission
             .session
             .clone()
@@ -67,6 +80,7 @@ impl AdmissionContext {
                 .map_err(|e| store_error(&e))?;
             let output = crate::http::mail::Page {
                 session,
+                recipient,
                 ids: page
                     .items()
                     .iter()

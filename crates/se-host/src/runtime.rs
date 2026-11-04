@@ -56,7 +56,7 @@ pub(crate) mod executor;
 #[cfg(feature = "listener")]
 mod history_import;
 #[cfg(feature = "listener")]
-mod mail;
+pub(crate) mod mail;
 #[cfg(feature = "listener")]
 pub use mail::MailRecipient;
 #[cfg(feature = "runtime")]
