@@ -161,7 +161,8 @@ fn prepare_child(parent: &Path, pin: &File, child: &str) -> IpcNativeResult<()> 
     })?;
     // SAFETY: one literal component relative to a retained verified directory;
     // protection applies at creation, without changing the process umask.
-    if unsafe { libc::mkdirat(pin.as_raw_fd(), name.as_ptr(), 0o700) } < 0 {
+    let result = unsafe { libc::mkdirat(pin.as_raw_fd(), name.as_ptr(), 0o700) };
+    if result < 0 {
         let cause = io::Error::last_os_error();
         if cause.kind() != io::ErrorKind::AlreadyExists {
             return Err(error("create protected runtime directory", cause));
@@ -182,6 +183,15 @@ fn prepare_child(parent: &Path, pin: &File, child: &str) -> IpcNativeResult<()> 
     // SAFETY: successful openat transferred one uniquely owned descriptor.
     let file = unsafe { File::from_raw_fd(raw) };
     let path = parent.join(child);
+    #[cfg(target_os = "macos")]
+    if result == 0 {
+        crate::state_files::protect_created_ipc_directory(&file, &path).map_err(|e| {
+            error(
+                "protect newly created IPC directory ACL",
+                io::Error::other(e),
+            )
+        })?;
+    }
     if stamp(&file)? != stamp(&private_directory(&path)?)? {
         return Err(refuse(
             IpcNativeErrorCode::PeerChanged,

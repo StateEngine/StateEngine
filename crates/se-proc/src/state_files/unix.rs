@@ -5,7 +5,7 @@ mod ancestors;
 #[cfg(target_os = "macos")]
 mod created_acl;
 #[cfg(target_os = "macos")]
-use created_acl::clear as clear_created_acl;
+pub(super) use created_acl::clear as clear_created_acl;
 #[path = "effects/unix.rs"]
 pub(super) mod effects;
 use std::{

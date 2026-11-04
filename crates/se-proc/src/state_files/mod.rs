@@ -24,6 +24,13 @@ use unix as os;
 #[cfg(windows)]
 use windows as os;
 
+/// Clear inheritance only on a newly created, held private directory. Existing
+/// IPC directories remain read-only admission checks, never implicit repairs.
+#[cfg(target_os = "macos")]
+pub(crate) fn protect_created_ipc_directory(file: &File, path: &Path) -> Result<()> {
+    unix::clear_created_acl(file, path, true)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StateFileErrorCode {
     AlreadyExists,
