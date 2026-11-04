@@ -45,6 +45,33 @@ pub(super) fn token(prefix: &str) -> Result<Secret> {
     }
     Secret::new(std::mem::take(&mut *value))
 }
+#[cfg(unix)]
+pub(super) fn stabilize_alias(
+    mut invocation: crate::ProviderInvocation,
+) -> Result<crate::ProviderInvocation> {
+    let selected = invocation.executable.to_local()?;
+    let image =
+        se_proc::canonicalize_path(&selected).map_err(|e| error("provider executable", e))?;
+    if image == selected {
+        return Ok(invocation);
+    }
+    // A native alias can exec an interpreter after its first image is observed.
+    // Keep a stable parent in the owned scope instead of weakening root identity.
+    // The fixed program passes separate argv words through "$@"; provider paths,
+    // arguments and credentials are never interpolated into shell source.
+    let parent =
+        se_proc::canonicalize_path("/bin/sh").map_err(|e| error("provider alias supervisor", e))?;
+    let mut arguments = vec![
+        "-c".into(),
+        "\"$@\"; se_provider_status=$?; exit \"$se_provider_status\"".into(),
+        "se-provider-alias".into(),
+        selected.into_os_string(),
+    ];
+    arguments.append(&mut invocation.arguments);
+    invocation.executable = NativePath::from_local(parent)?;
+    invocation.arguments = arguments;
+    Ok(invocation)
+}
 pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_proc::LaunchPolicy> {
     let scratch = home.join("launch").join(
         se_proc::session_launch_id(&plan.session)

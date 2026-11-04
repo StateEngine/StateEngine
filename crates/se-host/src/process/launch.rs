@@ -110,6 +110,16 @@ impl LaunchCoordinator {
         let mut invocation = harness
             .invocation(&request, call(self.store.generation, deadline)?)
             .await?;
+        #[cfg(unix)]
+        {
+            invocation = self
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    super::launch_util::stabilize_alias(invocation)
+                })
+                .await?;
+        }
         if mode == se_proc::LaunchMode::Window && cfg!(target_os = "linux") {
             invocation
                 .environment
