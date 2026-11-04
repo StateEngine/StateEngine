@@ -116,3 +116,7 @@ pub(super) fn page<R: ReadStore>(
     }
     se_types::Page::new(rows, se_types::Window::new(fields)?, next)
 }
+
+#[cfg(test)]
+#[path = "projects/tests.rs"]
+mod tests;
