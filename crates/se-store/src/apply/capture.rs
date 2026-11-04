@@ -30,25 +30,39 @@ pub(crate) fn canonicalize(c: &Connection, batch: &mut AtomicBatch) -> StoreResu
         if matches!(e.body, EventBody::SessionTurn { .. })
             && let Some(seq) = codec::capture::natural(c, e)?
         {
-            let retained: Vec<u8> = c
+            let (retained, session): (Vec<u8>, Vec<u8>) = c
                 .query_row(
-                    "SELECT turn_id FROM turn_data WHERE event_seq=?",
+                    "SELECT turn_id,session_id FROM turn_data WHERE event_seq=?",
                     [seq],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .map_err(sql)?;
-            if let EventBody::SessionTurn { turn, .. } = &mut e.body {
+            if let EventBody::SessionTurn {
+                turn,
+                session: current,
+                evidence,
+                ..
+            } = &mut e.body
+            {
                 let actual = codec::capture::record(retained)?;
-                ids.push((*turn, actual));
+                let scope = scope_key(c, &e.header.scope, false)?;
+                let replay = (key(c, "session", current.as_str(), &scope, false)? != session)
+                    .then(|| evidence.clone());
+                ids.push((*turn, actual, replay));
                 *turn = actual;
             }
         }
     }
     for e in &mut batch.events {
-        if let EventBody::CaptureProgress { last_turn, .. } = &mut e.body
-            && let Some((_, actual)) = ids.iter().find(|(draft, _)| draft == last_turn)
+        if let EventBody::CaptureProgress {
+            last_turn,
+            replay_evidence,
+            ..
+        } = &mut e.body
+            && let Some((_, actual, replay)) = ids.iter().find(|(draft, _, _)| draft == last_turn)
         {
             *last_turn = *actual;
+            *replay_evidence = replay.clone();
         }
     }
     Ok(())
@@ -86,12 +100,20 @@ pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult
                 old_offset,
                 new_offset,
                 last_turn,
+                replay_evidence,
                 ..
-            } => Some((source, incarnation, *old_offset, *new_offset, last_turn)),
+            } => Some((
+                source,
+                incarnation,
+                *old_offset,
+                *new_offset,
+                last_turn,
+                replay_evidence,
+            )),
             _ => None,
         })
         .collect();
-    for (source, incarnation, old, new, last) in &progress {
+    for (source, incarnation, old, new, last, replay) in &progress {
         if new <= old || *new > i64::MAX as u64 {
             return Err(invalid("capture progress must advance a bounded offset"));
         }
@@ -113,7 +135,8 @@ pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult
                     "capture progress requires its last turn in the same atomic batch",
                 )
             })?;
-        if &selected.1.incarnation != *incarnation
+        if replay.as_ref().is_some_and(|range| range != selected.1)
+            || &selected.1.incarnation != *incarnation
             || selected.1.offset.checked_add(selected.1.length) != Some(*new)
         {
             return Err(fail(
@@ -140,7 +163,7 @@ pub(crate) fn validate_batch(c: &Connection, batch: &AtomicBatch) -> StoreResult
                 .filter(|n| *n <= i64::MAX as u64)
                 .ok_or_else(|| invalid("turn source range overflow"))?;
             let mut matches = 0;
-            for (source, incarnation, old, new, _) in &progress {
+            for (source, incarnation, old, new, _, _) in &progress {
                 if evidence.incarnation == **incarnation
                     && evidence.offset >= *old
                     && end <= *new

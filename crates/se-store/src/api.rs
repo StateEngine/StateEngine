@@ -515,6 +515,14 @@ pub trait Snapshot {
     ) -> StoreResult<Page<Read<ProjectionRecord>>>;
     /// One immutable turn by its record ID, under this snapshot's project and visibility.
     fn turn(&mut self, id: RecordId) -> StoreResult<Read<StoredEvent>>;
+    /// Resolve an item through this session's native conversation and agent.
+    /// Codex resumes reuse the original immutable event across engine sessions.
+    fn native_turn(
+        &mut self,
+        session: SessionId,
+        provider: Provider,
+        vendor: &str,
+    ) -> StoreResult<Read<StoredEvent>>;
     fn turns(&mut self, agent: AgentId, budget: ReadBudget) -> StoreResult<Page<StoredEvent>>;
     /// The newest turns after `since`, oldest first; older turns the bound
     /// left out are counted exactly in the window's omitted-before.

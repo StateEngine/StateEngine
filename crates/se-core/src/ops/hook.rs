@@ -85,7 +85,7 @@ pub struct CaptureMetadata {
     pub event: EventId,
 }
 /// Allocated before first submission and retained across an uncertain result.
-/// The store's natural identity is bound session/provider/vendor_turn, not these
+/// Codex natural identity is bound native conversation/provider/vendor_turn, not these
 /// allocated event/turn identifiers, and replay resolves its original members.
 pub struct CaptureFacts {
     pub turn: RecordId,
@@ -97,6 +97,7 @@ pub struct CaptureThen {
     session: SessionId,
     source: RecordId,
     vendor_turn: String,
+    provider: Provider,
     text_sha256: [u8; 32],
     metadata: Vec<(String, [u8; 32])>,
 }
@@ -282,6 +283,7 @@ pub fn plan<R: Snapshot>(
         session: session.clone(),
         source: input.source,
         vendor_turn: input.vendor_turn.clone(),
+        provider: input.provider,
         text_sha256: Sha256::digest(input.text.as_str().as_bytes()).into(),
         metadata: metadata
             .iter()
@@ -334,6 +336,7 @@ pub fn plan<R: Snapshot>(
             old_offset,
             new_offset: input.new_offset,
             last_turn: facts.turn,
+            replay_evidence: None,
         },
     });
     Ok(OpStep::Commit {
@@ -373,10 +376,23 @@ pub fn committed<R: Snapshot>(
         "captured turn",
         scope::COMMITTED_READ_RECOVERY,
     )?;
-    if event.header.scope != cx.admission.scope
-        || event.header.actor != cx.admission.actor
-        || event.header.session.as_ref() != Some(&then.session)
-    {
+    let resumed = event.header.session.as_ref() != Some(&then.session);
+    if resumed {
+        let original = scope::require_present(
+            cx.read
+                .native_turn(then.session.clone(), then.provider, &then.vendor_turn)
+                .map_err(|e| store_error(&e))?,
+            "resumed native item",
+            scope::COMMITTED_READ_RECOVERY,
+        )?;
+        if then.provider != Provider::Codex || original.header.event != event.header.event {
+            return Err(scope::unreadable(
+                "captured turn",
+                "receipt differs from the bound native conversation item",
+            ));
+        }
+    }
+    if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
         return Err(scope::unreadable(
             "captured turn",
             "receipt resolved outside the admitted session",
@@ -390,7 +406,7 @@ pub fn committed<R: Snapshot>(
             role,
             text: StoredText::Present(text),
             ..
-        } if session == then.session
+        } if event.header.session.as_ref() == Some(&session)
             && vendor_ref == then.vendor_turn
             && <[u8; 32]>::from(Sha256::digest(text.as_bytes())) == then.text_sha256 =>
         {
@@ -453,7 +469,7 @@ pub fn committed<R: Snapshot>(
         },
         failure: None,
         receipt: Some(TurnReceipt {
-            result: if receipt.state == se_store::CommitState::Committed {
+            result: if !resumed && receipt.state == se_store::CommitState::Committed {
                 CaptureResult::Captured
             } else {
                 CaptureResult::Duplicate

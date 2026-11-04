@@ -331,7 +331,7 @@ impl Engine {
                 Err(fail(StoreErrorCode::ContentErased, "event content erased"))
             }
         })?;
-        if description != retained
+        if (description != retained && !codec::capture::native::resumed(event, &old))
             || event.header.actor != old.header.actor
             || event.header.scope != old.header.scope
         {
