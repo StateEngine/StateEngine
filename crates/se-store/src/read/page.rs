@@ -15,6 +15,16 @@ impl SqliteSnapshot {
         binding: &str,
         facts: PageFacts,
     ) -> StoreResult<Page<T>> {
+        self.page_with_unreadable(items, budget, binding, facts, 0)
+    }
+    pub(super) fn page_with_unreadable<T>(
+        &self,
+        items: Vec<T>,
+        budget: &ReadBudget,
+        binding: &str,
+        facts: PageFacts,
+        unreadable: u64,
+    ) -> StoreResult<Page<T>> {
         let PageFacts {
             h,
             after,
@@ -69,7 +79,7 @@ impl SqliteSnapshot {
             max_bytes: budget.page.max_bytes,
             omitted_before: Omission::None,
             omitted_after: omission,
-            unreadable: 0,
+            unreadable,
             stop_reason: stop,
         })
         .map_err(invalid)?;

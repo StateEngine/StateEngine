@@ -408,7 +408,7 @@ impl Snapshot for SqliteSnapshot {
     ) -> StoreResult<Page<StoredEvent>> {
         self.read_history(_query, _budget)
     }
-    fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<Page<SearchHit>> {
+    fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<SearchPage> {
         self.read_search(query, budget)
     }
     fn projects(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {

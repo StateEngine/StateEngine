@@ -217,7 +217,7 @@ pub(super) fn check_deadline(deadline: Instant) -> StoreResult<()> {
 pub(super) fn deadline(budget: &ReadBudget) -> StoreResult<Instant> {
     if budget.deadline.is_zero() || budget.deadline > std::time::Duration::from_secs(5) {
         return Err(fail(
-            StoreErrorCode::ReadBudgetTooSmall,
+            StoreErrorCode::EventInvalid,
             "read deadline must be positive and at most 5 seconds",
         ));
     }

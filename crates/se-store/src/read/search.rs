@@ -7,7 +7,7 @@ impl SqliteSnapshot {
         &self,
         mut query: SearchQuery,
         budget: ReadBudget,
-    ) -> StoreResult<Page<SearchHit>> {
+    ) -> StoreResult<SearchPage> {
         let deadline = query::deadline(&budget)?;
         if query.text.is_empty() || query.text.chars().count() > 512 {
             return Err(fail(
@@ -27,14 +27,52 @@ impl SqliteSnapshot {
         let mut bytes = 0;
         let mut last = stream.after;
         let mut stop = StopReason::Exhausted;
+        let mut erased = 0;
+        let mut unreadable = 0;
         for (checked, (_, seq, _)) in rows.into_iter().enumerate() {
             query::check_deadline(deadline)?;
             if checked == budget.page.limit.get() as usize {
                 stop = StopReason::ItemLimit;
                 break;
             }
-            let event = self.history_event(seq, &stream)?;
-            let cost = query::event_size(&event)?;
+            // Retained erasure metadata is authoritative even if an old body
+            // copy remains. Never reconstruct or search forgotten content.
+            let forgotten: bool = self
+                .db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM erased_fields WHERE event_seq=?)",
+                    [seq],
+                    |row| crate::sql_value::value(row, 0),
+                )
+                .map_err(|error| self.read_sql(error))?;
+            if forgotten {
+                erased += 1;
+                last = seq as u64;
+                continue;
+            }
+            let event = match self.history_event(seq, &stream) {
+                Ok(event) => event,
+                Err(error) if error.code == StoreErrorCode::ContentErased => {
+                    erased += 1;
+                    last = seq as u64;
+                    continue;
+                }
+                Err(error) if candidate_unreadable(&error) => {
+                    unreadable += 1;
+                    last = seq as u64;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let cost = match query::event_size(&event) {
+                Ok(cost) => cost,
+                Err(error) if error.code == StoreErrorCode::ContentErased => {
+                    erased += 1;
+                    last = seq as u64;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if bytes + cost > u64::from(budget.page.max_bytes.get()) {
                 if checked == 0 {
                     return Err(query::budget_failure(
@@ -58,7 +96,7 @@ impl SqliteSnapshot {
             last = seq as u64;
         }
         query::check_deadline(deadline)?;
-        self.page(
+        let page = self.page_with_unreadable(
             items,
             &budget,
             &stream.binding,
@@ -70,8 +108,27 @@ impl SqliteSnapshot {
                 stop,
                 remaining: None,
             },
-        )
+            unreadable,
+        )?;
+        Ok(SearchPage { page, erased })
     }
+}
+
+fn candidate_unreadable(error: &StoreError) -> bool {
+    // Payload/type failures can omit one candidate. Native SQLite failures,
+    // missing tables, structural corruption and authorization/index drift still
+    // fail the read instead of being laundered into an empty result.
+    matches!(
+        error.code,
+        StoreErrorCode::Unreadable | StoreErrorCode::EventInvalid
+    ) && !matches!(
+        error.detail,
+        StoreDetail::Sqlite { .. }
+            | StoreDetail::Io {
+                sqlite_extended_code: Some(_),
+                ..
+            }
+    )
 }
 
 fn snippet(body: &EventBody<StoredText>, needle: &str) -> StoreResult<Option<(String, bool)>> {

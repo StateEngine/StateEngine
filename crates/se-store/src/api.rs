@@ -344,6 +344,25 @@ pub struct SearchHit {
     pub snippet: StoredText,
     pub body_complete: bool,
 }
+
+/// Text search omits intentionally erased candidates separately from unreadable
+/// omissions in the page window. Erasure is not a failed read or a match.
+#[derive(Clone)]
+pub struct SearchPage {
+    pub page: Page<SearchHit>,
+    pub erased: u64,
+}
+impl SearchPage {
+    pub fn items(&self) -> &[SearchHit] {
+        self.page.items()
+    }
+    pub fn window(&self) -> &se_types::Window {
+        self.page.window()
+    }
+    pub fn next(&self) -> Option<&se_types::Cursor> {
+        self.page.next()
+    }
+}
 /// Current-head record; body is reconstructed from the owning immutable event.
 #[derive(Clone)]
 pub struct ProjectionRecord {
@@ -418,7 +437,7 @@ pub trait Snapshot {
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>>;
     /// Excludes runtime.* facts before matching/snippet construction.
-    fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<Page<SearchHit>>;
+    fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<SearchPage>;
     /// Non-mail mutable lists are labelled live keysets; Page describes this read only.
     fn projects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     /// Owner-only targeted lookup of removed registrations, retaining all matches

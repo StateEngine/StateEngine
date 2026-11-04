@@ -185,6 +185,104 @@ fn search_refuses_tiny_budgets_and_deadlines_without_claiming_absence() -> Check
             .code,
         StoreErrorCode::ReadIncomplete
     );
+    let mut excessive = budget(10, 65536, None)?;
+    excessive.deadline = std::time::Duration::from_secs(6);
+    assert_eq!(
+        snap.search(search("needle"), excessive)
+            .err()
+            .ok_or("invalid deadline accepted")?
+            .code,
+        StoreErrorCode::EventInvalid
+    );
+    snap.close()?;
+    Ok(())
+}
+
+#[test]
+fn search_continues_across_erased_and_unreadable_candidates_but_refuses_a_broken_store() -> Check {
+    let f = Fixture::new()?;
+    let (mut d, lease) = f.direct()?;
+    let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    let mut seqs = Vec::new();
+    for (index, text) in ["forgotten needle", "corrupt needle", "later needle"]
+        .iter()
+        .enumerate()
+    {
+        d.append(
+            f.send(
+                Actor::Agent(f.a.clone()),
+                Actor::Agent(f.b.clone()),
+                message()?,
+                text,
+                &format!("loss-{index}"),
+            )?,
+            &*lease,
+        )?;
+        seqs.push(db.query_row("SELECT max(seq) FROM events", [], |row| {
+            row.get::<_, i64>(0)
+        })?);
+    }
+    // Retained erasure metadata must suppress even a residual old body copy.
+    // The erasure operation itself belongs to its separate maintenance lane.
+    db.execute("INSERT INTO erasures(erasure_id,requested_seq,manifest_payload) SELECT zeroblob(16),?1,payload_id FROM payloads WHERE event_seq=?1 AND field='body'", [seqs[0]])?;
+    db.execute("INSERT INTO erased_fields(event_seq,field,original_bytes,erasure_id) VALUES(?1,'body',16,zeroblob(16))", [seqs[0]])?;
+    db.execute_batch("DROP TRIGGER payloads_no_update")?;
+    db.execute(
+        "UPDATE payloads SET sha256=zeroblob(32) WHERE event_seq=?",
+        [seqs[1]],
+    )?;
+    let mut snap = d.snapshot(f.self_scope(&f.b))?;
+    let erased = snap.search(search("needle"), budget(1, 65536, None)?)?;
+    assert_eq!(erased.erased, 1, "erased candidate was not counted");
+    assert!(erased.items().is_empty(), "forgotten text resurfaced");
+    let unreadable = snap.search(search("needle"), budget(1, 65536, erased.next().cloned())?)?;
+    assert_eq!(unreadable.erased, 0);
+    assert!(unreadable.items().is_empty());
+    assert_eq!(
+        unreadable
+            .window()
+            .fields()
+            .ok_or("missing accounting")?
+            .unreadable,
+        1
+    );
+    assert_eq!(
+        unreadable.window().omitted().reason,
+        Some(se_types::OmissionReason::Unreadable)
+    );
+    assert!(!unreadable.window().complete());
+    let later = snap.search(
+        search("needle"),
+        budget(1, 65536, unreadable.next().cloned())?,
+    )?;
+    assert_eq!(
+        later.items().len(),
+        1,
+        "later match was stranded behind unreadable content"
+    );
+    assert!(later.window().complete());
+    assert!(later.next().is_none());
+    let all = snap.search(search("needle"), budget(10, 65536, None)?)?;
+    assert_eq!(all.erased, 1);
+    assert_eq!(all.items().len(), 1);
+    assert_eq!(all.window().omitted().count, Some(1));
+    assert_eq!(
+        all.window().omitted().reason,
+        Some(se_types::OmissionReason::Unreadable)
+    );
+    assert!(!all.window().complete());
+    assert!(
+        all.next().is_none(),
+        "exhausted unreadability invented more candidates"
+    );
+    snap.close()?;
+    db.execute_batch("ALTER TABLE payloads RENAME TO broken_payloads")?;
+    let mut snap = d.snapshot(f.self_scope(&f.b))?;
+    assert!(
+        snap.search(search("needle"), budget(10, 65536, None)?)
+            .is_err(),
+        "broken storage became per-row omissions"
+    );
     snap.close()?;
     Ok(())
 }
