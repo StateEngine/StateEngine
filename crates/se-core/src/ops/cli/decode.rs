@@ -60,7 +60,7 @@ pub fn from_matches_with_key(
             .ok_or_else(|| {
                 SeError::new(Detail::UsageMissingArgument(
                     details::UsageMissingArgument {
-                        command: meta.name.into(),
+                        command: command_name(meta.name),
                         argument:
                             "request identity generated before first send (or --key for retry)"
                                 .into(),

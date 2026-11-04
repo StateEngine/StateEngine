@@ -36,9 +36,9 @@ pub fn parse(args: Vec<OsString>) -> std::result::Result<Invocation, Failure> {
                 // clap's early-exit action. Required input is irrelevant to it.
                 help_grammar(command)
                     .try_get_matches_from(&args)
-                    .map_err(usage_error)?
+                    .map_err(|error| usage_error(error, &args))?
             }
-            Err(error) => return Err(usage_error(error)),
+            Err(error) => return Err(usage_error(error, &args)),
         };
         let common = CommonArgs::from_matches(&matches)?;
         let generated = if ops::selected_meta(&matches)?.mutates() && common.key.is_none() {
@@ -75,8 +75,28 @@ fn context(error: &clap::Error, kind: ContextKind) -> String {
     error.get(kind).map(ToString::to_string).unwrap_or_default()
 }
 
-fn usage_error(error: clap::Error) -> SeError {
+fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
     let argument = context(&error, ContextKind::InvalidArg);
+    let command = error_command(args);
+    let flag = argument.split_whitespace().next().unwrap_or_default();
+    let missing_value = error.kind() == ErrorKind::InvalidValue
+        && context(&error, ContextKind::InvalidValue).is_empty()
+        && flag.starts_with('-')
+        && args
+            .iter()
+            .position(|arg| arg == flag)
+            .is_some_and(|index| {
+                args.get(index + 1)
+                    .is_none_or(|next| next.to_string_lossy().starts_with('-'))
+            });
+    if missing_value {
+        return SeError::new(Detail::UsageMissingArgument(
+            details::UsageMissingArgument {
+                command,
+                argument: format!("a value for {argument}"),
+            },
+        ));
+    }
     let detail = match error.kind() {
         ErrorKind::UnknownArgument if argument.starts_with('-') => Detail::UsageUnknownFlag(details::UsageUnknownFlag {
             reason: match argument.split('=').next().unwrap_or(&argument) {
@@ -86,7 +106,7 @@ fn usage_error(error: clap::Error) -> SeError {
                 _ => "unknown or inapplicable flag; inspect this command's --help",
             }.into(),
             flag: argument,
-            command: "se".into(),
+            command,
         }),
         ErrorKind::InvalidSubcommand | ErrorKind::UnknownArgument => {
             let got = if argument.is_empty() { context(&error, ContextKind::InvalidSubcommand) } else { argument };
@@ -100,15 +120,36 @@ fn usage_error(error: clap::Error) -> SeError {
             flags: vec![argument, context(&error, ContextKind::PriorArg)],
         }),
         ErrorKind::MissingRequiredArgument => Detail::UsageMissingArgument(details::UsageMissingArgument {
-            command: "se".into(), argument,
+            command, argument,
         }),
         _ => Detail::UsageInvalidValue(details::UsageInvalidValue {
-            argument,
+            argument: argument.clone(),
             got: context(&error, ContextKind::InvalidValue),
-            expected: context(&error, ContextKind::ValidValue),
+            expected: {
+                let expected = context(&error, ContextKind::ValidValue);
+                if expected.is_empty() { format!("a valid value for {argument}") } else { expected }
+            },
         }),
     };
     SeError::new(detail)
+}
+
+/// A second, diagnostics-only parse retains the recognized command prefix.
+/// It consumes option values through Clap, so a home or task named after a
+/// subcommand cannot be mistaken for the help target. Its matches never execute.
+fn error_command(args: &[OsString]) -> String {
+    let mut path = vec!["se".to_owned()];
+    if let Ok(matches) = ops::cli_command()
+        .ignore_errors(true)
+        .try_get_matches_from(args)
+    {
+        let mut current = &matches;
+        while let Some((name, child)) = current.subcommand() {
+            path.push(name.to_owned());
+            current = child;
+        }
+    }
+    path.join(" ")
 }
 
 /// Suggestions are selected only from clap's generated live siblings.

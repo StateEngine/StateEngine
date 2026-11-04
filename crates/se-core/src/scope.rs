@@ -30,7 +30,7 @@ pub fn working_agent(
         (Actor::Human(_), Some(agent)) => Ok(agent.clone()),
         (Actor::Human(_), None) => Err(SeError::new(Detail::UsageMissingArgument(
             details::UsageMissingArgument {
-                command: op.into(),
+                command: crate::ops::command_name(op),
                 argument: "--agent AGENT (owner inspection)".into(),
             },
         ))),

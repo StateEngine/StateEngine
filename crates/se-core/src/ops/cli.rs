@@ -126,9 +126,23 @@ fn unknown(command: &str) -> SeError {
 fn unknown_flag(flag: &str, command: &str, reason: &str) -> SeError {
     SeError::new(Detail::UsageUnknownFlag(details::UsageUnknownFlag {
         flag: flag.into(),
-        command: command.into(),
+        command: command_name(command),
         reason: reason.into(),
     }))
+}
+
+/// Public CLI spelling for diagnostics, derived from the live catalogue.
+pub(crate) fn command_name(operation: &str) -> String {
+    CATALOGUE
+        .iter()
+        .find(|meta| meta.name == operation)
+        .and_then(|meta| match meta.cli {
+            CliExposure::Leaf { path, .. } if !path.is_empty() => {
+                Some(format!("se {}", path.join(" ")))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| "se".into())
 }
 
 pub fn cli_command() -> Command {

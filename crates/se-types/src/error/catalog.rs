@@ -12,9 +12,9 @@ codes! {
     SelectorAmbiguous => ("selector-ambiguous", Usage) { kind: String, selector: String, matches: Vec<String> } => "{selector} matches {matches.len} {kind} entries: {matches}", "Select an exact ID from {matches}";
     UsageConflictingFlags => ("usage-conflicting-flags", Usage) { flags: Vec<String> } => "{flags} cannot be used together", "pick one";
     UsageInvalidValue => ("usage-invalid-value", Usage) { argument: String, got: String, expected: String } => "{argument}: `{got}` is not {expected}", "correct the value";
-    UsageMissingArgument => ("usage-missing-argument", Usage) { command: String, argument: String } => "`{command}` needs {argument}", "Use `se help {command}`";
+    UsageMissingArgument => ("usage-missing-argument", Usage) { command: String, argument: String } => "`{command}` needs {argument}", "Use `{command} --help`";
     UsageUnknownCommand => ("usage-unknown-command", Usage) { got: String, suggestion: Option<String> } => "unknown command `{got}`", "Use `se help`";
-    UsageUnknownFlag => ("usage-unknown-flag", Usage) { flag: String, command: String, reason: String } => "`{command}` does not accept {flag}: {reason}", "Use `se help {command}`";
+    UsageUnknownFlag => ("usage-unknown-flag", Usage) { flag: String, command: String, reason: String } => "`{command}` does not accept {flag}: {reason}", "Use `{command} --help`";
     CapabilityInvalid => ("capability-invalid", Unauthorized) { subject: String, reason: String, next_step: String } => "Session credential {subject}: {reason}", "{next_step}";
     GrantRequired => ("grant-required", Unauthorized) { grant: String, agent: AgentId } => "Session for {agent} lacks permission {grant}", "Owner: `se config set agent.{agent}.can-create true`";
     HumanTerminalRequired => ("human-terminal-required", Unauthorized) { op: String, reason: String } => "`{op}` needs you at an interactive terminal not started by an agent: {reason}", "Open your own terminal outside an agent tree; this mistake/drift guard is not proof against a determined agent using your account";

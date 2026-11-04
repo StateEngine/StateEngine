@@ -20,6 +20,7 @@ pub mod agent_config_receipt;
 mod agent_session;
 pub mod agent_status;
 mod cli;
+pub(crate) use cli::command_name;
 pub mod decision;
 pub mod decision_list;
 pub mod decision_show;
