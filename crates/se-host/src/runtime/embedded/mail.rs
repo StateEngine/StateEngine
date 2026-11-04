@@ -130,14 +130,14 @@ impl Generation {
             .map_err(native_error)?;
         Ok(())
     }
-    fn services(&self) -> api::Result<(api::HostEpoch, Arc<dyn api::HostServices>)> {
+    pub(super) fn services(&self) -> api::Result<(api::HostEpoch, Arc<dyn api::HostServices>)> {
         self.native
             .lock()
             .map_err(|_| support::unavailable("native registration"))?
             .clone()
             .ok_or_else(|| support::unavailable("activated native services"))
     }
-    fn service_options(
+    pub(super) fn service_options(
         &self,
         options: &api::CallOptions,
         deadline: &crate::client::lease::Deadline,

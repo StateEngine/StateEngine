@@ -126,10 +126,30 @@ impl api::HostServices for Services {
     }
     fn adopt_binding<'a>(
         &'a self,
-        _request: api::AdoptBinding,
+        request: api::AdoptBinding,
         _options: api::ServiceOptions,
     ) -> api::HostFuture<'a, api::Read<api::BindingObservation>> {
-        Box::pin(async { Err(services_refused()) })
+        Box::pin(async move {
+            let mut s = self.0.lock().map_err(|_| services_refused())?;
+            let mut current = request.previous.clone();
+            current.epoch = request.current_epoch;
+            if s.target.as_ref() != Some(&request.previous) && s.target.as_ref() != Some(&current) {
+                return Ok(api::Read::Absent {
+                    checked: "original native binding".into(),
+                });
+            }
+            s.target = Some(current.clone());
+            Ok(api::Read::Present {
+                value: api::BindingObservation {
+                    target: current,
+                    status: s.status.clone(),
+                    last_transition: event(),
+                    activity: api::Read::Present {
+                        value: api::SessionActivity::Idle,
+                    },
+                },
+            })
+        })
     }
     fn update_mail_target<'a>(
         &'a self,
