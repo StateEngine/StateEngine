@@ -76,7 +76,10 @@ impl RunningHost {
         }
     }
     pub fn stop(&self) -> Check {
-        if !self.live_until(Instant::now() + Duration::from_secs(10), "stop preflight")? {
+        if !self
+            .live()
+            .map_err(|error| format!("stop preflight: {error}"))?
+        {
             return Ok(());
         }
         let until = se_types::UnixMicros::new(
