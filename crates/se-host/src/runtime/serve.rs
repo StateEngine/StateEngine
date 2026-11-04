@@ -88,19 +88,16 @@ impl HostedRuntime {
         // Only an automatically started host with a known activity count may
         // exit when idle; an explicit `se up` or an unknown count stays resident.
         // Built once: unrelated traffic must not restart its zero-activity window.
-        let mut idle: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> =
+        let idle: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> =
             match self.auto_start.then(|| self.activity.take()).flatten() {
                 Some(mut activity) => Box::pin(async move { idle_expiry(&mut activity).await }),
                 None => Box::pin(std::future::pending()),
             };
         let (shutdown, cancelled) = watch::channel(None);
         #[cfg(all(target_os = "linux", target_env = "gnu"))]
-        {
-            idle = Box::pin(super::memory::while_serving(
-                idle,
-                self.memory_reclaim.clone(),
-            ));
-        }
+        let idle: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin(
+            super::memory::while_serving(idle, self.memory_reclaim.clone()),
+        );
         let mut tasks = JoinSet::new();
         let mut timers = super::live::Timers::new(
             idle,
