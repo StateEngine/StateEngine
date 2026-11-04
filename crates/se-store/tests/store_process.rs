@@ -450,7 +450,7 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     let mut i = identity(&f, false)?;
     let mut last = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("judge-console-0-{}", serial()))?),
         vec![registration(&i, ProcessState::Reserved)],
     )?)?)??
     .primary_event;
@@ -459,14 +459,24 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     if let EventBody::ProcessTransition { outcome, .. } = &mut scope {
         *outcome = "scope-prepared".into();
     }
-    last = wait(client.submit(f.batch(f.owner_project(), None, vec![scope])?)?)??.primary_event;
+    last = wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("judge-console-1-{}", serial()))?),
+        vec![scope],
+    )?)?)??
+    .primary_event;
     i.root_identity = RootIdentityState::Identified;
     i.instance = RecordedIdentity::Present(epoch()?.owner);
     let mut root = transition(&i, 2, ProcessState::Starting, ProcessState::Starting, last)?;
     if let EventBody::ProcessTransition { outcome, .. } = &mut root {
         *outcome = "root-prepared".into();
     }
-    last = wait(client.submit(f.batch(f.owner_project(), None, vec![root])?)?)??.primary_event;
+    last = wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("judge-console-2-{}", serial()))?),
+        vec![root],
+    )?)?)??
+    .primary_event;
     let RecordedIdentity::Present(original) = &i.instance else {
         return Err("missing root".into());
     };
@@ -496,7 +506,14 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
         if let EventBody::ProcessTransition { outcome, .. } = &mut event {
             *outcome = phase.into();
         }
-        assert!(wait(client.submit(f.batch(f.owner_project(), None, vec![event])?)?)?.is_err());
+        assert!(
+            wait(client.submit(f.batch(
+                f.owner_project(),
+                Some(request(&format!("judge-console-3-{}", serial()))?),
+                vec![event]
+            )?)?)?
+            .is_err()
+        );
         assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 3);
     }
     let mut event = transition(
@@ -509,7 +526,12 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     if let EventBody::ProcessTransition { outcome, .. } = &mut event {
         *outcome = "console-prepared".into();
     }
-    last = wait(client.submit(f.batch(f.owner_project(), None, vec![event])?)?)??.primary_event;
+    last = wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("judge-console-4-{}", serial()))?),
+        vec![event],
+    )?)?)??
+    .primary_event;
     let mut repeat = transition(
         &i,
         4,
@@ -520,10 +542,17 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     if let EventBody::ProcessTransition { outcome, .. } = &mut repeat {
         *outcome = "console-prepared".into();
     }
-    assert!(wait(client.submit(f.batch(f.owner_project(), None, vec![repeat])?)?)?.is_err());
+    assert!(
+        wait(client.submit(f.batch(
+            f.owner_project(),
+            Some(request(&format!("judge-console-5-{}", serial()))?),
+            vec![repeat]
+        )?)?)?
+        .is_err()
+    );
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("judge-console-6-{}", serial()))?),
         vec![transition(
             &console,
             4,
