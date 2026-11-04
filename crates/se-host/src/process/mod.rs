@@ -15,6 +15,8 @@ mod launch_util;
 mod mail;
 mod native_record;
 mod owned;
+#[cfg(unix)]
+mod reactor;
 mod recovery;
 mod release;
 mod remove;
