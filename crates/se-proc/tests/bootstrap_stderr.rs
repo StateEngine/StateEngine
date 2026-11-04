@@ -34,6 +34,22 @@ mod judge {
                 windows_sys::Win32::System::Threading::SetEvent(raw as _);
             }
         }
+        #[cfg(windows)]
+        if mode == "broker" {
+            use windows_sys::Win32::System::{
+                JobObjects::IsProcessInJob, Threading::GetCurrentProcess,
+            };
+            let mut member = 1;
+            // SAFETY: current-process query and writable BOOL; null tests every job.
+            require(
+                // SAFETY: retained process reference and writable native membership output.
+                unsafe { IsProcessInJob(GetCurrentProcess(), std::ptr::null_mut(), &mut member) }
+                    != 0
+                    && member == 0,
+                "broker child still belongs to a Windows job",
+            )?;
+            std::thread::sleep(Duration::from_millis(500));
+        }
         if mode == "await-commit" {
             let _ = guard.await_commit(HostInstanceId([31; 16]));
             return Err("uncommitted guard unexpectedly returned to its caller".into());
@@ -171,8 +187,16 @@ mod judge {
             },
             deadline: Instant::now() + Duration::from_secs(3),
         };
+        #[cfg(windows)]
+        let mut observed_detachment = None;
         let mut custody = match NativeProcessRuntime::spawn_runtime(spec) {
-            Ok(launch) => Custody(Some(launch.child)),
+            Ok(launch) => {
+                #[cfg(windows)]
+                {
+                    observed_detachment = Some(launch.detachment);
+                }
+                Custody(Some(launch.child))
+            }
             Err(failure) => {
                 let custody = Custody(failure.remaining);
                 if custody.0.is_none() {
@@ -181,6 +205,34 @@ mod judge {
                 custody
             }
         };
+        #[cfg(windows)]
+        if mode == "broker" {
+            require(
+                observed_detachment == Some(RuntimeDetachment::WindowsBroker),
+                "strict job did not use the broker path",
+            )?;
+            use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+            use windows_sys::Win32::System::{JobObjects::IsProcessInJob, Threading::*};
+            let identity = custody
+                .child()?
+                .identity()
+                .ok_or("broker child identity missing")?;
+            // SAFETY: read-only open of the exact child PID; retained custody pins that birth.
+            let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, identity.pid.0) };
+            require(!raw.is_null(), "outside broker child observation failed")?;
+            // SAFETY: successful native open transfers one owned reference.
+            let observed = unsafe { OwnedHandle::from_raw_handle(raw) };
+            let mut member = 1;
+            // SAFETY: retained exact child reference and writable BOOL.
+            require(
+                // SAFETY: retained process reference and writable native membership output.
+                unsafe {
+                    IsProcessInJob(observed.as_raw_handle(), std::ptr::null_mut(), &mut member)
+                } != 0
+                    && member == 0,
+                "outside observer found the detached child in a job",
+            )?;
+        }
         if mode == "live-read" {
             require(
                 matches!(
@@ -284,9 +336,83 @@ mod judge {
         println!("PASS {mode}: exact exited child, bounded EOF stderr and public refusal");
         Ok(())
     }
+    #[cfg(windows)]
+    fn strict_job() -> Result {
+        use std::{
+            mem::{size_of, zeroed},
+            os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        };
+        use windows_sys::Win32::System::{JobObjects::*, Threading::GetCurrentProcess};
+        // SAFETY: creates a new unnamed noninheritable job owned only by this fixture.
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        require(!raw.is_null(), "strict fixture job creation failed")?;
+        // SAFETY: successful native creation transfers one owned reference.
+        let job = unsafe { OwnedHandle::from_raw_handle(raw) };
+        // SAFETY: native POD job information with no limits or breakaway flags enabled.
+        let limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+        // SAFETY: retained private job and exact read-only native structure size.
+        require(
+            // SAFETY: retained private job and exact native limit structure.
+            unsafe {
+                SetInformationJobObject(
+                    job.as_raw_handle(),
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            } != 0,
+            "strict fixture job configuration failed",
+        )?;
+        // SAFETY: assign only this dedicated fixture caller, never the test driver or another process.
+        require(
+            // SAFETY: assigns only this dedicated fixture caller to its owned job.
+            unsafe { AssignProcessToJobObject(job.as_raw_handle(), GetCurrentProcess()) } != 0,
+            "strict fixture job admission failed",
+        )?;
+        let mut member = 0;
+        // SAFETY: exact private job and current-process query.
+        require(
+            // SAFETY: retained private job and current-process query with writable BOOL.
+            unsafe { IsProcessInJob(GetCurrentProcess(), job.as_raw_handle(), &mut member) } != 0
+                && member != 0,
+            "strict fixture caller was not in its job",
+        )?;
+        trial("broker")?;
+        // SAFETY: same retained caller/job after the detached child has exited.
+        require(
+            // SAFETY: retained private job and current-process query with writable BOOL.
+            unsafe { IsProcessInJob(GetCurrentProcess(), job.as_raw_handle(), &mut member) } != 0
+                && member != 0,
+            "launch changed the caller's job membership",
+        )?;
+        println!(
+            "bootstrap broker: 1 passed, 0 failed; caller remains in strict job; child outside all jobs and exited"
+        );
+        Ok(())
+    }
     pub fn run() -> Result {
         if let Some(guard) = RuntimeBootstrap::from_process_entry().map_err(error)? {
             return child(guard);
+        }
+        #[cfg(windows)]
+        if std::env::args_os().any(|arg| arg == "--strict-job") {
+            return strict_job();
+        }
+        #[cfg(windows)]
+        {
+            let output = std::process::Command::new(std::env::current_exe().map_err(error)?)
+                .arg("--strict-job")
+                .output()
+                .map_err(error)?;
+            require(
+                output.status.success(),
+                &format!(
+                    "strict-job consumer failed: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            )?;
+            print!("{}", String::from_utf8_lossy(&output.stdout));
         }
         if std::env::args_os().any(|arg| arg == "--retained-only") {
             trial("retained-await")?;

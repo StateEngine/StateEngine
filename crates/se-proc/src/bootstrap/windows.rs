@@ -10,6 +10,7 @@ use windows_sys::Win32::{
     Storage::FileSystem::*,
     System::{Console::*, Pipes::*, Threading::*},
 };
+mod broker;
 mod launch;
 pub(super) use launch::{receive, spawn};
 
@@ -365,6 +366,11 @@ pub(super) fn initial_identity(
     child: &Child,
     machine: &MachineId,
 ) -> ProcResult<Option<ProcessIdentity>> {
+    let process = child
+        .process
+        .as_ref()
+        .ok_or_else(|| input("runtime creation", "native custody absent"))?;
+    broker::outside_job(process.as_raw_handle())?;
     match crate::read_process(machine.clone(), child.pid)? {
         ProcessRead::Present(live) => Ok(Some(live.identity)),
         _ => Err(input(

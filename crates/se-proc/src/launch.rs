@@ -208,6 +208,7 @@ pub struct RuntimeReady {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RuntimeDetachment {
     WindowsBreakaway,
+    WindowsBroker,
     UserManagerUnit,
     /// A new session does not escape an inherited external cgroup.
     SessionOnly {

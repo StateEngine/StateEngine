@@ -30,6 +30,7 @@ fn observed_detachment_modes_roundtrip_without_guessing() -> Check {
         (HostDetachment::SessionOnly, "session-only"),
         (HostDetachment::UserManagerUnit, "user-manager-unit"),
         (HostDetachment::WindowsBreakaway, "windows-breakaway"),
+        (HostDetachment::WindowsBroker, "windows-broker"),
     ] {
         let mut view = status::missing("home".into(), "now".into(), "absent".into()).runtime;
         view.state = "running".into();
