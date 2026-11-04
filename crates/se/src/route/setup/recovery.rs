@@ -171,7 +171,7 @@ pub(super) fn missing_database(files: &Files, init: bool, recovered: bool) -> Re
                         root.join("state.db").display(),
                         root.join(name).display()
                     ),
-                    &remedy(root)?,
+                    &remedy(root, false)?,
                 ));
             }
             Read::Absent { .. } => (),
@@ -186,7 +186,11 @@ pub(super) fn missing_database(files: &Files, init: bool, recovered: bool) -> Re
     Ok(())
 }
 
-fn remedy(root: &Path) -> Result<String> {
+pub(super) fn corrupt_remedy(root: &Path) -> Result<String> {
+    remedy(root, true)
+}
+
+fn remedy(root: &Path, damaged: bool) -> Result<String> {
     use se_core::ops::AgentCommand;
     if AgentCommand::home_argument(root).is_none() {
         return Ok(AgentCommand::HOME_UNAVAILABLE.into());
@@ -206,15 +210,34 @@ fn remedy(root: &Path) -> Result<String> {
             .ok_or_else(|| SeError::invalid("recovery path", AgentCommand::HOME_UNAVAILABLE))
     };
     #[cfg(not(windows))]
+    let database_guard = if damaged {
+        format!(
+            "test -f {db}\ntest ! -L {db}",
+            db = q(&root.join("state.db"))?
+        )
+    } else {
+        format!("test ! -e {}", q(&root.join("state.db"))?)
+    };
+    #[cfg(not(windows))]
+    let preserve_database = if damaged {
+        format!(
+            "mv -- {} {}\n",
+            q(&root.join("state.db"))?,
+            q(&preserved.join("state.db"))?
+        )
+    } else {
+        String::new()
+    };
+    #[cfg(not(windows))]
     let restore = format!(
         r#"set -eu
 printf 'Directory of a CLOSED retained copy: '
 IFS= read -r COPY_DIR
 : "${{COPY_DIR:?A closed retained copy directory is required}}"
 test -f "$COPY_DIR/state.db"
-test ! -e {db}
+{database_guard}
 mkdir -m 700 -- {preserved}
-if [ ! -e {wal} ]; then :; else mv -- {wal} {saved_wal}; fi
+{preserve_database}if [ ! -e {wal} ]; then :; else mv -- {wal} {saved_wal}; fi
 if [ ! -e {shm} ]; then :; else mv -- {shm} {saved_shm}; fi
 umask 077
 cp -n -- "$COPY_DIR/state.db" {db}
@@ -229,6 +252,18 @@ se --home {home} status"#,
         home = q(root)?,
     );
     #[cfg(windows)]
+    let database_guard = if damaged {
+        "if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw 'The damaged state.db is absent; obtain a new recovery command' }\nif ((Get-Item -LiteralPath $target).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw 'The damaged state.db must not be a link' }"
+    } else {
+        "if (Test-Path -LiteralPath $target) { throw 'state.db already exists; nothing was restored' }"
+    };
+    #[cfg(windows)]
+    let leaves = if damaged {
+        "'state.db','state.db-wal','state.db-shm'"
+    } else {
+        "'state.db-wal','state.db-shm'"
+    };
+    #[cfg(windows)]
     let restore = format!(
         r#"$ErrorActionPreference = 'Stop'
 $COPY_DIR = Read-Host 'Directory of a CLOSED retained copy'
@@ -237,7 +272,7 @@ $source = Join-Path $COPY_DIR 'state.db'
 if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {{ throw 'The copy must contain state.db' }}
 $homePath = {home}
 $target = Join-Path $homePath 'state.db'
-if (Test-Path -LiteralPath $target) {{ throw 'state.db already exists; nothing was restored' }}
+{database_guard}
 $preserved = {preserved}
 if (Test-Path -LiteralPath $preserved) {{ throw 'The sidecar preservation directory already exists' }}
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
@@ -250,7 +285,7 @@ if ($PSVersionTable.PSEdition -eq 'Core') {{
 }} else {{
     [void][System.IO.Directory]::CreateDirectory($preserved, $acl)
 }}
-foreach ($leaf in @('state.db-wal','state.db-shm')) {{
+foreach ($leaf in @({leaves})) {{
     $old = Join-Path $homePath $leaf
     if (Test-Path -LiteralPath $old) {{ Move-Item -LiteralPath $old -Destination (Join-Path $preserved $leaf) -ErrorAction Stop }}
 }}
@@ -262,7 +297,12 @@ se --home {home} status"#,
         preserved = q(&preserved)?,
     );
     Ok(format!(
-        "Stop all writers first. Restore exactly state.db and its matching state.db-wal from a CLOSED retained copy; old WAL/SHM are preserved and SHM is never restored.\nBEGIN SE RESTORE COMMANDS\n{restore}\nEND SE RESTORE COMMANDS\nNo backup? Keep this home intact and create fresh identities and empty history in a separate home:\nBEGIN SE FRESH COMMAND\nse --home {} init --repo .\nEND SE FRESH COMMAND\nThe recorded human identity cannot be reconstructed from the machine credential alone.",
+        "Stop all writers first. Restore exactly state.db and its matching state.db-wal from a CLOSED retained copy; {}old WAL/SHM are preserved and SHM is never restored. Restoring replaces active history with the selected copy, so changes newer than that copy are no longer active. No automatic backup selection or salvage is performed.\nBEGIN SE RESTORE COMMANDS\n{restore}\nEND SE RESTORE COMMANDS\nNo backup? Keep this home intact and create fresh identities and empty history in a separate home:\nBEGIN SE FRESH COMMAND\nse --home {} init --repo .\nEND SE FRESH COMMAND\nThe recorded human identity cannot be reconstructed from the machine credential alone.",
+        if damaged {
+            "the damaged database and "
+        } else {
+            ""
+        },
         q(&fresh)?
     ))
 }

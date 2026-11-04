@@ -11,6 +11,19 @@ use std::{path::Path, time::Duration};
 mod recovery;
 pub(super) use recovery::quarantine;
 
+/// CLI presentation adds literal home-bound commands without changing the cause.
+pub fn with_recovery_remedy(mut error: se_types::SeError, home: &Path) -> se_types::SeError {
+    if error.code() == se_types::Code::StoreCorrupt
+        && let Ok(text) = recovery::corrupt_remedy(home)
+    {
+        error.body = error.body.with_remedy(se_types::Remedy {
+            text,
+            command: None,
+        });
+    }
+    error
+}
+
 pub enum Setup<T = SqliteReader> {
     Absent(Box<StatusOutput>),
     Present(T),

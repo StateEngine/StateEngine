@@ -120,13 +120,29 @@ try {
     }
     Require ([System.IO.File]::ReadAllText((Join-Path $repo 'user-work.txt')) -eq 'User work survives recovery.') 'User work changed'
     $passed++; Write-Output 'ok 5 - staging quarantined and owner preserved'
+    Require ((Invoke-Se -StateHome $state -Words @('down')).Code -eq 0) 'Pre-corruption down failed'
+    $damaged = 'Preserve these exact damaged database bytes.'
+    [System.IO.File]::WriteAllText((Join-Path $state 'state.db'), $damaged)
+    $corrupt = Invoke-Se -StateHome $state -Words @('status')
+    Require ($corrupt.Code -ne 0 -and $corrupt.Value.code -eq 'store-corrupt') 'Corruption was not reported'
+    Require (-not $corrupt.Value.remedy.text.Contains('se restore')) 'Remedy promises an unavailable verb'
+    $corruptRestore = Block $corrupt.Value.remedy.text 'RESTORE COMMANDS'
+    [System.IO.File]::WriteAllText((Join-Path $OutputRoot 'printed-corrupt-restore.ps1'), $corruptRestore)
+    & ([scriptblock]::Create($corruptRestore)) *> (Join-Path $OutputRoot 'corrupt-restore.log')
+    $damagedCopies = @(Get-ChildItem -LiteralPath $state -Directory | Where-Object Name -Like 'recovery-sidecars-*' | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'state.db') })
+    Require ($damagedCopies.Count -eq 1) 'Damaged database preservation missing'
+    Require ([System.IO.File]::ReadAllText((Join-Path $damagedCopies[0].FullName 'state.db')) -eq $damaged) 'Damaged database bytes changed'
+    $afterCorrupt = Invoke-Se -StateHome $state -Words @('init','--repo',$repo)
+    Require ($afterCorrupt.Code -eq 0 -and $afterCorrupt.Value.owner.human_id -eq $owner) 'Corrupt restore changed owner'
+    Require ((Get-FileHash -LiteralPath (Join-Path $script:RetainedCopy 'state.db')).Hash -eq $sourceHash) 'Corrupt restore changed retained copy'
+    $passed++; Write-Output 'ok 6 - corrupt store restores a closed copy and preserves damaged bytes'
 } finally {
     foreach ($stateHome in $homes) {
         $down = Invoke-Se -StateHome $stateHome -Words @('down')
         Require ($down.Code -eq 0 -and $down.Value.complete) 'Public down incomplete'
         Require (-not (Test-Path -LiteralPath (Join-Path $stateHome 'endpoint.json'))) 'Endpoint remains'
     }
-    [System.IO.File]::WriteAllText((Join-Path $OutputRoot 'result.json'), (@{passed=$passed; expected=5; homes=$homes; public_down=$true} | ConvertTo-Json -Depth 5))
+    [System.IO.File]::WriteAllText((Join-Path $OutputRoot 'result.json'), (@{passed=$passed; expected=6; homes=$homes; public_down=$true} | ConvertTo-Json -Depth 5))
 }
-Require ($passed -eq 5) 'Not all consumers ran'
-Write-Output '1..5'
+Require ($passed -eq 6) 'Not all consumers ran'
+Write-Output '1..6'
