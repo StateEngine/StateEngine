@@ -28,6 +28,7 @@ pub(super) struct Job {
     pub mail_pending: AtomicBool,
     pub wake: Arc<events::Wake>,
     pub task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub fault: Mutex<Option<&'static str>>,
 }
 impl LaunchCoordinator {
     /// Includes prepared launches and unresolved cleanup, not just providers
@@ -119,6 +120,7 @@ impl LaunchCoordinator {
                     mail_pending: AtomicBool::new(true),
                     wake,
                     task: Mutex::new(None),
+                    fault: Mutex::new(None),
                 });
                 jobs.insert(key, job.clone());
                 self.activity
@@ -131,13 +133,16 @@ impl LaunchCoordinator {
             let coordinator = self.clone();
             let owned = job.clone();
             let task = self.store.pool.handle().spawn(async move {
+                let completed = crate::runtime::tasks::caught(async {
                 let deadline = retained_deadline;
                 let mut state = owned.state.lock().await;
-                match coordinator.start(&mut state, &deadline).await {
+                let started = crate::runtime::tasks::caught(coordinator.start(&mut state, &deadline), false).await
+                    .unwrap_or_else(|()| Err(error("launch session task", "panicked with its original key and partial custody retained; reconcile before retry")));
+                match started {
                     Ok(output) => {
                         owned.ready.send_replace(Some(Ok(output)));
                         drop(state);
-                        coordinator.monitor(owned.clone()).await;
+                        coordinator.monitor_protected(owned.clone()).await;
                     }
                     Err(original) => {
                         let cleanup = Deadline::idle().and_then(|value| value.stage(std::time::Duration::from_secs(6)));
@@ -151,6 +156,12 @@ impl LaunchCoordinator {
                         };
                         owned.ready.send_replace(Some(Err(failure)));
                     }
+                }
+                }, false).await;
+                if completed.is_err() {
+                    let failure = error("session supervisor", "panicked; original lifecycle custody remains retained for explicit stop or reconciliation");
+                    if let Ok(mut fault) = owned.fault.lock() { *fault = Some("session supervisor panicked; explicit reconciliation required"); }
+                    owned.ready.send_replace(Some(Err(failure.body)));
                 }
             });
             *job.task

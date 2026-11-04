@@ -19,6 +19,7 @@ impl LaunchCoordinator {
             return Err(error("host status", "use the owner CLI for status --all"));
         }
         let home = self.options.home.display().to_string();
+        let (scope, actor) = (admission.scope.clone(), admission.actor.clone());
         let (mut output, plans) = self
             .store
             .read(admission, deadline, move |cx| {
@@ -37,6 +38,7 @@ impl LaunchCoordinator {
                 Ok((output, plans))
             })
             .await?;
+        self.task_status(&mut output, &scope, &actor)?;
         let owner = self.owner.clone();
         let kind = self.kind;
         let generation = self.store.generation.get();

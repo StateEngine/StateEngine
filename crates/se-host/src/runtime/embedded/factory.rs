@@ -11,12 +11,45 @@ struct Restart {
     reason: api::RestartReason,
     opened: Option<api::Read<api::OpenedHost>>,
 }
+#[allow(
+    clippy::result_large_err,
+    reason = "The linked API defines the public ApiError representation; retain its typed error channel."
+)]
 impl EmbeddedFactory {
+    pub(super) fn live_generation(
+        &self,
+        config: &api::HostConfig,
+    ) -> api::Result<Option<api::Generation>> {
+        let retained = self
+            .retained
+            .lock()
+            .map_err(|_| unavailable("factory generation registry"))?;
+        Ok(retained
+            .generations
+            .iter()
+            .find(|g| {
+                g.config.state_home == config.state_home
+                    && matches!(
+                        g.health(),
+                        api::GenerationHealth::Prepared
+                            | api::GenerationHealth::Activating
+                            | api::GenerationHealth::Ready
+                            | api::GenerationHealth::Recovering
+                    )
+            })
+            .map(|g| g.negotiated.generation))
+    }
     pub(super) fn remember(&self, generation: Arc<Generation>) -> api::Result<Arc<Generation>> {
         let mut retained = self
             .retained
             .lock()
             .map_err(|_| unavailable("factory generation registry"))?;
+        retained.generations.retain(|old| {
+            !(old.config.state_home == generation.config.state_home
+                && old.negotiated.generation == generation.negotiated.generation
+                && old.health() == api::GenerationHealth::Closed
+                && !old.activated.load(std::sync::atomic::Ordering::Acquire))
+        });
         if let Some(old) = retained.generations.iter().find(|old| {
             old.config.state_home == generation.config.state_home
                 && old.negotiated.generation == generation.negotiated.generation
@@ -110,6 +143,21 @@ impl EmbeddedFactory {
                     "one unambiguous state home per generation in this factory",
                 ));
             }
+            if source
+                .quarantined
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(refused(
+                    "quarantined restart source",
+                    "controlled application restart; exact unjoined ownership remains retained",
+                ));
+            }
+            if !source.activated.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(refused(
+                    "restart source",
+                    "close the unopened preparation, then open again; no owner generation was committed",
+                ));
+            }
             if !replayed {
                 match &reason {
                     api::RestartReason::Drained { receipt }
@@ -121,6 +169,12 @@ impl EmbeddedFactory {
                     api::RestartReason::Poisoned { incident }
                         if !incident.is_empty()
                             && incident.len() <= 1024
+                            && source
+                                .incident
+                                .lock()
+                                .map_err(|_| unavailable("poison incident registry"))?
+                                .as_ref()
+                                == Some(incident)
                             && source.health() == api::GenerationHealth::Poisoned => {}
                     _ => {
                         return Err(refused(

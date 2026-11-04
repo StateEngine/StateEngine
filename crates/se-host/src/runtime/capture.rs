@@ -383,6 +383,11 @@ pub struct CaptureHandle {
     fenced: Arc<std::sync::atomic::AtomicBool>,
 }
 impl CaptureHandle {
+    pub(crate) fn in_background(&self) -> Self {
+        let mut handle = self.clone();
+        handle.execution.blocking = self.execution.blocking.background_handle();
+        handle
+    }
     /// Called only by trusted provider launch/owner-adoption code with its
     /// retained native pin. No hook/IPC payload is decoded into this method.
     pub async fn bind(

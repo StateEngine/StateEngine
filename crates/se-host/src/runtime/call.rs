@@ -42,11 +42,21 @@ pub struct ExecutionContext {
     pub(crate) pending_writes: super::failure::PendingWrites,
     /// The native process coordinator, installed once before serving.
     pub(crate) custody: Arc<std::sync::OnceLock<Arc<dyn CustodyExecutor>>>,
+    pub(crate) ownership_fault: Arc<super::tasks::OwnershipFault>,
 }
 /// The launch/stop/remove coordinator's entry: it resolves a core custody plan
 /// (native effects plus their FULL commits) for one admitted caller. Installed
 /// through `HostedRuntime::install_custody`; absent, custody plans refuse.
 pub trait CustodyExecutor: Send + Sync {
+    /// One finite live-work sweep, under the host's original timer budget.
+    fn catch_up<'a>(&'a self, _deadline: &'a Deadline) -> crate::HostFuture<'a, ()> {
+        Box::pin(async {
+            Err(se_core::scope::unreadable(
+                "live-work catch-up",
+                "the active custody coordinator must supply native and capture readback",
+            ))
+        })
+    }
     /// Called by the retained completion observer only after an actual commit.
     /// This is an event hint, never admission, delivery or an inbox read.
     fn notify_mail(&self, _recipients: &[super::MailRecipient]) -> se_types::Result<()> {

@@ -59,6 +59,40 @@ fn configured(rt: &tokio::runtime::Runtime, capacity: u32) -> se_types::Result<B
     BlockingPool::with_jobs(rt.handle().clone(), capacity)
 }
 #[test]
+fn background_capture_handle_cannot_consume_the_reserved_foreground_slot() -> Check {
+    let rt = runtime(2)?;
+    rt.block_on(async {
+        let pool = configured(&rt, 2)?;
+        let mut first = launch(
+            pool.background_handle(),
+            BlockingClass::Foreground,
+            Duration::from_secs(5),
+        )?;
+        entered(&mut first).await?;
+        let mut second = launch(
+            pool.background_handle(),
+            BlockingClass::Foreground,
+            Duration::from_secs(5),
+        )?;
+        blocked(&mut second).await?;
+        let mut foreground = launch(
+            pool.clone(),
+            BlockingClass::Foreground,
+            Duration::from_secs(5),
+        )?;
+        entered(&mut foreground).await?;
+        foreground.release.send(())?;
+        foreground.task.await??;
+        first.release.send(())?;
+        first.task.await??;
+        entered(&mut second).await?;
+        second.release.send(())?;
+        second.task.await??;
+        pool.quiesce(&deadline(Duration::from_secs(3))?).await?;
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })
+}
+#[test]
 fn shared_jobs_and_one_maintenance_respect_configured_capacity() -> Check {
     for capacity in [1, 2, 4, 8] {
         let rt = runtime(capacity)?;

@@ -7,6 +7,37 @@ use std::{
     time::{Duration, Instant},
 };
 #[derive(Default)]
+pub(crate) struct OwnershipFault {
+    pub(crate) failed: std::sync::atomic::AtomicBool,
+    changed: tokio::sync::Notify,
+}
+impl OwnershipFault {
+    pub(crate) fn poison(&self) {
+        self.failed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.changed.notify_waiters();
+    }
+    pub(crate) async fn wait(&self) {
+        loop {
+            let notified = self.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.failed.load(std::sync::atomic::Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+    pub(crate) fn observe_writer(&self, error: &se_store::StoreError) {
+        if matches!(
+            error.code,
+            se_store::StoreErrorCode::WriterClosed | se_store::StoreErrorCode::GenerationChanged
+        ) {
+            self.poison();
+        }
+    }
+}
+#[derive(Default)]
 pub(crate) struct FaultBudget {
     failures: VecDeque<Instant>,
 }
@@ -68,11 +99,10 @@ mod tests {
         assert!(budget.available(now + Duration::from_secs(60)));
     }
     #[test]
-    fn polling_panic_returns_a_fault() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
+    fn polling_panic_returns_a_fault() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = tokio::runtime::Builder::new_current_thread().build()?;
         let result = runtime.block_on(caught(async { panic!("owned test route") }, false));
         assert!(result.is_err());
+        Ok(())
     }
 }

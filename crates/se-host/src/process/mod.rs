@@ -2,6 +2,7 @@
 //! never drops a native lifecycle, accepted write, provider drain or cleanup debt.
 mod attach;
 mod capture;
+mod catch_up;
 mod codex_capture;
 mod cold_stop;
 mod control;
@@ -24,6 +25,7 @@ mod status;
 mod stop;
 mod store;
 mod supervisor;
+mod tasks;
 pub use recovery::Reconciliation;
 pub use shutdown::ProcessDrain;
 
@@ -125,6 +127,8 @@ impl LaunchCoordinator {
         let pool = context.blocking.clone();
         #[cfg(unix)]
         let runtime = pool.handle();
+        #[cfg(unix)]
+        let (fault, fence) = (context.ownership_fault.clone(), host_runtime.fenced.clone());
         let machine = options.epoch.owner.fields().machine.clone();
         let helper = options.helper_executable.to_local()?;
         let delegation = options.linux_delegation.clone();
@@ -148,7 +152,11 @@ impl LaunchCoordinator {
                         max_stdio_buffer_bytes: 4 * 1024 * 1024,
                     },
                     #[cfg(unix)]
-                    reactor: Arc::new(events::Reactor { runtime }),
+                    reactor: Arc::new(events::Reactor {
+                        runtime,
+                        fault,
+                        fence,
+                    }),
                 })
                 .map_err(|e| error("native process arena", e))?;
                 Ok((Arc::new(native), identity.process))
@@ -201,6 +209,7 @@ impl LaunchCoordinator {
                 generation: context.generation,
                 pending: context.pending_writes.clone(),
                 mail_waits: context.mail_waits.clone(),
+                fault: context.ownership_fault.clone(),
             },
             options,
             capture: host_runtime.capture_handle(),

@@ -95,6 +95,7 @@ impl Generation {
     }
     pub(super) fn owner_inputs(&self, epoch: api::HostEpoch, timeout: Duration) -> OwnerInputs {
         OwnerInputs {
+            owner: self.self_ref.clone(),
             runtime: self.runtime.clone(),
             home: self.config.state_home.clone(),
             helper_executable: self.config.helper_executable.clone(),
@@ -114,10 +115,21 @@ impl Generation {
         if self.quarantined.load(Ordering::Acquire) {
             return api::GenerationHealth::Poisoned;
         }
-        self.health
+        let health = self
+            .health
             .lock()
             .map(|value| *value)
-            .unwrap_or(api::GenerationHealth::Poisoned)
+            .unwrap_or(api::GenerationHealth::Poisoned);
+        if self.poisoned.load(Ordering::Acquire)
+            && !matches!(
+                health,
+                api::GenerationHealth::Closed | api::GenerationHealth::Drained
+            )
+        {
+            api::GenerationHealth::Poisoned
+        } else {
+            health
+        }
     }
 }
 
@@ -143,11 +155,15 @@ impl Generation {
         let mut lifecycle = pool::within(&deadline, self.lifecycle.lock())
             .await
             .map_err(|e| api_error(&e))?;
-        self.await_ready(
-            &mut lifecycle,
-            deadline.remaining().map_err(|e| api_error(&e))?,
+        pool::within(
+            &deadline,
+            self.await_ready(
+                &mut lifecycle,
+                deadline.remaining().map_err(|e| api_error(&e))?,
+            ),
         )
-        .await?;
+        .await
+        .map_err(|e| api_error(&e))??;
         let receipt = match &mut *lifecycle {
             Lifecycle::Ready(serving) => {
                 self.set_health(api::GenerationHealth::Draining);
@@ -172,6 +188,9 @@ impl Generation {
                         ));
                     }
                 }
+            }
+            Lifecycle::Drained(receipt) if self.health() == api::GenerationHealth::Closed => {
+                return Ok(receipt.clone());
             }
             Lifecycle::Drained(receipt) => receipt.clone(),
             Lifecycle::Prepared => api::DrainReceipt {
@@ -210,6 +229,12 @@ impl Generation {
         drained: api::DrainReceipt,
         options: api::CallOptions,
     ) -> api::Result<api::DrainReceipt> {
+        if self.quarantined.load(Ordering::Acquire) {
+            return Err(refused(
+                "quarantined lifecycle",
+                "controlled application restart; exact unjoined resources remain retained",
+            ));
+        }
         if options.generation != self.negotiated.generation {
             return Err(refused(
                 "close generation",
@@ -274,6 +299,7 @@ impl Generation {
 impl Generation {
     pub(super) async fn poison_generation(
         &self,
+        report: &api::FaultReport,
         options: &api::CallOptions,
     ) -> api::Result<api::GenerationHealth> {
         if options.generation != self.negotiated.generation {
@@ -284,6 +310,26 @@ impl Generation {
         }
         let (deadline, _cancel) =
             support::call_deadline(&self.runtime, options).map_err(|e| api_error(&e))?;
+        deadline.remaining().map_err(|e| api_error(&e))?;
+        if report.incident.is_empty() || report.incident.len() > 1024 {
+            return Err(refused(
+                "poison incident",
+                "1..1024 UTF-8 bytes naming this generation's fault",
+            ));
+        }
+        {
+            let mut incident = self
+                .incident
+                .lock()
+                .map_err(|_| unavailable("poison incident registry"))?;
+            if incident
+                .as_ref()
+                .is_some_and(|original| original != &report.incident)
+            {
+                return Err(refused("poison incident", "the original recorded incident"));
+            }
+            *incident = Some(report.incident.clone());
+        }
         self.poison_now(false);
         let lifecycle = pool::within(&deadline, self.lifecycle.lock())
             .await
@@ -304,8 +350,13 @@ impl Generation {
 impl Generation {
     pub(super) fn poison_now(&self, quarantined: bool) {
         self.poisoned.store(true, Ordering::Release);
-        if quarantined {
-            self.quarantined.store(true, Ordering::Release);
+        if quarantined
+            && !self.quarantined.swap(true, Ordering::AcqRel)
+            && let Some(owner) = self.self_ref.upgrade()
+        {
+            // One bounded strong quarantine reference survives dropped public
+            // handles/factories. Only process exit can release unjoined work.
+            std::mem::forget(owner);
         }
         if let Some(fenced) = self.router_fence.get() {
             fenced.store(true, Ordering::Release);

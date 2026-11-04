@@ -4,6 +4,9 @@ use crate::{CustodyExecutor, HostFuture, client::lease::Deadline};
 use se_core::{ops::AnyOutput, ports::CustodyPlan};
 use se_store::Admission;
 impl CustodyExecutor for Arc<LaunchCoordinator> {
+    fn catch_up<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, ()> {
+        Box::pin(async move { self.catch_up_live(deadline).await })
+    }
     fn notify_mail(&self, recipients: &[crate::runtime::MailRecipient]) -> se_types::Result<()> {
         use std::sync::atomic::Ordering;
         let jobs = self

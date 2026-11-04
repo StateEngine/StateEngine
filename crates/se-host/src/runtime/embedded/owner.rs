@@ -15,11 +15,14 @@ const SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
 /// References independent of the owner's polled future. A panic cannot drop
 /// the lease or collector; only an actual successful owner join clears them.
 pub(super) struct RetainedResources {
-    _lease: std::sync::Arc<crate::runtime::HostLease>,
     _execution: crate::runtime::ExecutionContext,
     _sources: crate::runtime::TranscriptBindings,
+    // Field drop order keeps the lease until the writer/native collector and
+    // transcript pins above have actually released their references.
+    _lease: std::sync::Arc<crate::runtime::HostLease>,
 }
 pub(super) struct OwnerInputs {
+    pub(super) owner: std::sync::Weak<super::Generation>,
     pub(super) runtime: Handle,
     pub(super) home: PathBuf,
     pub(super) helper_executable: PathBuf,
@@ -52,80 +55,122 @@ pub(super) fn owner_thread(
     let quarantined = inputs.quarantined.clone();
     let fence = inputs.router_fence.clone();
     let changed = inputs.changed.clone();
+    let generation_owner = inputs.owner.clone();
     let spawned = std::thread::Builder::new()
         .name("stateengine-embedded-host".into())
         .spawn(move || {
-            let outcome=runtime.block_on(crate::runtime::tasks::caught(async move {
-                let generation = inputs.generation;
-                let (host, listener, stop, router) = match take_ownership(inputs).await {
-                    Ok(started) => started,
-                    Err(error) => {
-                        let _ = ready.send(Err(error));
-                        return;
-                    }
-                };
-                // Undelivered, or delivered but never claimed, the dropped
-                // stop ends this generation instead of serving unreachably.
-                let _ = ready.send(Ok((router, stop)));
-                let exit = host.serve(listener).await;
-                let receipt = match support::deadline(SHUTDOWN_BUDGET) {
-                    Ok(deadline) => {
-                        let report = exit.finish(&deadline).await;
-                        // Pending obligations and close errors stay unresolved;
-                        // the writer counts as flushed only when storage drained.
-                        let unresolved = (report.pending.len() + report.errors.len()) as u64;
-                        let receipt = api::DrainReceipt {
-                            generation,
-                            pending_notices: 0,
-                            unresolved_effects: unresolved,
-                            writer_flushed: matches!(&report.storage, core::Read::Present { value } if value.writer_joined && value.pending.is_empty())
-                                && unresolved == 0,
-                        };
-                        if !receipt.writer_flushed {
-                            // A failed embedded drain cannot drop native custody or
-                            // free its lease while the application keeps running.
-                            // The returned incomplete receipt requires controlled
-                            // application restart; this dedicated owner thread parks.
-                            let _ = exited.send(Ok(receipt));
-                            let _retained = report;
-                            loop {
-                                std::thread::park();
-                            }
-                        }
-                        // Drop the successfully closed runtime before publishing
-                        // drain completion; the external CLI checks the actual lock.
-                        drop(report);
-                        receipt
-                    }
-                    Err(error) => {
-                        // Forward the diagnostic through drain's error channel;
-                        // a library must not print into its embedding application.
-                        let failure = se_core::scope::unreadable(
-                            "embedded shutdown budget",
-                            &format!(
-                                "Could not create the shutdown budget: {error}. This runtime retains its writer and lease; preserve the data home and use controlled application restart."
-                            ),
-                        );
-                        let _ = exited.send(Err(failure));
-                        let _retained = exit;
-                        loop {
-                            std::thread::park();
-                        }
-                    }
-                };
-                let _ = exited.send(Ok(receipt));
-            },true));
-            if outcome.is_err() {
-                poisoned.store(true,std::sync::atomic::Ordering::Release);quarantined.store(true,std::sync::atomic::Ordering::Release);
-                if let Some(fence)=fence.get() {fence.store(true,std::sync::atomic::Ordering::Release);}
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                runtime.block_on(crate::runtime::tasks::caught(
+                    run_owner(inputs, ready, exited),
+                    true,
+                ))
+            }));
+            if !matches!(outcome, Ok(Ok(()))) {
+                if let Some(owner) = generation_owner.upgrade() {
+                    owner.poison_now(true);
+                }
+                poisoned.store(true, std::sync::atomic::Ordering::Release);
+                quarantined.store(true, std::sync::atomic::Ordering::Release);
+                if let Some(fence) = fence.get() {
+                    fence.store(true, std::sync::atomic::Ordering::Release);
+                }
                 changed.notify_waiters();
-                loop {std::thread::park();}
+                loop {
+                    std::thread::park();
+                }
             }
         });
     if spawned.is_err() {
         // Both receivers then report a closed channel: activation fails by name.
     }
     (ready_rx, exited_rx, spawned.ok())
+}
+
+async fn run_owner(
+    inputs: OwnerInputs,
+    ready: oneshot::Sender<Started>,
+    exited: oneshot::Sender<Stopped>,
+) {
+    let served_poison = inputs.poisoned.clone();
+    let served_changed = inputs.changed.clone();
+
+    let generation = inputs.generation;
+    let retained_owner = inputs.owner.clone();
+    let (host, listener, stop, router) = match take_ownership(inputs).await {
+        Ok(started) => started,
+        Err(error) => {
+            if let Some(owner) = retained_owner.upgrade()
+                && owner
+                    .resources
+                    .lock()
+                    .map_or(true, |resources| resources.is_some())
+            {
+                owner.poison_now(true);
+            }
+            let _ = ready.send(Err(error));
+            return;
+        }
+    };
+    // Undelivered, or delivered but never claimed, the dropped
+    // stop ends this generation instead of serving unreachably.
+    let _ = ready.send(Ok((router, stop)));
+    let exit = host.serve(listener).await;
+    if exit
+        .runtime
+        .execution
+        .ownership_fault
+        .failed
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        served_poison.store(true, std::sync::atomic::Ordering::Release);
+        served_changed.notify_waiters();
+    }
+    let receipt = match support::deadline(SHUTDOWN_BUDGET) {
+        Ok(deadline) => {
+            let report = exit.finish(&deadline).await;
+            // Pending obligations and close errors stay unresolved;
+            // the writer counts as flushed only when storage drained.
+            let unresolved = (report.pending.len() + report.errors.len()) as u64;
+            let receipt = api::DrainReceipt {
+                generation,
+                pending_notices: 0,
+                unresolved_effects: unresolved,
+                writer_flushed: matches!(&report.storage, core::Read::Present { value } if value.writer_joined && value.pending.is_empty())
+                    && unresolved == 0,
+            };
+            if !receipt.writer_flushed {
+                // A failed embedded drain cannot drop native custody or
+                // free its lease while the application keeps running.
+                // The returned incomplete receipt requires controlled
+                // application restart; this dedicated owner thread parks.
+                let _ = exited.send(Ok(receipt));
+                let _retained = report;
+                loop {
+                    std::thread::park();
+                }
+            }
+            // Drop the successfully closed runtime before publishing
+            // drain completion; the external CLI checks the actual lock.
+            drop(report);
+            receipt
+        }
+        Err(error) => {
+            // Forward the diagnostic through drain's error channel;
+            // a library must not print into its embedding application.
+            let failure = se_core::scope::unreadable(
+                "embedded shutdown budget",
+                &format!(
+                    "Could not create the shutdown budget: {error}. This runtime retains its writer and lease; preserve the data home and use controlled application restart."
+                ),
+            );
+            let _ = exited.send(Err(failure));
+            let _retained = exit;
+            loop {
+                std::thread::park();
+            }
+        }
+    };
+    let _ = exited.send(Ok(receipt));
 }
 
 async fn take_ownership(

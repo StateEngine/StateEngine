@@ -266,7 +266,7 @@ impl LaunchCoordinator {
                         let coordinator = self.clone();
                         let owned = job.clone();
                         let task = self.store.pool.handle().spawn(async move {
-                            coordinator.monitor(owned).await;
+                            coordinator.monitor_protected(owned).await;
                         });
                         *job.task
                             .lock()
@@ -379,6 +379,7 @@ impl LaunchCoordinator {
         let key = format!("recovered/{}", work.meta.lifecycle);
         let wake = work.wake.clone();
         let job = Arc::new(Job {
+            fault: std::sync::Mutex::new(None),
             intent: [0; 32],
             target: (work.meta.project.id.clone(), work.meta.agent.id.clone()),
             lifecycle: work.meta.lifecycle.clone(),

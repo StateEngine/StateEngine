@@ -75,6 +75,7 @@ enum Lifecycle {
     Failed(api::ApiError),
 }
 struct Generation {
+    self_ref: std::sync::Weak<Generation>,
     runtime: Handle,
     config: api::HostConfig,
     negotiated: api::Negotiated,
@@ -91,6 +92,7 @@ struct Generation {
     quarantined: Arc<std::sync::atomic::AtomicBool>,
     router_fence: Arc<std::sync::OnceLock<Arc<std::sync::atomic::AtomicBool>>>,
     faults: Mutex<std::collections::BTreeMap<&'static str, super::tasks::FaultBudget>>,
+    incident: Mutex<Option<String>>,
 }
 
 struct EmbeddedHost {
@@ -128,6 +130,7 @@ impl api::HostFactory for EmbeddedFactory {
                     checked: "setup-required: no StateEngine store at this state home; run se init for the workspace".into(),
                 });
             };
+            let generation = self.live_generation(&config)?.map_or(generation, |g| g.0);
             if options
                 .expected_generation
                 .is_some_and(|expected| expected.0 != generation)
@@ -154,7 +157,9 @@ impl api::HostFactory for EmbeddedFactory {
                     .collect(),
                 limits: config.limits.clone(),
             };
-            let generation = Arc::new(Generation {
+            let bindings = binding::Bindings::new().map_err(|e| api_error(&e))?;
+            let generation = Arc::new_cyclic(|self_ref| Generation {
+                self_ref: self_ref.clone(),
                 runtime: self.runtime.clone(),
                 config,
                 negotiated: negotiated.clone(),
@@ -162,7 +167,7 @@ impl api::HostFactory for EmbeddedFactory {
                 health: Mutex::new(api::GenerationHealth::Prepared),
                 changed: Arc::new(tokio::sync::Notify::new()),
                 native: Mutex::new(None),
-                bindings: binding::Bindings::new().map_err(|e| api_error(&e))?,
+                bindings,
                 binding_gate: tokio::sync::Mutex::new(()),
                 owner_join: tokio::sync::Mutex::new(generation::OwnerJoin::NotStarted),
                 resources: Arc::new(Mutex::new(None)),
@@ -171,6 +176,7 @@ impl api::HostFactory for EmbeddedFactory {
                 quarantined: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 router_fence: Arc::new(std::sync::OnceLock::new()),
                 faults: Mutex::new(std::collections::BTreeMap::new()),
+                incident: Mutex::new(None),
             });
             let generation = self.remember(generation)?;
             let host = Arc::new(EmbeddedHost { generation });
@@ -248,21 +254,18 @@ impl api::Host for EmbeddedHost {
     }
     fn poison<'a>(
         &'a self,
-        _report: api::FaultReport,
+        report: api::FaultReport,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::GenerationHealth> {
         self.protected("poison", true, async move {
-            self.poison_generation(&options).await
+            self.poison_generation(&report, &options).await
         })
     }
     fn negotiated(&self) -> api::Negotiated {
         self.negotiated.clone()
     }
     fn health(&self) -> api::GenerationHealth {
-        self.health
-            .lock()
-            .map(|health| *health)
-            .unwrap_or(api::GenerationHealth::Poisoned)
+        self.generation.health()
     }
     fn wait_health<'a>(
         &'a self,
@@ -270,6 +273,15 @@ impl api::Host for EmbeddedHost {
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::GenerationHealth> {
         self.protected("wait_health", false, async move {
+            if options.generation != self.negotiated.generation {
+                return Err(refused(
+                    "host health generation",
+                    "the exact negotiated generation",
+                ));
+            }
+            let (deadline, _cancel) =
+                support::call_deadline(&self.runtime, &options).map_err(|e| api_error(&e))?;
+            deadline.remaining().map_err(|e| api_error(&e))?;
             // Register before reading, so a change between the read and the
             // wait cannot be missed.
             let mut changed = std::pin::pin!(self.changed.notified());
@@ -277,9 +289,9 @@ impl api::Host for EmbeddedHost {
             if self.health() != after {
                 return Ok(self.health());
             }
-            tokio::time::timeout(options.timeout, changed)
+            super::pool::within(&deadline, changed)
                 .await
-                .map_err(|_| refused("host health", "a change within the call timeout"))?;
+                .map_err(|e| api_error(&e))?;
             Ok(self.health())
         })
     }
@@ -296,7 +308,11 @@ impl api::Host for EmbeddedHost {
                     "the generation this open negotiated",
                 ));
             }
-            let mut lifecycle = self.lifecycle.lock().await;
+            let (deadline, _cancel) =
+                support::call_deadline(&self.runtime, &options).map_err(|e| api_error(&e))?;
+            let mut lifecycle = super::pool::within(&deadline, self.lifecycle.lock())
+                .await
+                .map_err(|e| api_error(&e))?;
             match &*lifecycle {
                 Lifecycle::Prepared => {
                     *self
@@ -304,12 +320,16 @@ impl api::Host for EmbeddedHost {
                         .lock()
                         .map_err(|_| unavailable("native host registry"))? =
                         Some((epoch.clone(), services));
+                    let mut retained_join = super::pool::within(&deadline, self.owner_join.lock())
+                        .await
+                        .map_err(|e| api_error(&e))?;
+                    let inputs =
+                        self.owner_inputs(epoch, deadline.remaining().map_err(|e| api_error(&e))?);
                     self.set_health(api::GenerationHealth::Activating);
                     self.activated
                         .store(true, std::sync::atomic::Ordering::Release);
-                    let (ready, exited, join) =
-                        owner_thread(self.owner_inputs(epoch, options.timeout));
-                    *self.owner_join.lock().await = join.map_or(
+                    let (ready, exited, join) = owner_thread(inputs);
+                    *retained_join = join.map_or(
                         generation::OwnerJoin::NotStarted,
                         generation::OwnerJoin::Thread,
                     );
@@ -317,12 +337,28 @@ impl api::Host for EmbeddedHost {
                 }
                 // A retry resumes the same owner; it never spawns another.
                 Lifecycle::Activating(_) => {}
-                Lifecycle::Ready(_) => return Ok(api::Readiness::Ready),
+                Lifecycle::Ready(_) if self.health() == api::GenerationHealth::Ready => {
+                    return Ok(api::Readiness::Ready);
+                }
+                Lifecycle::Ready(_) => {
+                    return Err(refused(
+                        "host activation",
+                        "independent recovery of the fenced generation",
+                    ));
+                }
                 Lifecycle::Drained(_) | Lifecycle::Failed(_) => {
                     return Err(refused("host activation", "one prepared generation"));
                 }
             }
-            self.await_ready(&mut lifecycle, options.timeout).await?;
+            super::pool::within(
+                &deadline,
+                self.await_ready(
+                    &mut lifecycle,
+                    deadline.remaining().map_err(|e| api_error(&e))?,
+                ),
+            )
+            .await
+            .map_err(|e| api_error(&e))??;
             if self.health() != api::GenerationHealth::Ready {
                 return Err(refused(
                     "host activation",
