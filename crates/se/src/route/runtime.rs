@@ -231,7 +231,7 @@ pub(super) fn down_endpoint(
     let now = execute::now_us()?;
     let deadline = now
         .checked_add(
-            i64::try_from(options.timeout.as_micros())
+            i64::try_from(bound.remaining()?.as_micros())
                 .map_err(|_| SeError::invalid("stop deadline", "representable microseconds"))?,
         )
         .ok_or_else(|| SeError::invalid("stop deadline", "representable microseconds"))?;
