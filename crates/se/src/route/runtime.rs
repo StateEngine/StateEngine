@@ -217,6 +217,12 @@ pub(super) fn down_endpoint(
 ) -> Result<AnyOutput> {
     use se_host::client::endpoint::{RuntimeStopFact as Fact, RuntimeStopOutcome};
     let bound = Deadline::from_options(options)?;
+    se_proc::native_ipc::restore_image_cache(
+        files.0.root(),
+        endpoint.image_sha256,
+        &bound.native_bound(),
+    )
+    .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
     let mut options = se_host::client::ClientOptions {
         expected_generation: options.expected_generation,
         timeout: options.timeout,

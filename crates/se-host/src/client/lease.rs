@@ -209,7 +209,15 @@ impl crate::client::BlockingIpcClient {
         options: &ClientOptions,
     ) -> Result<BlockingConnection> {
         use super::{auth, wire};
-        let deadline = Deadline::from_options(options)?.stage(HELLO_TIMEOUT)?;
+        let budget = Deadline::from_options(options)?;
+        if matches!(&credential, ClientCredential::Machine(_)) {
+            // Cold local file I/O belongs to the caller's original request
+            // budget, before a connection holds a server handshake slot. The
+            // hello below reobserves native identity through the warmed cache.
+            se_proc::native_ipc::observe_ipc_self_bounded(&budget.native_bound())
+                .map_err(native_error)?;
+        }
+        let deadline = budget.stage(HELLO_TIMEOUT)?;
         let mut stream = native_connect(endpoint, &deadline, false)?;
         let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &deadline)?;
         let challenge = auth::decode_challenge(bytes.as_bytes(), endpoint)?;
@@ -278,6 +286,10 @@ impl crate::client::BlockingIpcClient {
             ));
         }
         let deadline = Deadline::from_options(options)?;
+        // Stop uses the same local-proof preparation as owner operation calls,
+        // including when the client executable has changed since host startup.
+        se_proc::native_ipc::observe_ipc_self_bounded(&deadline.native_bound())
+            .map_err(native_error)?;
         let hello = deadline.stage(HELLO_TIMEOUT)?;
         let mut stream = native_connect(endpoint, &hello, true)?;
         let bytes = wire::read_payload_bounded(&mut stream, wire::MAX_ENDPOINT_BYTES, &hello)?;
