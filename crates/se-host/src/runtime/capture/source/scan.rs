@@ -301,20 +301,52 @@ mod tests {
             value: std::num::NonZeroU64::new(1).ok_or("zero revision")?,
         };
         let deadline = Deadline::idle()?.stage(std::time::Duration::from_secs(10))?;
-        let batch =
-            next(&mut source, revision, 0, &deadline, false)?.ok_or("no bounded progress")?;
+        let batch = next(
+            &mut source,
+            revision,
+            0,
+            se_store::Provider::Claude,
+            &deadline,
+            false,
+        )?
+        .ok_or("no bounded progress")?;
         let end = (TAIL_RECORDS * line.len()) as u64;
         assert_eq!(batch.request.new_offset, end);
         let record = Record::decode(batch.request.text.as_str())?;
         assert_eq!(record.count, Some(TAIL_RECORDS as u64));
-        assert!(next(&mut source, revision, end, &deadline, false)?.is_none());
-        let final_batch =
-            next(&mut source, revision, end, &deadline, true)?.ok_or("final tail lost")?;
+        assert!(
+            next(
+                &mut source,
+                revision,
+                end,
+                se_store::Provider::Claude,
+                &deadline,
+                false
+            )?
+            .is_none()
+        );
+        let final_batch = next(
+            &mut source,
+            revision,
+            end,
+            se_store::Provider::Claude,
+            &deadline,
+            true,
+        )?
+        .ok_or("final tail lost")?;
         assert_eq!(
             Record::decode(final_batch.request.text.as_str())?.count,
             Some(1)
         );
-        next(&mut source, revision, end, &deadline, true)?.ok_or("final retry lost")?;
+        next(
+            &mut source,
+            revision,
+            end,
+            se_store::Provider::Claude,
+            &deadline,
+            true,
+        )?
+        .ok_or("final retry lost")?;
         assert_eq!(source.queue.len(), 2);
         assert!(source.queue.iter().any(|(at, _)| *at == end));
         drop(source);
