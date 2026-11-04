@@ -69,6 +69,7 @@ impl Pin {
     fn retain_raced_bytes(&self, path: &Path, name: &CString) -> Result<()> {
         // SAFETY: exclusive no-follow creation of a recovery sibling; no user name
         // is overwritten. Preserve any bytes that raced through the old open FD.
+        #[cfg(not(target_os = "macos"))]
         let mut recovery = owned(
             unsafe {
                 libc::openat(
@@ -85,15 +86,22 @@ impl Pin {
             "retain raced original bytes",
             path,
         )?;
-        #[cfg(target_os = "macos")]
-        super::super::clear_created_acl(&recovery, path, false)?;
         let mut original = &self.file;
         original
             .seek(SeekFrom::Start(0))
             .map_err(|e| io_error("seek raced original", path, e))?;
-        io::copy(&mut original, &mut recovery)
-            .map_err(|e| io_error("copy raced original to recovery sibling", path, e))?;
-        metadata::copy(&self.file, &recovery, path)?;
+        #[cfg(target_os = "macos")]
+        let recovery = private_stage::create_profile(path, &self.file, |file| {
+            io::copy(&mut original, file)
+                .map_err(|e| io_error("copy raced original to recovery sibling", path, e))?;
+            Ok(())
+        })?;
+        #[cfg(not(target_os = "macos"))]
+        {
+            io::copy(&mut original, &mut recovery)
+                .map_err(|e| io_error("copy raced original to recovery sibling", path, e))?;
+            metadata::copy(&self.file, &recovery, path)?;
+        }
         recovery
             .sync_all()
             .map_err(|e| io_error("sync raced original recovery", path, e))?;
@@ -161,6 +169,7 @@ impl Pin {
         )?;
         // SAFETY: same held parent and exclusive no-follow creation; no existing
         // entry is overwritten; inherited staging ACLs are cleared before writing.
+        #[cfg(not(target_os = "macos"))]
         let mut stage = owned(
             unsafe {
                 libc::openat(
@@ -177,12 +186,16 @@ impl Pin {
             "create owned profile staging",
             &stage_path,
         )?;
+        #[cfg(target_os = "macos")]
+        let stage = private_stage::create_profile(&stage_path, &self.file, |file| {
+            file.write_all(bytes)
+                .map_err(|e| io_error("write staged profile", &stage_path, e))
+        })?;
         let stage_identity = id(&stage, &stage_path, false, true)?;
         let wanted: [u8; 32] = Sha256::digest(bytes).into();
         let mut swapped = false;
         let result = (|| {
-            #[cfg(target_os = "macos")]
-            super::super::clear_created_acl(&stage, &stage_path, false)?;
+            #[cfg(not(target_os = "macos"))]
             stage
                 .write_all(bytes)
                 .map_err(|e| io_error("write staged profile", &stage_path, e))?;

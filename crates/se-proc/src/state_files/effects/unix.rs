@@ -83,6 +83,10 @@ fn lock(file: &File, path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[path = "private_stage_macos.rs"]
+mod private_stage;
+
 #[path = "claim_unix.rs"]
 mod claim;
 
