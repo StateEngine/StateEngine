@@ -119,9 +119,35 @@ namespace StateEngineInstall {
     public static class Native {
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool MoveFileEx(string source, string destination, uint flags);
-        public static void PublishRecord(string source, string destination) {
+        public static void PublishFile(string source, string destination) {
             // WRITE_THROUGH, without REPLACE_EXISTING or COPY_ALLOWED.
             if (!MoveFileEx(source, destination, 8)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+        [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreatePayload(string name, uint access, uint sharing,
+            ref SecurityAttributes security, uint disposition, uint flags, IntPtr template);
+        public static FileStream OpenPayload(string path, string owner, bool resume) {
+            var security = new System.Security.AccessControl.FileSecurity();
+            security.SetSecurityDescriptorSddlForm(
+                "O:" + owner + "D:P(A;;FA;;;SY)(A;;FA;;;" + owner + ")");
+            var descriptor = GCHandle.Alloc(security.GetSecurityDescriptorBinaryForm(), GCHandleType.Pinned);
+            try {
+                var attributes = new SecurityAttributes {
+                    Length = Marshal.SizeOf(typeof(SecurityAttributes)),
+                    Descriptor = descriptor.AddrOfPinnedObject(), InheritHandle = 0
+                };
+                // CREATE_NEW or OPEN_EXISTING, never overwrite a final path or follow a link.
+                SafeFileHandle handle = CreatePayload(path, 0x40000080, 0, ref attributes,
+                    resume ? 3u : 1u, 0x00200080, IntPtr.Zero);
+                if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+                try {
+                    AttributeTag info;
+                    if (!GetFileInformationByHandleEx(handle, 9, out info, 8))
+                        throw new Win32Exception(Marshal.GetLastWin32Error());
+                    if ((info.Attributes & 0x410u) != 0) throw new IOException("staging is a directory or reparse point");
+                    return new FileStream(handle, FileAccess.Write, 131072, false);
+                } catch { handle.Dispose(); throw; }
+            } finally { descriptor.Free(); }
         }
         [StructLayout(LayoutKind.Sequential)]
         private struct AttributeTag { public uint Attributes; public uint Tag; }
@@ -239,6 +265,9 @@ try {
             $files += @{path = $destination; sha256 = Get-Digest $path}
         }
     }
+    foreach ($copy in $copies) {
+        $copy.stage = Join-Path ([IO.Path]::GetDirectoryName($copy.to)) ('.se-publish-' + [Guid]::NewGuid().ToString('N'))
+    }
     $ownerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
     $owner = $ownerSid.Value
     if ([IO.Directory]::Exists($data)) { Assert-ProtectedDataHome $data $ownerSid }
@@ -273,6 +302,19 @@ try {
             foreach ($file in $files) {
                 $found = @($partial.planned_files | Where-Object { $_.path -ceq $file.path -and $_.sha256 -ceq $file.sha256 })
                 if ($found.Count -ne 1) { throw 'partial installation does not name the exact original files' }
+            }
+            if (@($partial.staged_files).Count -ne $copies.Count) { throw 'partial staging inventory differs' }
+            $stages = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+            foreach ($copy in $copies) {
+                $found = @($partial.staged_files | Where-Object { $_.target -ceq $copy.to })
+                if ($found.Count -ne 1) { throw 'partial staging target differs' }
+                $stage = [string]$found[0].path
+                if (-not [IO.Path]::IsPathRooted($stage) -or [IO.Path]::GetFullPath($stage) -cne $stage -or
+                    [IO.Path]::GetDirectoryName($stage) -cne [IO.Path]::GetDirectoryName($copy.to) -or
+                    [IO.Path]::GetFileName($stage) -cnotmatch '^\.se-publish-[0-9a-f]{32}$' -or -not $stages.Add($stage)) {
+                    throw 'partial staging requires unique journal-owned sibling paths'
+                }
+                $copy.stage = $stage
             }
             $edits = @($partial.path_edits)
             if ($edits.Count -gt 1 -or ($edits.Count -eq 1 -and ($edits[0].target -cne 'HKCU\Environment\Path' -or $edits[0].block -cne $bin -or
@@ -313,6 +355,7 @@ try {
     $claimed = $true
     $pendingPlan = [ordered]@{schema = 'stateengine-install-pending/v1'; owner = $owner;
         archive_sha256 = Get-Digest (Join-Path $bundle 'manifest.json'); planned_files = $files;
+        staged_files = @($copies | ForEach-Object { [ordered]@{target = $_.to; path = $_.stage} });
         created_directories = $created.ToArray(); path_edits = @($edits); had_path = $hadPath; path_kind = $kind.ToString()}
     if (-not $resumePending) {
         $pendingBytes = $utf8.GetBytes(($pendingPlan | ConvertTo-Json -Depth 12) + "`n")
@@ -330,8 +373,26 @@ try {
             if ((Get-Digest $copy.to) -cne (Get-Digest $copy.from) -or
                 (Get-Acl -LiteralPath $copy.to).GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $owner) { throw "partial destination changed; preserved: $($copy.to)" }
         } else {
-            [IO.File]::Copy($copy.from, $copy.to, $false)
-            Set-NativeOwner $copy.to $ownerSid
+            Assert-PlainPath $copy.stage
+            $stageExists = Test-Path -LiteralPath $copy.stage
+            if ($stageExists) {
+                if (-not $Recover) { throw "staging path appeared; preserved: $($copy.stage)" }
+                & (Join-Path $bundle 'se.exe') __install-files-check $copy.stage
+                if ($LASTEXITCODE -ne 0) { throw 'partial staging native file custody refused' }
+            }
+            Initialize-NativeTypes
+            # The durable protected journal owns this exact scratch name. An
+            # interrupted scratch copy may restart; changed final paths never do.
+            $stream = [StateEngineInstall.Native]::OpenPayload($copy.stage, $owner, $stageExists)
+            try {
+                $stream.SetLength(0)
+                $source = [IO.File]::OpenRead($copy.from)
+                try { $source.CopyTo($stream); $stream.Flush($true) } finally { $source.Dispose() }
+            } finally { $stream.Dispose() }
+            if ((Get-Digest $copy.stage) -cne (Get-Digest $copy.from)) { throw 'durable staged payload readback failed' }
+            & (Join-Path $bundle 'se.exe') __install-files-check $copy.stage
+            if ($LASTEXITCODE -ne 0) { throw 'staged payload native file custody refused' }
+            [StateEngineInstall.Native]::PublishFile($copy.stage, $copy.to)
         }
         Flush-Copy $copy.to
         if ((Get-Digest $copy.to) -ne (Get-Digest $copy.from)) { throw "installed file readback failed: $($copy.to)" }
@@ -371,7 +432,7 @@ try {
         try { $stream.SetLength(0); $bytes = $utf8.GetBytes($recordText); $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
         finally { $stream.Dispose() }
         Initialize-NativeTypes
-        [StateEngineInstall.Native]::PublishRecord($temporary, $record)
+        [StateEngineInstall.Native]::PublishFile($temporary, $record)
     }
     if ([IO.File]::ReadAllText($record) -cne $recordText) { throw 'ownership record readback failed' }
     & (Join-Path $bundle 'se.exe') __install-files-check $record
