@@ -99,6 +99,7 @@ class Pin:
 def worker(args):
     """Protects: console stimulus reaches the actual host with real terminal input."""
     import msvcrt
+    atomic_json(args.out / 'worker-started.json', {'worker_pid': os.getpid()})
     kernel = api()
     callback_type = ctypes.WINFUNCTYPE(w.BOOL, w.DWORD)
     events = []
@@ -192,19 +193,23 @@ std::process::exit(s.code().unwrap_or(1));}'''
     pins, failures, cleanup, members = [], [], [], []
     progress['stage'] = 'start separate native console worker'
     conhost = (Path(os.environ['SystemRoot']) / 'System32/conhost.exe').resolve(strict=True)
-    # Microsoft's ConsoleArguments.cpp: -ForceNoHandoff prevents delegation to
-    # the default terminal; -- introduces the actual console client command.
-    # https://github.com/microsoft/terminal/blob/main/src/host/ConsoleArguments.cpp
+    # Use the installed Windows conhost's direct-client form. Its supported
+    # switches can differ from the current OpenConsole source. Native window
+    # ownership and the callback receipt below remain the actual preconditions.
     with (fixture.root / 'worker.stderr').open('wb') as worker_log:
-        launcher = subprocess.Popen([str(conhost), '-ForceNoHandoff', '--',
-            sys.executable, '-I', str(Path(__file__).resolve()), '--worker',
+        launcher = subprocess.Popen([str(conhost), sys.executable, '-I',
+            str(Path(__file__).resolve()), '--worker',
             '--se', str(fixture.se), '--home', str(fixture.home), '--out', str(fixture.root)],
             stdin=subprocess.DEVNULL, stdout=worker_log, stderr=worker_log,
             cwd=fixture.repo, env=fixture.env, creationflags=subprocess.CREATE_NEW_CONSOLE)
     try:
+        progress['stage'] = 'precheck Python worker entry before any console stimulus'
+        started = read_json(fixture.root / 'worker-started.json')
         progress['stage'] = 'read worker PID and pin exact foreground host'
         ready_path = fixture.root / 'worker-ready.json'
         ready = read_json(ready_path)
+        if ready['worker_pid'] != started['worker_pid']:
+            raise AssertionError('console readiness belongs to a different worker')
         pins.append(Pin(kernel, ready['host_pid']))
         console_pin = Pin(kernel, ready['console_owner_pid'])
         try:
