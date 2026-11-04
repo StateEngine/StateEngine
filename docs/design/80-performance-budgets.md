@@ -464,6 +464,24 @@ not a duration, establish no loss or duplication.
 
 Windows has the thinner margin, which is one more reason to sign the binary (lighter Defender scanning).
 
+Installed Linux diagnostic, 2026-11-04: a temporary instrumented distribution
+build (`b94c55c`, following the runtime follow-ups) measured one contextual
+`se status --json` at 21.54 ms with load1 14.18. Elapsed phases were startup and
+dynamic loading 3.58 ms, read-only store open/schema-header checks 3.47 ms, native
+home pinning 3.46 ms, owner admission/selection 2.64 ms, endpoint/process
+observation 2.56 ms, clap 1.23 ms, status queries 0.86 ms, lease check 0.45 ms,
+config/bootstrap 0.30 ms, session preparation/native observation 0.23 ms,
+render 0.16 ms, other Rust work 1.42 ms and exit/parent drain 1.17 ms.
+These elapsed clocks include instrumentation and scheduling; one loaded sample
+is neither a p95 nor production acceptance, and the allocation table above is
+still a design estimate. The cost is distributed across protective phases with
+no identified safe structural removal. Prime accepted this status investigation
+as complete under Jimmy's rule that an approximately 1 ms overrun does not block
+landing; the B7 target remains unchanged. Raw clocks and installed-image binding
+are retained in `/mnt/nvme/stateengine/5p-status-profile-20261104`; its deliberately
+aborted pre-provider journey and profiling-stderr cleanup parse failure remain
+failures, with private-home/process/account-claim closure verified separately.
+
 ### 3.6 Per-operation timing and the open E3 result
 
 B9 and FULL-command thresholds are defined only in §1. Server-side MCP reads
