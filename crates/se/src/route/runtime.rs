@@ -45,19 +45,8 @@ pub fn up(
             (value, process, None)
         }
         se_host::EndpointRoute::Start { recovery } => {
-            let (endpoint, process) = start(cx, files, &bound, diagnostic).map_err(|error| {
-                if let Some(retained) = &recovery {
-                    let retained_path = match retained.retained.to_local() {
-                        Ok(path) => path.display().to_string(),
-                        Err(path_error) => format!("{:?} (path decoding failed: {path_error})", retained.retained),
-                    };
-                    SeError::new(se_types::Detail::StateConflict(se_types::details::StateConflict {
-                        subject: cx.home.display().to_string(),
-                        reason: format!("Retained stale endpoint {} as {retained_path}, but the runtime startup response could not be completed: {error}", cx.home.join("endpoint.json").display()),
-                        next_step: "Keep the retained endpoint record and run se status for this same home before retrying se up; use se down first if another host is running.".into(),
-                    })).with_cause(error)
-                } else { error }
-            })?;
+            let (endpoint, process) = start(cx, files, &bound, diagnostic)
+                .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))?;
             (endpoint, process, recovery)
         }
     };
@@ -92,19 +81,22 @@ pub fn foreground(cx: &Bootstrap, ready: &mut dyn FnMut(AnyOutput) -> Result<()>
     if caller.owner.is_none() {
         return Err(SeError::invalid("runtime owner", "native owner authority"));
     }
-    if let se_host::EndpointRoute::Live(endpoint) = discovery::route(cx)? {
-        let options = execute::options();
-        let bound = Deadline::from_options(&options)?;
-        let process = discovery::authenticate(cx, &files, &endpoint, &options, &bound)?;
-        return Err(SeError::new(se_types::Detail::StateConflict(
+    let machine = super::identity::require_machine(&files)?;
+    let recovery = match discovery::route(cx)? {
+        se_host::EndpointRoute::Live(endpoint) => {
+            let options = execute::options();
+            let bound = Deadline::from_options(&options)?;
+            let process = discovery::authenticate(cx, &files, &endpoint, &options, &bound)?;
+            return Err(SeError::new(se_types::Detail::StateConflict(
             se_types::details::StateConflict {
                 subject: "foreground host".into(),
                 reason: format!("A StateEngine host is already running for this home (PID {}).", process.pid),
                 next_step: "Run se status with the same --home to inspect and use the existing host, or se down before starting a foreground host.".into(),
             },
         )));
-    }
-    let machine = super::identity::require_machine(&files)?;
+        }
+        se_host::EndpointRoute::Start { recovery } => recovery,
+    };
     let configuration = match &cx.config.origin {
         Origin::File(path) => path.clone(),
         Origin::BuiltIn => cx.home.join("config.toml"),
@@ -120,11 +112,15 @@ pub fn foreground(cx: &Bootstrap, ready: &mut dyn FnMut(AnyOutput) -> Result<()>
                 process: process::observe(endpoint, &bound)?,
                 generation: endpoint.generation.get(),
                 endpoint: status::endpoint_name(endpoint)?,
-                endpoint_recovery: listener.endpoint_recovery().cloned(),
+                endpoint_recovery: listener
+                    .endpoint_recovery()
+                    .cloned()
+                    .or_else(|| recovery.clone()),
             }
             .into(),
         )
     })
+    .map_err(|error| discovery::after_recovery(cx, recovery.as_ref(), error))
 }
 
 #[cfg(any(target_os = "linux", windows))]

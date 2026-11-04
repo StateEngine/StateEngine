@@ -12,8 +12,6 @@ pub(super) struct Signal {
     interrupt: tokio::signal::windows::CtrlC,
     terminate: tokio::signal::windows::CtrlBreak,
     close: tokio::signal::windows::CtrlClose,
-    logoff: tokio::signal::windows::CtrlLogoff,
-    shutdown: tokio::signal::windows::CtrlShutdown,
 }
 
 impl Signal {
@@ -25,8 +23,6 @@ impl Signal {
             self.interrupt.poll_recv(cx),
             self.terminate.poll_recv(cx),
             self.close.poll_recv(cx),
-            self.logoff.poll_recv(cx),
-            self.shutdown.poll_recv(cx),
         ]
         .into_iter();
         events
@@ -53,8 +49,6 @@ pub(super) fn listen() -> Result<Signal> {
             interrupt: windows::ctrl_c()?,
             terminate: windows::ctrl_break()?,
             close: windows::ctrl_close()?,
-            logoff: windows::ctrl_logoff()?,
-            shutdown: windows::ctrl_shutdown()?,
         })
     })();
     result.map_err(|error| {

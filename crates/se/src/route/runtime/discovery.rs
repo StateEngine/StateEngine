@@ -47,3 +47,25 @@ pub(super) fn authenticate(
     })?;
     process::observe(endpoint, bound)
 }
+
+pub(super) fn after_recovery(
+    cx: &Bootstrap,
+    recovery: Option<&EndpointRecovery>,
+    error: SeError,
+) -> SeError {
+    let Some(retained) = recovery else {
+        return error;
+    };
+    let retained_path = match retained.retained.to_local() {
+        Ok(path) => path.display().to_string(),
+        Err(path_error) => format!(
+            "{:?} (path decoding failed: {path_error})",
+            retained.retained
+        ),
+    };
+    SeError::new(se_types::Detail::StateConflict(se_types::details::StateConflict {
+        subject: cx.home.display().to_string(),
+        reason: format!("Retained stale endpoint {} as {retained_path}, but the runtime startup response could not be completed: {error}", cx.home.join("endpoint.json").display()),
+        next_step: "Keep the retained endpoint record and run se status for this same home before retrying se up; use se down first if another host is running.".into(),
+    })).with_cause(error)
+}

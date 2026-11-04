@@ -359,7 +359,7 @@ custody or unreadable prior-host identity still refuses.
 
 `se up --foreground` keeps the original CLI process as the host and drains it
 through the normal shutdown path on Linux SIGINT, SIGTERM or SIGHUP, or Windows
-Ctrl-C, Ctrl-Break, console-close, logoff or shutdown events. A verified existing
+Ctrl-C, Ctrl-Break or console-close events. A verified existing
 host gives an already-running conflict with `se status` and `se down` guidance;
 foreground mode never takes that host over.
 
