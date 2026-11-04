@@ -99,12 +99,12 @@ impl SqliteSnapshot {
         agent: AgentId,
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>> {
+        let deadline = query::deadline(&budget)?;
         let p = self.project_bytes()?;
         let a = self.agent_bytes(&agent)?;
         let binding = format!("history:turns:{}", agent.as_str());
         let (h, after) = self.window(&budget, &binding, false)?;
-        let deadline = Instant::now() + budget.deadline;
-        let rows=self.query_seqs("SELECT e.entity_revision,t.event_seq,t.event_seq FROM turn_data t INDEXED BY turn_data_agent_seq JOIN events e ON e.seq=t.event_seq WHERE t.project_id=? AND t.agent_id=? AND t.event_seq>? AND t.event_seq<=? ORDER BY t.event_seq LIMIT ?",vec![rusqlite::types::Value::Blob(p),rusqlite::types::Value::Blob(a),rusqlite::types::Value::Integer(after as i64),rusqlite::types::Value::Integer(h as i64),rusqlite::types::Value::Integer(i64::from(budget.page.limit.get())+1)],&budget)?;
+        let rows=self.query_seqs_before("SELECT e.entity_revision,t.event_seq,t.event_seq FROM turn_data t INDEXED BY turn_data_agent_seq JOIN events e ON e.seq=t.event_seq WHERE t.project_id=? AND t.agent_id=? AND t.event_seq>? AND t.event_seq<=? ORDER BY t.event_seq LIMIT ?",vec![rusqlite::types::Value::Blob(p),rusqlite::types::Value::Blob(a),rusqlite::types::Value::Integer(after as i64),rusqlite::types::Value::Integer(h as i64),rusqlite::types::Value::Integer(i64::from(budget.page.limit.get())+1)],deadline)?;
         let mut items = Vec::new();
         let mut bytes = 0;
         let mut last = after;
@@ -124,8 +124,9 @@ impl SqliteSnapshot {
             let cost = query::event_size(&e)?;
             if bytes + cost > u64::from(budget.page.max_bytes.get()) {
                 if items.is_empty() {
-                    return Err(fail(
-                        StoreErrorCode::ReadBudgetTooSmall,
+                    return Err(query::budget_failure(
+                        &budget,
+                        cost,
                         "first complete turn exceeds page bytes",
                     ));
                 }
@@ -136,6 +137,7 @@ impl SqliteSnapshot {
             last = seq as u64;
             items.push(e);
         }
+        query::check_deadline(deadline)?;
         self.page(
             items,
             &budget,

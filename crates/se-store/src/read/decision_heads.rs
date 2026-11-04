@@ -131,7 +131,7 @@ impl SqliteSnapshot {
         governing: bool,
         budget: ReadBudget,
     ) -> StoreResult<Page<Read<ProjectionRecord>>> {
-        let deadline = Instant::now() + budget.deadline;
+        let deadline = query::deadline(&budget)?;
         let selectors = format!("{query:?}:{governing}");
         let history_visibility = query.history;
         let (filter, keys) = self.decision_filter(query, governing, history_visibility)?;
@@ -142,10 +142,10 @@ impl SqliteSnapshot {
             Value::Integer(after as i64),
             Value::Integer(i64::from(budget.page.limit.get()) + 1),
         ]);
-        let rows = self.query_seqs(
+        let rows = self.query_seqs_before(
             &format!("SELECT revision,last_seq,proposed_seq FROM decisions WHERE {filter} AND last_seq>? ORDER BY last_seq LIMIT ?"),
             params,
-            &budget,
+            deadline,
         )?;
         let mut items = Vec::new();
         let mut bytes = 0;
@@ -196,8 +196,9 @@ impl SqliteSnapshot {
             };
             if bytes + cost > u64::from(budget.page.max_bytes.get()) {
                 if items.is_empty() {
-                    return Err(fail(
-                        StoreErrorCode::ReadBudgetTooSmall,
+                    return Err(query::budget_failure(
+                        &budget,
+                        cost,
                         "first complete decision head exceeds page bytes",
                     ));
                 }

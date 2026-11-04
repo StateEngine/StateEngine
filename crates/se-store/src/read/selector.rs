@@ -31,6 +31,7 @@ impl SqliteSnapshot {
         agents: bool,
         budget: ReadBudget,
     ) -> StoreResult<Page<ProjectionRecord>> {
+        let deadline = query::deadline(&budget)?;
         if !matches!(self.scope.visibility, Visibility::Owner)
             || !matches!(self.scope.admission.actor, Actor::Human(_))
             || self.scope.admission.session.is_some()
@@ -108,12 +109,13 @@ impl SqliteSnapshot {
         params.push(rusqlite::types::Value::Integer(
             i64::from(budget.page.limit.get()) + 1,
         ));
-        let rows = self.query_seqs(&sql, params, &budget)?;
+        let rows = self.query_seqs_before(&sql, params, deadline)?;
         let mut items = Vec::new();
         let mut bytes = 0;
         let mut last = after;
         let mut stop = StopReason::Exhausted;
         for (revision, seq, ordinal) in rows {
+            query::check_deadline(deadline)?;
             if items.len() == budget.page.limit.get() as usize {
                 stop = StopReason::ItemLimit;
                 break;
@@ -149,8 +151,9 @@ impl SqliteSnapshot {
                     .unwrap_or(0);
             if bytes + cost > u64::from(budget.page.max_bytes.get()) {
                 if items.is_empty() {
-                    return Err(fail(
-                        StoreErrorCode::ReadBudgetTooSmall,
+                    return Err(query::budget_failure(
+                        &budget,
+                        cost,
                         "first selector record exceeds bytes",
                     ));
                 }
@@ -165,6 +168,7 @@ impl SqliteSnapshot {
             bytes += cost;
             last = ordinal;
         }
+        query::check_deadline(deadline)?;
         self.page(
             items,
             &budget,
