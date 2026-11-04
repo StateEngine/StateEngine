@@ -40,8 +40,19 @@ panic = "unwind"
 # Archive builds pay the link cost; ordinary release tests keep their usual profile.
 [profile.distribution]
 inherits = "release"
+opt-level = "s"
 lto = "thin"
 codegen-units = 1
+
+# Keep bundled SQLite and the authentication/digest primitives optimized for speed.
+[profile.distribution.package.libsqlite3-sys]
+opt-level = 3
+
+[profile.distribution.package.sha2]
+opt-level = 3
+
+[profile.distribution.package.hmac]
+opt-level = 3
 
 # The embedding workspace overrides this unpublished permissive package with
 # its own API crate, keeping one package identity across the linked boundary.
