@@ -221,20 +221,30 @@ mod tests {
         for _ in 0..40 {
             let (id, _) = state
                 .lock()
-                .unwrap()
+                .map_err(|_| poisoned())?
                 .sequence
                 .request("thread/read", json!({}))?;
             let wire::RequestId::Number(id) = id else {
                 panic!("numeric id required")
             };
             let (send, _receive) = oneshot::channel();
-            state.lock().unwrap().pending.insert(id, send);
+            state
+                .lock()
+                .map_err(|_| poisoned())?
+                .pending
+                .insert(id, send);
             let pending = Pending { state: &state, id };
-            assert_eq!(state.lock().unwrap().pending.len(), 1);
+            assert_eq!(state.lock().map_err(|_| poisoned())?.pending.len(), 1);
             drop(pending);
-            assert!(state.lock().unwrap().pending.is_empty());
-            assert!(state.lock().unwrap().sequence.issued(id));
-            assert!(!state.lock().unwrap().sequence.issued(id + 1));
+            assert!(state.lock().map_err(|_| poisoned())?.pending.is_empty());
+            assert!(state.lock().map_err(|_| poisoned())?.sequence.issued(id));
+            assert!(
+                !state
+                    .lock()
+                    .map_err(|_| poisoned())?
+                    .sequence
+                    .issued(id + 1)
+            );
         }
         Ok(())
     }

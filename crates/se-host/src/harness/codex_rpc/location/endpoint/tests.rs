@@ -1,5 +1,6 @@
 use super::*;
 use std::os::unix::{fs::symlink, net::UnixListener};
+type Check<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 struct Fixture {
     root: PathBuf,
     socket: PathBuf,
@@ -8,60 +9,57 @@ struct Fixture {
     value: Record,
 }
 impl Fixture {
-    fn new(alias: bool) -> Self {
+    fn new(alias: bool) -> Check<Self> {
         let root = std::env::temp_dir().join(format!(
             "e-{}",
             se_types::hex_lower(&{
                 let mut nonce = [0u8; 4];
-                se_proc::fill_entropy(&mut nonce).unwrap();
+                se_proc::fill_entropy(&mut nonce)?;
                 nonce
             })
         ));
-        se_proc::NativeStateFiles::create(&root).unwrap();
+        se_proc::NativeStateFiles::create(&root)?;
         let listen = root.join("listen");
-        se_proc::NativeStateFiles::create(&listen).unwrap();
-        let parent = private_parent(&listen).unwrap();
+        se_proc::NativeStateFiles::create(&listen)?;
+        let parent = private_parent(&listen)?;
         let socket = listen.join("s");
         let target = if alias {
             let directory = root.join(format!("codex-daemon-{}", parent.uid()));
-            se_proc::NativeStateFiles::create(&directory).unwrap();
+            se_proc::NativeStateFiles::create(&directory)?;
             directory.join(se_types::hex_lower(&Sha256::digest(
                 socket.as_os_str().as_bytes(),
             )))
         } else {
             socket.clone()
         };
-        let listener = UnixListener::bind(&target).unwrap();
+        let listener = UnixListener::bind(&target)?;
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
         if alias {
-            symlink(&target, &socket).unwrap();
+            symlink(&target, &socket)?;
         }
         drop(listener);
         let value = Record {
-            session: se_types::SessionId::from_parts(1_700_000_000_000, [1; 10]).unwrap(),
-            socket: NativePath::from_local(socket.clone()).unwrap(),
+            session: se_types::SessionId::from_parts(1_700_000_000_000, [1; 10])?,
+            socket: NativePath::from_local(socket.clone())?,
             device: parent.dev(),
             inode: parent.ino(),
         };
         let record = root.join("codex-runtime.json");
-        let files = se_proc::NativeStateFiles::open(&root).unwrap();
-        let mut staging = files.create_staging(&root).unwrap();
-        staging
-            .file
-            .write_all(&serde_json::to_vec(&value).unwrap())
-            .unwrap();
+        let files = se_proc::NativeStateFiles::open(&root)?;
+        let mut staging = files.create_staging(&root)?;
+        staging.file.write_all(&serde_json::to_vec(&value)?)?;
         drop(staging.file);
-        files.publish_no_replace(&staging.path, &record).unwrap();
-        Self {
+        files.publish_no_replace(&staging.path, &record)?;
+        Ok(Self {
             root,
             socket,
             record,
             target,
             value,
-        }
+        })
     }
-    fn cleanup(&self) {
+    fn cleanup(&self) -> Check {
         // All names were created here; never recurse or follow links.
         for path in [
             &self.socket,
@@ -69,60 +67,74 @@ impl Fixture {
             &sidecar(&self.record),
             &self.record,
         ] {
-            if metadata(path).unwrap().is_some() {
-                std::fs::remove_file(path).unwrap();
+            if metadata(path)?.is_some() {
+                std::fs::remove_file(path)?;
             }
         }
         if self.target != self.socket {
-            std::fs::remove_dir(self.target.parent().unwrap()).unwrap();
+            std::fs::remove_dir(self.target.parent().ok_or("owned endpoint parent absent")?)?;
         }
-        std::fs::remove_dir(self.socket.parent().unwrap()).unwrap();
-        std::fs::remove_dir(&self.root).unwrap();
+        std::fs::remove_dir(self.socket.parent().ok_or("owned endpoint parent absent")?)?;
+        std::fs::remove_dir(&self.root)?;
+        Ok(())
     }
 }
 #[test]
-fn direct_and_stock_alias_are_pinned_and_retired_without_removing_vendor_parent() {
+fn direct_and_stock_alias_are_pinned_and_retired_without_removing_vendor_parent() -> Check {
     for alias in [false, true] {
-        let f = Fixture::new(alias);
-        prepare(&f.socket, &f.record, &f.value.session).unwrap();
-        prepare(&f.socket, &f.record, &f.value.session).unwrap();
-        retire(&f.socket, &f.record, &f.value).unwrap();
-        assert!(metadata(&f.socket).unwrap().is_none());
-        assert!(metadata(&f.target).unwrap().is_none());
-        assert!(f.target.parent().unwrap().is_dir());
-        f.cleanup();
+        let f = Fixture::new(alias)?;
+        prepare(&f.socket, &f.record, &f.value.session)?;
+        prepare(&f.socket, &f.record, &f.value.session)?;
+        retire(&f.socket, &f.record, &f.value)?;
+        assert!(metadata(&f.socket)?.is_none());
+        assert!(metadata(&f.target)?.is_none());
+        assert!(
+            f.target
+                .parent()
+                .ok_or("owned endpoint parent absent")?
+                .is_dir()
+        );
+        f.cleanup()?;
     }
+    Ok(())
 }
 #[test]
-fn substituted_socket_or_non_stock_alias_refuses_without_removing_the_leaf() {
-    let f = Fixture::new(true);
-    prepare(&f.socket, &f.record, &f.value.session).unwrap();
+fn substituted_socket_or_non_stock_alias_refuses_without_removing_the_leaf() -> Check {
+    let f = Fixture::new(true)?;
+    prepare(&f.socket, &f.record, &f.value.session)?;
     // Keep the displaced inode allocated, preventing inode reuse.
     let displaced = f.target.with_extension("original");
-    std::fs::rename(&f.target, &displaced).unwrap();
-    let listener = UnixListener::bind(&f.target).unwrap();
+    std::fs::rename(&f.target, &displaced)?;
+    let listener = UnixListener::bind(&f.target)?;
     assert!(retire(&f.socket, &f.record, &f.value).is_err());
     assert!(f.target.exists());
     drop(listener);
-    std::fs::remove_file(&f.target).unwrap();
-    std::fs::rename(displaced, &f.target).unwrap();
-    retire(&f.socket, &f.record, &f.value).unwrap();
-    f.cleanup();
-    let f = Fixture::new(true);
-    std::fs::remove_file(&f.socket).unwrap();
-    symlink(f.target.with_extension("foreign"), &f.socket).unwrap();
+    std::fs::remove_file(&f.target)?;
+    std::fs::rename(displaced, &f.target)?;
+    retire(&f.socket, &f.record, &f.value)?;
+    f.cleanup()?;
+    let f = Fixture::new(true)?;
+    std::fs::remove_file(&f.socket)?;
+    symlink(f.target.with_extension("foreign"), &f.socket)?;
     assert!(prepare(&f.socket, &f.record, &f.value.session).is_err());
     assert!(retire(&f.socket, &f.record, &f.value).is_err());
-    assert!(metadata(&f.socket).unwrap().is_some());
+    assert!(metadata(&f.socket)?.is_some());
     assert!(f.target.exists());
-    f.cleanup();
+    f.cleanup()?;
+    Ok(())
 }
 #[test]
-fn failed_readiness_cleans_owned_alias_after_vendor_removes_target() {
-    let f = Fixture::new(true);
-    std::fs::remove_file(&f.target).unwrap();
-    retire(&f.socket, &f.record, &f.value).unwrap();
-    assert!(metadata(&f.socket).unwrap().is_none());
-    assert!(f.target.parent().unwrap().is_dir());
-    f.cleanup();
+fn failed_readiness_cleans_owned_alias_after_vendor_removes_target() -> Check {
+    let f = Fixture::new(true)?;
+    std::fs::remove_file(&f.target)?;
+    retire(&f.socket, &f.record, &f.value)?;
+    assert!(metadata(&f.socket)?.is_none());
+    assert!(
+        f.target
+            .parent()
+            .ok_or("owned endpoint parent absent")?
+            .is_dir()
+    );
+    f.cleanup()?;
+    Ok(())
 }

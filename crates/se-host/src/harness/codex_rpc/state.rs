@@ -221,17 +221,17 @@ fn encoded_size(value: &Value) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn state(capture: bool) -> State {
-        State {
+    fn state(capture: bool) -> Result<State> {
+        Ok(State {
             capture,
-            conversation: Some(ProviderSessionId::new("main-thread").unwrap()),
+            conversation: Some(ProviderSessionId::new("main-thread")?),
             active_turn: Some("main-turn".into()),
             ..Default::default()
-        }
+        })
     }
     #[test]
     fn disabled_capture_does_not_accumulate_items_or_terminal_turns() -> Result<()> {
-        let mut state = state(false);
+        let mut state = state(false)?;
         for n in 0..256 {
             assert!(state.observe("item/completed".into(), json!({"threadId":"main-thread","turnId":"main-turn","item":{"id":format!("item-{n}")}}))?);
         }
@@ -249,7 +249,7 @@ mod tests {
     }
     #[test]
     fn other_threads_and_turns_cannot_change_the_retained_parent() -> Result<()> {
-        let mut state = state(true);
+        let mut state = state(true)?;
         for (method, params) in [
             (
                 "turn/started",
@@ -277,7 +277,7 @@ mod tests {
     }
     #[test]
     fn enabled_capture_keeps_its_explicit_unacknowledged_capacity_bound() -> Result<()> {
-        let mut state = state(true);
+        let mut state = state(true)?;
         for n in 0..128 {
             state.observe("item/completed".into(), json!({"threadId":"main-thread","turnId":"main-turn","item":{"id":format!("item-{n}")}}))?;
         }
