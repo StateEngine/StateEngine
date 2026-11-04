@@ -647,6 +647,7 @@ name = "se"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "libc",
  "rusqlite",
  "se-core",
  "se-host",
