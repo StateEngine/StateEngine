@@ -589,6 +589,17 @@ fn receipt_members(
                 through: e.position.clone(),
             })
         }
+        if let (Scope::Project(project), EventBody::WorkMessageSent { work, .. }) =
+            (&e.header.scope, &e.body)
+        {
+            for agent in &work.addressees {
+                wakes.push(Wake {
+                    project: project.clone(),
+                    principal: Actor::Agent(agent.clone()),
+                    through: e.position.clone(),
+                });
+            }
+        }
     }
     Ok(CommitReceipt {
         write_timings: None,

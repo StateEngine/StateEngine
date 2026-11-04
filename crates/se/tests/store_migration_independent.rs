@@ -20,7 +20,9 @@ fn schema_one(f: &Fixture, obstruct: bool) -> Check {
             db.execute_batch(&format!("DROP INDEX {name}"))?;
         }
     }
-    db.execute_batch("PRAGMA user_version=1")?;
+    db.execute_batch(
+        "DROP TABLE work_mark_data; DROP TABLE message_deliveries; PRAGMA user_version=1",
+    )?;
     Ok(())
 }
 fn backup_is_original(f: &Fixture, expected_head: u64) -> Check {
@@ -112,7 +114,7 @@ fn check(obstruct: bool) -> Check {
     });
     outcome?;
     let after = reader.info()?;
-    assert_eq!(after.schema_version, if obstruct { 1 } else { 2 });
+    assert_eq!(after.schema_version, if obstruct { 1 } else { 3 });
     assert_eq!(after.id, before.id);
     // Startup may append runtime ownership; the backup must bind the old head.
     backup_is_original(&f, u64::try_from(before_sequence)?)?;

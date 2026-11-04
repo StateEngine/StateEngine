@@ -58,6 +58,9 @@ pub(super) fn supersede(
             "source message already has a replacement",
         ));
     }
+    if connection::mail_table(c)? == "message_deliveries" {
+        c.execute("UPDATE message_deliveries SET superseded_by=?,revision=? WHERE project_id=? AND message_id=?",crate::sql_value::sql_params![new,rev,p,old]).map_err(sql)?;
+    }
     if unread {
         count(c, &p, &recipient, -1, seq)?;
     }

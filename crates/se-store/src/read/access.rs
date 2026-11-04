@@ -75,6 +75,7 @@ impl SqliteSnapshot {
                 }
                 match &e.body {
                     EventBody::MessageSent { recipient, .. } => *recipient == who,
+                    EventBody::WorkMessageSent { work, .. } => work.addressees.contains(a),
                     EventBody::WorkingStateSet { agent, .. }
                     | EventBody::SessionTurn { agent, .. } => agent == a,
                     EventBody::CaptureSource { session, .. }
@@ -272,24 +273,88 @@ impl SqliteSnapshot {
         delivered: Option<u64>,
         read: Option<u64>,
         dismissed: Option<u64>,
+        selected_recipient: Option<&[u8]>,
     ) -> StoreResult<MessageRecord> {
         let e = self.record(sent)?;
-        let EventBody::MessageSent {
-            message,
-            recipient,
-            kind,
-            body,
-            refs,
-            reply_to,
-        } = e.body
-        else {
-            return Err(invalid("message head points to another event kind"));
+        let (message, recipient, work, kind, body, refs, reply_to) = match e.body {
+            EventBody::MessageSent {
+                message,
+                recipient,
+                kind,
+                body,
+                refs,
+                reply_to,
+            } => (message, recipient, None, kind, body, refs, reply_to),
+            EventBody::WorkMessageSent {
+                message,
+                work,
+                kind,
+                body,
+                refs,
+                reply_to,
+            } => {
+                let preview = match &self.scope.visibility {
+                    Visibility::SelfOnly(agent) => Some(Actor::Agent(agent.clone())),
+                    _ => None,
+                };
+                let agent = if let Some(selected) = selected_recipient {
+                    let agent = wire(
+                        &self.db,
+                        "agent",
+                        selected,
+                        &scope_key(&self.db, &e.header.scope, false)?,
+                    )?
+                    .try_into()
+                    .map_err(invalid)?;
+                    if !work.addressees.contains(&agent) {
+                        return Err(invalid("work delivery names an unaddressed recipient"));
+                    }
+                    agent
+                } else {
+                    match preview.as_ref() {
+                        Some(Actor::Agent(agent)) if work.addressees.contains(agent) => {
+                            agent.clone()
+                        }
+                        _ => work
+                            .addressees
+                            .first()
+                            .cloned()
+                            .ok_or_else(|| invalid("work message has no addressees"))?,
+                    }
+                };
+                (
+                    message,
+                    Actor::Agent(agent),
+                    Some(work),
+                    kind,
+                    body,
+                    refs,
+                    reply_to,
+                )
+            }
+            _ => return Err(invalid("message head points to another event kind")),
+        };
+        let (delivered, read, dismissed) = if work.is_some() {
+            let id = key(
+                &self.db,
+                recipient.kind(),
+                recipient.wire(),
+                &scope_key(&self.db, &e.header.scope, false)?,
+                false,
+            )?;
+            self.db.query_row("SELECT delivered_seq,read_seq,dismissed_seq FROM message_deliveries WHERE sent_seq=? AND recipient_id=?",rusqlite::params![sent,id],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).map_err(sql)?
+        } else {
+            (delivered, read, dismissed)
         };
         let pos = |s| StorePosition::new_internal(self.info.id.clone(), self.info.incarnation, s);
         let replacement: Option<Vec<u8>> = self
             .db
             .query_row(
-                "SELECT superseded_by FROM messages WHERE sent_seq=?",
+                if self.info.schema_version >= 3 {
+                    "SELECT superseded_by FROM message_deliveries WHERE sent_seq=? LIMIT 1"
+                } else {
+                    "SELECT superseded_by FROM messages WHERE sent_seq=?"
+                },
                 [sent],
                 |r| r.get(0),
             )
@@ -309,6 +374,7 @@ impl SqliteSnapshot {
             sent: e.position,
             sender: e.header.actor,
             recipient,
+            work,
             kind,
             body,
             refs,

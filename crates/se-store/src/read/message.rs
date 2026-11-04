@@ -2,7 +2,23 @@ use super::*;
 use crate::sql_value::value;
 use rusqlite::types::Value;
 pub(super) type MarkRow = (i64, u64, Option<u64>, Option<u64>, Option<u64>);
+type DeliveryRow = (i64, u64, Option<u64>, Option<u64>, Option<u64>, Vec<u8>);
 impl SqliteSnapshot {
+    /// Schema 3 adds delivery heads; it still needs the retained direct-mail
+    /// projection and marks for decoding and subsequent recipient mutations.
+    /// Preparing these finite sources preserves storage failure even when a
+    /// maintained count or an empty delivery index would otherwise short-cut.
+    pub(super) fn mail_source(&self) -> StoreResult<()> {
+        self.db.prepare("SELECT d.sent_seq,m.message_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE 0")
+            .map_err(|error| self.read_sql(error))?;
+        if self.info.schema_version >= 3 {
+            self.db
+                .prepare("SELECT sent_seq FROM message_deliveries WHERE 0")
+                .map_err(|error| self.read_sql(error))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn read_messages(
         &self,
         query: MessageQuery,
@@ -16,6 +32,7 @@ impl SqliteSnapshot {
         budget: ReadBudget,
         pending: bool,
     ) -> StoreResult<Page<MessageRecord>> {
+        self.mail_source()?;
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let binding = format!(
@@ -55,7 +72,7 @@ impl SqliteSnapshot {
         self.db
             .progress_handler(1000, Some(move || Instant::now() >= deadline))
             .map_err(|error| self.read_sql(error))?;
-        let result: StoreResult<Vec<MarkRow>> = (|| {
+        let result: StoreResult<Vec<DeliveryRow>> = (|| {
             let mut rows = if let Some(own) = own {
                 // A sent-or-received view is two index streams, not a broad page
                 // followed by a visibility filter that can hide eligible rows.
@@ -109,12 +126,12 @@ impl SqliteSnapshot {
         self.db
             .progress_handler(0, None::<fn() -> bool>)
             .map_err(|error| self.read_sql(error))?;
-        let rows: Vec<MarkRow> = result?;
+        let rows: Vec<DeliveryRow> = result?;
         let mut items = Vec::new();
         let mut bytes = 0;
         let mut last = after;
         let mut stop = StopReason::Exhausted;
-        for (sent, revision, d, r, x) in rows {
+        for (sent, revision, d, r, x, recipient) in rows {
             if items.len() == budget.page.limit.get() as usize {
                 stop = StopReason::ItemLimit;
                 break;
@@ -125,7 +142,7 @@ impl SqliteSnapshot {
                     "mail read deadline exhausted",
                 ));
             }
-            let mut message = self.message_at(sent, revision, d, r, x)?;
+            let mut message = self.message_at(sent, revision, d, r, x, Some(&recipient))?;
             if !query.full_body
                 && let StoredText::Present(s) = &mut message.body
             {
@@ -144,6 +161,7 @@ impl SqliteSnapshot {
                 &message.event,
                 &message.sender,
                 &message.recipient,
+                &message.work,
                 &message.kind,
                 &message.refs,
                 &message.reply_to,
@@ -226,8 +244,7 @@ impl SqliteSnapshot {
         after: u64,
         budget: &ReadBudget,
         pending: bool,
-    ) -> StoreResult<Vec<MarkRow>> {
-        let unread = query.unread_only && to.is_some();
+    ) -> StoreResult<Vec<DeliveryRow>> {
         let (mut statement, mut args) = mail_sql(
             p,
             to,
@@ -235,16 +252,19 @@ impl SqliteSnapshot {
             query,
             h,
             after,
-            "d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq",
+            // The single MIN aggregate pins SQLite's accompanying bare columns
+            // to one matching delivery, including an unfiltered unread view.
+            "d.sent_seq,d.revision,d.delivered_seq,d.read_seq,d.dismissed_seq,MIN(d.recipient_id)",
+            self.info.schema_version,
         );
         if pending {
-            statement.push_str(" AND m.delivered_seq IS NULL");
+            statement.push_str(if self.info.schema_version >= 3 {
+                " AND d.delivered_seq IS NULL"
+            } else {
+                " AND m.delivered_seq IS NULL"
+            });
         }
-        statement.push_str(if unread {
-            " ORDER BY m.message_seq LIMIT ?"
-        } else {
-            " ORDER BY d.sent_seq LIMIT ?"
-        });
+        statement.push_str(" GROUP BY d.sent_seq ORDER BY d.sent_seq LIMIT ?");
         args.push(Value::Integer(i64::from(budget.page.limit.get()) + 1));
         let mut q = self
             .db
@@ -257,6 +277,7 @@ impl SqliteSnapshot {
                 value(r, 2)?,
                 value(r, 3)?,
                 value(r, 4)?,
+                value(r, 5)?,
             ))
         })
         .map_err(|error| self.read_sql(error))?
@@ -275,6 +296,10 @@ impl SqliteSnapshot {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep the finite mail query and its supported schema together without passing snapshot authority."
+)]
 pub(super) fn mail_sql(
     p: &[u8],
     to: Option<&[u8]>,
@@ -283,24 +308,32 @@ pub(super) fn mail_sql(
     h: u64,
     after: u64,
     projection: &str,
+    schema: u32,
 ) -> (String, Vec<Value>) {
+    if schema < 3 {
+        let projection = projection
+            .replace("d.delivered_seq", "m.delivered_seq")
+            .replace("d.read_seq", "m.read_seq")
+            .replace("d.dismissed_seq", "m.dismissed_seq");
+        return mail_legacy::sql(p, to, from, query, h, after, &projection);
+    }
     let unread = query.unread_only && to.is_some();
     let index = if to.is_some() {
-        "messages_recipient_seq"
+        "mail_recipient_seq"
     } else if from.is_some() {
-        "messages_sender_seq"
+        "mail_sender_seq"
     } else if query.kind.is_some() {
-        "messages_kind_seq"
+        "mail_kind_seq"
     } else {
-        "messages_project_seq"
+        "mail_project_seq"
     };
     let mut statement = if unread {
         format!(
-            "SELECT {projection} FROM marks m INDEXED BY marks_unread JOIN messages d ON d.sent_seq=m.message_seq WHERE m.project_id=? AND m.read_seq IS NULL AND m.dismissed_seq IS NULL AND m.message_seq>? AND m.message_seq<=?"
+            "SELECT {projection} FROM message_deliveries d INDEXED BY mail_unread WHERE d.project_id=? AND d.read_seq IS NULL AND d.dismissed_seq IS NULL AND d.sent_seq>? AND d.sent_seq<=?"
         )
     } else {
         format!(
-            "SELECT {projection} FROM messages d INDEXED BY {index} JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.sent_seq>? AND d.sent_seq<=?"
+            "SELECT {projection} FROM message_deliveries d INDEXED BY {index} WHERE d.project_id=? AND d.sent_seq>? AND d.sent_seq<=?"
         )
     };
     let mut args = vec![
@@ -309,11 +342,7 @@ pub(super) fn mail_sql(
         Value::Integer(h as i64),
     ];
     if let Some(to) = to {
-        statement.push_str(if unread {
-            " AND m.recipient_id=?"
-        } else {
-            " AND d.recipient_id=?"
-        });
+        statement.push_str(" AND d.recipient_id=?");
         args.push(Value::Blob(to.into()));
     }
     if let Some(from) = from {
@@ -325,7 +354,7 @@ pub(super) fn mail_sql(
         args.push(Value::Text(kind.clone()));
     }
     if query.unread_only && !unread {
-        statement.push_str(" AND m.read_seq IS NULL AND m.dismissed_seq IS NULL");
+        statement.push_str(" AND d.read_seq IS NULL AND d.dismissed_seq IS NULL");
     }
     if query.unread_only {
         statement.push_str(" AND d.superseded_by IS NULL");

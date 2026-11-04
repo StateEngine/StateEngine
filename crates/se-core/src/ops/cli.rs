@@ -301,13 +301,15 @@ fn input_command(name: &str, c: Command) -> Command {
         "message.read" => c.arg(positional("msg_id",1,true)).arg(value("budget").default_value("262144").help("Maximum serialized reply bytes, checked before marking read")),
         "message.ack" | "message.dismiss" => c.arg(positional("msg_id",1,true)),
         "message.send" => c
-            .arg(positional("to", 1, true))
+            .arg(positional("to", 1, true).help("A registered recipient, or floor with --work-action and --addressee"))
             .arg(positional("body", 2, true))
             .arg(value("kind").default_value("note").value_parser([
                 "note", "task", "question", "answer", "blocker", "done", "handoff", "finding",
             ]))
             .arg(Arg::new("refs").long("ref").action(ArgAction::Append))
-            .arg(value("reply_to").long("reply-to")),
+            .arg(value("reply_to").long("reply-to"))
+            .arg(value("work_action").long("work-action").value_parser(["admit","assign","return","question","ruling_request","ruling","finding","notify"]))
+            .arg(Arg::new("addressees").long("addressee").action(ArgAction::Append)),
         "message.list" => c
             .arg(value("to"))
             .arg(value("from"))

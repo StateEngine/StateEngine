@@ -42,6 +42,7 @@ pub enum MessageKind {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MessageSend {
+    /// A registered recipient, or floor with explicit work addressing.
     pub to: String,
     pub body: String,
     #[serde(default)]
@@ -49,6 +50,9 @@ pub struct MessageSend {
     #[serde(default)]
     pub refs: Vec<String>,
     pub reply_to: Option<MessageId>,
+    /// One shared work message and its recipients; labels grant no authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<se_types::WorkAddressing>,
     pub idempotency_key: IdempotencyKey,
 }
 

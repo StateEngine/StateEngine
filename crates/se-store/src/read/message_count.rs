@@ -1,6 +1,7 @@
 use super::*;
 impl SqliteSnapshot {
     pub(super) fn count_messages(&self, query: MessageQuery) -> StoreResult<u64> {
+        self.mail_source()?;
         let project = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let actor_key = |actor: &Actor| {
@@ -55,8 +56,16 @@ impl SqliteSnapshot {
                     .as_ref()
                     .map(StorePosition::sequence)
                     .unwrap_or(0);
-                let (statement, args) =
-                    message::mail_sql(&project, recipient, sender, &query, h, 0, "COUNT(*)");
+                let (statement, args) = message::mail_sql(
+                    &project,
+                    recipient,
+                    sender,
+                    &query,
+                    h,
+                    0,
+                    "COUNT(DISTINCT d.sent_seq)",
+                    self.info.schema_version,
+                );
                 self.db
                     .query_row(&statement, rusqlite::params_from_iter(args), |r| {
                         crate::sql_value::value::<u64>(r, 0)

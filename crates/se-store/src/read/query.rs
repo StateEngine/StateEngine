@@ -326,6 +326,7 @@ fn kind_name(k: EventKind) -> &'static str {
         EventKind::CredentialActivated => "credential.activated",
         EventKind::CredentialRevoked => "credential.revoked",
         EventKind::MessageSent => "message.sent",
+        EventKind::WorkMessageSent => "message.work_sent",
         EventKind::MessageDelivered => "message.delivered",
         EventKind::MessageRead => "message.read",
         EventKind::MessageDismissed => "message.dismissed",

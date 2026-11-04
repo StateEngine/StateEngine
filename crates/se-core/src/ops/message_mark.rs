@@ -130,7 +130,17 @@ fn row<S: Snapshot>(cx: &mut Cx<'_, S>, record: MessageRecord) -> Result<Message
         id: record.message,
         event_id: record.event,
         from: receipt::actor_ref(cx.read, &record.sender)?,
-        to: receipt::actor_ref(cx.read, &record.recipient)?,
+        to: if record.work.is_some() {
+            receipt::floor_ref()
+        } else {
+            receipt::actor_ref(cx.read, &record.recipient)?
+        },
+        for_recipient: if record.work.is_some() {
+            Some(receipt::actor_ref(cx.read, &record.recipient)?)
+        } else {
+            None
+        },
+        work: record.work,
         kind: serde_json::from_value(serde_json::Value::String(record.kind))
             .map_err(|error| scope::unreadable("message kind", &error.to_string()))?,
         sent_at: receipt::timestamp(event.recorded_at_us)?,

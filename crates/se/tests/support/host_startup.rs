@@ -282,6 +282,7 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
             kind: Default::default(),
             refs: vec![],
             reply_to: None,
+            work: None,
             idempotency_key: key("detached-message")?,
         }),
         &selected,

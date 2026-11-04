@@ -308,6 +308,7 @@ pub struct MessageRecord {
     pub sent: StorePosition,
     pub sender: Actor,
     pub recipient: Actor,
+    pub work: Option<se_types::WorkAddressing>,
     pub kind: String,
     pub body: StoredText,
     pub refs: Vec<EventId>,

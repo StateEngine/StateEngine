@@ -41,6 +41,13 @@ pub fn commit_state(receipt: &CommitReceipt) -> CommitState {
         }
     }
 }
+pub(crate) fn floor_ref() -> ActorRef {
+    ActorRef {
+        kind: "floor".into(),
+        id: "floor".into(),
+        name: "Shared work messages".into(),
+    }
+}
 pub fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<ActorRef> {
     let record = scope::require_present(
         read.principal(actor.clone()).map_err(|e| store_error(&e))?,
@@ -182,7 +189,7 @@ pub fn message<R: Snapshot>(
             ));
         }
     };
-    match event.body {
+    let (message, recipient, work, kind, body, refs, reply_to) = match event.body {
         EventBody::MessageSent {
             message,
             recipient,
@@ -190,52 +197,72 @@ pub fn message<R: Snapshot>(
             body,
             refs,
             reply_to,
-        } if message == output.message => {
-            let StoredText::Present(body) = body else {
-                return Err(scope::unreadable(
-                    "committed message body",
-                    "content was erased; the original body digest cannot be reconstructed",
-                ));
-            };
-            let kind = serde_json::from_value(serde_json::Value::String(kind))
-                .map_err(|e| scope::unreadable("stored message kind", &e.to_string()))?;
-            Ok(MessageOutput {
-                state: commit_state(&output.commit),
-                message_id: message,
-                event_id: output.commit.primary_event.clone(),
-                recorded_at: timestamp(event.recorded_at_us)?,
-                project: Named {
-                    id: project,
-                    name: project_name,
-                },
-                from: actor_ref(cx.read, &event.header.actor)?,
-                to: actor_ref(cx.read, &recipient)?,
-                kind,
-                reply_to,
-                refs,
-                idempotency_key: key(&output.commit)?,
-                body: BodyDigest {
-                    bytes: body.len() as u64,
-                    sha256: format!("{:x}", Sha256::digest(body.as_bytes())),
-                },
-                delivery: Delivery {
-                    state: if matches!(recipient, Actor::Human(_)) {
-                        "not-applicable"
-                    } else {
-                        "pending"
-                    }
-                    .into(),
-                    at: None,
-                },
-                writer: writer(&output.commit),
-            })
+        } => (message, Some(recipient), None, kind, body, refs, reply_to),
+        EventBody::WorkMessageSent {
+            message,
+            work,
+            kind,
+            body,
+            refs,
+            reply_to,
+        } => (message, None, Some(work), kind, body, refs, reply_to),
+        _ => {
+            return Err(scope::unreadable(
+                "message receipt",
+                "stored primary event/message differs",
+            ));
         }
-        _ => Err(scope::unreadable(
+    };
+    if message != output.message {
+        return Err(scope::unreadable(
             "message receipt",
             "stored primary event/message differs",
-        )),
+        ));
     }
+    let StoredText::Present(body) = body else {
+        return Err(scope::unreadable(
+            "committed message body",
+            "content was erased; the original body digest cannot be reconstructed",
+        ));
+    };
+    let kind = serde_json::from_value(serde_json::Value::String(kind))
+        .map_err(|e| scope::unreadable("stored message kind", &e.to_string()))?;
+    Ok(MessageOutput {
+        state: commit_state(&output.commit),
+        message_id: message,
+        event_id: output.commit.primary_event.clone(),
+        recorded_at: timestamp(event.recorded_at_us)?,
+        project: Named {
+            id: project,
+            name: project_name,
+        },
+        from: actor_ref(cx.read, &event.header.actor)?,
+        to: match &recipient {
+            Some(recipient) => actor_ref(cx.read, recipient)?,
+            None => floor_ref(),
+        },
+        work,
+        kind,
+        reply_to,
+        refs,
+        idempotency_key: key(&output.commit)?,
+        body: BodyDigest {
+            bytes: body.len() as u64,
+            sha256: format!("{:x}", Sha256::digest(body.as_bytes())),
+        },
+        delivery: Delivery {
+            state: if matches!(recipient, Some(Actor::Human(_))) {
+                "not-applicable"
+            } else {
+                "pending"
+            }
+            .into(),
+            at: None,
+        },
+        writer: writer(&output.commit),
+    })
 }
+
 pub fn working_state<R: Snapshot>(
     output: commit::WorkingStateSetOutput,
     cx: &mut commit::Cx<'_, R>,

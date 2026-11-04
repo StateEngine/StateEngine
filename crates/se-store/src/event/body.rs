@@ -21,6 +21,7 @@ pub enum EventKind {
     CredentialActivated,
     CredentialRevoked,
     MessageSent,
+    WorkMessageSent,
     MessageDelivered,
     MessageRead,
     MessageDismissed,
@@ -165,6 +166,14 @@ pub enum EventBody<T> {
     MessageSent {
         message: MessageId,
         recipient: Actor,
+        kind: String,
+        body: T,
+        refs: Vec<EventId>,
+        reply_to: Option<MessageId>,
+    },
+    WorkMessageSent {
+        message: MessageId,
+        work: se_types::WorkAddressing,
         kind: String,
         body: T,
         refs: Vec<EventId>,

@@ -23,6 +23,8 @@ pub struct MessageOutput {
     pub project: Named<ProjectId>,
     pub from: ActorRef,
     pub to: ActorRef,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<se_types::WorkAddressing>,
     pub kind: MessageKind,
     pub reply_to: Option<MessageId>,
     pub refs: Vec<EventId>,
@@ -67,6 +69,11 @@ pub struct MessageRow {
     pub event_id: EventId,
     pub from: ActorRef,
     pub to: ActorRef,
+    /// The recipient whose independent delivery/disposition is shown for floor mail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_recipient: Option<ActorRef>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work: Option<se_types::WorkAddressing>,
     pub kind: MessageKind,
     pub sent_at: String,
     pub reply_to: Option<MessageId>,

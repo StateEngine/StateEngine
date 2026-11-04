@@ -198,6 +198,32 @@ impl Validate for MessageSend {
     fn validate(&self) -> Result<()> {
         bounded("to", &self.to, 512, false)?;
         bounded("body", &self.body, MESSAGE_BODY_MAX_BYTES, false)?;
+        match (&*self.to, &self.work) {
+            ("floor", Some(work)) => {
+                work.validate()?;
+                if matches!(self.kind, crate::commit::MessageKind::Finding)
+                    != matches!(work.action, se_types::WorkAction::Finding)
+                {
+                    return Err(SeError::invalid(
+                        "floor finding",
+                        "kind finding paired with work.action finding",
+                    ));
+                }
+            }
+            ("floor", None) => {
+                return Err(SeError::invalid(
+                    "floor message",
+                    "work.action and 1..20 work.addressees",
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(SeError::invalid(
+                    "work",
+                    "a floor target; direct messages use their recipient and kind",
+                ));
+            }
+            (_, None) => {}
+        }
         if self.refs.len() > 20 {
             return Err(SeError::invalid("refs", "at most 20 event ids"));
         }

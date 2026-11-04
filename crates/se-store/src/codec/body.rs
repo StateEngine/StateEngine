@@ -36,9 +36,32 @@ pub(crate) fn body(
                     .transpose()?,
             }
         }
+        "message.work_sent" => {
+            let v = facts(c, seq)?;
+            WorkMessageSent {
+                message: field(&v, "message")?,
+                work: field(&v, "work")?,
+                kind: field(&v, "kind")?,
+                body: stored_text(c, seq, "body")?,
+                refs: field(&v, "refs")?,
+                reply_to: field(&v, "reply_to")?,
+            }
+        }
         "message.read" | "message.dismissed" | "message.delivered" => {
-            let (message,recipient,evidence):(Vec<u8>,Vec<u8>,Option<Vec<u8>>)=c.query_row("SELECT d.message_id,m.recipient_id,m.evidence_event FROM mark_data m JOIN message_data d
-                    ON d.event_seq=m.message_seq WHERE m.event_seq=?",[seq],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).map_err(sql)?;
+            let statement = if crate::connection::info(c)?.schema_version >= 3 {
+                "SELECT d.message_id,m.recipient_id,m.evidence_event FROM mark_data m JOIN message_data d ON d.event_seq=m.message_seq WHERE m.event_seq=?1 UNION ALL SELECT message_id,recipient_id,evidence_event FROM work_mark_data WHERE event_seq=?1"
+            } else {
+                "SELECT d.message_id,m.recipient_id,m.evidence_event FROM mark_data m JOIN message_data d ON d.event_seq=m.message_seq WHERE m.event_seq=?1"
+            };
+            let (message, recipient, evidence): (Vec<u8>, Vec<u8>, Option<Vec<u8>>) = c
+                .query_row(statement, [seq], |r| {
+                    Ok((
+                        crate::sql_value::value(r, 0)?,
+                        crate::sql_value::value(r, 1)?,
+                        crate::sql_value::value(r, 2)?,
+                    ))
+                })
+                .map_err(sql)?;
             let s = scope_key(c, scope, false)?;
             let message = wire(c, "message", &message, &s)?
                 .try_into()

@@ -156,7 +156,19 @@ impl CoreOps for Kernel {
     ) -> Result<OpStep<MessageSendOutput, MessageSendThen>> {
         input.validate()?;
         admitted(cx)?;
-        let recipient = scope::actor_selector(cx.read, &input.to)?;
+        let recipient = if let Some(work) = &input.work {
+            for agent in &work.addressees {
+                if scope::actor_selector(cx.read, agent.as_str())? != Actor::Agent(agent.clone()) {
+                    return Err(SeError::invalid(
+                        "work.addressees",
+                        "registered canonical agents in this project",
+                    ));
+                }
+            }
+            None
+        } else {
+            Some(scope::actor_selector(cx.read, &input.to)?)
+        };
         let registry = cx.read.legacy_registry().map_err(|e| store_error(&e))?;
         let refs = input
             .refs
@@ -169,22 +181,40 @@ impl CoreOps for Kernel {
         drop(registry);
         let kind = serde_json::to_value(&input.kind)
             .map_err(|e| scope::unreadable("message kind", &e.to_string()))?;
-        let intent = serde_json::json!({"recipient":scope::actor_id(&recipient),"kind":kind,"body":input.body,"refs":refs,"reply_to":input.reply_to});
+        let mut intent = serde_json::json!({"kind":kind,"body":input.body,"refs":refs,"reply_to":input.reply_to});
+        if let Some(recipient) = &recipient {
+            intent["recipient"] = serde_json::json!(scope::actor_id(recipient));
+        } else {
+            intent["recipient"] = serde_json::json!("floor");
+            intent["work"] = serde_json::json!(input.work);
+        }
         let key = input.idempotency_key;
-        let event = self.event(
-            EventBody::MessageSent {
+        let kind = kind
+            .as_str()
+            .ok_or_else(|| SeError::invalid("message kind", "registered string"))?
+            .to_owned();
+        let body = if let Some(work) = input.work {
+            EventBody::WorkMessageSent {
                 message: self.facts()?.message.clone(),
-                recipient,
-                kind: kind
-                    .as_str()
-                    .ok_or_else(|| SeError::invalid("message kind", "registered string"))?
-                    .into(),
+                work,
+                kind,
                 body: InputText::Inline(input.body),
                 refs,
                 reply_to: input.reply_to,
-            },
-            cx,
-        )?;
+            }
+        } else {
+            EventBody::MessageSent {
+                message: self.facts()?.message.clone(),
+                recipient: recipient.ok_or_else(|| {
+                    SeError::invalid("message recipient", "a checked direct recipient")
+                })?,
+                kind,
+                body: InputText::Inline(input.body),
+                refs,
+                reply_to: input.reply_to,
+            }
+        };
+        let event = self.event(body, cx)?;
         let batch = self.batch("message.send", key.clone(), intent, event, cx)?;
         Ok(OpStep::Commit {
             batch,
@@ -212,10 +242,12 @@ impl CoreOps for Kernel {
             ));
         }
         match event.body {
-            EventBody::MessageSent { message, .. } => Ok(MessageSendOutput {
-                message,
-                commit: receipt,
-            }),
+            EventBody::MessageSent { message, .. } | EventBody::WorkMessageSent { message, .. } => {
+                Ok(MessageSendOutput {
+                    message,
+                    commit: receipt,
+                })
+            }
             _ => Err(scope::unreadable(
                 "message receipt",
                 "primary event is not message.sent",

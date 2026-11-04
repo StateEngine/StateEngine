@@ -206,6 +206,7 @@ pub fn from_matches_with_key(
                 body: required(m, "body")?,
                 kind: serde_json::from_value(serde_json::Value::String(required(m, "kind")?))
                     .map_err(|_| SeError::invalid("kind", "a registered message kind"))?,
+                work: work_addressing(m)?,
                 refs: many(m, "refs"),
                 reply_to: text(m, "reply_to")
                     .map(se_types::MessageId::from_legacy)
@@ -395,4 +396,28 @@ pub fn from_matches_with_key(
             _ => return Err(unknown(meta.name)),
         };
     Ok(op)
+}
+
+fn work_addressing(m: &ArgMatches) -> Result<Option<se_types::WorkAddressing>> {
+    let addressees = many(m, "addressees");
+    let Some(action) = text(m, "work_action") else {
+        if !addressees.is_empty() {
+            return Err(SeError::invalid(
+                "addressee",
+                "--work-action with a floor target",
+            ));
+        }
+        return Ok(None);
+    };
+    Ok(Some(se_types::WorkAddressing {
+        action: serde_json::from_value(serde_json::Value::String(action))
+            .map_err(|_| SeError::invalid("work-action", "a registered work action"))?,
+        addressees: addressees
+            .into_iter()
+            .map(|id| {
+                id.parse()
+                    .map_err(|_| SeError::invalid("addressee", "a canonical agent ID"))
+            })
+            .collect::<Result<Vec<_>>>()?,
+    }))
 }

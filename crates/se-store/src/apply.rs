@@ -7,6 +7,7 @@ pub(crate) mod effect;
 mod mail;
 mod message;
 mod revision;
+mod work_message;
 pub(crate) use revision::{expected, revision_for};
 mod principal;
 pub(crate) mod process;
@@ -27,12 +28,17 @@ pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> 
     if existing.is_some() {
         return Ok(existing);
     }
-    if let EventBody::MessageSent { message, .. } = &e.body {
+    if let EventBody::MessageSent { message, .. } | EventBody::WorkMessageSent { message, .. } =
+        &e.body
+    {
         let p = project_id(c, &e.header.scope, false)?;
         let m = key(c, "message", message.as_str(), &scope, false)?;
         return c
             .query_row(
-                "SELECT sent_seq FROM messages WHERE project_id=? AND message_id=?",
+                &format!(
+                    "SELECT sent_seq FROM {} WHERE project_id=? AND message_id=? LIMIT 1",
+                    connection::mail_table(c)?
+                ),
                 crate::sql_value::sql_params![p, m],
                 |r| crate::sql_value::value(r, 0),
             )
@@ -68,8 +74,23 @@ pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> 
         },
         false,
     )?;
-    c.query_row(&format!("SELECT m.{col} FROM marks m JOIN messages d ON d.sent_seq=m.message_seq WHERE d.project_id=?
-                    AND d.message_id=? AND m.recipient_id=?"),crate::sql_value::sql_params![project,message,recipient],|r|crate::sql_value::value(r,0)).optional().map_err(sql).map(Option::flatten)
+    let statement = if connection::mail_table(c)? == "message_deliveries" {
+        format!(
+            "SELECT {col} FROM message_deliveries WHERE project_id=? AND message_id=? AND recipient_id=?"
+        )
+    } else {
+        format!(
+            "SELECT m.{col} FROM marks m JOIN messages d ON d.sent_seq=m.message_seq WHERE d.project_id=? AND d.message_id=? AND m.recipient_id=?"
+        )
+    };
+    c.query_row(
+        &statement,
+        crate::sql_value::sql_params![project, message, recipient],
+        |r| crate::sql_value::value(r, 0),
+    )
+    .optional()
+    .map_err(sql)
+    .map(Option::flatten)
 }
 pub(crate) fn apply(
     c: &Connection,
@@ -348,81 +369,17 @@ pub(crate) fn apply(
                 crate::sql_value::sql_params![seq, project()?, recipient],
             )
             .map_err(sql)?;
+            if connection::mail_table(c)? == "message_deliveries" {
+                c.execute("INSERT INTO message_deliveries(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,is_floor,revision) VALUES(?,?,?,?,?,?,0,?)",crate::sql_value::sql_params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
+            }
             count(c, project()?, &recipient, 1, seq)?;
         }
         body @ MessageSuperseded { .. } => {
             message::supersede(c, header, body, seq, revision, facts)?
         }
+        body @ WorkMessageSent { .. } => work_message::send(c, header, body, seq, revision, facts)?,
         body @ (MessageRead { .. } | MessageDismissed { .. } | MessageDelivered { .. }) => {
-            let (message, recipient, column, tag, evidence) = match body {
-                MessageRead { message, recipient } => {
-                    (message, recipient, "read_seq", "read", None)
-                }
-                MessageDismissed { message, recipient } => {
-                    (message, recipient, "dismissed_seq", "dismissed", None)
-                }
-                MessageDelivered {
-                    message,
-                    recipient,
-                    evidence,
-                } => (
-                    message,
-                    recipient,
-                    "delivered_seq",
-                    "delivered",
-                    Some(evidence),
-                ),
-                _ => return Err(invalid("mark dispatch")),
-            };
-            let m = key(c, "message", message.as_str(), &s, false)?;
-            let a = actor_key(&recipient)?;
-            if header.actor != recipient && tag != "delivered" {
-                return Err(fail(
-                    StoreErrorCode::ScopeMismatch,
-                    "recipient marker actor differs",
-                ));
-            }
-            let (sent, unread): (i64, bool) = c
-                .query_row(
-                    "SELECT d.sent_seq,(m.read_seq IS NULL AND m.dismissed_seq IS NULL AND d.superseded_by IS NULL)
-                 FROM messages d JOIN marks m ON m.message_seq=d.sent_seq
-                 WHERE d.project_id=? AND d.message_id=? AND d.recipient_id=?",
-                    crate::sql_value::sql_params![project()?, m, a],
-                    |r| {
-                        Ok((
-                            crate::sql_value::value(r, 0)?,
-                            crate::sql_value::value(r, 1)?,
-                        ))
-                    },
-                )
-                .optional()
-                .map_err(sql)?
-                .ok_or_else(|| {
-                    fail(
-                        StoreErrorCode::ScopeMismatch,
-                        format!(
-                            "message {} is unavailable to the named recipient",
-                            message.as_str()
-                        ),
-                    )
-                })?;
-            let ev = evidence
-                .map(|v| key(c, "event", v.as_str(), &s, false))
-                .transpose()?;
-            c.execute("INSERT INTO mark_data(event_seq,message_seq,recipient_id,disposition,evidence_event) VALUES(?,?,?,?,?)",crate::sql_value::sql_params![seq,sent,a,tag,ev]).map_err(sql)?;
-            c.execute(
-                &format!("UPDATE marks SET {column}=? WHERE message_seq=? AND {column} IS NULL"),
-                crate::sql_value::sql_params![seq, sent],
-            )
-            .map_err(sql)?;
-            c.execute(
-                "UPDATE messages SET revision=? WHERE project_id=? AND message_id=?",
-                crate::sql_value::sql_params![revision, project()?, m],
-            )
-            .map_err(sql)?;
-            if unread && tag != "delivered" {
-                count(c, project()?, &a, -1, seq)?
-            }
+            work_message::mark(c, header, body, seq, revision)?;
         }
         WorkingStateSet {
             agent,
