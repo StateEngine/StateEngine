@@ -12,6 +12,7 @@ use secode_stateengine_api as api;
 use sha2::Sha256;
 use std::{collections::BTreeMap, sync::Mutex};
 
+mod rebind;
 mod recovery;
 
 #[derive(Clone)]
@@ -206,7 +207,9 @@ pub(super) fn check(
             provider: se_store::Provider::SeCode,
             ..
         }) if scope.admission.actor == Actor::Agent(agent.clone())
-            && *generation == scope.admission.generation =>
+            // Only grant-verified calls or registered native targets reach this check.
+            // A verified restart adoption may reissue the same durable session.
+            && *generation <= scope.admission.generation =>
         {
             Ok(())
         }
@@ -235,10 +238,7 @@ impl EmbeddedHost {
             ));
         }
         if request.target.is_some() || request.expected_binding_revision.is_some() {
-            return Err(SeError::invalid(
-                "linked takeover",
-                "embedded takeover arrives with live handover; stop the linked session, then bind fresh",
-            ));
+            return self.rebind(&router, request, options, &deadline).await;
         }
         // Native consent cannot opt back into capture disabled by the owner.
         let home = self.config.state_home.clone();

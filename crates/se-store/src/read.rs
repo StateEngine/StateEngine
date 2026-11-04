@@ -23,6 +23,7 @@ mod message_count;
 mod page;
 mod project;
 mod query;
+mod receipt;
 mod runtime;
 mod search;
 mod selector;
