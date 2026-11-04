@@ -49,6 +49,7 @@ pub use message_mark::{
 };
 pub mod message;
 pub use listing::{AgentList, AgentPage};
+pub mod mcp_identity;
 mod meta;
 pub mod outputs;
 pub mod project;

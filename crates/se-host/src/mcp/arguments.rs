@@ -1,30 +1,29 @@
 //! Caller assertions may agree with authenticated custody, never select it.
 use super::*;
-const FIELDS: [(&str, bool); 5] = [
-    ("agent_id", false),
-    ("agentId", false),
-    ("project_id", true),
-    ("projectId", true),
-    ("project", true),
-];
+use se_core::ops::mcp_identity::{self, IdentityRole};
 
 pub(super) async fn bound(
     backend: &mut impl McpBackend,
     capability: Arc<Secret>,
+    tool: &str,
     mut arguments: Value,
 ) -> Result<Value> {
-    if !FIELDS
+    if !mcp_identity::CALLER_FIELDS
         .iter()
         .any(|(field, _)| arguments.get(field).is_some())
     {
         return Ok(arguments);
     }
+    let fields = mcp_identity::fields(tool)?;
     let principal = backend.bound_principal(capability).await?;
-    for (field, project) in FIELDS {
+    for &(field, role) in fields {
         let Some(requested) = arguments.get(field) else {
             continue;
         };
-        let bound = if project {
+        if role == IdentityRole::Target {
+            continue;
+        }
+        let bound = if role == IdentityRole::CallerProject {
             principal.project.as_str()
         } else {
             principal.agent.as_str()
@@ -39,8 +38,10 @@ pub(super) async fn bound(
         }
     }
     if let Some(object) = arguments.as_object_mut() {
-        for (field, _) in FIELDS {
-            object.remove(field);
+        for &(field, role) in fields {
+            if role != IdentityRole::Target {
+                object.remove(field);
+            }
         }
     }
     Ok(arguments)

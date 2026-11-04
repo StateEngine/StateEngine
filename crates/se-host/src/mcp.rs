@@ -210,7 +210,8 @@ async fn call(
     };
     // A domain refusal, including a bad argument, is a typed tool result the
     // model can read and act on, never an empty success.
-    let arguments = match arguments::bound(backend, Arc::clone(&capability), arguments).await {
+    let arguments = match arguments::bound(backend, Arc::clone(&capability), name, arguments).await
+    {
         Ok(arguments) => arguments,
         Err(error) => return resume::failure(id, &error),
     };
