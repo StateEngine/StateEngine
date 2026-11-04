@@ -103,7 +103,10 @@ fn context(process: HANDLE) -> ProcResult<Context> {
     let token = handle(raw, "own detached broker token")?;
     let token = token.as_raw_handle();
     // A broker must never remove a restricted-token or app-container boundary.
-    if token_value::<u32>(token, TokenHasRestrictions)? != 0
+    // The native payload is BOOLEAN although the published enum page says DWORD;
+    // token_buffer preserves DWORD alignment and only this initialized byte is read.
+    // https://github.com/microsoft/win32metadata/discussions/2308
+    if token_value::<u8>(token, TokenHasRestrictions)? != 0
         || token_value::<u32>(token, TokenIsAppContainer)? != 0
     {
         return Err(input(
