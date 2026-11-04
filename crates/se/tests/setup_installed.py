@@ -22,7 +22,7 @@ state=owner/'state'
 repo=root/'repository';repo.mkdir()
 work=repo/'user-work.txt';work.write_bytes(b'Existing user work survives first setup.\n')
 env={k:v for k,v in os.environ.items() if not k.startswith(('SE_','STATEENGINE_','CODEX_','CLAUDE'))}
-env.update(HOME=str(owner),USERPROFILE=str(owner),SE_HOME=str(state),SHELL='/bin/sh')
+env.update(HOME=str(owner),USERPROFILE=str(owner),SE_HOME=str(state),SHELL='/bin/sh',PATH='/usr/bin:/bin')
 se=owner/'.local/bin/se'
 calls=0
 def call(*args,install=False):
