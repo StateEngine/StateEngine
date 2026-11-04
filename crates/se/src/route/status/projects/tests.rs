@@ -85,7 +85,7 @@ fn partial_agent_page_refuses_a_running_total() -> fixture::Check {
         store.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(fixture::request(&format!("status-count-profile-{agent}"))?),
                 vec![se_store::EventBody::ProfileSaved {
                     agent: agent.clone(),
                     profile: se_store::Profile {
