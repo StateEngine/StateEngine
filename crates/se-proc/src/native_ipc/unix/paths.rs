@@ -4,7 +4,8 @@ use sha2::{Digest, Sha256};
 use std::{ffi::CString, os::fd::AsRawFd};
 
 /// The executable collects these platform inputs. Embedded callers supply
-/// their own; absence selects the state home's protected `run` directory.
+/// their own; absence selects the state home's protected `run` directory, with
+/// a short system temporary fallback when the native socket path will not fit.
 #[derive(Clone, Debug, Default)]
 pub struct UnixSocketPaths {
     /// Linux XDG_RUNTIME_DIR; its existing root must be current-owner 0700.
@@ -19,6 +20,11 @@ struct SocketLocation {
     temporary: bool,
 }
 impl UnixSocketPaths {
+    /// Deterministic system fallback, independent of a host's redirected TMPDIR.
+    /// Creation still goes through the native owner-only directory checks.
+    pub fn short_provider_root() -> PathBuf {
+        system_temporary_directory().join(format!("se-{}", current_uid()))
+    }
     /// Pure address comparison for a caller that cannot take the runtime lease.
     /// This observes no files and creates no directories. It grants no custody:
     /// binding still requires `prepare` under the retained exclusive home lease.
@@ -114,22 +120,35 @@ impl UnixSocketPaths {
                 false,
             ));
         }
-        #[cfg(target_os = "macos")]
-        if state.join("run/runtime.sock").as_os_str().as_bytes().len() >= 104 {
-            let root = self.temporary_directory.clone().ok_or_else(|| refuse(
-                IpcNativeErrorCode::UnsafeEndpoint,
-                "long macOS state home requires an explicit protected temporary directory (TMPDIR in the CLI)",
-            ))?;
-            return Ok((
-                root,
-                format!("se-{}", current_uid()),
-                format!("{key}.sock"),
-                true,
-            ));
+        // Both Linux without XDG and macOS need a short, private per-user
+        // fallback when the state-home address exceeds native sun_path.
+        // SAFETY: zeroed sockaddr_un is valid storage; only array capacity is read.
+        let address: libc::sockaddr_un = unsafe { zeroed() };
+        if state.join("run/runtime.sock").as_os_str().as_bytes().len() >= address.sun_path.len() {
+            let child = format!("se-{}", current_uid());
+            let name = format!("{key}.sock");
+            let root = self
+                .temporary_directory
+                .as_ref()
+                .filter(|root| {
+                    root.join(&child).join(&name).as_os_str().as_bytes().len()
+                        < address.sun_path.len()
+                })
+                .cloned()
+                .unwrap_or_else(system_temporary_directory);
+            return Ok((root, child, name, true));
         }
         let _ = key;
         Ok((state.to_owned(), "run".into(), "runtime.sock".into(), false))
     }
+}
+
+fn system_temporary_directory() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    let root = "/private/tmp";
+    #[cfg(not(target_os = "macos"))]
+    let root = "/tmp";
+    PathBuf::from(root)
 }
 
 fn parent_pin(path: &Path, temporary: bool) -> IpcNativeResult<File> {

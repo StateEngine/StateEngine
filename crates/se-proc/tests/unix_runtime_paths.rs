@@ -107,6 +107,32 @@ fn expected_paths_are_pure_even_when_the_home_does_not_exist() -> Result {
     }
     Ok(())
 }
+#[test]
+fn absent_platform_directories_use_private_short_sockets_for_long_homes() -> Result {
+    let h = Home::new()?;
+    let first = h.root.join("long-state-home-".repeat(8));
+    let second = h.root.join("another-long-home-".repeat(8));
+    private(&first)?;
+    private(&second)?;
+    let options = UnixSocketPaths::default();
+    let expected = options.expected_path(&first)?;
+    let a = options.prepare(&first, &bound())?;
+    let b = options.prepare(&second, &bound())?;
+    assert_eq!(a, expected);
+    assert_ne!(a, b);
+    assert!(!a.starts_with(&h.root));
+    assert!(a.as_os_str().as_encoded_bytes().len() < 100);
+    let long_temporary = UnixSocketPaths {
+        runtime_directory: None,
+        temporary_directory: Some(first.clone()),
+    };
+    assert_eq!(long_temporary.expected_path(&first)?, a);
+    let parent = fs::metadata(a.parent().ok_or("parent")?)?;
+    assert_eq!(parent.uid(), fs::metadata(&h.root)?.uid());
+    assert_eq!(parent.mode() & 0o7777, 0o700);
+    round_trip(&a)?;
+    round_trip(&b)
+}
 #[cfg(target_os = "linux")]
 #[test]
 fn xdg_homes_do_not_collide_and_stale_cleanup_keeps_its_native_checks() -> Result {

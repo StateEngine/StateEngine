@@ -45,6 +45,37 @@ pub(super) fn token(prefix: &str) -> Result<Secret> {
     }
     Secret::new(std::mem::take(&mut *value))
 }
+#[cfg(unix)]
+pub(super) fn stabilize_alias(
+    mut invocation: crate::ProviderInvocation,
+    required: bool,
+) -> Result<crate::ProviderInvocation> {
+    if !required {
+        return Ok(invocation);
+    }
+    let selected = invocation.executable.to_local()?;
+    // A native alias can exec an interpreter after its first image is observed.
+    // Keep a stable parent in the owned scope instead of weakening root identity.
+    // The fixed program passes separate argv words through "$@"; provider paths,
+    // arguments and credentials are never interpolated into shell source.
+    let parent =
+        se_proc::canonicalize_path("/bin/sh").map_err(|e| error("provider alias supervisor", e))?;
+    let mut arguments = vec![
+        "-c".into(),
+        concat!(
+            "exec 3<&0; \"$@\" <&3 3<&- & se_provider_pid=$!; exec 3<&-; ",
+            "trap 'kill -TERM \"$se_provider_pid\"; wait \"$se_provider_pid\"; exit $?' TERM; ",
+            "trap 'kill -INT \"$se_provider_pid\"; wait \"$se_provider_pid\"; exit $?' INT; ",
+            "wait \"$se_provider_pid\"; se_provider_status=$?; trap - TERM INT; exit \"$se_provider_status\""
+        ).into(),
+        "se-provider-alias".into(),
+        selected.into_os_string(),
+    ];
+    arguments.append(&mut invocation.arguments);
+    invocation.executable = NativePath::from_local(parent)?;
+    invocation.arguments = arguments;
+    Ok(invocation)
+}
 pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_proc::LaunchPolicy> {
     let scratch = home.join("launch").join(
         se_proc::session_launch_id(&plan.session)
@@ -79,12 +110,13 @@ pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_pro
 }
 #[cfg(target_os = "linux")]
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
-    find_command(command)?.ok_or_else(|| {
+    let found = find_command(command)?.ok_or_else(|| {
         se_core::scope::unreadable(
             "provider executable",
             "configured command was not found in absolute PATH entries",
         )
-    })
+    })?;
+    se_proc::canonicalize_path(found).map_err(|e| error("provider executable", e))
 }
 
 pub(super) fn resolve_provider_command(
@@ -129,12 +161,7 @@ pub(super) fn resolve_provider_command(
 fn find_command(command: &str) -> Result<Option<PathBuf>> {
     let path = PathBuf::from(command);
     if path.is_absolute() {
-        return native_executable(&path)
-            .map_err(|e| error("provider executable", e))?
-            .map(|resolved| {
-                se_proc::canonicalize_path(resolved).map_err(|e| error("provider executable", e))
-            })
-            .transpose();
+        return native_executable(&path).map_err(|e| error("provider executable", e));
     }
     if path.components().count() != 1 {
         return Err(se_types::SeError::invalid(
@@ -155,9 +182,9 @@ fn find_command(command: &str) -> Result<Option<PathBuf>> {
         }
         match native_executable(&directory.join(command)) {
             Ok(Some(candidate)) => {
-                return se_proc::canonicalize_path(candidate)
-                    .map(Some)
-                    .map_err(|e| error("provider executable", e));
+                // Multicall launchers select the provider through argv[0].
+                // Image identity is still observed by the native process arena.
+                return Ok(Some(candidate));
             }
             Ok(None) => (),
             Err(error) if unreadable.is_none() => unreadable = Some(error),

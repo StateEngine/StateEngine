@@ -39,12 +39,23 @@ impl CodexHarness {
             } else {
                 let launch =
                     se_proc::session_launch_id(&request.identity.session).map_err(native_error)?;
-                self.socket_root
+                let requested = self
+                    .socket_root
                     .join(format!(
                         "se-cx-{}",
                         launch.as_str().trim_start_matches("lch_")
                     ))
-                    .join("s")
+                    .join("s");
+                if requested.as_os_str().as_bytes().len() < 100 {
+                    requested
+                } else {
+                    se_proc::native_ipc::UnixSocketPaths::short_provider_root()
+                        .join(format!(
+                            "se-cx-{}",
+                            launch.as_str().trim_start_matches("lch_")
+                        ))
+                        .join("s")
+                }
             };
             if !selected.is_absolute() || selected.as_os_str().as_bytes().len() >= 100 {
                 return Err(incompatible(
@@ -75,6 +86,13 @@ impl CodexHarness {
         let deadline = crate::client::lease::Deadline::idle()?.stage(cx.timeout)?;
         self.pool.run_owned(&deadline, move || {
             let parent = socket.parent().ok_or_else(|| SeError::invalid("Codex socket", "a parent"))?;
+            #[cfg(unix)]
+            let _short_root = {
+                let root = se_proc::native_ipc::UnixSocketPaths::short_provider_root();
+                if parent.parent() == Some(root.as_path()) {
+                    Some(se_proc::NativeStateFiles::create(&root).map_err(native_error)?)
+                } else { None }
+            };
             match std::fs::symlink_metadata(parent) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
                 Ok(_) => return Err(incompatible("the rendezvous directory already exists", "Reconcile its original launch; a new launch never reuses or repairs it.")),
