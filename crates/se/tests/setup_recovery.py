@@ -85,6 +85,30 @@ def fresh_home(f):
     assert snapshot(home) == before
 
 
+def installer_identity_is_fresh(f):
+    home = f.root / "machine-only O’Brien's home"
+    home.mkdir(mode=0o700)
+    shutil.copy2(f.home / "machine.json", home / "machine.json")
+    machine = (home / "machine.json").read_bytes()
+    original = f.home
+    try:
+        f.home = home
+        status = f.ok("status")
+        assert status["setup"]["state"] == "not-set-up"
+        result = f.call("resume")
+        assert result.returncode != 0 and json.loads(result.stdout)["code"] == "setup-required"
+        initialized = f.ok("init", "--repo", str(f.root / "repo"))
+        assert initialized["owner"]["human_id"] != f.owner
+        assert (home / "machine.json").read_bytes() == machine
+        assert (home / "credential").is_file() and (home / "state.db").is_file()
+        assert f.ok("status")["setup"]["state"] == "configured"
+    finally:
+        try:
+            f.ok("down")
+        finally:
+            f.home = original
+
+
 def setup_required_command_keeps_curly_home(f):
     home = f.root / "fresh O’Brien's home"
     home.mkdir(mode=0o700)
@@ -188,7 +212,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    cases = [deleted_state, fresh_home, setup_required_command_keeps_curly_home, unclaimed_staging, linked_stage_refuses, line_break_home_has_no_shell_command]
+    cases = [deleted_state, fresh_home, installer_identity_is_fresh, setup_required_command_keeps_curly_home, unclaimed_staging, linked_stage_refuses, line_break_home_has_no_shell_command]
     print(f"1..{len(cases)}", flush=True)
     for number, case in enumerate(cases, 1):
         f = Fixture(args.se.resolve(), args.output.resolve() / (case.__name__ + "-O’Brien's-" + uuid.uuid4().hex[:6]))
