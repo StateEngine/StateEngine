@@ -789,25 +789,40 @@ impl StatusHost {
         }
     }
 
-    /// The kernel can drop /proc/PID/exe while our exact instance's state has
-    /// not reached zombie yet, so read_process reports the executable as
-    /// unreadable for a process that is exiting normally. One fresh
-    /// observation settles that race without masking a real refusal: proven
-    /// absence or our exact zombie is an exit, a still-present exact instance
-    /// is alive, and anything else keeps the original error.
+    /// The kernel can drop /proc/PID/exe while the exiting instance's state
+    /// has not reached zombie yet, and that window can outlast one re-read.
+    /// Poll the bounded observation until it settles: absence or our exact
+    /// zombie proves the exit, a live exact instance means the refusal was
+    /// transient, and anything else keeps the original error.
     fn settle_exit_race(
         &self,
         original: se_proc::ProcError,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let confirmed = se_proc::NativeProcessRuntime::read_process_until(
-            self.identity.machine.clone(),
-            self.identity.pid,
-            Instant::now() + Duration::from_secs(5),
-        )
-        .map_err(|again| {
-            format!("exit-race confirmation failed: original {original:?}, confirmation {again:?}")
-        })?;
-        self.classify(confirmed, "exit-race confirmation")
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match se_proc::NativeProcessRuntime::read_process_until(
+                self.identity.machine.clone(),
+                self.identity.pid,
+                Instant::now() + Duration::from_millis(100),
+            ) {
+                Ok(read) => return self.classify(read, "exit-race confirmation"),
+                Err(again) if Self::exit_race(&again) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!(
+                            "exit-race confirmation unsettled: original {original:?}, last {again:?}"
+                        )
+                        .into());
+                    }
+                    std::thread::park_timeout(Duration::from_millis(10));
+                }
+                Err(again) => {
+                    return Err(format!(
+                        "exit-race confirmation failed: original {original:?}, confirmation {again:?}"
+                    )
+                    .into());
+                }
+            }
+        }
     }
 
     /// The exact read_process signature of that exit race: the executable read
