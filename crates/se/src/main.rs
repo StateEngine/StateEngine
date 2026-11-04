@@ -288,3 +288,33 @@ fn main() -> std::process::ExitCode {
     }
     std::process::ExitCode::from(run(args, route::execute::dispatch).unwrap_or(70))
 }
+
+#[cfg(test)]
+#[test]
+fn invalid_flag_assignments_stay_private_in_both_renderers()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    for flag in ["--help", "--version", "--quiet", "--no-color", "--json"] {
+        let args = vec![
+            std::ffi::OsString::from("se"),
+            std::ffi::OsString::from(format!("{flag}=private-renderer-capability")),
+        ];
+        let error = match grammar::parse(args) {
+            Err(failure) => failure.error,
+            Ok(_) => return Err("boolean assignment unexpectedly accepted".into()),
+        };
+        for json in [false, true] {
+            let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+            let exit = render::error::write(
+                &error,
+                &se_types::RenderCx::default(),
+                json,
+                &mut stdout,
+                &mut stderr,
+            )?;
+            assert_eq!(exit, 64);
+            assert!(!String::from_utf8(stdout)?.contains("private-renderer-capability"));
+            assert!(!String::from_utf8(stderr)?.contains("private-renderer-capability"));
+        }
+    }
+    Ok(())
+}

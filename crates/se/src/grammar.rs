@@ -124,7 +124,11 @@ fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
         }),
         _ => Detail::UsageInvalidValue(details::UsageInvalidValue {
             argument: argument.clone(),
-            got: context(&error, ContextKind::InvalidValue),
+            got: if context(&error, ContextKind::ValidValue).is_empty() {
+                "<redacted>".into()
+            } else {
+                context(&error, ContextKind::InvalidValue)
+            },
             expected: {
                 let expected = context(&error, ContextKind::ValidValue);
                 if expected.is_empty() { format!("a valid value for {argument}") } else { expected }
@@ -215,7 +219,44 @@ pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<Option<std::pat
 mod tests {
     use super::*;
     #[test]
-    fn explicit_help_never_retains_option_values() {
+    fn unenumerated_rejected_values_do_not_enter_diagnostics()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let args: Vec<OsString> = ["se", "--budget", "private-validator-capability"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let error = clap::Command::new("se")
+            .arg(
+                clap::Arg::new("budget")
+                    .long("budget")
+                    .value_parser(clap::value_parser!(u64)),
+            )
+            .try_get_matches_from(&args)
+            .err()
+            .ok_or("numeric validator unexpectedly accepted its input")?;
+        let error = usage_error(error, &args);
+        let Detail::UsageInvalidValue(detail) = error.body.detail() else {
+            panic!("the invalid-value diagnostic must remain classified");
+        };
+        assert_eq!(detail.got, "<redacted>");
+        assert!(!serde_json::to_string(&error.body)?.contains("private-validator-capability"));
+        let args = ["se", "init", "--provider", "cloude"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let Err(failure) = parse(args) else {
+            panic!("provider typo must refuse")
+        };
+        let Detail::UsageInvalidValue(detail) = failure.error.body.detail() else {
+            panic!("the enumerated diagnostic must remain classified");
+        };
+        assert_eq!(detail.got, "cloude");
+        Ok(())
+    }
+
+    #[test]
+    fn explicit_help_never_retains_option_values()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         for (path, expected) in [
             (vec!["--token=private-inline-capability"], "--token"),
             (vec!["-tprivate-inline-capability"], "-t"),
@@ -233,20 +274,18 @@ mod tests {
             };
             let error = ops::metadata_output(&invocation.operation)
                 .err()
-                .unwrap_or_else(|| panic!("unknown help target must refuse"));
+                .ok_or("unknown help target must refuse")?;
             let Detail::UsageUnknownCommand(detail) = error.body.detail() else {
                 panic!("unknown help target must retain its command diagnostic");
             };
             assert_eq!(detail.got, expected);
-            assert!(
-                !serde_json::to_string(&error.body)
-                    .unwrap()
-                    .contains("private-inline-capability")
-            );
+            assert!(!serde_json::to_string(&error.body)?.contains("private-inline-capability"));
         }
+        Ok(())
     }
     #[test]
-    fn unknown_options_never_retain_values() {
+    fn unknown_options_never_retain_values() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         for prefix in [
             vec!["se"],
             vec!["se", "doctor"],
@@ -274,11 +313,11 @@ mod tests {
                     _ => panic!("the option must retain its diagnostic"),
                 }
                 assert!(
-                    !serde_json::to_string(&failure.error.body)
-                        .unwrap()
+                    !serde_json::to_string(&failure.error.body)?
                         .contains("private-inline-capability")
                 );
             }
         }
+        Ok(())
     }
 }
