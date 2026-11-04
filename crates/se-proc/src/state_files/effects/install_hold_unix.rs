@@ -112,6 +112,9 @@ pub(super) fn run(
 ) -> Result<i32> {
     let path = Path::new(executable);
     let caller = child::caller(path)?;
+    let _signals = child::Signals::install(path)?;
+    // SAFETY: immutable kernel identity retained for the pre-exec parent check.
+    let holder = unsafe { libc::getpid() };
     // SAFETY: duplicate only this retained claim; CLOEXEC remains set in the
     // holder, and is cleared in the forked child immediately before exec.
     let raw = unsafe { libc::fcntl(claim.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
@@ -172,11 +175,12 @@ pub(super) fn run(
         custody = Some(receiver);
     }
     let custody_raw = custody.as_ref().map(AsRawFd::as_raw_fd);
-    // SAFETY: the closure uses only async-signal-safe fcntl and errno access.
+    // SAFETY: the closure uses only native parent/signal setup, fcntl and errno.
     // A duplicated flock shares the same open file description; no explicit
     // unlock is performed when the holder drops its own descriptors.
     unsafe {
         command.pre_exec(move || {
+            child::prepare_worker(holder)?;
             if libc::fcntl(raw, libc::F_SETFD, 0) < 0 {
                 return Err(io::Error::last_os_error());
             }
