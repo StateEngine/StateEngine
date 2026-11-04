@@ -83,14 +83,17 @@ pub struct ContentHash(pub [u8; 32]);
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
+#[serde(try_from = "String", into = "String")]
 pub struct RelativePath(pub(crate) String);
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
+#[serde(try_from = "String", into = "String")]
 pub struct AtlasCursor(pub(crate) String);
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
+#[serde(try_from = "String", into = "String")]
 pub struct QueryText(pub(crate) String);
 
 #[derive(
@@ -468,98 +471,10 @@ pub struct Outline {
     pub next: Option<AtlasCursor>,
 }
 
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-#[serde(deny_unknown_fields)]
-pub struct QueryBudget {
-    pub max_results: u16,
-    pub max_bytes: u32,
-    pub work: Duration,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SearchScope {
-    pub paths: Vec<RelativePath>,
-    pub languages: Vec<Language>,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub enum SymbolSelector {
-    Id(SymbolId),
-    At {
-        path: RelativePath,
-        position: Position,
-    },
-    Name {
-        name: QueryText,
-        path: Option<RelativePath>,
-        container: Option<QueryText>,
-    },
-}
-#[derive(
-    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
-)]
-pub enum SearchKind {
-    Symbol,
-    Text,
-    Path,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct FindQuery {
-    pub kind: SearchKind,
-    pub query: QueryText,
-    pub scope: SearchScope,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct RefsQuery {
-    pub symbol: SymbolSelector,
-    pub kinds: Vec<ReferenceKind>,
-    pub include_name_only: bool,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ImpactQuery {
-    pub symbol: SymbolSelector,
-    pub depth: u8,
-    pub include_name_only: bool,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub enum GitObjectId {
-    Sha1([u8; 20]),
-    Sha256([u8; 32]),
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub enum ChangeBaseline {
-    Cursor(AtlasCursor),
-    ObservedCommit(GitObjectId),
-    ObservedUnixMillis(i64),
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ChangesQuery {
-    pub since: ChangeBaseline,
-    pub scope: SearchScope,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct OutlineQuery {
-    pub path: RelativePath,
-    pub next: Option<AtlasCursor>,
-    pub budget: QueryBudget,
-}
-
+mod query;
+pub use query::*;
+mod validation;
+pub use validation::Validate;
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResumeRequest {
@@ -629,8 +544,8 @@ pub struct ResumeCode {
     pub diagnostic: Option<ErrorBody>,
 }
 
-/// Required constructors/decoders, declared without implementation until design
-/// approval. JSON/CLI adapters call these same validations.
+/// Shared pure constructors/decoders. Validate supplies the common ingress
+/// implementation; scoped cursor payload checks remain with the query reader.
 pub trait AtlasValidation {
     fn relative_path(&self, value: String) -> crate::Result<RelativePath>;
     fn query_text(&self, value: String) -> crate::Result<QueryText>;
@@ -639,7 +554,7 @@ pub trait AtlasValidation {
     fn selector(&self, value: SymbolSelector) -> crate::Result<SymbolSelector>;
 }
 
-/// Implemented for RelativePath, AtlasCursor and QueryText after approval.
+/// Borrow the validated UTF-8 spelling without creating another text domain.
 pub trait AtlasText {
     fn as_str(&self) -> &str;
 }

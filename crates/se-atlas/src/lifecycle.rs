@@ -182,7 +182,7 @@ pub enum RevisionTrust {
     QualifiedChangeSequence,
     QualifiedCtime,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileIdentity {
     pub volume: [u8; 16],
     pub file: [u8; 16],

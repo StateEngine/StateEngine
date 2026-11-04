@@ -8,6 +8,10 @@ publish.workspace = true
 
 [dependencies]
 se-types = { path = "../se-types" }
+serde.workspace = true
+serde_json.workspace = true
+blake3 = { version = "=1.8.7", default-features = false, features = ["std", "pure"] }
+rusqlite = { version = "0.40", features = ["bundled", "hooks", "limits"] }
 
 [lints]
 workspace = true

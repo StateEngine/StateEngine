@@ -15,7 +15,8 @@ use std::{path::PathBuf, time::Duration};
 pub struct CacheLocation {
     pub directory: PathBuf,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CachePointer {
     pub schema: u32,
     pub project: ProjectId,
