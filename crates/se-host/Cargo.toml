@@ -45,5 +45,10 @@ name = "w3_realhost_independent"
 path = "tests/w3_realhost_independent.rs"
 required-features = ["secode"]
 
+[[test]]
+name = "w3_lifecycle_independent"
+path = "tests/w3_lifecycle_independent.rs"
+required-features = ["secode"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread"] }
