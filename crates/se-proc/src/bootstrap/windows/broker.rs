@@ -30,31 +30,67 @@ struct Context {
     elevation: i32,
     integrity: String,
 }
-// Private callers instantiate this only with native token POD structures.
-fn token_value<T>(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> ProcResult<T> {
-    // SAFETY: every caller uses a native POD type whose all-zero representation is valid.
-    let mut value: T = unsafe { zeroed() };
-    let mut bytes = 0;
-    // SAFETY: retained token and writable aligned output of the exact requested native size.
-    if unsafe {
-        GetTokenInformation(
-            token,
-            class,
-            (&mut value as *mut T).cast(),
-            size_of::<T>() as u32,
-            &mut bytes,
-        )
-    } == 0
-    {
-        return Err(last("read detached broker token context"));
+// Token queries use aligned owned buffers and bounded resizing: a token's
+// variable data may change after the sizing probe. Never decode a short value.
+fn token_buffer(
+    token: HANDLE,
+    class: TOKEN_INFORMATION_CLASS,
+    minimum: usize,
+) -> ProcResult<Vec<usize>> {
+    let mut needed = 0;
+    // SAFETY: documented null sizing probe with retained token and writable length.
+    unsafe {
+        GetTokenInformation(token, class, ptr::null_mut(), 0, &mut needed);
     }
-    if bytes as usize != size_of::<T>() {
-        return Err(input(
-            "detached broker token",
-            "native token output size changed",
-        ));
+    for _ in 0..3 {
+        let capacity = (needed as usize).max(minimum).saturating_add(256);
+        if capacity > 65536 {
+            return Err(input(
+                "detached broker token",
+                "native token buffer exceeds 64 KiB",
+            ));
+        }
+        let mut storage = vec![0usize; capacity.div_ceil(size_of::<usize>())];
+        let mut returned = 0;
+        // SAFETY: aligned initialized allocation of at least capacity bytes;
+        // the token and output length remain retained throughout this query.
+        let ok = unsafe {
+            GetTokenInformation(
+                token,
+                class,
+                storage.as_mut_ptr().cast(),
+                capacity as u32,
+                &mut returned,
+            )
+        };
+        if ok != 0 {
+            if (returned as usize) < minimum || returned as usize > capacity {
+                return Err(input(
+                    "detached broker token",
+                    &format!(
+                        "class {class}: returned {returned} bytes, minimum {minimum}, capacity {capacity}"
+                    ),
+                ));
+            }
+            return Ok(storage);
+        }
+        let cause = io::Error::last_os_error();
+        if cause.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+            return Err(fail("read detached broker token context", cause));
+        }
+        needed = returned;
     }
-    Ok(value)
+    Err(input(
+        "detached broker token",
+        &format!("class {class}: size did not stabilize after three native reads"),
+    ))
+}
+// Private callers instantiate this only with fixed-size, pointer-free native token POD.
+fn token_value<T: Copy>(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> ProcResult<T> {
+    let storage = token_buffer(token, class, size_of::<T>())?;
+    // SAFETY: successful native query initialized at least sizeof(T) bytes;
+    // usize allocation aligns every fixed token POD used by these private callers.
+    Ok(unsafe { *storage.as_ptr().cast::<T>() })
 }
 fn context(process: HANDLE) -> ProcResult<Context> {
     let sid =
@@ -76,38 +112,11 @@ fn context(process: HANDLE) -> ProcResult<Context> {
         ));
     }
     let stats: TOKEN_STATISTICS = token_value(token, TokenStatistics)?;
-    let mut bytes = 0;
-    // SAFETY: documented sizing call; token remains retained by the local owner above.
-    unsafe {
-        GetTokenInformation(token, TokenIntegrityLevel, ptr::null_mut(), 0, &mut bytes);
-    }
-    if bytes < size_of::<TOKEN_MANDATORY_LABEL>() as u32 || bytes > 65536 {
-        return Err(input(
-            "detached broker token",
-            "integrity label size outside bounds",
-        ));
-    }
-    let capacity = bytes;
-    let mut buffer = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
-    // SAFETY: aligned retained native token buffer with measured capacity.
-    if unsafe {
-        GetTokenInformation(
-            token,
-            TokenIntegrityLevel,
-            buffer.as_mut_ptr().cast(),
-            capacity,
-            &mut bytes,
-        )
-    } == 0
-    {
-        return Err(last("read detached broker integrity"));
-    }
-    if bytes > capacity || bytes < size_of::<TOKEN_MANDATORY_LABEL>() as u32 {
-        return Err(input(
-            "detached broker token",
-            "integrity label size changed",
-        ));
-    }
+    let buffer = token_buffer(
+        token,
+        TokenIntegrityLevel,
+        size_of::<TOKEN_MANDATORY_LABEL>(),
+    )?;
     // SAFETY: successful aligned label output remains retained through SID conversion.
     let integrity = crate::windows_native::sid_text(unsafe {
         (*buffer.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid
