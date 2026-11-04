@@ -60,30 +60,105 @@ impl SqliteSnapshot {
         budget: ReadBudget,
     ) -> StoreResult<Page<ImportCheckpoint>> {
         self.import_owner()?;
-        let page = self.list_heads(
-            "import_progress",
-            "last_seq",
-            "import_id=?",
-            vec![rusqlite::types::Value::Blob(id.as_bytes().to_vec())],
-            budget,
-        )?;
-        let window = page.window().clone();
-        let next = page.next().cloned();
-        let items = page
-            .into_items()
-            .into_iter()
-            .map(|row| {
-                let EventBody::ImportProgress { mut checkpoint, .. } = row.current.body else {
-                    return Err(fail(
-                        StoreErrorCode::ProjectionInconsistent,
-                        "import checkpoint head has another kind",
-                    ));
-                };
-                checkpoint.expected = Expected::Revision(row.revision);
-                Ok(checkpoint)
-            })
-            .collect::<StoreResult<Vec<_>>>()?;
-        Page::new(items, window, next).map_err(invalid)
+        let deadline = query::deadline(&budget)?;
+        let binding = format!("live:import-source-key:{}", codec::encode(&id)?);
+        let (h, after) = self.window(&budget, &binding, true)?;
+        // The numeric cursor names the immutable checkpoint carrying its typed
+        // last key. Updates of that source cannot change the continuation key,
+        // and legacy source keys never need to fit inside a wire cursor.
+        let previous = if after == 0 {
+            None
+        } else {
+            let event = self.record(i64::try_from(after).map_err(invalid)?)?;
+            let EventBody::ImportProgress { checkpoint, .. } = event.body else {
+                return Err(fail(
+                    StoreErrorCode::CursorInvalid,
+                    "import cursor is not a checkpoint",
+                ));
+            };
+            if checkpoint.import != id {
+                return Err(fail(
+                    StoreErrorCode::CursorInvalid,
+                    "import cursor names another run",
+                ));
+            }
+            Some(checkpoint)
+        };
+        let mut params = vec![rusqlite::types::Value::Blob(id.as_bytes().to_vec())];
+        let mut sql =
+            "SELECT revision,last_seq,last_seq FROM import_progress WHERE import_id=?".to_string();
+        if let Some(previous) = previous {
+            let family = serde_json::to_value(previous.family).map_err(invalid)?;
+            let family = family
+                .as_str()
+                .ok_or_else(|| invalid("import family tag"))?;
+            sql.push_str(" AND (family,source_key)>(?,?)");
+            params.push(rusqlite::types::Value::Text(family.into()));
+            params.push(rusqlite::types::Value::Blob(previous.source_key));
+        }
+        sql.push_str(" ORDER BY family,source_key LIMIT ?");
+        params.push(rusqlite::types::Value::Integer(
+            i64::from(budget.page.limit.get()) + 1,
+        ));
+        let rows = self.query_seqs_before(&sql, params, deadline)?;
+        let mut items = Vec::new();
+        let mut bytes = 0;
+        let mut last = after;
+        let mut stop = StopReason::Exhausted;
+        for (revision, seq, _) in rows {
+            query::check_deadline(deadline)?;
+            if items.len() == budget.page.limit.get() as usize {
+                stop = StopReason::ItemLimit;
+                break;
+            }
+            let event = self.record(seq)?;
+            let cost = query::event_size(&event)?;
+            if bytes + cost > u64::from(budget.page.max_bytes.get()) {
+                if items.is_empty() {
+                    let mut error = fail(
+                        StoreErrorCode::ReadBudgetTooSmall,
+                        "first import checkpoint exceeds bytes",
+                    );
+                    error.detail = StoreDetail::Budget {
+                        allowed: u64::from(budget.page.max_bytes.get()),
+                        required: Some(cost),
+                    };
+                    return Err(error);
+                }
+                stop = StopReason::ByteLimit;
+                break;
+            }
+            let EventBody::ImportProgress { mut checkpoint, .. } = event.body else {
+                return Err(fail(
+                    StoreErrorCode::ProjectionInconsistent,
+                    "import checkpoint head has another kind",
+                ));
+            };
+            if checkpoint.import != id {
+                return Err(fail(
+                    StoreErrorCode::ProjectionInconsistent,
+                    "import checkpoint head has another run",
+                ));
+            }
+            checkpoint.expected = Expected::Revision(codec::revision(revision)?);
+            items.push(checkpoint);
+            bytes += cost;
+            last = seq as u64;
+        }
+        query::check_deadline(deadline)?;
+        self.page(
+            items,
+            &budget,
+            &binding,
+            page::PageFacts {
+                h,
+                after: 0,
+                last,
+                bytes,
+                stop,
+                remaining: None,
+            },
+        )
     }
 }
 impl crate::import::ImportSnapshot for SqliteSnapshot {

@@ -7,10 +7,10 @@ impl SqliteSnapshot {
         session: Option<SessionId>,
         budget: ReadBudget,
     ) -> StoreResult<TranscriptRecords> {
+        let until = query::deadline(&budget)?;
         let p = self.project_bytes()?;
         let a = self.agent_bytes(&agent)?;
         let (head, _) = self.window(&budget, &format!("transcript-events:{agent}"), false)?;
-        let until = Instant::now() + budget.deadline;
         let mut filter = String::from(
             "t.project_id=? AND t.agent_id=? AND t.event_seq<=? AND t.role='system' AND t.vendor_ref LIKE 'se.notice.v1/%'",
         );
@@ -32,10 +32,11 @@ impl SqliteSnapshot {
         let select = format!(
             "SELECT 1,t.event_seq,t.event_seq FROM turn_data t INDEXED BY turn_data_agent_seq WHERE {filter} ORDER BY t.event_seq DESC LIMIT ?"
         );
-        let rows = self.query_seqs(&select, limited, &budget)?;
+        let rows = self.query_seqs_before(&select, limited, until)?;
         let mut bytes = 0;
         let mut events = Vec::new();
         for (_, seq, _) in rows {
+            query::check_deadline(until)?;
             let event = self.record(seq)?;
             bytes += query::event_size(&event)?;
             if bytes > u64::from(budget.page.max_bytes.get()) {
@@ -73,6 +74,7 @@ impl SqliteSnapshot {
             },
             None => self.absent("recorded provider compaction"),
         };
+        query::check_deadline(until)?;
         Ok(TranscriptRecords {
             omitted: count.saturating_sub(events.len() as u64),
             events,

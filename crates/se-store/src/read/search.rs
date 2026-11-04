@@ -1,0 +1,131 @@
+//! Search shares history's authorization, indexed candidates and fixed window.
+use super::*;
+use rusqlite::types::Value;
+
+impl SqliteSnapshot {
+    pub(super) fn read_search(
+        &self,
+        mut query: SearchQuery,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<SearchHit>> {
+        let deadline = query::deadline(&budget)?;
+        if query.text.is_empty() || query.text.chars().count() > 512 {
+            return Err(fail(
+                StoreErrorCode::EventInvalid,
+                "search text needs 1..512 characters",
+            ));
+        }
+        history::normalize(&mut query.history);
+        let stream = self.history_stream(&query.history, &budget, Some(&query.text))?;
+        let mut params = stream.params.clone();
+        // A limit bounds candidates, not just matches. An empty incomplete page
+        // advances past checked nonmatches instead of pretending exhaustion.
+        params.push(Value::Integer(i64::from(budget.page.limit.get()) + 1));
+        let rows = self.query_seqs_before(&stream.sql, params, deadline)?;
+        let needle = query.text.to_lowercase();
+        let mut items = Vec::new();
+        let mut bytes = 0;
+        let mut last = stream.after;
+        let mut stop = StopReason::Exhausted;
+        for (checked, (_, seq, _)) in rows.into_iter().enumerate() {
+            query::check_deadline(deadline)?;
+            if checked == budget.page.limit.get() as usize {
+                stop = StopReason::ItemLimit;
+                break;
+            }
+            let event = self.history_event(seq, &stream)?;
+            let cost = query::event_size(&event)?;
+            if bytes + cost > u64::from(budget.page.max_bytes.get()) {
+                if checked == 0 {
+                    let mut error = fail(
+                        StoreErrorCode::ReadBudgetTooSmall,
+                        "first search candidate exceeds scan bytes",
+                    );
+                    error.detail = StoreDetail::Budget {
+                        allowed: u64::from(budget.page.max_bytes.get()),
+                        required: Some(cost),
+                    };
+                    return Err(error);
+                }
+                stop = StopReason::ByteLimit;
+                break;
+            }
+            bytes += cost;
+            if let Some((snippet, body_complete)) = snippet(&event.body, &needle)? {
+                items.push(SearchHit {
+                    event: event.header.event,
+                    revision: event.revision,
+                    snippet: StoredText::Present(snippet),
+                    body_complete,
+                });
+            }
+            last = seq as u64;
+        }
+        query::check_deadline(deadline)?;
+        self.page(
+            items,
+            &budget,
+            &stream.binding,
+            page::PageFacts {
+                h: stream.high,
+                after: stream.after,
+                last,
+                bytes,
+                stop,
+                remaining: None,
+            },
+        )
+    }
+}
+
+fn snippet(body: &EventBody<StoredText>, needle: &str) -> StoreResult<Option<(String, bool)>> {
+    use EventBody::*;
+    let fields = match body {
+        MessageSent { body, .. } => vec![body],
+        SessionTurn { text, .. } | WorkingStateSet { text, .. } => vec![text],
+        DecisionProposed {
+            statement,
+            rationale,
+            ..
+        } => {
+            let mut fields = vec![statement];
+            fields.extend(rationale.iter());
+            fields
+        }
+        DecisionRejected { reason, .. }
+        | DecisionRetracted { reason, .. }
+        | SessionEnded { reason, .. }
+        | SessionRevoked { reason, .. }
+        | CredentialRevoked { reason, .. } => vec![reason],
+        _ => Vec::new(),
+    };
+    let single = fields.len() == 1;
+    for field in fields {
+        let StoredText::Present(text) = field else {
+            return Err(fail(
+                StoreErrorCode::ContentErased,
+                "search candidate text was erased",
+            ));
+        };
+        if let Some(offset) = text.to_lowercase().find(needle) {
+            // Lowercasing may change UTF-8 lengths (and even character counts).
+            // Map the folded byte position back to an original character.
+            let mut folded = 0;
+            let mut matched = 0;
+            for (index, ch) in text.chars().enumerate() {
+                let length = ch.to_lowercase().map(char::len_utf8).sum::<usize>();
+                if folded + length > offset {
+                    matched = index;
+                    break;
+                }
+                folded += length;
+            }
+            let length = text.chars().count();
+            let start = matched.saturating_sub(80);
+            let end = (start + 640).min(length);
+            let snippet = text.chars().skip(start).take(end - start).collect();
+            return Ok(Some((snippet, single && start == 0 && end == length)));
+        }
+    }
+    Ok(None)
+}

@@ -10,6 +10,7 @@ impl SqliteSnapshot {
         since: Option<StorePosition>,
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>> {
+        let deadline = query::deadline(&budget)?;
         if budget.page.after.is_some() {
             return Err(fail(
                 StoreErrorCode::CursorInvalid,
@@ -41,15 +42,16 @@ impl SqliteSnapshot {
                 rusqlite::types::Value::Integer(extra),
             ]
         };
-        let rows = self.query_seqs(
+        let rows = self.query_seqs_before(
             "SELECT e.entity_revision,t.event_seq,t.event_seq FROM turn_data t INDEXED BY turn_data_agent_seq JOIN events e ON e.seq=t.event_seq WHERE NOT (t.role='system' AND t.vendor_ref LIKE 'se.notice.v1/%') AND t.project_id=? AND t.agent_id=? AND t.event_seq>? AND t.event_seq<=? ORDER BY t.event_seq DESC LIMIT ?",
             params(i64::from(budget.page.limit.get())),
-            &budget,
+            deadline,
         )?;
         let mut items = Vec::new();
         let mut bytes = 0u64;
         let mut stop = StopReason::Exhausted;
         for (_, seq, _) in rows {
+            query::check_deadline(deadline)?;
             let e = self.record(seq)?;
             let cost = query::event_size(&e)?;
             if bytes + cost > u64::from(budget.page.max_bytes.get()) {
@@ -71,14 +73,19 @@ impl SqliteSnapshot {
         // Exact count of the older turns the tail left out, from the same index.
         let older: u64 = match oldest {
             None => 0,
-            Some(oldest) => self
-                .db
-                .query_row(
-                    "SELECT count(*) FROM turn_data INDEXED BY turn_data_agent_seq WHERE NOT (role='system' AND vendor_ref LIKE 'se.notice.v1/%') AND project_id=? AND agent_id=? AND event_seq>? AND event_seq<?",
-                    rusqlite::params![p, a, floor as i64, oldest as i64],
-                    |r| crate::sql_value::value(r, 0),
+            Some(oldest) => {
+                let counts = self.query_seqs_before(
+                    "SELECT 1,count(*),1 FROM turn_data INDEXED BY turn_data_agent_seq WHERE NOT (role='system' AND vendor_ref LIKE 'se.notice.v1/%') AND project_id=? AND agent_id=? AND event_seq>? AND event_seq<?",
+                    vec![rusqlite::types::Value::Blob(p), rusqlite::types::Value::Blob(a),
+                        rusqlite::types::Value::Integer(floor as i64), rusqlite::types::Value::Integer(oldest as i64)], deadline)?;
+                u64::try_from(
+                    counts
+                        .first()
+                        .ok_or_else(|| invalid("recent-turn count absent"))?
+                        .1,
                 )
-                .map_err(|error| self.read_sql(error))?,
+                .map_err(invalid)?
+            }
         };
         let omitted_before = match std::num::NonZeroU64::new(older) {
             None => Omission::None,
@@ -96,6 +103,7 @@ impl SqliteSnapshot {
                 }
             }
         };
+        query::check_deadline(deadline)?;
         let window = Window::new(WindowFields {
             source: Source::Store {
                 store: self.info.id.clone(),

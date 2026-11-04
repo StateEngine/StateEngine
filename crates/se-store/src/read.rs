@@ -14,6 +14,7 @@ mod control;
 mod cursor;
 mod decision;
 mod decision_heads;
+mod history;
 mod import;
 mod mail;
 mod mail_legacy;
@@ -23,6 +24,7 @@ mod page;
 mod project;
 mod query;
 mod runtime;
+mod search;
 mod selector;
 mod transcript;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
@@ -406,8 +408,8 @@ impl Snapshot for SqliteSnapshot {
     ) -> StoreResult<Page<StoredEvent>> {
         self.read_history(_query, _budget)
     }
-    fn search(&mut self, _query: SearchQuery, _budget: ReadBudget) -> StoreResult<Page<SearchHit>> {
-        later("search")
+    fn search(&mut self, query: SearchQuery, budget: ReadBudget) -> StoreResult<Page<SearchHit>> {
+        self.read_search(query, budget)
     }
     fn projects(&mut self, _budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         if !matches!(self.scope.visibility, Visibility::Owner) {
