@@ -73,7 +73,10 @@ pub(super) fn stop_native(
 pub(super) fn wait_native_exit(identity: &se_proc::ProcessIdentity) -> Check {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     loop {
-        match se_proc::NativeProcessRuntime::read_process(identity.machine.clone(), identity.pid)
+        // A terminating Windows process can deny its image query before its
+        // retained object signals. Spend this waiter's original bound; the
+        // denial itself must never count as an exit or absence witness.
+        match se_proc::read_process_until(identity.machine.clone(), identity.pid, deadline)
             .map_err(|error| format!("native child readback {error:?}"))?
         {
             se_proc::ProcessRead::Absent { .. } => return Ok(()),

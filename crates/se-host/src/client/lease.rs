@@ -154,7 +154,11 @@ pub(crate) fn native_error(cause: se_proc::native_ipc::IpcNativeError) -> SeErro
             ),
         }),
     };
-    SeError::new(detail).with_cause(cause)
+    let mut error = SeError::new(detail);
+    if cause.code == se_proc::native_ipc::IpcNativeErrorCode::PeerChanged {
+        error.body = error.body.with_retry(se_types::Retry::AfterReread);
+    }
+    error.with_cause(cause)
 }
 fn native_connect(
     endpoint: &crate::EndpointRecord,
