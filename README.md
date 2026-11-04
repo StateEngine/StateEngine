@@ -5,19 +5,24 @@ Plan: https://claude.ai/artifact/F82qoYRSPSaVZfXevnWU5D (ledger: rust-redesign-p
 
 ## Your first agent
 
-StateEngine is one command, `se`. A **home** is its data directory on your machine
-(default `~/.local/state/stateengine`); a **project** is a folder it tracks, usually a
-git repo; an **agent** is one saved coding assistant (Claude Code or Codex) in a
+StateEngine is one command, `se`. A **home** is its data directory (Linux default
+`~/.local/state/stateengine`; macOS/Windows differ); a **project** is a folder it tracks,
+usually a git repo; an **agent** is one saved coding assistant (Claude Code or Codex) in a
 project; the **floor** is the append-only message log between you and your agents.
 
-1. Build or install the release. `se --help` opens with `StateEngine — durable agent
-   work and context`; check the version:
+1. Install the release: extract the release archive for your platform and, from the
+   extracted folder, run `sh ./install.sh` (Linux, macOS) or `install.ps1` (Windows),
+   or build one from this tree on the target platform with `python3
+   scripts/release/build.py --target <target> --out <new-dir>` and `python3
+   scripts/release/assemble.py --build <new-dir> --out <archive-dir>`. Verify:
 
        $ se --version
        stateengine 0.0.1
 
-2. In an existing git repo, register the project and create your first agent.
-   `--provider codex` makes it a Codex agent; the default is Claude Code.
+2. First install and log in to the agent you will use: a Codex agent needs the Codex CLI
+   (0.152.0 or newer) and `codex login`; the default Claude Code is installed and logged
+   in the same way. Then, in an existing git repo, register the project and create your
+   first agent. `--provider codex` makes it a Codex agent.
 
        $ se init --provider codex
        Project repo registered at /path/to/repo
@@ -28,14 +33,14 @@ project; the **floor** is the append-only message log between you and your agent
          created the initial saved agent / persisted the initial listener port
        Launch your first agent: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
 
-   The profile line says what the agent may do; init prints the exact `se config set`
-   command (run it in your own terminal) if you want to change it.
+   `State home` above is the Linux default; macOS: `~/Library/Application Support/StateEngine`,
+   Windows: `%LOCALAPPDATA%\StateEngine`. The profile line says what the agent may do; init
+   prints the exact `se config set` command (run it in your own terminal) to change it.
 
 3. Launch the agent headless with a one-line task:
 
        $ se launch main --task "Create a file called notes.md with one sentence describing what this repo is for." --detach
        Agent main: running (Codex, headless)
-       Conversation: 01a1a815-7e8a-...
 
 4. Check on it:
 
@@ -44,8 +49,7 @@ project; the **floor** is the append-only message log between you and your agent
        Runtime: running
          main: running — unread 0
 
-5. Read what it did. A plain task launch reports in its conversation and in your
-   folder, not by floor mail:
+5. Read what it did: a plain task launch reports in its conversation and in your folder, not by floor mail:
 
        $ se msg list
        Unread messages: 0
@@ -63,9 +67,6 @@ project; the **floor** is the append-only message log between you and your agent
        $ se stop main
        Stop agent: stopped (complete: true)
        Resume ready: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
-       $ se launch main --detach
-       Agent main: running (Codex, headless)
-       Conversation: 01a1a815-7e8a-...
 
 7. When you are done, stop the runtime; the next launch starts it again.
 
