@@ -36,7 +36,7 @@ pub fn execute(
 ) -> impl Future<Output = Result<ExecutedCall>> + Send {
     async move {
         let ExecutionCall { admitted, deadline } = call;
-        let reader = std::sync::Arc::clone(&context.reader);
+        let reader = context.reads.clone();
         let generation = context.generation;
         if admitted.admission.generation != generation.get() {
             return Err(SeError::invalid(
@@ -48,7 +48,7 @@ pub fn execute(
         let (planned, planning) =
             timings::blocking(&context.blocking, Mode::Finite, &deadline, move || {
                 plan_deadline.remaining()?;
-                let phase = checked_phase(&reader, generation)?;
+                let phase = checked_pooled_phase(&reader, generation)?;
                 plan(phase, admitted)
             })
             .await?;
@@ -124,7 +124,7 @@ pub fn execute(
                 let (output, continuation) =
                     timings::blocking(&pool, Mode::Finite, &deadline, move || {
                         finish_deadline.remaining()?;
-                        let phase = checked_phase(&context.reader, generation)?;
+                        let phase = checked_pooled_phase(&context.reads, generation)?;
                         let mut read = phase
                             .into_snapshot(read_scope(&admission))
                             .map_err(|error| store_error(&error))?;
@@ -151,6 +151,7 @@ pub fn execute(
                 })
             }
             OpStep::Custody(CustodyPlan::ImportNode(input)) => Ok(ExecutedCall {
+                host_phases,
                 output: super::history_import::execute(
                     context, input, admission, kernel, &deadline,
                 )
@@ -257,11 +258,31 @@ pub(crate) fn close_read<T>(result: Result<T>, closed: se_store::StoreResult<()>
         (Err(original), Err(error)) => Err(original.with_cause(error)),
     }
 }
+pub(crate) fn check_generation(
+    reader: &se_store::SqliteReader,
+    expected: se_types::Generation,
+) -> Result<()> {
+    let phase = checked_phase(reader, expected)?;
+    close_read(Ok(()), phase.close())
+}
 pub(super) fn checked_phase(
     reader: &se_store::SqliteReader,
     expected: se_types::Generation,
 ) -> Result<se_store::ReadPhase> {
     let phase = reader.read_phase().map_err(|error| store_error(&error))?;
+    generation_phase(phase, expected)
+}
+pub(super) fn checked_pooled_phase(
+    reader: &se_store::ReadPhasePool,
+    expected: se_types::Generation,
+) -> Result<se_store::ReadPhase> {
+    let phase = reader.read_phase().map_err(|error| store_error(&error))?;
+    generation_phase(phase, expected)
+}
+fn generation_phase(
+    phase: se_store::ReadPhase,
+    expected: se_types::Generation,
+) -> Result<se_store::ReadPhase> {
     let result = phase
         .runtime_owner()
         .map_err(|error| store_error(&error))

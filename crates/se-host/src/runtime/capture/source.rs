@@ -80,9 +80,10 @@ fn cursor(
 ) -> Result<Cursor> {
     // Generation and the cursor belong to one fresh read pin. Close it before
     // checking the committed prefix or scanning any new transcript bytes.
-    let mut read = super::super::executor::checked_phase(&context.reader, context.generation)?
-        .into_snapshot(read_scope(admission))
-        .map_err(|error| store_error(&error))?;
+    let mut read =
+        super::super::executor::checked_pooled_phase(&context.reads, context.generation)?
+            .into_snapshot(read_scope(admission))
+            .map_err(|error| store_error(&error))?;
     let result = (|| {
         let session = scope::require_present(
             read.session(source.binding.identity.session.clone())

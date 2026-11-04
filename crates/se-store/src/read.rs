@@ -29,8 +29,11 @@ use se_types::{
 };
 use se_types::{DecisionId, LifecycleId, SessionId};
 use std::{marker::PhantomData, rc::Rc, time::Instant};
+// SQLite closes and rolls back on implicit drop. Only an explicit successful
+// close may return a connection to its host pool.
 pub struct SqliteSnapshot {
     pub(crate) db: Connection,
+    recycle: Option<crate::read_phase_pool::Recycle>,
     info: StoreInfo,
     scope: ReadScope,
     path: std::path::PathBuf,
@@ -47,6 +50,7 @@ impl SqliteSnapshot {
         }
         Ok(Self {
             db: phase.db,
+            recycle: phase.recycle,
             info: phase.info,
             scope,
             path: phase.path,
@@ -392,11 +396,6 @@ impl SqliteSnapshot {
         })
     }
 }
-impl Drop for SqliteSnapshot {
-    fn drop(&mut self) {
-        let _ = self.db.execute_batch("ROLLBACK");
-    }
-}
 pub struct LegacyRegistry<'a> {
     snapshot: &'a SqliteSnapshot,
 }
@@ -682,9 +681,19 @@ impl Snapshot for SqliteSnapshot {
         }
     }
     fn close(self) -> StoreResult<()> {
+        // A deadline handler belongs to this snapshot, never the next borrower.
         self.db
-            .execute_batch("ROLLBACK")
-            .map_err(|error| self.read_sql(error))
+            .progress_handler(0, None::<fn() -> bool>)
+            .map_err(|error| self.read_sql(error))?;
+        ReadPhase {
+            db: self.db,
+            info: self.info,
+            path: self.path,
+            slot: self._slot,
+            recycle: self.recycle,
+            local: self._local,
+        }
+        .close()
     }
     fn history(
         &mut self,

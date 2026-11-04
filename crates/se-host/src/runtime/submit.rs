@@ -6,6 +6,7 @@ use se_store::{AtomicBatch, CommitReceipt, WriterClient};
 use se_types::Result;
 use std::time::Instant;
 
+#[cfg(feature = "secode")]
 pub(super) async fn submit(
     context: &ExecutionContext,
     batch: AtomicBatch,

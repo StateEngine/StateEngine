@@ -412,11 +412,14 @@ threads; core discovery never prevents startup. Embedded hosts supply their
 own matching runtime and HostLimits cap. Before listener publication, the host
 opens its shared store reader with capacity `max(2, effective blocking_jobs)`;
 snapshots, owner guards and credential reads share that immutable budget across
-reader clones. Host admission may retain at most that reader capacity of idle
-connections, with native file custody rechecked at each checkout. Every checkout
-begins a fresh transaction and rereads the header, generation and credential;
-no admission result or read pin survives the synchronous job. IPC and HTTP use
-the same cache. Storage drain fences admission, joins phase jobs, seals checkout
+reader clones. Admission, planning, receipt continuation and capture cursor reads
+share a host pool with at most that reader capacity of idle connections. Each
+checkout rechecks native file custody, begins a fresh transaction and rereads the
+header. Admission rereads generation and credential; planning and continuation
+recheck generation and retain their admitted scope. Explicit snapshot close rolls
+back before recycling; implicit drop physically closes and rolls back SQLite.
+No read pin survives the synchronous job or writer wait. IPC and HTTP use the
+same cache. Storage drain fences admission, joins phase jobs, seals checkout
 and closes every retained connection before maintenance or lease release.
 Ordinary snapshots and direct CLI phases still physically close their connections.
 Other store readers keep their default capacity of two. In the

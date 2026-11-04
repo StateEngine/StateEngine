@@ -303,6 +303,7 @@ fn prepare(
     let execution = ExecutionContext {
         state_directory: options.state_directory.clone(),
         reader: Arc::new(reader),
+        reads: admission_reads.clone(),
         writer: writer.client(),
         blocking,
         generation,

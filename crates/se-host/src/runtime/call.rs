@@ -33,6 +33,7 @@ pub struct HostedCall {
 pub struct ExecutionContext {
     pub(crate) state_directory: std::path::PathBuf,
     pub reader: Arc<SqliteReader>,
+    pub(crate) reads: se_store::ReadPhasePool,
     pub writer: SqliteClient,
     pub blocking: BlockingPool,
     pub generation: se_types::Generation,

@@ -30,7 +30,10 @@ returns OpStep::Commit with an owned se_store::AtomicBatch and typed continuatio
 HostStore::start_writer yields WriterOwner, whose client submits and returns
 Completion: CommitWait. Only that future await runs on the executor; after it,
 a second bounded blocking-pool job opens a fresh snapshot and feeds the actual
-CommitReceipt to `then`. The consumer owns/clones its reader handle across jobs.
+CommitReceipt to `then`. The consumer owns/clones its reader handle across jobs. A host may reuse the
+physical connection after explicit snapshot close rolls back the transaction;
+its next borrower still opens a fresh validated read pin. Implicit snapshot drop
+closes the connection rather than returning it to the bounded pool.
 On the hostless route, DirectStore::append uses the same transaction engine
 synchronously under the shared runtime lease and returns CommitReceipt directly
 to the same continuation. CommitWait has no blocking-wait method or caller.
