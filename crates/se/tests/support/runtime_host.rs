@@ -19,11 +19,12 @@ impl RunningHost {
             home.join("endpoint.json"),
         )?)?;
         let expected = endpoint.epoch.owner.fields();
-        let observed = se_proc::NativeProcessRuntime::read_process(
+        let observed = se_proc::NativeProcessRuntime::read_process_until(
             expected.machine.clone(),
             se_proc::ProcessId(expected.pid.get()),
+            Instant::now() + Duration::from_secs(10),
         )
-        .map_err(|error| format!("outside native host observation: {error:?}"))?;
+        .map_err(|error| format!("outside native host observation during start: {error:?}"))?;
         let se_proc::ProcessRead::Present(observed) = observed else {
             return Err(format!("fixture host is not live: {observed:?}").into());
         };
@@ -39,11 +40,19 @@ impl RunningHost {
         })
     }
     pub fn live(&self) -> Result<bool, Box<dyn std::error::Error>> {
-        match se_proc::NativeProcessRuntime::read_process(
+        self.live_until(Instant::now() + Duration::from_secs(10), "live")
+    }
+    fn live_until(
+        &self,
+        deadline: Instant,
+        phase: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        match se_proc::NativeProcessRuntime::read_process_until(
             self.identity.machine.clone(),
             self.identity.pid,
+            deadline,
         )
-        .map_err(|error| format!("outside native host observation: {error:?}"))?
+        .map_err(|error| format!("outside native host observation during {phase}: {error:?}"))?
         {
             se_proc::ProcessRead::Present(observed) if observed.identity == self.identity => {
                 Ok(!matches!(
@@ -60,11 +69,14 @@ impl RunningHost {
             {
                 Ok(false)
             }
-            _ => Err("host identity changed; refusing to act on another instance".into()),
+            _ => Err(format!(
+                "host identity changed during {phase}; refusing to act on another instance"
+            )
+            .into()),
         }
     }
     pub fn stop(&self) -> Check {
-        if !self.live()? {
+        if !self.live_until(Instant::now() + Duration::from_secs(10), "stop preflight")? {
             return Ok(());
         }
         let until = se_types::UnixMicros::new(
@@ -85,7 +97,7 @@ impl RunningHost {
             },
         )?;
         let deadline = Instant::now() + Duration::from_secs(10);
-        while self.live()? {
+        while self.live_until(deadline, "stop exit")? {
             if Instant::now() >= deadline {
                 return Err("exact fixture host did not exit after graceful stop".into());
             }
