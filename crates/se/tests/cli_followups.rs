@@ -826,11 +826,19 @@ impl StatusHost {
     }
 
     /// The exact read_process signature of that exit race: the executable read
-    /// failed with ENOENT while a same-born instance still existed.
+    /// failed with a not-found native code while a same-born instance still
+    /// existed. Classified through std so the test needs no native dependency.
     fn exit_race(error: &se_proc::ProcError) -> bool {
+        let Some(native) = error.native.as_ref() else {
+            return false;
+        };
         error.code == se_proc::ProcErrorCode::IdentityUnreadable
-            && error.native.as_ref().is_some_and(|native| {
-                native.api == "read proc executable" && native.code == Some(i64::from(libc::ENOENT))
+            && native.api == "read proc executable"
+            && native.code.is_some_and(|code| {
+                let Ok(code) = i32::try_from(code) else {
+                    return false;
+                };
+                std::io::Error::from_raw_os_error(code).kind() == std::io::ErrorKind::NotFound
             })
     }
 
