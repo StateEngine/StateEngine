@@ -1,5 +1,6 @@
 """Author CLI consumers for absent state and unclaimed init staging."""
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -110,6 +111,66 @@ def installer_identity_is_fresh(f):
             f.home = original
 
 
+def corrupt_state(f):
+    f.ok("down")
+    saved = f.root / "closed copy O’Brien's"
+    saved.mkdir(mode=0o700)
+    for leaf in ["state.db", "state.db-wal"]:
+        if (f.home / leaf).exists():
+            shutil.copy2(f.home / leaf, saved / leaf)
+    damaged = b"Retain these exact damaged database bytes.\n"
+    with closing(sqlite3.connect(f"file:{saved / 'state.db'}?mode=ro", uri=True)) as db:
+        original_owners = db.execute("select human_id from owners").fetchall()
+    source = snapshot(saved)
+    (f.home / "state.db").write_bytes(damaged)
+    before = snapshot(f.home)
+    try:
+        for args in [("status",), ("resume",), ("doctor",),
+                     ("init", "--repo", str(f.root / "repo"))]:
+            result = f.call(*args)
+            value = json.loads(result.stdout)
+            assert result.returncode != 0 and value["code"] == "store-corrupt", value
+            assert "se restore" not in value["remedy"]["text"]
+            assert "No automatic backup selection or salvage" in value["remedy"]["text"]
+            assert snapshot(f.home) == before, "observing corrupt state changed its bytes"
+        remedy = value["remedy"]["text"]
+        sidecars = {leaf: ("Preserve old " + leaf).encode() for leaf in ["state.db-wal", "state.db-shm"]}
+        for leaf, content in sidecars.items():
+            (f.home / leaf).write_bytes(content)
+            (f.home / leaf).chmod(0o600)
+        environment = dict(f.environment, PATH=str(f.se.parent) + os.pathsep + "/usr/bin:/bin")
+        block = command_block(remedy, "RESTORE COMMANDS")
+        result = subprocess.run(["/bin/sh", "-c", block], input=(str(saved) + "\n").encode(),
+                                env=environment, cwd=f.root / "repo", capture_output=True, timeout=90)
+        (f.root / "corrupt-restore.stdout").write_bytes(result.stdout)
+        (f.root / "corrupt-restore.stderr").write_bytes(result.stderr)
+        assert result.returncode == 0, result.stderr
+        preserved = list(f.home.glob("recovery-sidecars-*"))
+        assert len(preserved) == 1 and preserved[0].stat().st_mode & 0o777 == 0o700
+        assert (preserved[0] / "state.db").read_bytes() == damaged
+        for leaf, content in sidecars.items():
+            assert (preserved[0] / leaf).read_bytes() == content
+        with closing(sqlite3.connect(f"file:{f.home / 'state.db'}?mode=ro", uri=True)) as db:
+            assert db.execute("select human_id from owners").fetchall() == original_owners
+        assert snapshot(saved) == source, "restoring changed the closed source copy"
+        f.ok("down")
+        intact = snapshot(f.home)
+        replay = subprocess.run(["/bin/sh", "-c", block], input=(str(saved) + "\n").encode(),
+                                env=environment, cwd=f.root / "repo", capture_output=True, timeout=90)
+        assert replay.returncode != 0 and snapshot(f.home) == intact, "replaying replaced an existing recovery directory"
+    finally:
+        # Keep the corrupt bytes in the fixture, and keep close() runnable even
+        # when an assertion above fails before the printed remedy succeeds.
+        if (f.home / "state.db").read_bytes() == damaged:
+            (f.home / "state.db").rename(f.root / "unrestored-damaged-state.db")
+            for leaf in ["state.db-wal", "state.db-shm"]:
+                if (f.home / leaf).exists():
+                    (f.home / leaf).rename(f.root / ("unrestored-" + leaf))
+            shutil.copy2(saved / "state.db", f.home / "state.db")
+            if (saved / "state.db-wal").exists():
+                shutil.copy2(saved / "state.db-wal", f.home / "state.db-wal")
+
+
 def setup_required_command_keeps_curly_home(f):
     home = f.root / "fresh O’Brien's home"
     home.mkdir(mode=0o700)
@@ -213,7 +274,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    cases = [deleted_state, fresh_home, installer_identity_is_fresh, setup_required_command_keeps_curly_home, unclaimed_staging, linked_stage_refuses, line_break_home_has_no_shell_command]
+    cases = [deleted_state, fresh_home, installer_identity_is_fresh, setup_required_command_keeps_curly_home, unclaimed_staging, linked_stage_refuses, line_break_home_has_no_shell_command, corrupt_state]
     print(f"1..{len(cases)}", flush=True)
     for number, case in enumerate(cases, 1):
         f = Fixture(args.se.resolve(), args.output.resolve() / (case.__name__ + "-O’Brien's-" + uuid.uuid4().hex[:6]))

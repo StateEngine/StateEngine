@@ -153,6 +153,7 @@ pub fn run(
             stderr.flush()
         };
         dispatch(&context, operation, &mut diagnostic)
+            .map_err(|error| route::setup::with_recovery_remedy(error, &context.home))
     };
     let setup_remedy = route::setup::InitRemedy {
         home: &context.home,
