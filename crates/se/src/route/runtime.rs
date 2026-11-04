@@ -223,8 +223,9 @@ pub fn down<R: se_store::ReadStore>(
             }).collect::<Vec<_>>().join("; "),
             Err(error) => format!("pre-stop native inventory unreadable: {error}"),
         };
+        let projects = inventory.as_ref().map(|value| value.processes.iter().map(|process| process.project.clone()).collect()).unwrap_or_default();
         error.body = error.body.with_remedy(se_types::Remedy {
-            text: format!("No final stop result was received. Exit remains unproved for the pre-stop inventory: {identities}. Concurrent starts may add obligations; reread this home's status. {}", retry_cleanup(files)),
+            text: format!("No final stop result was received. Exit remains unproved for the pre-stop inventory: {identities}. Concurrent starts may add obligations; reread this home's status. {}", retry_cleanup(files, projects)),
             command: Some(se_types::Cmd::Manual),
         });
         error
@@ -306,6 +307,15 @@ pub(super) fn down_endpoint(
             }
             let observed_at = receipt::timestamp(execute::now_us()?)?;
             let retained_count = retained_resume.len();
+            let projects = retained_resume
+                .iter()
+                .map(|saved| saved.project.clone())
+                .chain(
+                    report
+                        .iter()
+                        .flat_map(|report| report.stops.iter().map(|stop| stop.project.clone())),
+                )
+                .collect();
             let stops = stops::render(report.as_ref(), retained_resume, &observed_at, &mut pending);
             let missing: Vec<_> = [
                 Fact::AgentsStopped,
@@ -324,7 +334,7 @@ pub(super) fn down_endpoint(
             }
             let complete = pending.is_empty() && stops.iter().all(|stop| stop.complete);
             if !complete {
-                pending.push(retry_cleanup(files));
+                pending.push(retry_cleanup(files, projects));
             }
             let detail = format!(
                 "Achieved: {achieved:?}; retained resume references: {retained_count}; pending: {}",
@@ -355,22 +365,51 @@ pub(super) fn down_endpoint(
     }
 }
 
-fn retry_cleanup(files: &Files) -> String {
+fn retry_cleanup(files: &Files, projects: Vec<se_types::ProjectId>) -> String {
     let Some(home) = AgentCommand::home_argument(files.0.root()) else {
         return AgentCommand::HOME_UNAVAILABLE.into();
     };
-    let command = |verb: &str, all: bool| {
-        let mut argv = vec!["se".into(), "--home".into(), home.into(), verb.into()];
-        if all {
-            argv.push("--all".into());
+    let mut distinct = Vec::new();
+    for project in projects {
+        if !distinct.contains(&project) {
+            distinct.push(project);
         }
-        AgentCommand::from_argv(argv).map(|value| value.command)
-    };
-    match (command("stop", true), command("down", false)) {
-        (Some(stop), Some(down)) => format!(
-            "Cleanup is incomplete. {} `{stop}` to retry stopping the saved agents, then `{down}`. A stop refusal remains a failure; preserve the data home and the named lifecycle identities.",
-            AgentCommand::instruction("Run")
-        ),
-        _ => AgentCommand::HOME_UNAVAILABLE.into(),
     }
+    let mut commands = Vec::new();
+    for project in distinct {
+        let argv = vec![
+            "se".into(),
+            "--home".into(),
+            home.into(),
+            "--project".into(),
+            project.to_string(),
+            "stop".into(),
+            "--all".into(),
+        ];
+        let Some(command) = AgentCommand::from_argv(argv) else {
+            return AgentCommand::HOME_UNAVAILABLE.into();
+        };
+        commands.push(format!("`{}`", command.command));
+    }
+    let Some(down) = AgentCommand::from_argv(vec![
+        "se".into(),
+        "--home".into(),
+        home.into(),
+        "down".into(),
+    ]) else {
+        return AgentCommand::HOME_UNAVAILABLE.into();
+    };
+    let stop = if commands.is_empty() {
+        "Reread this home's status to identify unresolved projects; no complete target inventory was available".into()
+    } else {
+        format!(
+            "{} {} to retry stopping every named project's saved agents",
+            AgentCommand::instruction("Run"),
+            commands.join(", then ")
+        )
+    };
+    format!(
+        "Cleanup is incomplete. {stop}, then `{}`. A stop refusal remains a failure; preserve the data home and the named lifecycle identities.",
+        down.command
+    )
 }
