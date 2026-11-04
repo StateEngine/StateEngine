@@ -1,6 +1,17 @@
 # The installed native operation owns the plan, graceful stop, removal and readback.
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# A PowerShell 7 parent exports a PSModulePath that Windows PowerShell 5.1
+# cannot autoload from; restore the 5.1 system module directory.
+$env:PSModulePath = [IO.Path]::Combine([Environment]::GetEnvironmentVariable('WINDIR'), 'System32', 'WindowsPowerShell', 'v1.0', 'Modules')
+function Get-Digest([string]$Path) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        try { ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+        finally { $stream.Dispose() }
+    } finally { $sha.Dispose() }
+}
 try {
     if ($env:OS -ne 'Windows_NT') { throw 'this script requires Windows' }
     $root = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'StateEngine'))
@@ -43,7 +54,7 @@ try {
         }
     }
     $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw | ConvertFrom-Json
-    if ($manifest.files.'se.exe'.sha256 -ne (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()) {
+    if ($manifest.files.'se.exe'.sha256 -ne (Get-Digest $binary)) {
         throw 'installed se differs from this archive; invoke the current installed se uninstall instead'
     }
 } catch {

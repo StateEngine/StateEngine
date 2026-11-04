@@ -90,9 +90,25 @@ def main():
         root = Path(scratch) / stem
         root.mkdir()
         for name in sorted(expected):
+            if name.startswith("notices/"):
+                continue
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(build / name, target)
+        # Preserve every original notice byte in one deterministic installed
+        # file, rather than paying a durable publication for each small notice.
+        with tarfile.open(root / "notices.tar", "x") as notices:
+            for name in sorted(metadata["files"]):
+                if not name.startswith("notices/"):
+                    continue
+                source = build / name
+                info = notices.gettarinfo(str(source), name)
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                info.mtime = metadata["source_timestamp"]
+                info.mode = 0o644
+                with source.open("rb") as stream:
+                    notices.addfile(info, stream)
         for script in ("install", "uninstall"):
             name = script + (".ps1" if windows else ".sh")
             shutil.copyfile(SCRIPTS / name, root / name)
@@ -104,6 +120,7 @@ def main():
             f'Unsigned development archive; source {metadata["source_commit"]}.\n\n'
             f'Extract this archive, then run {command} as your normal user.\n'
             'Open a fresh login terminal and run se --version.\n'
+            'The notices.tar member collects the release notices for this archive.\n'
             'To remove the installation, run se uninstall from an owner terminal.\n'
             'The uninstall script delegates to the same operation.\n'
             'Installation does not launch a service or require Node, npm or Rust.\n')

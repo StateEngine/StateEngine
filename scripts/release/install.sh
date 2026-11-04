@@ -38,11 +38,13 @@ case "$(uname -s):$(uname -m)" in
     *) fail 'this archive requires native Linux x86_64 or macOS arm64/x86_64' ;;
 esac
 native_held=0
-if [ "$#" -eq 1 ] && [ "$1" = --native-held ]; then
+recover=0
+if [ "$#" -ge 1 ] && [ "$1" = --native-held ]; then
     native_held=1
     shift
 fi
-[ "$#" -eq 0 ] || fail 'usage: sh ./install.sh'
+if [ "$#" -eq 1 ] && [ "$1" = --recover ]; then recover=1; shift; fi
+[ "$#" -eq 0 ] || fail 'usage: sh ./install.sh [--recover]'
 bundle=$(CDPATH='' cd -P "$(dirname "$0")" && pwd)
 links=$(find "$bundle" -type l -print)
 [ -z "$links" ] || fail 'extract the archive without symbolic links'
@@ -68,13 +70,20 @@ assets=$HOME/.local/share/stateengine/installation
 if [ "$macos" -eq 1 ]; then data=${SE_HOME:-$HOME/Library/Application Support/StateEngine}
 else data=${SE_HOME:-${XDG_STATE_HOME:-$HOME/.local/state}/stateengine}; fi
 record=$data/standalone-install.json
+partial=$data/standalone-install.partial
+plain_path "$partial"
+if [ "$recover" -eq 1 ]; then
+    [ -d "$partial" ] || fail "partial installation is absent: $partial"
+else [ ! -e "$partial" ] || fail "partial installation at $partial; resume with: sh \"$bundle/install.sh\" --recover"; fi
 for destination in "$bin/se" "$assets" "$record"; do
     plain_path "$destination"
-    if [ "$native_held" -eq 1 ] && [ "$destination" = "$assets" ]; then
+    if [ "$recover" -eq 1 ]; then
+        : # The protected journal and original archive are checked under the native claim.
+    elif [ "$native_held" -eq 1 ] && [ "$destination" = "$assets" ]; then
         [ -d "$assets" ] || fail "native installation assets directory is absent: $assets"
     else [ ! -e "$destination" ] || fail "existing installation path is preserved; run se uninstall before reinstalling: $destination"; fi
 done
-if command -v se >/dev/null 2>&1; then fail "another se command is already on PATH: $(command -v se)"; fi
+if [ "$recover" -eq 0 ] && command -v se >/dev/null 2>&1; then fail "another se command is already on PATH: $(command -v se)"; fi
 profiles='.profile'
 fish_file=''
 case ${SHELL-} in
@@ -82,7 +91,7 @@ case ${SHELL-} in
         profiles=''
         fish_file=${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/stateengine.fish
         plain_path "$fish_file"
-        [ ! -e "$fish_file" ] || fail "existing fish configuration is preserved: $fish_file"
+        [ "$recover" -eq 1 ] || [ ! -e "$fish_file" ] || fail "existing fish configuration is preserved: $fish_file"
         ;;
     ''|*/sh|*/bash|*/dash|*/ksh|*/zsh)
         if [ -e "$HOME/.bash_profile" ] || [ -L "$HOME/.bash_profile" ]; then profiles="$profiles .bash_profile"
@@ -91,6 +100,7 @@ case ${SHELL-} in
         ;;
     *) fail 'supported login shells are sh, bash, dash, ksh, zsh and fish; open one of these shells before installing' ;;
 esac
+profile_metadata() {
 profile_digests=''
 for name in $profiles; do
     profile=$HOME/$name
@@ -104,11 +114,10 @@ for name in $profiles; do
     profile_digests="$profile_digests$name $prior $prior_bytes
 "
 done
+}
+if [ "$recover" -eq 0 ]; then profile_metadata; fi
 # The inventory contains only safe relative names, so this list needs no path splitting.
-asset_files='manifest.json build.json NOTICE.txt uninstall.sh'
-for relative in $actual_files; do
-    case "$relative" in notices/*) asset_files="$asset_files $relative" ;; esac
-done
+asset_files='manifest.json build.json NOTICE.txt notices.tar uninstall.sh'
 # Native preparation rejects unsafe existing homes, creates absent homes with
 # the same protection as init, and retains the account-wide installation claim.
 if [ "$native_held" -eq 0 ]; then
@@ -117,7 +126,11 @@ if [ "$native_held" -eq 0 ]; then
     if [ -n "$fish_file" ]; then set -- "$@" --fish-directory "$(dirname "$fish_file")"; fi
     if [ -n "${XDG_STATE_HOME-}" ]; then set -- "$@" --xdg-state-home "$XDG_STATE_HOME"; fi
     if [ -n "${XDG_CONFIG_HOME-}" ]; then set -- "$@" --xdg-config-home "$XDG_CONFIG_HOME"; fi
-    exec "$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" --native-held
+    # Retain the public caller while the native holder watches its lifetime.
+    if [ "$recover" -eq 1 ]; then
+        "$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" --native-held --recover
+    else "$bundle/se" "$@" -- /bin/sh "$bundle/install.sh" --native-held; fi
+    exit "$?"
 fi
 # This reads custody from the native channel only after verifying the inherited
 # account-wide kernel claim. A worker marker or environment list grants nothing.
@@ -125,26 +138,27 @@ created_directories=$("$bundle/se" __install-home-check "$data") || fail 'native
 owner=$(id -u)
 stage=''
 temp_payload=''
-payload_destination=''
-payload_kind=''
-claimed=0
-published_asset_files=''
-published_binary=0
-published_fish=0
 done_install=0
 publish_file() {
-    # Copy and flush on the destination filesystem, then claim without overwrite.
+    # Recovery resumes only bytes owned by the matching protected journal.
+    if [ "$recover" -eq 1 ] && [ -e "$2" ]; then
+        plain_path "$2"
+        [ -f "$2" ] && cmp -s "$1" "$2" || fail "partial destination changed; preserved: $2"
+        flush "$2" "$(dirname "$2")"
+        return
+    fi
+    # Copy and flush on the destination filesystem, then claim without replace.
     temp_payload=$(mktemp "$(dirname "$2")/.se-publish-XXXXXXXX")
-    payload_destination=$2
-    payload_kind=$4
     cp "$1" "$temp_payload"
     chmod "$3" "$temp_payload"
     flush "$temp_payload"
-    ln "$temp_payload" "$2" || fail "destination appeared during installation: $2"
-    case "$4" in
-        binary) published_binary=1 ;; fish) published_fish=1 ;;
-        asset) published_asset_files="$5 $published_asset_files" ;;
-    esac
+    # link(2) through the bundled binary: the claim refuses atomically against
+    # any existing destination, of any kind; no precheck can own the interval.
+    "$bundle/se" __install-publish "$temp_payload" "$2" || { rm "$temp_payload"; temp_payload=''; fail "destination appeared during installation: $2"; }
+    if [ ! -f "$2" ] || [ ! "$2" -ef "$temp_payload" ]; then
+        rm "$temp_payload"; temp_payload=''
+        fail "destination appeared during installation: $2"
+    fi
     rm "$temp_payload"
     temp_payload=''
     flush "$2" "$(dirname "$2")"
@@ -215,63 +229,27 @@ remove_stale_temps() {
         rm "$stale" || fail "cannot remove owned stale installation scratch: $stale"
     done
 }
-truncate_profile() {
-    if [ "$macos" -eq 1 ]; then dd if=/dev/null of="$1" bs=1 seek="$2" 2>/dev/null
-    else truncate -s "$2" "$1"; fi
-}
 cleanup() {
     exit_code=$?
     trap - EXIT HUP INT TERM
     set +e
-    rollback_complete=1
-    if [ -n "$temp_payload" ] && [ "$payload_destination" -ef "$temp_payload" ]; then
-        case "$payload_kind" in
-            binary) published_binary=1 ;; fish) published_fish=1 ;;
-            asset) published_asset_files="${payload_destination#"$assets"/} $published_asset_files" ;;
-        esac
-    fi
     if [ "$done_install" -eq 0 ]; then
-        for name in $profiles; do
-            [ "$claimed" -eq 1 ] || continue
-            profile=$HOME/$name
-            prior=$(cat "$stage/$name.digest")
-            if [ -f "$stage/$name.started" ]; then
-                if profile_append_matches "$name"; then
-                    if [ "$prior" = absent ]; then
-                        if rm "$profile"; then flush "$HOME" || rollback_complete=0
-                        else rollback_complete=0; fi
-                    elif truncate_profile "$profile" "$prior_bytes" && flush "$profile" &&
-                         [ "$(file_digest "$profile")" = "$prior" ]; then :
-                    else rollback_complete=0; fi
-                else rollback_complete=0; fi
-            elif [ ! -L "$profile" ] && [ -f "$profile" ] && [ "$(file_digest "$profile")" = "$prior" ]; then :
-            elif [ -e "$profile" ] || [ -L "$profile" ]; then rollback_complete=0; fi
-        done
-        if [ "$published_fish" -eq 1 ]; then
-            if [ ! -L "$fish_file" ] && cmp -s "$fish_file" "$stage/fish-config"; then rm "$fish_file" || rollback_complete=0
-            else rollback_complete=0; fi
-        fi
-        if [ "$published_binary" -eq 1 ]; then
-            if [ ! -L "$bin/se" ] && cmp -s "$bin/se" "$bundle/se"; then rm "$bin/se" || rollback_complete=0
-            else rollback_complete=0; fi
-        fi
-        for relative in $published_asset_files; do
-            file=$assets/$relative
-            if [ ! -L "$file" ] && cmp -s "$file" "$bundle/$relative"; then rm "$file" || rollback_complete=0
-            else rollback_complete=0; fi
-        done
-        if [ "$claimed" -eq 1 ] && [ "$rollback_complete" -eq 1 ] && [ "$record" -ef "$stage/install.json" ]; then rm "$record"; fi
-        [ "$rollback_complete" -eq 1 ] || printf 'Rollback incomplete; owned paths and blocks remain recorded: %s\n' "$record" >&2
+        [ -z "$stage" ] || printf 'Partial installation preserved at %s\nResume with: sh "%s/install.sh" --recover\n' "$stage" "$bundle" >&2
+        exit "$exit_code"
     fi
-    [ -z "$temp_payload" ] || rm "$temp_payload"
     if [ -n "$stage" ]; then
-        find "$stage" -depth -type p -exec rm {} +
         find "$stage" -depth -type f -exec rm {} +
         find "$stage" -depth -type d -exec rmdir {} \;
         if [ -e "$stage" ]; then
             printf 'Installation scratch cleanup incomplete: %s\n' "$stage" >&2
-            [ "$exit_code" -ne 0 ] || exit_code=1
+            exit_code=1
         fi
+    fi
+    if [ "$exit_code" -eq 0 ]; then
+        flush "$data" || exit_code=1
+    fi
+    if [ "$exit_code" -eq 0 ]; then
+        printf 'Installed se at %s\nOpen a fresh login terminal and run se --version.\n' "$bin/se"
     fi
     # The native holder retains the identities of its created directories and
     # owns failed-child directory cleanup; the script never removes them by name.
@@ -284,7 +262,28 @@ trap 'exit 143' TERM
 for directory in "$bin" "$assets" "$data"; do
     [ -d "$directory" ] && [ ! -L "$directory" ] || fail "native installation directory is absent or linked: $directory"
 done
-stage=$(mktemp -d "$data/.install-XXXXXXXX")
+stage=$partial
+resume=0
+if [ "$recover" -eq 1 ]; then
+    recovery=$("$bundle/se" __install-recovery-check "$data" && printf 'end\n') || fail 'partial journal or matching archive is unreadable'
+    {
+        IFS= read -r mode
+        IFS= read -r saved_profiles
+        IFS= read -r saved_fish
+        IFS= read -r end_marker
+    } <<RECOVERY
+$recovery
+RECOVERY
+    [ "$end_marker" = end ] || fail 'native recovery response is incomplete'
+    if [ "$mode" = resume ]; then
+        resume=1; profiles=$saved_profiles; fish_file=$saved_fish
+    elif [ "$mode" = fresh ]; then
+        # No payload was published before the interrupted journal was complete.
+        find "$stage" -depth -type f -exec rm {} +
+        profile_metadata
+    else fail 'unknown native recovery state'; fi
+else mkdir "$stage"; fi
+if [ "$resume" -eq 0 ]; then
 cat > "$stage/path-block" <<'BLOCK'
 
 # >>> StateEngine PATH >>>
@@ -335,47 +334,54 @@ DIRECTORIES
         printf '%s\n    {"target": ' "$comma"; json_string "$HOME/$name"; printf ', "before_sha256": '
         prior=$(cat "$stage/$name.digest")
         if [ "$prior" != absent ]; then json_string "$prior"; else printf null; fi
-        printf ', "block": '; json_block "$stage/path-block"; printf '}'
+        prior_bytes=$(cat "$stage/$name.bytes")
+        printf ', "before_bytes": %s, "block": ' "$prior_bytes"; json_block "$stage/path-block"; printf '}'
         comma=','
     done
     printf '\n  ]}\n'
 } > "$stage/install.json"
-flush "$stage/install.json"
-ln "$stage/install.json" "$record" || fail 'another installation already owns the record'
-claimed=1
-flush "$record" "$data"
+file_digest "$bundle/manifest.json" > "$stage/.manifest-ready"
+set -- "$stage/install.json" "$stage/.manifest-ready" "$stage/path-block"
+for name in $profiles; do set -- "$@" "$stage/$name.digest" "$stage/$name.bytes"; done
+if [ -n "$fish_file" ]; then set -- "$@" "$stage/fish-config"; fi
+flush "$@" "$stage" "$data"
+# Publish readiness only after the entire original journal is durable.
+# link(2) through the bundled binary refuses any existing claim atomically.
+"$bundle/se" __install-publish "$stage/.manifest-ready" "$stage/manifest.sha256" || fail "manifest claim failed: $stage/manifest.sha256"
+[ -f "$stage/manifest.sha256" ] && [ "$stage/manifest.sha256" -ef "$stage/.manifest-ready" ] || fail "manifest claim failed: $stage/manifest.sha256"
+rm "$stage/.manifest-ready"
+flush "$stage/manifest.sha256" "$stage"
+fi
 # Only the exclusive claimant may scrub earlier scratch in shared destinations.
 remove_stale_temps "$HOME" .se-profile-
 remove_stale_temps "$bin" .se-publish-
+remove_stale_temps "$data" .se-publish-
 if [ -n "$fish_file" ]; then remove_stale_temps "$(dirname "$fish_file")" .se-publish-; fi
 for relative in $asset_files; do
-    publish_file "$bundle/$relative" "$assets/$relative" 644 asset "$relative"
+    publish_file "$bundle/$relative" "$assets/$relative" 644
 done
-publish_file "$bundle/se" "$bin/se" 755 binary
+publish_file "$bundle/se" "$bin/se" 755
 if [ -n "$fish_file" ]; then
-    publish_file "$stage/fish-config" "$fish_file" 600 fish
+    publish_file "$stage/fish-config" "$fish_file" 600
 fi
 for name in $profiles; do
     profile=$HOME/$name
     prior=$(cat "$stage/$name.digest")
-    if [ "$prior" != absent ]; then
-        if [ -L "$profile" ] || [ ! -f "$profile" ] || [ "$(file_digest "$profile")" != "$prior" ]; then
-            fail "login profile changed during installation: $profile"
-        fi
-    else [ ! -e "$profile" ] && [ ! -L "$profile" ] || fail "login profile appeared during installation: $profile"; fi
-    if [ "$prior" = absent ]; then
+    if [ ! -e "$profile" ] && [ ! -L "$profile" ]; then
+        [ "$prior" = absent ] || fail "original login profile is absent: $profile"
         (set -C; : > "$profile") || fail "login profile appeared during installation: $profile"
     fi
-    : > "$stage/$name.started"
-    cat "$stage/path-block" >> "$profile"
+    profile_append_matches "$name" || fail "login profile changed; preserved: $profile"
+    dd if="$stage/path-block" bs=1 skip="$appended_bytes" >> "$profile" 2>/dev/null
     flush "$profile" "$HOME"
     profile_append_matches "$name" && [ "$appended_bytes" -eq "$block_bytes" ] || fail "login profile append readback failed: $profile"
 done
 for relative in $asset_files; do cmp -s "$assets/$relative" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done
 cmp -s "$bin/se" "$bundle/se" || fail 'installed binary readback failed'
-cmp -s "$record" "$stage/install.json" || fail 'ownership record readback failed'
 set -- "$bundle/se" __install-files-check "$bin/se"
 for relative in $asset_files; do set -- "$@" "$assets/$relative"; done
 "$@" || fail 'native installed-file ownership readback failed'
+publish_file "$stage/install.json" "$record" 600
+cmp -s "$record" "$stage/install.json" || fail 'ownership record readback failed'
+"$bundle/se" __install-files-check "$record" || fail 'native ownership record readback failed'
 done_install=1
-printf 'Installed se at %s\nOpen a fresh login terminal and run se --version.\n' "$bin/se"
