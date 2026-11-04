@@ -148,6 +148,10 @@ pub fn runtime_start(value: &RuntimeStart, out: &mut impl Write) -> io::Result<(
 }
 
 pub fn runtime_stop(value: &RuntimeStop, out: &mut impl Write) -> io::Result<()> {
+    if value.already_down {
+        writeln!(out, "Already down; no host was running.")?;
+        return witness(&value.witness, out);
+    }
     stops(&value.stops, out)?;
     writeln!(
         out,

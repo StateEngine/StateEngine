@@ -211,8 +211,8 @@ pub fn observe_snapshot<S: Snapshot>(
                     output.runtime.state = "running".into();
                     output.runtime.host = Some(
                         match endpoint.kind {
-                            se_host::HostKind::Standalone => "standalone",
-                            se_host::HostKind::EmbeddedSecode => "embedded-secode",
+                            se_host::HostKind::Standalone => "daemon",
+                            se_host::HostKind::EmbeddedSecode => "secode",
                         }
                         .into(),
                     );

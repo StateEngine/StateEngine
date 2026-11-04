@@ -98,3 +98,8 @@ mod session_pin;
 pub use session_pin::{
     publish_session_pin, read_session_pin, remove_session_pin, session_launch_id,
 };
+
+#[cfg(target_os = "linux")]
+mod self_resources;
+#[cfg(target_os = "linux")]
+pub use self_resources::{SelfResources, observe_self_resources};

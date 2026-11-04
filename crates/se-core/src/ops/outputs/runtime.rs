@@ -30,6 +30,9 @@ pub struct RuntimeStart {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeStop {
     pub complete: bool,
+    /// No stop was sent; native exclusion and retained custody proved absence.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub already_down: bool,
     pub stops: Vec<StopFact>,
     pub witness: Witness,
 }
