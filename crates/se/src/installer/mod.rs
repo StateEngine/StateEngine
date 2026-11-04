@@ -1,9 +1,22 @@
 //! The one native installer holder prepares admitted paths before its script.
 mod args;
 mod manifest;
+#[cfg(unix)]
+mod recovery;
 use args::Options;
 use se_types::{Result, SeError};
 use std::ffi::OsString;
+pub fn check_recovery(args: &[OsString]) -> Result<i32> {
+    #[cfg(unix)]
+    {
+        recovery::check(args)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = args;
+        Err(args::invalid("the Unix installation recovery journal"))
+    }
+}
 /// The worker marker alone cannot turn an unsafe existing home into an install.
 pub fn check_home(args: &[OsString]) -> Result<i32> {
     if args.len() != 3 {

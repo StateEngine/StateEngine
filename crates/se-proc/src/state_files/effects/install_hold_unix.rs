@@ -8,7 +8,7 @@ use std::{
         fd::{AsRawFd, FromRawFd},
         unix::fs::FileTypeExt,
         unix::net::UnixStream,
-        unix::process::{CommandExt, ExitStatusExt},
+        unix::process::CommandExt,
     },
     path::Path,
     process::Command,
@@ -17,6 +17,8 @@ use std::{
 const CLAIM_FD: &str = "SE_INSTALL_CLAIM_FD";
 const CUSTODY_FD: &str = "SE_INSTALL_CUSTODY_FD";
 const MAX_CUSTODY: usize = 32768;
+#[path = "install_child_unix.rs"]
+mod child;
 
 pub(super) fn inherited_created_directories() -> Result<Vec<std::path::PathBuf>> {
     let diagnostic = Path::new("inherited installer handoff");
@@ -109,6 +111,7 @@ pub(super) fn run(
     created: Option<&OsStr>,
 ) -> Result<i32> {
     let path = Path::new(executable);
+    let caller = child::caller(path)?;
     // SAFETY: duplicate only this retained claim; CLOEXEC remains set in the
     // holder, and is cleared in the forked child immediately before exec.
     let raw = unsafe { libc::fcntl(claim.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
@@ -123,6 +126,7 @@ pub(super) fn run(
     let inherited = unsafe { File::from_raw_fd(raw) };
     let mut command = Command::new(executable);
     command.args(args);
+    command.process_group(0);
     command.env_remove(CLAIM_FD).env_remove(CUSTODY_FD);
     command.env_remove("SE_INSTALL_CREATED_DIRECTORIES");
     let mut custody = None;
@@ -189,10 +193,5 @@ pub(super) fn run(
         .map_err(|error| io_error("start installer under native claim", path, error))?;
     drop(inherited);
     drop(custody);
-    let status = child
-        .wait()
-        .map_err(|error| io_error("wait for claimed installer", path, error))?;
-    Ok(status
-        .code()
-        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+    child::wait(&mut child, caller, path)
 }

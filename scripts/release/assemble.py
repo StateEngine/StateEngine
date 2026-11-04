@@ -90,9 +90,25 @@ def main():
         root = Path(scratch) / stem
         root.mkdir()
         for name in sorted(expected):
+            if name.startswith("notices/"):
+                continue
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(build / name, target)
+        # Preserve every original notice byte in one deterministic installed
+        # file, rather than paying a durable publication for each small notice.
+        with tarfile.open(root / "notices.tar", "x") as notices:
+            for name in sorted(metadata["files"]):
+                if not name.startswith("notices/"):
+                    continue
+                source = build / name
+                info = notices.gettarinfo(str(source), name)
+                info.uid = info.gid = 0
+                info.uname = info.gname = ""
+                info.mtime = metadata["source_timestamp"]
+                info.mode = 0o644
+                with source.open("rb") as stream:
+                    notices.addfile(info, stream)
         for script in ("install", "uninstall"):
             name = script + (".ps1" if windows else ".sh")
             shutil.copyfile(SCRIPTS / name, root / name)
