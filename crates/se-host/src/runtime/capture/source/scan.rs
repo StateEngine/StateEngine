@@ -24,6 +24,7 @@ pub(super) fn next(
     if provider == se_store::Provider::Codex {
         return super::codex::next(source, revision, offset, deadline, final_capture);
     }
+    let mut tracker = super::queue::restore(source, offset, deadline)?;
     let mut position = offset;
     let mut consumed = offset;
     let mut complete = offset;
@@ -51,19 +52,43 @@ pub(super) fn next(
             }
             digest.update(&line);
             complete = consumed;
-            if let Some(mut record) = claude::decode(&line, &source.binding.conversation)? {
+            let decoded = claude::decode(&line, &source.binding.conversation)?;
+            let mut queued = tracker.observe(
+                &line,
+                Position {
+                    offset: consumed - line.len() as u64,
+                    length: line.len() as u64,
+                },
+            )?;
+            if let Some(mut record) = decoded {
                 if record.role == se_store::Role::System {
-                    let mut notice = Record::decode(record.text.as_str())?;
+                    let mut notice = if queued.is_empty() {
+                        Record::decode(record.text.as_str())?
+                    } else {
+                        queued.remove(0)
+                    };
                     notice.position = Position {
                         offset: consumed - line.len() as u64,
                         length: line.len() as u64,
                     };
-                    if claude::noise_kind(&notice.kind) {
+                    if notice.queued_input.is_none() && claude::noise_kind(&notice.kind) {
                         count(&mut noise, notice)?;
                         noise_records += 1;
                         if noise_records >= TAIL_RECORDS || consumed - offset >= TAIL_BYTES {
-                            return finish(source, revision, offset, consumed, digest, noise, None)
-                                .map(Some);
+                            return finish(
+                                source,
+                                revision,
+                                offset,
+                                consumed,
+                                digest,
+                                None,
+                                Pending {
+                                    noise,
+                                    queued,
+                                    tracker,
+                                },
+                            )
+                            .map(Some);
                         }
                         line.clear();
                         continue;
@@ -86,8 +111,12 @@ pub(super) fn next(
                     offset,
                     consumed,
                     digest,
-                    noise,
                     Some(record),
+                    Pending {
+                        noise,
+                        queued,
+                        tracker,
+                    },
                 )
                 .map(Some);
             }
@@ -102,7 +131,20 @@ pub(super) fn next(
                 ));
             }
             if final_capture && !noise.is_empty() {
-                return finish(source, revision, offset, complete, digest, noise, None).map(Some);
+                return finish(
+                    source,
+                    revision,
+                    offset,
+                    complete,
+                    digest,
+                    None,
+                    Pending {
+                        noise,
+                        queued: Vec::new(),
+                        tracker,
+                    },
+                )
+                .map(Some);
             }
             return Ok(None);
         }
@@ -135,15 +177,25 @@ fn identity(source: &BoundTranscript, category: &str, offset: u64, kind: &str) -
         se_types::hex_lower(&source.pin.identity())
     )
 }
+struct Pending {
+    noise: BTreeMap<String, Record>,
+    queued: Vec<Record>,
+    tracker: super::queue::Tracker,
+}
 fn finish(
-    source: &BoundTranscript,
+    source: &mut BoundTranscript,
     revision: se_store::Revision,
     offset: u64,
     end: u64,
     digest: Sha256,
-    mut noise: BTreeMap<String, Record>,
     main: Option<TextRecord>,
+    pending: Pending,
 ) -> Result<TrustedCapture> {
+    let Pending {
+        mut noise,
+        queued,
+        tracker,
+    } = pending;
     let main = match main {
         Some(main) => main,
         None => {
@@ -157,15 +209,28 @@ fn finish(
             }
         }
     };
-    let mut metadata = Vec::with_capacity(noise.len());
-    for record in noise.into_values() {
+    let mut metadata = Vec::with_capacity(noise.len() + queued.len());
+    for record in noise.into_values().chain(queued) {
         let allocated = facts()?;
         metadata.push(CaptureMetadata {
-            vendor_turn: identity(source, "noise", offset, &record.kind),
+            vendor_turn: identity(
+                source,
+                "notice",
+                record.position.offset,
+                &format!(
+                    "{}:{}",
+                    record.kind,
+                    record.queued_input.as_ref().map_or(0, |q| q.enqueue.offset)
+                ),
+            ),
             record,
             turn: allocated.turn,
             event: allocated.turn_event,
         });
+    }
+    source.queue.push_back((end, tracker));
+    if source.queue.len() > 2 {
+        source.queue.pop_front();
     }
     Ok(TrustedCapture {
         request: CaptureRequest {
@@ -220,6 +285,7 @@ mod tests {
                 path: se_types::NativePath::from_local(path.clone())?,
                 file_identity: se_types::Sha256::from_bytes(pin.identity()),
             },
+            queue: Default::default(),
             source: se_store::RecordId::from_parts(1_700_000_000_000, [2; 10])?,
             pin,
         };

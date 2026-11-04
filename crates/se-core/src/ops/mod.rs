@@ -36,6 +36,7 @@ pub mod hook;
 pub mod inbox;
 pub mod inputs;
 pub mod transcript;
+pub mod queued_input;
 pub use inbox::MessageInbox;
 pub mod installation;
 pub mod store_import;

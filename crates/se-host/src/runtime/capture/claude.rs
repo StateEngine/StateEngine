@@ -29,7 +29,10 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
                 "the bound conversation when metadata names a session",
             ));
         }
-        if noise_kind(kind) && (object.contains_key("message") || object.contains_key("content")) {
+        if noise_kind(kind)
+            && !matches!(kind, "api-request-blob" | "queue-operation")
+            && (object.contains_key("message") || object.contains_key("content"))
+        {
             return Err(invalid("bookkeeping without message or content fields"));
         }
         if !known_metadata(kind)
@@ -45,10 +48,28 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
                 "a recognized text record type; an unknown message-bearing record may be a real turn",
             ));
         }
-        let notice = se_core::ops::transcript::Record::new(
+        let mut notice = se_core::ops::transcript::Record::new(
             kind,
             object.get("subtype").and_then(Value::as_str),
         );
+        if kind == "queue-operation"
+            && object.get("operation").and_then(Value::as_str) == Some("enqueue")
+        {
+            let text = object
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("the actual queued input text"))?;
+            Body::new(text)?;
+            notice.subtype = Some("enqueue".into());
+            notice.queued_input = Some(se_core::ops::queued_input::QueuedInput {
+                enqueue: notice.position.clone(),
+                outcome: se_core::ops::queued_input::Outcome::Unresolved,
+                reason: None,
+                delivery: se_core::ops::queued_input::Delivery::Unresolved,
+                outcome_position: None,
+                text: Some(text.into()),
+            });
+        }
         return Ok(Some(TextRecord {
             vendor_turn: String::new(),
             role: se_store::Role::System,
@@ -223,7 +244,6 @@ mod tests {
         let session = ProviderSessionId::new("bound-session")?;
         for value in [
             json!({"type":"file-history-snapshot","message":null}),
-            json!({"type":"api-request-blob","content":"chat"}),
             json!({"type":"mode","sessionId":"foreign-session"}),
             json!({"type":"mode","sessionId":null}),
         ] {
@@ -231,6 +251,8 @@ mod tests {
         }
         for value in [
             json!({"type":"file-history-snapshot","snapshot":{}}),
+            json!({"type":"api-request-blob","content":"native model traffic"}),
+            json!({"type":"queue-operation","operation":"remove","content":"provider bookkeeping"}),
             json!({"type":"mode","sessionId":"bound-session"}),
         ] {
             assert!(decode(&serde_json::to_vec(&value)?, &session)?.is_some());
