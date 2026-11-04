@@ -167,9 +167,12 @@ def main():
             failure = str(error)
         finally:
             # Public cleanup first even when the baseline detached a sibling.
-            stopped = call(binary, 'cleanup-down', 'down')
-            if stopped.returncode != 0:
-                cleanup.append('public cleanup down failed')
+            remaining_host = identity(observed) if observed is not None else None
+            if ((state / 'endpoint.json').exists()
+                    or (remaining_host is not None and remaining_host['state'] != 'Z')):
+                stopped = call(binary, 'cleanup-down', 'down')
+                if stopped.returncode != 0:
+                    cleanup.append('public cleanup down failed')
             if child.poll() is None:
                 if initial and same(initial):
                     child.send_signal(signal.SIGTERM)
