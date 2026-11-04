@@ -296,7 +296,7 @@ pub(super) fn finish<R: ReadStore>(
                     argv: command.argv,
                 };
             } else {
-                value.next = command(
+                value.next = next_command(
                     cx,
                     "Inspect your saved agent",
                     vec![
@@ -315,13 +315,13 @@ pub(super) fn finish<R: ReadStore>(
     Ok(output)
 }
 fn listing(cx: &Bootstrap) -> Result<NextStep> {
-    command(
+    next_command(
         cx,
         "List your registered projects",
         vec!["status".into(), "--all".into()],
     )
 }
-fn command(cx: &Bootstrap, text: &str, tail: Vec<String>) -> Result<NextStep> {
+fn next_command(cx: &Bootstrap, text: &str, tail: Vec<String>) -> Result<NextStep> {
     let home = cx
         .home
         .to_str()
