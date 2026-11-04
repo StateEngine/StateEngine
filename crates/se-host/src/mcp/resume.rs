@@ -235,7 +235,7 @@ mod tests {
             json!("x".repeat(5000)),
             input(),
         ));
-        assert!(serde_json::to_vec(&response)?.len() + 1 <= 4096);
+        assert!(serde_json::to_vec(&response)?.len() < 4096);
         assert!(response["id"].is_null() && response["error"].is_object());
         Ok(())
     }
@@ -299,7 +299,7 @@ mod tests {
                 .ok_or("missing success")?,
         )?;
         assert_eq!(response["result"]["isError"], false);
-        assert!(serde_json::to_vec(&response)?.len() + 1 <= needed as usize);
+        assert!(serde_json::to_vec(&response)?.len() < needed as usize);
         assert_eq!(
             output["omissions"],
             json!([{"section":"working_state","count":499,"reason":"UTF-8 byte budget"}])
@@ -341,7 +341,7 @@ mod tests {
                 .as_str()
                 .is_some_and(|text| text.contains("1048576"))
         );
-        assert!(serde_json::to_vec(&response)?.len() + 1 <= 4096);
+        assert!(serde_json::to_vec(&response)?.len() < 4096);
         Ok(())
     }
 }
