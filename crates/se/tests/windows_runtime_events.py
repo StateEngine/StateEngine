@@ -23,6 +23,49 @@ import traceback
 CONSOLE_HANDLERS = []  # Native callbacks must remain alive until process exit.
 
 
+def launch_console(directory, client, env):
+    """Protects: conhost receives one plain client command line without inherited log handles."""
+    directory.mkdir(exist_ok=True)
+    conhost = (Path(os.environ['SystemRoot']) / 'System32/conhost.exe').resolve(strict=True)
+    powershell = conhost.parent / 'WindowsPowerShell/v1.0/powershell.exe'
+    request = directory / 'launcher-request.json'
+    command_line = subprocess.list2cmdline(client)
+    atomic_json(request, {'conhost': str(conhost), 'command_line': command_line,
+                         'receipt': str(directory / 'launcher-ready.json')})
+    script = directory / 'launch-console.ps1'
+    script.write_text('''param([string]$Request)
+$ErrorActionPreference = 'Stop'
+$r = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
+$p = Start-Process -FilePath $r.conhost -ArgumentList $r.command_line -PassThru
+$json = @{conhost_pid=$p.Id; command_line=$r.command_line} | ConvertTo-Json -Compress
+[IO.File]::WriteAllText(($r.receipt + '.tmp'), $json, [Text.UTF8Encoding]::new($false))
+[IO.File]::Move(($r.receipt + '.tmp'), $r.receipt)
+$p.WaitForExit()
+exit $p.ExitCode
+''')
+    # Match the native Start-Process probe that ran on the target Windows box.
+    # Only the PowerShell observer writes a log; conhost owns genuine stdio.
+    with (directory / 'launcher.stderr').open('wb') as log:
+        launcher = subprocess.Popen([str(powershell), '-NoProfile', '-NonInteractive',
+            '-File', str(script), str(request)], env=env, cwd=directory,
+            stdin=subprocess.DEVNULL, stdout=log, stderr=log)
+    return launcher, conhost
+
+
+def console_precheck(directory, env):
+    """Protects: the exact console launcher executes Python before any product launch."""
+    marker = directory / 'python-probe.json'
+    code = 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text("console-python-ran")'
+    launcher, _ = launch_console(directory, [sys.executable, '-I', '-c', code, str(marker)], env)
+    try:
+        wait_for(lambda: marker.exists() and marker.read_text() == 'console-python-ran',
+                 'NOT REACHED: standalone conhost Python precheck never executed')
+    finally:
+        launcher.wait(timeout=10)
+    if launcher.returncode:
+        raise AssertionError('standalone conhost Python precheck failed')
+
+
 def atomic_json(path, value):
     temporary = path.with_suffix('.tmp')
     temporary.write_text(json.dumps(value))
@@ -192,29 +235,25 @@ std::process::exit(s.code().unwrap_or(1));}'''
     user_file.write_bytes(b'Keep Windows user work.\r\n')
     pins, failures, cleanup, members = [], [], [], []
     progress['stage'] = 'start separate native console worker'
-    conhost = (Path(os.environ['SystemRoot']) / 'System32/conhost.exe').resolve(strict=True)
-    # Use the installed Windows conhost's direct-client form. Its supported
-    # switches can differ from the current OpenConsole source. Native window
-    # ownership and the callback receipt below remain the actual preconditions.
-    with (fixture.root / 'worker.stderr').open('wb') as worker_log:
-        launcher = subprocess.Popen([str(conhost), sys.executable, '-I',
-            str(Path(__file__).resolve()), '--worker',
-            '--se', str(fixture.se), '--home', str(fixture.home), '--out', str(fixture.root)],
-            stdin=subprocess.DEVNULL, stdout=worker_log, stderr=worker_log,
-            cwd=fixture.repo, env=fixture.env, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    console_precheck(fixture.root / 'console-precheck', fixture.env)
+    launcher, conhost = launch_console(fixture.root, [sys.executable, '-I',
+        str(Path(__file__).resolve()), '--worker', '--se', str(fixture.se),
+        '--home', str(fixture.home), '--out', str(fixture.root)], fixture.env)
     try:
         progress['stage'] = 'precheck Python worker entry before any console stimulus'
         started = read_json(fixture.root / 'worker-started.json')
         progress['stage'] = 'read worker PID and pin exact foreground host'
         ready_path = fixture.root / 'worker-ready.json'
         ready = read_json(ready_path)
+        launched = read_json(fixture.root / 'launcher-ready.json')
+        progress['console_client_command_line'] = launched['command_line']
         if ready['worker_pid'] != started['worker_pid']:
             raise AssertionError('console readiness belongs to a different worker')
         pins.append(Pin(kernel, ready['host_pid']))
         console_pin = Pin(kernel, ready['console_owner_pid'])
         try:
             progress['console_owner'] = console_pin.record
-            if (console_pin.record['pid'] != launcher.pid
+            if (console_pin.record['pid'] != launched['conhost_pid']
                     or Path(console_pin.record['image']).resolve() != conhost):
                 raise AssertionError('NOT REACHED: console window is not owned by the explicit classic conhost')
         finally:
@@ -301,7 +340,13 @@ def main():
     if os.name != 'nt':
         parser.error('native Windows required')
     if args.worker:
-        return worker(args)
+        with (args.out / 'worker.stderr').open('w', encoding='utf8') as errors:
+            sys.stderr = errors
+            try:
+                return worker(args)
+            except BaseException:
+                traceback.print_exc()
+                raise
     # An explicit absolute path also works under python -I; copy the complete
     # tests/judges directory alongside this file when staging the native kit.
     sys.path.insert(0, str(Path(__file__).resolve().parent / 'judges'))
@@ -324,6 +369,8 @@ def main():
                    'fixture': str(root / selected), 'traceback': traceback.format_exc(), **progress}
         worker_log = root / selected / 'worker.stderr'
         row['worker_stderr'] = worker_log.read_text(errors='replace') if worker_log.exists() else None
+        launch_log = root / selected / 'launcher.stderr'
+        row['launcher_stderr'] = launch_log.read_text(errors='replace') if launch_log.exists() else None
         rows.append(row)
         print(('PASS: ' if row['passed'] else 'FAIL: ') + selected, flush=True)
         report = {'binary_sha256': digest, 'cases': rows,
