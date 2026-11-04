@@ -20,6 +20,9 @@ mod already_down;
 #[cfg(any(target_os = "linux", windows))]
 #[path = "runtime/completion.rs"]
 mod completion;
+#[cfg(any(target_os = "linux", windows))]
+#[path = "runtime/discovery.rs"]
+mod discovery;
 #[path = "runtime/stops.rs"]
 mod stops;
 
@@ -36,36 +39,9 @@ pub fn up(
     }
     let options = execute::options();
     let bound = Deadline::from_options(&options)?;
-    #[cfg(unix)]
-    let expected = se_host::IpcEndpoint::UnixSocket(se_types::NativePath::from_local(
-        crate::config::unix_socket_paths()?
-            .expected_path(&cx.home)
-            .map_err(|error| {
-                scope::unreadable("expected runtime socket address", &error.to_string())
-                    .with_cause(error)
-            })?,
-    )?);
-    #[cfg(windows)]
-    let expected = se_host::runtime_endpoint_address(&cx.home)?;
-    let (endpoint, process, endpoint_recovery) = match se_host::route_endpoint(&cx.home, &expected)?
-    {
+    let (endpoint, process, endpoint_recovery) = match discovery::route(cx)? {
         se_host::EndpointRoute::Live(value) => {
-            BlockingIpcClient::connect_authenticated(
-                &value,
-                execute::credential(cx, files)?,
-                NonZeroU32::new(se_host::client::wire::DEFAULT_REPLY_BYTES)
-                    .ok_or_else(|| SeError::invalid("runtime reply budget", "positive"))?,
-                &options,
-            ).map_err(|error| {
-                if error.code() == se_types::Code::IpcUnavailable {
-                    SeError::new(se_types::Detail::StateConflict(se_types::details::StateConflict {
-                        subject: cx.home.join("runtime.lock").display().to_string(),
-                        reason: format!("the runtime lease is held but its endpoint could not be authenticated: {error}"),
-                        next_step: "Run se down for this same data home before retrying se up; the endpoint and live host were preserved.".into(),
-                    })).with_cause(error)
-                } else { error }
-            })?;
-            let process = process::observe(&value, &bound)?;
+            let process = discovery::authenticate(cx, files, &value, &options, &bound)?;
             (value, process, None)
         }
         se_host::EndpointRoute::Start { recovery } => {
@@ -115,6 +91,18 @@ pub fn foreground(cx: &Bootstrap, ready: &mut dyn FnMut(AnyOutput) -> Result<()>
     };
     if caller.owner.is_none() {
         return Err(SeError::invalid("runtime owner", "native owner authority"));
+    }
+    if let se_host::EndpointRoute::Live(endpoint) = discovery::route(cx)? {
+        let options = execute::options();
+        let bound = Deadline::from_options(&options)?;
+        let process = discovery::authenticate(cx, &files, &endpoint, &options, &bound)?;
+        return Err(SeError::new(se_types::Detail::StateConflict(
+            se_types::details::StateConflict {
+                subject: "foreground host".into(),
+                reason: format!("A StateEngine host is already running for this home (PID {}).", process.pid),
+                next_step: "Run se status with the same --home to inspect and use the existing host, or se down before starting a foreground host.".into(),
+            },
+        )));
     }
     let machine = super::identity::require_machine(&files)?;
     let configuration = match &cx.config.origin {

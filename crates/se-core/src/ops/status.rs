@@ -21,6 +21,7 @@ pub fn missing(home: String, generated_at: String, checked: String) -> StatusOut
             version: None,
             observed_at: None,
             resources: None,
+            resources_unavailable: None,
         },
         project: Read::Absent { checked },
         removal: None,

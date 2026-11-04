@@ -33,6 +33,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         Read::Unknown { what } => writeln!(out, "Project unknown: {what}")?,
     }
     writeln!(out, "Runtime: {}", value.runtime.state)?;
+    if let Some(reason) = &value.runtime.resources_unavailable {
+        writeln!(out, "Host resources unavailable: {reason}")?;
+    }
     if matches!(
         value.runtime.detachment.as_ref(),
         Some(HostDetachment::SessionOnly)

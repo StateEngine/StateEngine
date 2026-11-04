@@ -18,7 +18,7 @@ pub struct SetupView {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ResourceSample {
-    pub self_voluntary_switches: u64,
+    pub self_voluntary_switches: Option<u64>,
     pub self_involuntary_switches: Option<u64>,
     pub cpu_user_us: u64,
     pub cpu_system_us: u64,
@@ -46,6 +46,8 @@ pub struct RuntimeView {
     pub observed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resources: Option<ResourceSample>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources_unavailable: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RemovalView {

@@ -1,23 +1,68 @@
-//! Foreground Ctrl-C is an event, sharing the ordinary host drain and join.
+//! Terminal and termination signals share the ordinary host drain and join.
 use super::*;
 use std::{
     future::{Future, poll_fn},
     pin::pin,
-    task::Poll,
+    task::{Context, Poll},
 };
 #[cfg(unix)]
-type Signal = tokio::signal::unix::Signal;
+pub(super) struct Signal([tokio::signal::unix::Signal; 3]);
 #[cfg(windows)]
-type Signal = tokio::signal::windows::CtrlC;
+pub(super) struct Signal {
+    interrupt: tokio::signal::windows::CtrlC,
+    terminate: tokio::signal::windows::CtrlBreak,
+    close: tokio::signal::windows::CtrlClose,
+    logoff: tokio::signal::windows::CtrlLogoff,
+    shutdown: tokio::signal::windows::CtrlShutdown,
+}
+
+impl Signal {
+    fn poll_recv(&mut self, cx: &mut Context<'_>) -> Poll<Option<()>> {
+        #[cfg(unix)]
+        let events = self.0.iter_mut().map(|signal| signal.poll_recv(cx));
+        #[cfg(windows)]
+        let events = [
+            self.interrupt.poll_recv(cx),
+            self.terminate.poll_recv(cx),
+            self.close.poll_recv(cx),
+            self.logoff.poll_recv(cx),
+            self.shutdown.poll_recv(cx),
+        ]
+        .into_iter();
+        events
+            .into_iter()
+            .find(Poll::is_ready)
+            .unwrap_or(Poll::Pending)
+    }
+}
 
 pub(super) fn listen() -> Result<Signal> {
     #[cfg(unix)]
-    let result = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt());
+    let result = (|| {
+        use tokio::signal::unix::{SignalKind, signal};
+        Ok::<_, std::io::Error>(Signal([
+            signal(SignalKind::interrupt())?,
+            signal(SignalKind::terminate())?,
+            signal(SignalKind::hangup())?,
+        ]))
+    })();
     #[cfg(windows)]
-    let result = tokio::signal::windows::ctrl_c();
+    let result = (|| {
+        use tokio::signal::windows;
+        Ok::<_, std::io::Error>(Signal {
+            interrupt: windows::ctrl_c()?,
+            terminate: windows::ctrl_break()?,
+            close: windows::ctrl_close()?,
+            logoff: windows::ctrl_logoff()?,
+            shutdown: windows::ctrl_shutdown()?,
+        })
+    })();
     result.map_err(|error| {
-        se_core::scope::unreadable("foreground Ctrl-C registration", &error.to_string())
-            .with_cause(error)
+        se_core::scope::unreadable(
+            "foreground termination signal registration",
+            &error.to_string(),
+        )
+        .with_cause(error)
     })
 }
 pub(super) async fn serve(
@@ -27,7 +72,7 @@ pub(super) async fn serve(
 ) -> se_host::HostServeExit {
     let stop = host.local_stop();
     let mut serving = pin!(host.serve(listener));
-    let mut interrupted = pin!(signal.recv());
+    let mut interrupted = pin!(poll_fn(|cx| signal.poll_recv(cx)));
     let mut received = false;
     let mut failure = None;
     let mut exit = poll_fn(|cx| {
@@ -35,7 +80,7 @@ pub(super) async fn serve(
             received = true;
             if event.is_none() {
                 failure = Some(se_core::scope::unreadable(
-                    "foreground Ctrl-C",
+                    "foreground termination signal",
                     "the registered native event stream closed",
                 ));
             }
