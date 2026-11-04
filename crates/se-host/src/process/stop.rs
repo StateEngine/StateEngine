@@ -147,6 +147,7 @@ impl LaunchCoordinator {
                 }
                 se_proc::RecoveryOutcome::Exited(witness) => {
                     work.native_already_reconciled = true;
+                    work.last_witness = Some((*witness).clone());
                     return self.finish(work, *witness, deadline).await;
                 }
                 _ => {
