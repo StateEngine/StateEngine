@@ -37,6 +37,11 @@ expect_used = "deny"
 [profile.release]
 panic = "unwind"
 
+# Native IPC proves a cold executable before its file-identity cache is warm.
+# Keep software SHA fast in development/tests, including CPUs without SHA instructions.
+[profile.dev.package.sha2]
+opt-level = 3
+
 # Archive builds pay the link cost; ordinary release tests keep their usual profile.
 [profile.distribution]
 inherits = "release"

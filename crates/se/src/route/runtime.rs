@@ -217,6 +217,12 @@ pub(super) fn down_endpoint(
 ) -> Result<AnyOutput> {
     use se_host::client::endpoint::{RuntimeStopFact as Fact, RuntimeStopOutcome};
     let bound = Deadline::from_options(options)?;
+    se_proc::native_ipc::restore_image_cache(
+        files.0.root(),
+        endpoint.image_sha256,
+        &bound.native_bound(),
+    )
+    .map_err(|error| scope::unreadable("protected executable cache", &error.to_string()))?;
     let mut options = se_host::client::ClientOptions {
         expected_generation: options.expected_generation,
         timeout: options.timeout,
@@ -225,7 +231,7 @@ pub(super) fn down_endpoint(
     let now = execute::now_us()?;
     let deadline = now
         .checked_add(
-            i64::try_from(options.timeout.as_micros())
+            i64::try_from(bound.remaining()?.as_micros())
                 .map_err(|_| SeError::invalid("stop deadline", "representable microseconds"))?,
         )
         .ok_or_else(|| SeError::invalid("stop deadline", "representable microseconds"))?;

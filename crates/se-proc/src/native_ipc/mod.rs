@@ -187,7 +187,11 @@ pub fn observe_ipc_peer(
     channel: BorrowedIpc<'_>,
     side: IpcPeerSide,
 ) -> IpcNativeResult<NativeIpcPeer> {
-    observe_ipc_peer_bounded(channel, side, &proof_bound())
+    observe_ipc_peer_bounded(
+        channel,
+        side,
+        &proof_bound(std::time::Duration::from_secs(5)),
+    )
 }
 pub fn observe_ipc_peer_bounded(
     channel: BorrowedIpc<'_>,
@@ -227,7 +231,10 @@ pub fn verify_ipc_stop_server(
         .map_err(|e| error("finish stop server verification", e))
 }
 pub fn observe_ipc_self() -> IpcNativeResult<NativeIpcPeer> {
-    observe_ipc_self_bounded(&proof_bound())
+    // A cold local image may need disk I/O before its file-identity cache is warm.
+    // This is not an unauthenticated handshake; keep that separate five-second
+    // bound above. Explicit bounded callers still own their original deadline.
+    observe_ipc_self_bounded(&proof_bound(std::time::Duration::from_secs(30)))
 }
 pub fn observe_ipc_self_bounded(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
     bound
@@ -242,9 +249,9 @@ pub fn observe_ipc_self_bounded(bound: &IpcIoBound) -> IpcNativeResult<NativeIpc
         windows::self_peer(bound)
     }
 }
-fn proof_bound() -> IpcIoBound {
+fn proof_bound(timeout: std::time::Duration) -> IpcIoBound {
     IpcIoBound {
-        deadline: Instant::now() + std::time::Duration::from_secs(5),
+        deadline: Instant::now() + timeout,
         cancelled: Arc::new(AtomicBool::new(false)),
     }
 }
