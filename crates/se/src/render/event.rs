@@ -29,7 +29,45 @@ fn present(value: &HistoryEvent, out: &mut impl Write) -> io::Result<()> {
     }?;
     // The core has already selected the public payload. Render every selected
     // fact so registrations, grants and other non-body families stay useful.
-    payload(&value.payload, "Payload", 0, out)
+    if value.kind == "profile.saved" {
+        // The stored profile keeps internal enum names; plain history reuses
+        // the same permission and provider terms init and launch print.
+        let mapped = saved_profile_payload(&value.payload);
+        payload(&mapped, "Payload", 0, out)
+    } else {
+        payload(&value.payload, "Payload", 0, out)
+    }
+}
+
+fn saved_profile_payload(payload: &serde_json::Value) -> serde_json::Value {
+    let mut mapped = payload.clone();
+    let Some(profile) = mapped.get_mut("profile").and_then(|profile| profile.as_object_mut()) else {
+        return mapped;
+    };
+    if let Some(serde_json::Value::String(permission)) = profile.get_mut("permission") {
+        *permission = permission_label(permission).to_owned();
+    }
+    if let Some(serde_json::Value::String(provider)) = profile.get_mut("provider") {
+        *provider = provider_label(provider).to_owned();
+    }
+    mapped
+}
+
+fn permission_label(permission: &str) -> &str {
+    match permission {
+        "ReadOnly" => "read-only",
+        "WorkspaceWrite" => "workspace-write",
+        "NamedFullBypass" => "bypass",
+        other => other,
+    }
+}
+
+fn provider_label(provider: &str) -> &str {
+    match provider {
+        "Claude" => "Claude Code",
+        "SeCode" => "SE Code",
+        other => other,
+    }
 }
 
 fn payload(
