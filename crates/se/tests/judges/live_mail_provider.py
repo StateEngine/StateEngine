@@ -95,6 +95,10 @@ def run_turns(initial, se, home, cwd, conversation, transcript):
             native = {"type":"user","sessionId":conversation,"uuid":frame.get("uuid",str(uuid.uuid4())),"message":frame["message"]}
             with transcript.open("a") as stream:
                 stream.write(json.dumps(native)+"\n")
+                # Real provider extensions can add an unrelated user-context
+                # record before the host reconciles the consumed notice. Both
+                # native records exist before the stream boundary is emitted.
+                stream.write(json.dumps({"type":"user","sessionId":conversation,"uuid":str(uuid.uuid4()),"message":{"role":"user","content":"Unrelated later provider context"}})+"\n")
                 stream.flush()
                 os.fsync(stream.fileno())
         # This is an actual echo of consumed input, with its original UUID.
@@ -113,7 +117,8 @@ def run_turns(initial, se, home, cwd, conversation, transcript):
                     (cwd / "provider-busy.json").write_text(json.dumps({"sequence":sequence,"message_id":row["id"]}))
                     with (cwd / "busy-gate").open("rb", buffering=0) as gate:
                         assert gate.read(1) == b"!"
-                rpc("stateengine_msg_send", {"to":owner.group(1),"body":marker.group(0),"kind":"done","reply_to":row["id"],"idempotency_key":str(uuid.uuid4())})
+                sent = rpc("stateengine_msg_send", {"to":"owner","body":marker.group(0),"kind":"done","reply_to":row["id"],"idempotency_key":str(uuid.uuid4())})
+                assert sent["to"]["id"] == owner.group(1), "reserved owner selector changed the task recipient"
         assistant = {"type":"assistant","sessionId":conversation,"uuid":str(uuid.uuid4()),"message":{"role":"assistant","content":[{"type":"text","text":"Turn completed"}]}}
         with transcript.open("a") as stream:
             stream.write(json.dumps(assistant)+"\n")

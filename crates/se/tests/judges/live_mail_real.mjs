@@ -40,8 +40,7 @@ BudgetRun.prototype.oneSession=async function(t){
    if(found.length){
     if(found.length!==1)throw Error('Duplicate exact done reply');
     const original=await inspection(source.message_id);
-    if(original.delivery.state!=='delivered' || original.disposition.state!=='read')throw Error('Reply did not leave delivered/read source mail');
-    return found[0];
+    if(original.delivery.state==='delivered' && original.disposition.state==='read')return found[0];
    }
    await pause(500);
   }

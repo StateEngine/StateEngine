@@ -14,9 +14,12 @@ import uuid
 
 
 class Fixture:
-    def __init__(self, se, root, provider_helper=None):
+    def __init__(self, se, root, provider_helper=None, log_directory=None):
         self.se, self.root = se.resolve(), root.resolve()
         self.root.mkdir(parents=True, exist_ok=False)
+        self.log_root = self.root / log_directory if log_directory else self.root
+        if log_directory:
+            self.log_root.mkdir()
         self.home = self.root / "state"
         self.repo = self.root / "repo"
         self.repo.mkdir()
@@ -64,7 +67,7 @@ std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.
             environment["SE_SESSION"] = self.session
         result = subprocess.run([str(self.se), "--json", "--home", str(self.home), *args],
                                 stdin=subprocess.DEVNULL, env=environment, capture_output=True, timeout=90)
-        base = self.root / f"call-{self.calls:02}"
+        base = self.log_root / f"call-{self.calls:02}"
         base.with_suffix(".stdout").write_bytes(result.stdout)
         base.with_suffix(".stderr").write_bytes(result.stderr)
         return result
@@ -89,7 +92,7 @@ std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.
         result = subprocess.run([str(self.se), "--home", str(self.home), "mcp"],
                                 input=(json.dumps(request) + "\n").encode(), env=environment,
                                 capture_output=True, timeout=30)
-        base = self.root / f"call-{self.calls:02}"
+        base = self.log_root / f"call-{self.calls:02}"
         base.with_suffix(".stdout").write_bytes(result.stdout)
         base.with_suffix(".stderr").write_bytes(result.stderr)
         assert result.returncode == 0, (result.stdout, result.stderr)

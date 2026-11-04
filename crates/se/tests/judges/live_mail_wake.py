@@ -53,8 +53,12 @@ def reply(f, receipt, marker):
         return next((row for row in page["items"] if row["reply_to"] == receipt["message_id"]), None)
     row = wait(read)
     assert row["from"]["id"] == f.agent and row["body"]["complete"] and row["body"]["text"] == marker, row
-    original = f.mail("read", receipt["message_id"])
-    assert original["inspection"] and original["message"]["delivery"]["state"] == "delivered", original
+    def delivered():
+        original = f.mail("read", receipt["message_id"])
+        assert original["inspection"], original
+        message = original["message"]
+        return original if message["delivery"]["state"] == "delivered" and message["disposition"]["state"] == "read" else None
+    wait(delivered)
     return row
 
 
@@ -109,7 +113,7 @@ def main():
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    f = Fixture(args.se, args.output, Path(__file__).with_name("live_mail_provider.py"))
+    f = Fixture(args.se, args.output, Path(__file__).with_name("live_mail_provider.py"), log_directory="calls")
     failure = cleanup = None
     try:
         run(f)
