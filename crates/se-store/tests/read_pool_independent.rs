@@ -362,6 +362,7 @@ fn query_refusal_then_explicit_close_observes_the_next_committed_head() -> Check
                 session: None,
                 kinds: Vec::new(),
                 families: Vec::new(),
+                transcript: se_store::TranscriptFilter::All,
                 since: None,
             },
             budget(1, 1, None)?,

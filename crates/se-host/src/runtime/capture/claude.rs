@@ -17,88 +17,33 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
     let value: Value =
         serde_json::from_slice(bytes).map_err(|_| invalid("a complete JSON record"))?;
     let object = value.as_object().ok_or_else(|| invalid("a JSON object"))?;
-    if let Some(session) = object.get("sessionId")
-        && session.as_str() != Some(conversation.as_str())
-    {
-        return Err(invalid(
-            "the bound provider conversation on every session-bearing record",
-        ));
-    }
     let kind = object
         .get("type")
         .and_then(Value::as_str)
-        .ok_or_else(|| invalid("a recognized record type"))?;
+        .ok_or_else(|| invalid("an explicit string record type"))?;
     if kind != "user" && kind != "assistant" {
-        // Claude's request cache repeats API messages, including system text;
-        // these are not conversation records and have no vendor turn uuid.
-        // Recognize its explicit envelope without accepting arbitrary records
-        // carrying message text as metadata.
-        if kind == "api-request-blob"
-            && !object.contains_key("uuid")
-            && !object.contains_key("content")
-            && object
-                .get("hash")
-                .and_then(Value::as_str)
-                .is_some_and(|hash| {
-                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
-                })
-            && object
-                .get("message")
-                .and_then(Value::as_object)
-                .is_some_and(|message| {
-                    matches!(
-                        message.get("role").and_then(Value::as_str),
-                        Some("system" | "user" | "assistant")
-                    ) && matches!(
-                        message.get("content"),
-                        Some(Value::String(_) | Value::Array(_))
-                    )
-                })
+        if !known_metadata(kind)
+            && matches!(
+                object
+                    .get("message")
+                    .and_then(|m| m.get("role"))
+                    .and_then(Value::as_str),
+                Some("user" | "assistant")
+            )
         {
-            return Ok(None);
+            return Err(invalid(
+                "a recognized text record type; an unknown message-bearing record may be a real turn",
+            ));
         }
-        // Known non-turn metadata contains no message/body. Unknown kinds stop
-        // the cursor so a future schema change cannot silently discard text.
-        if matches!(
+        let notice = se_core::ops::transcript::Record::new(
             kind,
-            "mode"
-                | "file-history-snapshot"
-                | "file-history-delta"
-                | "system"
-                | "attachment"
-                | "ai-title"
-                | "last-prompt"
-                | "permission-mode"
-                | "queue-operation"
-                | "agent-name"
-                | "frame-link"
-                | "custom-title"
-                | "bridge-session"
-                | "atis-latch"
-                | "cost-state"
-                | "artifact-comment-monitor"
-                | "artifact-autoreact-ledger"
-                | "relocated"
-                | "worktree-state"
-                | "session-owner"
-                | "tools-used"
-                | "api-request-shape"
-                | "api-request"
-        ) && !object.contains_key("message")
-            && !object.contains_key("content")
-        {
-            return Ok(None);
-        }
-        let name: String = kind.chars().take(128).collect();
-        let truncated = if name.len() < kind.len() {
-            " (truncated)"
-        } else {
-            ""
-        };
-        return Err(SeError::invalid(
-            &format!("pinned Claude transcript record type {name:?}{truncated}"),
-            "a supported transcript record; preserve the old cursor on schema drift",
-        ));
+            object.get("subtype").and_then(Value::as_str),
+        );
+        return Ok(Some(TextRecord {
+            vendor_turn: String::new(),
+            role: se_store::Role::System,
+            text: notice.body()?,
+        }));
     }
     if object.get("sessionId").and_then(Value::as_str) != Some(conversation.as_str()) {
         return Err(invalid("the actual bound conversation on a text record"));
@@ -230,4 +175,29 @@ fn append(target: &mut String, value: &str) -> Result<()> {
 }
 fn invalid(expected: &str) -> SeError {
     SeError::invalid("pinned Claude transcript", expected)
+}
+
+/// Frequent provider bookkeeping, summarized with the next captured record.
+pub fn noise_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "file-history-snapshot"
+            | "api-request-blob"
+            | "api-request"
+            | "api-request-shape"
+            | "session-owner"
+            | "tools-used"
+            | "attachment"
+            | "queue-operation"
+            | "atis-latch"
+            | "last-prompt"
+            | "cost-state"
+    )
+}
+fn known_metadata(kind: &str) -> bool {
+    noise_kind(kind)
+        || matches!(
+            kind,
+            "system" | "compact_boundary" | "mode" | "permission-mode" | "ai-title"
+        )
 }

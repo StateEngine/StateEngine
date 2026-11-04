@@ -18,6 +18,7 @@ pub(super) struct Gathered {
     pub unread_total: u64,
     pub decisions: Decisions,
     pub turns: Vec<RecentTurn>,
+    pub transcript: super::super::transcript::View,
     pub window: Window,
     pub cursor: se_types::Cursor,
     pub omissions: Vec<Omission>,
@@ -191,6 +192,13 @@ pub(super) fn gather<R: Snapshot>(
             }
         }
     }
+    let transcript = super::super::transcript::read(agent, None, cx);
+    if let Read::Present { value } = &transcript.last_compaction {
+        attention.push(format!(
+            "Provider compaction recorded at native transcript byte {} (event {}).",
+            value.record.position.offset, value.event_id
+        ));
+    }
     let turns = cx
         .read
         .recent_turns(agent.clone(), since, budget(u32::from(limit))?)
@@ -305,6 +313,7 @@ pub(super) fn gather<R: Snapshot>(
             pending,
         },
         turns: recent,
+        transcript,
         window,
         cursor,
         omissions,

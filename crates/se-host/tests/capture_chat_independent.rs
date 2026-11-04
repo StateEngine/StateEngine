@@ -1,4 +1,4 @@
-//! Production capture through a retained native file and the public coordinator handle.
+//! Protects: capture separates metadata from chat and refuses malformed known chat atomically.
 //! Session facts are typed setup; this does not claim a real provider launch.
 #![cfg(all(feature = "listener", target_os = "linux"))]
 use se_host::*;
@@ -12,7 +12,7 @@ mod support;
 use support::*;
 
 #[test]
-fn pinned_capture_keeps_real_chat_and_refuses_schema_drift_without_advancing() -> Check {
+fn pinned_capture_keeps_chat_separate_and_refuses_broken_known_records() -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
     seed(&f)?;
@@ -70,31 +70,50 @@ fn pinned_capture_keeps_real_chat_and_refuses_schema_drift_without_advancing() -
         let consumer = async {
             let result: Check = async {
                 let result = capture.catch_up(admitted.clone(), conversation.clone(), native_path.clone(), &bound()?).await?;
-                require(result.capture_commits.len() == 3, "metadata or tool results became chat; real chat missing")?;
+                require(result.capture_commits.len() == 3, "metadata or real chat missing; tool result became a turn")?;
                 let mut snapshot = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let page = snapshot.turns(f.a.clone(), budget(10, 100_000, None)?)?;
                 let mut texts = Vec::new();
+                let mut metadata = 0;
                 for event in page.items() {
                     let EventBody::SessionTurn { role, text:StoredText::Present(text), evidence, .. } = &event.body else { return Err("unexpected captured event".into()); };
-                    require(matches!(role, Role::User | Role::Assistant), "non-chat role was published")?;
-                    texts.push(text.clone());
+                    match role {
+                        Role::User | Role::Assistant => texts.push(text.clone()),
+                        Role::System => {
+                            let body: serde_json::Value = serde_json::from_str(text)?;
+                            require(body["schema"] == "se.transcript-event/v1", "metadata schema missing")?;
+                            require(!text.contains("CACHE_SECRET") && !text.contains("TOOL_SECRET"), "provider payload leaked into metadata")?;
+                            metadata += 1;
+                        }
+                        Role::Tool => return Err("tool role was published".into()),
+                    }
                     let start = usize::try_from(evidence.offset)?;
                     let end = start + usize::try_from(evidence.length)?;
                     let hash: [u8;32] = Hasher::digest(&bytes[start..end]).into();
                     require(evidence.sha256 == Some(hash), "raw native evidence digest differs")?;
                 }
+                require(metadata == 5, "metadata lost its durable representation")?;
                 texts.sort();
                 require(texts == vec!["real assistant", "real user λ", "second real user"], format!("wrong public chat: {texts:?}"))?;
-                let before = present(snapshot.capture_source(source)?)?;
+
                 snapshot.close()?;
                 let mut file = OpenOptions::new().append(true).open(&path)?;
                 writeln!(file, "{}", json!({"type":"api-request","sessionId":conversation.as_str(),"message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}}))?;
                 file.sync_all()?;
-                require(capture.catch_up(admitted, conversation, native_path, &bound()?).await.is_err(), "message-bearing metadata silently discarded")?;
+                writeln!(file, "{}", json!({"type":"assistant","sessionId":conversation.as_str(),"uuid":"after-metadata","message":{"role":"assistant","content":"after metadata"}}))?;
+                file.sync_all()?;
+                let added = capture.catch_up(admitted.clone(), conversation.clone(), native_path.clone(), &bound()?).await?;
+                require(added.capture_commits.len() == 1, "message-bearing metadata was not retained separately")?;
+                let mut stable = execution.reader.snapshot(f.self_scope(&f.a))?;
+                let before = present(stable.capture_source(source)?)?;
+                stable.close()?;
+                writeln!(file, "{}", json!({"type":"user","sessionId":conversation.as_str(),"uuid":"broken-known","message":{"role":"user"}}))?;
+                file.sync_all()?;
+                require(capture.catch_up(admitted, conversation, native_path, &bound()?).await.is_err(), "malformed known user silently discarded")?;
                 let mut after = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let current = present(after.capture_source(source)?)?;
                 require(current.revision == before.revision && current.current.header.event == before.current.header.event, "schema drift advanced the durable cursor")?;
-                require(after.turns(f.a.clone(), budget(10,100_000,None)?)?.items().len() == 3, "schema drift fabricated a chat turn")?;
+                require(after.turns(f.a.clone(), budget(10,100_000,None)?)?.items().len() == 10, "malformed known record fabricated a turn")?;
                 after.close()?;
                 Ok(())
             }.await;

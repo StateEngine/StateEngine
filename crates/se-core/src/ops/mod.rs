@@ -33,6 +33,7 @@ pub use history::{HistoryList, HistoryPage};
 pub mod hook;
 pub mod inbox;
 pub mod inputs;
+pub mod transcript;
 pub use inbox::MessageInbox;
 pub mod installation;
 pub mod store_import;

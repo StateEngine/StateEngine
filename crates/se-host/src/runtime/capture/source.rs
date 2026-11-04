@@ -4,6 +4,7 @@ use super::*;
 use se_core::{admission::read_scope, scope, store_error::store_error};
 use se_store::{Consent, EventBody, Snapshot};
 use sha2::{Digest, Sha256};
+mod scan;
 const CHUNK: usize = 256 * 1024;
 const LINE: usize = 4 * 1024 * 1024;
 struct Cursor {
@@ -19,6 +20,7 @@ pub fn next(
     hook: &crate::ClaudeHookInput,
     deadline: &Deadline,
     replay: bool,
+    final_capture: bool,
 ) -> Result<Option<(TrustedCapture, bool)>> {
     deadline.remaining()?;
     check_scope(admission, &source.binding)?;
@@ -41,16 +43,23 @@ pub fn next(
     if matches!(hook.kind, crate::ClaudeHookKind::SessionStart) {
         return Ok(None);
     }
-    if let Some(request) = scan(source, cursor.revision, cursor.offset, deadline)? {
+    if let Some(request) = scan::next(
+        source,
+        cursor.revision,
+        cursor.offset,
+        deadline,
+        final_capture,
+    )? {
         return Ok(Some((request, false)));
     }
     if replay && let Some((from, to)) = cursor.previous {
-        let request = scan(source, cursor.revision, from, deadline)?.ok_or_else(|| {
-            scope::unreadable(
-                "captured source range",
-                "the original captured text record no longer decodes",
-            )
-        })?;
+        let request = scan::next(source, cursor.revision, from, deadline, final_capture)?
+            .ok_or_else(|| {
+                scope::unreadable(
+                    "captured source range",
+                    "the original captured text record no longer decodes",
+                )
+            })?;
         if request.request.new_offset != to {
             return Err(scope::unreadable(
                 "captured source range",
@@ -206,66 +215,6 @@ fn cursor(
         })
     })();
     super::super::executor::close_read(result, read.close())
-}
-fn scan(
-    source: &mut BoundTranscript,
-    revision: se_store::Revision,
-    offset: u64,
-    deadline: &Deadline,
-) -> Result<Option<TrustedCapture>> {
-    let mut position = offset;
-    let mut consumed = offset;
-    let mut line = Vec::new();
-    let mut digest = Sha256::new();
-    loop {
-        deadline.remaining()?;
-        let chunk = source.pin.read_at(position, CHUNK).map_err(native_error)?;
-        for byte in chunk.bytes {
-            consumed = consumed.checked_add(1).ok_or_else(|| {
-                SeError::invalid("capture offset", "a representable source range")
-            })?;
-            line.push(byte);
-            if line.len() > LINE {
-                return Err(SeError::too_large(
-                    "provider transcript line",
-                    LINE,
-                    line.len(),
-                ));
-            }
-            if byte == b'\n' {
-                digest.update(&line);
-                if let Some(record) = super::claude::decode(&line, &source.binding.conversation)? {
-                    return Ok(Some(TrustedCapture {
-                        request: se_core::ops::hook::CaptureRequest {
-                            source: source.source,
-                            expected: revision,
-                            conversation: source.binding.conversation.clone(),
-                            provider: se_store::Provider::Claude,
-                            vendor_turn: record.vendor_turn,
-                            role: record.role,
-                            text: record.text,
-                            evidence: se_store::SourceEvidence {
-                                path: Some(source.binding.path.clone()),
-                                incarnation: source.pin.identity().to_vec(),
-                                offset,
-                                length: consumed - offset,
-                                sha256: Some(digest.finalize().into()),
-                            },
-                            new_offset: consumed,
-                        },
-                        facts: facts()?,
-                    }));
-                }
-                line.clear();
-            }
-        }
-        position = chunk.next_offset;
-        if chunk.end_of_file || position == consumed && position == offset {
-            // Incomplete EOF remains pending until a real provider hook/signal;
-            // neither metadata nor a partial final line advances the cursor.
-            return Ok(None);
-        }
-    }
 }
 fn facts() -> Result<se_core::ops::hook::CaptureFacts> {
     use se_store::RecordIdentity;

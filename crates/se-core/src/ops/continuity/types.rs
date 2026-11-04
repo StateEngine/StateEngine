@@ -142,6 +142,8 @@ pub struct ResumeOutput {
     pub required_reads: Vec<RequiredRead>,
     pub decisions: Decisions,
     pub recent_turns: Vec<RecentTurn>,
+    #[serde(flatten, default)]
+    pub transcript: crate::ops::transcript::View,
     pub code_changes: Option<Vec<serde_json::Value>>,
     pub omissions: Vec<Omission>,
     pub attention: Vec<String>,

@@ -127,6 +127,7 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
         se_types::Read::Present { value } => {
             writeln!(out, "Agent {} ({})", value.name, value.id)?;
             writeln!(out, "Permission profile: {}", value.profile)?;
+            super::transcript::render(&value.session.transcript, out)?;
             if let Some(model) = &value.model {
                 writeln!(out, "Model: {model}")?;
             }

@@ -22,6 +22,7 @@ mod page;
 mod project;
 mod query;
 mod runtime;
+mod transcript;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
 use rusqlite::{Connection, OptionalExtension};
 use se_types::{
@@ -513,6 +514,14 @@ impl Snapshot for SqliteSnapshot {
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>> {
         self.read_recent_turns(agent, since, budget)
+    }
+    fn transcript_events(
+        &mut self,
+        agent: AgentId,
+        session: Option<SessionId>,
+        budget: ReadBudget,
+    ) -> StoreResult<TranscriptRecords> {
+        self.read_transcript_events(agent, session, budget)
     }
     fn governing_decisions(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>> {
         self.read_governing_decisions(budget)

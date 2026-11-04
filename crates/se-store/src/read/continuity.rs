@@ -42,7 +42,7 @@ impl SqliteSnapshot {
             ]
         };
         let rows = self.query_seqs(
-            "SELECT e.entity_revision,t.event_seq,t.event_seq FROM turn_data t INDEXED BY turn_data_agent_seq JOIN events e ON e.seq=t.event_seq WHERE t.project_id=? AND t.agent_id=? AND t.event_seq>? AND t.event_seq<=? ORDER BY t.event_seq DESC LIMIT ?",
+            "SELECT e.entity_revision,t.event_seq,t.event_seq FROM turn_data t INDEXED BY turn_data_agent_seq JOIN events e ON e.seq=t.event_seq WHERE NOT (t.role='system' AND t.vendor_ref LIKE 'se.notice.v1/%') AND t.project_id=? AND t.agent_id=? AND t.event_seq>? AND t.event_seq<=? ORDER BY t.event_seq DESC LIMIT ?",
             params(i64::from(budget.page.limit.get())),
             &budget,
         )?;
@@ -74,7 +74,7 @@ impl SqliteSnapshot {
             Some(oldest) => self
                 .db
                 .query_row(
-                    "SELECT count(*) FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND event_seq>? AND event_seq<?",
+                    "SELECT count(*) FROM turn_data INDEXED BY turn_data_agent_seq WHERE NOT (role='system' AND vendor_ref LIKE 'se.notice.v1/%') AND project_id=? AND agent_id=? AND event_seq>? AND event_seq<?",
                     rusqlite::params![p, a, floor as i64, oldest as i64],
                     |r| crate::sql_value::value(r, 0),
                 )

@@ -339,6 +339,20 @@ pub(super) fn fill_stopped(
         flushed: work.capture_flushed,
         last_event_id: work.last_capture.clone(),
     };
+    if let Some(failure) = &work.capture_failure {
+        row.result = "capture-incomplete".into();
+        row.resume.state = "new-required".into();
+        row.resume.reason = Some(format!(
+            "Native exit is witnessed; capture failed: {}. The original transcript and failure record are retained. Use the supplied fresh-conversation launch command.",
+            failure.message()
+        ));
+        row.resume.conversation_id = None;
+        if !row.resume.argv.is_empty() && !row.resume.argv.iter().any(|a| a == "--new") {
+            row.resume.argv.push("--new".into());
+            row.resume.command.push_str(" --new");
+        }
+        return Ok(());
+    }
     row.resume.model = work.meta.model.clone();
     match (&work.meta.conversation, work.activated) {
         (se_types::Read::Present { value }, true) if !row.resume.argv.is_empty() => {

@@ -17,9 +17,13 @@ impl LaunchCoordinator {
         work: &mut Work,
         deadline: &Deadline,
     ) -> Result<()> {
+        work.capture_failure = None;
         let result = self.capture_progress_inner(work, deadline).await;
         if let Err(error) = &result {
             self.report_capture_failure(work, error).await?;
+            work.capture_failure = Some(error.body.clone());
+        } else {
+            work.capture_failure = None;
         }
         result
     }
@@ -81,15 +85,25 @@ impl LaunchCoordinator {
             session: Some(work.meta.session.clone()),
             generation: self.store.generation.get(),
         };
-        let result = self
-            .capture
-            .catch_up(
-                admission,
-                transcript.conversation,
-                transcript.path,
-                deadline,
-            )
-            .await?;
+        let result = if work.process_retired && work.last_witness.is_some() {
+            self.capture
+                .catch_up_final(
+                    admission,
+                    transcript.conversation,
+                    transcript.path,
+                    deadline,
+                )
+                .await?
+        } else {
+            self.capture
+                .catch_up(
+                    admission,
+                    transcript.conversation,
+                    transcript.path,
+                    deadline,
+                )
+                .await?
+        };
         let se_core::ops::AnyOutput::HookClaude(output) = result.output else {
             return Err(error(
                 "final transcript capture",
