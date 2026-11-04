@@ -101,10 +101,27 @@ pub fn credential(cx: &Bootstrap, files: &Files) -> Result<ClientCredential> {
 }
 pub fn dispatch(
     cx: &Bootstrap,
-    op: AnyOp,
+    mut op: AnyOp,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<AnyOutput> {
     let observation_deadline = super::session_observation::deadline()?;
+    if let AnyOp::ImportNode(input) = &mut op {
+        let path = std::path::PathBuf::from(&input.from_node);
+        let absolute = if path.is_absolute() {
+            path
+        } else {
+            cx.cwd.join(path)
+        };
+        input.from_node = absolute
+            .to_str()
+            .ok_or_else(|| {
+                SeError::invalid(
+                    "Node source path",
+                    "an exact UTF-8 CLI path; lossy path conversion is refused",
+                )
+            })?
+            .into();
+    }
     if let AnyOp::ProjectInit(input) = op {
         return super::init::execute(cx, input);
     }
@@ -340,6 +357,7 @@ fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
                 location: match plan {
                     se_core::ports::CustodyPlan::ClaudeHook(_) => "hook",
                     se_core::ports::CustodyPlan::Initialize(_) => "init",
+                    se_core::ports::CustodyPlan::ImportNode(_) => "host history importer",
                     se_core::ports::CustodyPlan::ObserveStatus(_) => "status",
                     se_core::ports::CustodyPlan::RuntimeUp(_) => "runtime.up",
                     se_core::ports::CustodyPlan::RuntimeDown(_) => "runtime.down",

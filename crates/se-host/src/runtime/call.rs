@@ -44,6 +44,14 @@ pub struct ExecutionContext {
 /// (native effects plus their FULL commits) for one admitted caller. Installed
 /// through `HostedRuntime::install_custody`; absent, custody plans refuse.
 pub trait CustodyExecutor: Send + Sync {
+    /// Import may adopt an old user model under the current owner's actual
+    /// safe default. This port exposes no commands, credentials or old grants.
+    fn import_profiles(&self) -> se_types::Result<Vec<se_store::Profile>> {
+        Err(se_core::scope::unreadable(
+            "import profile defaults",
+            "the active process coordinator must supply its validated current-owner defaults",
+        ))
+    }
     fn execute<'a>(
         &'a self,
         plan: se_core::ports::CustodyPlan,

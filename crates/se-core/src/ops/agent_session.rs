@@ -176,7 +176,7 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
         ));
     }
     session.session_id = Some(id.clone());
-    session.since = Some(receipt::timestamp(latest.current.recorded_at_us)?);
+    session.since = Some(receipt::timestamp(receipt::event_time(&latest.current))?);
     recorded::apply(agent, id, &latest.current.body, &mut session, cx)?;
     Ok((
         session,

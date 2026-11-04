@@ -35,6 +35,8 @@ pub mod inbox;
 pub mod inputs;
 pub use inbox::MessageInbox;
 pub mod installation;
+pub mod store_import;
+pub use store_import::{ImportNode, ImportReceipt};
 pub mod listing;
 pub mod mail;
 pub mod message_mark;
@@ -142,6 +144,7 @@ ops! {
     MetaVersion => MetaVersion, VersionOutput, ("meta.version",CliExposure::RootFlag { flag:"version" },no_mcp("Installed CLI metadata is not an agent task."),Either,true,Never,Read,None,None,"se.version",Version,&["J1"]);
     MetaHelp => MetaHelp, HelpOutput, ("meta.help",leaf(&["help"]),no_mcp("MCP descriptions derive from the same catalogue."),Either,true,Never,Read,None,None,"se.help",Help,&["J1"]);
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
+    ImportNode => ImportNode, ImportReceipt, ("store.import_node",leaf(&["import"]),no_mcp("Explicit owner migration preserves the original Node history."),Owner,false,Never,Custody,Home,HostAutoStart,"se.import",Import,&["J2","J3","J4"]);
     ProjectInit => ProjectInit, InitOutput, ("project.init",leaf(&["init"]),no_mcp("Owner setup registers the managed workspace."),Owner,false,Never,Write,Home,None,"se.init",Init,&["J2"]);
     DoctorInspect => DoctorInspect, Diagnosis, ("doctor.inspect",leaf(&["doctor"]),no_mcp("Owner installation diagnosis uses the installed CLI."),Owner,false,Never,Read,Home,None,"se.diagnosis",Diagnosis,&["J5"]);
     DoctorRepair => DoctorRepair, RepairOutput, ("doctor.repair",CliExposure::Leaf {path:&["doctor"],hidden:false,select:Selector::Flag("fix")},no_mcp("One-check repair requires an owner terminal."),Owner,false,Always,Write,Home,None,"se.repair",Repair,&["J5"]);
@@ -201,6 +204,7 @@ impl AnyOp {
     pub fn idempotency_key(&self) -> Option<&IdempotencyKey> {
         match self {
             Self::ProjectInit(v) => Some(&v.idempotency_key),
+            Self::ImportNode(v) => Some(&v.idempotency_key),
             Self::MessageSend(v) => Some(&v.idempotency_key),
             Self::WorkingStateSet(v) => Some(&v.idempotency_key),
             Self::RuntimeUp(v) => Some(&v.idempotency_key),
@@ -249,6 +253,7 @@ impl AnyOutput {
             Self::DoctorInspect(v) => v.value.exit_code(),
             Self::DoctorRepair(v) if !v.value.complete => 2,
             Self::Uninstall(v) if !v.value.complete => 2,
+            Self::ImportNode(v) if !v.value.complete => 2,
             Self::AgentStop(v) if !v.value.complete => 2,
             Self::ProjectRemove(v) if !matches!(v.value.outcome.as_str(), "removed" | "absent") => {
                 2

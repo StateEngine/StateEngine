@@ -378,7 +378,8 @@ pub struct ErasureReport {
     pub residuals: Vec<ResidualCopy>,
 }
 /// User history only; no fleet/runtime/configuration repair protocols.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ImportFamily {
     Projects,
     Owners,
@@ -390,7 +391,7 @@ pub enum ImportFamily {
     Conversations,
     Turns,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ImportCheckpoint {
     pub import: RecordId,
     pub family: ImportFamily,
@@ -400,8 +401,10 @@ pub struct ImportCheckpoint {
     pub row_offset: u64,
     pub expected: Expected,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ImportCounts {
+    #[serde(default)]
+    pub deferred: u64,
     pub read: u64,
     pub imported: u64,
     pub duplicate: u64,

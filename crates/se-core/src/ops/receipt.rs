@@ -16,6 +16,15 @@ pub fn timestamp(micros: i64) -> Result<String> {
         .ok_or_else(|| scope::unreadable("UTC formatter", "missing UTC suffix"))?;
     Ok(format!("{}Z", value.replacen(' ', "T", 1)))
 }
+/// Imported user history reports its original time. Commit receipts continue
+/// to report the separately retained native recording time.
+pub(crate) fn event_time(event: &StoredEvent) -> i64 {
+    if event.header.door == se_store::Door::Import {
+        event.header.occurred_at_us
+    } else {
+        event.recorded_at_us
+    }
+}
 pub fn writer(receipt: &CommitReceipt) -> Writer {
     match receipt.writer.kind() {
         se_store::WriterKind::Direct => Writer::Direct,
@@ -267,33 +276,36 @@ pub fn working_state_get<R: Snapshot>(
 ) -> Result<WorkingStateOutput> {
     let name = named_agent(cx.read, &agent)?;
     let value = match cx.read.working_state(agent).map_err(|e| store_error(&e))? {
-        Read::Present { value } => match value.current.body {
-            EventBody::WorkingStateSet {
-                text: StoredText::Present(text),
-                ..
-            } => Read::Present {
-                value: WorkingStateValue {
-                    text,
-                    revision: value.revision.value.get(),
-                    recorded_at: timestamp(value.current.recorded_at_us)?,
+        Read::Present { value } => {
+            let updated_at = timestamp(event_time(&value.current))?;
+            match value.current.body {
+                EventBody::WorkingStateSet {
+                    text: StoredText::Present(text),
+                    ..
+                } => Read::Present {
+                    value: WorkingStateValue {
+                        text,
+                        revision: value.revision.value.get(),
+                        recorded_at: updated_at,
+                    },
                 },
-            },
-            EventBody::WorkingStateSet {
-                text: StoredText::Erased { .. },
-                ..
-            } => {
-                return Err(scope::unreadable(
-                    "working state",
-                    "stored content was erased",
-                ));
+                EventBody::WorkingStateSet {
+                    text: StoredText::Erased { .. },
+                    ..
+                } => {
+                    return Err(scope::unreadable(
+                        "working state",
+                        "stored content was erased",
+                    ));
+                }
+                _ => {
+                    return Err(scope::unreadable(
+                        "working-state projection",
+                        "current event has another kind",
+                    ));
+                }
             }
-            _ => {
-                return Err(scope::unreadable(
-                    "working-state projection",
-                    "current event has another kind",
-                ));
-            }
-        },
+        }
         other => other.map(|_| unreachable!()),
     };
     Ok(WorkingStateOutput { agent: name, value })

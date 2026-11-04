@@ -1,5 +1,6 @@
 use crate::{error::*, identity, open::SqliteReader, *};
 use se_types::Read;
+
 pub(crate) fn read(reader: &SqliteReader, hash: [u8; 32]) -> StoreResult<Read<CredentialRecord>> {
     let phase = reader.read_phase()?;
     let result = phase.credential(hash);
@@ -21,6 +22,7 @@ pub(crate) fn read_at(
     let value = if let Some(row) = rows.next().map_err(sql)? {
         let project: Vec<u8> = row.get(1).map_err(sql)?;
         let scope = [&[1u8][..], project.as_slice()].concat();
+        let identities = identity::registered_ids(c, &scope);
         let agent: Option<Vec<u8>> = row.get(8).map_err(sql)?;
         let agent = agent.ok_or_else(|| {
             fail(
@@ -37,19 +39,25 @@ pub(crate) fn read_at(
         Read::Present {
             value: CredentialRecord {
                 credential: crate::codec::capture::record(row.get(0).map_err(sql)?)?,
-                project: identity::wire(c, "project", &project, &[0])?
-                    .parse()
-                    .map_err(invalid)?,
-                agent: identity::wire(c, "agent", &agent, &scope)?
-                    .parse()
-                    .map_err(invalid)?,
-                session: identity::wire(
-                    c,
-                    "session",
-                    &row.get::<_, Vec<u8>>(2).map_err(sql)?,
-                    &scope,
-                )?
-                .parse()
+                project: se_types::ProjectId::from_registered_legacy(
+                    identity::wire(c, "project", &project, &[0])?,
+                    &identities,
+                )
+                .map_err(invalid)?,
+                agent: se_types::AgentId::from_registered_legacy(
+                    identity::wire(c, "agent", &agent, &scope)?,
+                    &identities,
+                )
+                .map_err(invalid)?,
+                session: se_types::SessionId::from_registered_legacy(
+                    identity::wire(
+                        c,
+                        "session",
+                        &row.get::<_, Vec<u8>>(2).map_err(sql)?,
+                        &scope,
+                    )?,
+                    &identities,
+                )
                 .map_err(invalid)?,
                 purpose: row.get(3).map_err(sql)?,
                 expires_at_us: row.get(4).map_err(sql)?,

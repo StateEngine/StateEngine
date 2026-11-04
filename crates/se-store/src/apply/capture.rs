@@ -197,7 +197,7 @@ fn source_binding(
         })?;
     Ok((
         wire(c, "session", &session, &scope)?
-            .parse()
+            .try_into()
             .map_err(invalid)?,
         incarnation,
     ))
@@ -211,9 +211,7 @@ fn bound_session(
 ) -> StoreResult<(Vec<u8>, crate::codec::session::SessionHead)> {
     let id = key(c, "session", session.as_str(), scope, false)?;
     let head = codec::session::head(c, p, &id)?;
-    let agent: AgentId = wire(c, "agent", &head.agent, scope)?
-        .parse()
-        .map_err(invalid)?;
+    let agent: AgentId = decode_agent(c, wire(c, "agent", &head.agent, scope)?, scope)?;
     if let Actor::Agent(actor) = &h.actor
         && (*actor != agent || h.session.as_ref() != Some(session))
     {
@@ -222,7 +220,9 @@ fn bound_session(
             "capture actor differs from the bound session agent",
         ));
     }
-    if !matches!(head.state.as_str(), "active" | "prepared") {
+    if !matches!(head.state.as_str(), "active" | "prepared")
+        && !(h.door == Door::Import && head.state == "ended")
+    {
         return Err(fail(
             StoreErrorCode::InvalidTransition,
             "capture session is terminal",
@@ -254,7 +254,7 @@ pub(super) fn apply(
         } => {
             let (session, head) = bound_session(c, &p, &scope, &session, h)?;
             let a = key(c, "agent", agent.as_str(), &scope, false)?;
-            if head.state != "active"
+            if !(head.state == "active" || h.door == Door::Import && head.state == "ended")
                 || head.consent != "capture"
                 || head.agent != a
                 || head.provider != provider(backend)

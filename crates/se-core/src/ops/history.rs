@@ -126,9 +126,15 @@ pub fn list<R: Snapshot>(input: HistoryList, cx: &mut Cx<'_, R>) -> Result<Histo
     })
 }
 const PUBLIC_KINDS: &[(&str, se_store::EventKind)] = &[
+    ("legacy.retained", se_store::EventKind::LegacyRetained),
+    ("alias.imported", se_store::EventKind::AliasImported),
+    ("message.superseded", se_store::EventKind::MessageSuperseded),
     ("session.turn", se_store::EventKind::SessionTurn),
     ("capture.suppressed", se_store::EventKind::CaptureSuppressed),
     ("message.sent", se_store::EventKind::MessageSent),
+    ("message.read", se_store::EventKind::MessageRead),
+    ("message.dismissed", se_store::EventKind::MessageDismissed),
+    ("message.delivered", se_store::EventKind::MessageDelivered),
     ("working_state.set", se_store::EventKind::WorkingStateSet),
     (
         "principal.registered",
@@ -146,9 +152,16 @@ const PUBLIC_KINDS: &[(&str, se_store::EventKind)] = &[
         se_store::EventKind::DecisionSuperseded,
     ),
 ];
+const IMPORT_KINDS: &[(&str, se_store::EventKind)] = &[
+    ("import.started", se_store::EventKind::ImportStarted),
+    ("import.progress", se_store::EventKind::ImportProgress),
+    ("import.finished", se_store::EventKind::ImportFinished),
+    ("import.unreadable", se_store::EventKind::ImportUnreadable),
+];
 fn kind(name: &str) -> Result<se_store::EventKind> {
     PUBLIC_KINDS
         .iter()
+        .chain(IMPORT_KINDS.iter())
         .find_map(|(wire, kind)| (*wire == name).then_some(*kind))
         .ok_or_else(|| {
             SeError::invalid(

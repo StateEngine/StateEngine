@@ -177,7 +177,9 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
             at: None,
         };
         let disposition = Delivery {
-            state: if record.dismissed.is_some() {
+            state: if record.superseded_by.is_some() {
+                "superseded"
+            } else if record.dismissed.is_some() {
                 "dismissed"
             } else if record.read.is_some() {
                 "read"
@@ -193,7 +195,11 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
             from: receipt::actor_ref(cx.read, &record.sender)?,
             to: receipt::actor_ref(cx.read, &record.recipient)?,
             kind,
-            sent_at: receipt::timestamp(event.recorded_at_us)?,
+            sent_at: receipt::timestamp(if event.header.door == se_store::Door::Import {
+                event.header.occurred_at_us
+            } else {
+                event.recorded_at_us
+            })?,
             reply_to: record.reply_to,
             refs: record.refs,
             delivery,

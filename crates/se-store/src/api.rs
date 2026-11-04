@@ -307,6 +307,7 @@ pub struct MessageRecord {
     pub delivered: Option<StorePosition>,
     pub read: Option<StorePosition>,
     pub dismissed: Option<StorePosition>,
+    pub superseded_by: Option<MessageId>,
     pub body_complete: bool,
 }
 #[derive(Clone, Debug)]

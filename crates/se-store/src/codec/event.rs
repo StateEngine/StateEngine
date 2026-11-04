@@ -30,11 +30,12 @@ pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreRes
         ));
     }
     let scope = match p {
-        Some(p) => Scope::Project(wire(c, "project", &p, &[0])?.parse().map_err(invalid)?),
+        Some(p) => Scope::Project(project_from_key(c, &p)?),
         None => Scope::Registry,
     };
     let s = scope_key(c, &scope, false)?;
-    let parse_event = |k: &[u8]| wire(c, "event", k, &s).and_then(|v| v.parse().map_err(invalid));
+    let parse_event =
+        |k: &[u8]| wire(c, "event", k, &s).and_then(|v| v.try_into().map_err(invalid));
     let writer = match (mode.as_str(), generation) {
         ("direct", None) => LeaseIdentity {
             store: Some(info.id.clone()),
@@ -54,7 +55,7 @@ pub(crate) fn load_event(c: &Connection, seq: i64, info: &StoreInfo) -> StoreRes
             scope: scope.clone(),
             actor: actor(c, &actor_id, &s)?,
             session: session
-                .map(|v| wire(c, "session", &v, &s).and_then(|v| v.parse().map_err(invalid)))
+                .map(|v| wire(c, "session", &v, &s).and_then(|v| v.try_into().map_err(invalid)))
                 .transpose()?,
             origin: StoreId::from_bytes(
                 origin.try_into().map_err(|_| invalid("origin ID length"))?,

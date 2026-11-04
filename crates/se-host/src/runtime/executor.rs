@@ -141,6 +141,16 @@ pub fn execute(
                     capture_keys: Vec::new(),
                 })
             }
+            OpStep::Custody(CustodyPlan::ImportNode(input)) => Ok(ExecutedCall {
+                output: super::history_import::execute(
+                    context, input, admission, kernel, &deadline,
+                )
+                .await?,
+                write_timings: None,
+                committed: None,
+                capture_commits: Vec::new(),
+                capture_keys: Vec::new(),
+            }),
             OpStep::Custody(plan) => match context.custody.get() {
                 Some(custody) => Ok(ExecutedCall {
                     output: custody.execute(plan, admission, &deadline).await?,

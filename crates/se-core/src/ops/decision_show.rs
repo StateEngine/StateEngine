@@ -218,7 +218,7 @@ pub fn detail<R: Snapshot>(
         transitions.push(DecisionTransition {
             action,
             by: super::receipt::actor_ref(cx.read, &event.header.actor)?,
-            at: super::receipt::timestamp(event.recorded_at_us)?,
+            at: super::receipt::timestamp(super::receipt::event_time(&event))?,
             event_id: event.header.event,
             reason,
         });
