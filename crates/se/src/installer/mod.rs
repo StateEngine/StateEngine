@@ -58,6 +58,41 @@ pub fn sync_paths(args: &[OsString]) -> Result<i32> {
     Ok(0)
 }
 
+/// Claims a final path with link(2), the only atomic no-replace claim: any
+/// existing destination, file, directory or link, refuses with its reason, and
+/// an existing directory never receives a link inside itself the way the
+/// system ln utility places one.
+pub fn publish_file(args: &[OsString]) -> Result<i32> {
+    if args.len() != 4 {
+        return Err(args::invalid("__install-publish <payload> <destination>"));
+    }
+    let source = args::path(&args[2])?;
+    let destination = args::path(&args[3])?;
+    match std::fs::hard_link(&source, &destination) {
+        Ok(()) => Ok(0),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(SeError::new(
+            se_types::Detail::StateConflict(se_types::details::StateConflict {
+                subject: destination.display().to_string(),
+                reason: "the destination already exists".into(),
+                next_step: "Preserve the existing path and resolve the conflict before \
+                               retrying the installation"
+                    .into(),
+            }),
+        )
+        .with_cause(error)),
+        Err(error) => Err(SeError::new(se_types::Detail::StateConflict(
+            se_types::details::StateConflict {
+                subject: "native installation publication".into(),
+                reason: format!("{}: {}", destination.display(), error),
+                next_step: "Preserve the reported paths and retry after install or uninstall \
+                            finishes"
+                    .into(),
+            },
+        ))
+        .with_cause(error)),
+    }
+}
+
 /// Every installed program/asset file must pass the real native owner reader.
 pub fn check_files(args: &[OsString]) -> Result<i32> {
     if !(3..=4098).contains(&args.len()) {
