@@ -128,6 +128,9 @@ def main():
         if current is not None and current['birth'] == known['birth']:
             failures.append('first shutdown left the exact known host instance')
         already('after-shutdown')
+    except BaseException as error:
+        failures.append(f'consumer did not complete: {type(error).__name__}: {error}')
+        raise
     finally:
         if (state / 'endpoint.json').exists():
             code, out, err = call('cleanup-down', 'down')
