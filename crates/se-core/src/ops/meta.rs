@@ -187,7 +187,6 @@ pub struct McpTool {
     pub title: &'static str,
     pub description: &'static str,
     pub input_schema: serde_json::Value,
-    pub output_schema: serde_json::Value,
 }
 /// The registered admitted rows are the only source of the model-facing tool list.
 pub fn mcp_tools() -> Result<Vec<McpTool>> {
@@ -199,14 +198,12 @@ pub fn mcp_tools() -> Result<Vec<McpTool>> {
             description,
         } = meta.mcp
         {
-            let (input_schema, output_schema) =
-                schemas(meta.name).ok_or_else(|| internal(meta.name))?;
+            let input_schema = input_schema(meta.name).ok_or_else(|| internal(meta.name))?;
             tools.push(McpTool {
                 name,
                 title,
                 description,
                 input_schema,
-                output_schema,
             });
         }
     }
@@ -254,7 +251,7 @@ fn decode_registered(
     meta: &crate::registry::OpMeta,
     arguments: serde_json::Value,
 ) -> Result<AnyOp> {
-    let (input_schema, _) = schemas(meta.name).ok_or_else(|| internal(meta.name))?;
+    let input_schema = input_schema(meta.name).ok_or_else(|| internal(meta.name))?;
     let properties = input_schema
         .get("properties")
         .and_then(serde_json::Value::as_object);

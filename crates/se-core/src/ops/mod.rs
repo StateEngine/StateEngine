@@ -112,13 +112,16 @@ macro_rules! ops {
             pub fn input_schema(&self) -> serde_json::Value { match self { $( Self::$variant(_)=>schemars::schema_for!($input).to_value(), )+ } }
         }
         $(impl $input { #[allow(non_snake_case)] fn META_REF() -> &'static OpMeta { &Self::META } })+
+        pub(crate) fn input_schema(name:&str) -> Option<serde_json::Value> {
+            match name { $( $name=>Some(schemars::schema_for!($input).to_value()), )+ _=>None }
+        }
         pub(crate) fn schemas(name:&str) -> Option<(serde_json::Value,serde_json::Value)> {
             match name { $( $name=>{
                 let mut output=schemars::schema_for!(Envelope<$output>).to_value();
                 if let Some(properties)=output.get_mut("properties").and_then(serde_json::Value::as_object_mut) {
                     properties.insert("schema".into(),serde_json::json!({"const":<$input>::META.family.schema()}));
                 }
-                Some((schemars::schema_for!($input).to_value(),output))
+                Some((input_schema(name)?,output))
             }, )+ _=>None }
         }
     }
