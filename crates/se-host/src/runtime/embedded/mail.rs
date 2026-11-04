@@ -25,12 +25,16 @@ use std::{
     time::Duration,
 };
 use tokio::sync::Notify;
+mod worker;
+pub(super) use worker::drive;
 
 #[derive(Clone)]
 struct Registration {
     target: api::HostSessionTarget,
     signal: Arc<NativeSignal>,
     error: Option<api::ApiError>,
+    retry_at: Option<tokio::time::Instant>,
+    backoff: Duration,
 }
 pub(super) struct Registry {
     entries: Mutex<BTreeMap<String, Registration>>,
@@ -217,6 +221,8 @@ impl Generation {
                         target: target.clone(),
                         signal: signal.clone(),
                         error: None,
+                        retry_at: None,
+                        backoff: Duration::from_secs(1),
                     },
                 );
                 signal
@@ -257,58 +263,6 @@ fn read_error<T>(subject: &str, value: api::Read<T>) -> api::ApiError {
             &format!("a verified Present native observation; absent: {checked}"),
         ),
         api::Read::Present { .. } => support::refused(subject, "a consistent observation"),
-    }
-}
-
-/// Owned by the embedded owner and joined before its writer/lease can close.
-pub(super) async fn drive(owner: std::sync::Weak<Generation>, router: HostedRouter) {
-    loop {
-        let Some(generation) = owner.upgrade() else {
-            return;
-        };
-        let changed = generation.mail.changed.clone();
-        drop(generation);
-        changed.notified().await;
-        let Some(generation) = owner.upgrade() else {
-            return;
-        };
-        if generation.mail.closed.load(Ordering::Acquire) {
-            return;
-        }
-        let entries = match generation.mail.entries.lock() {
-            Ok(entries) => entries
-                .values()
-                .filter(|entry| entry.signal.dirty.swap(false, Ordering::AcqRel))
-                .cloned()
-                .collect::<Vec<_>>(),
-            Err(_) => {
-                generation.poison_now(false);
-                return;
-            }
-        };
-        for entry in entries {
-            if generation.mail.closed.load(Ordering::Acquire) {
-                return;
-            }
-            let result = generation
-                .protected(
-                    "native_mail",
-                    false,
-                    generation.deliver_native(&router, &entry.target),
-                )
-                .await;
-            match generation.mail.entries.lock() {
-                Ok(mut entries) => {
-                    if let Some(current) = entries.get_mut(&entry.target.binding.session.0) {
-                        current.error = result.err();
-                    }
-                }
-                Err(_) => {
-                    generation.poison_now(false);
-                    return;
-                }
-            }
-        }
     }
 }
 

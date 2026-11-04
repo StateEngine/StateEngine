@@ -6,6 +6,8 @@ pub struct State {
     pub target: Option<api::HostSessionTarget>,
     pub status: api::TargetStatus,
     pub calls: usize,
+    pub attempts: usize,
+    pub fail_before_admit: bool,
     pub observations: usize,
     pub admissions: Vec<api::Admission>,
     pub messages: Vec<Vec<api::MessageId>>,
@@ -17,6 +19,8 @@ impl Services {
             target: None,
             status: api::TargetStatus::Eligible,
             calls: 0,
+            attempts: 0,
+            fail_before_admit: true,
             observations: 0,
             admissions: vec![],
             messages: vec![],
@@ -159,6 +163,11 @@ impl api::HostServices for Services {
             let mut s = self.0.lock().map_err(|_| services_refused())?;
             if s.target.as_ref() != Some(&notice.target) || s.status != api::TargetStatus::Eligible
             {
+                return Err(services_refused());
+            }
+            s.attempts += 1;
+            if s.fail_before_admit {
+                s.fail_before_admit = false;
                 return Err(services_refused());
             }
             s.calls += 1;

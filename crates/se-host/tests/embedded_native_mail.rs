@@ -200,24 +200,37 @@ fn native_mail_reconciles_commit_wakes_lost_replies_and_holds_without_read_marks
             )
             .await?;
             let until = Instant::now() + Duration::from_secs(8);
+            while native.0.lock().map_err(|_| "fixture lock")?.attempts == 0 {
+                assert!(
+                    Instant::now() < until,
+                    "first native delivery was not attempted"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            let failed = result(
+                opened
+                    .host
+                    .adoption_status(&api::OwnerAuthority, page(), options.clone())
+                    .await,
+            )?;
+            assert!(
+                matches!(failed.items[0].state, api::AdoptionState::Unreadable(_)),
+                "transient failure was hidden during backoff"
+            );
+            // No new mail or native_state_changed nudge follows this failure.
+            let until = Instant::now() + Duration::from_secs(8);
             loop {
                 if native.0.lock().map_err(|_| "fixture lock")?.calls == 1 {
                     break;
                 }
                 assert!(
                     Instant::now() < until,
-                    "committed mail did not wake native delivery"
+                    "native delivery did not recover without new mail"
                 );
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            // The callback committed its queue admission, then lost its reply.
-            // A new nudge must query that exact identity, never deliver twice.
-            result(
-                opened
-                    .host
-                    .native_state_changed(&target, options.clone())
-                    .await,
-            )?;
+            // The second attempt committed, then lost its reply. Automatic
+            // backoff must query that original ID, never deliver it twice.
             let until = Instant::now() + Duration::from_secs(8);
             loop {
                 let status = result(
@@ -239,6 +252,11 @@ fn native_mail_reconciles_commit_wakes_lost_replies_and_holds_without_read_marks
                 native.0.lock().map_err(|_| "fixture lock")?.calls,
                 1,
                 "lost reply duplicated input"
+            );
+            assert_eq!(
+                native.0.lock().map_err(|_| "fixture lock")?.attempts,
+                2,
+                "retry bypassed original-ID reconciliation"
             );
             let before = native.0.lock().map_err(|_| "fixture lock")?.observations;
             result(
