@@ -9,15 +9,25 @@ use se_types::{Read, Result};
 use std::{path::Path, time::Duration};
 #[path = "setup/recovery.rs"]
 mod recovery;
-pub(super) use recovery::refuse_staging;
+pub(super) use recovery::quarantine;
 
 pub enum Setup<T = SqliteReader> {
     Absent(Box<StatusOutput>),
     Present(T),
 }
 pub fn inspect(home: &Path, generated_at: String) -> Result<Setup> {
+    inspect_home(home, generated_at, None)
+}
+pub(super) fn inspect_for_init(
+    home: &Path,
+    generated_at: String,
+    recovered: bool,
+) -> Result<Setup> {
+    inspect_home(home, generated_at, Some(recovered))
+}
+fn inspect_home(home: &Path, generated_at: String, pending_init: Option<bool>) -> Result<Setup> {
     Ok(
-        match inspect_with(home, generated_at, SqliteFactory::open_reader)? {
+        match inspect_with(home, generated_at, SqliteFactory::open_reader, pending_init)? {
             Setup::Absent(output) => Setup::Absent(output),
             Setup::Present((_, reader)) => Setup::Present(reader),
         },
@@ -27,12 +37,18 @@ pub fn inspect_phase(
     home: &Path,
     generated_at: String,
 ) -> Result<Setup<(Files, (SqliteReader, ReadPhase))>> {
-    inspect_with(home, generated_at, SqliteFactory::open_reader_with_phase)
+    inspect_with(
+        home,
+        generated_at,
+        SqliteFactory::open_reader_with_phase,
+        None,
+    )
 }
 fn inspect_with<T>(
     home: &Path,
     generated_at: String,
     open: impl FnOnce(&StoreOptions) -> se_store::StoreResult<Read<T>>,
+    pending_init: Option<bool>,
 ) -> Result<Setup<(Files, T)>> {
     match std::fs::symlink_metadata(home) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -62,7 +78,11 @@ fn inspect_with<T>(
     .map_err(|e| store_error(&e))?
     {
         Read::Absent { checked } => {
-            recovery::missing_database(&files)?;
+            recovery::missing_database(
+                &files,
+                pending_init.is_some(),
+                pending_init.unwrap_or(false),
+            )?;
             Ok(missing(home, generated_at, checked))
         }
         Read::Present { value } => Ok(Setup::Present((files, value))),

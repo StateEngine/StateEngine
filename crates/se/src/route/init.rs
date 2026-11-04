@@ -105,7 +105,7 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
     // Ordinary setup changes only this state home. Its no-replace publication
     // and direct writer lease coordinate setup without blocking other homes
     // behind an unrelated account-wide install or PATH edit.
-    let before = setup::inspect(&cx.home, receipt::timestamp(execute::now_us()?)?)?;
+    let before = setup::inspect_for_init(&cx.home, receipt::timestamp(execute::now_us()?)?, false)?;
     let observed = match &before {
         setup::Setup::Absent(_) => owner::observe(&[])?,
         setup::Setup::Present(reader) => {
@@ -126,12 +126,15 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
             next_step: "Wait for that operation, or run se down with the same --home, then retry se init".into(),
         },
     )))?;
-    // The exclusive home lease excludes a live cooperating initializer. Older
-    // killed attempts have no durable claim that permits deleting their files.
-    setup::refuse_staging(&lease.files)?;
+    // Preserve strict no-follow staging names under exclusive home custody.
+    let recovered_changes = setup::quarantine(&lease.files)?;
     // Re-read after exclusion: another setup or removal may have completed
     // between the preliminary owner check and acquisition of this home.
-    let before = setup::inspect(&cx.home, receipt::timestamp(execute::now_us()?)?)?;
+    let before = setup::inspect_for_init(
+        &cx.home,
+        receipt::timestamp(execute::now_us()?)?,
+        !recovered_changes.is_empty(),
+    )?;
     let files = &lease.files;
     let observed = match &before {
         setup::Setup::Absent(_) => owner::observe(&[])?,
@@ -201,7 +204,15 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
             Read::Unknown { what } => return Err(scope::unreadable("setup store", &what)),
         };
     lease.identity.store = Some(store.info().map_err(|e| store_error(&e))?.id);
-    let result = registration::finish(cx, &input, &repository, &observed, &mut store, &lease);
+    let result = registration::finish(
+        cx,
+        &input,
+        &repository,
+        &observed,
+        &mut store,
+        &lease,
+        recovered_changes,
+    );
     let closed = store.close().map_err(|e| store_error(&e));
     match result {
         Ok(value) => {

@@ -7,8 +7,8 @@ pub(super) fn finish(
     observed: &owner::FileOwner,
     store: &mut SqliteDirect,
     lease: &DirectLease,
+    mut changed: Vec<String>,
 ) -> Result<AnyOutput> {
-    let mut changed = Vec::new();
     let inventory = owner::inventory(store, &lease.files)?;
     let human = match inventory.owners.as_slice() {
         [owner] => owner.clone(),

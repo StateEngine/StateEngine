@@ -2,6 +2,10 @@
 import argparse
 import hashlib
 import json
+import os
+import shlex
+import subprocess
+import sqlite3
 from pathlib import Path
 import sys
 import uuid
@@ -17,9 +21,11 @@ def snapshot(home):
 
 def deleted_state(f):
     f.ok("down")
-    saved = f.root / "retained-state.db"
-    (f.home / "state.db").rename(saved)
+    saved = f.root / "closed-copy"
+    saved.mkdir(mode=0o700)
+    (f.home / "state.db").rename(saved / "state.db")
     before = snapshot(f.home)
+    source = snapshot(saved)
     try:
         for args in [("status",), ("resume",), ("doctor",),
                      ("init", "--repo", str(f.root / "repo"))]:
@@ -27,11 +33,34 @@ def deleted_state(f):
             assert result.returncode != 0
             value = json.loads(result.stdout)
             assert value["code"] == "state-conflict" and "Recorded state is missing" in value["message"]
-            assert "Restore the original database" in value["remedy"]["text"]
-            assert not (f.home / "state.db").exists()
-            assert snapshot(f.home) == before, "lost-state diagnosis changed surviving files"
+            assert snapshot(f.home) == before and not (f.home / "state.db").exists()
+        remedy = value["remedy"]["text"]
+        lines = remedy.splitlines()
+        first = next(i for i, line in enumerate(lines) if line == "set -eu")
+        end = next(i for i, line in enumerate(lines) if line.startswith("No backup?"))
+        environment = dict(f.environment, COPY_DIR=str(saved), PATH=str(f.se.parent) + os.pathsep + "/usr/bin:/bin")
+        recovered = subprocess.run(["/bin/sh", "-c", "\n".join(lines[first:end])], env=environment,
+            cwd=f.root / "repo", capture_output=True, timeout=90)
+        (f.root / "restore.stdout").write_bytes(recovered.stdout)
+        (f.root / "restore.stderr").write_bytes(recovered.stderr)
+        assert recovered.returncode == 0, recovered.stderr
+        assert f.ok("status")["setup"]["state"] == "configured"
+        assert snapshot(saved) == source
+        # Exercise the printed no-backup command too: the original home and its
+        # owner remain intact while a separate home gets fresh identities.
+        argv = shlex.split([line for line in lines if line.startswith("se --home ")][-1])
+        argv[0] = str(f.se)
+        fresh = subprocess.run(argv, env=f.environment, cwd=f.root / "repo", capture_output=True, timeout=90)
+        (f.root / "fresh.stdout").write_bytes(fresh.stdout)
+        (f.root / "fresh.stderr").write_bytes(fresh.stderr)
+        assert fresh.returncode == 0, fresh.stderr
+        fresh_home = Path(argv[argv.index("--home") + 1])
+        with sqlite3.connect(f"file:{f.home / 'state.db'}?mode=ro", uri=True) as old, sqlite3.connect(f"file:{fresh_home / 'state.db'}?mode=ro", uri=True) as new:
+            assert new.execute("select human_id from owners").fetchall() != old.execute("select human_id from owners").fetchall()
+        assert snapshot(saved) == source
     finally:
-        saved.rename(f.home / "state.db")
+        if not (f.home / "state.db").exists():
+            (saved / "state.db").rename(f.home / "state.db")
 
 
 def fresh_home(f):
@@ -62,24 +91,30 @@ def unclaimed_staging(f):
         path.write_bytes(b"Unclaimed initialization bytes.\n")
         path.chmod(0o600)
     before = snapshot(f.home)
-    (f.root / "staging-before.json").write_text(json.dumps(before, indent=2))
-    try:
-        result = f.call("--key", "retained-init-key", "init", "--repo", str(f.root / "repo"))
-        assert result.returncode != 0
-        text = (result.stdout + result.stderr).decode()
-        assert all(name in text for name in names) and "original --key" in text
-        after = snapshot(f.home)
-        (f.root / "staging-after.json").write_text(json.dumps(after, indent=2))
-        # Opening the existing SQLite reader may recreate WAL/SHM sidecars.
-        # Persistent database, identity and unclaimed source bytes must agree.
-        persistent = lambda rows: {k: v for k, v in rows.items() if k not in ["state.db-wal", "state.db-shm"]}
-        assert persistent(after) == persistent(before), "refusal changed persistent database or unclaimed files"
-    finally:
-        # These synthetic bytes were created by this case; retain them outside
-        # the home before its ordinary public shutdown.
-        for name in names:
-            (f.home / name).rename(f.root / name)
+    value = f.ok("--key", "retained-init-key", "init", "--repo", str(f.root / "repo"))
+    assert value["owner"]["human_id"] == f.owner
+    quarantine = list(f.home.glob("init-quarantine-*"))
+    assert len(quarantine) == 1 and str(quarantine[0]) in " ".join(value["changed"])
+    for name in names:
+        assert not (f.home / name).exists()
+        assert hashlib.sha256((quarantine[0] / name).read_bytes()).hexdigest() == before[name]
     assert unrelated.read_bytes() == b"Unrelated user bytes stay intact.\n"
+    assert f.ok("--key", "retained-init-key", "init", "--repo", str(f.root / "repo"))["owner"]["human_id"] == f.owner
+    assert len(list(f.home.glob("init-quarantine-*"))) == 1
+
+
+def linked_stage_refuses(f):
+    outside = f.root / "outside-user-file"
+    outside.write_bytes(b"Outside user bytes.\n")
+    link = f.home / (".se-stage-" + "1" * 32)
+    link.symlink_to(outside)
+    try:
+        refused = f.call("init", "--repo", str(f.root / "repo"))
+        assert refused.returncode != 0 and link.is_symlink()
+        assert not list(f.home.glob("init-quarantine-*"))
+        assert outside.read_bytes() == b"Outside user bytes.\n"
+    finally:
+        link.unlink()
 
 
 def main():
@@ -88,7 +123,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    cases = [deleted_state, fresh_home, unclaimed_staging]
+    cases = [deleted_state, fresh_home, unclaimed_staging, linked_stage_refuses]
     print(f"1..{len(cases)}", flush=True)
     for number, case in enumerate(cases, 1):
         f = Fixture(args.se.resolve(), args.output.resolve() / (case.__name__ + "-" + uuid.uuid4().hex[:6]))
