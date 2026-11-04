@@ -59,8 +59,9 @@ impl SqliteSnapshot {
                     .unwrap_or(0);
             if bytes + cost > u64::from(budget.page.max_bytes.get()) {
                 if items.is_empty() {
-                    return Err(fail(
-                        StoreErrorCode::ReadBudgetTooSmall,
+                    return Err(budget_failure(
+                        &budget,
+                        cost,
                         "first head exceeds page bytes",
                     ));
                 }
@@ -217,8 +218,17 @@ pub(super) fn deadline(budget: &ReadBudget) -> StoreResult<Instant> {
     if budget.deadline.is_zero() || budget.deadline > std::time::Duration::from_secs(5) {
         return Err(fail(
             StoreErrorCode::ReadBudgetTooSmall,
-            "read deadline needs 0..5 seconds",
+            "read deadline must be positive and at most 5 seconds",
         ));
     }
     Ok(Instant::now() + budget.deadline)
+}
+
+pub(super) fn budget_failure(budget: &ReadBudget, required: u64, cause: &str) -> Box<StoreError> {
+    let mut error = fail(StoreErrorCode::ReadBudgetTooSmall, cause);
+    error.detail = StoreDetail::Budget {
+        allowed: u64::from(budget.page.max_bytes.get()),
+        required: Some(required),
+    };
+    error
 }

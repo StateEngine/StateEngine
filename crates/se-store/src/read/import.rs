@@ -115,15 +115,11 @@ impl SqliteSnapshot {
             let cost = query::event_size(&event)?;
             if bytes + cost > u64::from(budget.page.max_bytes.get()) {
                 if items.is_empty() {
-                    let mut error = fail(
-                        StoreErrorCode::ReadBudgetTooSmall,
+                    return Err(query::budget_failure(
+                        &budget,
+                        cost,
                         "first import checkpoint exceeds bytes",
-                    );
-                    error.detail = StoreDetail::Budget {
-                        allowed: u64::from(budget.page.max_bytes.get()),
-                        required: Some(cost),
-                    };
-                    return Err(error);
+                    ));
                 }
                 stop = StopReason::ByteLimit;
                 break;

@@ -196,8 +196,9 @@ impl SqliteSnapshot {
             };
             if bytes + cost > u64::from(budget.page.max_bytes.get()) {
                 if items.is_empty() {
-                    return Err(fail(
-                        StoreErrorCode::ReadBudgetTooSmall,
+                    return Err(query::budget_failure(
+                        &budget,
+                        cost,
                         "first complete decision head exceeds page bytes",
                     ));
                 }

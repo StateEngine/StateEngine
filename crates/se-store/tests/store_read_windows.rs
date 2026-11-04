@@ -159,6 +159,35 @@ fn prepare(
 }
 
 #[test]
+fn first_complete_head_and_turn_pages_report_the_required_minimum() -> Check {
+    let f = Fixture::new()?;
+    let (mut d, lease) = f.direct()?;
+    let (session, source) = prepare(&f, &mut d, &lease)?;
+    d.append(
+        capture(&f, &session, source, b"first", 0, 1, "budget-turn")?,
+        &*lease,
+    )?;
+    let mut snap = d.snapshot(f.scoped(Visibility::Owner))?;
+    let check = |error: Option<Box<StoreError>>| -> Check {
+        let error = error.ok_or("first full item became an empty page")?;
+        assert_eq!(error.code, StoreErrorCode::ReadBudgetTooSmall);
+        assert!(
+            matches!(error.detail, StoreDetail::Budget { allowed: 1, required: Some(n) } if n > 1)
+        );
+        Ok(())
+    };
+    check(snap.principals(budget(10, 1, None)?).err())?;
+    check(snap.sessions(budget(10, 1, None)?).err())?;
+    check(snap.turns(f.a.clone(), budget(10, 1, None)?).err())?;
+    check(
+        snap.recent_turns(f.a.clone(), None, budget(10, 1, None)?)
+            .err(),
+    )?;
+    snap.close()?;
+    Ok(())
+}
+
+#[test]
 fn exact_session_turn_history_uses_the_scoped_index_and_rejects_broken_joins() -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;
@@ -231,11 +260,11 @@ fn progress(
     d: &mut SqliteDirect,
     lease: &Lease,
     id: RecordId,
-    family: ImportFamily,
-    source: &[u8],
+    source: (ImportFamily, &[u8]),
     expected: Expected,
     offset: u64,
 ) -> Check {
+    let (family, source) = source;
     let checkpoint = ImportCheckpoint {
         import: id,
         family,
@@ -283,7 +312,7 @@ fn import_progress_pages_by_source_key_even_when_earlier_heads_are_updated() -> 
         (ImportFamily::Agents, b"b"),
         (ImportFamily::Agents, b"a"),
     ] {
-        progress(&f, &mut d, &lease, id, family, key, Expected::Absent, 0)?;
+        progress(&f, &mut d, &lease, id, (family, key), Expected::Absent, 0)?;
     }
     let mut snap = d.snapshot(f.scoped(Visibility::Owner))?;
     let first = snap.import_progress(id, budget(1, 65536, None)?)?;
@@ -295,8 +324,7 @@ fn import_progress_pages_by_source_key_even_when_earlier_heads_are_updated() -> 
         &mut d,
         &lease,
         id,
-        ImportFamily::Agents,
-        b"a",
+        (ImportFamily::Agents, b"a"),
         revision(1)?,
         1,
     )?;
