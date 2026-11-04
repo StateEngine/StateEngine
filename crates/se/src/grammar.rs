@@ -84,10 +84,12 @@ fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
         && flag.starts_with('-')
         && args
             .iter()
-            .position(|arg| arg == flag)
+            .position(|arg| arg == flag || arg.to_string_lossy() == format!("{flag}="))
             .is_some_and(|index| {
-                args.get(index + 1)
-                    .is_none_or(|next| next.to_string_lossy().starts_with('-'))
+                args[index].to_string_lossy().ends_with('=')
+                    || args
+                        .get(index + 1)
+                        .is_none_or(|next| next.to_string_lossy().starts_with('-'))
             });
     if missing_value {
         return SeError::new(Detail::UsageMissingArgument(
@@ -127,7 +129,8 @@ fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
             got: if context(&error, ContextKind::ValidValue).is_empty() {
                 "<redacted>".into()
             } else {
-                context(&error, ContextKind::InvalidValue)
+                let value = context(&error, ContextKind::InvalidValue);
+                if value.is_empty() { "<empty>".into() } else { value }
             },
             expected: {
                 let expected = context(&error, ContextKind::ValidValue);
@@ -218,6 +221,37 @@ pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<Option<std::pat
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn negative_values_are_invalid_and_empty_assignments_need_a_value()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for words in [
+            vec!["se", "history", "--limit", "-5"],
+            vec!["se", "history", "--limit=-5"],
+        ] {
+            let failure = parse(words.into_iter().map(OsString::from).collect())
+                .err()
+                .ok_or("negative limit accepted")?;
+            assert!(
+                matches!(failure.error.body.detail(), Detail::UsageInvalidValue(_)),
+                "{:?}",
+                failure.error.body
+            );
+        }
+        for words in [
+            vec!["se", "history", "--limit="],
+            vec!["se", "init", "--provider="],
+            vec!["se", "history", "--limit", "--json"],
+        ] {
+            let failure = parse(words.into_iter().map(OsString::from).collect())
+                .err()
+                .ok_or("empty value accepted")?;
+            assert!(matches!(
+                failure.error.body.detail(),
+                Detail::UsageMissingArgument(_)
+            ));
+        }
+        Ok(())
+    }
     #[test]
     fn unenumerated_rejected_values_do_not_enter_diagnostics()
     -> std::result::Result<(), Box<dyn std::error::Error>> {

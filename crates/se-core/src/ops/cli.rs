@@ -101,7 +101,11 @@ fn many(m: &ArgMatches, id: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 fn value(id: &'static str) -> Arg {
-    Arg::new(id).long(id).num_args(1)
+    Arg::new(id)
+        .long(id)
+        .num_args(1)
+        .allow_negative_numbers(true)
+        .value_parser(clap::builder::NonEmptyStringValueParser::new())
 }
 fn toggle(id: &'static str) -> Arg {
     Arg::new(id).long(id).action(ArgAction::SetTrue)
