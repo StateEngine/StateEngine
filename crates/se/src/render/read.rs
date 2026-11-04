@@ -79,7 +79,7 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         for project in projects.items() {
             writeln!(
                 out,
-                "  {}: {} — {} agents running, {} unread",
+                "  {}: {} — {} agents running, {} unread for owner",
                 project.name,
                 project.root.as_deref().unwrap_or("root unreadable"),
                 count(project.agents_running),

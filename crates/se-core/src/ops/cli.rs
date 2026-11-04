@@ -8,6 +8,7 @@ use std::path::PathBuf;
 mod agent_command;
 pub use agent_command::AgentCommand;
 mod decode;
+mod help;
 mod selections;
 pub use decode::{from_matches, from_matches_with_key};
 pub use selections::CliSelections;
@@ -170,19 +171,56 @@ pub fn cli_command() -> Command {
         .disable_help_flag(true)
         .disable_version_flag(true)
         .disable_help_subcommand(true)
-        .arg(toggle("version").short('V').global(true))
-        .arg(toggle("help").short('h').global(true))
-        .arg(value("home").global(true))
-        .arg(value("project").short('p').global(true))
-        .arg(toggle("json").global(true))
-        .arg(toggle("quiet").short('q').global(true))
+        .arg(
+            Arg::new("version")
+                .long("version")
+                .short('V')
+                .action(ArgAction::SetTrue)
+                .help("Show the installed se version and exit")
+                .global(true),
+        )
+        .arg(
+            Arg::new("help")
+                .long("help")
+                .short('h')
+                .action(ArgAction::SetTrue)
+                .help("Show help for this command and exit")
+                .global(true),
+        )
+        .arg(
+            value("home")
+                .help("Data home directory for this StateEngine installation")
+                .global(true),
+        )
+        .arg(
+            value("project")
+                .short('p')
+                .help("Saved project name or ID")
+                .global(true),
+        )
+        .arg(
+            toggle("json")
+                .help("Output the machine-readable JSON envelope")
+                .global(true),
+        )
+        .arg(
+            toggle("quiet")
+                .short('q')
+                .help("Suppress informational output; refusals still print")
+                .global(true),
+        )
         .arg(
             Arg::new("no_color")
                 .long("no-color")
                 .action(ArgAction::SetTrue)
+                .help("Disable color in the plain rendering")
                 .global(true),
         )
-        .arg(value("key").global(true));
+        .arg(
+            value("key")
+                .help("Request identity for a mutation: reuse it to repeat the same mutation, and use a new key for a different intent")
+                .global(true),
+        );
     for meta in CATALOGUE {
         if let CliExposure::Leaf { path, hidden, .. } = meta.cli {
             root = insert(root, path, meta.name, hidden);
@@ -190,9 +228,13 @@ pub fn cli_command() -> Command {
     }
     root = root
         .mut_subcommand("decision", |command| {
-            input_command("decision.list", command)
+            let command = input_command("decision.list", command)
                 .visible_alias("decisions")
-                .args_conflicts_with_subcommands(true)
+                .args_conflicts_with_subcommands(true);
+            match help::group("decision") {
+                Some(summary) => command.about(summary),
+                None => command,
+            }
         })
         .subcommand(
             input_command(
@@ -202,7 +244,8 @@ pub fn cli_command() -> Command {
                     .disable_version_flag(true)
                     .disable_help_subcommand(true),
             )
-            .mut_arg("pending", |arg| arg.default_value("true")),
+            .mut_arg("pending", |arg| arg.default_value("true"))
+            .about("List decisions awaiting an outcome"),
         );
     // MCP is a streaming transport for the registered operations, not another
     // store operation with a fabricated product output family.
@@ -212,7 +255,7 @@ pub fn cli_command() -> Command {
             .disable_help_flag(true)
             .disable_version_flag(true)
             .disable_help_subcommand(true)
-            .arg(toggle("stdio")),
+            .arg(toggle("stdio").help("Read JSON-RPC on stdin and write replies on stdout")),
     )
 }
 fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> Command {
@@ -229,47 +272,61 @@ fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> 
     if command.find_subcommand(head).is_some() {
         command.mut_subcommand(*head, update)
     } else {
-        command.subcommand(update(
-            Command::new(*head)
-                .hide(hidden)
-                .disable_help_flag(true)
-                .disable_version_flag(true)
-                .disable_help_subcommand(true),
-        ))
+        let mut child = Command::new(*head)
+            .hide(hidden)
+            .disable_help_flag(true)
+            .disable_version_flag(true)
+            .disable_help_subcommand(true);
+        if let Some(summary) = help::group(head) {
+            child = child.about(summary);
+        }
+        command.subcommand(update(child))
     }
 }
 fn input_command(name: &str, c: Command) -> Command {
-    match name {
+    let c = match name {
         "meta.help" => c
-            .arg(Arg::new("path").num_args(0..).action(ArgAction::Append))
-            .arg(toggle("all")),
-        "meta.schema" => c.arg(positional("op", 1, false)),
+            .arg(
+                Arg::new("path")
+                    .num_args(0..)
+                    .action(ArgAction::Append)
+                    .help("Command words to explain, e.g. help msg send; omit them for the full catalogue"),
+            )
+            .arg(toggle("all").help("Also show hidden commands")),
+        "meta.schema" => c.arg(
+            positional("op", 1, false)
+                .help("Exact registered operation name, e.g. project.status; omit it for the full catalogue"),
+        ),
         "project.init" => c
-            .arg(value("repo"))
-            .arg(value("name"))
-            .arg(value("agent").default_value("main"))
-            .arg(value("provider").value_parser(["claude", "codex"]))
-            .arg(value("model"))
+            .arg(value("repo").help("Existing repository folder to register as this project"))
+            .arg(value("name").help("Project name shown in status and listings"))
+            .arg(value("agent").default_value("main").help("Name for your first saved agent"))
+            .arg(
+                value("provider")
+                    .value_parser(["claude", "codex"])
+                    .help("Provider for the first agent: claude or codex"),
+            )
+            .arg(value("model").help("Model for the first agent"))
             .arg(toggle("launch").hide(true))
             .arg(toggle("adopt").hide(true)),
-        "doctor.inspect" => c.about("Check this installation and name exact supported repairs"),
         "doctor.repair" => c.arg(value("fix").help("Apply only this currently diagnosed CHECK-ID after printing its plan")),
-        "store.import_node" => c.about("Import supported user history without changing the original Node state").arg(value("from_node").long("from-node").required(true)).arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner")).arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),
-        "project.status" => c.arg(toggle("all")),
+        "store.import_node" => c
+            .arg(value("from_node").long("from-node").required(true).help("Path to the Node StateEngine home to import from"))
+            .arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner"))
+            .arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),
+        "project.status" => c.arg(toggle("all").help("Also summarize every registered project, with its owner-mail counts")),
         "agent.launch" => c
-            .about("Start or resume a saved agent in a window; --detach runs headless")
-            .arg(positional("agent", 1, true))
-            .arg(toggle("new"))
-            .arg(value("provider"))
-            .arg(value("model"))
-            .arg(value("task"))
-            .arg(toggle("detach")),
+            .arg(positional("agent", 1, true).help("Saved agent name or ID to start or resume"))
+            .arg(toggle("new").help("Start a fresh provider conversation instead of resuming the saved one"))
+            .arg(value("provider").help("Override the saved provider for this launch: claude or codex"))
+            .arg(value("model").help("Override the saved model for this launch"))
+            .arg(value("task").help("Task text handed to the agent for this launch"))
+            .arg(toggle("detach").help("Run headless instead of in a window")),
         "agent.stop" => c
-            .arg(positional("agent", 1, false).conflicts_with("all"))
-            .arg(toggle("all").conflicts_with("release"))
-            .arg(toggle("release")),
+            .arg(positional("agent", 1, false).conflicts_with("all").help("Saved agent name or ID to stop"))
+            .arg(toggle("all").conflicts_with("release").help("Stop every running agent in this project"))
+            .arg(toggle("release").help("Also release the stopped agent's reserved resources; one target only")),
         "continuity.resume" => c
-            .about("Restore your saved context without acknowledging packets or mail")
             .arg(value("since").help("An opaque cursor from resume for this same agent"))
             .arg(value("budget").default_value("4096").help("Maximum UTF-8 bytes in the JSON reply (1024..1048576)"))
             .arg(value("limit").default_value("20").help("Maximum recent turns and governing decisions per section (1..100)"))
@@ -281,101 +338,105 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("governing_cursor").long("governing-cursor"))
             .arg(value("limit").default_value("20")),
         "project.remove" => c
-            .arg(toggle("all").conflicts_with("project"))
-            .arg(toggle("keep-integrations")),
+            .arg(toggle("all").conflicts_with("project").help("Remove every registered project in this home"))
+            .arg(toggle("keep-integrations").help("Keep registered integrations while removing the project")),
         "history.event_read" => c.arg(
             value("event")
-                .conflicts_with_all(["agent", "session", "kind", "since", "limit", "cursor"]),
+                .conflicts_with_all(["agent", "session", "kind", "since", "limit", "cursor"])
+                .help("One committed event ID from se history"),
         ),
         "history.list" => c
-            .about("Read the public timeline: conversations, mail, decisions, working state and saved identity changes")
-            .arg(value("agent"))
-            .arg(value("session"))
-            .arg(value("kind").action(ArgAction::Append))
+            .arg(value("agent").help("Saved agent name or ID to filter on"))
+            .arg(value("session").help("Session ID to filter on"))
+            .arg(value("kind").action(ArgAction::Append).help("Event kind to include; repeat for several"))
             .arg(
                 value("since")
                     .help("An event position from se history, scoped to this caller and project"),
             )
-            .arg(value("limit").default_value("20"))
-            .arg(value("cursor")),
-        "message.read" => c.arg(positional("msg_id",1,true)).arg(value("budget").default_value("262144").help("Maximum serialized reply bytes, checked before marking read")),
-        "message.ack" | "message.dismiss" => c.arg(positional("msg_id",1,true)),
+            .arg(value("limit").default_value("20").help("Maximum events in this page"))
+            .arg(value("cursor").help("Cursor from a previous page of this same read")),
+        "message.read" => c
+            .arg(positional("msg_id", 1, true).help("Message ID from se msg list or inbox"))
+            .arg(value("budget").default_value("262144").help("Maximum serialized reply bytes, checked before marking read")),
+        "message.ack" | "message.dismiss" => c
+            .arg(positional("msg_id", 1, true).help("Message ID from se msg list or inbox")),
         "message.send" => c
-            .arg(positional("to", 1, true).help("A registered recipient, or floor with --work-action and --addressee"))
-            .arg(positional("body", 2, true))
+            .arg(positional("to", 1, true).help("Registered recipient name or ID, the owner, or floor (shared project messages) with --work-action and --addressee"))
+            .arg(positional("body", 2, true).help("Message text; - reads it from stdin"))
             .arg(value("kind").default_value("note").value_parser([
                 "note", "task", "question", "answer", "blocker", "done", "handoff", "finding",
-            ]))
-            .arg(Arg::new("refs").long("ref").action(ArgAction::Append))
-            .arg(value("reply_to").long("reply-to"))
-            .arg(value("work_action").long("work-action").value_parser(["admit","assign","return","question","ruling_request","ruling","finding","notify"]))
-            .arg(Arg::new("addressees").long("addressee").action(ArgAction::Append)),
+            ]).help("Message kind: note, task, question, answer, blocker, done, handoff or finding"))
+            .arg(Arg::new("refs").long("ref").action(ArgAction::Append).help("Message ID this one references; repeat for each"))
+            .arg(value("reply_to").long("reply-to").help("Message ID this one directly answers"))
+            .arg(value("work_action").long("work-action").value_parser(["admit","assign","return","question","ruling_request","ruling","finding","notify"]).help("For floor: what the message does: admit, assign, return, question, ruling_request, ruling, finding or notify"))
+            .arg(Arg::new("addressees").long("addressee").action(ArgAction::Append).help("Explicit floor addressee; repeat for each")),
         "message.list" => c
-            .arg(value("to"))
-            .arg(value("from"))
+            .arg(value("to").help("Only messages to this recipient"))
+            .arg(value("from").help("Only messages from this sender"))
             .arg(value("kind").value_parser([
                 "note", "task", "question", "answer", "blocker", "done", "handoff", "finding",
-            ]))
-            .arg(toggle("all"))
-            .arg(toggle("full"))
-            .arg(value("limit").default_value("20"))
-            .arg(value("preview_chars").long("preview-chars"))
-            .arg(value("cursor"))
+            ]).help("Only messages of this kind"))
+            .arg(toggle("all").help("Include read messages, not only unread"))
+            .arg(toggle("full").help("Return complete bodies instead of previews"))
+            .arg(value("limit").default_value("20").help("Maximum messages in this page"))
+            .arg(value("preview_chars").long("preview-chars").help("Maximum body preview characters when the full body is not requested"))
+            .arg(value("cursor").help("Cursor from a previous page of this same read"))
             .arg(
                 value("box")
                     .value_parser(["inbox", "sent"])
-                    .default_value("inbox"),
+                    .default_value("inbox")
+                    .help("inbox or sent"),
             ),
         "message.inbox" => c
-            .arg(positional("agent", 1, false))
-            .arg(toggle("full"))
-            .arg(value("limit").default_value("20"))
-            .arg(value("preview_chars").long("preview-chars"))
-            .arg(value("cursor")),
-        "working_state.get" => c.arg(value("agent")),
-        "agent.show" => c.arg(positional("agent", 1, true)),
+            .arg(positional("agent", 1, false).help("Saved agent name or ID whose unread inbox the owner lists; omit it for your own"))
+            .arg(toggle("full").help("Return complete bodies instead of previews"))
+            .arg(value("limit").default_value("20").help("Maximum messages in this page"))
+            .arg(value("preview_chars").long("preview-chars").help("Maximum body preview characters"))
+            .arg(value("cursor").help("Cursor from a previous page of this same read")),
+        "working_state.get" => c.arg(value("agent").help("Saved agent name or ID whose working state the owner reads")),
+        "agent.show" => c.arg(positional("agent", 1, true).help("Saved agent name or ID to inspect")),
         "agent.list" => c
-            .arg(value("limit").default_value("20"))
-            .arg(value("cursor")),
+            .arg(value("limit").default_value("20").help("Maximum agents in this page"))
+            .arg(value("cursor").help("Cursor from a previous page of this same read")),
         "config.get" => c
-            .arg(positional("setting_key", 1, true))
-            .arg(toggle("origin")),
+            .arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile or agent.<AGENT>.can-create; example: se config get agent.main.model"))
+            .arg(toggle("origin").help("Report where the value comes from")),
         "config.set" => {
-            c.arg(positional("setting_key", 1, true))
-                .arg(positional("setting_value", 2, true))
+            c.arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile or agent.<AGENT>.can-create"))
+                .arg(positional("setting_value", 2, true).help("Model string or null for the default, an existing named permission profile, or true/false for can-create"))
         }
         "agent.create" => c
-            .arg(positional("name", 1, true))
-            .arg(value("provider").value_parser(["claude", "codex"]))
-            .arg(value("model")),
+            .arg(positional("name", 1, true).help("Name for the new saved agent"))
+            .arg(value("provider").value_parser(["claude", "codex"]).help("Provider for the new agent: claude or codex"))
+            .arg(value("model").help("Model for the new agent")),
         "decision.list" => c
-            .arg(value("id"))
-            .arg(toggle("pending"))
-            .arg(toggle("history"))
-            .arg(value("limit").default_value("20"))
-            .arg(value("cursor")),
-        "decision.show" => c.arg(positional("decision_id", 1, true)),
+            .arg(value("id").help("One decision ID"))
+            .arg(toggle("pending").help("Only proposals awaiting an owner outcome"))
+            .arg(toggle("history").help("Include retired decisions"))
+            .arg(value("limit").default_value("20").help("Maximum decisions in this page"))
+            .arg(value("cursor").help("Cursor from a previous page of this same read")),
+        "decision.show" => c.arg(positional("decision_id", 1, true).help("Decision ID from se decision list")),
         "decision.propose" => c
-            .arg(positional("decision_key", 1, true))
-            .arg(positional("statement", 2, true))
-            .arg(value("rationale"))
-            .arg(value("supersedes")),
+            .arg(positional("decision_key", 1, true).help("Stable key naming this decision topic"))
+            .arg(positional("statement", 2, true).help("The statement to propose"))
+            .arg(value("rationale").help("Supporting reason for the proposal"))
+            .arg(value("supersedes").help("Decision ID this proposal replaces")),
         "decision.ratify" => c
-            .arg(positional("decision_id", 1, true))
-            .arg(value("expect")),
+            .arg(positional("decision_id", 1, true).help("Decision ID from se decision list"))
+            .arg(value("expect").help("Expected revision from se decision show")),
         "decision.reject" | "decision.retract" => c
-            .arg(positional("decision_id", 1, true))
-            .arg(value("reason").required(true))
-            .arg(value("expect")),
+            .arg(positional("decision_id", 1, true).help("Decision ID from se decision list"))
+            .arg(value("reason").required(true).help("Why, recorded with the decision"))
+            .arg(value("expect").help("Expected revision from se decision show")),
         "decision.supersede" => c
-            .arg(positional("decision_id", 1, true))
-            .arg(positional("replacement_id", 2, true))
-            .arg(value("expect")),
+            .arg(positional("decision_id", 1, true).help("Decision ID to supersede"))
+            .arg(positional("replacement_id", 2, true).help("New decision ID replacing it"))
+            .arg(value("expect").help("Expected revision from se decision show")),
         "working_state.set" => c
-            .arg(positional("text", 1, true))
-            .arg(value("expect").required(true))
-            .arg(value("agent")),
-        "runtime.up" => c.arg(toggle("foreground")),
+            .arg(positional("text", 1, true).help("The new working-state text; - reads it from stdin"))
+            .arg(value("expect").required(true).help("The revision you last read, or absent for the first write"))
+            .arg(value("agent").help("Saved agent name or ID whose working state the owner replaces")),
+        "runtime.up" => c.arg(toggle("foreground").help("Run the runtime in this terminal instead of detaching")),
         "hook.claude" => c.arg(positional("event", 1, true).value_parser([
             "session-start",
             "prompt",
@@ -383,6 +444,11 @@ fn input_command(name: &str, c: Command) -> Command {
             "stop-failure",
         ])),
         _ => c,
+    };
+    if let Some(summary) = help::command(name) {
+        c.about(summary)
+    } else {
+        c
     }
 }
 pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::OpMeta> {
