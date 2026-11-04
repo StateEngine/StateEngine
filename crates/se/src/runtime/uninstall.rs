@@ -74,8 +74,8 @@ pub(super) fn execute(
     let mut installation_claim =
         Some(se_proc::NativeInstallationClaim::acquire().map_err(native_error)?);
     // Only uninstall takes the account claim, protecting install/PATH effects
-    // across homes. Retain an existing home lock before effects and re-observe;
-    // a never-initialized home does not acquire a published runtime lock.
+    // across homes. Share setup's persistent home lock through every effect,
+    // including when no store exists yet, then re-observe under exclusion.
     let files =
         route::files::Files::open(&cx.home).map_err(|e| se_core::store_error::store_error(&e))?;
     let record_path = cx.home.join("standalone-install.json");
@@ -86,17 +86,13 @@ pub(super) fn execute(
         }
         Err(error) => return Err(unreadable(&record_path, error)),
     }
-    let _runtime_lease = match route::files::existing_setup_lock(&files) {
-        Ok(Some(lock)) => Some(lock),
-        Ok(None) => return Err(SeError::new(Detail::StateConflict(details::StateConflict {
+    let _runtime_lease = route::files::setup_lock(&files)
+        .map_err(|e| se_core::store_error::store_error(&e))?
+        .ok_or_else(|| SeError::new(Detail::StateConflict(details::StateConflict {
             subject: "uninstall runtime custody".into(),
             reason: "setup, another writer or the runtime holds this home's exclusive lease".into(),
             next_step: "Wait for setup/removal or run se down with this same --home, then retry uninstall; no installation effects were attempted".into(),
-        }))),
-        Err(error) if error.code == se_store::StoreErrorCode::Absent
-            && matches!(route::setup::inspect(&cx.home, clock())?, route::setup::Setup::Absent(_)) => None,
-        Err(error) => return Err(se_core::store_error::store_error(&error)),
-    };
+        })))?;
     let (owner, store_observation) = observe()?;
     owner.authorize(
         "installation.uninstall",

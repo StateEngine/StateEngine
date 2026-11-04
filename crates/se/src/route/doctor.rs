@@ -127,7 +127,7 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
         },
         None => None,
     };
-    checks.push(check("runtime.lock","Runtime lease",if free.is_some(){CheckState::Ok}else{CheckState::Failed},match free {Some(true)=>"Exclusive lease is available",Some(false)=>"Lease is held; doctor will not break it",None=>"Initialized runtime.lock is absent; its absence is not permission to create a replacement"}.into(),&at));
+    checks.push(check("runtime.lock","Runtime lease",if free.is_some(){CheckState::Ok}else{CheckState::Failed},match free {Some(true)=>"Exclusive lease is available",Some(false)=>"Lease is held; doctor will not break it",None=>"The store is initialized, but runtime.lock is absent; its absence is not permission to create a replacement"}.into(),&at));
     let endpoint = raw_endpoint(files)?;
     let mut endpoint_check = check(
         "runtime.endpoint",

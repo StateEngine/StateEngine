@@ -15,21 +15,11 @@ use std::{
 /// Persistent home-local exclusion for setup and uninstall. Never replace a
 /// published lock: every cooperating operation must retain the same inode.
 pub fn setup_lock(files: &Files) -> StoreResult<Option<File>> {
-    setup_lock_inner(files, true)
-}
-/// Uninstall observes existing exclusion without initializing a state home.
-pub fn existing_setup_lock(files: &Files) -> StoreResult<Option<File>> {
-    setup_lock_inner(files, false)
-}
-fn setup_lock_inner(files: &Files, create: bool) -> StoreResult<Option<File>> {
     let path = files.0.root().join("runtime.lock");
     match files.readback(&path)? {
         Read::Present { .. } => (),
         Read::Unreadable { reason, .. } => return Err(fail(StoreErrorCode::Unreadable, &reason)),
         Read::Unknown { what } => return Err(fail(StoreErrorCode::Unreadable, &what)),
-        Read::Absent { .. } if !create => {
-            return Err(fail(StoreErrorCode::Absent, "runtime lock is absent"));
-        }
         Read::Absent { .. } => {
             let staged = files.create_staging(files.0.root())?;
             staged
