@@ -18,7 +18,7 @@ pub struct CodexLaunch<'a> {
 pub fn initialize() -> Value {
     json!({"clientInfo": {
         "name": "stateengine", "title": "StateEngine", "version": env!("CARGO_PKG_VERSION")
-    }})
+    }, "capabilities": {"experimentalApi":true}})
 }
 
 fn approval(policy: &ResolvedProfile) -> &'static str {
