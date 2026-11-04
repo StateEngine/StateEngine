@@ -2,6 +2,9 @@
 param([switch]$Recover)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# A PowerShell 7 parent exports a PSModulePath that Windows PowerShell 5.1
+# cannot autoload from; restore the 5.1 system module directory.
+$env:PSModulePath = [IO.Path]::Combine([Environment]::GetEnvironmentVariable('WINDIR'), 'System32', 'WindowsPowerShell', 'v1.0', 'Modules')
 $utf8 = New-Object Text.UTF8Encoding($false)
 $claimed = $false
 $created = New-Object 'System.Collections.Generic.List[string]'
@@ -39,7 +42,14 @@ function Get-PlainFiles([string]$Root) {
         }
     }
 }
-function Get-Digest([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Digest([string]$Path) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $stream = [IO.File]::OpenRead($Path)
+        try { ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '').ToLowerInvariant() }
+        finally { $stream.Dispose() }
+    } finally { $sha.Dispose() }
+}
 function Get-TextDigest([string]$Text) {
     $sha = [Security.Cryptography.SHA256]::Create()
     try { ([BitConverter]::ToString($sha.ComputeHash($utf8.GetBytes($Text)))).Replace('-', '').ToLowerInvariant() }
