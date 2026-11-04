@@ -51,6 +51,7 @@ pub struct Binding {
     initial: tokio::sync::Mutex<Option<Value>>,
     input: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    diagnostic_secrets: Vec<se_types::Secret>,
 }
 impl CodexHarness {
     pub fn new(
@@ -300,6 +301,10 @@ impl Harness for CodexHarness {
                 initial: tokio::sync::Mutex::new(None),
                 input: tokio::sync::Mutex::new(()),
                 tasks: Mutex::new(vec![]),
+                diagnostic_secrets: vec![
+                    se_types::Secret::new(request.request.mcp_bearer.expose().to_vec())?,
+                    se_types::Secret::new(request.request.launch_credential.expose().to_vec())?,
+                ],
             });
             let mut tasks = vec![
                 tokio::spawn(rpc::read(Arc::downgrade(&binding), receiver, cx.generation)),

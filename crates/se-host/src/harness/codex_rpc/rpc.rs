@@ -114,11 +114,7 @@ pub(super) async fn read(
                 match reply {
                     Ok(Some(reply)) => {
                         let _ = reply.send(result.map_err(|failure| {
-                            let reason = if failure.message.len() <= 2048 {
-                                format!("provider refused request ({}): {}", failure.code, failure.message)
-                            } else {
-                                format!("provider refused request ({}); its diagnostic exceeds 2048 bytes ({} bytes)", failure.code, failure.message.len())
-                            };
+                            let reason = diagnostic(failure.code, &failure.message, &binding.diagnostic_secrets);
                             incompatible(&reason, "Inspect the provider/profile and retry only after resolving the original input.").body
                         }));
                         Ok(())
@@ -164,5 +160,43 @@ pub(super) async fn read(
             binding.fail(error);
             return;
         }
+    }
+}
+
+fn diagnostic(code: i64, message: &str, secrets: &[se_types::Secret]) -> String {
+    if message.len() > 2048 {
+        return format!(
+            "provider refused request ({code}); its diagnostic exceeds 2048 bytes ({} bytes)",
+            message.len()
+        );
+    }
+    let mut safe = message.to_owned();
+    for secret in secrets {
+        if let Ok(value) = std::str::from_utf8(secret.expose()) {
+            safe = safe.replace(value, "[redacted]");
+        }
+    }
+    format!("provider refused request ({code}): {safe}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn provider_errors_preserve_the_reason_without_reflecting_launch_capabilities() -> Result<()> {
+        let secrets = [
+            se_types::Secret::new(b"test-http-bearer".to_vec())?,
+            se_types::Secret::new(b"test-session-pin".to_vec())?,
+        ];
+        let actual = diagnostic(
+            -32602,
+            "invalid headers: Bearer test-http-bearer and test-session-pin",
+            &secrets,
+        );
+        assert!(actual.contains("invalid headers") && actual.contains("-32602"));
+        assert!(!actual.contains("test-http-bearer") && !actual.contains("test-session-pin"));
+        let oversized = diagnostic(-32000, &"x".repeat(2049), &secrets);
+        assert!(oversized.contains("2049 bytes") && !oversized.contains(&"x".repeat(32)));
+        Ok(())
     }
 }
