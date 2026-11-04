@@ -137,9 +137,9 @@ pub fn publish_image_cache(
 }
 /// Restore a bounded protected hint, never PID, birth, credential, generation,
 /// ancestry or authorization. hash_image still pins/rechecks the actual file's
-/// identity, size and exact modification timestamp before using this digest.
-/// Same-inode edits restoring size+mtime have the same stated bound as the
-/// process-local cache. Endpoint/native instance and MAC checks remain required.
+/// identity, size and exact modification/change timestamps before using this digest.
+/// Legacy hints without change time cannot match a fresh native key.
+/// Endpoint/native instance and MAC checks remain required.
 pub fn restore_image_cache(
     root: &Path,
     expected: Sha256,
