@@ -74,7 +74,7 @@ partial=$data/standalone-install.partial
 plain_path "$partial"
 if [ "$recover" -eq 1 ]; then
     [ -d "$partial" ] || fail "partial installation is absent: $partial"
-else [ ! -e "$partial" ] || fail "partial installation at $partial; resume with: sh $bundle/install.sh --recover"; fi
+else [ ! -e "$partial" ] || fail "partial installation at $partial; resume with: sh \"$bundle/install.sh\" --recover"; fi
 for destination in "$bin/se" "$assets" "$record"; do
     plain_path "$destination"
     if [ "$recover" -eq 1 ]; then
