@@ -124,7 +124,11 @@ fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
         }),
         _ => Detail::UsageInvalidValue(details::UsageInvalidValue {
             argument: argument.clone(),
-            got: context(&error, ContextKind::InvalidValue),
+            got: if context(&error, ContextKind::ValidValue).is_empty() {
+                "<redacted>".into()
+            } else {
+                context(&error, ContextKind::InvalidValue)
+            },
             expected: {
                 let expected = context(&error, ContextKind::ValidValue);
                 if expected.is_empty() { format!("a valid value for {argument}") } else { expected }
@@ -214,6 +218,65 @@ pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<Option<std::pat
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn unenumerated_rejected_values_do_not_enter_diagnostics() {
+        let args: Vec<OsString> = ["se", "--budget", "private-validator-capability"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let error = clap::Command::new("se")
+            .arg(
+                clap::Arg::new("budget")
+                    .long("budget")
+                    .value_parser(clap::value_parser!(u64)),
+            )
+            .try_get_matches_from(&args)
+            .unwrap_err();
+        let error = usage_error(error, &args);
+        let Detail::UsageInvalidValue(detail) = error.body.detail() else {
+            panic!("the invalid-value diagnostic must remain classified");
+        };
+        assert_eq!(detail.got, "<redacted>");
+        for json in [false, true] {
+            let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+            let exit = crate::render::error::write(
+                &error,
+                &se_types::RenderCx::default(),
+                json,
+                &mut stdout,
+                &mut stderr,
+            )
+            .unwrap();
+            assert_eq!(exit, 64);
+            assert!(
+                !String::from_utf8(stdout)
+                    .unwrap()
+                    .contains("private-validator-capability")
+            );
+            assert!(
+                !String::from_utf8(stderr)
+                    .unwrap()
+                    .contains("private-validator-capability")
+            );
+        }
+        assert!(
+            !serde_json::to_string(&error.body)
+                .unwrap()
+                .contains("private-validator-capability")
+        );
+        let args = ["se", "init", "--provider", "cloude"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let Err(failure) = parse(args) else {
+            panic!("provider typo must refuse")
+        };
+        let Detail::UsageInvalidValue(detail) = failure.error.body.detail() else {
+            panic!("the enumerated diagnostic must remain classified");
+        };
+        assert_eq!(detail.got, "cloude");
+    }
+
     #[test]
     fn explicit_help_never_retains_option_values() {
         for (path, expected) in [
