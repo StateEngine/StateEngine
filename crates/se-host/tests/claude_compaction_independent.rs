@@ -90,7 +90,7 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
         )?;
         bytes.extend_from_slice(COMPACT);
         for n in 0..25 {
-            bytes.extend(line(json!({"type":"future-provider-record","sessionId":CONVERSATION,"uuid":format!("future-{n}"),"message":{"role":"assistant","content":"PRIVATE_PROVIDER_PAYLOAD"},"opaque":"PRIVATE_PROVIDER_PAYLOAD"}))?);
+            bytes.extend(line(json!({"type":"future-provider-record","sessionId":CONVERSATION,"uuid":format!("future-{n}"),"content":"PRIVATE_PROVIDER_PAYLOAD","opaque":"PRIVATE_PROVIDER_PAYLOAD"}))?);
         }
         bytes.extend(line(chat(
             "assistant",
@@ -361,6 +361,14 @@ fn malformed_json_framing_and_known_messages_keep_the_committed_cursor() -> Chec
         )?,
     ] {
         exercise(Some(bytes))?;
+    }
+    for record in [
+        json!({"sessionId":CONVERSATION}),
+        json!({"type":42,"sessionId":CONVERSATION}),
+        json!({"type":"User","sessionId":CONVERSATION,"message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}}),
+        json!({"type":"future-chat","sessionId":CONVERSATION,"message":{"role":"assistant","content":"MUST_NOT_DISAPPEAR"}}),
+    ] {
+        exercise(Some(line(record)?))?;
     }
     Ok(())
 }

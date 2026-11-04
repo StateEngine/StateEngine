@@ -177,6 +177,17 @@ fn malformed_json_and_known_message_shapes_still_refuse() -> Result<()> {
             );
         }
     }
+    for value in [
+        json!({}),
+        json!({"type":42}),
+        json!({"type":"User","message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}}),
+        json!({"type":"future-chat","message":{"role":"assistant","content":"MUST_NOT_DISAPPEAR"}}),
+    ] {
+        assert!(
+            decode(value).is_err(),
+            "ambiguous or future chat-shaped record silently became metadata"
+        );
+    }
     assert!(claude::decode(b"{broken json}\n", &conversation()?).is_err());
     Ok(())
 }
