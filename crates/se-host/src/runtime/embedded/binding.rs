@@ -213,13 +213,13 @@ impl EmbeddedHost {
         {
             return Err(SeError::invalid(
                 "linked bind",
-                "native Owner authority, SE Code harness, and a fresh binding without a takeover target",
+                "native Owner authority and the SE Code harness",
             ));
         }
         if request.target.is_some() || request.expected_binding_revision.is_some() {
             return Err(SeError::invalid(
                 "linked takeover",
-                "embedded takeover arrives with live handover",
+                "embedded takeover arrives with live handover; stop the linked session, then bind fresh",
             ));
         }
         // Native consent cannot opt back into capture disabled by the owner.
