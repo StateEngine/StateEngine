@@ -122,6 +122,31 @@ pub fn run(
             "warning[w-legacy-env-present]: legacy STATEENGINE_* variables are present and ignored"
         )?;
     }
+    #[cfg(any(target_os = "linux", windows))]
+    if matches!(&operation, AnyOp::RuntimeUp(input) if input.foreground) {
+        let result = route::foreground(&context, &mut |output| {
+            render::output(&output, common.json, common.quiet, &mut stdout)
+                .map(|_| ())
+                .map_err(|error| {
+                    se_core::scope::unreadable("foreground startup output", &error.to_string())
+                        .with_cause(error)
+                })?;
+            stdout.flush().map_err(|error| {
+                se_core::scope::unreadable("foreground startup output", &error.to_string())
+                    .with_cause(error)
+            })
+        });
+        return match result {
+            Ok(code) => Ok(code),
+            Err(error) => render::error::write(
+                &error,
+                &RenderCx::default(),
+                common.json,
+                &mut stdout,
+                &mut stderr,
+            ),
+        };
+    }
     let result = {
         let mut diagnostic = |message: &str| {
             writeln!(stderr, "{message}")?;

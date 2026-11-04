@@ -9,7 +9,7 @@ use std::{
 
 fn bytes(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let file = fs::File::open(path).map_err(|e| native("open native owner fact", e))?;
-    let mut data = Vec::new();
+    let mut data = Vec::with_capacity(limit.saturating_add(1).min(4096));
     file.take(limit as u64 + 1)
         .read_to_end(&mut data)
         .map_err(|e| native("read native owner fact", e))?;

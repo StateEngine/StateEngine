@@ -12,8 +12,13 @@ mod child;
 #[path = "host/environment.rs"]
 mod environment;
 #[cfg(any(target_os = "linux", windows))]
+#[path = "host/interrupt.rs"]
+mod interrupt;
+#[cfg(any(target_os = "linux", windows))]
 #[path = "host/launch.rs"]
 mod launch;
+#[cfg(any(target_os = "linux", windows))]
+pub(crate) use child::foreground;
 #[cfg(any(target_os = "linux", windows))]
 pub use launch::{StartedHost, StartupFailure, start, start_with_origin};
 

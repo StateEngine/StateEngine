@@ -75,8 +75,8 @@ impl LaunchCoordinator {
                 status.value.runtime.state = "running".into();
                 status.value.runtime.host = Some(
                     match kind {
-                        crate::HostKind::Standalone => "standalone",
-                        crate::HostKind::EmbeddedSecode => "embedded-secode",
+                        crate::HostKind::Standalone => "daemon",
+                        crate::HostKind::EmbeddedSecode => "secode",
                     }
                     .into(),
                 );
@@ -88,6 +88,20 @@ impl LaunchCoordinator {
                         error("host observation clock", "representable Unix microseconds")
                     })?,
                 )?);
+                #[cfg(target_os = "linux")]
+                {
+                    let counters = se_proc::observe_self_resources()
+                        .map_err(|cause| error("host self resources", format!("{cause:?}")))?;
+                    status.value.runtime.resources = Some(ResourceSample {
+                        self_voluntary_switches: counters.voluntary_switches,
+                        self_involuntary_switches: Some(counters.involuntary_switches),
+                        cpu_user_us: counters.cpu_user_us,
+                        cpu_system_us: counters.cpu_system_us,
+                        rss_bytes: counters.rss_bytes,
+                        sampled_at: receipt::timestamp(crate::runtime::start::now_unix_micros()?)?,
+                        method: "linux:getrusage(RUSAGE_SELF)+/proc/self/statm".into(),
+                    });
+                }
                 bound.remaining()?;
                 Ok(output)
             })

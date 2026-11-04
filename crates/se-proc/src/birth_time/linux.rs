@@ -106,7 +106,7 @@ impl Pin {
 fn boot_seconds(deadline: Instant) -> ProcResult<u64> {
     bound(deadline)?;
     const MAX: usize = 1024 * 1024;
-    let mut data = Vec::new();
+    let mut data = Vec::with_capacity(16 * 1024);
     File::open("/proc/stat")
         .and_then(|file| file.take(MAX as u64 + 1).read_to_end(&mut data))
         .map_err(|e| {

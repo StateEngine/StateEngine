@@ -76,6 +76,65 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
             .and_then(|v| v.parse().ok())
             .ok_or_else(|| invalid("a nonzero host generation"))?,
     )?;
+    serve(
+        home,
+        configuration,
+        persisted,
+        generation,
+        auto_start,
+        #[cfg(unix)]
+        se_proc::native_ipc::UnixSocketPaths {
+            runtime_directory: (!runtime_directory.is_empty())
+                .then(|| PathBuf::from(runtime_directory)),
+            temporary_directory: (!temporary_directory.is_empty())
+                .then(|| PathBuf::from(temporary_directory)),
+        },
+        Some(instance),
+        guard,
+        &mut |_| Ok(()),
+    )
+}
+
+pub(crate) fn foreground(
+    home: PathBuf,
+    configuration: PathBuf,
+    machine: se_types::MachineId,
+    ready: &mut dyn FnMut(&se_host::HostedListener) -> Result<()>,
+) -> Result<u8> {
+    let mut bytes = [0; 8];
+    se_proc::fill_entropy(&mut bytes).map_err(|error| {
+        se_core::scope::unreadable("foreground host generation", &error.to_string())
+    })?;
+    let generation = HostGeneration::new((u64::from_le_bytes(bytes) & i64::MAX as u64).max(1))?;
+    serve(
+        home,
+        configuration,
+        machine,
+        generation,
+        false,
+        #[cfg(unix)]
+        crate::config::unix_socket_paths()?,
+        None,
+        &mut None,
+        ready,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "One shared host entry retains the authenticated detached frame or the authorized foreground callback."
+)]
+fn serve(
+    home: PathBuf,
+    configuration: PathBuf,
+    machine: se_types::MachineId,
+    generation: HostGeneration,
+    auto_start: bool,
+    #[cfg(unix)] socket_paths: se_proc::native_ipc::UnixSocketPaths,
+    instance: Option<se_proc::HostInstanceId>,
+    guard: &mut Option<se_proc::RuntimeBootstrap>,
+    ready: &mut dyn FnMut(&se_host::HostedListener) -> Result<()>,
+) -> Result<u8> {
     let initialized = se_host::initialize_host_process()?;
     let config = crate::config::load::<se_core::config_policy::ConfigFile>(
         &configuration,
@@ -92,9 +151,11 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         }
     };
     let blocking_jobs = config.value.runtime.resolve_blocking_jobs(cores)?;
-    let identity = se_proc::current_runtime_identity(bootstrap.identity().machine.clone())
-        .map_err(native_error)?;
-    if identity.process != *bootstrap.identity() {
+    let identity = se_proc::current_runtime_identity(machine).map_err(native_error)?;
+    if guard
+        .as_ref()
+        .is_some_and(|bootstrap| identity.process != *bootstrap.identity())
+    {
         return Err(invalid("the native bootstrap's unchanged process identity"));
     }
     let peer = se_proc::native_ipc::observe_ipc_self().map_err(|e| {
@@ -166,12 +227,7 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         host.configure(config.value)?;
         host.configure_auto_start(auto_start)?;
         #[cfg(unix)]
-        host.configure_unix_socket_paths(se_proc::native_ipc::UnixSocketPaths {
-            runtime_directory: (!runtime_directory.is_empty())
-                .then(|| PathBuf::from(runtime_directory)),
-            temporary_directory: (!temporary_directory.is_empty())
-                .then(|| PathBuf::from(temporary_directory)),
-        })?;
+        host.configure_unix_socket_paths(socket_paths)?;
         let (_coordinator, reconciliation) = se_host::LaunchCoordinator::install(
             &mut host,
             se_host::ProcessOptions {
@@ -185,13 +241,32 @@ fn receive_inner(guard: &mut Option<se_proc::RuntimeBootstrap>) -> Result<u8> {
         for failure in &reconciliation.unproved {
             eprintln!("Agent recovery incomplete; its custody remains fenced: {failure}");
         }
-        let bootstrap = guard
-            .take()
-            .ok_or_else(|| invalid("the retained bootstrap before listener admission"))?;
-        let listener = host
-            .listen_bootstrap(engine.handle().clone(), bootstrap, instance, &bound)
-            .await?;
-        let exit = host.serve(listener).await;
+        // Install the native event source before publishing readiness, so a
+        // Ctrl-C sent as soon as ready is printed cannot escape the drain path.
+        let interrupt = if guard.is_none() { Some(super::interrupt::listen()?) } else { None };
+        let listener = match guard.take() {
+            Some(bootstrap) => host.listen_bootstrap(
+                engine.handle().clone(),
+                bootstrap,
+                instance.ok_or_else(|| invalid("the authenticated detached host instance"))?,
+                &bound,
+            ).await?,
+            None => host.listen(engine.handle().clone(), &bound).await?,
+        };
+        let announced = ready(&listener);
+        if let Err(error) = announced {
+            let stop = host.local_stop();
+            stop.request();
+            let cleanup = finish(host.serve(listener).await).await;
+            return Err(match cleanup {
+                Ok(_) => error,
+                Err(cleanup) => error.with_cause(cleanup),
+            });
+        }
+        let exit = match interrupt {
+            Some(signal) => super::interrupt::serve(host, listener, signal).await,
+            None => host.serve(listener).await,
+        };
         finish(exit).await
     });
     #[cfg(windows)]

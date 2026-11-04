@@ -46,3 +46,6 @@ pub mod setup;
 mod status;
 #[path = "route/uninstall.rs"]
 pub mod uninstall;
+
+#[cfg(any(target_os = "linux", windows))]
+pub use runtime_control::foreground;

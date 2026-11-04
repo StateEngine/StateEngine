@@ -19,7 +19,7 @@ pub(super) fn absent(e: &io::Error) -> bool {
 pub(super) fn bytes(path: &Path, max: usize) -> ProcResult<Vec<u8>> {
     let f = fs::File::open(path)
         .map_err(|e| native(ProcErrorCode::IdentityUnreadable, "open proc identity", e))?;
-    let mut data = Vec::new();
+    let mut data = Vec::with_capacity(max.saturating_add(1).min(4096));
     f.take(max as u64 + 1)
         .read_to_end(&mut data)
         .map_err(|e| native(ProcErrorCode::IdentityUnreadable, "read proc identity", e))?;
@@ -54,7 +54,7 @@ pub(super) fn stat(pid: ProcessId) -> ProcResult<Option<Stat>> {
     let path = format!("/proc/{}/stat", pid.0);
     let data = match fs::File::open(&path) {
         Ok(f) => {
-            let mut data = Vec::new();
+            let mut data = Vec::with_capacity(linux_native::STAT_BYTES + 1);
             match f
                 .take(linux_native::STAT_BYTES as u64 + 1)
                 .read_to_end(&mut data)
