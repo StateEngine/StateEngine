@@ -8,6 +8,7 @@ mod mail;
 mod message;
 mod revision;
 pub(crate) use revision::{expected, revision_for};
+mod principal;
 pub(crate) mod process;
 pub(crate) mod project;
 pub(crate) mod session;
@@ -192,6 +193,7 @@ pub(crate) fn apply(
             if matches!(kind, PrincipalKind::Agent) != matches!(principal, Actor::Agent(_)) {
                 return Err(invalid("principal kind differs from ID"));
             }
+            principal::name_available(c, &header.scope, &principal, &name)?;
             let a = actor_key(&principal)?;
             if matches!(principal, Actor::Agent(_)) {
                 let collision: bool = c
@@ -240,6 +242,7 @@ pub(crate) fn apply(
         PrincipalRenamed {
             principal, name, ..
         } => {
+            principal::name_available(c, &header.scope, &principal, &name)?;
             let a = actor_key(&principal)?;
             c.execute("UPDATE principals SET display_name=?,revision=?,last_seq=? WHERE project_id=? AND principal_id=?",crate::sql_value::sql_params![name,revision,seq,project()?,a]).map_err(sql)?;
             codec::aux(c, seq, facts)?;

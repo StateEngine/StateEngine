@@ -73,6 +73,7 @@ codes! {
     SourceUnreadable => ("source-unreadable", Unreadable) { subject: String, reason: String, next_step: String } => "Cannot read {subject}: {reason}", "{next_step}";
     StoreCorrupt => ("store-corrupt", Unreadable) { path: String, check: String } => "the store failed its integrity check ({check})", "Run `se restore` in your own terminal; it prints loss/stop consequences, restores newest valid automatic backup and preserves the corrupt source; no salvage";
     StoreUnreadable => ("store-unreadable", Unreadable) { path: String, reason: String } => "can't read the store: {reason}", "Use `se doctor`";
+    AgentNameConflict => ("agent-name-conflict", Conflict) { name: String, agent: AgentId, project: ProjectId } => "Agent name `{name}` already belongs to {agent} in project {project}", "Choose another name for the new agent, or use the existing agent";
     AgentAlreadyRunning => ("agent-already-running", Conflict) { agent: AgentId, pid: u32, since: String } => "{agent} is already running (since {since})", "message it, or → `se stop {agent}`";
     IdempotencyKeyReused => ("idempotency-key-reused", Conflict) { key: String, original_event: EventId } => "key `{key}` was used for a different request", "use a new key";
     IntegrationConflict => ("integration-conflict", Conflict) { path: String, entry: String } => "you changed {entry} in {path}; StateEngine won't overwrite it", "keep it, or delete the entry and → `se doctor --fix CHECK-ID`";

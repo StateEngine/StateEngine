@@ -2,6 +2,37 @@
 use se_store::{StoreError, StoreErrorCode as C};
 use se_types::{Detail, SeError, details};
 pub fn store_error(error: &StoreError) -> SeError {
+    if let se_store::StoreDetail::PrincipalNameConflict {
+        project,
+        name,
+        existing,
+    } = &error.detail
+    {
+        let se_store::Actor::Agent(agent) = existing else {
+            return SeError::new(Detail::StateConflict(details::StateConflict {
+                subject: format!("principal name {name}"),
+                reason: "this name belongs to an existing human in the selected project".into(),
+                next_step: "Choose another name for the new agent.".into(),
+            }))
+            .with_cause(error.clone());
+        };
+        let command = match se_types::Argv::from_op(&ExistingAgent { project, agent }) {
+            Ok(argv) => se_types::Cmd::Se { argv },
+            Err(cause) => return cause.with_cause(error.clone()),
+        };
+        return SeError::from(
+            se_types::ErrorBody::new(Detail::AgentNameConflict(details::AgentNameConflict {
+                name: name.clone(),
+                agent: agent.clone(),
+                project: project.clone(),
+            }))
+            .with_remedy(se_types::Remedy {
+                text: "Choose another name for the new agent, or use the existing agent.".into(),
+                command: Some(command),
+            }),
+        )
+        .with_cause(error.clone());
+    }
     let subject = format!("store {:?}", error.code);
     let reason = error.cause.clone();
     let next_step = error.remedy.text.clone();
@@ -220,4 +251,14 @@ pub fn retain_write_identity(
             .with_retry(se_types::Retry::AfterReread);
     }
     error
+}
+
+struct ExistingAgent<'a> {
+    project: &'a se_types::ProjectId,
+    agent: &'a se_types::AgentId,
+}
+impl se_types::OperationCommand for ExistingAgent<'_> {
+    fn cli_argv(&self) -> Vec<String> {
+        crate::ops::AgentCommand::launch(self.agent, None, Some(self.project), false).argv
+    }
 }
