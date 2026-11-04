@@ -8,6 +8,33 @@ pub struct MailRecipient {
     pub project: ProjectId,
     pub agent: AgentId,
 }
+#[derive(Default)]
+pub(crate) struct Revocations {
+    pub sessions: Vec<(ProjectId, se_types::SessionId)>,
+    pub credentials: Vec<(ProjectId, se_store::RecordId)>,
+}
+pub(crate) fn revocations(batch: &AtomicBatch) -> Revocations {
+    let mut result = Revocations::default();
+    for event in &batch.events {
+        let Scope::Project(project) = &event.header.scope else {
+            continue;
+        };
+        match &event.body {
+            EventBody::SessionEnded { session, .. } | EventBody::SessionRevoked { session, .. } => {
+                result.sessions.push((project.clone(), session.clone()))
+            }
+            EventBody::SessionActivated {
+                incumbent: Some((session, _)),
+                ..
+            } => result.sessions.push((project.clone(), session.clone())),
+            EventBody::CredentialRevoked { credential, .. } => {
+                result.credentials.push((project.clone(), *credential))
+            }
+            _ => (),
+        }
+    }
+    result
+}
 pub(crate) fn recipients(batch: &AtomicBatch) -> Vec<MailRecipient> {
     let mut result = Vec::new();
     for event in &batch.events {
@@ -31,7 +58,8 @@ pub(crate) fn recipients(batch: &AtomicBatch) -> Vec<MailRecipient> {
                 agent,
                 role: Role::User,
                 ..
-            } => agent,
+            }
+            | EventBody::SessionPrepared { agent, .. } => agent,
             _ => continue,
         };
         let recipient = MailRecipient {

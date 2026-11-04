@@ -27,6 +27,7 @@ pub(super) async fn measured(
     // Preserve the returned waiter even if native work uses the final
     // part of the budget; the original request identity is unchanged.
     let recipients = super::mail::recipients(&batch);
+    let revocations = super::mail::revocations(&batch);
     let custody = context.custody.get().cloned();
     let mail_waits = Arc::clone(&context.mail_waits);
     let writer = context.writer.clone();
@@ -55,11 +56,14 @@ pub(super) async fn measured(
                             Err(_) => pending.failed_attempt(&submitted),
                         };
                         let notified = if receipt.is_ok() {
-                            mail_waits.committed(&recipients).and_then(|()| {
-                                custody
-                                    .as_ref()
-                                    .map_or(Ok(()), |custody| custody.notify_mail(&recipients))
-                            })
+                            mail_waits
+                                .committed(&recipients)
+                                .and_then(|()| mail_waits.revoked(&revocations))
+                                .and_then(|()| {
+                                    custody
+                                        .as_ref()
+                                        .map_or(Ok(()), |custody| custody.notify_mail(&recipients))
+                                })
                         } else {
                             Ok(())
                         };

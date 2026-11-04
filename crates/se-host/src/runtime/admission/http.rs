@@ -12,9 +12,16 @@ impl AdmissionContext {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let admitted = (|| {
             self.check_generation(&phase)?;
-            self.credential(&phase, secret, crate::MCP_BEARER_PURPOSE)
+            let admission = self.credential(&phase, secret, crate::MCP_BEARER_PURPOSE)?;
+            let hash: [u8; 32] = Hasher::digest(secret.expose()).into();
+            let credential = se_core::scope::require_present(
+                phase.credential(hash).map_err(|e| store_error(&e))?,
+                "parked wait credential",
+                "Use the active session bearer.",
+            )?;
+            Ok((admission, credential.credential))
         })();
-        let admission = match admitted {
+        let (admission, credential) = match admitted {
             Ok(admission) => admission,
             Err(error) => return super::super::executor::close_read(Err(error), phase.close()),
         };
@@ -81,6 +88,7 @@ impl AdmissionContext {
             let output = crate::http::mail::Page {
                 session,
                 recipient,
+                credential,
                 ids: page
                     .items()
                     .iter()

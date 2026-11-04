@@ -1,7 +1,7 @@
 //! One bounded event-driven wait per authenticated session. Notifications are
 //! hints: every response rereads current credentials and recipient-scoped mail.
 use crate::{HostedRouter, client::lease::Deadline};
-use se_types::{Result, SeError, Secret, SessionId};
+use se_types::{ProjectId, Result, SeError, Secret, SessionId};
 use std::{
     collections::BTreeMap,
     sync::{
@@ -14,7 +14,7 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 pub(crate) struct Waits {
     maximum: usize,
-    sessions: Mutex<BTreeMap<SessionId, Arc<Signal>>>,
+    sessions: Mutex<BTreeMap<(ProjectId, SessionId), Arc<Signal>>>,
     // Cancelled predecessors may still be encoding/closing their connection.
     // Bound those retained resources separately from the live session map.
     retained: Arc<Semaphore>,
@@ -24,10 +24,11 @@ struct Signal {
     changed: Notify,
     cancelled: AtomicBool,
     recipient: crate::runtime::MailRecipient,
+    credential: se_store::RecordId,
 }
 struct Wait {
     registry: Arc<Waits>,
-    session: SessionId,
+    key: (ProjectId, SessionId),
     signal: Arc<Signal>,
     _permit: OwnedSemaphorePermit,
 }
@@ -44,6 +45,7 @@ impl Waits {
         self: &Arc<Self>,
         session: SessionId,
         recipient: crate::runtime::MailRecipient,
+        credential: se_store::RecordId,
     ) -> Result<Wait> {
         let permit = Arc::clone(&self.retained)
             .try_acquire_owned()
@@ -51,13 +53,14 @@ impl Waits {
                 SeError::invalid("parked mail capacity", "retry after an earlier wait closes")
             })?;
         let mut sessions = self.sessions.lock().map_err(|_| poisoned())?;
+        let key = (recipient.project.clone(), session);
         if self.closed.load(Ordering::Acquire) {
             return Err(SeError::invalid(
                 "parked mail",
                 "a running host before shutdown",
             ));
         }
-        if !sessions.contains_key(&session) && sessions.len() >= self.maximum {
+        if !sessions.contains_key(&key) && sessions.len() >= self.maximum {
             return Err(SeError::invalid(
                 "parked mail capacity",
                 "one wait per negotiated session slot",
@@ -67,14 +70,15 @@ impl Waits {
             changed: Notify::new(),
             cancelled: AtomicBool::new(false),
             recipient,
+            credential,
         });
-        if let Some(previous) = sessions.insert(session.clone(), Arc::clone(&signal)) {
+        if let Some(previous) = sessions.insert(key.clone(), Arc::clone(&signal)) {
             previous.cancelled.store(true, Ordering::Release);
             previous.changed.notify_one();
         }
         Ok(Wait {
             registry: Arc::clone(self),
-            session,
+            key,
             signal,
             _permit: permit,
         })
@@ -98,15 +102,33 @@ impl Waits {
         }
         Ok(())
     }
+    pub(crate) fn revoked(&self, changes: &crate::runtime::mail::Revocations) -> Result<()> {
+        if changes.sessions.is_empty() && changes.credentials.is_empty() {
+            return Ok(());
+        }
+        for ((project, session), signal) in self.sessions.lock().map_err(|_| poisoned())?.iter() {
+            if changes
+                .sessions
+                .iter()
+                .any(|(found_project, found)| found_project == project && found == session)
+                || changes.credentials.iter().any(|(project, found)| {
+                    project == &signal.recipient.project && *found == signal.credential
+                })
+            {
+                signal.changed.notify_one();
+            }
+        }
+        Ok(())
+    }
 }
 impl Drop for Wait {
     fn drop(&mut self) {
         if let Ok(mut sessions) = self.registry.sessions.lock()
             && sessions
-                .get(&self.session)
+                .get(&self.key)
                 .is_some_and(|signal| Arc::ptr_eq(signal, &self.signal))
         {
-            sessions.remove(&self.session);
+            sessions.remove(&self.key);
         }
     }
 }
@@ -120,6 +142,8 @@ pub(crate) struct Page {
     pub session: SessionId,
     #[serde(skip)]
     pub recipient: crate::runtime::MailRecipient,
+    #[serde(skip)]
+    pub credential: se_store::RecordId,
     pub ids: Vec<se_types::MessageId>,
     pub cursor: se_types::Cursor,
     pub complete: bool,
@@ -146,10 +170,10 @@ impl HostedRouter {
         let first = self.mail_page(Arc::clone(&secret), deadline).await?;
         // Subscribe before the deciding read so a committed change cannot fall
         // between the snapshot and installing the event waiter.
-        let wait = self
-            .execution
-            .mail_waits
-            .register(first.session, first.recipient)?;
+        let wait =
+            self.execution
+                .mail_waits
+                .register(first.session, first.recipient, first.credential)?;
         active.lock().map_err(|_| poisoned())?.take();
         loop {
             if wait.signal.cancelled.load(Ordering::Acquire) {
@@ -177,11 +201,62 @@ impl HostedRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use se_store::RecordIdentity;
     fn recipient() -> Result<crate::runtime::MailRecipient> {
         Ok(crate::runtime::MailRecipient {
             project: se_types::ProjectId::from_parts(1, [1; 10])?,
             agent: se_types::AgentId::from_parts(1, [2; 10])?,
         })
+    }
+    fn credential(n: u8) -> Result<se_store::RecordId> {
+        let mut bytes = [n; 16];
+        bytes[6] = 0x70 | (n & 0x0f);
+        bytes[8] = 0x80 | (n & 0x3f);
+        se_store::RecordId::from_bytes(bytes)
+            .map_err(|error| se_core::store_error::store_error(&error))
+    }
+    #[test]
+    fn revocations_wake_only_the_bound_session_or_credential_in_its_project() -> Result<()> {
+        use std::{
+            future::Future,
+            task::{Context, Waker},
+        };
+        let registry = Waits::new(3);
+        let own = recipient()?;
+        let foreign = crate::runtime::MailRecipient {
+            project: ProjectId::from_parts(1, [8; 10])?,
+            agent: own.agent.clone(),
+        };
+        let session = SessionId::from_parts(1, [4; 10])?;
+        let second_session = SessionId::from_parts(1, [5; 10])?;
+        let first = registry.register(session.clone(), own.clone(), credential(1)?)?;
+        let second = registry.register(second_session.clone(), own.clone(), credential(2)?)?;
+        let other = registry.register(session, foreign, credential(1)?)?;
+        assert!(!first.signal.cancelled.load(Ordering::Acquire));
+        let mut context = Context::from_waker(Waker::noop());
+        let mut a = Box::pin(first.signal.changed.notified());
+        let mut b = Box::pin(second.signal.changed.notified());
+        let mut c = Box::pin(other.signal.changed.notified());
+        assert!(a.as_mut().poll(&mut context).is_pending());
+        assert!(b.as_mut().poll(&mut context).is_pending());
+        assert!(c.as_mut().poll(&mut context).is_pending());
+        registry.revoked(&crate::runtime::mail::Revocations {
+            sessions: vec![],
+            credentials: vec![(own.project.clone(), credential(1)?)],
+        })?;
+        assert!(a.as_mut().poll(&mut context).is_ready());
+        assert!(b.as_mut().poll(&mut context).is_pending());
+        assert!(c.as_mut().poll(&mut context).is_pending());
+        let mut again = Box::pin(first.signal.changed.notified());
+        assert!(again.as_mut().poll(&mut context).is_pending());
+        registry.revoked(&crate::runtime::mail::Revocations {
+            sessions: vec![(own.project, second_session)],
+            credentials: vec![],
+        })?;
+        assert!(again.as_mut().poll(&mut context).is_pending());
+        assert!(b.as_mut().poll(&mut context).is_ready());
+        assert!(c.as_mut().poll(&mut context).is_pending());
+        Ok(())
     }
     #[test]
     fn commits_wake_only_sessions_for_the_exact_recipient() -> Result<()> {
@@ -195,9 +270,18 @@ mod tests {
             project: se_types::ProjectId::from_parts(1, [3; 10])?,
             agent: own.agent.clone(),
         };
-        let first = registry.register(SessionId::from_parts(1, [4; 10])?, own.clone())?;
-        let second = registry.register(SessionId::from_parts(1, [5; 10])?, own.clone())?;
-        let other = registry.register(SessionId::from_parts(1, [6; 10])?, foreign)?;
+        let first = registry.register(
+            SessionId::from_parts(1, [4; 10])?,
+            own.clone(),
+            credential(1)?,
+        )?;
+        let second = registry.register(
+            SessionId::from_parts(1, [5; 10])?,
+            own.clone(),
+            credential(1)?,
+        )?;
+        let other =
+            registry.register(SessionId::from_parts(1, [6; 10])?, foreign, credential(2)?)?;
         let mut context = Context::from_waker(Waker::noop());
         registry.committed(&[])?;
         let mut a = Box::pin(first.signal.changed.notified());
@@ -217,20 +301,36 @@ mod tests {
         let registry = Waits::new(1);
         let session = SessionId::from_parts(1, [1; 10])?;
         let other = SessionId::from_parts(1, [2; 10])?;
-        let first = registry.register(session.clone(), recipient()?)?;
-        assert!(registry.register(other.clone(), recipient()?).is_err());
-        let second = registry.register(session.clone(), recipient()?)?;
+        let first = registry.register(session.clone(), recipient()?, credential(1)?)?;
+        assert!(
+            registry
+                .register(other.clone(), recipient()?, credential(1)?)
+                .is_err()
+        );
+        let second = registry.register(session.clone(), recipient()?, credential(1)?)?;
         assert!(first.signal.cancelled.load(Ordering::Acquire));
         assert!(!second.signal.cancelled.load(Ordering::Acquire));
-        assert!(registry.register(session.clone(), recipient()?).is_err());
+        assert!(
+            registry
+                .register(session.clone(), recipient()?, credential(1)?)
+                .is_err()
+        );
         drop(first);
-        assert!(registry.register(other.clone(), recipient()?).is_err());
+        assert!(
+            registry
+                .register(other.clone(), recipient()?, credential(1)?)
+                .is_err()
+        );
         assert_eq!(registry.retained.available_permits(), 1);
         drop(second);
-        let last = registry.register(other, recipient()?)?;
+        let last = registry.register(other, recipient()?, credential(1)?)?;
         registry.close()?;
         assert!(last.signal.cancelled.load(Ordering::Acquire));
-        assert!(registry.register(session, recipient()?).is_err());
+        assert!(
+            registry
+                .register(session, recipient()?, credential(1)?)
+                .is_err()
+        );
         drop(last);
         assert_eq!(registry.retained.available_permits(), 2);
         Ok(())

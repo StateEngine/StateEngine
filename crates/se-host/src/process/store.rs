@@ -79,6 +79,7 @@ impl Store {
         };
         let submitted = identity.clone();
         let recipients = crate::runtime::mail::recipients(&batch);
+        let revocations = crate::runtime::mail::revocations(&batch);
         let writer = self.writer.clone();
         let pending = self.pending.clone();
         let mail_waits = self.mail_waits.clone();
@@ -100,7 +101,9 @@ impl Store {
                             Err(_) => pending.failed_attempt(&submitted),
                         };
                         let notified = if receipt.is_ok() {
-                            mail_waits.committed(&recipients)
+                            mail_waits
+                                .committed(&recipients)
+                                .and_then(|()| mail_waits.revoked(&revocations))
                         } else {
                             Ok(())
                         };
