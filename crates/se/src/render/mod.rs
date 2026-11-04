@@ -7,6 +7,7 @@ pub mod error;
 mod event;
 mod import;
 mod read;
+mod stop;
 mod transcript;
 mod write;
 
@@ -75,7 +76,7 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::Launch, AnyOutput::AgentLaunch(value)) => {
                 control::launch(&value.value, out)?
             }
-            (HumanKind::Stop, AnyOutput::AgentStop(value)) => control::stop(&value.value, out)?,
+            (HumanKind::Stop, AnyOutput::AgentStop(value)) => stop::output(&value.value, out)?,
             (HumanKind::Remove, AnyOutput::ProjectRemove(value)) => {
                 control::remove(&value.value, out)?
             }
