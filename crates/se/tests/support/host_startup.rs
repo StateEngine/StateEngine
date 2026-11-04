@@ -73,6 +73,20 @@ pub fn private_startup_serves_and_retires() -> Check {
     ] {
         command.env(name, "must-not-enter-the-detached-host");
     }
+    // Provider configuration is intentionally inherited; fleet/session variables are not.
+    for name in [
+        "CODEX_HOME",
+        "CLAUDE_CONFIG_DIR",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
+    ] {
+        command.env(name, "detached-host-provider-canary");
+    }
     let output = command.output()?;
     print!("{}", String::from_utf8_lossy(&output.stdout));
     eprint!("{}", String::from_utf8_lossy(&output.stderr));
@@ -188,6 +202,9 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
             "XDG_CACHE_HOME",
             "XDG_STATE_HOME",
             "XDG_RUNTIME_DIR",
+            "CODEX_HOME",
+            "OPENAI_API_KEY",
+            "OPENAI_BASE_URL",
             "CLAUDE_CONFIG_DIR",
             "ANTHROPIC_API_KEY",
             "ANTHROPIC_BASE_URL",
@@ -198,6 +215,10 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
             "LOCALAPPDATA",
             "ProgramData",
             "ProgramFiles",
+            "ProgramW6432",
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
         ];
         let mut expected = std::collections::BTreeMap::new();
         for (name, value) in std::env::vars_os() {
@@ -225,7 +246,7 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
             assert!(
                 !upper.starts_with(b"STATEENGINE_")
                     && upper != b"SE_SESSION"
-                    && !upper.starts_with(b"CODEX_")
+                    && (!upper.starts_with(b"CODEX_") || upper == b"CODEX_HOME")
                     && (!upper.starts_with(b"CLAUDE_") || upper == b"CLAUDE_CONFIG_DIR"),
                 "fleet/session environment leaked through {}",
                 String::from_utf8_lossy(name)
