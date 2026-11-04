@@ -35,6 +35,9 @@ impl ReadSlots {
             used: AtomicUsize::new(0),
         }))
     }
+    pub(crate) fn capacity(&self) -> usize {
+        self.0.capacity
+    }
     pub(crate) fn acquire(&self) -> StoreResult<ReadSlot> {
         self.0
             .used

@@ -18,11 +18,21 @@ macro_rules! output_types {
             /// Called by the host with this request's store measurements. Direct
             /// output constructors leave diagnostics absent.
             pub fn with_write_timings(mut self, timings: ReceiptWriteTimings) -> Self {
-                match &mut self { $( Self::$variant(value)=>value.diagnostics=Some(OutputDiagnostics { write_timings: timings, capture_commits: Vec::new() }), )+ }
+                match &mut self { $( Self::$variant(value)=>value.diagnostics=Some(OutputDiagnostics { write_timings: timings, host_phases: None, capture_commits: Vec::new() }), )+ }
                 self
             }
         }
         impl AnyOutput {
+            /// Attach only to an already measured hosted completion; ordinary
+            /// reads/direct results never acquire synthetic write diagnostics.
+            pub fn with_host_phases(mut self, phases: HostPhaseTimings) -> Self {
+                match &mut self { $( Self::$variant(value)=> {
+                    if let Some(diagnostics) = &mut value.diagnostics {
+                        diagnostics.host_phases = Some(phases);
+                    }
+                }, )+ }
+                self
+            }
             pub fn with_capture_commits(mut self, commits: Vec<CaptureCommitDiagnostics>) -> se_types::Result<Self> {
                 if commits.len() > 128 {
                     return Err(se_types::SeError::invalid("capture diagnostics", "at most 128 commits per signal"));

@@ -290,7 +290,7 @@ impl StateFiles for Files {
             .map_err(native_error)
     }
 }
-fn native_error(error: StateFileError) -> Box<StoreError> {
+pub(crate) fn native_error(error: StateFileError) -> Box<StoreError> {
     Box::new(StoreError {code:match error.code {
         StateFileErrorCode::AlreadyExists=>StoreErrorCode::AlreadyExists,
         StateFileErrorCode::Unreadable=>StoreErrorCode::Unreadable,

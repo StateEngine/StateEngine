@@ -247,8 +247,8 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Component | Allocation | Baseline / basis |
 | --- | ---: | --- |
 | Code pages touched (se-host, se-core, se-store, se-proc in secode-server) | 4.0 MB | Minimal core added 114 KB of binary; full product estimated at 3–5 MB of text |
-| SQLite page-cache targets: writer + 2–8 readers × 512 KiB | About 1.6 MB at two readers; 4.7 MB at eight | `cache_size=-512` on writer and reader connections; cache target, not a hard allocation cap |
-| SQLite connections, schema, statement caches | 1.5 MB | 3 connections at the default reader capacity, 32 statements each; additional connection overhead unmeasured |
+| SQLite page-cache targets: writer + active/idle foreground readers × 512 KiB | About 2.6 MB at the two-job default; 8.9 MB at eight jobs | `cache_size=-512` on writer and reader connections; cache target, not a hard allocation cap |
+| SQLite connections, schema, statement caches | 1.5 MB | Up to 5 foreground connections at the two-job default, 32 statements each; overhead beyond the original 3-connection allocation remains unmeasured |
 | Session tasks, 16 live × ~50 KB | 0.8 MB | 00 §2.2 |
 | Mail watches and bounded subscriptions | 1.0 MB | Bounded channels |
 | Listener and MCP buffers (1 MiB body cap, ≤ 2 large bodies at once) | 2.5 MB | §4 |
@@ -257,33 +257,41 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Process custody state | 0.2 MB | Handles, job/cgroup records and one Windows IOCP collector's state per host; stack charged once below, no registered-wait pool |
 | Resume assembly: up to four packets; one may exceed 32 KiB, max 1 MiB | 1.5 MB | One shared above-default permit, bounded metadata and no duplicate encoded packet |
 | Fixed native/writer thread stack pages and allocator slack | 2.0 MB | Count every added committed stack page in E2; SE Code's existing reactor is not a second runtime |
-| **Estimated spend at two readers** | **16.6 MB** | Eight reader cache targets increase this estimate to 19.7 MB; additional connection overhead is unmeasured |
-| Estimated reserve at two readers | 13.4 MB | About 10.3 MB at eight reader cache targets, before additional overhead; Atlas is off in embedded |
+| **Estimated spend at two jobs** | **17.6 MB** | Eight jobs with idle cache targets increase this estimate to 23.9 MB; additional connection overhead is unmeasured |
+| Estimated reserve at two jobs | 12.4 MB | About 6.1 MB at eight jobs with idle cache targets, before additional overhead; Atlas is off in embedded |
 | **Hard total budget** | **30.0 MB** | Unchanged |
 
 ### 3.2 Standalone memory (B4: 25 MB)
 | Component | Allocation | Baseline / basis |
 | --- | ---: | --- |
 | `se` code pages and system libraries | 5.0 MB | Prototype owners 2.7–3.8 MB in total; Rust MCP server 5 MB |
-| tokio `current_thread`, blocking pool (thread cap 2–8), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
-| SQLite page-cache targets: writer + 2–8 host readers × 512 KiB | About 1.6 MB at two readers; 4.7 MB at eight | `cache_size=-512`; hosted planning and continuations use readers even though independent CLI reads also access the file directly |
-| SQLite connections, schema, statements | 1.0 MB | Default reader allocation; additional connection overhead unmeasured |
+| tokio `current_thread`, blocking pool (two threads by default; explicit caps 2–8), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
+| SQLite page-cache targets: writer + active/idle host readers × 512 KiB | About 2.6 MB at the two-job default; 8.9 MB at eight jobs | `cache_size=-512`; hosted planning and continuations use readers even though independent CLI reads also access the file directly |
+| SQLite connections, schema, statements | 1.0 MB | Up to 5 foreground connections at the two-job default; additional connection overhead unmeasured |
 | Sessions, mail, listener/MCP, capture + watcher, custody, resume | 7.5 MB | Includes the same single-large-packet resume allowance as 3.1 |
 | Optional Atlas in-host: queries and single-file updates after config opt-in | 2.0 MB | One closed-when-idle connection plus one parser |
 | Allocator slack | 1.0 MB | |
-| **Estimated spend at two readers** | **19.1 MB** | Eight reader cache targets increase this estimate to 22.2 MB; additional connection overhead is unmeasured |
-| Estimated reserve at two readers | 5.9 MB | About 2.8 MB at eight reader cache targets, before additional overhead |
+| **Estimated spend at two jobs** | **20.1 MB** | Eight jobs with idle cache targets increase this estimate to 26.4 MB before additional connection overhead |
+| Estimated reserve at two jobs | 4.9 MB | Eight jobs with idle cache targets exceed this estimate by 1.4 MB before additional overhead; configuration does not relax B4 |
 | **Hard total budget** | **25.0 MB** | Unchanged |
 
-The store configures `cache_size=-512` for both writer and reader connections:
-a target of 512 KiB each. Eight concurrent reader cache targets total 4 MiB,
-plus 0.5 MiB for the writer; the tables use decimal MB and round to one decimal
-place. The configured target is not a hard cap on connection allocations or
-RSS, and these estimates contain no assumed 2 MB per-connection allowance.
-The two-reader estimates do not cover additional connections at maximum
-concurrency. E2 must establish actual committed stacks, connection overhead
-and post-task memory within the unchanged B1/B4 limits; neither the larger
-reader setting nor these tables grants memory qualification.
+The shipped finite-work default is two jobs for standalone and embedded hosts;
+more cores do not raise it. An explicit `runtime.blocking_jobs` in 2–8 is capped
+by native availability; one/unknown-core hosts keep the existing foreground and
+maintenance split. Reader slots and idle admission connections follow the same
+effective capacity, with a minimum reader capacity of two.
+
+The store configures `cache_size=-512` for writer and reader connections.
+Two shared active readers can coexist with two idle admission connections:
+including the writer, their five cache targets total 2.5 MiB (about 2.6 MB).
+At eight jobs, sixteen foreground readers plus the writer target 8.5 MiB
+(about 8.9 MB). These are source-derived foreground connection bounds, not
+observed pooled-host RSS or a cap on separate maintenance allocations.
+The tables use decimal MB rounded to one decimal place. Cache targets are
+not hard allocation caps; schema, statements, stacks and allocator retention
+still require measurement. E2 must establish actual pooled-host and post-task
+memory within unchanged B1/B4 limits; larger configured caps remain subject
+to those same budgets.
 
 Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
 It is built after the journeys and live handover pass and never holds a
@@ -645,7 +653,7 @@ do not label that interval settled idle or hide it in the baseline expectation.
 | --- | --- |
 | **No idle polling.** Every replaced loop stays gone: 250 ms mail door, 1.5 s watcher, 15 s supervisor tick, 60 s projection drain, 10 min Atlas renew, 1 h capture canary. Process exits arrive as OS events, mail as `watch` bumps after commit, files as OS file events. The live-session safety catch-up and attended renewal in §3.7 remain explicit measured costs. `notify`'s poll watcher is never used: on a filesystem without events, capture relies on the harness signal and reports the watcher as unavailable. | B5, B6 |
 | **No timer without a live session,** except the auto-start/handback exit timer. Log rotation happens on write, never on a clock. | B6 |
-| **Fixed thread set at idle.** The writer is a named `std::thread`, not a pool thread. Standalone blocking pool is capped at 2–8 and by native available cores, with the original single foreground plus single maintenance slot on two blocking threads when cores are one or unknown; finite threads remain shared across sessions. No per-session threads. Windows process exits for all jobs arrive on one shared IOCP collector per host; no registered-wait thread pool. | B6, Windows bound |
+| **Fixed thread set at idle.** The writer is a named `std::thread`, not a pool thread. Standalone blocking pool defaults to two jobs, with explicit 2–8 caps bounded by native available cores, with the original single foreground plus single maintenance slot on two blocking threads when cores are one or unknown; finite threads remain shared across sessions. No per-session threads. Windows process exits for all jobs arrive on one shared IOCP collector per host; no registered-wait thread pool. | B6, Windows bound |
 | **Bounded SQLite:** `cache_size=-512` per connection (512 KiB cache target, not an RSS cap), `mmap_size=0` (mapped pages would inflate RSS without a ceiling), statement cache 32, `temp_store=FILE`, `journal_size_limit` 4 MiB, `TRUNCATE` checkpoint at clean shutdown. | B1, B4 |
 | **Batched writer, explicit durability:** block on receive, drain whatever is queued (up to 256), one `BEGIN IMMEDIATE … COMMIT`. No gather window, so no latency or timer is added. Autocheckpoint is commit-driven. Ordinary batches use NORMAL; credential/session/runtime/security transitions and decision ratify/reject/retract/supersede require FULL. NORMAL can lose several recent commits on power/OS loss, not an application crash. | B9, burst, B2 |
 | **Bounded everything else:** channels bounded with `Lagged{resume_from}` on overflow; one closed DTO per operation for CLI/MCP; lists default 20 and max 100 rows, search max 50, message preview 400 characters, resume default 32 KiB/max 1 MiB; message body 32 KiB and working state 16 KiB; page/encoded budgets expose incompleteness and never truncate a full body. | B1, B4 |

@@ -1,8 +1,10 @@
 //! Common bounded submission and retained completion observer for every hosted writer.
+use super::timings::{self, Mode};
 use super::{CommittedWrite, ExecutionContext, failure::WriteIdentity};
 use crate::client::lease::Deadline;
 use se_store::{AtomicBatch, CommitReceipt, WriterClient};
 use se_types::Result;
+use std::time::Instant;
 
 pub(super) async fn submit(
     context: &ExecutionContext,
@@ -10,6 +12,16 @@ pub(super) async fn submit(
     identity: &WriteIdentity,
     deadline: &Deadline,
 ) -> Result<CommitReceipt> {
+    measured(context, batch, identity, deadline)
+        .await
+        .map(|value| value.0)
+}
+pub(super) async fn measured(
+    context: &ExecutionContext,
+    batch: AtomicBatch,
+    identity: &WriteIdentity,
+    deadline: &Deadline,
+) -> Result<(CommitReceipt, se_core::ops::HostPhaseSpan, u64)> {
     // submit performs finite bounded queue admission and serialization.
     // Preserve the returned waiter even if native work uses the final
     // part of the budget; the original request identity is unchanged.
@@ -18,9 +30,8 @@ pub(super) async fn submit(
     let submitted = identity.clone();
     let pending = context.pending_writes.clone();
     let runtime = context.blocking.handle();
-    let completion = context
-        .blocking
-        .run_owned(deadline, move || {
+    let (completion, submission) =
+        timings::blocking(&context.blocking, Mode::Owned, deadline, move || {
             submit_deadline.remaining()?;
             pending.register(&submitted)?;
             match writer.submit(batch) {
@@ -52,6 +63,7 @@ pub(super) async fn submit(
     // Neither a worker permit nor a read transaction survives here.
     // Timeout/cancel never cancels an accepted store transaction; the
     // caller must resolve/retry its original operation/natural key.
+    let waiting = Instant::now();
     let (receipt, settled) = super::pool::within(deadline, completion)
         .await
         .map_err(|error| identity.wait_error(error))?
@@ -61,6 +73,7 @@ pub(super) async fn submit(
                 &error.to_string(),
             ))
         })?;
+    let completion_wait_us = timings::micros(waiting.elapsed());
     let receipt = match receipt {
         Ok(receipt) => receipt,
         Err(error) => {
@@ -78,5 +91,5 @@ pub(super) async fn submit(
         committed_events: receipt.events.clone(),
     };
     settled.map_err(|error| committed.response_error(error))?;
-    Ok(receipt)
+    Ok((receipt, submission, completion_wait_us))
 }

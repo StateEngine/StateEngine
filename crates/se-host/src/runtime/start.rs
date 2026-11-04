@@ -52,6 +52,7 @@ pub struct HostedRuntime {
     pub(crate) socket_paths: se_proc::native_ipc::UnixSocketPaths,
     pub(crate) execution: ExecutionContext,
     pub(crate) sources: TranscriptBindings,
+    pub(crate) admission_reads: se_store::ReadPhasePool,
     pub(crate) configuration: Option<se_core::config_policy::ConfigFile>,
     pub(crate) prepared_requests: Arc<std::sync::OnceLock<crate::PreparedRequestProofs>>,
     pub(crate) writer: Option<se_store::SqliteWriter>,
@@ -201,6 +202,9 @@ fn prepare(
             .map_err(|e| store_error(&e))?,
         "state store",
     )?;
+    let admission_reads = reader
+        .phase_pool(super::admission_reads::pin)
+        .map_err(|error| store_error(&error))?;
     let inventory = reader
         .owner_guard(&files, owner_budget()?)
         .map_err(|e| store_error(&e))?;
@@ -309,6 +313,7 @@ fn prepare(
         #[cfg(unix)]
         socket_paths: Default::default(),
         execution,
+        admission_reads,
         configuration: None,
         prepared_requests: Arc::default(),
         writer: Some(writer),

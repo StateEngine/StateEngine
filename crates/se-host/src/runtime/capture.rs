@@ -1,5 +1,6 @@
 //! Trusted transcript bindings and the native hook-to-writer consumer. A hook
 //! can only signal an existing pin, never create one or replace its identity.
+use super::timings::{self, Mode};
 use super::*;
 use crate::client::lease::Deadline;
 use se_types::{Read, Result, SeError, SessionId};
@@ -223,6 +224,7 @@ fn empty_capture(kind: crate::ClaudeHookKind) -> ExecutedCall {
         "No complete new text record at the verified pinned source; an incomplete final line remains pending a real provider signal."
     };
     ExecutedCall {
+        host_phases: Default::default(),
         output: se_core::ops::HookResult {
             stdout: String::new(),
             captured: Read::Absent {
@@ -275,6 +277,7 @@ impl Capturing<'_> {
             .as_ref()
             .ok_or_else(|| SeError::invalid("capture session", "an admitted session"))?;
         let pin = self.sources.get(session)?;
+        let mut host_phases = se_core::ops::HostPhaseTimings::default();
         let mut last = None;
         let mut commits = Vec::new();
         let mut natural_keys = Vec::new();
@@ -293,14 +296,14 @@ impl Capturing<'_> {
                 };
                 let bound = deadline.clone();
                 let replay = last.is_none();
-                let next = self
-                    .execution
-                    .blocking
-                    .run(BlockingClass::Foreground, deadline, move || {
+                let (next, capture_read) = timings::blocking(&self.execution.blocking, Mode::Finite, deadline, move || {
                         let mut pin = try_guard(&source)?;
                         source::next(&context, &admitted, &mut pin, &signal, &bound, replay)
                     })
                     .await?;
+                host_phases.merge(se_core::ops::HostPhaseTimings {
+                    capture_read: Some(capture_read), ..Default::default()
+                });
                 let Some((capture, replayed)) = next else {
                     return Ok(last.unwrap_or_else(|| empty_capture(hook.kind)));
                 };
@@ -331,6 +334,7 @@ impl Capturing<'_> {
                         return Err(error);
                     }
                 };
+                host_phases.merge(result.host_phases.clone());
                 if let se_core::ops::AnyOutput::HookClaude(value) = &result.output
                     && let Some(receipt) = &value.value.receipt
                 {
@@ -349,6 +353,7 @@ impl Capturing<'_> {
         .await;
         match result {
             Ok(mut result) => {
+                result.host_phases = host_phases;
                 result.capture_commits = commits;
                 result.capture_keys = natural_keys;
                 Ok(result)

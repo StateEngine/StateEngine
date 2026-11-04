@@ -730,6 +730,11 @@ renewal, or two occupied shared blocking-pool workers while children run.
 Native creation/query/dispatch steps use bounded host blocking work where
 necessary; unavoidable OS-call latency is reported, not disguised as an
 async wait. Long child setup/provider readiness never holds that worker.
+The shipped host default is two finite-work jobs, shared across sessions;
+`runtime.blocking_jobs` may explicitly raise the cap within 2–8, bounded by
+native core availability. One/unknown-core hosts retain the existing independent
+foreground and maintenance slots. The host reader and idle read-connection pool
+use the same effective capacity; no native wait occupies either read slot.
 
 ExitNotice carries lifecycle, **generation**, per-slot monotone sequence and
 kind. It is a hint only. A late/duplicate notice cannot grant authority or

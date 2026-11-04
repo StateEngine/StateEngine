@@ -38,6 +38,13 @@ impl HostedRuntime {
         // rather than the runtime's configurable reader. Drain foreground work
         // before reaching that independent maintenance context.
         self.execution.blocking.quiesce(deadline).await?;
+        let reads = self.admission_reads.clone();
+        self.execution
+            .blocking
+            .run_owned(deadline, move || {
+                reads.close().map_err(|error| store_error(&error))
+            })
+            .await?;
         let drain_budget = deadline.remaining()?;
         if self.drain.is_none()
             && let Some(writer) = self.writer.take()

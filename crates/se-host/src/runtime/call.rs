@@ -87,6 +87,7 @@ pub struct CommittedWrite {
     pub committed_events: Vec<se_types::EventId>,
 }
 pub struct ExecutedCall {
+    pub host_phases: se_core::ops::HostPhaseTimings,
     pub output: se_core::ops::AnyOutput,
     pub write_timings: Option<se_store::WriteTimings>,
     pub committed: Option<CommittedWrite>,

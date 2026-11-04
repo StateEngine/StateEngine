@@ -32,7 +32,7 @@ const RELAUNCH: &str = "relaunch the agent with `se launch AGENT`";
 const SESSION_CAPABILITY: &str = "session";
 #[derive(Clone)]
 pub(crate) struct AdmissionContext {
-    pub reader: Arc<se_store::SqliteReader>,
+    pub reads: se_store::ReadPhasePool,
     // Retained routers borrow admission authority; only the runtime and its
     // writer obligations own the lease after the admission fence is joined.
     pub lease: Weak<HostLease>,
@@ -63,7 +63,7 @@ impl AdmissionContext {
         })
     }
     pub fn handshake(&self, pending: &mut PendingIpcHandshake) -> Result<ConnectionGrant> {
-        let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
+        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
             match pending.input() {
@@ -104,7 +104,7 @@ impl AdmissionContext {
         raw: RawOperation,
         metadata: OperationMetadata,
     ) -> Result<HostedCall> {
-        let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
+        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
             let operation = ops::decode_operation(&raw.name, raw.arguments, raw.key.as_ref())?;
@@ -215,7 +215,7 @@ impl AdmissionContext {
     /// no owner proof, launch activation or per-call authority override (§7.3).
     /// The shared consumer has already decoded the tool through core's registry.
     pub fn mcp_call(&self, secret: &se_types::Secret, operation: ops::AnyOp) -> Result<HostedCall> {
-        let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
+        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
             let admission = self.credential(&phase, secret, crate::MCP_BEARER_PURPOSE)?;
@@ -236,7 +236,7 @@ impl AdmissionContext {
     }
     /// Read-only MCP methods still require the same current session bearer.
     pub fn check_session(&self, secret: &se_types::Secret) -> Result<()> {
-        let phase = self.reader.read_phase().map_err(|e| store_error(&e))?;
+        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
         let result = (|| {
             self.check_generation(&phase)?;
             self.credential_in(&phase, secret, crate::MCP_BEARER_PURPOSE, Pending::Discover)
@@ -478,7 +478,7 @@ impl HostedRuntime {
         AdmissionContext {
             configuration: self.configuration.clone(),
             prepared_requests: self.prepared_requests.clone(),
-            reader: Arc::clone(&self.execution.reader),
+            reads: self.admission_reads.clone(),
             lease: Arc::downgrade(&self.lease),
             owner: self.owner.clone(),
             generation: self.generation(),

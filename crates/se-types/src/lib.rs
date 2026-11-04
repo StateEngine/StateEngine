@@ -29,8 +29,9 @@ pub struct ApiVersion {
 /// Internal CLI/IPC version, distinct from Alpha's linked API version ownership.
 pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 0 };
 
-/// Shared bounds for configured finite work and its matching store reader budget.
+/// Shared default and bounds for finite work and its matching store reader budget.
 /// Effective one-core execution retains its separate legacy fallback.
+pub const DEFAULT_BLOCKING_JOBS: u32 = 2;
 pub const MIN_BLOCKING_JOBS: u32 = 2;
 pub const MAX_BLOCKING_JOBS: u32 = 8;
 

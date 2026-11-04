@@ -2,7 +2,7 @@
 //! only the retained native pin. No SQL read lease survives native file work.
 use super::*;
 use se_core::{admission::read_scope, scope, store_error::store_error};
-use se_store::{Consent, EventBody, ReadStore, Snapshot};
+use se_store::{Consent, EventBody, Snapshot};
 use sha2::{Digest, Sha256};
 const CHUNK: usize = 256 * 1024;
 const LINE: usize = 4 * 1024 * 1024;
@@ -21,7 +21,6 @@ pub fn next(
     replay: bool,
 ) -> Result<Option<(TrustedCapture, bool)>> {
     deadline.remaining()?;
-    super::super::executor::check_generation(&context.reader, context.generation)?;
     check_scope(admission, &source.binding)?;
     if hook.conversation != source.binding.conversation {
         return Err(SeError::invalid(
@@ -79,9 +78,10 @@ fn cursor(
     admission: &se_store::Admission,
     source: &BoundTranscript,
 ) -> Result<Cursor> {
-    let mut read = context
-        .reader
-        .snapshot(read_scope(admission))
+    // Generation and the cursor belong to one fresh read pin. Close it before
+    // checking the committed prefix or scanning any new transcript bytes.
+    let mut read = super::super::executor::checked_phase(&context.reader, context.generation)?
+        .into_snapshot(read_scope(admission))
         .map_err(|error| store_error(&error))?;
     let result = (|| {
         let session = scope::require_present(
