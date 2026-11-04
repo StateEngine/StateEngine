@@ -34,6 +34,7 @@ fn kernel() -> Result<Kernel, Box<dyn std::error::Error>> {
     })?)
 }
 
+/// Bug: a09b427b — a settled reservation request was returned as live delivery work.
 #[test]
 fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Check {
     let f = Fixture::new()?;
@@ -90,7 +91,7 @@ fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Che
         return Err("notice was not planned".into());
     };
     let receipt = wait(writer.submit(batch)?)??;
-    {
+    let original_reservation = {
         let mut read = reader.snapshot(scope.clone())?;
         let reserved = committed(
             &k,
@@ -102,7 +103,34 @@ fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Che
             receipt,
         )?;
         assert_eq!(reserved.ids, vec![first.clone(), second.clone()]);
-    }
+        reserved
+    };
+    let retry = || -> Result<_, Box<dyn std::error::Error>> {
+        let mut read = reader.snapshot(scope.clone())?;
+        Ok(reserve_notice(
+            &k,
+            &mut Cx {
+                read: &mut read,
+                admission: &scope.admission,
+            },
+            ReserveNotice {
+                target: target.clone(),
+                key: request("reserve")?.key,
+                notice_id: record()?,
+                effect_id: record()?,
+            },
+        )?)
+    };
+    let OpStep::Complete(Read::Present {
+        value: active_retry,
+    }) = retry()?
+    else {
+        return Err("active reservation retry lost its original work".into());
+    };
+    assert_eq!(active_retry.effect_id, original_reservation.effect_id);
+    assert_eq!(active_retry.notice_id, original_reservation.notice_id);
+    assert_eq!(active_retry.ids, original_reservation.ids);
+    assert_eq!(active_retry.event_id, original_reservation.event_id);
     // Later messages are outside the immutable reservation and remain new debt.
     let replacement = message()?;
     wait(writer.submit(f.send(
@@ -202,8 +230,21 @@ fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Che
         matches!(plan(vec![])?, OpStep::Complete(Read::Present { value }) if value.event_id == settled.event_id),
         "replay did not retain the original committed settlement"
     );
+    for _ in 0..2 {
+        let refusal = retry()
+            .err()
+            .ok_or("settled reservation retry returned old delivery work")?;
+        let refusal = refusal
+            .downcast_ref::<se_types::SeError>()
+            .ok_or("reservation retry lost its structured refusal")?;
+        let se_types::Detail::StateConflict(conflict) = refusal.body.detail() else {
+            return Err("settled reservation retry refused for an unrelated reason".into());
+        };
+        assert!(conflict.reason.contains("settled"));
+        assert!(conflict.next_step.contains("fresh"));
+    }
     {
-        let mut read = reader.snapshot(scope)?;
+        let mut read = reader.snapshot(scope.clone())?;
         let original = present(read.message(first)?)?;
         assert!(original.read.is_some(), "resolution lost a read marker");
         assert!(
@@ -217,7 +258,7 @@ fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Che
             matches!(record.current.body, EventBody::EffectSettled { outcome: EffectOutcome::Witnessed, evidence, .. }
             if evidence == vec![read_event])
         );
-        let later = present(read.message(replacement)?)?;
+        let later = present(read.message(replacement.clone())?)?;
         assert!(later.read.is_none() && later.dismissed.is_none() && later.delivered.is_none());
         assert!(
             read.mail_notices(f.a.clone(), budget(10, 65536, None)?)?
@@ -225,6 +266,56 @@ fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Che
                 .is_empty()
         );
     }
+    // A new request must still reserve later unread mail, without resurrecting
+    // the terminal effect or changing its stable settlement receipt.
+    let fresh_effect = record()?;
+    let fresh_kernel = kernel()?;
+    let fresh_step = {
+        let mut read = reader.snapshot(scope.clone())?;
+        reserve_notice(
+            &fresh_kernel,
+            &mut Cx {
+                read: &mut read,
+                admission: &scope.admission,
+            },
+            ReserveNotice {
+                target: target.clone(),
+                key: request("reserve-later")?.key,
+                notice_id: record()?,
+                effect_id: fresh_effect,
+            },
+        )?
+    };
+    let OpStep::Commit { batch, then } = fresh_step else {
+        return Err("fresh key did not plan the remaining unread mail".into());
+    };
+    let receipt = wait(writer.submit(batch)?)??;
+    {
+        let mut read = reader.snapshot(scope.clone())?;
+        let fresh = committed(
+            &fresh_kernel,
+            &mut Cx {
+                read: &mut read,
+                admission: &scope.admission,
+            },
+            then,
+            receipt,
+        )?;
+        assert_eq!(fresh.effect_id, fresh_effect);
+        assert_ne!(fresh.effect_id, effect);
+        assert_ne!(fresh.notice_id, original_reservation.notice_id);
+        assert_eq!(fresh.ids, vec![replacement]);
+        assert_eq!(
+            read.mail_notices(f.a.clone(), budget(10, 65536, None)?)?
+                .items()
+                .len(),
+            1
+        );
+    }
+    assert!(
+        matches!(plan(vec![])?, OpStep::Complete(Read::Present { value }) if value.event_id == settled.event_id),
+        "fresh reservation changed the original settlement replay"
+    );
     drop(wait(owner.drain(Duration::from_secs(2)))??);
     Ok(())
 }
