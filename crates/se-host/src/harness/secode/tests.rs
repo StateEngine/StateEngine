@@ -299,21 +299,24 @@ fn human_hold_and_takeover_race_are_native_facts_not_interrupt_acknowledgements(
 fn adopted_status_retains_original_epoch_event_sequence_and_digest() {
     run(async {
         let native = Native::new();
-        let (old, _) = adapter(native.clone());
+        let (old, old_fence) = adapter(native.clone());
         let original = notice(target());
         old.deliver_notice(&original, options()).await.unwrap();
         let committed = native.state.lock().unwrap().admissions[0].clone();
+        old_fence.store(true, Ordering::Release);
+        let mut fresh = options();
+        fresh.generation = api::Generation(8);
         let mut current = target();
         current.epoch.generation = api::HostGeneration(6);
         let next = SecodeAdapter::new(
             current.epoch.clone(),
-            api::Generation(7),
-            native.clone(),
+            api::Generation(8),
+            native.rebound(api::Generation(8)),
             Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
         assert!(
-            next.notice_status(&current, &original.id, options())
+            next.notice_status(&current, &original.id, fresh.clone())
                 .await
                 .is_err()
         );
@@ -323,12 +326,12 @@ fn adopted_status_retains_original_epoch_event_sequence_and_digest() {
                 current_epoch: current.epoch.clone(),
                 idempotency_key: api::IdempotencyKey("adopt-original".into()),
             },
-            options(),
+            fresh.clone(),
         )
         .await
         .unwrap();
         assert_eq!(
-            next.notice_status(&current, &original.id, options())
+            next.notice_status(&current, &original.id, fresh.clone())
                 .await
                 .unwrap(),
             api::Read::Present {
