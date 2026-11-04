@@ -6,6 +6,8 @@
 mod read;
 #[path = "../src/render/write.rs"]
 mod render_write;
+#[path = "../src/render/transcript.rs"]
+mod transcript;
 use se_core::ops::{AnyOutput, installation::*, outputs::*};
 use se_proc::{NativeStateFiles, OwnedFile};
 use se_types::{IdempotencyKey, Read};

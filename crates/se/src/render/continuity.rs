@@ -56,6 +56,7 @@ pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
         "Pending decisions in this authorized view: {}",
         value.decisions.pending
     )?;
+    super::transcript::render(&value.transcript, out)?;
     for turn in &value.recent_turns {
         writeln!(
             out,

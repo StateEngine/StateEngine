@@ -86,6 +86,7 @@ fn initial(
         required_reads,
         decisions: data.decisions.clone(),
         recent_turns: data.turns.clone(),
+        transcript: data.transcript.clone(),
         code_changes: None,
         omissions: data.omissions.clone(),
         attention: data
@@ -113,7 +114,13 @@ fn wire_bytes<T: serde::Serialize>(schema: &str, value: &T) -> Result<usize> {
         .map_err(|e| scope::unreadable("continuity encoding", &e.to_string()))
 }
 fn refresh(result: &mut ResumeOutput, data: &Gathered) {
-    let unreadable = !data.failures.is_empty()
+    let unreadable = matches!(
+        result.transcript.transcript_events,
+        Read::Unreadable { .. } | Read::Unknown { .. }
+    ) || matches!(
+        result.transcript.last_compaction,
+        Read::Unreadable { .. } | Read::Unknown { .. }
+    ) || !data.failures.is_empty()
         || matches!(
             result.working_state,
             Read::Unreadable { .. } | Read::Unknown { .. }
@@ -170,6 +177,25 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
         let needed = measure(result, data)?;
         if needed <= input.byte_budget as usize {
             return Ok(());
+        }
+        if let Read::Present { value } = &mut result.transcript.transcript_events
+            && let Some(omitted) = value.pop()
+        {
+            if let Read::Present { value: count } = &mut result.transcript.transcript_events_omitted
+            {
+                *count = count.saturating_add(1);
+            }
+            add_omission(
+                result,
+                "transcript_events",
+                Some(1),
+                format!(
+                    "se --project {} history --event {}",
+                    identity.principal.project.id, omitted.event_id
+                ),
+                "stateengine_event_read",
+            );
+            continue;
         }
         if !result.recent_turns.is_empty() {
             let omitted = result.recent_turns.remove(0);

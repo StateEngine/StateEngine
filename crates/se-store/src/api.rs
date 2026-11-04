@@ -482,6 +482,17 @@ pub trait Snapshot {
         since: Option<StorePosition>,
         budget: ReadBudget,
     ) -> StoreResult<Page<StoredEvent>>;
+    /// Latest non-turn provider records and the independent latest compaction.
+    /// Session=None reads this agent's continuity across its saved sessions.
+    fn transcript_events(
+        &mut self,
+        agent: AgentId,
+        session: Option<SessionId>,
+        budget: ReadBudget,
+    ) -> StoreResult<TranscriptRecords> {
+        let _ = (agent, session, budget);
+        crate::error::later("transcript metadata read")
+    }
     /// Current ratified decision heads, in last-change order.
     fn governing_decisions(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     /// Exact decision heads in this snapshot, all or only pending proposals.

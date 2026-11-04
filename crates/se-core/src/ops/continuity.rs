@@ -35,3 +35,7 @@ pub fn context<R: Snapshot>(
     };
     packet::context(resume, at, identity, cx)
 }
+
+pub(super) fn metadata_budget() -> se_types::Result<se_store::ReadBudget> {
+    read::budget(20)
+}

@@ -408,7 +408,24 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<()> {
         self.revoke_credentials(work, deadline).await?;
-        self.flush_capture(work, deadline).await?;
+        if let Err(error) = self.flush_capture(work, deadline).await {
+            // A durable capture failure cannot keep a proved-empty native scope
+            // and its revoked agent session active forever. Publication of that
+            // failure must have succeeded before this retirement is legal.
+            if !work.process_retired
+                || work.last_witness.is_none()
+                || work.capture_failure.is_none()
+            {
+                return Err(error);
+            }
+        }
+        let reason = match &work.capture_failure {
+            Some(error) => format!(
+                "{reason}; capture incomplete: {}; native transcript and capture failure retained; launch this agent with --new for a fresh conversation",
+                error.message()
+            ),
+            None => reason.to_owned(),
+        };
         let session = work.meta.session.clone();
         let active = work.active;
         self.store
@@ -416,9 +433,7 @@ impl LaunchCoordinator {
                 work.cleanup_admission.clone(),
                 deadline,
                 None,
-                move |kernel, cx| {
-                    process_commit::end_binding(kernel, session, active, reason.into(), cx)
-                },
+                move |kernel, cx| process_commit::end_binding(kernel, session, active, reason, cx),
             )
             .await?;
         work.session_retired = true;

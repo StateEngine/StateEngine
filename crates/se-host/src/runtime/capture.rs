@@ -189,6 +189,7 @@ impl HostedRouter {
             execution: &self.execution,
             sources: &self.sources,
             fenced: &self.fenced,
+            final_capture: false,
         }
     }
 }
@@ -247,6 +248,7 @@ struct Capturing<'a> {
     execution: &'a ExecutionContext,
     sources: &'a TranscriptBindings,
     fenced: &'a std::sync::atomic::AtomicBool,
+    final_capture: bool,
 }
 impl Capturing<'_> {
     fn check_open(&self) -> Result<()> {
@@ -296,9 +298,10 @@ impl Capturing<'_> {
                 };
                 let bound = deadline.clone();
                 let replay = last.is_none();
+                let final_capture = self.final_capture;
                 let (next, capture_read) = timings::blocking(&self.execution.blocking, Mode::Finite, deadline, move || {
                         let mut pin = try_guard(&source)?;
-                        source::next(&context, &admitted, &mut pin, &signal, &bound, replay)
+                        source::next(&context, &admitted, &mut pin, &signal, &bound, replay, final_capture)
                     })
                     .await?;
                 host_phases.merge(se_core::ops::HostPhaseTimings {
@@ -424,8 +427,8 @@ impl CaptureHandle {
             })
             .await
     }
-    /// The final catch-up after a stop: read the bound session's pinned
-    /// transcript to its last complete record and commit what is new.
+    /// Read complete records from the bound source. A live writer may still
+    /// be appending its last line, so an incomplete tail remains pending.
     pub async fn catch_up(
         &self,
         admission: se_store::Admission,
@@ -433,10 +436,34 @@ impl CaptureHandle {
         transcript: se_types::NativePath,
         deadline: &Deadline,
     ) -> Result<ExecutedCall> {
+        self.catch_up_inner(admission, conversation, transcript, deadline, false)
+            .await
+    }
+    /// Used only after native exit and empty-scope proof: a partial final line
+    /// is broken framing, not a successfully flushed transcript.
+    pub(crate) async fn catch_up_final(
+        &self,
+        admission: se_store::Admission,
+        conversation: se_types::ProviderSessionId,
+        transcript: se_types::NativePath,
+        deadline: &Deadline,
+    ) -> Result<ExecutedCall> {
+        self.catch_up_inner(admission, conversation, transcript, deadline, true)
+            .await
+    }
+    async fn catch_up_inner(
+        &self,
+        admission: se_store::Admission,
+        conversation: se_types::ProviderSessionId,
+        transcript: se_types::NativePath,
+        deadline: &Deadline,
+        final_capture: bool,
+    ) -> Result<ExecutedCall> {
         let capturing = Capturing {
             execution: &self.execution,
             sources: &self.sources,
             fenced: &self.fenced,
+            final_capture,
         };
         let terminal = se_core::admission::HumanTerminal::Refused {
             reason: "a coordinator capture is not an owner terminal".into(),

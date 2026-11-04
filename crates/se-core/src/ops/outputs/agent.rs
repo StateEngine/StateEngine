@@ -13,6 +13,8 @@ pub struct SessionView {
     pub process_state: Read<String>,
     #[serde(default = "unobserved_session_process")]
     pub liveness: Read<String>,
+    #[serde(flatten, default)]
+    pub transcript: crate::ops::transcript::View,
     pub session_id: Option<SessionId>,
     pub launch_id: Option<se_types::LaunchId>,
     pub surface: Option<String>,

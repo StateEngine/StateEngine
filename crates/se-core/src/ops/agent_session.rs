@@ -42,6 +42,7 @@ fn empty_session() -> SessionView {
         liveness: Read::Unknown {
             what: "A recorded session is not a fresh native liveness observation".into(),
         },
+        transcript: Default::default(),
         session_id: None,
         launch_id: None,
         surface: None,
@@ -175,6 +176,7 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
             "preparation and current head name different sessions",
         ));
     }
+    session.transcript = super::transcript::read(agent, Some(id.clone()), cx);
     session.session_id = Some(id.clone());
     session.since = Some(receipt::timestamp(receipt::event_time(&latest.current))?);
     recorded::apply(agent, id, &latest.current.body, &mut session, cx)?;

@@ -110,8 +110,25 @@ pub fn plan<R: Snapshot>(
     let session = session.clone();
     let agent = agent.clone();
     super::inputs::bounded("vendor turn", &input.vendor_turn, 512, false)?;
-    if !matches!(input.role, Role::User | Role::Assistant | Role::Tool)
-        || facts.occurred_at_us < 0
+    if input.role == Role::System {
+        let notice = super::transcript::Record::decode(input.text.as_str())?;
+        if notice.position.length == 0
+            || notice.position.offset < input.evidence.offset
+            || notice.position.offset.checked_add(notice.position.length) != Some(input.new_offset)
+            || !input
+                .vendor_turn
+                .starts_with(se_store::TRANSCRIPT_EVENT_PREFIX)
+        {
+            return Err(SeError::invalid(
+                "provider metadata",
+                "an exact bounded source position and native metadata identity",
+            ));
+        }
+    }
+    if !matches!(
+        input.role,
+        Role::System | Role::User | Role::Assistant | Role::Tool
+    ) || facts.occurred_at_us < 0
         || facts.turn_event == facts.progress_event
     {
         return Err(SeError::invalid(

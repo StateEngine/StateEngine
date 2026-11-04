@@ -7,6 +7,7 @@ pub mod error;
 mod event;
 mod import;
 mod read;
+mod transcript;
 mod write;
 
 use se_core::{ops::AnyOutput, registry::HumanKind};

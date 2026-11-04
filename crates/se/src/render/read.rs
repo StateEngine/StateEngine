@@ -61,6 +61,7 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                 agent.session.state,
                 count(agent.unread)
             )?;
+            super::transcript::render(&agent.session.transcript, out)?;
             if let Some(reason) = &agent.session.containment_cause {
                 writeln!(
                     out,

@@ -19,6 +19,7 @@ pub fn next(
     hook: &crate::ClaudeHookInput,
     deadline: &Deadline,
     replay: bool,
+    final_capture: bool,
 ) -> Result<Option<(TrustedCapture, bool)>> {
     deadline.remaining()?;
     check_scope(admission, &source.binding)?;
@@ -41,16 +42,23 @@ pub fn next(
     if matches!(hook.kind, crate::ClaudeHookKind::SessionStart) {
         return Ok(None);
     }
-    if let Some(request) = scan(source, cursor.revision, cursor.offset, deadline)? {
+    if let Some(request) = scan(
+        source,
+        cursor.revision,
+        cursor.offset,
+        deadline,
+        final_capture,
+    )? {
         return Ok(Some((request, false)));
     }
     if replay && let Some((from, to)) = cursor.previous {
-        let request = scan(source, cursor.revision, from, deadline)?.ok_or_else(|| {
-            scope::unreadable(
-                "captured source range",
-                "the original captured text record no longer decodes",
-            )
-        })?;
+        let request =
+            scan(source, cursor.revision, from, deadline, final_capture)?.ok_or_else(|| {
+                scope::unreadable(
+                    "captured source range",
+                    "the original captured text record no longer decodes",
+                )
+            })?;
         if request.request.new_offset != to {
             return Err(scope::unreadable(
                 "captured source range",
@@ -212,6 +220,7 @@ fn scan(
     revision: se_store::Revision,
     offset: u64,
     deadline: &Deadline,
+    final_capture: bool,
 ) -> Result<Option<TrustedCapture>> {
     let mut position = offset;
     let mut consumed = offset;
@@ -234,7 +243,29 @@ fn scan(
             }
             if byte == b'\n' {
                 digest.update(&line);
-                if let Some(record) = super::claude::decode(&line, &source.binding.conversation)? {
+                if let Some(mut record) =
+                    super::claude::decode(&line, &source.binding.conversation)?
+                {
+                    if record.role == se_store::Role::System {
+                        let mut notice =
+                            se_core::ops::transcript::Record::decode(record.text.as_str())?;
+                        notice.position = se_core::ops::transcript::Position {
+                            offset: consumed - line.len() as u64,
+                            length: line.len() as u64,
+                        };
+                        record.vendor_turn = format!(
+                            "{}{}{}/{}",
+                            se_store::TRANSCRIPT_EVENT_PREFIX,
+                            if notice.is_compaction() {
+                                "compact/"
+                            } else {
+                                "record/"
+                            },
+                            notice.position.offset,
+                            se_types::hex_lower(&source.pin.identity())
+                        );
+                        record.text = notice.body()?;
+                    }
                     return Ok(Some(TrustedCapture {
                         request: se_core::ops::hook::CaptureRequest {
                             source: source.source,
@@ -261,8 +292,13 @@ fn scan(
         }
         position = chunk.next_offset;
         if chunk.end_of_file || position == consumed && position == offset {
-            // Incomplete EOF remains pending until a real provider hook/signal;
-            // neither metadata nor a partial final line advances the cursor.
+            if final_capture && !line.is_empty() {
+                return Err(SeError::invalid(
+                    "pinned Claude transcript framing",
+                    "a newline-terminated final record after the native writer has exited; preserve the source and committed cursor",
+                ));
+            }
+            // While the native writer is live, an incomplete line stays pending.
             return Ok(None);
         }
     }
