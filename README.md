@@ -17,6 +17,10 @@ Dependency direction: se-types <- se-store <- se-core <- se-host <- se; se-proc 
 se-atlas depends on se-types and se-store. Authors write no tests; reviewers add black-box tests;
 the five journey scripts are the acceptance judge. Line counts are estimates, never caps.
 
+Before upgrading, run `se down` for each running data home (use the same `--home`
+as its host), then install the new release and run `se up`. An existing Windows
+host keeps the pipe name chosen by its original executable until restarted.
+
 To import existing Node user history, first preserve a source copy containing its
 `.stateengine/projects.jsonl`, named project history, and saved profiles. Initialize
 a Rust data home with `se init`, then run `se import --from-node PATH` as its owner.
