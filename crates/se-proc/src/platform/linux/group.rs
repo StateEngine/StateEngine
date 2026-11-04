@@ -25,7 +25,9 @@ fn in_group(live: &LiveObservation, group: ProcessId) -> ProcResult<bool> {
         return Err(input("group continuity", "native Linux birth required"));
     };
     Ok(identity::stat(live.identity.pid)?.is_some_and(|s| {
-        s.start == start_ticks && s.group == group && s.state != NativeState::ExitedAwaitingReap
+        s.start == start_ticks
+            && s.group == Some(group)
+            && s.state != NativeState::ExitedAwaitingReap
     }))
 }
 
@@ -116,7 +118,7 @@ impl Scope {
             let Some(stat) = identity::stat(pid)? else {
                 continue;
             };
-            if stat.group != group || stat.state == NativeState::ExitedAwaitingReap {
+            if stat.state == NativeState::ExitedAwaitingReap || stat.group != Some(group) {
                 continue;
             }
             if let ProcessRead::Present(member) = read_process(root.machine.clone(), pid)? {

@@ -10,7 +10,7 @@ use std::{
 pub(super) struct Stat {
     pub state: NativeState,
     pub parent: ProcessId,
-    pub group: ProcessId,
+    pub group: Option<ProcessId>,
     pub start: u64,
 }
 pub(super) fn absent(e: &io::Error) -> bool {
@@ -92,7 +92,14 @@ pub(super) fn stat(pid: ProcessId) -> ProcResult<Option<Stat>> {
     Ok(Some(Stat {
         state,
         parent: ProcessId(facts.parent().map_err(stat_error)?),
-        group: ProcessId(facts.group().map_err(stat_error)?),
+        // A task that has lost its sighand can report X with pgrp/sid -1.
+        // Its birth still proves which task exited, but it no longer supplies
+        // group membership. Never turn that terminal sentinel into a PID.
+        group: if state == NativeState::ExitedAwaitingReap {
+            None
+        } else {
+            Some(ProcessId(facts.group().map_err(stat_error)?))
+        },
         start: facts.start_ticks().map_err(stat_error)?,
     }))
 }
