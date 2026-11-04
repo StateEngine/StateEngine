@@ -290,11 +290,7 @@ pub(super) fn finish<R: ReadStore>(
                 None
             };
             if let Some(command) = command {
-                value.next = NextStep {
-                    text: AgentCommand::instruction("Launch your first agent"),
-                    command: command.command,
-                    argv: command.argv,
-                };
+                value.next = super::command_hint::next(command, "Launch your first agent");
             } else {
                 value.next = next_command(
                     cx,
@@ -329,9 +325,5 @@ fn next_command(cx: &Bootstrap, text: &str, tail: Vec<String>) -> Result<NextSte
     let mut argv = vec!["se".into(), "--home".into(), home.into()];
     argv.extend(tail);
     let command = AgentCommand::from_argv(argv);
-    Ok(NextStep {
-        text: AgentCommand::instruction(text),
-        command: command.command,
-        argv: command.argv,
-    })
+    Ok(super::command_hint::next(command, text))
 }
