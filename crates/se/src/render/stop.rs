@@ -61,7 +61,7 @@ pub(super) fn output(value: &StopResult, out: &mut impl Write) -> io::Result<()>
             "Stop remains incomplete; inspect the named failure and any possible remaining processes before retrying."
         )?;
     }
-    writeln!(out, "Request key: {}", value.idempotency_key)
+    writeln!(out, "Use --json for full stop details.")
 }
 fn exit(value: &StopWitness, out: &mut impl Write) -> io::Result<()> {
     match value.state.as_str() {
@@ -181,9 +181,6 @@ fn captured(value: &StopCapture, out: &mut impl Write) -> io::Result<()> {
             "may be incomplete"
         }
     )?;
-    if let Some(event) = &value.last_event_id {
-        writeln!(out, "Last saved event: {event}")?;
-    }
     Ok(())
 }
 fn resumable(value: &StopResume, out: &mut impl Write) -> io::Result<()> {
@@ -197,9 +194,6 @@ fn resumable(value: &StopResume, out: &mut impl Write) -> io::Result<()> {
     }
     if let Some(reason) = &value.reason {
         writeln!(out, "{reason}")?;
-    }
-    if let Some(conversation) = &value.conversation_id {
-        writeln!(out, "Saved conversation: {conversation}")?;
     }
     Ok(())
 }
