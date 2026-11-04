@@ -36,6 +36,7 @@ fn token_buffer(
     token: HANDLE,
     class: TOKEN_INFORMATION_CLASS,
     minimum: usize,
+    maximum: usize,
 ) -> ProcResult<Vec<usize>> {
     let mut needed = 0;
     // SAFETY: documented null sizing probe with retained token and writable length.
@@ -64,11 +65,14 @@ fn token_buffer(
             )
         };
         if ok != 0 {
-            if (returned as usize) < minimum || returned as usize > capacity {
+            if (returned as usize) < minimum
+                || returned as usize > maximum
+                || returned as usize > capacity
+            {
                 return Err(input(
                     "detached broker token",
                     &format!(
-                        "class {class}: returned {returned} bytes, minimum {minimum}, capacity {capacity}"
+                        "class {class}: returned {returned} bytes, allowed {minimum}..={maximum}, capacity {capacity}"
                     ),
                 ));
             }
@@ -87,7 +91,7 @@ fn token_buffer(
 }
 // Private callers instantiate this only with fixed-size, pointer-free native token POD.
 fn token_value<T: Copy>(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> ProcResult<T> {
-    let storage = token_buffer(token, class, size_of::<T>())?;
+    let storage = token_buffer(token, class, size_of::<T>(), size_of::<T>())?;
     // SAFETY: successful native query initialized at least sizeof(T) bytes;
     // usize allocation aligns every fixed token POD used by these private callers.
     Ok(unsafe { *storage.as_ptr().cast::<T>() })
@@ -102,13 +106,21 @@ fn context(process: HANDLE) -> ProcResult<Context> {
     }
     let token = handle(raw, "own detached broker token")?;
     let token = token.as_raw_handle();
-    // A broker must never remove a restricted-token or app-container boundary.
-    // The native payload is BOOLEAN although the published enum page says DWORD;
-    // token_buffer preserves DWORD alignment and only this initialized byte is read.
-    // https://github.com/microsoft/win32metadata/discussions/2308
-    if token_value::<u8>(token, TokenHasRestrictions)? != 0
-        || token_value::<u32>(token, TokenIsAppContainer)? != 0
-    {
+    // UAC-filtered tokens are normal interactive users. Only actual restricting
+    // SIDs or an app-container boundary refuse; elevation/integrity still match.
+    // SAFETY: clearing this thread's last-error distinguishes FALSE from failure.
+    unsafe {
+        SetLastError(ERROR_SUCCESS);
+    }
+    // SAFETY: retained TOKEN_QUERY handle for a read-only native restriction query.
+    let restricted = unsafe { IsTokenRestricted(token) };
+    if restricted == 0 {
+        let cause = io::Error::last_os_error();
+        if cause.raw_os_error() != Some(ERROR_SUCCESS as i32) {
+            return Err(fail("read detached broker restricting SIDs", cause));
+        }
+    }
+    if restricted != 0 || token_value::<u32>(token, TokenIsAppContainer)? != 0 {
         return Err(input(
             "detached broker token",
             "restricted and app-container tokens cannot use a native parent broker",
@@ -119,6 +131,7 @@ fn context(process: HANDLE) -> ProcResult<Context> {
         token,
         TokenIntegrityLevel,
         size_of::<TOKEN_MANDATORY_LABEL>(),
+        65536,
     )?;
     // SAFETY: successful aligned label output remains retained through SID conversion.
     let integrity = crate::windows_native::sid_text(unsafe {
