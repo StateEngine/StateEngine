@@ -12,7 +12,10 @@ pub fn write(
 ) -> io::Result<u8> {
     let mut body = error.body.clone();
     let mut remedy = body.remedy(context).map_err(io::Error::other)?;
-    if error.code() == se_types::Code::AgentNameConflict {
+    let literal_recovery = error.code() == se_types::Code::AgentNameConflict
+        || matches!(error.body.detail(), se_types::Detail::UsageMissingArgument(detail)
+            if detail.command == "se resume" && detail.argument == "--preview AGENT");
+    if literal_recovery {
         if let Some(se_types::Cmd::Se { argv }) = &remedy.command {
             if let Some(command) = se_core::ops::AgentCommand::from_argv(argv.as_slice().to_vec()) {
                 remedy.text = format!(
@@ -27,9 +30,9 @@ pub fn write(
         }
         body = body.with_remedy(remedy.clone());
     }
-    // The conflict remedy already contains the resolved home. Do not resolve
+    // The literal remedy already contains the resolved home. Do not resolve
     // that literal command a second time while building the JSON envelope.
-    let envelope = if error.code() == se_types::Code::AgentNameConflict {
+    let envelope = if literal_recovery {
         ErrorEnvelope::new(body, &RenderCx::default())
     } else {
         ErrorEnvelope::new(body, context)

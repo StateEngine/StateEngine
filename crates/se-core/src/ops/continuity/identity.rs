@@ -18,6 +18,21 @@ pub(super) fn resolve<R: Snapshot>(
     let (agent, session, is_preview) = match (&cx.admission.actor, preview, &cx.admission.session) {
         (Actor::Agent(agent), None, Some(session)) => (agent.clone(), Some(session.clone()), false),
         (Actor::Human(_), Some(agent), None) => (agent.clone(), None, true),
+        (Actor::Human(_), None, None) => {
+            let mut error = SeError::new(se_types::Detail::UsageMissingArgument(
+                se_types::details::UsageMissingArgument {
+                    command: "se resume".into(),
+                    argument: "--preview AGENT".into(),
+                },
+            ));
+            error.body = error.body.with_remedy(se_types::Remedy {
+                text: "Choose a saved agent with the command below, then use se resume --preview AGENT to inspect its context. Context inspection does not restart a provider conversation.".into(),
+                command: Some(se_types::Cmd::Se {
+                    argv: se_types::Argv::from_op(&OwnerResumeChoices(&project.id))?,
+                }),
+            });
+            return Err(error);
+        }
         (Actor::Agent(_), Some(_), _) => {
             return Err(SeError::new(se_types::Detail::OwnerRequired(
                 se_types::details::OwnerRequired {
@@ -163,4 +178,17 @@ pub(super) fn resolve<R: Snapshot>(
         model: profile.and_then(|profile| profile.model),
         conversation,
     })
+}
+
+struct OwnerResumeChoices<'a>(&'a se_types::ProjectId);
+impl se_types::OperationCommand for OwnerResumeChoices<'_> {
+    fn cli_argv(&self) -> Vec<String> {
+        vec![
+            "se".into(),
+            "--project".into(),
+            self.0.to_string(),
+            "agent".into(),
+            "list".into(),
+        ]
+    }
 }
