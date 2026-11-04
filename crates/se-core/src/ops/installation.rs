@@ -154,6 +154,7 @@ impl UninstallPlan {
             ));
         }
         let protected_files = [
+            "runtime.lock",
             "state.db",
             "state.db-wal",
             "state.db-shm",

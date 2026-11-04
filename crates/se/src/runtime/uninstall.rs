@@ -4,7 +4,6 @@ use super::*;
 use crate::{bootstrap::Bootstrap, route};
 use se_core::ops::{installation::UninstallEffects, outputs::*};
 use se_proc::{DirectoryRemoval, OwnedFile, StateFileError, StateFileErrorCode};
-use se_store::StateFiles;
 use se_types::Read;
 use std::{
     io,
@@ -31,39 +30,18 @@ pub(super) fn execute(
     // Store absence and a complete inventory with no unresolved custody are
     // distinct observations. Retained exit history is never live custody;
     // endpoint absence never supplies an empty-process proof.
-    let (owner, store_observation, _runtime_lease) = match route::setup::inspect(&cx.home, clock())?
-    {
-        route::setup::Setup::Absent(_) => (
-            route::owner::observe(&[])?,
-            "runtime store absence measured",
-            None,
-        ),
-        route::setup::Setup::Present(reader) => {
-            let files = route::files::Files::open(&cx.home)
-                .map_err(|e| se_core::store_error::store_error(&e))?;
-            let lock = match files
-                .readback(&cx.home.join("runtime.lock"))
-                .map_err(|e| se_core::store_error::store_error(&e))?
-            {
-                Read::Present { value } => value,
-                _ => {
-                    return Err(invalid(
-                        "initialized runtime lock is unavailable; preserve the installation",
-                    ));
-                }
-            };
-            match lock.try_lock() {
-                Ok(()) => (),
-                Err(std::fs::TryLockError::WouldBlock) => return Err(SeError::new(Detail::StateConflict(details::StateConflict {
-                    subject: "uninstall runtime custody".into(),
-                    reason: "the runtime is in use; the host or another writer still holds its native lease".into(),
-                    next_step: "Run se down with this same --home, wait for the host to stop, then retry se uninstall; no installation effects were attempted".into(),
-                }))),
-                Err(std::fs::TryLockError::Error(error)) => return Err(unreadable(&cx.home.join("runtime.lock"), error)),
-            }
-            let inventory = route::owner::inventory(&reader, &files)?;
-            if let Some(first) = inventory.processes.first() {
-                return Err(SeError::new(Detail::StateConflict(details::StateConflict {
+    let observe = || -> Result<_> {
+        Ok(match route::setup::inspect(&cx.home, clock())? {
+            route::setup::Setup::Absent(_) => (
+                route::owner::observe(&[])?,
+                "runtime store absence measured",
+            ),
+            route::setup::Setup::Present(reader) => {
+                let files = route::files::Files::open(&cx.home)
+                    .map_err(|e| se_core::store_error::store_error(&e))?;
+                let inventory = route::owner::inventory(&reader, &files)?;
+                if let Some(first) = inventory.processes.first() {
+                    return Err(SeError::new(Detail::StateConflict(details::StateConflict {
                     subject: "uninstall unresolved process custody".into(),
                     reason: format!("The complete home-wide inventory contains {} unresolved custody records; process {} in project {} {}. Retained completed exit history does not block uninstall.",
                         inventory.processes.len(), first.identity.record, first.project,
@@ -74,18 +52,19 @@ pub(super) fn execute(
                         }),
                     next_step: "Run se down with this same --home to finish ordinary stop and session/capture cleanup, then retry se uninstall; if down reports unproved custody, resolve that named process through se stop before retrying. No installation effects were attempted".into(),
                 })));
+                }
+                (
+                    route::owner::from_inventory(&inventory)?,
+                    if inventory.has_process_records {
+                        "initialized store; complete protected home-wide inventory has no unresolved custody; completed process history is retained"
+                    } else {
+                        "initialized store; complete protected home-wide process inventory is empty"
+                    },
+                )
             }
-            (
-                route::owner::from_inventory(&inventory)?,
-                if inventory.has_process_records {
-                    "initialized store; complete protected home-wide inventory has no unresolved custody; completed process history is retained"
-                } else {
-                    "initialized store; complete protected home-wide process inventory is empty"
-                },
-                Some(lock),
-            )
-        }
+        })
     };
+    let (owner, _) = observe()?;
     owner.authorize(
         "installation.uninstall",
         owner.os_owner(),
@@ -94,6 +73,33 @@ pub(super) fn execute(
     )?;
     let mut installation_claim =
         Some(se_proc::NativeInstallationClaim::acquire().map_err(native_error)?);
+    // Same order as setup/removal: obtain home-local exclusion before any
+    // credential or installation mutation, then re-read under that exclusion.
+    // The account claim above protects install/PATH effects across homes.
+    let files =
+        route::files::Files::open(&cx.home).map_err(|e| se_core::store_error::store_error(&e))?;
+    let record_path = cx.home.join("standalone-install.json");
+    match std::fs::symlink_metadata(&record_path) {
+        Ok(_) => (),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(invalid("the owned installation record is absent"));
+        }
+        Err(error) => return Err(unreadable(&record_path, error)),
+    }
+    let _runtime_lease = route::files::setup_lock(&files)
+        .map_err(|e| se_core::store_error::store_error(&e))?
+        .ok_or_else(|| SeError::new(Detail::StateConflict(details::StateConflict {
+            subject: "uninstall runtime custody".into(),
+            reason: "setup, another writer or the runtime holds this home's exclusive lease".into(),
+            next_step: "Wait for setup/removal or run se down with this same --home, then retry uninstall; no installation effects were attempted".into(),
+        })))?;
+    let (owner, store_observation) = observe()?;
+    owner.authorize(
+        "installation.uninstall",
+        owner.os_owner(),
+        cx.session.is_some(),
+        true,
+    )?;
     #[cfg(windows)]
     super::helper_cleanup::retry(
         &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
@@ -101,7 +107,6 @@ pub(super) fn execute(
             .as_ref()
             .ok_or_else(|| invalid("native installation claim missing"))?,
     )?;
-    let record_path = cx.home.join("standalone-install.json");
     let mut record = OwnedFile::open(&record_path)
         .map_err(native_error)?
         .ok_or_else(|| invalid("the owned installation record is absent"))?;

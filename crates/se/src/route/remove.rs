@@ -54,11 +54,8 @@ fn finish<R: ReadStore>(
     bound: &Deadline,
 ) -> Result<()> {
     bound.remaining()?;
-    // Setup and uninstall take this same native per-user claim before touching
-    // the machine credential, including before their runtime-lock acquisition.
-    let _installation = se_proc::NativeInstallationClaim::acquire().map_err(|error| {
-        scope::unreadable("remove installation claim", &error.to_string()).with_cause(error)
-    })?;
+    // A live host already excludes setup. After down, empty_home::lock below
+    // excludes setup and uninstall before the credential can be retired.
     let credential = super::credential::require(files)?;
     let digest = Sha256::digest(credential.expose()).into();
     let key_digest = Sha256::digest(value.idempotency_key.as_str().as_bytes());
@@ -158,9 +155,6 @@ pub fn absent<R: ReadStore>(
     if !input.all || !matches!(super::credential::read(files)?, Read::Absent { .. }) {
         return Ok(None);
     }
-    let _claim = se_proc::NativeInstallationClaim::acquire().map_err(|error| {
-        scope::unreadable("remove installation claim", &error.to_string()).with_cause(error)
-    })?;
     let _lock = super::empty_home::lock(files, reader, admission, Duration::from_secs(5))?;
     let Read::Absent { checked } = super::credential::read(files)? else {
         return Err(scope::unreadable(

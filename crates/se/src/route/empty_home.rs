@@ -1,6 +1,6 @@
 //! Read-only exclusion for the two explicit post-remove operations. Holding
-//! this file excludes a host and direct writers; callers hold the native
-//! installation claim to exclude setup and uninstall before touching a key.
+//! this file excludes setup, uninstall, hosts and direct writers before a
+//! credential is changed. Setup retains that same exclusive lock itself.
 use super::files::Files;
 use se_core::{scope, store_error::store_error};
 use se_store::{Admission, ReadStore, Snapshot, StateFiles};
@@ -28,6 +28,15 @@ pub fn lock<R: ReadStore>(
             &format!("runtime or direct writer is active: {error}"),
         )
     })?;
+    verify(reader, admission, bound.remaining()?)?;
+    Ok(lock)
+}
+/// Caller already retains the exclusive runtime lock, as setup does while
+/// creating credentials and committing its registration.
+pub fn verify<R: ReadStore>(reader: &R, admission: &Admission, timeout: Duration) -> Result<()> {
+    let mut options = super::execute::options();
+    options.timeout = timeout;
+    let bound = se_host::client::lease::Deadline::from_options(&options)?;
     let mut admitted = admission.clone();
     admitted.scope = se_store::Scope::Registry;
     let mut snapshot = reader
@@ -67,5 +76,5 @@ pub fn lock<R: ReadStore>(
             )?;
         }
     }
-    Ok(lock)
+    Ok(())
 }
