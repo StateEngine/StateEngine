@@ -215,8 +215,13 @@ pub fn launch<R: Snapshot>(
                         ..
                     } if owner == &agent && *provider == profile.provider => {
                         let reference = super::session_reference::read(cx.read, value)?;
-                        if original.header.door == se_store::Door::Import && !matches!(reference, Read::Present { .. }) {
-                            return Err(SeError::invalid("imported Codex conversation", "a retained native thread reference; use --new explicitly when it is missing or unsupported"));
+                        if original.header.door == se_store::Door::Import
+                            && !matches!(reference, Read::Present { .. })
+                        {
+                            return Err(SeError::invalid(
+                                "imported Codex conversation",
+                                "a retained native thread reference; use --new explicitly when it is missing or unsupported",
+                            ));
                         }
                         reference
                     }
