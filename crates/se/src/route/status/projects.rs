@@ -70,13 +70,15 @@ pub(super) fn page<R: ReadStore>(
         match reader.snapshot(read_scope(&project_admission)) {
             Err(error) => errors.push(store_error(&error).body),
             Ok(mut snap) => {
-                match snap.sessions(super::super::select::budget(None)?) {
+                match super::super::select::budget(None)
+                    .and_then(|budget| snap.sessions(budget).map_err(|error| store_error(&error)))
+                {
                     Ok(sessions) => {
                         agents_running = (sessions.items().is_empty()
                             && sessions.window().complete())
                         .then_some(0)
                     }
-                    Err(error) => errors.push(store_error(&error).body),
+                    Err(error) => errors.push(error.body),
                 }
                 match snap.message_count(MessageQuery {
                     sender: None,

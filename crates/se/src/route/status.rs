@@ -318,12 +318,11 @@ fn listing(cx: &Bootstrap) -> Result<NextStep> {
     )
 }
 fn next_command(cx: &Bootstrap, text: &str, tail: Vec<String>) -> Result<NextStep> {
-    let home = cx
-        .home
-        .to_str()
+    let home = AgentCommand::home_argument(&cx.home)
         .ok_or_else(|| scope::unreadable("status command", AgentCommand::HOME_UNAVAILABLE))?;
     let mut argv = vec!["se".into(), "--home".into(), home.into()];
     argv.extend(tail);
-    let command = AgentCommand::from_argv(argv);
+    let command = AgentCommand::from_argv(argv)
+        .ok_or_else(|| scope::unreadable("status command", AgentCommand::HOME_UNAVAILABLE))?;
     Ok(super::command_hint::next(command, text))
 }
