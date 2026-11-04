@@ -275,11 +275,7 @@ impl AnyOutput {
             Self::ConfigGet(v) => v.value.value.exit_code(),
             Self::DecisionShow(v) => v.value.decision.exit_code(),
             Self::AgentShow(v) => v.value.agent.exit_code(),
-            Self::Resume(v)
-                if !v.value.complete || v.value.resume_status == "integrity_blocked" =>
-            {
-                2
-            }
+            Self::Resume(v) => v.value.exit_code(),
             Self::SessionContext(v) if v.value.truncated || !v.value.failures.is_empty() => 2,
             Self::AgentList(v) => v.value.page.window().exit_code(false),
             Self::HistoryList(v) => v.value.page.window().exit_code(false),
