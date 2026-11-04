@@ -296,7 +296,7 @@ impl Snapshot for SqliteSnapshot {
         match row {
             None => Ok(self.absent("message ID")),
             Some((s, v, d, r, x)) => Ok(Read::Present {
-                value: self.message_at(s, v, d, r, x)?,
+                value: self.message_at(s, v, d, r, x, None)?,
             }),
         }
     }

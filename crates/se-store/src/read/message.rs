@@ -125,7 +125,7 @@ impl SqliteSnapshot {
                     "mail read deadline exhausted",
                 ));
             }
-            let mut message = self.message_at(sent, revision, d, r, x)?;
+            let mut message = self.message_at(sent, revision, d, r, x, query.recipient.as_ref())?;
             if !query.full_body
                 && let StoredText::Present(s) = &mut message.body
             {

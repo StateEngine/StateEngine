@@ -80,6 +80,20 @@ fn one_work_message_has_independent_recipient_dispositions_and_natural_replays()
     );
     assert!(present(b.message(id.clone())?)?.read.is_none());
     b.close()?;
+    let mut owner = store.snapshot(f.scoped(Visibility::Owner))?;
+    for (agent, was_read) in [(&f.a, true), (&f.b, false)] {
+        let page = owner.messages(
+            query(Some(Actor::Agent(agent.clone())), false),
+            budget(10, 65536, None)?,
+        )?;
+        let row = page.items().first().ok_or("missing selected delivery")?;
+        assert_eq!(row.recipient, Actor::Agent(agent.clone()));
+        assert_eq!(row.read.is_some(), was_read);
+    }
+    let row = present(owner.message(id.clone())?)?;
+    assert_eq!(row.recipient, Actor::Agent(f.a.clone()));
+    assert!(row.read.is_some());
+    owner.close()?;
     store.append(
         f.batch(
             f.self_scope(&f.b).admission,

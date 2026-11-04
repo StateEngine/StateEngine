@@ -135,6 +135,11 @@ fn row<S: Snapshot>(cx: &mut Cx<'_, S>, record: MessageRecord) -> Result<Message
         } else {
             receipt::actor_ref(cx.read, &record.recipient)?
         },
+        for_recipient: if record.work.is_some() {
+            Some(receipt::actor_ref(cx.read, &record.recipient)?)
+        } else {
+            None
+        },
         work: record.work,
         kind: serde_json::from_value(serde_json::Value::String(record.kind))
             .map_err(|error| scope::unreadable("message kind", &error.to_string()))?,

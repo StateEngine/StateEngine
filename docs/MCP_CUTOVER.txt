@@ -41,6 +41,8 @@ requires both kind="finding" and work.action="finding"; return commonly uses
 kind="question" and work.action="return". Actions label a message's purpose;
 they grant no authority. One floor message has one ID/body and independent
 recipient read/dismiss state. Each recipient sees that same canonical message.
+Floor rows name for_recipient, whose delivery/disposition is shown; owner
+inspection can choose another recipient with the CLI msg list --to filter.
 
 Rust retains the 32 KiB UTF-8 body bound and at most 20 refs. List limits are
 1..100, preview_chars is 0..4000, and msg_read budgets are 512..1048576 bytes.

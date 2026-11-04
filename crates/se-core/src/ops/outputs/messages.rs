@@ -69,6 +69,9 @@ pub struct MessageRow {
     pub event_id: EventId,
     pub from: ActorRef,
     pub to: ActorRef,
+    /// The recipient whose independent delivery/disposition is shown for floor mail.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub for_recipient: Option<ActorRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work: Option<se_types::WorkAddressing>,
     pub kind: MessageKind,

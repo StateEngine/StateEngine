@@ -273,6 +273,7 @@ impl SqliteSnapshot {
         delivered: Option<u64>,
         read: Option<u64>,
         dismissed: Option<u64>,
+        selected_recipient: Option<&Actor>,
     ) -> StoreResult<MessageRecord> {
         let e = self.record(sent)?;
         let (message, recipient, work, kind, body, refs, reply_to) = match e.body {
@@ -292,8 +293,12 @@ impl SqliteSnapshot {
                 refs,
                 reply_to,
             } => {
-                let agent = match &self.scope.admission.actor {
-                    Actor::Agent(agent) if work.addressees.contains(agent) => agent.clone(),
+                let preview = match &self.scope.visibility {
+                    Visibility::SelfOnly(agent) => Some(Actor::Agent(agent.clone())),
+                    _ => None,
+                };
+                let agent = match selected_recipient.or(preview.as_ref()) {
+                    Some(Actor::Agent(agent)) if work.addressees.contains(agent) => agent.clone(),
                     _ => work
                         .addressees
                         .first()
@@ -313,18 +318,14 @@ impl SqliteSnapshot {
             _ => return Err(invalid("message head points to another event kind")),
         };
         let (delivered, read, dismissed) = if work.is_some() {
-            if recipient == self.scope.admission.actor {
-                let id = key(
-                    &self.db,
-                    recipient.kind(),
-                    recipient.wire(),
-                    &scope_key(&self.db, &e.header.scope, false)?,
-                    false,
-                )?;
-                self.db.query_row("SELECT delivered_seq,read_seq,dismissed_seq FROM message_deliveries WHERE sent_seq=? AND recipient_id=?",rusqlite::params![sent,id],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).map_err(sql)?
-            } else {
-                (None, None, None)
-            }
+            let id = key(
+                &self.db,
+                recipient.kind(),
+                recipient.wire(),
+                &scope_key(&self.db, &e.header.scope, false)?,
+                false,
+            )?;
+            self.db.query_row("SELECT delivered_seq,read_seq,dismissed_seq FROM message_deliveries WHERE sent_seq=? AND recipient_id=?",rusqlite::params![sent,id],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).map_err(sql)?
         } else {
             (delivered, read, dismissed)
         };
