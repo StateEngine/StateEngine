@@ -28,6 +28,14 @@ impl StateFiles for StagingFiles {
     fn prepare_directory(&self, path: &Path) -> StoreResult<()> {
         self.native.prepare_directory(path).map_err(file_error)
     }
+    fn retire_empty_staging(&self, staged: ProtectedStaging) -> StoreResult<std::fs::File> {
+        self.native
+            .retire_empty_staging(se_proc::ProtectedStateStaging {
+                path: staged.path,
+                file: staged.file,
+            })
+            .map_err(file_error)
+    }
     fn create_staging(&self, path: &Path) -> StoreResult<ProtectedStaging> {
         let staged = self.native.create_staging(path).map_err(file_error)?;
         *self

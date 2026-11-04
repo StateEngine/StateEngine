@@ -17,7 +17,7 @@ fn unreadable_project_root_does_not_hide_other_projects() -> fixture::Check {
     store.append(
         f.batch(
             admission,
-            None,
+            Some(fixture::request("readable-status-project")?),
             vec![EventBody::ProjectRegistered {
                 project: other.clone(),
                 name: "Readable project".into(),

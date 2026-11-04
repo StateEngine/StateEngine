@@ -39,6 +39,9 @@ pub trait StateFiles: Send + Sync {
     /// Reserve a unique, protected regular staging file in the owned directory.
     /// Read back owner-only mode/ACL and directory custody before returning.
     fn create_staging(&self, directory: &std::path::Path) -> StoreResult<ProtectedStaging>;
+    /// Consume fresh empty staging and retire its exact native name before text
+    /// is written, retaining the writable anonymous file until its final drop.
+    fn retire_empty_staging(&self, staged: ProtectedStaging) -> StoreResult<std::fs::File>;
     /// Open without following links and verify regular-file identity and owner-only
     /// file/directory protection. Missing is Absent; unknown/unreadable is not absence.
     fn readback(&self, path: &std::path::Path) -> StoreResult<Read<std::fs::File>>;

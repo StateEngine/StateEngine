@@ -56,6 +56,14 @@ fn native_error(e: StateFileError) -> Box<StoreError> {
 }
 pub struct Files(pub NativeStateFiles);
 impl StateFiles for Files {
+    fn retire_empty_staging(&self, staged: ProtectedStaging) -> StoreResult<std::fs::File> {
+        self.0
+            .retire_empty_staging(se_proc::ProtectedStateStaging {
+                path: staged.path,
+                file: staged.file,
+            })
+            .map_err(native_error)
+    }
     fn create_staging(&self, directory: &Path) -> StoreResult<ProtectedStaging> {
         let s = self.0.create_staging(directory).map_err(native_error)?;
         Ok(ProtectedStaging {

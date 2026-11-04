@@ -96,19 +96,8 @@ pub(crate) fn stage(
         .ok_or_else(|| invalid("state directory missing"))?
         .join("staging");
     lease.files().prepare_directory(&directory)?;
-    let ProtectedStaging { path, mut file } = lease.files().create_staging(&directory)?;
-    // Native removal compares the exact empty digest, syncs the parent and
-    // witnesses absence. Windows uses POSIX disposition; the held file survives.
-    lease
-        .files()
-        .remove_owned(&path, Sha256::digest([]).into())
-        .map_err(|mut e| {
-            e.cause.push_str(&format!(
-                "; empty staging retirement failed at {}",
-                path.display()
-            ));
-            e
-        })?;
+    let staged = lease.files().create_staging(&directory)?;
+    let mut file = lease.files().retire_empty_staging(staged)?;
     let mut hash = Sha256::new();
     let mut length = 0u64;
     let mut buffer = [0u8; 16 * 1024 + 3];

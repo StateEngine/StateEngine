@@ -134,7 +134,10 @@ fn open(path: &Path, directory: bool, create: bool, write: bool) -> Result<File>
     let raw = unsafe {
         CreateFileW(
             data.as_ptr(),
-            GENERIC_READ | READ_CONTROL | if write { GENERIC_WRITE } else { 0 },
+            GENERIC_READ
+                | READ_CONTROL
+                | if write { GENERIC_WRITE } else { 0 }
+                | if create && !directory { DELETE } else { 0 },
             share,
             attributes.as_ref().map_or(ptr::null(), |a| a as *const _),
             if create { CREATE_NEW } else { OPEN_EXISTING },
@@ -378,6 +381,49 @@ impl Directory {
             .sync_all()
             .map_err(|e| io_error("flush staging parent", path, e))?;
         Ok(file)
+    }
+    pub fn retire_empty_staging(&self, path: &Path, file: &File, root: &Path) -> Result<()> {
+        let parent = self.parent(path, root)?;
+        let physical = self.absolute(path, root)?;
+        let held = metadata(file, path, false, true)?;
+        let outside = open(&physical, false, false, false)?;
+        if metadata(&outside, path, false, true)? != held {
+            return Err(unsafe_path("empty staging name changed", path));
+        }
+        drop(outside);
+        // The original CREATE_NEW handle denies competing writers. Delete that
+        // exact object directly; opening the general mutation guard would deny
+        // sharing with our own still-live writable staging handle.
+        let info = FILE_DISPOSITION_INFO_EX {
+            Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        };
+        // SAFETY: uniquely owned DELETE-capable staging handle and exact layout.
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle(),
+                FileDispositionInfoEx,
+                (&info as *const FILE_DISPOSITION_INFO_EX).cast(),
+                size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+            )
+        } == 0
+        {
+            return Err(last("retire exact empty staging handle", path));
+        }
+        parent
+            .sync_all()
+            .map_err(|e| io_error("flush anonymous staging parent", path, e))?;
+        match open(&physical, false, false, false) {
+            Err(error)
+                if error
+                    .source
+                    .as_ref()
+                    .is_some_and(|e| e.kind() == io::ErrorKind::NotFound) =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(error),
+            Ok(_) => Err(unsafe_path("retired staging name remains present", path)),
+        }
     }
     pub fn open_for_publication(&self, path: &Path, root: &Path) -> Result<File> {
         let _parent = self.parent(path, root)?;
