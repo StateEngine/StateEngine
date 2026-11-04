@@ -1,7 +1,7 @@
 //! Permanent per-account claim creation and retained installation-record locking.
 use super::*;
 
-impl OwnedFile {
+impl Pin {
     pub(in crate::state_files) fn create_claim(path: &Path) -> Result<Self> {
         if let Some(pin) = Self::open(path).map_err(claim_error)? {
             if pin
