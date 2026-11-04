@@ -3,6 +3,7 @@ use schemars::JsonSchema;
 use se_types::{AgentId, Cursor, Named, Page, ProjectId, Read, Result, SeError, SessionId, Window};
 use serde::{Deserialize, Serialize};
 pub const DEFAULT_BYTES: u32 = 4096;
+pub const MAX_BYTES: u32 = 1048576;
 pub fn default_limit() -> u16 {
     20
 }
@@ -42,7 +43,7 @@ pub struct SessionContextRequest {
     pub byte_budget: u32,
 }
 fn bytes(value: u32) -> Result<()> {
-    if !(1024..=1048576).contains(&value) {
+    if !(1024..=MAX_BYTES).contains(&value) {
         return Err(SeError::invalid("byte_budget", "1024..1048576 UTF-8 bytes"));
     }
     Ok(())

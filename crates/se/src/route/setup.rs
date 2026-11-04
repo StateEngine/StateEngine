@@ -93,9 +93,27 @@ impl se_types::OperationCommand for InitRemedy<'_> {
 }
 impl se_types::RemedyCommands for InitRemedy<'_> {
     fn for_error(&self, error: &se_types::ErrorBody) -> Result<Option<se_types::Cmd>> {
+        if let Some(se_types::Cmd::Se { argv }) = error.recovery_command() {
+            let home = self.home.to_str().ok_or_else(|| {
+                se_core::scope::unreadable("recovery command home", "UTF-8 state home required")
+            })?;
+            return se_types::Argv::from_op(&RecoveryInHome { argv, home })
+                .map(|argv| Some(se_types::Cmd::Se { argv }));
+        }
         (error.code() == se_types::Code::SetupRequired)
             .then(|| se_types::Argv::from_op(self).map(|argv| se_types::Cmd::Se { argv }))
             .transpose()
+    }
+}
+struct RecoveryInHome<'a> {
+    argv: &'a se_types::Argv,
+    home: &'a str,
+}
+impl se_types::OperationCommand for RecoveryInHome<'_> {
+    fn cli_argv(&self) -> Vec<String> {
+        let mut argv = self.argv.as_slice().to_vec();
+        argv.splice(1..1, ["--home".into(), self.home.into()]);
+        argv
     }
 }
 pub fn required(cx: &crate::bootstrap::Bootstrap) -> se_types::SeError {

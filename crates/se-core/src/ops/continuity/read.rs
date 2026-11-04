@@ -399,3 +399,123 @@ pub(super) fn resume_command(identity: &Identity, governing: Option<&se_types::C
     }
     command
 }
+
+struct BudgetRecovery<'a> {
+    identity: &'a Identity,
+    input: &'a Resume,
+    needed: usize,
+}
+impl se_types::OperationCommand for BudgetRecovery<'_> {
+    fn cli_argv(&self) -> Vec<String> {
+        let mut argv = vec![
+            "se".into(),
+            "--project".into(),
+            self.identity.principal.project.id.to_string(),
+            "resume".into(),
+            "--limit".into(),
+            self.input.limit.to_string(),
+            "--budget".into(),
+            self.needed.to_string(),
+        ];
+        if self.identity.principal.preview {
+            argv.extend([
+                "--preview".into(),
+                self.identity.principal.agent.id.to_string(),
+            ]);
+        }
+        for (flag, cursor) in [
+            ("--since", self.input.since.as_ref()),
+            ("--governing-cursor", self.input.governing_cursor.as_ref()),
+        ] {
+            if let Some(cursor) = cursor {
+                argv.extend([flag.into(), cursor.to_string()]);
+            }
+        }
+        argv
+    }
+}
+pub(super) fn budget_refusal(
+    identity: &Identity,
+    input: &Resume,
+    needed: usize,
+) -> Result<SeError> {
+    let retry = needed <= MAX_BYTES as usize;
+    let mut error = SeError::too_large(
+        "continuity JSON structural metadata and first unread item",
+        input.byte_budget as usize,
+        needed,
+    );
+    error.body=error.body.with_remedy(se_types::Remedy {
+        text:if retry {format!("Retry the CLI JSON response with --budget {needed}, preserving the selected agent, limit and cursors.")}
+            else {format!("The minimum {needed}-byte JSON response exceeds the {MAX_BYTES}-byte supported cap. Read working-state, mail and history separately with their paged commands.")},
+        command:Some(if retry {se_types::Cmd::Se {argv:se_types::Argv::from_op(&BudgetRecovery {identity,input,needed})?}} else {se_types::Cmd::Manual}),
+    });
+    Ok(error)
+}
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+    fn identity() -> Result<Identity> {
+        Ok(Identity {
+            principal: ContinuityPrincipal {
+                project: se_types::Named {
+                    id: se_types::ProjectId::from_parts(1, [1; 10])?,
+                    name: "Project with spaces".into(),
+                },
+                agent: se_types::Named {
+                    id: se_types::AgentId::from_parts(2, [2; 10])?,
+                    name: "Agent with spaces".into(),
+                },
+                session_id: None,
+                preview: true,
+            },
+            role: None,
+            harness: "claude".into(),
+            model: None,
+            conversation: None,
+        })
+    }
+    #[test]
+    fn emitted_retry_round_trips_through_production_cli_grammar()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let identity = identity()?;
+        let input = Resume {
+            limit: 2,
+            byte_budget: 1024,
+            preview_agent: Some(identity.principal.agent.id.clone()),
+            since: Some(se_types::Cursor::new("since-cursor")?),
+            governing_cursor: Some(se_types::Cursor::new("governing-cursor")?),
+        };
+        let error = budget_refusal(&identity, &input, 8192)?;
+        let se_types::Cmd::Se { argv } = error
+            .body
+            .recovery_command()
+            .ok_or("missing typed recovery")?
+        else {
+            return Err("CLI recovery required".into());
+        };
+        let matches = crate::ops::cli_command().try_get_matches_from(argv.as_slice())?;
+        let common = crate::ops::CommonArgs::from_matches(&matches)?;
+        assert_eq!(
+            common.selections.preview.as_deref(),
+            Some(identity.principal.agent.id.as_str())
+        );
+        let crate::ops::AnyOp::Resume(decoded) = crate::ops::from_matches(&matches)? else {
+            return Err("resume grammar required".into());
+        };
+        assert_eq!(decoded.limit, input.limit);
+        assert_eq!(decoded.byte_budget, 8192);
+        assert_eq!(decoded.since, input.since);
+        assert_eq!(decoded.governing_cursor, input.governing_cursor);
+        let error = budget_refusal(&identity, &input, MAX_BYTES as usize + 1)?;
+        assert!(matches!(
+            error.body.recovery_command(),
+            Some(se_types::Cmd::Manual)
+        ));
+        assert!(matches!(
+            error.body.remedy(&se_types::RenderCx::default())?.command,
+            Some(se_types::Cmd::Manual)
+        ));
+        Ok(())
+    }
+}
