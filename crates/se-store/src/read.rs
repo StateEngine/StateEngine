@@ -272,6 +272,7 @@ impl Snapshot for SqliteSnapshot {
         )
     }
     fn message(&mut self, id: se_types::MessageId) -> StoreResult<Read<MessageRecord>> {
+        self.mail_source()?;
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let m = key(&self.db, "message", id.as_str(), &scope, false)?;

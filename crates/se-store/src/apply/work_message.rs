@@ -123,6 +123,7 @@ pub(super) fn mark(
     }
     let scope = scope_key(c, &header.scope, false)?;
     let project = project_id(c, &header.scope, false)?;
+    let message_id = message.clone();
     let message = key(c, "message", message.as_str(), &scope, false)?;
     let recipient = key(
         c,
@@ -152,7 +153,7 @@ pub(super) fn mark(
         .ok_or_else(|| {
             fail(
                 StoreErrorCode::ScopeMismatch,
-                "message unavailable to the named recipient",
+                format!("message {message_id} unavailable to the named recipient"),
             )
         })?;
     let evidence = evidence

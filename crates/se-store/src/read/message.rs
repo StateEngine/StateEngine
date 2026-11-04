@@ -4,6 +4,21 @@ use rusqlite::types::Value;
 pub(super) type MarkRow = (i64, u64, Option<u64>, Option<u64>, Option<u64>);
 type DeliveryRow = (i64, u64, Option<u64>, Option<u64>, Option<u64>, Vec<u8>);
 impl SqliteSnapshot {
+    /// Schema 3 adds delivery heads; it still needs the retained direct-mail
+    /// projection and marks for decoding and subsequent recipient mutations.
+    /// Preparing these finite sources preserves storage failure even when a
+    /// maintained count or an empty delivery index would otherwise short-cut.
+    pub(super) fn mail_source(&self) -> StoreResult<()> {
+        self.db.prepare("SELECT d.sent_seq,m.message_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE 0")
+            .map_err(|error| self.read_sql(error))?;
+        if self.info.schema_version >= 3 {
+            self.db
+                .prepare("SELECT sent_seq FROM message_deliveries WHERE 0")
+                .map_err(|error| self.read_sql(error))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn read_messages(
         &self,
         query: MessageQuery,
@@ -17,6 +32,7 @@ impl SqliteSnapshot {
         budget: ReadBudget,
         pending: bool,
     ) -> StoreResult<Page<MessageRecord>> {
+        self.mail_source()?;
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let binding = format!(

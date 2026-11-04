@@ -1,6 +1,7 @@
 use super::*;
 impl SqliteSnapshot {
     pub(super) fn count_messages(&self, query: MessageQuery) -> StoreResult<u64> {
+        self.mail_source()?;
         let project = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let actor_key = |actor: &Actor| {
