@@ -234,7 +234,10 @@ pub async fn old_stop_unproved(f: &Fixture, writer: &SqliteClient) -> Check {
     let receipt = writer
         .submit(f.batch(
             f.owner_project(),
-            None,
+            Some(super::fixture::request(&format!(
+                "fixture-wave2_host_fixture-235-{}",
+                serial()
+            ))?),
             vec![
                 session::prepared(f, &old, &f.a),
                 process::registration(&identity, ProcessState::Starting),
@@ -244,7 +247,10 @@ pub async fn old_stop_unproved(f: &Fixture, writer: &SqliteClient) -> Check {
     writer
         .submit(f.batch(
             f.owner_project(),
-            None,
+            Some(super::fixture::request(&format!(
+                "fixture-wave2_host_fixture-245-{}",
+                serial()
+            ))?),
             vec![
                 process::transition(
                     &identity,

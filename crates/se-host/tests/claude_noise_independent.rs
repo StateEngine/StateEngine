@@ -91,7 +91,10 @@ fn noise_accompanies_real_turns_and_a_live_noise_only_tail_waits() -> Check {
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-claude_noise_independent-92-{}",
+                serial()
+            ))?),
             vec![
                 EventBody::ProfileSaved {
                     agent: f.a.clone(),

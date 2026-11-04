@@ -109,7 +109,10 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-claude_compaction_independent-110-{}",
+                serial()
+            ))?),
             vec![
                 EventBody::ProfileSaved {
                     agent: f.a.clone(),

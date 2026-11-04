@@ -30,7 +30,10 @@ fn active(f: &Fixture) -> Result<se_store::RecordId, Box<dyn std::error::Error>>
     writer.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-read_pool_host_independent-31-{}",
+                serial()
+            ))?),
             vec![
                 session::prepared(f, &session, &f.a),
                 issued,
@@ -95,7 +98,10 @@ fn real_http_rechecks_committed_revocation_after_warming_the_admission_pool() ->
                     .writer
                     .submit(f.batch(
                         f.owner_project(),
-                        None,
+                        Some(fixture::request(&format!(
+                            "fixture-read_pool_host_independent-96-{}",
+                            serial()
+                        ))?),
                         vec![EventBody::CredentialRevoked {
                             credential: id,
                             expected: revision(2)?,

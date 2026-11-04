@@ -43,7 +43,10 @@ fn pinned_capture_keeps_chat_separate_and_refuses_broken_known_records() -> Chec
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-capture_chat_independent-44-{}",
+                serial()
+            ))?),
             vec![
                 session::prepared(&f, &s, &f.a),
                 session::activated(&s)?,

@@ -265,7 +265,10 @@ pub(super) fn prepare_session(
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(super::fixture::request(&format!(
+                "fixture-host_fixture-266-{}",
+                serial()
+            ))?),
             vec![
                 EventBody::SessionPrepared {
                     session: session.clone(),

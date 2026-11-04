@@ -24,7 +24,10 @@ pub fn check() -> Check {
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(super::fixture::request(&format!(
+                "fixture-host_eight_clients-25-{}",
+                serial()
+            ))?),
             vec![EventBody::PrincipalRegistered {
                 principal: Actor::Human(f.owner.clone()),
                 kind: PrincipalKind::Human,
@@ -42,7 +45,10 @@ pub fn check() -> Check {
         direct.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(super::fixture::request(&format!(
+                    "fixture-host_eight_clients-43-{}",
+                    serial()
+                ))?),
                 vec![EventBody::PrincipalRegistered {
                     principal: Actor::Agent(agent.clone()),
                     kind: PrincipalKind::Agent,

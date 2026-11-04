@@ -25,7 +25,10 @@ fn setup() -> Outcome<(Fixture, SqliteDirect, Arc<Lease>)> {
     store.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-decision_detail-26-{}",
+                serial()
+            ))?),
             vec![EventBody::PrincipalRegistered {
                 principal: Actor::Human(f.owner.clone()),
                 kind: PrincipalKind::Human,
@@ -52,7 +55,10 @@ fn propose(
         .append(
             f.batch(
                 f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
-                None,
+                Some(fixture::request(&format!(
+                    "fixture-decision_detail-53-{}",
+                    serial()
+                ))?),
                 vec![EventBody::DecisionProposed {
                     decision: id.clone(),
                     key: "policy.files".into(),
@@ -73,7 +79,17 @@ fn append(
     body: EventBody<InputText>,
 ) -> Outcome<EventId> {
     Ok(store
-        .append(f.batch(f.owner_project(), None, vec![body])?, lease)?
+        .append(
+            f.batch(
+                f.owner_project(),
+                Some(fixture::request(&format!(
+                    "fixture-decision_detail-76-{}",
+                    serial()
+                ))?),
+                vec![body],
+            )?,
+            lease,
+        )?
         .primary_event)
 }
 fn read(f: &Fixture, id: &DecisionId, json: bool) -> Outcome<(Output, serde_json::Value)> {
@@ -310,7 +326,10 @@ fn unknown_and_foreign_decision_ids_are_distinct() -> Check {
     store.append(
         f.batch(
             admission.clone(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-decision_detail-311-{}",
+                serial()
+            ))?),
             vec![
                 EventBody::ProjectRegistered {
                     project,

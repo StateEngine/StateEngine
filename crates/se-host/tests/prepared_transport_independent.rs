@@ -68,7 +68,10 @@ fn check(fenced: bool) -> Check {
                     .writer
                     .submit(f.batch(
                         f.owner_project(),
-                        None,
+                        Some(fixture::request(&format!(
+                            "fixture-prepared_transport_independent-69-{}",
+                            serial()
+                        ))?),
                         vec![
                             session::prepared(&f, &s, &f.a),
                             credential(

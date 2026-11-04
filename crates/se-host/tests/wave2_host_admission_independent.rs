@@ -36,7 +36,10 @@ fn prepared_refusals_validate_authority_before_naming_activation() -> Check {
     d.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-wave2_host_admission_independent-37-{}",
+                serial()
+            ))?),
             vec![
                 session::prepared(&f, &s, &f.a),
                 current,
@@ -125,7 +128,10 @@ fn prepared_refusals_validate_authority_before_naming_activation() -> Check {
                     .writer
                     .submit(f.batch(
                         f.owner_project(),
-                        None,
+                        Some(fixture::request(&format!(
+                            "fixture-wave2_host_admission_independent-126-{}",
+                            serial()
+                        ))?),
                         vec![
                             session::prepared(&f, &successor, &f.a),
                             credential(
@@ -193,7 +199,10 @@ fn stop_unproved_fence_crosses_sessions_but_not_agent_principals() -> Check {
                 .writer
                 .submit(f.batch(
                     f.owner_project(),
-                    None,
+                    Some(fixture::request(&format!(
+                        "fixture-wave2_host_admission_independent-194-{}",
+                        serial()
+                    ))?),
                     vec![
                         session::prepared(&f, &s, agent),
                         issued,
