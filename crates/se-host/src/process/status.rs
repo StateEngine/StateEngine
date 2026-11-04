@@ -5,6 +5,8 @@ use crate::{BlockingClass, client::lease::Deadline};
 use se_core::{commit::Cx, ops::*, scope, store_error::store_error};
 use se_store::{Actor, Admission, EventBody, MessageQuery, Snapshot};
 use se_types::{Read, Result};
+#[path = "status/resources.rs"]
+mod resources;
 
 impl LaunchCoordinator {
     pub(super) async fn status(
@@ -88,20 +90,7 @@ impl LaunchCoordinator {
                         error("host observation clock", "representable Unix microseconds")
                     })?,
                 )?);
-                #[cfg(target_os = "linux")]
-                {
-                    let counters = se_proc::observe_self_resources()
-                        .map_err(|cause| error("host self resources", format!("{cause:?}")))?;
-                    status.value.runtime.resources = Some(ResourceSample {
-                        self_voluntary_switches: counters.voluntary_switches,
-                        self_involuntary_switches: Some(counters.involuntary_switches),
-                        cpu_user_us: counters.cpu_user_us,
-                        cpu_system_us: counters.cpu_system_us,
-                        rss_bytes: counters.rss_bytes,
-                        sampled_at: receipt::timestamp(crate::runtime::start::now_unix_micros()?)?,
-                        method: "linux:getrusage(RUSAGE_SELF)+/proc/self/statm".into(),
-                    });
-                }
+                resources::observe(&mut status.value.runtime);
                 bound.remaining()?;
                 Ok(output)
             })

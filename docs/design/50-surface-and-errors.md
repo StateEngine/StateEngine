@@ -357,6 +357,12 @@ state and claims no stop effect. The optional `already_down` field is omitted
 for an actual shutdown. A missing endpoint with a held lease, unresolved native
 custody or unreadable prior-host identity still refuses.
 
+`se up --foreground` keeps the original CLI process as the host and drains it
+through the normal shutdown path on Linux SIGINT, SIGTERM or SIGHUP, or Windows
+Ctrl-C, Ctrl-Break or console-close events. A verified existing
+host gives an already-running conflict with `se status` and `se down` guidance;
+foreground mode never takes that host over.
+
 | Op | Command line | Human output | Family |
 | --- | --- | --- | --- |
 | runtime.up | `se up [--foreground]` | `StateEngine running (daemon, pid 4120, generation 7, 127.0.0.1:24731).` | `se.runtime-start/v1` |
@@ -1071,8 +1077,9 @@ Codex approval never with bypass false is an ordinary sandboxed policy.
 | `$.runtime.endpoint` | string \| null | yes | `127.0.0.1:PORT` |
 | `$.runtime.version` | string \| null | yes | the host's se version |
 | `$.runtime.observed_at` | Time \| null | yes | last observation from outside |
-| `$.runtime.resources` | object | only when a host answered | Host self-accounting (Prime decision, 2026-10-30). `$.runtime` is this family's host block, so this is the requested `host.resources`. The key is present whenever a running host answered the status call, and the key is absent otherwise: absent means no host, never zero. The values are kernel-sourced counters that the host reads about itself at `sampled_at`; they are never estimates. The journey runner measures StateEngine's own idle cost as the difference of two samples 60 s apart. |
-| `$.runtime.resources.self_voluntary_switches` | int | with `resources` | cumulative since host start. Linux/macOS: `ru_nvcsw` from `getrusage(RUSAGE_SELF)`, which counts the host's own threads, exited ones included, and excludes child processes such as agents. Windows: the sum of `ContextSwitches` over the host process's live threads, which Windows does not split into voluntary and involuntary (switches of exited threads are not included). |
+| `$.runtime.resources` | object | when a host answered and native counters are available | Host self-accounting (Prime decision, 2026-10-30). `$.runtime` is this family's host block, so this is the requested `host.resources`. The values are kernel-sourced counters that the host reads about itself at `sampled_at`; they are never estimates. A failed resource observation leaves this key absent and names the reason in `resources_unavailable`, while the rest of status remains available. A file-only CLI reader cannot sample the host's own counters. Absence never means zero or proves no host is running. The journey runner measures StateEngine's own idle cost as the difference of two samples 60 s apart. |
+| `$.runtime.resources_unavailable` | string | when hosted native self-accounting is unavailable | Names the failed observation or unsupported platform; absent when a sample succeeded or no host answered. |
+| `$.runtime.resources.self_voluntary_switches` | int \| null | with `resources` | cumulative since host start when the OS supplies the split. Linux/macOS: `ru_nvcsw` from `getrusage(RUSAGE_SELF)`, which counts the host's own threads, exited ones included, and excludes child processes such as agents. Windows: null, because the OS does not separate voluntary and involuntary switches. An unavailable counter is never zero. |
 | `$.runtime.resources.self_involuntary_switches` | int \| null | with `resources` | Linux/macOS: `ru_nivcsw` from the same call. Windows: null, because the OS does not separate it; this is an unavailable fact, not zero. |
 | `$.runtime.resources.cpu_user_us` | int | with `resources` | cumulative user CPU in microseconds. Linux/macOS: `ru_utime`. Windows: `GetProcessTimes` user time. Children are excluded on every OS. |
 | `$.runtime.resources.cpu_system_us` | int | with `resources` | cumulative kernel CPU in microseconds. Linux/macOS: `ru_stime`. Windows: `GetProcessTimes` kernel time. |
