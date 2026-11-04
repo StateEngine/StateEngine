@@ -26,6 +26,10 @@ pub struct Record {
     pub last_position: Option<Position>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued_input: Option<super::queued_input::QueuedInput>,
+    /// Native tool evidence; its provider-specific JSON is not a new input door.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<serde_json::Value>")]
+    pub captured_tool: Option<tool::Observation>,
     pub kind_truncated: bool,
     pub subtype_truncated: bool,
 }
@@ -43,6 +47,7 @@ impl Record {
             kind: k,
             subtype: sub,
             queued_input: None,
+            captured_tool: None,
             count: None,
             first_position: None,
             last_position: None,
@@ -63,6 +68,7 @@ impl Record {
                     .is_some_and(|(a, b)| a <= b)
         };
         let valid = match (self.count, &self.first_position, &self.last_position) {
+            (None, None, None) if self.captured_tool.is_some() => bounded(&self.position),
             (None, None, None) => {
                 bounded(&self.position)
                     && self.position.offset.checked_add(self.position.length) == end
@@ -85,6 +91,25 @@ impl Record {
                     "individual provenance, never a counted aggregate",
                 ));
             }
+        }
+        if let Some(tool) = &self.captured_tool {
+            if self.kind != "captured-tool"
+                || self.count.is_some()
+                || self.queued_input.is_some()
+                || self.position != tool.position
+            {
+                return Err(SeError::invalid(
+                    "captured tool",
+                    "individual exact tool provenance",
+                ));
+            }
+            tool.validate_binding(
+                &tool.session,
+                &tool.agent,
+                tool.provider,
+                tool.source,
+                evidence,
+            )?;
         }
         if !valid {
             return Err(scope::unreadable(
@@ -151,6 +176,8 @@ impl Default for View {
 fn event(value: StoredEvent) -> Result<TranscriptEvent> {
     let EventBody::SessionTurn {
         session,
+        agent,
+        provider,
         role: se_store::Role::System,
         text: StoredText::Present(text),
         vendor_ref,
@@ -171,6 +198,9 @@ fn event(value: StoredEvent) -> Result<TranscriptEvent> {
     }
     let record = Record::decode(text.as_str())?;
     record.validate_evidence(&evidence)?;
+    if let Some(tool) = &record.captured_tool {
+        tool.validate_binding(&session, &agent, provider, tool.source, &evidence)?;
+    }
     Ok(TranscriptEvent {
         event_id: value.header.event,
         session_id: session,

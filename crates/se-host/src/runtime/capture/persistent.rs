@@ -64,6 +64,7 @@ impl Record {
             source: self.source,
             pin,
             queue: Default::default(),
+            tools: Default::default(),
         })
     }
 }

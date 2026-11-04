@@ -28,8 +28,27 @@ pub(super) fn next(
                 continue;
             }
             digest.update(&line);
-            if let Some(record) = crate::codex_capture::decode(&line, &source.binding.conversation)?
-            {
+            let tool =
+                crate::harness::tool_capture::codex::decode(&line, &source.binding.conversation)?;
+            let completed = match tool {
+                Some(fact) => Some(crate::codex_capture::Completed {
+                    vendor: fact.vendor(&source.binding.identity.session),
+                    role: se_store::Role::System,
+                    text: fact
+                        .record(
+                            &source.binding.identity,
+                            se_store::Provider::Codex,
+                            source.source,
+                            se_core::ops::transcript::Position {
+                                offset: consumed - line.len() as u64,
+                                length: line.len() as u64,
+                            },
+                        )?
+                        .body()?,
+                }),
+                None => crate::codex_capture::decode(&line, &source.binding.conversation)?,
+            };
+            if let Some(record) = completed {
                 let mut allocated = facts()?;
                 allocated.turn = crate::codex_capture::turn_id(
                     &source.binding.identity.session,

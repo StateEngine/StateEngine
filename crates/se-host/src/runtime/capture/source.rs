@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 mod codex;
 pub(super) mod queue;
 mod scan;
+mod tools;
 const CHUNK: usize = 256 * 1024;
 const LINE: usize = 4 * 1024 * 1024;
 struct Cursor {

@@ -131,6 +131,15 @@ pub fn plan<R: Snapshot>(
     if input.role == Role::System {
         let notice = super::transcript::Record::decode(input.text.as_str())?;
         notice.validate_evidence(&input.evidence)?;
+        if let Some(tool) = &notice.captured_tool {
+            tool.validate_binding(
+                &session,
+                &agent,
+                input.provider,
+                input.source,
+                &input.evidence,
+            )?;
+        }
         if !input
             .vendor_turn
             .starts_with(se_store::TRANSCRIPT_EVENT_PREFIX)
@@ -150,8 +159,19 @@ pub fn plan<R: Snapshot>(
     let mut metadata = Vec::new();
     for item in input.metadata {
         item.record.validate_evidence(&input.evidence)?;
+        if let Some(tool) = &item.record.captured_tool {
+            tool.validate_binding(
+                &session,
+                &agent,
+                input.provider,
+                input.source,
+                &input.evidence,
+            )?;
+        }
         super::inputs::bounded("metadata identity", &item.vendor_turn, 512, false)?;
-        if item.record.count.is_none() && item.record.queued_input.is_none()
+        if item.record.count.is_none()
+            && item.record.queued_input.is_none()
+            && item.record.captured_tool.is_none()
             || !item
                 .vendor_turn
                 .starts_with(se_store::TRANSCRIPT_EVENT_PREFIX)

@@ -36,18 +36,37 @@ impl LaunchCoordinator {
             generation: self.store.generation.get(),
         };
         for notification in &pending {
-            let Some(record) = crate::codex_capture::notification(notification, &conversation)?
-            else {
+            let tool =
+                crate::harness::tool_capture::codex::notification(notification, &conversation)?;
+            let record = if tool.is_some() {
+                None
+            } else {
+                crate::codex_capture::notification(notification, &conversation)?
+            };
+            if tool.is_none() && record.is_none() {
                 committed.push(notification.clone());
                 continue;
-            };
+            }
             let session = work.meta.session.clone();
+            let agent = work.meta.agent.id.clone();
+            let vendor = tool
+                .as_ref()
+                .map(|fact| fact.vendor(&session))
+                .or_else(|| record.as_ref().map(|record| record.vendor.clone()))
+                .ok_or_else(|| {
+                    error(
+                        "Codex capture acknowledgement",
+                        "the completed native identity",
+                    )
+                })?;
             let matched = self.store.read(admission.clone(), deadline, move |cx| {
-                match cx.read.native_turn(session, se_store::Provider::Codex, &record.vendor).map_err(|cause| se_core::store_error::store_error(&cause))? {
+                match cx.read.native_turn(session.clone(), se_store::Provider::Codex, &vendor).map_err(|cause| se_core::store_error::store_error(&cause))? {
                     Read::Absent { .. } => Ok(false),
+                    Read::Present { value } if tool.is_some()=>crate::harness::tool_capture::committed(
+                        tool.as_ref().ok_or_else(||error("Codex tool acknowledgement","the actual native item"))?,value,&session,&agent),
                     Read::Present { value } => match value.body {
                         EventBody::SessionTurn {provider: se_store::Provider::Codex, vendor_ref, role, text: StoredText::Present(text), ..}
-                            if vendor_ref == record.vendor && role == record.role && text == record.text.as_str() => Ok(true),
+                            if record.as_ref().is_some_and(|record|vendor_ref == record.vendor && role == record.role && text == record.text.as_str()) => Ok(true),
                         _ => Err(error("Codex capture acknowledgement", "the immutable item differs or was erased; preserve its original identity")),
                     },
                     Read::Unreadable { reason, .. } => Err(error("Codex committed item", reason)),

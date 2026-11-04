@@ -70,6 +70,9 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
         .build()?;
     rt.block_on(async {
         let mut host = HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
+        let mut configuration = se_core::config_policy::ConfigFile::default();
+        configuration.runtime.listen_port = Some(private_port()?);
+        host.configure(configuration)?;
         let capture = host.capture_handle();
         capture.bind(TranscriptPin { identity: SessionIdentity {project:f.project.clone(),agent:f.a.clone(),session:s.clone()}, conversation:conversation.clone(), path:native_path.clone(),file_identity:Sha256::from_bytes(pin.identity()) }, source, pin, &bound()?).await?;
         let execution = host.execution_context();
@@ -80,11 +83,12 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
         let consumer = async {
             let result: Check = async {
                 let result = capture.catch_up(admitted.clone(), conversation.clone(), native_path.clone(), &bound()?).await?;
-                require(result.capture_commits.len() == 3, "metadata or real chat missing; tool result became a turn")?;
+                require(result.capture_commits.len() == 4, "metadata, tool facts or real chat missing")?;
                 let mut snapshot = execution.reader.snapshot(f.self_scope(&f.a))?;
-                let page = snapshot.turns(f.a.clone(), budget(10, 100_000, None)?)?;
+                let page = snapshot.turns(f.a.clone(), budget(20, 100_000, None)?)?;
                 let mut texts = Vec::new();
                 let mut metadata = 0;
+                let mut tools = 0;
                 for event in page.items() {
                     let EventBody::SessionTurn { role, text:StoredText::Present(text), evidence, .. } = &event.body else { return Err("unexpected captured event".into()); };
                     match role {
@@ -93,6 +97,12 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
                             let body: serde_json::Value = serde_json::from_str(text)?;
                             require(body["schema"] == "se.transcript-event/v1", "metadata schema missing")?;
                             require(!text.contains("CACHE_SECRET") && !text.contains("TOOL_SECRET"), "provider payload leaked into metadata")?;
+                            if body["kind"] == "captured-tool" {
+                                let record = se_core::ops::transcript::Record::decode(text)?;
+                                let tool = record.captured_tool.ok_or("native tool fact missing")?;
+                                require(matches!(tool.native, se_core::ops::transcript::tool::NativeIdentity::Unknown(_)), "missing native identity was fabricated")?;
+                                tools += 1;
+                            }
                             metadata += 1;
                         }
                         Role::Tool => return Err("tool role was published".into()),
@@ -102,7 +112,7 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
                     let hash: [u8;32] = Hasher::digest(&bytes[start..end]).into();
                     require(evidence.sha256 == Some(hash), "raw native evidence digest differs")?;
                 }
-                require(metadata == 5, "metadata lost its durable representation")?;
+                require(metadata == 7 && tools == 2, "metadata lost its durable representation")?;
                 texts.sort();
                 require(texts == vec!["real assistant", "real user λ", "second real user"], format!("wrong public chat: {texts:?}"))?;
 
@@ -118,8 +128,8 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
                 require(added.capture_commits.len() == 1, "permitted cache metadata blocked the real assistant")?;
                 let mut stable = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let before = present(stable.capture_source(source)?)?;
-                let retained = stable.turns(f.a.clone(), budget(10,100_000,None)?)?;
-                require(retained.items().len() == 10, "permitted cache and real assistant were not retained exactly")?;
+                let retained = stable.turns(f.a.clone(), budget(20,100_000,None)?)?;
+                require(retained.items().len() == 12, "permitted cache and real assistant were not retained exactly")?;
                 let mut found_assistant = false;
                 for event in retained.items() {
                     let EventBody::SessionTurn { role, text:StoredText::Present(text), .. } = &event.body
@@ -146,7 +156,7 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
                 let mut after = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let current = present(after.capture_source(source)?)?;
                 require(current.revision == before.revision && current.current.header.event == before.current.header.event, "invalid known record advanced the durable cursor")?;
-                require(after.turns(f.a.clone(), budget(10,100_000,None)?)?.items().len() == 10, "invalid known record fabricated a turn")?;
+                require(after.turns(f.a.clone(), budget(20,100_000,None)?)?.items().len() == 12, "invalid known record fabricated a turn")?;
                 after.close()?;
                 Ok(())
             }.await;
@@ -158,4 +168,14 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
         require(report.transport_closed && report.endpoint_retired, "capture host transport cleanup incomplete")?;
         result
     })
+}
+fn private_port() -> std::result::Result<u16, Box<dyn std::error::Error>> {
+    for port in 20000..=29999 {
+        if port != 20800
+            && let Ok(probe) = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+        {
+            return Ok(probe.local_addr()?.port());
+        }
+    }
+    Err("no available explicit test listener port".into())
 }

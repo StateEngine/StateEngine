@@ -1,0 +1,157 @@
+use super::*;
+use serde_json::{Value, json};
+type Check = std::result::Result<(), Box<dyn std::error::Error>>;
+fn called(id: &str, path: &str) -> Value {
+    json!({"type":"assistant","sessionId":"native","cwd":"/native/work",
+        "message":{"role":"assistant","content":[{"type":"tool_use","id":id,"name":"Edit",
+            "input":{"file_path":path,"new_string":"INTENDED_BYTES_NOT_A_REVISION"}}]}})
+}
+fn completed(id: &str, error: bool) -> Value {
+    json!({"type":"user","sessionId":"native","message":{"role":"user",
+        "content":[{"type":"tool_result","tool_use_id":id,"is_error":error,"content":"PRIVATE_TOOL_OUTPUT"}]}})
+}
+#[test]
+fn claude_joins_only_actual_ids_and_keeps_missing_or_conflicting_facts_unknown() -> Check {
+    let mut tracker = claude::Tracker::default();
+    tracker.observe(&called("call-a", "a.rs"))?;
+    tracker.observe(&called("call-b", "b.rs"))?;
+    for (id, path) in [("call-b", "b.rs"), ("call-a", "a.rs")] {
+        let facts = tracker.observe(&completed(id, false))?;
+        let fact = &facts[0];
+        assert!(matches!(&fact.native,NativeIdentity::ClaudeCall{tool_use_id} if tool_use_id==id));
+        assert!(matches!(fact.outcome, Outcome::Succeeded));
+        let Target::Paths(paths) = &fact.target else {
+            return Err("actual ID did not join its target".into());
+        };
+        assert_eq!(paths[0].spelling, path);
+        assert_eq!(paths[0].cwd.as_deref(), Some("/native/work"));
+        assert!(
+            paths[0].content_revision.is_none(),
+            "intended Edit content became a revision witness"
+        );
+    }
+    let result = tracker.observe(&completed("unmatched", true))?;
+    assert!(matches!(result[0].outcome, Outcome::Failed));
+    assert!(matches!(
+        result[0].target,
+        Target::Unknown(UnknownReason::UnmatchedIdentity)
+    ));
+    tracker.observe(&called("missing-outcome", "unknown.rs"))?;
+    let mut missing = completed("missing-outcome", false);
+    missing["message"]["content"][0]
+        .as_object_mut()
+        .ok_or("block")?
+        .remove("is_error");
+    assert!(matches!(
+        tracker.observe(&missing)?[0].outcome,
+        Outcome::Unknown(UnknownReason::NoNativeOutcome)
+    ));
+    assert!(matches!(
+        tracker.observe(&completed("call-b", true))?[0].outcome,
+        Outcome::Unknown(UnknownReason::ConflictingEvidence)
+    ));
+    let conflict = tracker.observe(&called("call-a", "different.rs"))?;
+    assert!(matches!(
+        conflict[0].target,
+        Target::Unknown(UnknownReason::ConflictingEvidence)
+    ));
+    assert!(matches!(
+        tracker.observe(&completed("call-a", false))?[0].outcome,
+        Outcome::Unknown(UnknownReason::ConflictingEvidence)
+    ));
+    let mut cache = called("cache-copy", "not-an-edit");
+    cache["type"] = json!("api-request-blob");
+    assert!(
+        tracker.observe(&cache)?.is_empty(),
+        "cached model traffic became another native call"
+    );
+    let mut shell = called("shell", "ignored");
+    shell["message"]["content"][0]["name"] = json!("Bash");
+    shell["message"]["content"][0]["input"] = json!({"command":"echo data > forged.rs"});
+    assert!(matches!(
+        tracker.observe(&shell)?[0].target,
+        Target::Unknown(UnknownReason::NoNativeTarget)
+    ));
+    Ok(())
+}
+#[test]
+fn codex_preserves_item_call_namespaces_and_real_multi_path_outcomes() -> Check {
+    let conversation = "native".parse()?;
+    let item = json!({"type":"FileChange","id":"item-actual","call_id":"call-distinct","status":"Completed",
+        "changes":[{"path":"old.rs","kind":{"type":"update","move_path":"new.rs"},"diff":"INTENDED_PATCH_NOT_CONTENT"}]});
+    let native = json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":"native","turn_id":"turn-actual","item":item}});
+    let fact = codex::decode(&serde_json::to_vec(&native)?, &conversation)?.ok_or("no tool")?;
+    assert!(
+        matches!(&fact.native,NativeIdentity::CodexItem{turn_id:Some(turn),item_id:Some(item),call_id:Some(call)} if turn=="turn-actual"&&item=="item-actual"&&call=="call-distinct")
+    );
+    assert!(matches!(fact.outcome, Outcome::Succeeded));
+    let Target::Paths(paths) = &fact.target else {
+        return Err("native paths missing".into());
+    };
+    assert_eq!(
+        paths
+            .iter()
+            .map(|p| p.spelling.as_str())
+            .collect::<Vec<_>>(),
+        ["old.rs", "new.rs"]
+    );
+    assert!(paths.iter().all(|p| p.content_revision.is_none()));
+    let mut rpc_item = item.clone();
+    rpc_item["type"] = json!("fileChange");
+    rpc_item["status"] = json!("completed");
+    let rpc = json!({"method":"item/completed","params":{"threadId":"native","turnId":"turn-actual","item":rpc_item}});
+    let notified = codex::notification(&rpc, &conversation)?.ok_or("no notification")?;
+    assert_eq!(fact.key, notified.key);
+    let identity = crate::SessionIdentity {
+        session: SessionId::from_parts(1, [1; 10])?,
+        agent: se_types::AgentId::from_parts(1, [2; 10])?,
+        project: se_types::ProjectId::from_parts(1, [3; 10])?,
+    };
+    let source = <RecordId as se_store::RecordIdentity>::from_parts(1, [4; 10])?;
+    let record = fact.record(
+        &identity,
+        Provider::Codex,
+        source,
+        Position {
+            offset: 10,
+            length: 20,
+        },
+    )?;
+    assert!(notified.matches(record.captured_tool.as_ref().ok_or("metadata")?)?);
+    let text = record.body()?;
+    assert!(!text.as_str().contains("INTENDED_PATCH_NOT_CONTENT"));
+    let mut altered = record.captured_tool.ok_or("metadata")?;
+    altered.outcome = Outcome::Failed;
+    assert!(!notified.matches(&altered)?);
+    Ok(())
+}
+#[test]
+fn codex_unknowns_are_explicit_and_a_large_target_set_is_never_trimmed() -> Check {
+    let conversation = "native".parse()?;
+    let mut item = json!({"type":"FileChange","id":"file","changes":(0..17).map(|n|json!({"path":format!("{n}.rs")})).collect::<Vec<_>>()});
+    let envelope = |item: &Value| json!({"method":"item/completed","params":{"threadId":"native","turnId":"turn","item":item}});
+    let fact = codex::notification(&envelope(&item), &conversation)?.ok_or("tool")?;
+    assert!(matches!(
+        fact.target,
+        Target::Unknown(UnknownReason::OverBudget)
+    ));
+    assert!(matches!(
+        fact.outcome,
+        Outcome::Unknown(UnknownReason::NoNativeOutcome)
+    ));
+    item = json!({"type":"mcpToolCall","id":"mcp-item","tool":"search","status":"failed","arguments":{"query":"explicit query"}});
+    let fact = codex::notification(&envelope(&item), &conversation)?.ok_or("tool")?;
+    assert!(matches!(fact.outcome, Outcome::Failed));
+    assert!(matches!(fact.target,Target::Query(ref query) if query=="explicit query"));
+    item["arguments"] = json!({"command":"write imaginary.rs"});
+    assert!(matches!(
+        codex::notification(&envelope(&item), &conversation)?
+            .ok_or("tool")?
+            .target,
+        Target::Unknown(UnknownReason::NoNativeTarget)
+    ));
+    let mut delta = envelope(&item);
+    delta["method"] = json!("item/tool/outputDelta");
+    assert!(codex::notification(&delta, &conversation)?.is_none());
+    Ok(())
+}

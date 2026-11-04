@@ -18,6 +18,7 @@ struct BoundTranscript {
     source: se_store::RecordId,
     pin: se_proc::NativeSourcePin,
     queue: std::collections::VecDeque<(u64, source::queue::Tracker)>,
+    tools: std::collections::VecDeque<(u64, crate::harness::tool_capture::claude::Tracker)>,
 }
 #[derive(Clone)]
 pub struct TranscriptBindings {
@@ -417,6 +418,7 @@ impl CaptureHandle {
                     source,
                     pin,
                     queue: Default::default(),
+                    tools: Default::default(),
                 };
                 let path = source.binding.path.to_local()?;
                 if path != source.pin.path()

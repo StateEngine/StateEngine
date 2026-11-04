@@ -25,6 +25,7 @@ pub(super) fn next(
         return super::codex::next(source, revision, offset, deadline, final_capture);
     }
     let mut tracker = super::queue::restore(source, offset, deadline)?;
+    let mut tool_tracker = super::tools::restore(source, offset, deadline)?;
     let mut position = offset;
     let mut consumed = offset;
     let mut complete = offset;
@@ -50,9 +51,47 @@ pub(super) fn next(
             if byte != b'\n' {
                 continue;
             }
+            let decoded = claude::decode(&line, &source.binding.conversation)?;
+            let native = if decoded
+                .as_ref()
+                .is_some_and(|r| r.role == se_store::Role::System)
+                || line.iter().all(u8::is_ascii_whitespace)
+            {
+                None
+            } else {
+                Some(
+                    serde_json::from_slice::<serde_json::Value>(&line)
+                        .map_err(|_| SeError::invalid("native tool record", "complete JSON"))?,
+                )
+            };
+            let tool_count = native
+                .as_ref()
+                .map_or(0, crate::harness::tool_capture::claude::Tracker::count);
+            if tool_count > 32 {
+                return Err(SeError::invalid(
+                    "native tools per record",
+                    "at most 32 tool facts; preserve the source cursor",
+                ));
+            }
+            if tool_count + noise.len() > 32 {
+                return finish(
+                    source,
+                    revision,
+                    offset,
+                    complete,
+                    digest,
+                    None,
+                    Pending {
+                        noise,
+                        queued: Vec::new(),
+                        tracker,
+                        tool_tracker,
+                    },
+                )
+                .map(Some);
+            }
             digest.update(&line);
             complete = consumed;
-            let decoded = claude::decode(&line, &source.binding.conversation)?;
             let mut queued = tracker.observe(
                 &line,
                 Position {
@@ -60,6 +99,26 @@ pub(super) fn next(
                     length: line.len() as u64,
                 },
             )?;
+            if let Some(value) = native {
+                let position = Position {
+                    offset: consumed - line.len() as u64,
+                    length: line.len() as u64,
+                };
+                for fact in tool_tracker.observe(&value)? {
+                    queued.push(fact.record(
+                        &source.binding.identity,
+                        se_store::Provider::Claude,
+                        source.source,
+                        position.clone(),
+                    )?);
+                }
+            }
+            if queued.len() + noise.len() > 32 {
+                return Err(SeError::invalid(
+                    "native metadata per record",
+                    "at most 32 metadata facts; preserve the source cursor",
+                ));
+            }
             if let Some(mut record) = decoded {
                 if record.role == se_store::Role::System {
                     let mut notice = if queued.is_empty() {
@@ -86,6 +145,7 @@ pub(super) fn next(
                                     noise,
                                     queued,
                                     tracker,
+                                    tool_tracker,
                                 },
                             )
                             .map(Some);
@@ -116,6 +176,24 @@ pub(super) fn next(
                         noise,
                         queued,
                         tracker,
+                        tool_tracker,
+                    },
+                )
+                .map(Some);
+            }
+            if !queued.is_empty() {
+                return finish(
+                    source,
+                    revision,
+                    offset,
+                    consumed,
+                    digest,
+                    None,
+                    Pending {
+                        noise,
+                        queued,
+                        tracker,
+                        tool_tracker,
                     },
                 )
                 .map(Some);
@@ -142,6 +220,7 @@ pub(super) fn next(
                         noise,
                         queued: Vec::new(),
                         tracker,
+                        tool_tracker,
                     },
                 )
                 .map(Some);
@@ -181,6 +260,7 @@ struct Pending {
     noise: BTreeMap<String, Record>,
     queued: Vec<Record>,
     tracker: super::queue::Tracker,
+    tool_tracker: crate::harness::tool_capture::claude::Tracker,
 }
 fn finish(
     source: &mut BoundTranscript,
@@ -193,15 +273,26 @@ fn finish(
 ) -> Result<TrustedCapture> {
     let Pending {
         mut noise,
-        queued,
+        mut queued,
         tracker,
+        tool_tracker,
     } = pending;
     let main = match main {
         Some(main) => main,
         None => {
-            let (_, record) = noise.pop_first().ok_or_else(|| {
-                SeError::invalid("final metadata", "at least one complete counted record")
-            })?;
+            let record = if !noise.is_empty() {
+                noise
+                    .pop_first()
+                    .ok_or_else(|| SeError::invalid("final metadata", "the counted record"))?
+                    .1
+            } else if !queued.is_empty() {
+                queued.remove(0)
+            } else {
+                return Err(SeError::invalid(
+                    "final metadata",
+                    "at least one complete native metadata record",
+                ));
+            };
             TextRecord {
                 vendor_turn: identity(source, "noise", offset, &record.kind),
                 role: se_store::Role::System,
@@ -210,28 +301,33 @@ fn finish(
         }
     };
     let mut metadata = Vec::with_capacity(noise.len() + queued.len());
-    for record in noise.into_values().chain(queued) {
+    for (index, record) in noise.into_values().chain(queued).enumerate() {
         let allocated = facts()?;
         metadata.push(CaptureMetadata {
             vendor_turn: identity(
                 source,
                 "notice",
                 record.position.offset,
-                &format!(
-                    "{}:{}",
-                    record.kind,
-                    record
-                        .queued_input
-                        .as_ref()
-                        .and_then(|q| q.enqueue.as_ref())
-                        .map_or(0, |p| p.offset)
-                ),
+                &if record.captured_tool.is_some() {
+                    format!("captured-tool:{index}")
+                } else {
+                    format!(
+                        "{}:{}",
+                        record.kind,
+                        record
+                            .queued_input
+                            .as_ref()
+                            .and_then(|q| q.enqueue.as_ref())
+                            .map_or(0, |p| p.offset)
+                    )
+                },
             ),
             record,
             turn: allocated.turn,
             event: allocated.turn_event,
         });
     }
+    super::tools::retain(source, end, tool_tracker);
     if let Some((_, cached)) = source.queue.iter_mut().find(|(at, _)| *at == end) {
         *cached = tracker;
     } else {
@@ -264,6 +360,8 @@ fn finish(
 }
 
 #[cfg(test)]
+mod tool_tests;
+#[cfg(test)]
 mod tests {
     use super::*;
     use se_store::RecordIdentity;
@@ -294,6 +392,7 @@ mod tests {
                 file_identity: se_types::Sha256::from_bytes(pin.identity()),
             },
             queue: Default::default(),
+            tools: Default::default(),
             source: se_store::RecordId::from_parts(1_700_000_000_000, [2; 10])?,
             pin,
         };
