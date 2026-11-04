@@ -92,6 +92,7 @@ fn unmeasured(id: &str, title: &str, error: SeError, at: &str) -> DiagnosisCheck
 struct Observation {
     present: bool,
     repairable: bool,
+    complete_value_sha256: Option<String>,
     detail: String,
 }
 fn original(current: Option<&str>, edit: &crate::runtime::PathEdit) -> bool {
@@ -109,6 +110,7 @@ fn observe(edit: &crate::runtime::PathEdit) -> Result<Observation> {
         return Ok(Observation {
             present: false,
             repairable: false,
+            complete_value_sha256: None,
             detail: format!(
                 "{} is absent; restore the recorded shell profile or rerun the matching installer before retrying this check",
                 edit.target
@@ -122,6 +124,7 @@ fn observe(edit: &crate::runtime::PathEdit) -> Result<Observation> {
     Ok(Observation {
         present: count == 1,
         repairable: count == 0 && original(Some(text), edit),
+        complete_value_sha256: Some(se_types::hex_lower(&Sha256::digest(&bytes))),
         detail: format!(
             "{}: {} exact recorded PATH blocks; other user edits are preserved",
             edit.target, count
@@ -145,6 +148,9 @@ fn observe(edit: &crate::runtime::PathEdit) -> Result<Observation> {
     Ok(Observation {
         present: count == 1,
         repairable: count == 0 && original(observed.value(), edit),
+        complete_value_sha256: observed
+            .value()
+            .map(|value| se_types::hex_lower(&Sha256::digest(value.as_bytes()))),
         detail: format!(
             "Recorded user PATH entry occurs {count} times; no process environment is changed"
         ),
@@ -178,7 +184,8 @@ pub(super) fn repair(
         .path_edits
         .get(index)
         .ok_or_else(|| refused(id, "recorded PATH check is absent"))?;
-    if !observe(edit)?.repairable {
+    let before = observe(edit)?;
+    if !before.present && !before.repairable {
         return Err(refused(
             id,
             "the complete profile or user PATH changed since installation; user edits were preserved. Manually add the recorded StateEngine PATH entry while keeping those edits, or rerun the matching installer; do not replace the whole profile",
@@ -188,8 +195,8 @@ pub(super) fn repair(
         check_id: id.into(),
         target: edit.target.clone(),
         expected_before: PathBefore {
-            complete_value_sha256: edit.before_sha256.as_ref().map(se_types::Sha256::hex),
-            recorded_entry_absent: true,
+            complete_value_sha256: before.complete_value_sha256,
+            recorded_entry_absent: !before.present,
         },
         expected_after: PathAfter {
             recorded_entry_sha256: se_types::hex_lower(&Sha256::digest(edit.block.as_bytes())),
@@ -198,23 +205,40 @@ pub(super) fn repair(
         },
     });
     super::plan::emit(&plan, cx.json, diagnostic)?;
-    apply(edit)?;
+    if !before.present {
+        apply(edit)?;
+    }
     let at = se_core::ops::receipt::timestamp(super::super::execute::now_us()?)?;
     let after = checks(cx, &at);
     let complete = after
         .iter()
         .any(|value| value.id == id && value.state == CheckState::Ok);
+    let fact = RepairFact {
+        subject: edit.target.clone(),
+        outcome: if before.present {
+            "already-correct"
+        } else {
+            "restored-owned-path-entry"
+        }
+        .into(),
+        detail: if before.present {
+            "Exactly one recorded entry was already present; no profile or PATH write was attempted"
+        } else {
+            "Only the exact recorded entry was restored after complete-value comparison"
+        }
+        .into(),
+    };
+    let (applied, skipped) = if before.present {
+        (vec![], vec![fact])
+    } else {
+        (vec![fact], vec![])
+    };
     Ok(RepairOutput {
         check_id: id.into(),
         plan,
         complete,
-        applied: vec![RepairFact {
-            subject: edit.target.clone(),
-            outcome: "restored-owned-path-entry".into(),
-            detail: "Only the exact recorded entry was restored after complete-value comparison"
-                .into(),
-        }],
-        skipped: vec![],
+        applied,
+        skipped,
         readbacks: vec![RepairFact {
             subject: edit.target.clone(),
             outcome: if complete {

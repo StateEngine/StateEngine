@@ -27,7 +27,11 @@ pub(super) fn emit(
         RepairPlan::RestoreRecordedPath(plan) => (
             &plan.check_id,
             &plan.target,
-            "restore exactly one recorded PATH entry after comparing the complete original value; preserve user edits".into(),
+            if plan.expected_before.recorded_entry_absent {
+                "restore exactly one recorded PATH entry after comparing the complete original value; preserve user edits"
+            } else {
+                "verify the already-correct recorded PATH entry; change nothing"
+            }.into(),
         ),
     };
     let mut write = || -> std::io::Result<()> {
