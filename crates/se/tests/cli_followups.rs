@@ -4,13 +4,13 @@
 )]
 use se_store::*;
 use se_types::EventId;
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 use std::{
     path::Path,
     process::{Command, Output},
     sync::Arc,
 };
-#[cfg(unix)]
-use std::time::{Duration, Instant};
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -716,7 +716,10 @@ fn send_to(
         .append(
             f.batch(
                 f.admission(Scope::Project(f.project.clone()), sender),
-                None,
+                Some(fixture::request(&format!(
+                    "fixture-cli_followups-send-to-{}",
+                    serial()
+                ))?),
                 vec![EventBody::MessageSent {
                     message: message()?,
                     recipient,
