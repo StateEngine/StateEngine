@@ -87,7 +87,7 @@ fn new_phase_observes_credential_activation_and_revocation() -> Check {
     writer.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-read_phase-88-{}", serial()))?),
             vec![
                 prepared(&f, &id, &f.a),
                 EventBody::CredentialIssued {
@@ -112,7 +112,7 @@ fn new_phase_observes_credential_activation_and_revocation() -> Check {
     writer.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-read_phase-113-{}", serial()))?),
             vec![
                 activated(&id)?,
                 EventBody::CredentialActivated {
@@ -134,7 +134,7 @@ fn new_phase_observes_credential_activation_and_revocation() -> Check {
     writer.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-read_phase-135-{}", serial()))?),
             vec![EventBody::CredentialRevoked {
                 credential,
                 expected: revision(2)?,

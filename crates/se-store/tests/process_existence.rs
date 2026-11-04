@@ -55,7 +55,10 @@ fn exited_reservations_still_count_as_process_records() -> Check {
     let id = identity(&f)?;
     let registered = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-process_existence-56-{}",
+            serial()
+        ))?),
         vec![EventBody::ProcessRegistered {
             identity: Box::new(id.clone()),
             initial: ProcessState::Reserved,
@@ -63,7 +66,10 @@ fn exited_reservations_still_count_as_process_records() -> Check {
     )?)?)??;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-process_existence-64-{}",
+            serial()
+        ))?),
         vec![EventBody::ProcessTransition {
             process: id.record.clone(),
             identity: Box::new(id),
@@ -95,7 +101,10 @@ fn released_projection_rows_still_count_as_process_records() -> Check {
     let writer = host.start_writer(options(8)?, lease.clone())?;
     wait(writer.client().submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-process_existence-96-{}",
+            serial()
+        ))?),
         vec![EventBody::ProcessRegistered {
             identity: Box::new(identity(&f)?),
             initial: ProcessState::Reserved,
@@ -181,7 +190,10 @@ fn another_projects_process_is_in_the_home_wide_fact() -> Check {
     );
     wait(client.submit(f.batch(
         admission.clone(),
-        None,
+        Some(request(&format!(
+            "fixture-process_existence-182-{}",
+            serial()
+        ))?),
         vec![EventBody::ProjectRegistered {
             project: project.clone(),
             name: "Other project".into(),
@@ -193,7 +205,10 @@ fn another_projects_process_is_in_the_home_wide_fact() -> Check {
     )?)?)??;
     wait(client.submit(f.batch(
         admission.clone(),
-        None,
+        Some(request(&format!(
+            "fixture-process_existence-194-{}",
+            serial()
+        ))?),
         vec![EventBody::PrincipalRegistered {
             principal: principal.clone(),
             kind: PrincipalKind::Agent,
@@ -208,7 +223,10 @@ fn another_projects_process_is_in_the_home_wide_fact() -> Check {
     id.principal = principal;
     wait(client.submit(f.batch(
         admission,
-        None,
+        Some(request(&format!(
+            "fixture-process_existence-209-{}",
+            serial()
+        ))?),
         vec![EventBody::ProcessRegistered {
             identity: Box::new(id),
             initial: ProcessState::Reserved,

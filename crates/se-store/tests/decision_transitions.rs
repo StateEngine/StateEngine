@@ -22,7 +22,7 @@ fn propose(
     Ok(s.append(
         f.batch(
             f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
-            None,
+            Some(request(&format!("fixture-proposal-{d}"))?),
             vec![EventBody::DecisionProposed {
                 decision: d.clone(),
                 key: "policy.files".into(),
@@ -42,8 +42,15 @@ fn append(
     l: &Lease,
     body: EventBody<InputText>,
 ) -> Outcome<EventId> {
-    Ok(s.append(f.batch(f.owner_project(), None, vec![body])?, l)?
-        .primary_event)
+    Ok(s.append(
+        f.batch(
+            f.owner_project(),
+            Some(request(&format!("fixture-transition-{}", serial()))?),
+            vec![body],
+        )?,
+        l,
+    )?
+    .primary_event)
 }
 fn events(page: &se_types::Page<StoredEvent>) -> Vec<EventId> {
     page.items()
@@ -57,7 +64,7 @@ fn foreign(f: &Fixture, s: &mut SqliteDirect, l: &Lease) -> Outcome<(ProjectId, 
     s.append(
         f.batch(
             f.admission(Scope::Project(p.clone()), Actor::Human(f.owner.clone())),
-            None,
+            Some(request(&format!("fixture-project-{p}"))?),
             vec![
                 EventBody::ProjectRegistered {
                     project: p.clone(),

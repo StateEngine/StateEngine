@@ -33,7 +33,10 @@ fn selectors_use_id_order_and_stale_on_catalog_changes_only() -> Check {
         direct.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "fixture-selector_catalog-34-{}",
+                    serial()
+                ))?),
                 vec![EventBody::PrincipalRegistered {
                     principal: Actor::Agent(se_types::AgentId::from_legacy(agent)?),
                     kind: PrincipalKind::Agent,
@@ -94,7 +97,10 @@ fn selectors_use_id_order_and_stale_on_catalog_changes_only() -> Check {
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "fixture-selector_catalog-95-{}",
+                serial()
+            ))?),
             vec![EventBody::PrincipalRenamed {
                 principal: Actor::Agent(f.a.clone()),
                 name: "New Alpha".into(),
@@ -153,7 +159,10 @@ fn project_pages_sort_ids_and_stale_after_registration() -> Check {
                     Scope::Project(project.clone()),
                     Actor::Human(f.owner.clone()),
                 ),
-                None,
+                Some(request(&format!(
+                    "fixture-selector_catalog-151-{}",
+                    serial()
+                ))?),
                 vec![EventBody::ProjectRegistered {
                     project,
                     name: name.into(),
@@ -188,7 +197,10 @@ fn project_pages_sort_ids_and_stale_after_registration() -> Check {
     direct.append(
         f.batch(
             f.admission(Scope::Project(added.clone()), Actor::Human(f.owner.clone())),
-            None,
+            Some(request(&format!(
+                "fixture-selector_catalog-189-{}",
+                serial()
+            ))?),
             vec![EventBody::ProjectRegistered {
                 project: added,
                 name: "Added project".into(),

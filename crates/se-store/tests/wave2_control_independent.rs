@@ -33,7 +33,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     let other = agent()?;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_control_independent-34-{}",
+            serial()
+        ))?),
         vec![
             grant(&f.a, true, Expected::Absent),
             helper(&f, &child, Some(&f.a)),
@@ -56,7 +59,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     let admission = f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone()));
     let session_receipt = wait(client.submit(f.batch(
         admission.clone(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_control_independent-57-{}",
+            serial()
+        ))?),
         vec![capture::prepared(&f, &session, &child)],
     )?)?)??;
     let mut process = identity(&child)?;
@@ -64,13 +70,19 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     process.session = Some(session.clone());
     wait(client.submit(f.batch(
         admission.clone(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_control_independent-65-{}",
+            serial()
+        ))?),
         vec![registration(&process, ProcessState::Reserved)],
     )?)?)??;
     process.root_identity = RootIdentityState::Unpublished;
     wait(client.submit(f.batch(
         admission.clone(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_control_independent-71-{}",
+            serial()
+        ))?),
         vec![transition(
             &process,
             1,
@@ -92,7 +104,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
             Scope::Project(f.project.clone()),
             Actor::Agent(child.clone()),
         ),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_control_independent-90-{}",
+            serial()
+        ))?),
         vec![EventBody::WorkingStateSet {
             agent: child.clone(),
             text: InputText::Inline("child private continuity".into()),
@@ -203,7 +218,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     );
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_control_independent-204-{}",
+            serial()
+        ))?),
         vec![grant(&f.a, false, revision(1)?)],
     )?)?)??;
     // The already measured snapshot keeps its grant and child facts together.
@@ -280,7 +298,10 @@ fn control_inventory_is_complete_or_refuses() -> Check {
     let child = agent()?;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_control_independent-281-{}",
+            serial()
+        ))?),
         vec![
             grant(&f.a, true, Expected::Absent),
             helper(&f, &child, Some(&f.a)),
@@ -294,7 +315,14 @@ fn control_inventory_is_complete_or_refuses() -> Check {
         .iter()
         .map(|id| capture::prepared(&f, id, &child))
         .collect();
-    wait(client.submit(f.batch(f.owner_project(), None, bodies)?)?)??;
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-297-{}",
+            serial()
+        ))?),
+        bodies,
+    )?)?)??;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     assert_eq!(
         reader
@@ -307,7 +335,10 @@ fn control_inventory_is_complete_or_refuses() -> Check {
     );
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_control_independent-308-{}",
+            serial()
+        ))?),
         vec![EventBody::SessionRevoked {
             session: sessions[0].clone(),
             expected: revision(1)?,

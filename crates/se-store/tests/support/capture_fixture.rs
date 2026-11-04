@@ -106,7 +106,7 @@ pub fn active(
     d.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(super::fixture::request(&format!("fixture-session-{id}"))?),
             vec![
                 prepared(f, id, &f.a),
                 activated(id)?,

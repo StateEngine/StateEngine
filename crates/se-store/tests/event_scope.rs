@@ -42,7 +42,7 @@ fn project(
     store.append(
         f.batch(
             f.admission(Scope::Project(p.clone()), Actor::Human(f.owner.clone())),
-            None,
+            Some(request(&format!("fixture-event_scope-43-{}", serial()))?),
             vec![EventBody::ProjectRegistered {
                 project: p.clone(),
                 name: "Foreign".into(),
@@ -122,7 +122,7 @@ fn foreign_ids_refuse_before_payload_and_preserve_history_scope() -> Check {
                 Scope::Project(foreign.clone()),
                 Actor::Human(f.owner.clone()),
             ),
-            None,
+            Some(request(&format!("fixture-event_scope-120-{}", serial()))?),
             vec![EventBody::PrincipalRegistered {
                 principal: Actor::Human(f.owner.clone()),
                 kind: PrincipalKind::Human,

@@ -31,7 +31,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     let mut i = identity(&f.a)?;
     let first = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_checkpoint_independent-32-{}",
+            serial()
+        ))?),
         vec![registration(&i, ProcessState::Starting)],
     )?)?)??;
     assert!(
@@ -53,7 +56,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     no_child.root_identity = RootIdentityState::NoChildCreated;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_checkpoint_independent-54-{}",
+            serial()
+        ))?),
         vec![registration(&no_child, ProcessState::Starting)],
     )?)?)??;
     let mut invalid_checkpoint = no_child.clone();
@@ -82,7 +88,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
         RecordedIdentity::Present(se_types::ProcessInstance::from_observation(fields.clone())?);
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_checkpoint_independent-83-{}",
+            serial()
+        ))?),
         vec![transition(
             &i,
             1,
@@ -131,7 +140,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     let target_session = capture::session()?;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_checkpoint_independent-132-{}",
+            serial()
+        ))?),
         vec![capture::prepared(&f, &target_session, &f.a)],
     )?)?)??;
     for kind in ["principal", "session"] {
@@ -182,7 +194,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
             RecordedIdentity::Present(se_types::ProcessInstance::from_observation(changed)?);
         let refused = wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "fixture-wave2_checkpoint_independent-183-{}",
+                serial()
+            ))?),
             vec![transition(
                 &drift,
                 2,
@@ -223,7 +238,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     );
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_checkpoint_independent-224-{}",
+            serial()
+        ))?),
         vec![transition(
             &i,
             2,
@@ -260,7 +278,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     );
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_checkpoint_independent-261-{}",
+            serial()
+        ))?),
         vec![transition(
             &i,
             3,

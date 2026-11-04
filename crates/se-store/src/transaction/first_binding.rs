@@ -152,7 +152,7 @@ pub(super) fn check_pair(
                 ));
             }
             let mut activations = 0;
-            let mut preparations = 0;
+            let mut prepared = None;
             for id in &retained.events {
                 let scope = scope_key(c, &batch.admission.scope, false)?;
                 let event = key(c, "event", id.as_str(), &scope, false)?;
@@ -179,21 +179,30 @@ pub(super) fn check_pair(
                         owner_generation = Some(generation.get());
                     }
                     EventBody::SessionPrepared {
+                        session,
                         generation,
                         surface: Some(SessionSurface::SeCode),
                         ..
-                    } if index == 1 && owner_generation == Some(generation) => {
-                        preparations += 1;
+                    } if index == 1
+                        && owner_generation == Some(generation)
+                        && prepared.is_none()
+                        && activations == 0 =>
+                    {
+                        prepared = Some(session);
                     }
                     EventBody::SessionActivated {
+                        session,
                         process: None,
                         containment: ContainmentFact::NotLaunched,
                         ..
-                    } if index == 1 => {
+                    } if index == 1 && prepared.as_ref() == Some(&session) && activations == 0 => {
                         activations += 1;
                     }
-                    EventBody::SessionEnded { .. } | EventBody::SessionRevoked { .. }
-                        if index == 1 => {}
+                    EventBody::SessionEnded { session, .. }
+                    | EventBody::SessionRevoked { session, .. }
+                        if index == 1
+                            && activations == 0
+                            && prepared.as_ref() != Some(&session) => {}
                     _ => {
                         return Err(fail(
                             StoreErrorCode::ProjectionInconsistent,
@@ -201,8 +210,17 @@ pub(super) fn check_pair(
                         ));
                     }
                 }
+                if event.durability != CommitDurability::Full
+                    || !matches!(event.writer.kind(), WriterKind::Host { generation } if Some(generation) == owner_generation)
+                {
+                    return Err(fail(
+                        StoreErrorCode::ProjectionInconsistent,
+                        "first binding member writer/durability differs",
+                    ));
+                }
             }
-            if index == 1 && (activations != 1 || preparations != 1 || owner_generation.is_none()) {
+            if index == 1 && (activations != 1 || prepared.is_none() || owner_generation.is_none())
+            {
                 return Err(fail(
                     StoreErrorCode::ProjectionInconsistent,
                     "first binding retained activation missing",

@@ -47,7 +47,7 @@ fn unknown_capture_source_is_not_unreadable_storage() -> Check {
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-store_failures-48-{}", serial()))?),
             vec![
                 capture_fixture::prepared(&f, &sid, &f.a),
                 capture_fixture::activated(&sid)?,
@@ -134,7 +134,10 @@ fn unknown_replacement_decision_is_a_reference_refusal() -> Check {
     let proposed = direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "fixture-store_failures-135-{}",
+                serial()
+            ))?),
             vec![EventBody::DecisionProposed {
                 decision: prior.clone(),
                 key: "policy".into(),
@@ -149,7 +152,10 @@ fn unknown_replacement_decision_is_a_reference_refusal() -> Check {
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "fixture-store_failures-150-{}",
+                serial()
+            ))?),
             vec![EventBody::DecisionRatified {
                 decision: prior.clone(),
                 expected: revision(1)?,
@@ -163,7 +169,10 @@ fn unknown_replacement_decision_is_a_reference_refusal() -> Check {
         .append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "fixture-store_failures-164-{}",
+                    serial()
+                ))?),
                 vec![EventBody::DecisionSuperseded {
                     prior: prior.clone(),
                     replacement: replacement.clone(),
@@ -195,7 +204,10 @@ fn unknown_replacement_decision_is_a_reference_refusal() -> Check {
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "fixture-store_failures-196-{}",
+                serial()
+            ))?),
             vec![EventBody::DecisionRetracted {
                 decision: prior,
                 expected: revision(2)?,

@@ -93,7 +93,10 @@ fn cached_connection_observes_newly_committed_activation_and_revocation() -> Che
     writer.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "fixture-read_pool_independent-94-{}",
+                serial()
+            ))?),
             vec![
                 prepared(&f, &session, &f.a),
                 EventBody::CredentialIssued {
@@ -118,7 +121,10 @@ fn cached_connection_observes_newly_committed_activation_and_revocation() -> Che
     writer.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "fixture-read_pool_independent-119-{}",
+                serial()
+            ))?),
             vec![
                 activated(&session)?,
                 EventBody::CredentialActivated {
@@ -140,7 +146,10 @@ fn cached_connection_observes_newly_committed_activation_and_revocation() -> Che
     writer.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "fixture-read_pool_independent-141-{}",
+                serial()
+            ))?),
             vec![EventBody::CredentialRevoked {
                 credential,
                 expected: revision(2)?,

@@ -21,7 +21,10 @@ fn commit(
     Ok(writer.append(
         f.batch(
             f.admission(scope, Actor::Human(f.owner.clone())),
-            None,
+            Some(request(&format!(
+                "fixture-wave2_empty_project_removal_independent-22-{}",
+                serial()
+            ))?),
             vec![body],
         )?,
         lease,
@@ -125,7 +128,10 @@ fn empty_registry_witness_preserves_owner_and_expected_revision() -> Check {
     writer.append(
         f.batch(
             f.admission(Scope::Registry, actor.clone()),
-            None,
+            Some(request(&format!(
+                "fixture-wave2_empty_project_removal_independent-126-{}",
+                serial()
+            ))?),
             vec![EventBody::PrincipalRegistered {
                 principal: actor.clone(),
                 kind: PrincipalKind::Human,
@@ -142,7 +148,10 @@ fn empty_registry_witness_preserves_owner_and_expected_revision() -> Check {
     let nonowner = writer.append(
         f.batch(
             f.admission(Scope::Project(id.clone()), actor),
-            None,
+            Some(request(&format!(
+                "fixture-wave2_empty_project_removal_independent-143-{}",
+                serial()
+            ))?),
             vec![removal(&id, 1, registered.primary_event.clone())?],
         )?,
         &*lease,
@@ -203,7 +212,10 @@ fn empty_project_refuses_foreign_or_unrelated_registry_witnesses() -> Check {
     let unrelated = writer.append(
         f.batch(
             f.admission(Scope::Registry, actor.clone()),
-            None,
+            Some(request(&format!(
+                "fixture-wave2_empty_project_removal_independent-204-{}",
+                serial()
+            ))?),
             vec![EventBody::PrincipalRegistered {
                 principal: actor,
                 kind: PrincipalKind::Human,

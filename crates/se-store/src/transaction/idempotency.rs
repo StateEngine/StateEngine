@@ -1,5 +1,11 @@
 //! Caller-key resolution is shared by ordinary and first-binding replay.
 use super::*;
+struct StoredRequest {
+    op: Vec<u8>,
+    digest: Option<Vec<u8>>,
+    version: u16,
+    erased: bool,
+}
 pub(super) fn lookup(
     c: &Connection,
     batch: &AtomicBatch,
@@ -18,9 +24,15 @@ pub(super) fn lookup(
         false,
     )?;
     if let Some(request) = &batch.request {
-        let found:Option<(Vec<u8>,Option<Vec<u8>>,u16,bool)>=c.query_row("SELECT operation_id,fingerprint,fingerprint_codec,erased FROM operations WHERE scope_key=? AND actor_id=?
-                    AND request_key=?",crate::sql_value::sql_params![scope,actor,request.key.as_str()],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?))).optional().map_err(sql)?;
-        if let Some((op, digest, version, erased)) = found {
+        let found:Option<StoredRequest>=c.query_row("SELECT operation_id,fingerprint,fingerprint_codec,erased FROM operations WHERE scope_key=? AND actor_id=?
+                    AND request_key=?",crate::sql_value::sql_params![scope,actor,request.key.as_str()],|r|Ok(StoredRequest { op:crate::sql_value::value(r,0)?,digest:crate::sql_value::value(r,1)?,version:crate::sql_value::value(r,2)?,erased:crate::sql_value::value(r,3)? })).optional().map_err(sql)?;
+        if let Some(StoredRequest {
+            op,
+            digest,
+            version,
+            erased,
+        }) = found
+        {
             if erased {
                 return Err(fail(
                     StoreErrorCode::ContentErased,

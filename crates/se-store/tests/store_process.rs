@@ -84,7 +84,7 @@ fn typed_process_registration_and_stop_transitions_roundtrip() -> Check {
     let mut i = identity(&f, false)?;
     let first = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-85-{}", serial()))?),
         vec![registration(&i, ProcessState::Reserved)],
     )?)?)??;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
@@ -105,7 +105,7 @@ fn typed_process_registration_and_stop_transitions_roundtrip() -> Check {
     ] {
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-store_process-106-{}", serial()))?),
             vec![transition(&i, rev, from, to, first.primary_event.clone())?],
         )?)?)??;
         let current = head(&f, i.record.clone())?;
@@ -149,13 +149,13 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     let sid = capture_fixture::session()?;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-150-{}", serial()))?),
         vec![capture_fixture::prepared(&f, &sid, &f.a)],
     )?)?)??;
     let i = identity(&f, true)?;
     let first = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-156-{}", serial()))?),
         vec![registration(&i, ProcessState::Running)],
     )?)?)??;
     for (rev, from, to) in [
@@ -231,7 +231,7 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 1);
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-232-{}", serial()))?),
         vec![transition(
             &i,
             1,
@@ -268,7 +268,7 @@ fn loss_never_discards_an_already_published_native_birth_identity() -> Check {
     let i = identity(&f, true)?;
     let first = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-269-{}", serial()))?),
         vec![registration(&i, ProcessState::Running)],
     )?)?)??;
     let mut lost = i.clone();
@@ -278,7 +278,7 @@ fn loss_never_discards_an_already_published_native_birth_identity() -> Check {
     };
     let result = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-279-{}", serial()))?),
         vec![transition(
             &lost,
             1,
@@ -326,7 +326,7 @@ fn direct_registration_and_foreign_session_refuse() -> Check {
     let session = capture_fixture::session()?;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-327-{}", serial()))?),
         vec![capture_fixture::prepared(&f, &session, &f.b)],
     )?)?)??;
     i = identity(&f, false)?;
@@ -362,12 +362,12 @@ fn saved_native_identity_survives_loss_and_recovery() -> Check {
     let i = identity(&f, true)?;
     let first = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-363-{}", serial()))?),
         vec![registration(&i, ProcessState::Running)],
     )?)?)??;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-368-{}", serial()))?),
         vec![transition(
             &i,
             1,
@@ -392,7 +392,7 @@ fn saved_native_identity_survives_loss_and_recovery() -> Check {
     }
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-393-{}", serial()))?),
         vec![transition(
             &i,
             2,

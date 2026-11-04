@@ -125,7 +125,7 @@ fn session_source_and_turn_readers_apply_principal_visibility() -> Check {
     d.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-store_capture-126-{}", serial()))?),
             vec![
                 prepared(&f, &beta, &f.b),
                 activated(&beta)?,
@@ -177,7 +177,7 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
     d.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-store_capture-178-{}", serial()))?),
             vec![
                 prepared(&f, &id, &f.a),
                 EventBody::CredentialIssued {
@@ -221,7 +221,7 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
     d.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-store_capture-222-{}", serial()))?),
             vec![
                 activated(&id)?,
                 EventBody::CredentialActivated {
@@ -258,7 +258,7 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
     d.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-store_capture-259-{}", serial()))?),
             vec![
                 EventBody::CredentialRevoked {
                     credential,
@@ -307,7 +307,11 @@ fn native_capture_metadata(request_key: Option<&str>) -> Check {
         *provider = Provider::SeCode;
     }
     d.append(
-        f.batch(f.owner_project(), None, vec![prepared, activated(&id)?])?,
+        f.batch(
+            f.owner_project(),
+            Some(request(&format!("fixture-store_capture-310-{}", serial()))?),
+            vec![prepared, activated(&id)?],
+        )?,
         &*lease,
     )?;
     let attempt = || -> Result<AtomicBatch, Box<dyn std::error::Error>> {
