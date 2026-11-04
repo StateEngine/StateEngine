@@ -152,6 +152,7 @@ fn human_launch_stop_hint_preserves_the_receipt_home_project_and_agent() -> Chec
         },
         containment: "contained".into(),
         containment_cause: None,
+        replies: AgentCommand::history_in_home(&f.a, home, &f.project),
         resume: ResumeCommand {
             ready: true,
             mode: "resume".into(),

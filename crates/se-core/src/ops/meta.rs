@@ -257,6 +257,9 @@ fn decode_registered(
     meta: &crate::registry::OpMeta,
     arguments: serde_json::Value,
 ) -> Result<AnyOp> {
+    if meta.name == "continuity.resume" {
+        super::continuity::validate_resume_since(&arguments)?;
+    }
     let input_schema = input_schema(meta.name).ok_or_else(|| internal(meta.name))?;
     let properties = input_schema
         .get("properties")

@@ -37,6 +37,15 @@ pub fn launch(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
     if let Some(reason) = &value.resume.reason {
         writeln!(out, "Resume: {reason}")?;
     }
+    if let Some(command) = &value.replies {
+        writeln!(out, "Read replies: {}", command.command)?;
+    } else {
+        writeln!(
+            out,
+            "Read replies: {}",
+            se_core::ops::AgentCommand::HOME_UNAVAILABLE
+        )?;
+    }
     writeln!(
         out,
         "Event: {}; request key: {}",

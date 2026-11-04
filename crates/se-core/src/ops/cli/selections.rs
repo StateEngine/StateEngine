@@ -7,6 +7,8 @@ use super::*;
 #[serde(default, deny_unknown_fields)]
 pub struct CliSelections {
     pub preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_agent: Option<String>,
     /// Resolved from CLI project policy before forwarding; never an authority.
     /// The host must select/check this scope before opening an admitted snapshot.
     pub project: Option<se_types::ProjectId>,
@@ -24,6 +26,7 @@ impl CliSelections {
             ("agent", &self.agent),
             ("to", &self.mail_to),
             ("preview", &self.preview),
+            ("resume agent", &self.resume_agent),
         ] {
             if let Some(selector) = selector {
                 bounded(name, selector, 512, false)?;
@@ -64,6 +67,16 @@ impl CliSelections {
                     ));
                 }
             }
+        }
+        if let Some(target) = &self.resume_agent {
+            return match op {
+                AnyOp::Resume(_) => super::reopen::refuse(cx, target),
+                _ => Err(unknown_flag(
+                    "resume agent",
+                    op.meta().name,
+                    "only resume accepts this selector",
+                )),
+            };
         }
         if let Some(target) = &self.preview {
             if !matches!(cx.admission.actor, se_store::Actor::Human(_)) {

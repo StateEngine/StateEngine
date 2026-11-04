@@ -86,4 +86,5 @@ pub struct LaunchResult {
     pub containment: String,
     pub containment_cause: Option<String>,
     pub resume: ResumeCommand,
+    pub replies: Option<super::AgentCommand>,
 }

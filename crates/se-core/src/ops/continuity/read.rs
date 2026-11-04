@@ -94,7 +94,7 @@ pub(super) fn gather<R: Snapshot>(
         .as_ref()
         .map(|cursor| cx.read.cursor_position(cursor, purpose.clone()))
         .transpose()
-        .map_err(|e| store_error(&e))?;
+        .map_err(|error| super::cursor::store_cursor_error(&error))?;
     // The store's global head may be another agent's private event. The
     // target's resume head advances with its own turns, state, sessions and
     // mail, and is the admitted checkpoint for this target-bound cursor.

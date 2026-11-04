@@ -347,6 +347,11 @@ impl LaunchCoordinator {
             }
             .into(),
             containment_cause,
+            replies: se_core::ops::AgentCommand::history_in_home(
+                &plan.agent.id,
+                &self.options.home,
+                &plan.project.id,
+            ),
             resume: ResumeCommand {
                 ready: resume.is_some(),
                 mode: "resume".into(),
