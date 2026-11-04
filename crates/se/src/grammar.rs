@@ -75,8 +75,16 @@ fn context(error: &clap::Error, kind: ContextKind) -> String {
     error.get(kind).map(ToString::to_string).unwrap_or_default()
 }
 
+fn diagnostic_word(word: String) -> String {
+    if word.starts_with('-') {
+        word.split('=').next().unwrap_or(&word).to_owned()
+    } else {
+        word
+    }
+}
+
 fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
-    let argument = context(&error, ContextKind::InvalidArg);
+    let argument = diagnostic_word(context(&error, ContextKind::InvalidArg));
     let command = error_command(args);
     let flag = argument.split_whitespace().next().unwrap_or_default();
     let missing_value = error.kind() == ErrorKind::InvalidValue
@@ -105,11 +113,11 @@ fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
                 "--actor" | "--agent-id" | "--user-id" | "--human-actor" => "identity comes from the verified owner or launched session",
                 _ => "unknown or inapplicable flag; inspect this command's --help",
             }.into(),
-            flag: argument,
+            flag: argument.split('=').next().unwrap_or(&argument).into(),
             command,
         }),
         ErrorKind::InvalidSubcommand | ErrorKind::UnknownArgument => {
-            let got = if argument.is_empty() { context(&error, ContextKind::InvalidSubcommand) } else { argument };
+            let got = if argument.is_empty() { diagnostic_word(context(&error, ContextKind::InvalidSubcommand)) } else { argument };
             let suggestion = match error.get(ContextKind::ValidSubcommand) {
                 Some(ContextValue::Strings(commands)) => spelling(&got, commands),
                 _ => None,
@@ -209,4 +217,33 @@ pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<Option<std::pat
         Ok(m.get_one::<String>("home").map(std::path::PathBuf::from))
     })();
     Some(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_options_never_retain_inline_values() {
+        for prefix in [
+            vec!["se"],
+            vec!["se", "doctor"],
+            vec!["se", "msg", "send"],
+            vec!["se", "--"],
+            vec!["se", "doctor", "--"],
+        ] {
+            let mut args: Vec<OsString> = prefix.into_iter().map(OsString::from).collect();
+            args.push("--token=private-inline-capability".into());
+            let Err(failure) = parse(args) else {
+                panic!("an unknown option must refuse");
+            };
+            match failure.error.body.detail() {
+                Detail::UsageUnknownFlag(detail) => assert_eq!(detail.flag, "--token"),
+                Detail::UsageUnknownCommand(detail) => assert_eq!(detail.got, "--token"),
+                _ => panic!("the option must retain its diagnostic"),
+            }
+            let rendered = serde_json::to_string(&failure.error.body).unwrap();
+            assert!(!rendered.contains("private-inline-capability"));
+        }
+    }
 }

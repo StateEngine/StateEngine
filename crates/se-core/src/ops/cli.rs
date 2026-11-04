@@ -125,7 +125,7 @@ fn unknown(command: &str) -> SeError {
 }
 fn unknown_flag(flag: &str, command: &str, reason: &str) -> SeError {
     SeError::new(Detail::UsageUnknownFlag(details::UsageUnknownFlag {
-        flag: flag.into(),
+        flag: flag.split('=').next().unwrap_or(flag).into(),
         command: command_name(command),
         reason: reason.into(),
     }))

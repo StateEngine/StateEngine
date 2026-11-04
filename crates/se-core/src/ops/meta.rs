@@ -30,6 +30,7 @@ pub fn metadata_output(op: &AnyOp) -> Result<Option<AnyOutput>> {
         AnyOp::MetaHelp(value) => {
             value.validate()?;
             let mut command = cli_command();
+            command.build();
             for part in &value.path {
                 command = command.find_subcommand(part).cloned().ok_or_else(|| {
                     SeError::new(Detail::UsageUnknownCommand(details::UsageUnknownCommand {
