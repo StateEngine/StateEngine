@@ -7,6 +7,8 @@ import ctypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import re
+import socket
 from pathlib import Path
 import shlex
 import subprocess
@@ -103,12 +105,17 @@ def run(options):
     def check(text):
         checks.append(text)
         print(f'ok {len(checks)} - {text}', flush=True)
-    for case in (['alias', 'socket'] if options.expect_red else ['alias', 'plain-symlink', 'socket']):
+    cases = options.case or (['alias', 'socket'] if options.expect_red else ['alias', 'plain-symlink', 'socket'])
+    for case in cases:
         directory = options.output / case
         f = Fixture(options.se, directory)
         model = Model(directory, f.repo)
         short = Path(tempfile.mkdtemp(prefix='se5b-first-', dir='/tmp'))
         try:
+            for name, suffix in [('XDG_CONFIG_HOME', 'config'), ('XDG_CACHE_HOME', 'cache'), ('XDG_DATA_HOME', 'data'), ('XDG_STATE_HOME', 'state')]:
+                location = directory / ('xdg-' + suffix)
+                location.mkdir(mode=0o700)
+                f.env[name] = str(location)
             f.env.pop('XDG_RUNTIME_DIR', None)
             f.env['TMPDIR'] = '/tmp'
             if case == 'alias':
@@ -135,6 +142,11 @@ def run(options):
             check(case + ': invoked configured command identifies stock Codex')
             config = f.home / 'config.toml'
             text = config.read_text()
+            if options.port:
+                with socket.socket() as available:
+                    available.bind(('127.0.0.1', options.port))
+                text, replaced = re.subn(r'(?m)^listen_port = [0-9]+$', 'listen_port = ' + str(options.port), text, count=1)
+                assert replaced == 1, 'configured listener port anchor missing'
             text = text.replace('[providers.codex]', '[providers.codex]\ncommand = ' + json.dumps(str(command)), 1)
             config.write_text(text)
             f.agent = f.ok('--project', f.project, 'agent', 'add', 'First Codex', '--provider', 'codex', '--model', 'gpt-6.1-sol')['agent']['id']
@@ -220,6 +232,8 @@ if __name__ == '__main__':
     p.add_argument('--se', type=Path, required=True)
     p.add_argument('--codex', type=Path, required=True)
     p.add_argument('--alias', type=Path, required=True)
+    p.add_argument('--case', action='append', choices=['alias', 'plain-symlink', 'socket'], help='Limit this run to named public consumers')
+    p.add_argument('--port', type=int, help='Explicit distinct native listener port for this runtime lane')
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--expect-red', action='store_true')
     o = p.parse_args()
