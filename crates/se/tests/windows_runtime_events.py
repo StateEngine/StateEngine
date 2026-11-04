@@ -101,7 +101,15 @@ def worker(args):
     import msvcrt
     kernel = api()
     callback_type = ctypes.WINFUNCTYPE(w.BOOL, w.DWORD)
-    callback = callback_type(lambda event: True)
+    events = []
+    def observed_event(event):
+        try:
+            events.append({'event': int(event), 'observed_at': time.time()})
+            atomic_json(args.out / 'worker-console-events.json', events)
+        except Exception:
+            traceback.print_exc()
+        return True
+    callback = callback_type(observed_event)
     CONSOLE_HANDLERS.append(callback)
     kernel.SetConsoleCtrlHandler.argtypes = [callback_type, w.BOOL]
     kernel.SetConsoleCtrlHandler.restype = w.BOOL
@@ -199,10 +207,28 @@ std::process::exit(s.code().unwrap_or(1));}'''
         members = stimulus(kernel, ready, pins, selected)
         progress['event_sent'] = True
         progress['stage'] = 'witness native host/root/helper exit and endpoint retirement'
+        began = time.monotonic()
+        snapshots = []
+        def observed_closed():
+            elapsed = time.monotonic() - began
+            if not snapshots or int(elapsed) > int(snapshots[-1]['elapsed_seconds']):
+                snapshots.append({'elapsed_seconds': elapsed, 'instances': [
+                    {**pin.record, 'exited': pin.exited()} for pin in pins]})
+            return all(pin.exited() for pin in pins)
         try:
-            wait_for(lambda: all(pin.exited() for pin in pins), 'host or managed root/helper survived event', 15)
+            wait_for(observed_closed, 'host or managed root/helper survived event', 15)
         except TimeoutError as error:
             failures.append(str(error))
+        progress['precleanup_instances'] = snapshots
+        event_file = fixture.root / 'worker-console-events.json'
+        events = json.loads(event_file.read_text()) if event_file.exists() else []
+        progress['native_worker_events'] = events
+        expected_event = 1 if selected == 'break' else 2
+        progress['native_event_observed'] = any(event['event'] == expected_event for event in events)
+        if not progress['native_event_observed']:
+            failures.append('NOT REACHED: native worker did not receive the requested console control event')
+        (fixture.root / 'foreground-before-cleanup.log').write_bytes(
+            (fixture.root / 'foreground.log').read_bytes())
         if (fixture.home / 'endpoint.json').exists():
             failures.append('termination retained the protected endpoint')
         try:
