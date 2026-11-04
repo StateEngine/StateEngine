@@ -206,8 +206,8 @@ namespace StateEngineInstall {
         public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr parameter,
             string text, uint flags, uint timeout, out UIntPtr result);
         [DllImport("advapi32.dll", SetLastError = true)]
-        private static extern int RegFlushKey(IntPtr hKey);
-        public static void FlushRegistryKey(IntPtr hKey) {
+        private static extern int RegFlushKey(SafeRegistryHandle hKey);
+        public static void FlushRegistryKey(SafeRegistryHandle hKey) {
             // Persist the PATH value before the environment broadcast.
             int result = RegFlushKey(hKey);
             if (result != 0) throw new Win32Exception(result);

@@ -152,7 +152,17 @@ publish_file() {
     cp "$1" "$temp_payload"
     chmod "$3" "$temp_payload"
     flush "$temp_payload"
-    ln -T "$temp_payload" "$2" || fail "destination appeared during installation: $2"
+    # BSD ln has no -T: refuse an existing destination before writing, then
+    # witness the claim is the payload itself, never a link inside a directory.
+    if [ -e "$2" ] || [ -L "$2" ]; then
+        rm "$temp_payload"; temp_payload=''
+        fail "destination appeared during installation: $2"
+    fi
+    ln "$temp_payload" "$2" || { rm "$temp_payload"; temp_payload=''; fail "destination appeared during installation: $2"; }
+    if [ ! -f "$2" ] || [ ! "$2" -ef "$temp_payload" ]; then
+        rm "$temp_payload"; temp_payload=''
+        fail "destination appeared during installation: $2"
+    fi
     rm "$temp_payload"
     temp_payload=''
     flush "$2" "$(dirname "$2")"
@@ -340,7 +350,10 @@ for name in $profiles; do set -- "$@" "$stage/$name.digest" "$stage/$name.bytes"
 if [ -n "$fish_file" ]; then set -- "$@" "$stage/fish-config"; fi
 flush "$@" "$stage" "$data"
 # Publish readiness only after the entire original journal is durable.
-ln -T "$stage/.manifest-ready" "$stage/manifest.sha256"
+# BSD ln has no -T: witness the claim is the scratch itself, never a link
+# created inside an existing directory.
+ln "$stage/.manifest-ready" "$stage/manifest.sha256" || fail "manifest claim failed: $stage/manifest.sha256"
+[ -f "$stage/manifest.sha256" ] && [ "$stage/manifest.sha256" -ef "$stage/.manifest-ready" ] || fail "manifest claim failed: $stage/manifest.sha256"
 rm "$stage/.manifest-ready"
 flush "$stage/manifest.sha256" "$stage"
 fi
