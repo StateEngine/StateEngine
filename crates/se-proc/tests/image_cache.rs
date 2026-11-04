@@ -119,3 +119,78 @@ fn protected_cache_contract() -> Result<()> {
     fs::remove_dir(root)?;
     Ok(())
 }
+
+/// Protects: executable hints cannot hide same-inode rewrites restoring size and mtime.
+#[test]
+fn restored_modification_time_does_not_reuse_old_digest() -> Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let root = std::env::temp_dir().join(format!("se-image-ctime-{}", std::process::id()));
+    assert!(!root.exists(), "preserve an existing fixture");
+    fs::create_dir(&root)?;
+    let cache = root.join("cache");
+    let files = NativeStateFiles::create(&cache)?;
+    let image = root.join(if cfg!(windows) { "probe.exe" } else { "probe" });
+    fs::copy(std::env::current_exe()?, &image)?;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&image)?
+        .write_all(&[0; 4096])?;
+    let digest_path = root.join("digest.json");
+    let run = |action: &str| -> Result<()> {
+        let output = Command::new(&image)
+            .args(["--ignored", "--exact", "changed_image_child"])
+            .env("SE_IMAGE_CTIME_ROOT", &cache)
+            .env("SE_IMAGE_CTIME_DIGEST", &digest_path)
+            .env("SE_IMAGE_CTIME_ACTION", action)
+            .output()?;
+        assert!(output.status.success(), "{action}: {output:?}");
+        Ok(())
+    };
+    run("publish")?;
+    let metadata = fs::metadata(&image)?;
+    let mut file = fs::OpenOptions::new().write(true).open(&image)?;
+    file.seek(SeekFrom::End(-1))?;
+    file.write_all(&[1])?;
+    file.sync_all()?;
+    file.set_modified(metadata.modified()?)?;
+    drop(file);
+    assert_eq!(fs::metadata(&image)?.len(), metadata.len());
+    assert_eq!(fs::metadata(&image)?.modified()?, metadata.modified()?);
+    run("restore")?;
+    drop(files);
+    fs::remove_file(cache.join("ipc-image-cache.json"))?;
+    fs::remove_dir(cache)?;
+    fs::remove_file(image)?;
+    fs::remove_file(digest_path)?;
+    fs::remove_dir(root)?;
+    Ok(())
+}
+/// Protects: child-side observation uses public native proof after a real executable rewrite.
+#[test]
+#[ignore = "child process invoked by restored_modification_time_does_not_reuse_old_digest"]
+fn changed_image_child() -> Result<()> {
+    let root = std::env::var_os("SE_IMAGE_CTIME_ROOT").ok_or("missing cache root")?;
+    let digest_path = std::env::var_os("SE_IMAGE_CTIME_DIGEST").ok_or("missing digest path")?;
+    let root = Path::new(&root);
+    match std::env::var("SE_IMAGE_CTIME_ACTION")?.as_str() {
+        "publish" => {
+            let digest = observe_ipc_self_bounded(&bound())?.image_sha256();
+            publish_image_cache(root, digest, &bound())?;
+            fs::write(digest_path, serde_json::to_vec(&digest)?)?;
+        }
+        "restore" => {
+            let old: Sha256 = serde_json::from_slice(&fs::read(digest_path)?)?;
+            assert_eq!(
+                restore_image_cache(root, old, &bound())?,
+                ImageCacheRead::Current
+            );
+            assert_ne!(
+                observe_ipc_self_bounded(&bound())?.image_sha256(),
+                old,
+                "a same-file rewrite restored to its old mtime reused the stale proof"
+            );
+        }
+        _ => return Err("unknown child action".into()),
+    }
+    Ok(())
+}
