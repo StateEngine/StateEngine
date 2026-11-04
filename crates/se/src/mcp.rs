@@ -5,6 +5,12 @@ use se_types::Result;
 use std::ffi::OsString;
 
 pub fn entry(args: &[OsString]) -> Option<Result<u8>> {
+    // Absence of the literal transport command is enough to skip this parse.
+    // A present token still goes through the generated grammar, so option
+    // values named "mcp" cannot select a transport or bypass validation.
+    if !args.iter().skip(1).any(|arg| arg == "mcp") {
+        return None;
+    }
     crate::grammar::mcp_options(args).map(|home| home.and_then(run))
 }
 fn run(home: Option<std::path::PathBuf>) -> Result<u8> {
