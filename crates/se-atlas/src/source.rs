@@ -32,7 +32,10 @@ impl<A: SourceAccess> RegisteredSource<A> {
         }
         Ok(Self { scope, access })
     }
-    fn open(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>> {
+    /// One retained, root-validated file for streaming Text reads. Consumers
+    /// enforce their byte/deadline bound, recheck identity and validate_path
+    /// before accepting hits. The borrow cannot outlive this registered root.
+    pub fn open(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>> {
         if self.access.physical_root()? != self.scope.physical_root {
             return Err(source_error(
                 path,
