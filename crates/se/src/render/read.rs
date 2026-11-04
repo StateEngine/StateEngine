@@ -80,7 +80,10 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             writeln!(
                 out,
                 "  {}: {} — {} agents running, {} unread",
-                project.name, project.root, project.agents_running, project.owner_unread
+                project.name,
+                project.root,
+                count(project.agents_running),
+                project.owner_unread
             )?;
         }
         omissions(projects, out)?;

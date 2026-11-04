@@ -189,16 +189,8 @@ pub(super) fn finish(
             ));
         }
     };
-    let command = vec![
-        "se".into(),
-        "--home".into(),
-        cx.home.display().to_string(),
-        "--project".into(),
-        id.to_string(),
-        "agent".into(),
-        "show".into(),
-        agent.id.to_string(),
-    ];
+    let command = AgentCommand::launch_in_home(&agent.id, &cx.home, &id, false)
+        .ok_or_else(|| scope::unreadable("first launch command", AgentCommand::HOME_UNAVAILABLE))?;
     let node_source = repository.path.join(".stateengine/projects.jsonl");
     let import_hint=match se_proc::NativeSourcePin::open(&node_source) {
         Ok(Some(_))=>Some("Node history detected. Preserve an immutable source copy, then run se import --from-node PATH.".into()),
@@ -264,21 +256,9 @@ pub(super) fn finish(
         integrations: vec![],
         changed,
         next: NextStep {
-            text: "Inspect your saved agent".into(),
-            command: format!(
-                "se --home {} --project {} agent show {}",
-                if cfg!(windows) {
-                    format!("'{}'", cx.home.display().to_string().replace('\'', "''"))
-                } else {
-                    format!(
-                        "'{}'",
-                        cx.home.display().to_string().replace('\'', "'\"'\"'")
-                    )
-                },
-                id,
-                agent.id,
-            ),
-            argv: command,
+            text: "Launch your first agent".into(),
+            command: command.command,
+            argv: command.argv,
         },
         launch: None,
     }

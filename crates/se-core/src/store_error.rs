@@ -30,9 +30,10 @@ pub fn store_error(error: &StoreError) -> SeError {
                 reason,
             })
         }
-        C::CursorInvalid | C::CursorStale => {
-            Detail::CursorInvalid(details::CursorInvalid { reason })
-        }
+        C::CursorInvalid | C::CursorStale => Detail::CursorInvalid(details::CursorInvalid {
+            reason,
+            next_step: "Remove or replace the invalid cursor used by this read.".into(),
+        }),
         C::LocationUnsafe => Detail::StateConflict(details::StateConflict {
             subject,
             reason,

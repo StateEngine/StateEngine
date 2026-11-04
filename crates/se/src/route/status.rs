@@ -6,6 +6,8 @@ use se_store::{
     Actor, Admission, EventBody, MessageQuery, ReadStore, RuntimeOwnerHead, Scope, Snapshot,
 };
 use se_types::{Read, Result};
+#[path = "status/projects.rs"]
+mod projects;
 
 pub fn observe<R: ReadStore>(
     cx: &Bootstrap,
@@ -25,7 +27,8 @@ pub fn observe<R: ReadStore>(
     match result {
         Ok(value) => {
             closed?;
-            super::session_observation::finish(value, &cx.home)
+            let output = super::session_observation::finish(value, &cx.home)?;
+            finish(cx, reader, output, admission)
         }
         Err(error) => Err(match closed {
             Ok(()) => error,
@@ -65,21 +68,6 @@ pub fn observe_snapshot<S: Snapshot>(
     .map_err(|e| store_error(&e))?;
     if lease.is_some() {
         output.runtime.state = "stopped".into();
-    }
-    if cx.selections.status_all {
-        output.scope = "all".into();
-        let projects = snap
-            .projects(super::select::budget(None)?)
-            .map_err(|e| store_error(&e))?;
-        // Empty registration is a measured fact; no per-project runtime
-        // counts need to be guessed to render the post-remove --all answer.
-        if projects.items().is_empty() && projects.window().complete() {
-            output.projects = Some(se_types::Page::new(
-                vec![],
-                projects.window().clone(),
-                projects.next().cloned(),
-            )?);
-        }
     }
     if let Scope::Project(project) = &admission.scope {
         let result = (|| {
@@ -270,18 +258,96 @@ pub fn observe_snapshot<S: Snapshot>(
             detail: error.to_string(),
         }),
     }
-    if output.removal.is_none() {
-        output.next = NextStep {
-            text: "Inspect the selected agent's saved state.".into(),
-            command: "se agent show main".into(),
-            argv: vec!["se".into(), "agent".into(), "show".into(), "main".into()],
-        };
-    }
     Ok(output.into())
 }
 pub fn endpoint_name(endpoint: &se_host::EndpointRecord) -> Result<String> {
     Ok(match &endpoint.address {
         se_host::IpcEndpoint::UnixSocket(path) => path.to_local()?.display().to_string(),
         se_host::IpcEndpoint::WindowsPipe(name) => name.clone(),
+    })
+}
+
+/// Complete cross-project reads after the selected project's read pin closes.
+pub(super) fn finish<R: ReadStore>(
+    cx: &Bootstrap,
+    reader: &R,
+    mut output: AnyOutput,
+    admission: &Admission,
+) -> Result<AnyOutput> {
+    let AnyOutput::ProjectStatus(status) = &mut output else {
+        return Ok(output);
+    };
+    let value = &mut status.value;
+    if cx.selections.status_all {
+        value.scope = "all".into();
+        value.projects = Some(projects::page(reader, admission)?);
+    }
+    if value.removal.is_none() {
+        if let Some(row) = value.agents.as_ref().and_then(|page| page.items().first()) {
+            let command = if row.session.state == "never-launched" {
+                AgentCommand::launch_in_home(&row.id, &cx.home, &scope::project(admission)?, false)
+            } else {
+                None
+            };
+            if let Some(command) = command {
+                value.next = NextStep {
+                    text: "Launch your first agent".into(),
+                    command: command.command,
+                    argv: command.argv,
+                };
+            } else {
+                value.next = command(
+                    cx,
+                    "Inspect your saved agent",
+                    vec![
+                        "--project".into(),
+                        scope::project(admission)?.to_string(),
+                        "agent".into(),
+                        "show".into(),
+                        row.id.to_string(),
+                    ],
+                )?;
+            }
+        } else {
+            value.next = listing(cx)?;
+        }
+    }
+    Ok(output)
+}
+fn listing(cx: &Bootstrap) -> Result<NextStep> {
+    command(
+        cx,
+        "List your registered projects",
+        vec!["status".into(), "--all".into()],
+    )
+}
+fn command(cx: &Bootstrap, text: &str, tail: Vec<String>) -> Result<NextStep> {
+    let home = cx
+        .home
+        .to_str()
+        .ok_or_else(|| scope::unreadable("status command", AgentCommand::HOME_UNAVAILABLE))?;
+    let mut argv = vec!["se".into(), "--home".into(), home.into()];
+    argv.extend(tail);
+    let command = argv
+        .iter()
+        .map(|word| {
+            if !word.is_empty()
+                && word
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-.:/".contains(&byte))
+            {
+                word.clone()
+            } else if cfg!(windows) {
+                format!("'{}'", word.replace('\'', "''"))
+            } else {
+                format!("'{}'", word.replace('\'', "'\"'\"'"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(NextStep {
+        text: text.into(),
+        command,
+        argv,
     })
 }
