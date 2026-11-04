@@ -91,6 +91,12 @@ def run_turns(initial, se, home, cwd, conversation, transcript):
         if frame is None:
             return
         sequence += 1
+        if sequence > 1:
+            native = {"type":"user","sessionId":conversation,"uuid":frame.get("uuid",str(uuid.uuid4())),"message":frame["message"]}
+            with transcript.open("a") as stream:
+                stream.write(json.dumps(native)+"\n")
+                stream.flush()
+                os.fsync(stream.fileno())
         # This is an actual echo of consumed input, with its original UUID.
         emit({**frame, "session_id":conversation})
         if sequence > 1:
