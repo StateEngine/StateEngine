@@ -247,7 +247,7 @@ pub fn launch<R: Snapshot>(
         profile,
         resolved,
         conversation,
-        capture: true,
+        capture: configuration.capture.enabled,
         control,
         seed,
         replayed,

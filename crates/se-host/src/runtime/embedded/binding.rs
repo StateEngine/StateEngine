@@ -203,21 +203,35 @@ impl EmbeddedHost {
     pub(super) async fn bind(
         &self,
         authority: &api::BindingAuthority,
-        request: api::BindingRequest,
+        mut request: api::BindingRequest,
         options: api::CallOptions,
     ) -> Result<api::IssuedSession> {
         let (router, deadline, _cancel) = self.ready(&options).await?;
         let _serial = super::super::pool::within(&deadline, self.binding_gate.lock()).await?;
         if !matches!(authority, api::BindingAuthority::Owner(_))
             || request.harness != api::Harness::Secode
-            || request.target.is_some()
-            || request.expected_binding_revision.is_some()
         {
             return Err(SeError::invalid(
                 "linked bind",
-                "native Owner authority, SE Code harness, and a fresh binding without a takeover target",
+                "native Owner authority and the SE Code harness",
             ));
         }
+        if request.target.is_some() || request.expected_binding_revision.is_some() {
+            return Err(SeError::invalid(
+                "linked takeover",
+                "embedded takeover arrives with live handover; stop the linked session, then bind fresh",
+            ));
+        }
+        // Native consent cannot opt back into capture disabled by the owner.
+        let home = self.config.state_home.clone();
+        let enabled = router
+            .execution
+            .blocking
+            .run(crate::BlockingClass::Foreground, &deadline, move || {
+                super::support::load_config(&home).map(|config| config.capture.enabled)
+            })
+            .await?;
+        request.capture_consent &= enabled;
         for (name, text, cap) in [
             ("provider", &request.model.provider, 256),
             ("model", &request.model.model, 256),
