@@ -6,6 +6,7 @@
 use se_types::{Result, SeError, Secret};
 use serde_json::{Value, json};
 use std::{future::Future, sync::Arc};
+mod arguments;
 mod resume;
 
 /// Protocol revisions spoken here, newest first. An unknown requested
@@ -23,6 +24,11 @@ pub enum McpReply {
 
 /// What a transport supplies. Both methods authenticate the capability
 /// themselves on every call; the consumer never caches a grant.
+pub struct McpPrincipal {
+    pub project: se_types::ProjectId,
+    pub agent: se_types::AgentId,
+}
+
 pub trait McpBackend {
     fn check_session(&mut self, capability: Arc<Secret>)
     -> impl Future<Output = Result<()>> + Send;
@@ -33,6 +39,33 @@ pub trait McpBackend {
         capability: Arc<Secret>,
         operation: se_core::ops::AnyOp,
     ) -> impl Future<Output = Result<Value>> + Send;
+    /// A current authenticated principal, never selected by tool arguments.
+    /// The stdio bridge uses its existing session-only status IPC operation;
+    /// HTTP can return the principal directly from its credential admission.
+    fn bound_principal(
+        &mut self,
+        capability: Arc<Secret>,
+    ) -> impl Future<Output = Result<McpPrincipal>> + Send {
+        let read = self.call(
+            capability,
+            se_core::ops::AnyOp::ProjectStatus(Default::default()),
+        );
+        async move {
+            let status = read.await?;
+            let id = |path| {
+                status.pointer(path).and_then(Value::as_str).ok_or_else(|| {
+                    se_core::scope::unreadable(
+                        "MCP bound principal",
+                        "authenticated status did not supply an exact project and agent",
+                    )
+                })
+            };
+            Ok(McpPrincipal {
+                project: id("/principal/project/id")?.parse()?,
+                agent: id("/principal/agent/id")?.parse()?,
+            })
+        }
+    }
     /// The complete JSON-RPC response budget for this transport, in bytes.
     fn response_limit(&self) -> usize;
     /// Resolve the capability for a selected tool method, after lifecycle
@@ -177,6 +210,10 @@ async fn call(
     };
     // A domain refusal, including a bad argument, is a typed tool result the
     // model can read and act on, never an empty success.
+    let arguments = match arguments::bound(backend, Arc::clone(&capability), arguments).await {
+        Ok(arguments) => arguments,
+        Err(error) => return resume::failure(id, &error),
+    };
     let outcome = match se_core::ops::decode_tool(name, arguments) {
         Ok(mut operation) => {
             if let se_core::ops::AnyOp::Resume(input) = operation {
