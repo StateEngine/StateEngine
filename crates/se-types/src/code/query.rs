@@ -10,7 +10,7 @@ pub struct QueryBudget {
     pub work: Duration,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ScopeWire")]
 pub struct SearchScope {
     pub paths: Vec<RelativePath>,
@@ -47,7 +47,7 @@ pub enum SearchKind {
     Edit,
     Commit,
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FindQuery {
     pub kind: SearchKind,
@@ -65,7 +65,7 @@ pub struct FindQuery {
     #[serde(default)]
     pub regex: bool,
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RefsQuery {
     pub target: AtlasTarget,
@@ -74,7 +74,7 @@ pub struct RefsQuery {
     pub next: Option<AtlasCursor>,
     pub budget: QueryBudget,
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImpactQuery {
     pub target: AtlasTarget,
@@ -90,13 +90,13 @@ pub enum GitObjectId {
     Sha1([u8; 20]),
     Sha256([u8; 32]),
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub enum ChangeBaseline {
     Cursor(AtlasCursor),
     ObservedCommit(GitObjectId),
     ObservedUnixMillis(i64),
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChangesQuery {
     pub since: ChangeBaseline,
@@ -104,7 +104,7 @@ pub struct ChangesQuery {
     pub next: Option<AtlasCursor>,
     pub budget: QueryBudget,
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct OutlineQuery {
     pub path: RelativePath,

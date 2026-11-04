@@ -563,6 +563,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "se-atlas",
  "se-core",
  "se-proc",
  "se-store",
