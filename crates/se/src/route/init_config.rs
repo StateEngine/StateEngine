@@ -42,7 +42,13 @@ pub fn listener_port(cx: &Bootstrap, files: &Files, owner: &str) -> Result<(u16,
     if let Some(port) = observed.runtime.listen_port {
         return Ok((port, false));
     }
-    let hash = Sha256::digest(owner.as_bytes());
+    // Dormant homes owned by the same OS user must not all start their search
+    // at the same port. A later external collision still refuses at bind time.
+    let mut seed = Sha256::new();
+    seed.update(owner.as_bytes());
+    seed.update([0]);
+    seed.update(cx.home.as_os_str().as_encoded_bytes());
+    let hash = seed.finalize();
     let first = u16::from_le_bytes([hash[0], hash[1]]) % 10000;
     let mut selected = None;
     for step in 0..10000u16 {

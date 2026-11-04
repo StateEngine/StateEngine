@@ -56,6 +56,16 @@ impl HttpListener {
         };
         let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, configured.unwrap_or(0)))
             .map_err(|e| match configured {
+                Some(port) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                    se_types::SeError::new(se_types::Detail::ListenerUnavailable(
+                        se_types::details::ListenerUnavailable {
+                            subject: format!("configured loopback port {port} (runtime.listen_port)"),
+                            reason: e.to_string(),
+                            next_step: "Choose an unused port in 20000..29999 and set runtime.listen_port in the selected host configuration (config.toml for the CLI), then retry startup. Explicit ports are never changed automatically.".into(),
+                        },
+                    ))
+                    .with_cause(e)
+                }
                 Some(port) => io(
                     &format!("configured loopback port {port} (runtime.listen_port)"),
                     e,
