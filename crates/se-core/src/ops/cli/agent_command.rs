@@ -69,6 +69,33 @@ impl AgentCommand {
         argv.extend([verb.into(), agent.to_string()]);
         argv
     }
+    /// cmd.exe expands percent/exclamation variables even inside double quotes.
+    /// Such arguments require the explicitly named PowerShell form instead.
+    pub fn for_cmd(&self) -> Option<Self> {
+        let words: Option<Vec<_>> = self
+            .argv
+            .iter()
+            .map(|word| {
+                if word.contains(['%', '!', '"', '\r', '\n']) {
+                    return None;
+                }
+                if !word.is_empty()
+                    && word
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-.:'\\/".contains(&b))
+                {
+                    Some(word.clone())
+                } else {
+                    let trailing = word.chars().rev().take_while(|c| *c == '\\').count();
+                    Some(format!("\"{}{}\"", word, "\\".repeat(trailing)))
+                }
+            })
+            .collect();
+        Some(Self {
+            command: words?.join(" "),
+            argv: self.argv.clone(),
+        })
+    }
     pub fn from_argv(argv: Vec<String>) -> Self {
         let command = argv
             .iter()

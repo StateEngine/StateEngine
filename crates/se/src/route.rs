@@ -49,3 +49,6 @@ pub mod uninstall;
 
 #[cfg(any(target_os = "linux", windows))]
 pub use runtime_control::foreground;
+
+#[path = "route/command_hint.rs"]
+mod command_hint;

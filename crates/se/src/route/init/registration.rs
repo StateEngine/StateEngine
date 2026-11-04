@@ -255,11 +255,7 @@ pub(super) fn finish(
         },
         integrations: vec![],
         changed,
-        next: NextStep {
-            text: AgentCommand::instruction("Launch your first agent"),
-            command: command.command,
-            argv: command.argv,
-        },
+        next: super::super::command_hint::next(command, "Launch your first agent"),
         launch: None,
     }
     .into())

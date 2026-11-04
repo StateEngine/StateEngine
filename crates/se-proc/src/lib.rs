@@ -111,3 +111,8 @@ pub use session_pin::{
 mod self_resources;
 #[cfg(target_os = "linux")]
 pub use self_resources::{SelfResources, observe_self_resources};
+
+#[cfg(windows)]
+mod parent_image;
+#[cfg(windows)]
+pub use parent_image::parent_process_image;
