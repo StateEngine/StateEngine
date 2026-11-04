@@ -142,7 +142,7 @@ fn checked(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Erro
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 
-/// Protects: a real initialized home without an endpoint names status and the absence/exit distinction, rather than selecting an unrelated principal or implicitly starting a host.
+/// Protects: down on an initialized, unowned home witnesses the absent endpoint without claiming a stop or changing initialized state.
 #[test]
 fn absent_down_endpoint_names_status_and_preserves_initialized_state() -> Check {
     // The roots are independent; a failed case does not invalidate this
@@ -172,20 +172,26 @@ fn absent_down_endpoint_names_status_and_preserves_initialized_state() -> Check 
     let credential = std::fs::read(home.join("credential"))?;
     for json in [true, false] {
         let output = command(&image, home, json).arg("down").output()?;
-        assert!(!output.status.success());
-        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{output:?}");
+        let diagnostic = String::from_utf8_lossy(&output.stdout);
         assert!(
-            diagnostic.contains("se status") && diagnostic.contains("absence alone does not prove"),
-            "wrong endpoint recovery: {diagnostic}"
+            diagnostic.contains("absent endpoint"),
+            "missing endpoint observation: {diagnostic}"
         );
         assert!(!diagnostic.contains("Select an existing project principal"));
         if json {
+            let value: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+            assert_eq!(value["complete"], true);
+            assert_eq!(value["already_down"], true);
+            assert_eq!(value["stops"], serde_json::json!([]));
+            assert_eq!(value["witness"]["state"], "witnessed");
             assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&output.stdout)?["code"],
-                "target-unknown"
+                value["witness"]["detail"],
+                "Already down; no host was running. No process was stopped."
             );
         } else {
-            assert!(output.stdout.is_empty());
+            assert!(diagnostic.contains("Already down; no host was running."));
+            assert!(diagnostic.contains("No process was stopped."));
         }
         assert_eq!(reader.info()?.head, before);
         assert_eq!(std::fs::read(home.join("machine.json"))?, identity);
