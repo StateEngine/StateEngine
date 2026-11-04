@@ -40,7 +40,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_checkpoint_independent-41-{}",
+                serial()
+            ))?),
             vec![transition(
                 &i,
                 1,
@@ -68,7 +71,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_checkpoint_independent-69-{}",
+                serial()
+            ))?),
             vec![transition(
                 &invalid_checkpoint,
                 1,
@@ -104,7 +110,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_checkpoint_independent-105-{}",
+                serial()
+            ))?),
             vec![transition(
                 &i,
                 2,
@@ -123,7 +132,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     assert_eq!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_checkpoint_independent-124-{}",
+                serial()
+            ))?),
             vec![transition(
                 &premature,
                 2,
@@ -156,7 +168,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
         assert_eq!(
             wait(client.submit(f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-wave2_checkpoint_independent-157-{}",
+                    serial()
+                ))?),
                 vec![transition(
                     &drift,
                     2,
@@ -224,7 +239,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_checkpoint_independent-225-{}",
+                serial()
+            ))?),
             vec![transition(
                 &i,
                 1,
@@ -262,7 +280,10 @@ fn checkpoint_and_exec_preserve_birth_and_revision() -> Check {
     assert_eq!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_checkpoint_independent-263-{}",
+                serial()
+            ))?),
             vec![transition(
                 &drift,
                 3,

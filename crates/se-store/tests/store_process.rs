@@ -166,7 +166,10 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
         assert!(
             wait(client.submit(f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-store_process-167-{}",
+                    serial()
+                ))?),
                 vec![transition(&i, rev, from, to, first.primary_event.clone())?]
             )?)?)?
             .is_err()
@@ -189,7 +192,10 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
         assert_eq!(
             wait(client.submit(f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-store_process-190-{}",
+                    serial()
+                ))?),
                 vec![transition(
                     &drift,
                     1,
@@ -214,7 +220,10 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-store_process-215-{}",
+                serial()
+            ))?),
             vec![
                 transition(
                     &i,
@@ -243,7 +252,10 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-store_process-244-{}",
+                serial()
+            ))?),
             vec![transition(
                 &i,
                 2,
@@ -310,7 +322,10 @@ fn direct_registration_and_foreign_session_refuse() -> Check {
         d.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-store_process-311-{}",
+                    serial()
+                ))?),
                 vec![registration(&i, ProcessState::Reserved)]
             )?,
             &*lease
@@ -334,7 +349,10 @@ fn direct_registration_and_foreign_session_refuse() -> Check {
     assert_eq!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-store_process-335-{}",
+                serial()
+            ))?),
             vec![registration(&i, ProcessState::Reserved)]
         )?)?)?
         .err()

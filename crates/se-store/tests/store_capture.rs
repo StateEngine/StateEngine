@@ -202,7 +202,10 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
         d.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-store_capture-203-{}",
+                    serial()
+                ))?),
                 vec![EventBody::CredentialActivated {
                     credential,
                     session: id.clone(),
@@ -248,8 +251,18 @@ fn credential_transitions_and_session_end_have_current_revocation_metadata() -> 
         })
     };
     assert!(
-        d.append(f.batch(f.owner_project(), None, vec![ended()?])?, &*lease)
-            .is_err()
+        d.append(
+            f.batch(
+                f.owner_project(),
+                Some(request(&format!(
+                    "judge-nested-store_capture-251-{}",
+                    serial()
+                ))?),
+                vec![ended()?]
+            )?,
+            &*lease
+        )
+        .is_err()
     );
     assert_eq!(
         present(d.credential([17; 32])?)?.state,

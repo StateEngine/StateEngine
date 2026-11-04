@@ -13,18 +13,38 @@ fn timed(receipt: &CommitReceipt) -> Result<&WriteTimings, Box<dyn std::error::E
         .as_ref()
         .ok_or_else(|| "host completion omitted its own timing".into())
 }
-fn mail(f: &Fixture, key: &str, keyless: bool) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
-    let mut batch = f.send(
+fn mail(f: &Fixture, key: &str) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
+    f.send(
         Actor::Agent(f.a.clone()),
         Actor::Agent(f.b.clone()),
         message()?,
         key,
         key,
-    )?;
-    if keyless {
-        batch.request = None;
-    }
-    Ok(batch)
+    )
+}
+
+// Seed keyed mail before measuring the legal, naturally idempotent recipient mark.
+fn recipient_mark(
+    f: &Fixture,
+    client: &SqliteClient,
+    key: &str,
+) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
+    let id = message()?;
+    wait(client.submit(f.send(
+        Actor::Agent(f.a.clone()),
+        Actor::Agent(f.b.clone()),
+        id.clone(),
+        key,
+        key,
+    )?)?)??;
+    f.batch(
+        f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.b.clone())),
+        None,
+        vec![EventBody::MessageRead {
+            message: id,
+            recipient: Actor::Agent(f.b.clone()),
+        }],
+    )
 }
 
 /// Protects: E3 timing — concurrent keyless completions carry their own worker measurements even when awaited in reverse order.
@@ -34,9 +54,9 @@ fn concurrent_keyless_receipts_match_their_own_store_measurements() -> Check {
     let (host, lease) = host(&f)?;
     let owner = host.start_writer(options(256)?, lease)?;
     let client = owner.client();
-    let a = mail(&f, "keyless-a", true)?;
+    let a = recipient_mark(&f, &client, "keyless-a")?;
     let aid = a.events[0].header.event.clone();
-    let b = mail(&f, "keyless-b", true)?;
+    let b = recipient_mark(&f, &client, "keyless-b")?;
     let bid = b.events[0].header.event.clone();
     let aw = client.submit(a)?;
     let bw = client.submit(b)?;
@@ -93,11 +113,12 @@ fn group_promotion_and_replay_attempt_timings_keep_distinct_durability() -> Chec
         "retained-normal",
     )?)?)??;
     assert_eq!(original.durability, CommitDurability::Normal);
+    let normal = recipient_mark(&f, &client, "promoted-normal")?;
     let blocker = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
     blocker.execute_batch("BEGIN IMMEDIATE")?;
-    let gate = client.submit(mail(&f, "gate", false)?)?;
+    let gate = client.submit(mail(&f, "gate")?)?;
     let flush = owner.flush(Duration::from_secs(2))?;
-    let normal = client.submit(mail(&f, "promoted-normal", true)?)?;
+    let normal = client.submit(normal)?;
     let full = client.submit(f.batch(
         f.owner_project(),
         Some(request("activate-full")?),
@@ -158,7 +179,7 @@ fn every_receipt_keeps_timings_past_the_former_sample_capacity() -> Check {
     let owner = host.start_writer(options(256)?, lease)?;
     let client = owner.client();
     for n in 0..1026 {
-        let receipt = wait(client.submit(mail(&f, &format!("timed-{n}"), true)?)?)??;
+        let receipt = wait(client.submit(recipient_mark(&f, &client, &format!("timed-{n}"))?)?)??;
         assert_eq!(timed(&receipt)?.request_key, receipt.request_key);
         assert!(timed(&receipt)?.group_requests >= 1);
         assert_eq!(timed(&receipt)?.durability, CommitDurability::Normal);
@@ -172,7 +193,7 @@ fn every_receipt_keeps_timings_past_the_former_sample_capacity() -> Check {
 fn direct_receipts_do_not_have_host_write_timings() -> Check {
     let f = Fixture::new()?;
     let (mut direct, lease) = f.direct()?;
-    let receipt = direct.append(mail(&f, "direct", false)?, &*lease)?;
+    let receipt = direct.append(mail(&f, "direct")?, &*lease)?;
     assert!(receipt.write_timings.is_none());
     Ok(())
 }

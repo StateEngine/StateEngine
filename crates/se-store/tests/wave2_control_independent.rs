@@ -151,7 +151,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
         assert_eq!(
             wait(client.submit(f.batch(
                 admission.clone(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-wave2_control_independent-152-{}",
+                    serial()
+                ))?),
                 vec![capture::prepared(&f, &attempted, &forbidden)]
             )?)?)?
             .err()
@@ -163,7 +166,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
         assert_eq!(
             wait(client.submit(f.batch(
                 admission.clone(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-wave2_control_independent-164-{}",
+                    serial()
+                ))?),
                 vec![registration(&wrong, ProcessState::Starting)]
             )?)?)?
             .err()
@@ -186,7 +192,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     assert_eq!(
         wait(client.submit(f.batch(
             missing_grant.clone(),
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_control_independent-187-{}",
+                serial()
+            ))?),
             vec![capture::prepared(&f, &ungranted_session, &other)]
         )?)?)?
         .err()
@@ -197,7 +206,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     assert_eq!(
         wait(client.submit(f.batch(
             missing_grant,
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_control_independent-198-{}",
+                serial()
+            ))?),
             vec![registration(&identity(&other)?, ProcessState::Starting)]
         )?)?)?
         .err()
@@ -210,7 +222,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     assert!(
         wait(client.submit(f.batch(
             admission.clone(),
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_control_independent-211-{}",
+                serial()
+            ))?),
             vec![registration(&human, ProcessState::Starting)]
         )?)?)?
         .is_err(),
@@ -243,7 +258,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     assert_eq!(
         wait(client.submit(f.batch(
             admission.clone(),
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_control_independent-244-{}",
+                serial()
+            ))?),
             vec![capture::prepared(&f, &new_session, &child)]
         )?)?)?
         .err()
@@ -255,7 +273,10 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     assert_eq!(
         wait(client.submit(f.batch(
             admission,
-            None,
+            Some(request(&format!(
+                "judge-nested-wave2_control_independent-256-{}",
+                serial()
+            ))?),
             vec![transition(
                 &process,
                 2,
