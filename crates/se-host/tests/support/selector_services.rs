@@ -101,8 +101,18 @@ impl api::HostServices for Services {
                         session: api::HostSessionId(agent.into()),
                         binding: api::SessionIdentity {
                             project,
-                            agent: api::AgentId(agent.into()),
-                            session: api::SessionId(format!("session-{agent}")),
+                            agent: api::AgentId(
+                                match agent {
+                                    "aardvark" => "agt-0000-0000-0000",
+                                    "zulu" => "agt-zzzz-zzzz-zzzz",
+                                    _ => "agt-ffff-ffff-ffff",
+                                }
+                                .into(),
+                            ),
+                            session: api::SessionId(format!(
+                                "ses_018bcfe5-6800-7000-8000-{:012x}",
+                                agent.as_bytes()[0]
+                            )),
                         },
                         binding_fingerprint: api::Sha256([3; 32]),
                     },

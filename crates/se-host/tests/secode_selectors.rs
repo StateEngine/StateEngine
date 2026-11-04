@@ -293,7 +293,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
                 )
                 .await,
         )?)?;
-        assert_eq!(first.items[0].target.binding.agent.0, "aardvark");
+        assert_eq!(first.items[0].target.session.0, "aardvark");
         assert!(!first.window.complete);
         let next = first.next.ok_or("session continuation absent")?;
         let second = present(result(
@@ -310,7 +310,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
                 )
                 .await,
         )?)?;
-        assert_eq!(second.items[0].target.binding.agent.0, "zulu");
+        assert_eq!(second.items[0].target.session.0, "zulu");
         assert!(second.window.complete);
         assert!(
             second
@@ -346,7 +346,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
                 )
                 .await,
         )?)?;
-        assert_eq!(partial_last.items[0].target.binding.agent.0, "zulu");
+        assert_eq!(partial_last.items[0].target.session.0, "zulu");
         assert!(
             !partial_last.window.complete,
             "source-incomplete omission vanished after the final native page"
