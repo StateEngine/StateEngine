@@ -72,6 +72,15 @@ pub struct ProjectInfo {
     pub root: NativePath,
     pub revision: Revision,
 }
+/// Bounded display metadata; an AgentId is not an offered SE Code agent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentInfo {
+    pub project: ProjectId,
+    pub id: AgentId,
+    pub name: String,
+    pub role: String,
+    pub revision: Revision,
+}
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoreInfo {
     pub id: StoreId,

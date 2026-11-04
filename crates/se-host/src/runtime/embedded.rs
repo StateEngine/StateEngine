@@ -13,6 +13,7 @@ mod capture;
 mod context;
 mod owner;
 mod revoke;
+mod selector;
 mod store;
 mod support;
 use super::{HostedRouter, LocalStop};
@@ -72,6 +73,7 @@ struct EmbeddedHost {
     lifecycle: tokio::sync::Mutex<Lifecycle>,
     health: Mutex<api::GenerationHealth>,
     changed: tokio::sync::Notify,
+    native: Mutex<Option<(api::HostEpoch, Arc<dyn api::HostServices>)>>,
     bindings: binding::Bindings,
     binding_gate: tokio::sync::Mutex<()>,
 }
@@ -134,6 +136,7 @@ impl api::HostFactory for EmbeddedFactory {
                 lifecycle: tokio::sync::Mutex::new(Lifecycle::Prepared),
                 health: Mutex::new(api::GenerationHealth::Prepared),
                 changed: tokio::sync::Notify::new(),
+                native: Mutex::new(None),
                 bindings: binding::Bindings::new().map_err(|e| api_error(&e))?,
                 binding_gate: tokio::sync::Mutex::new(()),
             });
@@ -265,6 +268,40 @@ impl EmbeddedHost {
 }
 
 impl api::Host for EmbeddedHost {
+    fn list_projects<'a>(
+        &'a self,
+        _authority: &'a api::OwnerAuthority,
+        page: api::PageRequest,
+        options: api::CallOptions,
+    ) -> api::HostFuture<'a, api::Read<api::Page<api::ProjectInfo>>> {
+        Box::pin(async move { self.selector_projects(page, options).await.map_err(|e| *e) })
+    }
+    fn list_agents<'a>(
+        &'a self,
+        _authority: &'a api::OwnerAuthority,
+        project: api::ProjectId,
+        page: api::PageRequest,
+        options: api::CallOptions,
+    ) -> api::HostFuture<'a, api::Read<api::Page<api::AgentInfo>>> {
+        Box::pin(async move {
+            self.selector_agents(project, page, options)
+                .await
+                .map_err(|e| *e)
+        })
+    }
+    fn project_active_sessions<'a>(
+        &'a self,
+        _authority: &'a api::OwnerAuthority,
+        project: api::ProjectId,
+        page: api::PageRequest,
+        options: api::CallOptions,
+    ) -> api::HostFuture<'a, api::Read<api::Page<api::ActiveSession>>> {
+        Box::pin(async move {
+            self.selector_sessions(project, page, options)
+                .await
+                .map_err(|e| *e)
+        })
+    }
     fn poison<'a>(
         &'a self,
         _report: api::FaultReport,
@@ -309,7 +346,7 @@ impl api::Host for EmbeddedHost {
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Readiness> {
         Box::pin(async move {
-            let api::HostIntegration::Secode { epoch, services: _ } = integration;
+            let api::HostIntegration::Secode { epoch, services } = integration;
             if options.generation != self.negotiated.generation {
                 return Err(refused(
                     "host activation",
@@ -319,6 +356,11 @@ impl api::Host for EmbeddedHost {
             let mut lifecycle = self.lifecycle.lock().await;
             match &*lifecycle {
                 Lifecycle::Prepared => {
+                    *self
+                        .native
+                        .lock()
+                        .map_err(|_| unavailable("native host registry"))? =
+                        Some((epoch.clone(), services));
                     self.set_health(api::GenerationHealth::Activating);
                     let (ready, exited) = owner_thread(self.owner_inputs(epoch, options.timeout));
                     *lifecycle = Lifecycle::Activating(Box::new(Activating { ready, exited }));

@@ -22,6 +22,7 @@ mod page;
 mod project;
 mod query;
 mod runtime;
+mod selector;
 mod transcript;
 use crate::{codec, connection, error::*, identity::*, open::SqliteReader, *};
 use rusqlite::{Connection, OptionalExtension};
