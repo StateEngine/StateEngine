@@ -436,3 +436,7 @@ impl Drop for BudgetStatement<'_> {
         self.bytes.set(self.bytes.get() - self.reserved);
     }
 }
+
+#[cfg(test)]
+#[path = "statement_tests.rs"]
+mod statement_tests;
