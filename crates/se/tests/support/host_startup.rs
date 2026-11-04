@@ -81,6 +81,9 @@ pub fn private_startup_serves_and_retires() -> Check {
         "OPENAI_BASE_URL",
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_BASE_URL",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XAUTHORITY",
     ] {
         command.env(name, "detached-host-provider-canary");
     }
@@ -214,6 +217,7 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
             "ProgramFiles",
             "ProgramW6432",
             "DISPLAY",
+            "WAYLAND_DISPLAY",
             "XAUTHORITY",
         ];
         let mut expected = std::collections::BTreeMap::new();
