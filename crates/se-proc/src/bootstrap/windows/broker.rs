@@ -2,7 +2,7 @@
 //! Only our explicit startup handles enter its handle table; it executes no code.
 //! https://devblogs.microsoft.com/oldnewthing/20260511-00/?p=112313
 use super::*;
-use windows_sys::Win32::{Security::*, System::JobObjects::IsProcessInJob};
+use windows_sys::Win32::System::JobObjects::IsProcessInJob;
 
 fn in_job(process: HANDLE) -> ProcResult<bool> {
     let mut member = 0;
@@ -22,137 +22,13 @@ pub(super) fn outside_job(process: HANDLE) -> ProcResult<()> {
     Ok(())
 }
 
-#[derive(Eq, PartialEq)]
-struct Context {
-    sid: String,
-    logon: (u32, i32),
-    session: u32,
-    elevation: i32,
-    integrity: String,
-}
-// Token queries use aligned owned buffers and bounded resizing: a token's
-// variable data may change after the sizing probe. Never decode a short value.
-fn token_buffer(
-    token: HANDLE,
-    class: TOKEN_INFORMATION_CLASS,
-    minimum: usize,
-    maximum: usize,
-) -> ProcResult<Vec<usize>> {
-    let mut needed = 0;
-    // SAFETY: documented null sizing probe with retained token and writable length.
-    unsafe {
-        GetTokenInformation(token, class, ptr::null_mut(), 0, &mut needed);
-    }
-    for _ in 0..3 {
-        let capacity = (needed as usize).max(minimum).saturating_add(256);
-        if capacity > 65536 {
-            return Err(input(
-                "detached broker token",
-                "native token buffer exceeds 64 KiB",
-            ));
-        }
-        let mut storage = vec![0usize; capacity.div_ceil(size_of::<usize>())];
-        let mut returned = 0;
-        // SAFETY: aligned initialized allocation of at least capacity bytes;
-        // the token and output length remain retained throughout this query.
-        let ok = unsafe {
-            GetTokenInformation(
-                token,
-                class,
-                storage.as_mut_ptr().cast(),
-                capacity as u32,
-                &mut returned,
-            )
-        };
-        if ok != 0 {
-            if (returned as usize) < minimum
-                || returned as usize > maximum
-                || returned as usize > capacity
-            {
-                return Err(input(
-                    "detached broker token",
-                    &format!(
-                        "class {class}: returned {returned} bytes, allowed {minimum}..={maximum}, capacity {capacity}"
-                    ),
-                ));
-            }
-            return Ok(storage);
-        }
-        let cause = io::Error::last_os_error();
-        if cause.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
-            return Err(fail("read detached broker token context", cause));
-        }
-        needed = returned;
-    }
-    Err(input(
-        "detached broker token",
-        &format!("class {class}: size did not stabilize after three native reads"),
-    ))
-}
-// Private callers instantiate this only with fixed-size, pointer-free native token POD.
-fn token_value<T: Copy>(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> ProcResult<T> {
-    let storage = token_buffer(token, class, size_of::<T>(), size_of::<T>())?;
-    // SAFETY: successful native query initialized at least sizeof(T) bytes;
-    // usize allocation aligns every fixed token POD used by these private callers.
-    Ok(unsafe { *storage.as_ptr().cast::<T>() })
-}
-fn context(process: HANDLE) -> ProcResult<Context> {
-    let sid =
-        crate::windows_native::process_sid(process).map_err(|e| fail(e.operation, e.source))?;
-    let mut raw = ptr::null_mut();
-    // SAFETY: retained process and writable owned token output, query access only.
-    if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut raw) } == 0 {
-        return Err(last("open detached broker token"));
-    }
-    let token = handle(raw, "own detached broker token")?;
-    let token = token.as_raw_handle();
-    // UAC-filtered tokens are normal interactive users. Only actual restricting
-    // SIDs or an app-container boundary refuse; elevation/integrity still match.
-    // SAFETY: clearing this thread's last-error distinguishes FALSE from failure.
-    unsafe {
-        SetLastError(ERROR_SUCCESS);
-    }
-    // SAFETY: retained TOKEN_QUERY handle for a read-only native restriction query.
-    let restricted = unsafe { IsTokenRestricted(token) };
-    if restricted == 0 {
-        let cause = io::Error::last_os_error();
-        if cause.raw_os_error() != Some(ERROR_SUCCESS as i32) {
-            return Err(fail("read detached broker restricting SIDs", cause));
-        }
-    }
-    if restricted != 0 || token_value::<u32>(token, TokenIsAppContainer)? != 0 {
-        return Err(input(
-            "detached broker token",
-            "restricted and app-container tokens cannot use a native parent broker",
-        ));
-    }
-    let stats: TOKEN_STATISTICS = token_value(token, TokenStatistics)?;
-    let buffer = token_buffer(
-        token,
-        TokenIntegrityLevel,
-        size_of::<TOKEN_MANDATORY_LABEL>(),
-        65536,
-    )?;
-    // SAFETY: successful aligned label output remains retained through SID conversion.
-    let integrity = crate::windows_native::sid_text(unsafe {
-        (*buffer.as_ptr().cast::<TOKEN_MANDATORY_LABEL>()).Label.Sid
-    })
-    .map_err(|e| fail(e.operation, e.source))?;
-    Ok(Context {
-        sid,
-        logon: (
-            stats.AuthenticationId.LowPart,
-            stats.AuthenticationId.HighPart,
-        ),
-        session: token_value(token, TokenSessionId)?,
-        elevation: token_value(token, TokenElevationType)?,
-        integrity,
-    })
-}
+mod token;
+pub(super) use token::{Context, context};
 
 pub(super) struct Broker {
     process: OwnedHandle,
     pub identity: ProcessIdentity,
+    pub context: Context,
 }
 impl Broker {
     pub fn find(machine: &MachineId, deadline: Instant) -> ProcResult<Self> {
@@ -233,7 +109,11 @@ impl Broker {
             {
                 continue;
             }
-            return Ok(Self { process, identity });
+            return Ok(Self {
+                process,
+                identity,
+                context: caller,
+            });
         }
         Err(native(
             ProcErrorCode::BreakawayDenied,

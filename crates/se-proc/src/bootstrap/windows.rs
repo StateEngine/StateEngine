@@ -18,6 +18,7 @@ pub(super) struct Child {
     process: Option<OwnedHandle>,
     pid: ProcessId,
     image: File,
+    broker_context: Option<broker::Context>,
 }
 fn fail(api: &str, cause: io::Error) -> ProcError {
     native(ProcErrorCode::LaunchFailed, api, cause)
@@ -371,6 +372,14 @@ pub(super) fn initial_identity(
         .as_ref()
         .ok_or_else(|| input("runtime creation", "native custody absent"))?;
     broker::outside_job(process.as_raw_handle())?;
+    if let Some(expected) = &child.broker_context
+        && broker::context(process.as_raw_handle())? != *expected
+    {
+        return Err(input(
+            "detached broker child token",
+            "created child rights differ from the authorizing caller; no startup authority was sent",
+        ));
+    }
     match crate::read_process(machine.clone(), child.pid)? {
         ProcessRead::Present(live) => Ok(Some(live.identity)),
         _ => Err(input(

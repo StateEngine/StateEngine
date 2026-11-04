@@ -35,14 +35,15 @@ pub(in crate::bootstrap) fn spawn(
         ready.as_raw_handle(),
         diagnostic_writer.as_raw_handle(),
     ];
-    let (attempt, detachment) = match create(spec, &mut frame, &sources, None) {
-        Ok(attempt) => (attempt, RuntimeDetachment::WindowsBreakaway),
+    let (attempt, detachment, broker_context) = match create(spec, &mut frame, &sources, None) {
+        Ok(attempt) => (attempt, RuntimeDetachment::WindowsBreakaway, None),
         Err(error) if error.code == ProcErrorCode::BreakawayDenied => {
             let broker = broker::Broker::find(&spec.machine, spec.deadline)?;
             frame.broker = Some(broker.identity.clone());
             (
                 create(spec, &mut frame, &sources, Some(&broker))?,
                 RuntimeDetachment::WindowsBroker,
+                Some(broker.context.clone()),
             )
         }
         Err(error) => return Err(error),
@@ -58,6 +59,7 @@ pub(in crate::bootstrap) fn spawn(
             process: Some(process),
             pid,
             image,
+            broker_context,
         },
         events,
         authorization: authorize,
