@@ -44,7 +44,7 @@ pub(super) fn decode<R: ImportSnapshot>(
         let retained_sender = if sender == "floor" {
             true
         } else {
-            match seat(read, sender) {
+            match seat(cx, read, sender) {
                 Ok(actor) => match read.principal(actor.clone())? {
                     Read::Present { .. } => false,
                     Read::Absent { .. } => {
@@ -93,8 +93,8 @@ pub(super) fn decode<R: ImportSnapshot>(
                     "cross-project Node mail needs explicit source correspondence",
                 ));
             }
-            let by = seat(read, str_at(row, "from_seat")?)?;
-            let to = seat(read, str_at(row, "to_seat")?)?;
+            let by = seat(cx, read, str_at(row, "from_seat")?)?;
+            let to = seat(cx, read, str_at(row, "to_seat")?)?;
             require(read.principal(by.clone())?)?;
             require(read.principal(to.clone())?)?;
             let refs = row
@@ -173,7 +173,7 @@ pub(super) fn decode<R: ImportSnapshot>(
             )
         }
         "read-marker" | "dismiss" => {
-            let by = seat(read, str_at(row, "seat")?)?;
+            let by = seat(cx, read, str_at(row, "seat")?)?;
             let key = format!(
                 "{kind}:{id}:{}:{}",
                 str_at(row, "seat")?,

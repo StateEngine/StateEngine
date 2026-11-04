@@ -3,6 +3,25 @@ use super::inputs::{Validate, bounded};
 use schemars::JsonSchema;
 use se_types::{HumanId, IdempotencyKey, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HumanMapping {
+    pub source: HumanId,
+    pub target: HumanId,
+}
+impl HumanMapping {
+    pub fn parse(text: &str) -> Result<Self> {
+        let (source, target) = text.split_once('=').ok_or_else(|| {
+            se_types::SeError::invalid("--map-human", "SOURCE_HUMAN_ID=EXISTING_TARGET_HUMAN_ID")
+        })?;
+        Ok(Self {
+            source: HumanId::from_legacy(source)?,
+            target: HumanId::from_legacy(target)?,
+        })
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -11,10 +30,38 @@ pub struct ImportNode {
     /// Explicit source human adopted by this owner; other historical humans stay data.
     #[serde(default)]
     pub source_owner: Option<HumanId>,
+    /// Explicit historical identity correspondence; never creates a home owner.
+    #[serde(default)]
+    pub human_mappings: Vec<HumanMapping>,
     pub idempotency_key: IdempotencyKey,
+}
+impl ImportNode {
+    pub fn mappings(&self) -> Result<BTreeMap<HumanId, HumanId>> {
+        if self.human_mappings.len() > 256 {
+            return Err(se_types::SeError::invalid(
+                "--map-human",
+                "at most 256 explicit correspondences",
+            ));
+        }
+        let mut mappings = BTreeMap::new();
+        for pair in &self.human_mappings {
+            if mappings
+                .insert(pair.source.clone(), pair.target.clone())
+                .is_some()
+            {
+                return Err(se_types::SeError::invalid(
+                    "--map-human",
+                    "each source human ID exactly once",
+                ));
+            }
+        }
+        mappings.retain(|source, target| source != target);
+        Ok(mappings)
+    }
 }
 impl Validate for ImportNode {
     fn validate(&self) -> Result<()> {
+        self.mappings()?;
         bounded("Node state source", &self.from_node, 32768, false)?;
         if self.from_node.contains('\0') {
             return Err(se_types::SeError::invalid(
@@ -84,10 +131,19 @@ pub fn bind<R: se_store::Snapshot>(
         cx,
     )?;
     event.header.door = Door::Import;
+    let mut intent =
+        serde_json::json!({"from_node":input.from_node,"source_owner":input.source_owner});
+    let mappings = input.mappings()?;
+    // Preserve the established request fingerprint for imports without mappings.
+    if !mappings.is_empty() {
+        intent["human_mappings"] = serde_json::to_value(mappings).map_err(|_| {
+            se_types::SeError::invalid("human correspondence", "serializable exact human IDs")
+        })?;
+    }
     kernel.batch(
         "store.import_node",
         input.idempotency_key.clone(),
-        serde_json::json!({"from_node":input.from_node,"source_owner":input.source_owner}),
+        intent,
         event,
         cx,
     )

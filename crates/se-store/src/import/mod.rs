@@ -11,7 +11,7 @@ pub(crate) use wire::{decode, metadata};
 /// The original declaration used RecordId here, which cannot represent the
 /// private v8 dictionary keys of imported domain identities. Resolve a closed
 /// typed target in the same transaction instead of fabricating a v7 alias.
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", content = "id", rename_all = "snake_case")]
 pub enum LegacyTarget {
     Project(se_types::ProjectId),

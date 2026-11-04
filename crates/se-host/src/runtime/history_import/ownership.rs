@@ -16,6 +16,7 @@ pub(super) fn check<'a>(
     state: &Path,
     owner: &HumanId,
     selected: Option<&HumanId>,
+    mappings: &std::collections::BTreeMap<HumanId, HumanId>,
     registrations: impl Iterator<Item = &'a Value>,
     deadline: &Deadline,
 ) -> Result<HumanId> {
@@ -49,6 +50,12 @@ pub(super) fn check<'a>(
         Read::Absent { .. } => (),
         Read::Unreadable { source, reason, .. } => return Err(scope::unreadable(&source, &reason)),
         Read::Unknown { what } => return Err(scope::unreadable("Node source humans", &what)),
+    }
+    if mappings.keys().any(|id| !humans.contains(id)) {
+        return Err(scope::unreadable(
+            "--map-human source",
+            "every mapping must name a human ID recorded in humans.jsonl; display-name inference is not supported",
+        ));
     }
     let chosen = selected.unwrap_or(owner);
     let ids = |set: &BTreeSet<HumanId>| {

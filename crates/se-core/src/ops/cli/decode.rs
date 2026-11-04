@@ -143,6 +143,12 @@ pub fn from_matches_with_key(
                 source_owner: text(m, "source_owner")
                     .map(se_types::HumanId::from_legacy)
                     .transpose()?,
+                human_mappings: m
+                    .get_many::<String>("map_human")
+                    .into_iter()
+                    .flatten()
+                    .map(|v| store_import::HumanMapping::parse(v))
+                    .collect::<Result<Vec<_>>>()?,
                 idempotency_key: key()?,
             }),
             "project.init" => AnyOp::ProjectInit(ProjectInit {

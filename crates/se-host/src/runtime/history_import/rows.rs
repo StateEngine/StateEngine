@@ -32,11 +32,11 @@ fn materialize(
         .map_err(|e| store_error(&e))?;
     match legacy {
         Read::Present { value } => {
-            if !matches!(value.body,EventBody::LegacyRetained{source,..} if source.sha256==row.evidence.sha256)
+            if !matches!(&value.body,EventBody::LegacyRetained{source,mapped_id,..} if source.sha256==row.evidence.sha256 && mapped_id==&decoded.target)
             {
                 return Err(scope::unreadable(
                     "Node source duplicate",
-                    "the same original identity has conflicting bytes",
+                    "the same original identity has conflicting bytes or identity correspondence",
                 ));
             }
             counts.duplicate += units;
@@ -57,11 +57,11 @@ fn materialize(
                 .map_err(|e| store_error(&e))?
             {
                 Read::Present { value } => {
-                    if !matches!(&value.body,EventBody::LegacyRetained{source,..} if source.sha256==row.evidence.sha256)
+                    if !matches!(&value.body,EventBody::LegacyRetained{source,mapped_id,..} if source.sha256==row.evidence.sha256 && mapped_id==&decoded.target)
                     {
                         return Err(scope::unreadable(
                             "Node source conflict",
-                            "the original scoped source identity has conflicting bytes",
+                            "the original scoped source identity has conflicting bytes or identity correspondence",
                         ));
                     }
                     true

@@ -162,17 +162,27 @@ pub(super) fn owner<R: Snapshot>(
         ));
     }
     let human = HumanId::from_legacy(str_at(row, "human_id")?).map_err(invalid)?;
-    let principal = Actor::Human(human.clone());
+    let target = mapped_human(cx, human.clone());
+    let principal = Actor::Human(target.clone());
     let key = format!("human:{human}");
     let mut out = result(
         ImportFamily::Owners,
         key.clone(),
         LegacyTarget::Principal(principal.clone()),
     );
+    out.retained = Some(
+        json!({"source_human_id":human,"display_name":str_at(row,"display_name")?,"mapped_human_id":target,"created_at":str_at(row,"created_at")?}),
+    );
     let current = expected(read.principal(principal.clone())?)?;
     if current != Expected::Absent {
         out.duplicate = true;
         return Ok(out);
+    }
+    if target != human {
+        return Err(fail(
+            StoreErrorCode::ReferenceMissing,
+            "--map-human target must already be registered in this project; correspondence never creates another home owner",
+        ));
     }
     let Actor::Human(owner) = &cx.admission.actor else {
         return Err(invalid("owner import admission required"));

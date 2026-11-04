@@ -37,6 +37,7 @@ pub struct NodeContext {
     /// Earlier source operations still await dependencies; profile entries
     /// cannot yet be classified as outside this project.
     pub prerequisites_pending: bool,
+    pub human_mappings: std::sync::Arc<std::collections::BTreeMap<HumanId, HumanId>>,
 }
 pub struct DecodedRow {
     pub events: Vec<NewEvent>,
@@ -109,17 +110,26 @@ fn declared_agent(id: &str) -> StoreResult<AgentId> {
         .or_else(|_| AgentId::from_registered_legacy(id, &DeclaredAgent(id)))
         .map_err(invalid)
 }
-fn actor<R: Snapshot>(read: &R, v: &Value) -> StoreResult<Actor> {
+fn mapped_human(cx: &NodeContext, source: HumanId) -> HumanId {
+    cx.human_mappings.get(&source).cloned().unwrap_or(source)
+}
+fn actor<R: Snapshot>(cx: &NodeContext, read: &R, v: &Value) -> StoreResult<Actor> {
     let id = str_at(v, "actor_id")?;
     match str_at(v, "actor_type")? {
-        "human" => Ok(Actor::Human(HumanId::from_legacy(id).map_err(invalid)?)),
+        "human" => Ok(Actor::Human(mapped_human(
+            cx,
+            HumanId::from_legacy(id).map_err(invalid)?,
+        ))),
         "agent" => Ok(Actor::Agent(agent(read, id)?)),
         _ => Err(invalid("Node actor has an unsupported recorded kind")),
     }
 }
-fn seat<R: Snapshot>(read: &R, id: &str) -> StoreResult<Actor> {
+fn seat<R: Snapshot>(cx: &NodeContext, read: &R, id: &str) -> StoreResult<Actor> {
     if id.starts_with("hum-") || id.starts_with("hu_") {
-        Ok(Actor::Human(HumanId::from_legacy(id).map_err(invalid)?))
+        Ok(Actor::Human(mapped_human(
+            cx,
+            HumanId::from_legacy(id).map_err(invalid)?,
+        )))
     } else {
         Ok(Actor::Agent(agent(read, id)?))
     }

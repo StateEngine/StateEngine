@@ -50,9 +50,18 @@ fn now() -> Result<i64> {
         .try_into()
         .map_err(|_| scope::unreadable("import observation clock", "timestamp overflow"))
 }
-fn id(source: &NativePath, scope: &Scope, source_owner: &se_types::HumanId) -> Result<RecordId> {
-    let key = serde_json::to_string(&(2u32, source, scope, source_owner))
-        .map_err(|e| scope::unreadable("import run identity", &e.to_string()))?;
+fn id(
+    source: &NativePath,
+    scope: &Scope,
+    source_owner: &se_types::HumanId,
+    mappings: &std::collections::BTreeMap<se_types::HumanId, se_types::HumanId>,
+) -> Result<RecordId> {
+    let key = if mappings.is_empty() {
+        serde_json::to_string(&(2u32, source, scope, source_owner))
+    } else {
+        serde_json::to_string(&(3u32, source, scope, source_owner, mappings))
+    }
+    .map_err(|e| scope::unreadable("import run identity", &e.to_string()))?;
     node::record_id("run", &key).map_err(|e| store_error(&e))
 }
 fn family(value: ImportFamily) -> Result<String> {
@@ -135,18 +144,26 @@ pub(super) async fn execute(
     };
     let owner = owner.clone();
     let selected = input.source_owner.clone();
+    let human_mappings = std::sync::Arc::new(input.mappings()?);
+    let plan_mappings = human_mappings.clone();
     let plan = job(&context, deadline, move |_| {
-        plan::inspect(&from, &owner, selected.as_ref(), &bound)
+        plan::inspect(&from, &owner, selected.as_ref(), &plan_mappings, &bound)
     })
     .await?;
     let root_path = NativePath::from_local(plan.root.clone())?;
-    let root_id = id(&root_path, &Scope::Registry, &plan.source_owner)?;
+    let root_id = id(
+        &root_path,
+        &Scope::Registry,
+        &plan.source_owner,
+        &human_mappings,
+    )?;
     let source = plan.source.clone();
     let root_admission = admission.clone();
-    let root = job(&context, deadline, move |context| {
+    let mut root = job(&context, deadline, move |context| {
         state::context(context, root_admission, root_id, source, now()?)
     })
     .await?;
+    root.human_mappings = human_mappings.clone();
     ensure(&context, root.clone(), deadline).await?;
     let bindcx = root.clone();
     let bind_input = input.clone();
@@ -206,6 +223,7 @@ pub(super) async fn execute(
                 root_path: &root_path,
                 source_root: &source_root,
                 source_owner: &plan.source_owner,
+                human_mappings: &human_mappings,
                 registry: &plan.source,
             },
             project,

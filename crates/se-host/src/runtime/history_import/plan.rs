@@ -43,6 +43,7 @@ pub(super) fn inspect(
     path: &Path,
     owner: &HumanId,
     selected: Option<&HumanId>,
+    mappings: &std::collections::BTreeMap<HumanId, HumanId>,
     deadline: &Deadline,
 ) -> Result<Plan> {
     if !path.is_absolute() {
@@ -153,6 +154,7 @@ pub(super) fn inspect(
         &state,
         owner,
         selected,
+        mappings,
         registrations.values().map(|(_, value, _)| value),
         deadline,
     )?;
