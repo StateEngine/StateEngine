@@ -54,6 +54,12 @@ impl McpBackend for HttpBackend<'_> {
             .await
             .map(|output| output.value)
     }
+    async fn bound_principal(
+        &mut self,
+        capability: Arc<Secret>,
+    ) -> Result<crate::mcp::McpPrincipal> {
+        self.router.mcp_principal(capability, self.deadline).await
+    }
     fn response_limit(&self) -> usize {
         self.router.response_limit().get() as usize
     }

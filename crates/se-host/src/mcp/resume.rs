@@ -150,7 +150,7 @@ fn measured(id: Value, mut output: Value, limit: usize) -> Result<(Value, usize)
 fn text(output: &Value, is_error: bool) -> Value {
     json!({"content":[{"type":"text","text":output.to_string()}],"isError":is_error})
 }
-fn failure(id: Value, error: &SeError) -> Value {
+pub(super) fn failure(id: Value, error: &SeError) -> Value {
     match error_value(error) {
         Ok(mut output) => {
             // Raw ErrorBody carries recovery across IPC; the rendered remedy

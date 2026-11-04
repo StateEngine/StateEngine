@@ -428,6 +428,18 @@ impl HostedRouter {
             None => error,
         })
     }
+    pub(crate) async fn mcp_principal(
+        &self,
+        secret: std::sync::Arc<se_types::Secret>,
+        deadline: &Deadline,
+    ) -> Result<crate::mcp::McpPrincipal> {
+        self.check_open()?;
+        let context = self.context.clone();
+        self.execution
+            .blocking
+            .run_owned(deadline, move || context.mcp_principal(&secret))
+            .await
+    }
     pub(crate) async fn check_session(
         &self,
         secret: std::sync::Arc<se_types::Secret>,

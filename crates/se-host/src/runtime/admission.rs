@@ -237,6 +237,23 @@ impl AdmissionContext {
         })();
         super::executor::close_read(result, phase.close())
     }
+    pub fn mcp_principal(&self, secret: &se_types::Secret) -> Result<crate::mcp::McpPrincipal> {
+        let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
+        let result = (|| {
+            self.check_generation(&phase)?;
+            let admission = self.credential(&phase, secret, crate::MCP_BEARER_PURPOSE)?;
+            match (admission.scope, admission.actor) {
+                (Scope::Project(project), Actor::Agent(agent)) => {
+                    Ok(crate::mcp::McpPrincipal { project, agent })
+                }
+                _ => Err(SeError::invalid(
+                    "MCP caller",
+                    "an authenticated agent in its bound project",
+                )),
+            }
+        })();
+        super::executor::close_read(result, phase.close())
+    }
     /// Read-only MCP methods still require the same current session bearer.
     pub fn check_session(&self, secret: &se_types::Secret) -> Result<()> {
         let phase = self.reads.read_phase().map_err(|e| store_error(&e))?;
