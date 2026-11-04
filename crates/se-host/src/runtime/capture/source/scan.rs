@@ -228,9 +228,13 @@ fn finish(
             event: allocated.turn_event,
         });
     }
-    source.queue.push_back((end, tracker));
-    if source.queue.len() > 2 {
-        source.queue.pop_front();
+    if let Some((_, cached)) = source.queue.iter_mut().find(|(at, _)| *at == end) {
+        *cached = tracker;
+    } else {
+        source.queue.push_back((end, tracker));
+        if source.queue.len() > 2 {
+            source.queue.pop_front();
+        }
     }
     Ok(TrustedCapture {
         request: CaptureRequest {
@@ -306,6 +310,9 @@ mod tests {
             Record::decode(final_batch.request.text.as_str())?.count,
             Some(1)
         );
+        next(&mut source, revision, end, &deadline, true)?.ok_or("final retry lost")?;
+        assert_eq!(source.queue.len(), 2);
+        assert!(source.queue.iter().any(|(at, _)| *at == end));
         drop(source);
         std::fs::remove_file(path)?;
         std::fs::remove_dir(directory)?;
