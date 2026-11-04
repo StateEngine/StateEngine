@@ -207,7 +207,28 @@ pub fn down<R: se_store::ReadStore>(
         "a live authenticated runtime endpoint for graceful down",
         "Run se status for this same data home and verify its recorded host; endpoint absence alone does not prove the host stopped.",
     )?;
-    down_endpoint(files, &endpoint, input, &options)
+    // Retain a bounded inventory before sending stop: loss of the control
+    // channel must not discard the identities that may still own providers.
+    let bound = Deadline::from_options(&options)?;
+    let mut budget = super::owner::budget()?;
+    budget.deadline = budget.deadline.min(bound.remaining()?);
+    let inventory = reader.owner_guard(files, budget);
+    let mut options = options;
+    options.timeout = bound.remaining()?;
+    down_endpoint(files, &endpoint, input, &options).map_err(|mut error| {
+        let identities = match &inventory {
+            Ok(inventory) => inventory.processes.iter().map(|process| {
+                format!("project {} principal {:?} session {:?} lifecycle {}", process.project,
+                    process.identity.principal, process.identity.session, process.identity.record)
+            }).collect::<Vec<_>>().join("; "),
+            Err(error) => format!("pre-stop native inventory unreadable: {error}"),
+        };
+        error.body = error.body.with_remedy(se_types::Remedy {
+            text: format!("No final stop result was received. Exit remains unproved for the pre-stop inventory: {identities}. Concurrent starts may add obligations; reread this home's status. {}", retry_cleanup(files)),
+            command: Some(se_types::Cmd::Manual),
+        });
+        error
+    })
 }
 pub(super) fn down_endpoint(
     files: &Files,
