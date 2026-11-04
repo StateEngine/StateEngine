@@ -62,12 +62,12 @@ impl LaunchCoordinator {
             .configuration
             .provider_command(provider)
             .to_owned();
-        let home = self.options.home.clone();
+        let configuration_file = self.configuration_file.clone();
         let executable = self
             .store
             .pool
             .run_owned(deadline, move || {
-                resolve_provider_command(&command, provider, &home)
+                resolve_provider_command(&command, provider, configuration_file.as_deref())
             })
             .await?;
         harness

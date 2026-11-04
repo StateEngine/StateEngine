@@ -90,7 +90,7 @@ pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
 pub(super) fn resolve_provider_command(
     command: &str,
     provider: se_types::Provider,
-    home: &std::path::Path,
+    configuration_file: Option<&std::path::Path>,
 ) -> Result<PathBuf> {
     let (name, title, install) = match provider {
         se_types::Provider::Codex => ("codex", "Codex", "https://developers.openai.com/codex/cli"),
@@ -100,10 +100,13 @@ pub(super) fn resolve_provider_command(
             "https://code.claude.com/docs/en/setup",
         ),
     };
+    let destination = match configuration_file {
+        Some(path) => format!("configuration file {}", path.display()),
+        None => "the host application's provider configuration".into(),
+    };
     let help = se_types::Remedy {
         text: format!(
-            "Configured {title} command: {command:?}. Install {title} using {install}, or set command to its native executable's absolute path under [providers.{name}] in the configuration used to start this runtime: the file selected by SE_CONFIG, otherwise {}. Restart this home's runtime from your owner terminal with the same configuration selection after changing PATH or configuration, then retry the launch.",
-            home.join("config.toml").display()
+            "Configured {title} command: {command:?}. Install {title} using {install}, or set command to its native executable's absolute path under [providers.{name}] in {destination}. Restart this home's runtime from your owner terminal with the same configuration selection after changing PATH or configuration, then retry the launch."
         ),
         command: Some(se_types::Cmd::Manual),
     };

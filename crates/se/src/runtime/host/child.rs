@@ -224,7 +224,7 @@ fn serve(
         .await?;
         let restored=host.restore_transcripts(&bound).await?;
         if !restored.unavailable.is_empty() {eprintln!("capture recovery: {} binding(s) unavailable; their original cursors remain protected",restored.unavailable.len());}
-        host.configure(config.value)?;
+        host.configure_file(config.value, configuration)?;
         host.configure_auto_start(auto_start)?;
         #[cfg(unix)]
         host.configure_unix_socket_paths(socket_paths)?;
