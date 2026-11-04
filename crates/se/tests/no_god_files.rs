@@ -9,19 +9,26 @@ use std::path::{Path, PathBuf};
 const LIMIT: usize = 800;
 
 fn count_lines(path: &Path) -> usize {
-    let bytes = fs::read(path).unwrap_or_else(|error| {
-        panic!("no-god-files: cannot read {}: {}", path.display(), error)
-    });
+    let bytes = fs::read(path)
+        .unwrap_or_else(|error| panic!("no-god-files: cannot read {}: {}", path.display(), error));
     String::from_utf8_lossy(&bytes).lines().count()
 }
 
 fn collect_sources(dir: &Path, found: &mut Vec<PathBuf>) {
     let entries = fs::read_dir(dir).unwrap_or_else(|error| {
-        panic!("no-god-files: cannot read directory {}: {}", dir.display(), error)
+        panic!(
+            "no-god-files: cannot read directory {}: {}",
+            dir.display(),
+            error
+        )
     });
     for entry in entries {
         let entry = entry.unwrap_or_else(|error| {
-            panic!("no-god-files: cannot read entry in {}: {}", dir.display(), error)
+            panic!(
+                "no-god-files: cannot read entry in {}: {}",
+                dir.display(),
+                error
+            )
         });
         let path = entry.path();
         if path.is_dir() {
@@ -35,12 +42,23 @@ fn collect_sources(dir: &Path, found: &mut Vec<PathBuf>) {
 #[test]
 fn no_source_file_exceeds_the_god_file_limit() {
     let workspace = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
-        .expect("no-god-files: cannot resolve workspace root");
+        .unwrap_or_else(|error| panic!("no-god-files: cannot resolve workspace root: {error}"));
     let crates_dir = workspace.join("crates");
     let mut offenders = Vec::new();
-    for crate_entry in fs::read_dir(&crates_dir).expect("no-god-files: workspace crates directory") {
+    let crate_entries = fs::read_dir(&crates_dir).unwrap_or_else(|error| {
+        panic!(
+            "no-god-files: cannot read {}: {}",
+            crates_dir.display(),
+            error
+        )
+    });
+    for crate_entry in crate_entries {
         let crate_entry = crate_entry.unwrap_or_else(|error| {
-            panic!("no-god-files: cannot read entry in {}: {}", crates_dir.display(), error)
+            panic!(
+                "no-god-files: cannot read entry in {}: {}",
+                crates_dir.display(),
+                error
+            )
         });
         let src = crate_entry.path().join("src");
         if !src.is_dir() {
