@@ -16,7 +16,6 @@ struct Prompt {
     text: std::sync::Arc<str>,
     operation: Outcome,
     matched: bool,
-    native_delivered: bool,
     position: Position,
 }
 impl Tracker {
@@ -40,18 +39,20 @@ impl Tracker {
                     while self.pending.len() >= 4096
                         || text.len() > (16 * 1024 * 1024usize).saturating_sub(self.bytes)
                     {
-                        let completed = self.pending.iter().position(|prompt| {
-                            prompt.operation != Outcome::Unresolved
-                                && (prompt.matched || prompt.native_delivered)
-                        });
+                        let completed = self
+                            .pending
+                            .iter()
+                            .position(|prompt| prompt.operation != Outcome::Unresolved);
                         let Some(completed) = completed else {
                             return Err(SeError::invalid(
                                 "pending queued input",
                                 "at most 4096 unresolved inputs and 16 MiB; preserve the source cursor and resolve pending input",
                             ));
                         };
-                        // Only finite correlation history is discarded. Enqueue,
-                        // native outcome and witnessed delivery are already durable.
+                        // Resolved-operation FIFO: under entry/text pressure,
+                        // retire the oldest native queue outcome, even if delivery
+                        // stays unknown. Its durable provenance is never changed.
+                        // An unresolved native queue operation is never retired.
                         let retired = self.pending.remove(completed);
                         self.bytes -= retired.text.len();
                     }
@@ -60,7 +61,6 @@ impl Tracker {
                         text: text.into(),
                         operation: Outcome::Unresolved,
                         matched: false,
-                        native_delivered: false,
                         position: position.clone(),
                     });
                     let mut record = Record::new("queue-operation", Some("enqueue"));
@@ -113,7 +113,8 @@ impl Tracker {
                     if let Some(index) = index {
                         outcomes.push(self.resolve(index, Outcome::Removed, reason, &position));
                     } else {
-                        // Native logs can start after enqueue or remove transformed text.
+                        // Native logs can start after enqueue, remove transformed
+                        // text, or outlive a resolved-operation correlation window.
                         // Retain the operation without inventing an enqueue relationship.
                         let mut record = Record::new("queue-operation", Some("remove"));
                         record.position = position.clone();
@@ -151,11 +152,12 @@ impl Tracker {
                     .collect::<String>(),
                 _ => String::new(),
             };
-            // A native prompt may contain several queued inputs and provider
-            // wrappers. Require exact contained bytes; fuzzy matches grant no delivery.
+            // A native prompt may wrap several inputs. Require their complete
+            // bytes at line boundaries; a substring or quote is not delivery.
             let mut index = 0;
             while index < self.pending.len() {
-                if !self.pending[index].matched && text.contains(self.pending[index].text.as_ref())
+                if !self.pending[index].matched
+                    && anchored_input(&text, self.pending[index].text.as_ref())
                 {
                     outcomes.push(self.resolve(index, Outcome::Delivered, None, &position));
                 }
@@ -182,12 +184,6 @@ impl Tracker {
             prompt.matched = true;
         } else {
             prompt.operation = outcome;
-        }
-        if matches!(
-            reason.as_deref(),
-            Some("absorbed_mid_turn" | "delivered_to_agent")
-        ) {
-            prompt.native_delivered = true;
         }
         let mut record = Record::new(
             "queue-operation",
@@ -218,6 +214,15 @@ impl Tracker {
         });
         record
     }
+}
+fn anchored_input(text: &str, input: &str) -> bool {
+    text.match_indices(input).any(|(start, _)| {
+        let end = start + input.len();
+        (start == 0 || text.as_bytes()[start - 1] == b'\n')
+            && (end == text.len()
+                || text.as_bytes()[end] == b'\n'
+                || text[end..].starts_with("\r\n"))
+    })
 }
 pub(super) fn restore(
     source: &mut BoundTranscript,
@@ -305,7 +310,7 @@ mod tests {
         assert_eq!(operation.delivery, Delivery::NativeReason);
         let delivered = tracker.observe(
             &serde_json::to_vec(
-                &json!({"type":"user","message":{"content":"wrapper queued text wrapper"}}),
+                &json!({"type":"user","message":{"content":"wrapper\nqueued text\nwrapper"}}),
             )?,
             Position {
                 offset: 20,
@@ -347,7 +352,7 @@ mod tests {
     #[test]
     fn completed_history_releases_both_entry_and_text_capacity()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        for native_reason in [false, true] {
+        for completion in ["user", "native", "dequeue-only"] {
             for padding in [String::new(), "x".repeat(se_types::Body::MAX_BYTES / 2)] {
                 let mut tracker = Tracker::default();
                 let count = if padding.is_empty() {
@@ -358,16 +363,22 @@ mod tests {
                 let mut offset = 0;
                 for i in 0..count {
                     let text = format!("queued-{i}:{padding}");
-                    let values = if native_reason {
+                    let values = if completion == "native" {
                         vec![
                             json!({"type":"queue-operation","operation":"enqueue","content":text}),
                             json!({"type":"queue-operation","operation":"remove","content":text,"reason":"absorbed_mid_turn"}),
+                        ]
+                    } else if completion == "user" {
+                        vec![
+                            json!({"type":"queue-operation","operation":"enqueue","content":text}),
+                            json!({"type":"queue-operation","operation":"dequeue"}),
+                            json!({"type":"user","message":{"content":text}}),
                         ]
                     } else {
                         vec![
                             json!({"type":"queue-operation","operation":"enqueue","content":text}),
                             json!({"type":"queue-operation","operation":"dequeue"}),
-                            json!({"type":"user","message":{"content":text}}),
+                            json!({"type":"user","isSidechain":true,"message":{"content":text}}),
                         ]
                     };
                     for value in values {
@@ -375,22 +386,75 @@ mod tests {
                             &serde_json::to_vec(&value)?,
                             Position { offset, length: 1 },
                         )?;
-                        assert_eq!(rows.len(), 1);
-                        rows[0]
-                            .queued_input
-                            .as_ref()
-                            .ok_or("provenance absent")?
-                            .validate()?;
+                        if value.get("isSidechain").is_some() {
+                            assert!(rows.is_empty());
+                        } else {
+                            assert_eq!(rows.len(), 1);
+                            let provenance =
+                                rows[0].queued_input.as_ref().ok_or("provenance absent")?;
+                            provenance.validate()?;
+                            if completion == "dequeue-only" {
+                                assert_eq!(provenance.delivery, Delivery::Unresolved);
+                            }
+                        }
                         offset += 1;
                     }
                 }
                 assert!(tracker.pending.len() <= 4096);
                 assert!(tracker.bytes <= 16 * 1024 * 1024);
-                assert!(tracker.pending.iter().all(
-                    |p| (p.matched || p.native_delivered) && p.operation != Outcome::Unresolved
-                ));
+                assert!(
+                    tracker
+                        .pending
+                        .iter()
+                        .all(|p| p.operation != Outcome::Unresolved)
+                );
+                if completion == "dequeue-only" {
+                    assert!(tracker.pending.iter().all(|p| !p.matched));
+                }
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn delivery_requires_the_whole_input_at_native_line_boundaries() {
+        assert!(!anchored_input("bookkeeping", "ok"));
+        assert!(!anchored_input("quoted \"ok\"", "ok"));
+        assert!(!anchored_input("prefix queued text suffix", "queued text"));
+        assert!(anchored_input("ok", "ok"));
+        assert!(anchored_input("header\nok\nfooter", "ok"));
+        assert!(anchored_input("header\r\nok\r\nfooter", "ok"));
+        assert!(anchored_input("header\none\ntwo\nfooter", "one\ntwo"));
+    }
+
+    #[test]
+    fn unresolved_native_queue_operations_never_expire()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut tracker = Tracker::default();
+        let bytes = serde_json::to_vec(
+            &json!({"type":"queue-operation","operation":"enqueue","content":"pending"}),
+        )?;
+        for offset in 0..4096 {
+            tracker.observe(&bytes, Position { offset, length: 1 })?;
+        }
+        assert!(
+            tracker
+                .observe(
+                    &bytes,
+                    Position {
+                        offset: 4096,
+                        length: 1
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(tracker.pending.len(), 4096);
+        assert!(
+            tracker
+                .pending
+                .iter()
+                .all(|p| p.operation == Outcome::Unresolved)
+        );
         Ok(())
     }
 }
