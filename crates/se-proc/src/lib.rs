@@ -10,6 +10,10 @@
 mod windows_directory;
 #[cfg(windows)]
 pub use windows_directory::windows_directory;
+#[cfg(windows)]
+mod windows_package;
+#[cfg(windows)]
+pub use windows_package::process_has_package_identity;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocator;
 mod canonical_path;

@@ -160,15 +160,40 @@ impl Harness for CodexHarness {
         cx: CallContext,
     ) -> HostFuture<'a, ProviderVersion> {
         Box::pin(async move {
+            #[cfg(windows)]
+            let until = std::time::Instant::now() + cx.timeout;
             let mut found = probe::probe(&request.command, cx.timeout).await?;
             #[cfg(windows)]
             {
                 let environment = input::provider_environment();
-                let deadline = crate::client::lease::Deadline::idle()?.stage(cx.timeout)?;
-                let shell = self
+                let deadline = crate::client::lease::Deadline::idle()?
+                    .stage(until.saturating_duration_since(std::time::Instant::now()))?;
+                let candidates = self
                     .pool
-                    .run_owned(&deadline, move || windows_shell::select(&environment))
+                    .run_owned(&deadline, move || windows_shell::candidates(&environment))
                     .await?;
+                let mut selected = None;
+                for shell in candidates {
+                    if windows_shell::probe(
+                        &shell,
+                        &self.pool,
+                        &context(
+                            cx.generation,
+                            until.saturating_duration_since(std::time::Instant::now()),
+                        ),
+                    )
+                    .await?
+                    {
+                        selected = Some(shell);
+                        break;
+                    }
+                }
+                let shell = selected.ok_or_else(|| {
+                    incompatible(
+                        "no standard unpackaged PowerShell candidate qualifies",
+                        "Install the PowerShell MSI and retry; the sandbox will not be widened.",
+                    )
+                })?;
                 *self.windows_shell.lock().map_err(|_| poisoned())? = Some(shell);
             }
             found.protocol = if cfg!(unix) {
