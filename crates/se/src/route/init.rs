@@ -79,9 +79,15 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
     }
     let repository = repository::observe(cx, &input)?;
     if input.launch {
-        return Err(SeError::new(se_types::Detail::FeatureUnavailable(se_types::details::FeatureUnavailable {
-            subject:"agent launch".into(), reason:"launching agents isn't available in this build yet".into(), next_step:"Use se init without --launch to save the project, then inspect it with se status.".into(),
-        })));
+        return Err(SeError::new(se_types::Detail::FeatureUnavailable(
+            se_types::details::FeatureUnavailable {
+                subject: "init --launch".into(),
+                reason: "combined registration and launch is not supported in this build".into(),
+                next_step:
+                    "Run se init without --launch, then run its printed first-launch command."
+                        .into(),
+            },
+        )));
     }
     if input.adopt {
         return Err(SeError::new(se_types::Detail::FeatureUnavailable(

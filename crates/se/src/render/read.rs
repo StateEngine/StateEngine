@@ -81,10 +81,13 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                 out,
                 "  {}: {} — {} agents running, {} unread",
                 project.name,
-                project.root,
+                project.root.as_deref().unwrap_or("root unreadable"),
                 count(project.agents_running),
-                project.owner_unread
+                count(project.owner_unread)
             )?;
+            for error in &project.errors {
+                writeln!(out, "    Unreadable: {}", error.message())?;
+            }
         }
         omissions(projects, out)?;
     }

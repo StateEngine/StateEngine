@@ -51,54 +51,57 @@ pub(super) fn page<R: ReadStore>(
                 ));
             }
         };
-        let root = roots
+        let mut errors = Vec::new();
+        let root = match roots
             .first()
-            .ok_or_else(|| scope::unreadable("registered project", "repository root is absent"))?
-            .path
-            .to_local()?
-            .display()
-            .to_string();
+            .ok_or_else(|| scope::unreadable("registered project", "repository root is absent"))
+            .and_then(|root| root.path.to_local())
+        {
+            Ok(path) => Some(path.display().to_string()),
+            Err(error) => {
+                errors.push(error.body);
+                None
+            }
+        };
         let mut project_admission = admission.clone();
         project_admission.scope = Scope::Project(id.clone());
-        let mut snap = reader
-            .snapshot(read_scope(&project_admission))
-            .map_err(|e| store_error(&e))?;
-        let counts = (|| {
-            let sessions = snap
-                .sessions(super::super::select::budget(None)?)
-                .map_err(|e| store_error(&e))?;
-            let agents_running =
-                (sessions.items().is_empty() && sessions.window().complete()).then_some(0);
-            let owner_unread = snap
-                .message_count(MessageQuery {
+        let mut agents_running = None;
+        let mut owner_unread = None;
+        match reader.snapshot(read_scope(&project_admission)) {
+            Err(error) => errors.push(store_error(&error).body),
+            Ok(mut snap) => {
+                match snap.sessions(super::super::select::budget(None)?) {
+                    Ok(sessions) => {
+                        agents_running = (sessions.items().is_empty()
+                            && sessions.window().complete())
+                        .then_some(0)
+                    }
+                    Err(error) => errors.push(store_error(&error).body),
+                }
+                match snap.message_count(MessageQuery {
                     sender: None,
                     recipient: Some(admission.actor.clone()),
                     kind: None,
                     unread_only: true,
                     full_body: false,
-                })
-                .map_err(|e| store_error(&e))?;
-            Ok((agents_running, owner_unread))
-        })();
-        let closed = snap.close().map_err(|e| store_error(&e));
-        let (agents_running, owner_unread) = match counts {
-            Ok(value) => {
-                closed?;
-                value
+                }) {
+                    Ok(count) => owner_unread = Some(count),
+                    Err(error) => errors.push(store_error(&error).body),
+                }
+                if let Err(error) = snap.close() {
+                    errors.push(store_error(&error).body);
+                    agents_running = None;
+                    owner_unread = None;
+                }
             }
-            Err(error) => {
-                return Err(match closed {
-                    Ok(()) => error,
-                    Err(close) => error.with_cause(close),
-                });
-            }
-        };
+        }
         rows.push(ProjectSummary {
             id,
             name,
             root,
             agents_running,
             owner_unread,
+            errors,
         });
     }
     fields.returned = rows.len() as u64;

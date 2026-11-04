@@ -44,12 +44,6 @@ pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
         writeln!(out, "{hint}")?;
     }
     next_step(&value.next, out)?;
-    if value.repo.files_touched == 0 && value.integrations.is_empty() {
-        writeln!(
-            out,
-            "For user-started Claude Code or Codex sessions: se init --adopt"
-        )?;
-    }
     Ok(())
 }
 

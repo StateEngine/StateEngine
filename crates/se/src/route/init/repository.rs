@@ -28,9 +28,22 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
     } else {
         cx.cwd.join(requested)
     })
-    .map_err(|e| scope::unreadable("repository root", &e.to_string()))?;
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            SeError::new(se_types::Detail::RepoInvalid(se_types::details::RepoInvalid {
+                subject: "--repo".into(), reason: "the requested directory does not exist".into(),
+                next_step: "Select an existing directory with --repo DIR, or create that directory and retry.".into(),
+            }))
+        } else { scope::unreadable("repository root", &e.to_string()) }
+    })?;
     if !path.is_dir() {
-        return Err(SeError::invalid("repository root", "an existing directory"));
+        return Err(SeError::new(se_types::Detail::RepoInvalid(
+            se_types::details::RepoInvalid {
+                subject: "--repo".into(),
+                reason: "the selected path is not a directory".into(),
+                next_step: "Select an existing directory with --repo DIR.".into(),
+            },
+        )));
     }
     if canonical_destination(&cx.home)?.starts_with(&path) {
         return Err(SeError::invalid(
@@ -62,7 +75,14 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
         })?;
     let mut resolved = input.clone();
     resolved.name = Some(name.clone());
-    se_core::ops::inputs::Validate::validate(&resolved)?;
+    se_core::ops::inputs::Validate::validate(&resolved).map_err(|error| {
+        if input.name.is_none() && matches!(error.body.detail(), se_types::Detail::UsageInvalidValue(detail) if detail.argument == "name") {
+            SeError::new(se_types::Detail::RepoInvalid(se_types::details::RepoInvalid {
+                subject: "derived project name".into(), reason: "the directory name is not a supported project name".into(),
+                next_step: "Add --name NAME using 1..64 ASCII letters, digits, spaces, periods, underscores or hyphens, starting with a letter or digit.".into(),
+            })).with_cause(error)
+        } else { error }
+    })?;
     let nonempty = std::fs::read_dir(&path)
         .map_err(|e| scope::unreadable("repository contents", &e.to_string()))?
         .next()
