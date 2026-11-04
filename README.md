@@ -30,8 +30,9 @@ explicitly adopt that source owner; copies containing projects from other owners
 are refused. Historical humans keep their recorded IDs and display names as project
 members, without becoming owners of the Rust data home. To explicitly associate a
 source human with an existing target human, repeat `--map-human SOURCE_ID=TARGET_ID`.
-The target must already be registered in each imported project; the importing owner
-is registered there automatically. The source ID and name remain in history, and
+The target must already be registered in each imported project; explicit mapping onto
+the importing owner is also supported, because adoption registers that owner there.
+Missing targets are refused before adopting an import run. The source ID and name remain in history, and
 names alone never imply a correspondence. Changing a correspondence after importing
 that human is refused; use a fresh target data home for a different mapping.
 The command keeps source files intact and reports imported, duplicate, unreadable,
@@ -39,7 +40,7 @@ excluded and deferred source rows (individual entries for profile documents). Re
 progress. A malformed final row is recorded as unreadable; preserve a repaired
 export as a separate copy rather than rewriting its consumed prefix. `--json` returns the accounted receipt. An already registered root must be
 released explicitly before its historical project ID can adopt it. `se init` only
-offers this import; it never starts one automatically. Historical humans with colliding display names keep distinct IDs; later names receive a stable ` (historical ID-SUFFIX)` suffix, with the original name retained in provenance and a counted import note.
+offers this import; it never starts one automatically. Historical humans with colliding display names keep distinct IDs. The lowest source ID keeps the plain name; other IDs receive a stable ` (historical ID-SUFFIX)` suffix derived from their exact ID. Source row order does not change these names. The original name remains in provenance with a counted import note.
 
 Imported agents without a usable saved profile adopt the current owner's safe default
 provider profile after source configuration is processed. This is current configuration,

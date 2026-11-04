@@ -41,6 +41,7 @@ pub(super) fn context(
         owner_profiles,
         prerequisites_pending: false,
         human_mappings: Default::default(),
+        human_names: Default::default(),
     })
 }
 pub(super) fn start(

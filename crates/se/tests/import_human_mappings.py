@@ -61,6 +61,9 @@ def explicit_correspondence_and_replay(f):
     assert f.snapshot_sources() == before
     changed = f.call(*args)
     assert changed.returncode != 0, "an existing correspondence was silently rewritten"
+    assert HUMAN in changed.stdout.decode() and f.owner in changed.stdout.decode(), "earlier correspondence was not named"
+    changed = f.call("--key", str(uuid.uuid4()), *args)
+    assert changed.returncode != 0 and HUMAN in changed.stdout.decode() and f.owner in changed.stdout.decode()
     witnesses(f, f.owner)
 
 
@@ -73,10 +76,11 @@ def bad_correspondence(f):
     assert duplicate.returncode != 0, "ambiguous duplicate source correspondence accepted"
     missing_target = f.call(*args, "--map-human", f"{HUMAN}={UNKNOWN}")
     assert missing_target.returncode != 0
-    receipt = json.loads(missing_target.stdout)
-    assert not receipt["complete"] and sum(row["deferred"] for row in receipt["families"]) > 0
+    refusal = json.loads(missing_target.stdout)
+    assert refusal["schema"] == "se.error/v1" and HUMAN in refusal["message"] and UNKNOWN in refusal["message"]
     with closing(sqlite3.connect(f"file:{f.home / 'state.db'}?mode=ro", uri=True)) as db:
         assert db.execute("select count(*) from owners").fetchone() == (1,)
+        assert db.execute("select count(*) from import_runs").fetchone() == (0,), "missing target adopted an import run"
 
 
 def colliding_names_are_counted(f):
@@ -99,6 +103,39 @@ def colliding_names_are_counted(f):
     assert f.ok(*args)["complete"]
     second = f.history()
     assert second == events and f.snapshot_sources() == before
+    names = {e["payload"]["principal"]["id"]: e["payload"]["name"] for e in events
+             if e["kind"] == "principal.registered" and e["payload"]["principal"]["id"] in [HUMAN, SECOND]}
+    other = fixture.Fixture(f.se, f.root / "reversed-source")
+    try:
+        other_args = source(other)
+        path = other.state / "humans.jsonl"
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        for row in rows:
+            if row["human_id"] in [HUMAN, SECOND]:
+                row["display_name"] = "Same Historical Name" if row["human_id"] == HUMAN else "same historical name"
+        path.write_text("".join(json.dumps(row) + "\n" for row in reversed(rows)))
+        assert other.ok(*other_args)["complete"]
+        reversed_names = {e["payload"]["principal"]["id"]: e["payload"]["name"] for e in other.history()
+            if e["kind"] == "principal.registered" and e["payload"]["principal"]["id"] in [HUMAN, SECOND]}
+        assert reversed_names == names, "source order changed imported names"
+    finally:
+        other.close()
+
+
+def missing_display_name_is_unreadable(f):
+    args = source(f)
+    path = f.state / "humans.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    for row in rows:
+        if row["human_id"] == HUMAN:
+            del row["display_name"]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    before = f.snapshot_sources()
+    result = f.call(*args)
+    assert result.returncode != 0
+    receipt = json.loads(result.stdout)
+    assert not receipt["complete"] and sum(r["unreadable"] for r in f.family(receipt, "owners")) == 1
+    assert f.snapshot_sources() == before
 
 
 def main():
@@ -107,7 +144,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    cases = [preserve_names, explicit_correspondence_and_replay, bad_correspondence, colliding_names_are_counted]
+    cases = [preserve_names, explicit_correspondence_and_replay, bad_correspondence, colliding_names_are_counted, missing_display_name_is_unreadable]
     print(f"1..{len(cases)}", flush=True)
     failed = 0
     for number, case in enumerate(cases, 1):

@@ -1,11 +1,27 @@
-//! Display-name collisions never merge recorded human identities.
+//! Deterministic source names never depend on import order or roster suffixes.
 use super::*;
-pub(super) fn available<R: Snapshot>(
-    read: &mut R,
-    recorded: &str,
-    human: &HumanId,
-) -> StoreResult<String> {
-    let mut names = std::collections::BTreeSet::new();
+pub(in crate::runtime::history_import) fn suffix(recorded: &str, human: &HumanId) -> String {
+    let digest = se_types::hex_lower(&Sha256::digest(human.as_str().as_bytes()));
+    let stable = human
+        .as_str()
+        .chars()
+        .rev()
+        .take(8)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect::<String>();
+    let suffix = format!(" (historical {stable}-{})", &digest[..8]);
+    let prefix = recorded
+        .chars()
+        .scan(0usize, |used, ch| {
+            *used += ch.len_utf8();
+            (*used <= 64usize.saturating_sub(suffix.len())).then_some(ch)
+        })
+        .collect::<String>();
+    format!("{prefix}{suffix}")
+}
+pub(super) fn available<R: Snapshot>(read: &mut R, planned: &str) -> StoreResult<String> {
     let mut after = None;
     for _ in 0..64 {
         let page = read.principals(ReadBudget {
@@ -17,48 +33,22 @@ pub(super) fn available<R: Snapshot>(
             deadline: std::time::Duration::from_secs(5),
         })?;
         for item in page.items() {
-            match &item.current.body {
+            let name = match &item.current.body {
                 EventBody::PrincipalRegistered { name, .. }
-                | EventBody::PrincipalRenamed { name, .. } => {
-                    names.insert(name.to_ascii_lowercase());
-                }
+                | EventBody::PrincipalRenamed { name, .. } => name,
                 _ => return Err(invalid("principal roster contains an unexpected record")),
+            };
+            if name.eq_ignore_ascii_case(planned) {
+                return Err(fail(
+                    StoreErrorCode::NaturalKeyConflict,
+                    format!(
+                        "deterministic source human name {planned:?} is already occupied; use explicit --map-human correspondence rather than an order-dependent rename"
+                    ),
+                ));
             }
         }
         if page.window().complete() {
-            if !names.contains(&recorded.to_ascii_lowercase()) {
-                return Ok(recorded.into());
-            }
-            // Full exact ID determines the suffix; the retained correspondence
-            // keeps the unmodified recorded display name and source identity.
-            for number in 0..=names.len() {
-                let stable = human
-                    .as_str()
-                    .chars()
-                    .rev()
-                    .take(8)
-                    .collect::<String>()
-                    .chars()
-                    .rev()
-                    .collect::<String>();
-                let suffix = if number == 0 {
-                    format!(" (historical {stable})")
-                } else {
-                    format!(" (historical {stable}-{number})")
-                };
-                let prefix = recorded
-                    .chars()
-                    .scan(0usize, |used, ch| {
-                        *used += ch.len_utf8();
-                        (*used <= 64usize.saturating_sub(suffix.len())).then_some(ch)
-                    })
-                    .collect::<String>();
-                let candidate = format!("{prefix}{suffix}");
-                if !names.contains(&candidate.to_ascii_lowercase()) {
-                    return Ok(candidate);
-                }
-            }
-            return Err(invalid("no available historical human display name"));
+            return Ok(planned.into());
         }
         after = Some(
             page.next()

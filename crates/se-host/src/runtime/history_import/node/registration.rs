@@ -187,7 +187,11 @@ pub(super) fn owner<R: Snapshot>(
     let Actor::Human(owner) = &cx.admission.actor else {
         return Err(invalid("owner import admission required"));
     };
-    let display_name = super::human_name::available(read, str_at(row, "display_name")?, &human)?;
+    let planned = cx
+        .human_names
+        .get(&human)
+        .ok_or_else(|| invalid("source human name plan is absent"))?;
+    let display_name = super::human_name::available(read, planned)?;
     if display_name != str_at(row, "display_name")? {
         let retained = out
             .retained

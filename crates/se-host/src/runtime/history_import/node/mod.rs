@@ -2,6 +2,7 @@
 //! ranges are supplied by the host; no filesystem, environment or Node runtime.
 use se_store::import::{ImportSnapshot, LegacyTarget};
 mod human_name;
+pub(super) use human_name::suffix as historical_human_name;
 mod ledger;
 mod message;
 pub(super) mod profile;
@@ -39,6 +40,7 @@ pub struct NodeContext {
     /// cannot yet be classified as outside this project.
     pub prerequisites_pending: bool,
     pub human_mappings: std::sync::Arc<std::collections::BTreeMap<HumanId, HumanId>>,
+    pub human_names: super::human_plan::Names,
 }
 pub struct DecodedRow {
     pub events: Vec<NewEvent>,

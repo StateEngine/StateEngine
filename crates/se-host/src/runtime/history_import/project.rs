@@ -12,6 +12,7 @@ pub(super) struct Source<'a> {
     pub source_owner: &'a se_types::HumanId,
     pub human_mappings:
         &'a std::sync::Arc<std::collections::BTreeMap<se_types::HumanId, se_types::HumanId>>,
+    pub human_names: &'a human_plan::Names,
     pub registry: &'a SourceEvidence,
 }
 pub(super) async fn execute(
@@ -26,6 +27,7 @@ pub(super) async fn execute(
         source_root,
         source_owner,
         human_mappings,
+        human_names,
         registry: registry_source,
     } = source;
     let mut families = Vec::new();
@@ -38,7 +40,7 @@ pub(super) async fn execute(
     })
     .await?;
     admission.scope = Scope::Project(project.id);
-    let project_id = id(root_path, &admission.scope, source_owner, human_mappings)?;
+    let project_id = id(root_path, &admission.scope, source_owner)?;
     let own = admission.clone();
     let source = registry_source.clone();
     let mut cx = job(context, deadline, move |context| {
@@ -46,6 +48,7 @@ pub(super) async fn execute(
     })
     .await?;
     cx.human_mappings = human_mappings.clone();
+    cx.human_names = human_names.clone();
     ensure(context, cx.clone(), deadline).await?;
     let ownercx = cx.clone();
     if let Some(batch) = job(context, deadline, move |context| {
