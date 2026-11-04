@@ -1,5 +1,6 @@
 //! One read-only continuity assembler for CLI/MCP resume and linked session
 //! context. Authority, clock and the finite store snapshot come from adapters.
+mod commands;
 mod compact;
 mod identity;
 mod packet;
@@ -16,8 +17,17 @@ pub fn resume<R: Snapshot>(
     at: UnixMicros,
     cx: &mut Cx<'_, R>,
 ) -> Result<ResumeOutput> {
+    resume_at_home(input, at, None, cx)
+}
+pub(crate) fn resume_at_home<R: Snapshot>(
+    input: Resume,
+    at: UnixMicros,
+    home: Option<&std::path::Path>,
+    cx: &mut Cx<'_, R>,
+) -> Result<ResumeOutput> {
     input.validate()?;
-    let identity = identity::resolve(input.preview_agent.as_ref(), cx)?;
+    let mut identity = identity::resolve(input.preview_agent.as_ref(), cx)?;
+    identity.command_home = home.map(std::path::Path::to_owned);
     packet::resume(input, at, identity, cx)
 }
 pub fn context<R: Snapshot>(
@@ -25,8 +35,17 @@ pub fn context<R: Snapshot>(
     at: UnixMicros,
     cx: &mut Cx<'_, R>,
 ) -> Result<SessionContextOutput> {
+    context_at_home(input, at, None, cx)
+}
+pub(crate) fn context_at_home<R: Snapshot>(
+    input: SessionContextRequest,
+    at: UnixMicros,
+    home: Option<&std::path::Path>,
+    cx: &mut Cx<'_, R>,
+) -> Result<SessionContextOutput> {
     input.validate()?;
-    let identity = identity::resolve(None, cx)?;
+    let mut identity = identity::resolve(None, cx)?;
+    identity.command_home = home.map(std::path::Path::to_owned);
     let resume = Resume {
         limit: input.limit,
         governing_cursor: input.governing_cursor,

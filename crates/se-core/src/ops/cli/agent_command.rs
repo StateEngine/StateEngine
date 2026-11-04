@@ -1,6 +1,7 @@
 //! CLI receipt commands use the same positional selectors as the live grammar.
 use se_types::{AgentId, ProjectId};
 
+#[derive(Clone)]
 pub struct AgentCommand {
     pub command: String,
     pub argv: Vec<String>,

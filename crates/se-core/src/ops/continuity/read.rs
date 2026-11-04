@@ -2,6 +2,7 @@ use super::{identity::Identity, types::*};
 use crate::{
     commit::Cx,
     ops::{
+        AgentCommand,
         inputs::{MessageBox, MessageList, MessageView},
         message, receipt,
     },
@@ -43,7 +44,7 @@ pub(super) fn unread<R: Snapshot>(
     byte_budget: u32,
     cx: &mut Cx<'_, R>,
 ) -> Result<crate::ops::MessagePage> {
-    message::list(
+    let mut mail = message::list(
         MessageList {
             cli_list: identity.principal.preview,
             view: MessageView::Unread,
@@ -64,7 +65,21 @@ pub(super) fn unread<R: Snapshot>(
                 .then(|| identity.principal.agent.id.to_string()),
         },
         cx,
-    )
+    )?;
+    let mut rows = mail.page.items().to_vec();
+    for row in &mut rows {
+        if row.body.argv.is_some() {
+            let mut command = mail_command(identity)?.argv;
+            command.extend(["--limit".into(), limit.to_string()]);
+            // Keep the typed list's recovery selector; never parse shell text.
+            let command = AgentCommand::from_argv(command)
+                .ok_or_else(|| SeError::invalid("continuity mail command", "portable arguments"))?;
+            row.body.command = Some(command.command);
+            row.body.argv = Some(command.argv);
+        }
+    }
+    mail.page = se_types::Page::new(rows, mail.page.window().clone(), mail.page.next().cloned())?;
+    Ok(mail)
 }
 pub(super) fn gather<R: Snapshot>(
     input: &Resume,
@@ -145,14 +160,14 @@ pub(super) fn gather<R: Snapshot>(
     let mut governing_budget = budget(u32::from(limit))?;
     governing_budget.page.after = input.governing_cursor.clone();
     let mut governing_next = None;
-    let governing_command = resume_command(identity, input.governing_cursor.as_ref());
+    let governing_command = resume_command(identity, input.governing_cursor.as_ref())?;
     let governing = match cx.read.governing_decisions(governing_budget) {
         Ok(page) => {
             governing_next = page.next().cloned();
             window_omission(
                 "governing_decisions",
                 page.window(),
-                &resume_command(identity, governing_next.as_ref()),
+                &resume_command(identity, governing_next.as_ref())?,
                 "stateengine_resume",
                 &mut omissions,
             );
@@ -211,10 +226,7 @@ pub(super) fn gather<R: Snapshot>(
     window_omission(
         "recent_turns",
         turns.window(),
-        &format!(
-            "se --project {} history --kind session.turn",
-            identity.principal.project.id
-        ),
+        &identity.history()?,
         "stateengine_event_read",
         &mut omissions,
     );
@@ -256,14 +268,11 @@ pub(super) fn gather<R: Snapshot>(
         if preview.len() != text.len() {
             previewed_turns += 1;
         }
-        let argv = vec![
-            "se".into(),
-            "--project".into(),
-            identity.principal.project.id.to_string(),
+        let command = identity.command([
             "history".into(),
             "--event".into(),
             event.header.event.to_string(),
-        ];
+        ])?;
         recent.push(RecentTurn {
             event_id: event.header.event,
             at: receipt::timestamp(event.header.occurred_at_us)?,
@@ -277,8 +286,8 @@ pub(super) fn gather<R: Snapshot>(
             complete: preview.len() == text.len(),
             bytes: text.len() as u64,
             preview,
-            command: argv.join(" "),
-            argv,
+            command: command.command,
+            argv: command.argv,
         });
     }
     if unreadable_turns > 0 {
@@ -294,17 +303,14 @@ pub(super) fn gather<R: Snapshot>(
             "recent_turn_content",
             Some(previewed_turns),
             "UTF-8 content preview",
-            format!(
-                "se --project {} history --kind session.turn",
-                identity.principal.project.id
-            ),
+            identity.history()?,
             "stateengine_event_read",
         ));
     }
     window_omission(
         "unread",
         mail.page.window(),
-        &mail_command(identity),
+        &mail_command(identity)?,
         "stateengine_msg_list",
         &mut omissions,
     );
@@ -337,7 +343,7 @@ pub(super) fn omission(
     section: &str,
     count: Option<u64>,
     reason: &str,
-    command: String,
+    command: AgentCommand,
     tool: &str,
 ) -> Omission {
     Omission {
@@ -346,14 +352,14 @@ pub(super) fn omission(
         unit: None,
         reason: reason.into(),
         tool: tool.into(),
-        argv: command.split(' ').map(str::to_owned).collect(),
-        command,
+        argv: command.argv,
+        command: command.command,
     }
 }
 fn window_omission(
     section: &str,
     window: &Window,
-    command: &str,
+    command: &AgentCommand,
     tool: &str,
     out: &mut Vec<Omission>,
 ) {
@@ -368,70 +374,59 @@ fn window_omission(
             section,
             window.omitted().count,
             reason,
-            command.into(),
+            command.clone(),
             tool,
         ));
     }
 }
 
-pub(super) fn mail_command(identity: &Identity) -> String {
-    let command = format!(
-        "se --project {} msg list --full",
-        identity.principal.project.id
-    );
+pub(super) fn mail_command(identity: &Identity) -> Result<AgentCommand> {
+    let mut words = vec!["msg".into(), "list".into(), "--full".into()];
     if identity.principal.preview {
-        format!("{command} --to {}", identity.principal.agent.id)
-    } else {
-        command
+        words.extend(["--to".into(), identity.principal.agent.id.to_string()]);
     }
+    identity.command(words)
 }
 
-pub(super) fn resume_command(identity: &Identity, governing: Option<&se_types::Cursor>) -> String {
-    let mut command = format!(
-        "se --project {} resume --budget 1048576",
-        identity.principal.project.id
-    );
+pub(super) fn resume_command(
+    identity: &Identity,
+    governing: Option<&se_types::Cursor>,
+) -> Result<AgentCommand> {
+    let mut words = vec!["resume".into(), "--budget".into(), "1048576".into()];
     if identity.principal.preview {
-        command.push_str(&format!(" --preview {}", identity.principal.agent.id));
+        words.extend(["--preview".into(), identity.principal.agent.id.to_string()]);
     }
     if let Some(cursor) = governing {
-        command.push_str(&format!(" --governing-cursor {cursor}"));
+        words.extend(["--governing-cursor".into(), cursor.to_string()]);
     }
-    command
+    identity.command(words)
 }
 
-struct BudgetRecovery<'a> {
-    identity: &'a Identity,
-    input: &'a Resume,
-    needed: usize,
+fn budget_command(identity: &Identity, input: &Resume, needed: usize) -> Result<AgentCommand> {
+    let mut argv = vec![
+        "resume".into(),
+        "--limit".into(),
+        input.limit.to_string(),
+        "--budget".into(),
+        needed.to_string(),
+    ];
+    if identity.principal.preview {
+        argv.extend(["--preview".into(), identity.principal.agent.id.to_string()]);
+    }
+    for (flag, cursor) in [
+        ("--since", input.since.as_ref()),
+        ("--governing-cursor", input.governing_cursor.as_ref()),
+    ] {
+        if let Some(cursor) = cursor {
+            argv.extend([flag.into(), cursor.to_string()]);
+        }
+    }
+    identity.command(argv)
 }
-impl se_types::OperationCommand for BudgetRecovery<'_> {
+struct BudgetRecovery(AgentCommand);
+impl se_types::OperationCommand for BudgetRecovery {
     fn cli_argv(&self) -> Vec<String> {
-        let mut argv = vec![
-            "se".into(),
-            "--project".into(),
-            self.identity.principal.project.id.to_string(),
-            "resume".into(),
-            "--limit".into(),
-            self.input.limit.to_string(),
-            "--budget".into(),
-            self.needed.to_string(),
-        ];
-        if self.identity.principal.preview {
-            argv.extend([
-                "--preview".into(),
-                self.identity.principal.agent.id.to_string(),
-            ]);
-        }
-        for (flag, cursor) in [
-            ("--since", self.input.since.as_ref()),
-            ("--governing-cursor", self.input.governing_cursor.as_ref()),
-        ] {
-            if let Some(cursor) = cursor {
-                argv.extend([flag.into(), cursor.to_string()]);
-            }
-        }
-        argv
+        self.0.argv.clone()
     }
 }
 pub(super) fn budget_refusal(
@@ -448,7 +443,7 @@ pub(super) fn budget_refusal(
     error.body=error.body.with_remedy(se_types::Remedy {
         text:if retry {format!("Retry the CLI JSON response with --budget {needed}, preserving the selected agent, limit and cursors.")}
             else {format!("The minimum {needed}-byte JSON response exceeds the {MAX_BYTES}-byte supported cap. Read working-state, mail and history separately with their paged commands.")},
-        command:Some(if retry {se_types::Cmd::Se {argv:se_types::Argv::from_op(&BudgetRecovery {identity,input,needed})?}} else {se_types::Cmd::Manual}),
+        command:Some(if retry {se_types::Cmd::Se {argv:se_types::Argv::from_op(&BudgetRecovery(budget_command(identity,input,needed)?))?}} else {se_types::Cmd::Manual}),
     });
     Ok(error)
 }
@@ -457,6 +452,7 @@ mod recovery_tests {
     use super::*;
     fn identity() -> Result<Identity> {
         Ok(Identity {
+            command_home: None,
             principal: ContinuityPrincipal {
                 project: se_types::Named {
                     id: se_types::ProjectId::from_parts(1, [1; 10])?,
@@ -478,7 +474,8 @@ mod recovery_tests {
     #[test]
     fn emitted_retry_round_trips_through_production_cli_grammar()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let identity = identity()?;
+        let mut identity = identity()?;
+        identity.command_home = Some(std::path::PathBuf::from("/selected home ' 日本語"));
         let input = Resume {
             limit: 2,
             byte_budget: 1024,
@@ -496,6 +493,7 @@ mod recovery_tests {
         };
         let matches = crate::ops::cli_command().try_get_matches_from(argv.as_slice())?;
         let common = crate::ops::CommonArgs::from_matches(&matches)?;
+        assert_eq!(common.home, identity.command_home);
         assert_eq!(
             common.selections.preview.as_deref(),
             Some(identity.principal.agent.id.as_str())

@@ -207,7 +207,7 @@ pub fn dispatch(
             &mut snapshot,
             &caller.admission,
             &caller.terminal,
-            &Kernel::read_only_at(observed),
+            &Kernel::read_only_at(observed).with_command_home(&cx.home),
             op,
             &selections,
         )
