@@ -4,6 +4,7 @@ use crate::{apply::expected, codec, connection::project_id, error::*, identity::
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
 mod apply;
+pub(crate) mod counts;
 mod wire;
 pub(crate) use apply::apply;
 pub(crate) use wire::{decode, metadata};

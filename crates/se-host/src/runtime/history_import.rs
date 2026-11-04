@@ -90,6 +90,7 @@ fn receipt(
         dropped_by_policy: counts.dropped_by_policy,
         deferred,
         reason,
+        notes: counts.notes.clone(),
     })
 }
 fn total(into: &mut ImportCounts, other: &ImportCounts) -> Result<()> {
@@ -97,6 +98,10 @@ fn total(into: &mut ImportCounts, other: &ImportCounts) -> Result<()> {
         a.checked_add(b)
             .ok_or_else(|| scope::unreadable("import total", "counter overflow"))
     };
+    for (note, count) in &other.notes {
+        let entry = into.notes.entry(note.clone()).or_default();
+        *entry = add(*entry, *count)?;
+    }
     into.deferred = add(into.deferred, other.deferred)?;
     into.read = add(into.read, other.read)?;
     into.imported = add(into.imported, other.imported)?;

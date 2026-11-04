@@ -187,6 +187,22 @@ pub(super) fn owner<R: Snapshot>(
     let Actor::Human(owner) = &cx.admission.actor else {
         return Err(invalid("owner import admission required"));
     };
+    let display_name = super::human_name::available(read, str_at(row, "display_name")?, &human)?;
+    if display_name != str_at(row, "display_name")? {
+        let retained = out
+            .retained
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| invalid("human provenance is absent"))?;
+        retained.insert(
+            "import_note".into(),
+            Value::String("historical-human-name-disambiguated".into()),
+        );
+        retained.insert(
+            "imported_display_name".into(),
+            Value::String(display_name.clone()),
+        );
+    }
     out.events.push(event(
         cx,
         cx.admission.actor.clone(),
@@ -198,7 +214,7 @@ pub(super) fn owner<R: Snapshot>(
             kind: PrincipalKind::Human,
             owner: owner.clone(),
             created_by: None,
-            name: str_at(row, "display_name")?.into(),
+            name: display_name,
             role: "historical human identity".into(),
             expected: Expected::Absent,
         },

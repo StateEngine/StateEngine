@@ -77,6 +77,18 @@ fn materialize(
             if existing {
                 counts.duplicate += units;
             } else {
+                if decoded
+                    .retained
+                    .as_ref()
+                    .and_then(|v| v.get("import_note"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("historical-human-name-disambiguated")
+                {
+                    *counts
+                        .notes
+                        .entry("historical-human-name-disambiguated".into())
+                        .or_default() += 1;
+                }
                 let bytes = decoded
                     .retained
                     .map(|v| {

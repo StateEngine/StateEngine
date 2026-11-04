@@ -39,7 +39,7 @@ excluded and deferred source rows (individual entries for profile documents). Re
 progress. A malformed final row is recorded as unreadable; preserve a repaired
 export as a separate copy rather than rewriting its consumed prefix. `--json` returns the accounted receipt. An already registered root must be
 released explicitly before its historical project ID can adopt it. `se init` only
-offers this import; it never starts one automatically.
+offers this import; it never starts one automatically. Historical humans with colliding display names keep distinct IDs; later names receive a stable ` (historical ID-SUFFIX)` suffix, with the original name retained in provenance and a counted import note.
 
 Imported agents without a usable saved profile adopt the current owner's safe default
 provider profile after source configuration is processed. This is current configuration,

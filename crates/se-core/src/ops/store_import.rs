@@ -90,6 +90,8 @@ pub struct ImportFamilyReceipt {
     pub dropped_by_policy: u64,
     pub deferred: u64,
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub notes: std::collections::BTreeMap<String, u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ImportReceipt {

@@ -1,6 +1,7 @@
 //! Pure Node user-history decoding. Original source custody and immutable
 //! ranges are supplied by the host; no filesystem, environment or Node runtime.
 use se_store::import::{ImportSnapshot, LegacyTarget};
+mod human_name;
 mod ledger;
 mod message;
 pub(super) mod profile;

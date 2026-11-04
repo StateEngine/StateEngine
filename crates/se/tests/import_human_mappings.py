@@ -79,13 +79,35 @@ def bad_correspondence(f):
         assert db.execute("select count(*) from owners").fetchone() == (1,)
 
 
+def colliding_names_are_counted(f):
+    args = source(f)
+    path = f.state / "humans.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    for row in rows:
+        if row["human_id"] in [HUMAN, SECOND]:
+            row["display_name"] = "Same Historical Name" if row["human_id"] == HUMAN else "same historical name"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    before = f.snapshot_sources()
+    first = f.ok(*args)
+    assert first["complete"]
+    owner = [r for r in first["families"] if r["family"] == "owners"][0]
+    assert owner["notes"] == {"historical-human-name-disambiguated": 1}, owner
+    events = f.history()
+    rendered = json.dumps(events)
+    assert "Same Historical Name" in rendered and "same historical name (historical " in rendered
+    assert "imported_display_name" in rendered and HUMAN in rendered and SECOND in rendered
+    assert f.ok(*args)["complete"]
+    second = f.history()
+    assert second == events and f.snapshot_sources() == before
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    cases = [preserve_names, explicit_correspondence_and_replay, bad_correspondence]
+    cases = [preserve_names, explicit_correspondence_and_replay, bad_correspondence, colliding_names_are_counted]
     print(f"1..{len(cases)}", flush=True)
     failed = 0
     for number, case in enumerate(cases, 1):
