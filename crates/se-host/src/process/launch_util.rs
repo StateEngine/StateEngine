@@ -77,6 +77,7 @@ pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_pro
         hardening: se_proc::OptionalHardening::Off,
     })
 }
+#[cfg(target_os = "linux")]
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
     find_command(command)?.ok_or_else(|| {
         se_core::scope::unreadable(
