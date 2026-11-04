@@ -126,6 +126,9 @@ pub fn execute(cx: &Bootstrap, input: ProjectInit) -> Result<AnyOutput> {
             next_step: "Wait for that operation, or run se down with the same --home, then retry se init".into(),
         },
     )))?;
+    // The exclusive home lease excludes a live cooperating initializer. Older
+    // killed attempts have no durable claim that permits deleting their files.
+    setup::refuse_staging(&lease.files)?;
     // Re-read after exclusion: another setup or removal may have completed
     // between the preliminary owner check and acquisition of this home.
     let before = setup::inspect(&cx.home, receipt::timestamp(execute::now_us()?)?)?;

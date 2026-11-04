@@ -7,6 +7,9 @@ use se_core::{
 use se_store::{ReadPhase, SqliteFactory, SqliteReader, StoreFactory, StoreOptions};
 use se_types::{Read, Result};
 use std::{path::Path, time::Duration};
+#[path = "setup/recovery.rs"]
+mod recovery;
+pub(super) use recovery::refuse_staging;
 
 pub enum Setup<T = SqliteReader> {
     Absent(Box<StatusOutput>),
@@ -49,8 +52,8 @@ fn inspect_with<T>(
         Ok(_) => (),
     }
     // Protection and directory identity are native facts, independent of DB bytes.
-    // Only the store reader below establishes initialization. A runtime.lock
-    // may already exist for an uninstall or an init still holding exclusion.
+    // A lock or config alone does not establish initialization. Surviving
+    // identity/state records prevent an absent DB becoming first-time setup.
     let files = Files::open(home).map_err(|e| store_error(&e))?;
     match open(&StoreOptions {
         state_directory: home.to_owned(),
@@ -58,7 +61,10 @@ fn inspect_with<T>(
     })
     .map_err(|e| store_error(&e))?
     {
-        Read::Absent { checked } => Ok(missing(home, generated_at, checked)),
+        Read::Absent { checked } => {
+            recovery::missing_database(&files)?;
+            Ok(missing(home, generated_at, checked))
+        }
         Read::Present { value } => Ok(Setup::Present((files, value))),
         Read::Unreadable { source, reason, .. } => {
             Err(se_core::scope::unreadable(&source, &reason))
