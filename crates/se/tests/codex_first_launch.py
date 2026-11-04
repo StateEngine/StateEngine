@@ -100,13 +100,14 @@ class Model:
 
 
 def run(options):
+    os.umask(0o077)
     options.output.mkdir(parents=True, exist_ok=False)
     checks = []
     def check(text):
         checks.append(text)
         print(f'ok {len(checks)} - {text}', flush=True)
     cases = options.case or (['alias', 'socket'] if options.expect_red else ['alias', 'plain-symlink', 'socket'])
-    for case in cases:
+    for case_index, case in enumerate(cases):
         directory = options.output / case
         f = Fixture(options.se, directory)
         model = Model(directory, f.repo)
@@ -143,9 +144,11 @@ def run(options):
             config = f.home / 'config.toml'
             text = config.read_text()
             if options.port:
+                port = options.port + case_index
                 with socket.socket() as available:
-                    available.bind(('127.0.0.1', options.port))
-                text, replaced = re.subn(r'(?m)^listen_port = [0-9]+$', 'listen_port = ' + str(options.port), text, count=1)
+                    available.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    available.bind(('127.0.0.1', port))
+                text, replaced = re.subn(r'(?m)^listen_port = [0-9]+$', 'listen_port = ' + str(port), text, count=1)
                 assert replaced == 1, 'configured listener port anchor missing'
             text = text.replace('[providers.codex]', '[providers.codex]\ncommand = ' + json.dumps(str(command)), 1)
             config.write_text(text)
