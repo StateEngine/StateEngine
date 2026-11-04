@@ -117,3 +117,29 @@ impl AgentCommand {
         Self { command, argv }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cmd_form_preserves_spaces_apostrophes_and_trailing_backslashes() {
+        let original = AgentCommand::from_argv(vec![
+            "se".into(),
+            "--home".into(),
+            "C:\\state home's\\".into(),
+        ]);
+        let cmd = original.for_cmd().unwrap();
+        assert_eq!(cmd.argv, original.argv);
+        assert_eq!(cmd.command, "se --home \"C:\\state home's\\\\\"");
+    }
+    #[test]
+    fn cmd_form_refuses_variable_expansion_and_embedded_quotes() {
+        for word in ["%TEMP%", "!private!", "line\nnext", "embedded\"quote"] {
+            assert!(
+                AgentCommand::from_argv(vec![word.into()])
+                    .for_cmd()
+                    .is_none()
+            );
+        }
+    }
+}
