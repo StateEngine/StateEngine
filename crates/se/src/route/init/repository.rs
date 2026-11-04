@@ -66,7 +66,7 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
     let name = input
         .name
         .clone()
-        .or_else(|| path.file_name().and_then(|s| s.to_str()).map(str::to_owned))
+        .or_else(|| path.file_name().and_then(|s| s.to_str()).map(derived_name))
         .ok_or_else(|| {
             SeError::invalid(
                 "project name",
@@ -97,6 +97,26 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
         git,
     })
 }
+fn derived_name(directory: &str) -> String {
+    let name: String = directory
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || " ._-".contains(character) {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let name = name.trim_start_matches(|character: char| !character.is_ascii_alphanumeric());
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        "Project".into()
+    } else {
+        name[..name.len().min(64)].trim_end().into()
+    }
+}
+
 fn git(root: &Path) -> Result<Option<GitView>> {
     let mut candidate = Some(root);
     let mut registered = false;
@@ -221,5 +241,26 @@ fn canonical_destination(path: &Path) -> Result<PathBuf> {
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derived_name;
+    #[test]
+    fn directory_labels_produce_valid_bounded_project_names() -> se_types::Result<()> {
+        for (directory, expected) in [
+            ("my repo (v2)", "my repo v2"),
+            (".private", "private"),
+            ("café ü", "caf"),
+            ("日本語", "Project"),
+        ] {
+            let name = derived_name(directory);
+            assert_eq!(name, expected);
+            se_core::ops::inputs::name("name", &name)?;
+        }
+        let name = derived_name(&"a".repeat(100));
+        assert_eq!(name.len(), 64);
+        se_core::ops::inputs::name("name", &name)
     }
 }
