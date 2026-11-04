@@ -13,10 +13,10 @@ pub fn write(
     let mut body = error.body.clone();
     let mut remedy = body.remedy(context).map_err(io::Error::other)?;
     let literal_recovery = error.code() == se_types::Code::AgentNameConflict
-        || matches!(error.body.detail(), se_types::Detail::UsageInvalidValue(detail)
-            if detail.argument == "se resume AGENT")
         || matches!(error.body.detail(), se_types::Detail::UsageMissingArgument(detail)
-            if detail.command == "se resume" && detail.argument == "--preview AGENT");
+            if detail.command == "se resume" && detail.argument == "--preview AGENT")
+        || matches!(error.body.detail(), se_types::Detail::UsageInvalidValue(detail)
+            if detail.argument == "se resume AGENT");
     if literal_recovery {
         if let Some(se_types::Cmd::Se { argv }) = &remedy.command {
             if let Some(command) = se_core::ops::AgentCommand::from_argv(argv.as_slice().to_vec()) {
