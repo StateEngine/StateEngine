@@ -41,7 +41,10 @@ fn present(value: &HistoryEvent, out: &mut impl Write) -> io::Result<()> {
 
 fn saved_profile_payload(payload: &serde_json::Value) -> serde_json::Value {
     let mut mapped = payload.clone();
-    let Some(profile) = mapped.get_mut("profile").and_then(|profile| profile.as_object_mut()) else {
+    let Some(profile) = mapped
+        .get_mut("profile")
+        .and_then(|profile| profile.as_object_mut())
+    else {
         return mapped;
     };
     if let Some(serde_json::Value::String(permission)) = profile.get_mut("permission") {
