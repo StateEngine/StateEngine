@@ -18,6 +18,24 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
+
+CONSOLE_HANDLERS = []  # Native callbacks must remain alive until process exit.
+
+
+def atomic_json(path, value):
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(value))
+    temporary.replace(path)
+
+
+def read_json(path):
+    def complete():
+        try:
+            return json.loads(path.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+    return wait_for(complete, 'complete JSON publication: ' + str(path))
 
 
 def api():
@@ -84,6 +102,7 @@ def worker(args):
     kernel = api()
     callback_type = ctypes.WINFUNCTYPE(w.BOOL, w.DWORD)
     callback = callback_type(lambda event: True)
+    CONSOLE_HANDLERS.append(callback)
     kernel.SetConsoleCtrlHandler.argtypes = [callback_type, w.BOOL]
     kernel.SetConsoleCtrlHandler.restype = w.BOOL
     require(kernel.SetConsoleCtrlHandler(callback, True), 'worker console handler')
@@ -94,10 +113,12 @@ def worker(args):
         with args.out.joinpath('foreground.log').open('wb') as log:
             child = subprocess.Popen([str(args.se), '--home', str(args.home), 'up', '--foreground', '--json'],
                                      stdin=input_stream, stdout=log, stderr=log)
-            args.out.joinpath('worker-ready.json').write_text(json.dumps({
+            atomic_json(args.out.joinpath('worker-ready.json'), {
                 'host_pid': child.pid, 'worker_pid': os.getpid(),
-                'console_window': int(require(kernel.GetConsoleWindow(), 'native console window'))}))
-            return child.wait()
+                'console_window': int(require(kernel.GetConsoleWindow(), 'native console window'))})
+            code = child.wait()
+            atomic_json(args.out / 'worker-exit.json', {'host_pid': child.pid, 'exit': code})
+            return code
 
 
 def stimulus(kernel, ready, pins, selected):
@@ -116,6 +137,7 @@ def stimulus(kernel, ready, pins, selected):
         if selected == 'break':
             callback_type = ctypes.WINFUNCTYPE(w.BOOL, w.DWORD)
             callback = callback_type(lambda event: True)
+            CONSOLE_HANDLERS.append(callback)
             kernel.SetConsoleCtrlHandler.argtypes = [callback_type, w.BOOL]
             kernel.SetConsoleCtrlHandler.restype = w.BOOL
             require(kernel.SetConsoleCtrlHandler(callback, True), 'observer console handler')
@@ -130,9 +152,10 @@ def stimulus(kernel, ready, pins, selected):
     return members
 
 
-def run_case(args, kernel, root, selected):
+def run_case(args, kernel, root, selected, progress):
     from mail_cli import Fixture
     import msvcrt
+    progress['stage'] = 'public init and native provider fixture'
     fixture = Fixture(args.se, root / selected)
     # Retain the existing provider protocol, but detach its real native root
     # and helper from the host console before reporting readiness.
@@ -149,26 +172,33 @@ std::process::exit(s.code().unwrap_or(1));}'''
         .replace('HELPER,SE,HOME', ','.join(json.dumps(str(p)) for p in [
             Path(__file__).parent / 'judges/mail_provider.py', fixture.se, fixture.home])))
     subprocess.run(['rustc', '--edition=2024', str(source), '-o', str(fixture.root / 'provider.exe')],
-                   capture_output=True, check=True, timeout=60)
+                   stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=60)
     user_file = fixture.repo / 'user.txt'
     user_file.write_bytes(b'Keep Windows user work.\r\n')
     pins, failures, cleanup, members = [], [], [], []
-    launcher = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), '--worker',
-        '--se', str(fixture.se), '--home', str(fixture.home), '--out', str(fixture.root)],
-        cwd=fixture.repo, env=fixture.env, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    progress['stage'] = 'start separate native console worker'
+    with (fixture.root / 'worker.stderr').open('wb') as worker_log:
+        launcher = subprocess.Popen([sys.executable, '-I', str(Path(__file__).resolve()), '--worker',
+            '--se', str(fixture.se), '--home', str(fixture.home), '--out', str(fixture.root)],
+            stdin=subprocess.DEVNULL, stdout=worker_log, stderr=worker_log,
+            cwd=fixture.repo, env=fixture.env, creationflags=subprocess.CREATE_NEW_CONSOLE)
     try:
+        progress['stage'] = 'read worker PID and pin exact foreground host'
         ready_path = fixture.root / 'worker-ready.json'
-        wait_for(ready_path.exists, 'console worker readiness')
-        ready = json.loads(ready_path.read_text())
-        wait_for((fixture.home / 'endpoint.json').exists, 'foreground endpoint readiness')
-        endpoint = json.loads((fixture.home / 'endpoint.json').read_text())
+        ready = read_json(ready_path)
+        pins.append(Pin(kernel, ready['host_pid']))
+        progress['stage'] = 'read complete protected endpoint publication'
+        endpoint = read_json(fixture.home / 'endpoint.json')
         if endpoint['epoch']['owner']['pid'] != ready['host_pid']:
             raise AssertionError('foreground launch detached to another native process')
-        pins.append(Pin(kernel, ready['host_pid']))
+        progress['stage'] = 'launch managed native root/helper through public CLI'
         fixture.launch()
-        provider = json.loads((fixture.repo / 'provider-ready.json').read_text())
+        provider = read_json(fixture.repo / 'provider-ready.json')
         pins.extend(Pin(kernel, provider[key]) for key in ('native_root_pid', 'helper_pid'))
+        progress['stage'] = 'verify detached children and send real console event'
         members = stimulus(kernel, ready, pins, selected)
+        progress['event_sent'] = True
+        progress['stage'] = 'witness native host/root/helper exit and endpoint retirement'
         try:
             wait_for(lambda: all(pin.exited() for pin in pins), 'host or managed root/helper survived event', 15)
         except TimeoutError as error:
@@ -183,11 +213,13 @@ std::process::exit(s.code().unwrap_or(1));}'''
             failures.append('runtime lease unavailable: ' + str(error))
     except Exception as error:
         failures.append(type(error).__name__ + ': ' + str(error))
+        progress['traceback'] = traceback.format_exc()
     finally:
         fixture.se = args.cleanup_se
         try:
             if (fixture.home / 'endpoint.json').exists() or any(not pin.exited() for pin in pins):
-                fixture.ok('up')
+                if not pins or pins[0].exited():
+                    fixture.ok('up')
                 if fixture.session:
                     fixture.ok('--project', fixture.project, 'stop', fixture.agent)
                 fixture.ok('down')
@@ -199,12 +231,13 @@ std::process::exit(s.code().unwrap_or(1));}'''
                 cleanup.append('user work changed')
         except Exception as error:
             cleanup.append(type(error).__name__ + ': ' + str(error))
+            progress['cleanup_traceback'] = traceback.format_exc()
         records = [pin.record for pin in pins]
         for pin in pins:
             pin.close()
     return {'case': selected, 'passed': not failures and not cleanup, 'failures': failures,
             'cleanup_errors': cleanup, 'known_instances': records, 'console_members': members,
-            'fixture': str(fixture.root)}
+            'fixture': str(fixture.root), **progress}
 
 
 def main():
@@ -219,7 +252,9 @@ def main():
         parser.error('native Windows required')
     if args.worker:
         return worker(args)
-    sys.path.insert(0, str(Path(__file__).parent / 'judges'))
+    # An explicit absolute path also works under python -I; copy the complete
+    # tests/judges directory alongside this file when staging the native kit.
+    sys.path.insert(0, str(Path(__file__).resolve().parent / 'judges'))
     args.se = args.se.resolve(strict=True)
     args.cleanup_se = (args.cleanup_se or args.se).resolve(strict=True)
     args.out.mkdir(mode=0o700)
@@ -230,7 +265,15 @@ def main():
     args.se = image
     rows = []
     for selected in ('break', 'close'):
-        row = run_case(args, api(), root, selected)
+        progress = {'stage': 'not started', 'event_sent': False}
+        try:
+            row = run_case(args, api(), root, selected, progress)
+        except Exception as error:
+            row = {'case': selected, 'passed': False, 'failures': [str(error)],
+                   'cleanup_errors': ['fixture setup did not reach managed cleanup'],
+                   'fixture': str(root / selected), 'traceback': traceback.format_exc(), **progress}
+        worker_log = root / selected / 'worker.stderr'
+        row['worker_stderr'] = worker_log.read_text(errors='replace') if worker_log.exists() else None
         rows.append(row)
         print(('PASS: ' if row['passed'] else 'FAIL: ') + selected, flush=True)
         report = {'binary_sha256': digest, 'cases': rows,
@@ -238,6 +281,10 @@ def main():
                   'failed': sum(not row['passed'] for row in rows),
                   'bounds': 'Native Windows console events and managed processes; synthetic provider, no paid account.'}
         (args.out / 'results.json').write_text(json.dumps(report, indent=2))
+        if row['cleanup_errors']:
+            # Never allow a failed prior host to contaminate a different home.
+            print('STOP: prior case did not prove native cleanup; no next host started', flush=True)
+            break
     print(f"Windows console events: {report['passed']} passed, {report['failed']} failed", flush=True)
     return 1 if report['failed'] else 0
 
