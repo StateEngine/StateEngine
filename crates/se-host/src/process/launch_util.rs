@@ -78,10 +78,59 @@ pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_pro
     })
 }
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
+    find_command(command)?.ok_or_else(|| {
+        se_core::scope::unreadable(
+            "provider executable",
+            "configured command was not found in absolute PATH entries",
+        )
+    })
+}
+
+pub(super) fn resolve_provider_command(
+    command: &str,
+    provider: se_types::Provider,
+    home: &std::path::Path,
+) -> Result<PathBuf> {
+    let (name, title, install) = match provider {
+        se_types::Provider::Codex => ("codex", "Codex", "https://developers.openai.com/codex/cli"),
+        se_types::Provider::Claude => (
+            "claude",
+            "Claude Code",
+            "https://code.claude.com/docs/en/setup",
+        ),
+    };
+    let help = se_types::Remedy {
+        text: format!(
+            "Configured {title} command: {command:?}. Install {title} using {install}, or set command to its native executable's absolute path under [providers.{name}] in {}. Restart this home's runtime from your owner terminal after changing PATH or configuration, then retry the launch.",
+            home.join("config.toml").display()
+        ),
+        command: Some(se_types::Cmd::Manual),
+    };
+    let with_help = |mut error: se_types::SeError| {
+        error.body = error.body.with_remedy(help.clone());
+        error
+    };
+    match find_command(command) {
+        Ok(Some(path)) => Ok(path),
+        Ok(None) => Err(with_help(se_types::SeError::new(
+            se_types::Detail::ProviderCliNotFound(se_types::details::ProviderCliNotFound {
+                provider: name.into(),
+                searched: vec![command.into()],
+            }),
+        ))),
+        Err(error) => Err(with_help(error)),
+    }
+}
+
+fn find_command(command: &str) -> Result<Option<PathBuf>> {
     let path = PathBuf::from(command);
     if path.is_absolute() {
-        let resolved = native_executable(&path).unwrap_or(path);
-        return se_proc::canonicalize_path(resolved).map_err(|e| error("provider executable", e));
+        return native_executable(&path)
+            .map_err(|e| error("provider executable", e))?
+            .map(|resolved| {
+                se_proc::canonicalize_path(resolved).map_err(|e| error("provider executable", e))
+            })
+            .transpose();
     }
     if path.components().count() != 1 {
         return Err(se_types::SeError::invalid(
@@ -95,34 +144,47 @@ pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
             "PATH is absent from the host's admitted environment",
         )
     })?;
+    let mut unreadable = None;
     for directory in std::env::split_paths(&paths) {
         if !directory.is_absolute() {
             continue;
         }
-        if let Some(candidate) = native_executable(&directory.join(command)) {
-            return se_proc::canonicalize_path(candidate)
-                .map_err(|e| error("provider executable", e));
+        match native_executable(&directory.join(command)) {
+            Ok(Some(candidate)) => {
+                return se_proc::canonicalize_path(candidate)
+                    .map(Some)
+                    .map_err(|e| error("provider executable", e));
+            }
+            Ok(None) => (),
+            Err(error) if unreadable.is_none() => unreadable = Some(error),
+            Err(_) => (),
         }
     }
-    Err(se_core::scope::unreadable(
-        "provider executable",
-        "configured provider command was not found in absolute PATH entries",
-    ))
+    match unreadable {
+        Some(cause) => Err(error("provider executable", cause)),
+        None => Ok(None),
+    }
 }
 // Match native Windows executable lookup without invoking a command shell or
 // treating an npm batch shim as an executable process image.
-fn native_executable(path: &std::path::Path) -> Option<PathBuf> {
-    if path.is_file() {
-        return Some(path.to_path_buf());
+fn native_executable(path: &std::path::Path) -> std::io::Result<Option<PathBuf>> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => return Ok(Some(path.to_path_buf())),
+        Ok(_) => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error),
     }
     #[cfg(windows)]
     if path.extension().is_none() {
         let executable = path.with_extension("exe");
-        if executable.is_file() {
-            return Some(executable);
+        match std::fs::metadata(&executable) {
+            Ok(metadata) if metadata.is_file() => return Ok(Some(executable)),
+            Ok(_) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error),
         }
     }
-    None
+    Ok(None)
 }
 pub(super) fn view(
     root: &se_proc::ProcessIdentity,

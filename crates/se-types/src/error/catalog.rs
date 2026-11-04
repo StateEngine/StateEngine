@@ -45,7 +45,7 @@ codes! {
     ListenerUnavailable => ("listener-unavailable", Refused) { subject: String, reason: String, next_step: String } => "Listener {subject}: {reason}", "{next_step}";
     ProjectRemoved => ("project-removed", Refused) { project: ProjectId, at: UnixMicros } => "project {project} was removed at {at}", "re-adopt: → `se init --repo {root}`";
     ProviderChangeBreaksResume => ("provider-change-breaks-resume", Refused) { agent: AgentId, saved: String, requested: String } => "{agent}'s conversation is a {saved} conversation", "Use `se launch {agent} --new --provider {requested}`";
-    ProviderCliNotFound => ("provider-cli-not-found", Refused) { provider: String, searched: Vec<String> } => "can't find the {provider} CLI", "install it (`Cmd::Manual`), or → `se config set providers.{provider}.command PATH`";
+    ProviderCliNotFound => ("provider-cli-not-found", Refused) { provider: String, searched: Vec<String> } => "can't find the {provider} CLI", "Install the {provider} CLI, add its native executable to PATH or set command under [providers.{provider}] in this home's config.toml, then restart the runtime and retry the launch";
     ProviderIncompatible => ("provider-incompatible", Refused) { subject: String, reason: String, next_step: String } => "Provider {subject}: {reason}", "{next_step}";
     RecipientOtherProject => ("recipient-other-project", Refused) { to: String, project: ProjectId } => "{to} is in project {project}", "send from that project";
     RepairRefused => ("repair-refused", Refused) { subject: String, reason: String, next_step: String } => "Repair {subject}: {reason}", "{next_step}";
