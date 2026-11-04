@@ -4,7 +4,10 @@ use std::{
     fs::{self, File},
     io::Read,
     mem::{size_of, zeroed},
-    os::{fd::AsRawFd, unix::fs::MetadataExt},
+    os::{
+        fd::{AsRawFd, FromRawFd, OwnedFd},
+        unix::fs::MetadataExt,
+    },
 };
 pub(super) fn credentials(channel: BorrowedIpc<'_>) -> IpcNativeResult<(u32, u32)> {
     // SAFETY: zero initializes this native POD output before getsockopt fills it.
@@ -103,7 +106,96 @@ pub(super) fn observe(pid: u32, uid: u32, bound: &IpcIoBound) -> IpcNativeResult
         },
         image: native_path(&image)?,
         image_sha256,
+        peer_pidfd: None,
     })
+}
+
+pub(super) fn observe_connected(
+    channel: BorrowedIpc<'_>,
+    pid: u32,
+    uid: u32,
+    bound: &IpcIoBound,
+) -> IpcNativeResult<NativeIpcPeer> {
+    let pin = peer_pidfd(channel)?;
+    pin_live(pin.as_ref())?;
+    let mut peer = observe(pid, uid, bound)?;
+    pin_live(pin.as_ref())?;
+    peer.peer_pidfd = pin;
+    Ok(peer)
+}
+
+fn peer_pidfd(channel: BorrowedIpc<'_>) -> IpcNativeResult<Option<OwnedFd>> {
+    let mut raw: libc::c_int = -1;
+    let mut length = size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: connected borrowed socket and an aligned, exact-size descriptor
+    // output. Success transfers a fresh kernel-owned peer pidfd to this caller.
+    if unsafe {
+        libc::getsockopt(
+            channel.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERPIDFD,
+            (&mut raw as *mut libc::c_int).cast(),
+            &mut length,
+        )
+    } != 0
+    {
+        let mut cause = last("pin connection peer with SO_PEERPIDFD");
+        if cause.source.raw_os_error() == Some(libc::ENOPROTOOPT) {
+            // Linux before 6.5: retain the original SO_PEERCRED + birth/image
+            // rechecks. Access/resource failures are never downgraded to this.
+            return Ok(None);
+        }
+        if cause.source.raw_os_error() == Some(libc::ESRCH) {
+            cause.code = IpcNativeErrorCode::PeerChanged;
+        }
+        return Err(cause);
+    }
+    if raw < 0 {
+        return Err(refuse(
+            IpcNativeErrorCode::Unreadable,
+            "invalid socket peer pidfd",
+        ));
+    }
+    // SAFETY: successful SO_PEERPIDFD returned one newly owned descriptor;
+    // the kernel installs it close-on-exec, including on the fallback-free path.
+    let pin = unsafe { OwnedFd::from_raw_fd(raw) };
+    if length as usize != size_of::<libc::c_int>() {
+        return Err(refuse(
+            IpcNativeErrorCode::Unreadable,
+            "invalid socket peer pidfd size",
+        ));
+    }
+    Ok(Some(pin))
+}
+
+fn pin_live(pin: Option<&OwnedFd>) -> IpcNativeResult<()> {
+    let Some(pin) = pin else {
+        return Ok(());
+    };
+    let mut wait = libc::pollfd {
+        fd: pin.as_raw_fd(),
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: retained pidfd and a writable single pollfd; zero timeout only
+    // observes the original process and neither waits nor signals it.
+    let result = unsafe { libc::poll(&mut wait, 1, 0) };
+    if result < 0 {
+        return Err(last("observe pinned IPC peer liveness"));
+    }
+    if wait.revents & (libc::POLLERR | libc::POLLNVAL) != 0 {
+        return Err(refuse(
+            IpcNativeErrorCode::Unreadable,
+            "unreadable socket peer pidfd",
+        ));
+    }
+    if wait.revents & (libc::POLLIN | libc::POLLHUP) != 0 {
+        return Err(refuse(
+            IpcNativeErrorCode::PeerChanged,
+            "connection peer exited during identity readback",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn verify_stop_start(

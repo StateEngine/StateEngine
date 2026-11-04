@@ -73,6 +73,7 @@ fn observe(pid: u32, bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {
         started: StartIdentity::Windows { creation_filetime },
         image: native_path(&image)?,
         image_sha256,
+        process,
     })
 }
 
