@@ -45,6 +45,12 @@ impl ImportNode {
         }
         let mut mappings = BTreeMap::new();
         for pair in &self.human_mappings {
+            if pair.source == pair.target {
+                return Err(se_types::SeError::invalid(
+                    "--map-human",
+                    "a different existing target; omit mappings that keep the original human ID",
+                ));
+            }
             if mappings
                 .insert(pair.source.clone(), pair.target.clone())
                 .is_some()
@@ -55,7 +61,6 @@ impl ImportNode {
                 ));
             }
         }
-        mappings.retain(|source, target| source != target);
         Ok(mappings)
     }
 }

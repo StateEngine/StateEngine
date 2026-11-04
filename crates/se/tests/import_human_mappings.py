@@ -66,7 +66,7 @@ def explicit_correspondence_and_replay(f):
 
 def bad_correspondence(f):
     args = source(f)
-    for mapping in ["missing-equals", f"{UNKNOWN}={f.owner}"]:
+    for mapping in ["missing-equals", f"{UNKNOWN}={f.owner}", f"{UNKNOWN}={UNKNOWN}"]:
         refused = f.call(*args, "--map-human", mapping)
         assert refused.returncode != 0
     duplicate = f.call(*args, "--map-human", f"{HUMAN}={f.owner}", "--map-human", f"{HUMAN}={f.owner}")
