@@ -20,6 +20,7 @@ import sys
 import tempfile
 import termios
 import time
+import urllib.request
 sys.path.insert(0, str(Path(__file__).parent / 'judges'))
 from mail_cli import Fixture
 
@@ -58,13 +59,16 @@ class Case:
     def __init__(self, options, directory, label):
         self.options, self.directory, self.label = options, directory, label
         self.f = Fixture(options.se, directory / label)
+        self.f.env = {k: v for k, v in self.f.env.items()
+                      if k in ('HOME', 'USERPROFILE', 'PATH', 'LANG', 'SHELL', 'TMPDIR')
+                      or k.startswith('XDG_')}
         self.user = self.f.repo / 'user.txt'
         self.user.write_bytes(b'Keep user work.\n')
         self.root = self.host = self.master = self.log = None
         self.known, self.failures, self.cleanup = [], [], []
 
     def foreground(self, deny=None):
-        args = [str(self.f.se), '--home', str(self.f.home), '--project', self.f.project,
+        args = [str(self.f.se), '--home', str(self.f.home),
                 'up', '--foreground', '--json']
         if deny:
             args.insert(0, str(deny))
@@ -73,7 +77,12 @@ class Case:
         self.root = subprocess.Popen(args, env=self.f.env, cwd=self.f.repo, stdin=slave,
                                      stdout=self.log, stderr=self.log, preexec_fn=terminal)
         os.close(slave)
-        wait_until(lambda: (self.f.home / 'endpoint.json').exists(), 'host endpoint not published')
+        def ready():
+            code = self.root.poll()
+            if code not in (None, 0):
+                raise RuntimeError(f'foreground startup exited {code}; retained foreground.log')
+            return (self.f.home / 'endpoint.json').exists()
+        wait_until(ready, 'host endpoint not published')
         endpoint = json.loads((self.f.home / 'endpoint.json').read_text())
         self.host = native(endpoint['epoch']['owner']['pid'])
         if not self.host or self.host['state'] == 'Z':
@@ -103,7 +112,8 @@ class Case:
 
     def closed(self):
         self.reap()
-        return all(not same(old) for old in self.known)
+        return all((row := native(old['pid'])) is None or row['birth'] != old['birth']
+                   for old in self.known)
 
     def finish(self):
         # Observe regression failures before public recovery changes anything.
@@ -115,8 +125,14 @@ class Case:
                     up = self.f.call('up')
                     if up.returncode != 0:
                         self.cleanup.append('public recovery up failed')
+                    observed = self.f.call('status')
+                    if observed.returncode == 0:
+                        process = json.loads(observed.stdout).get('runtime', {}).get('process')
+                        if process and (current := native(process['pid'])) is not None:
+                            if not any(p['pid'] == current['pid'] and p['birth'] == current['birth'] for p in self.known):
+                                self.known.append(current)
                     if self.f.processes:
-                        stopped = self.f.call('stop', self.f.agent)
+                        stopped = self.f.call('--project', self.f.project, 'stop', self.f.agent)
                         if stopped.returncode != 0:
                             self.cleanup.append('public recovery stop failed')
                     down = self.f.call('down')
@@ -181,8 +197,23 @@ def resource_failure(case, deny):
     if 'Seccomp:\t2' not in status.read_text():
         raise AssertionError('native syscall-denial filter was not active in the actual host')
     case.provider()
-    result = case.f.rpc('stateengine_status', {})
-    (case.f.root / 'hosted-status.json').write_text(json.dumps(result, indent=2))
+    check_resources(case, 'stdio', case.f.rpc('stateengine_status', {}))
+    arguments = (case.f.repo / 'provider-argv.txt').read_text().splitlines()
+    config = json.loads(Path(arguments[arguments.index('--mcp-config') + 1]).read_text())
+    server = config['mcpServers']['stateengine']
+    request = urllib.request.Request(server['url'], data=json.dumps({
+        'jsonrpc': '2.0', 'id': 91, 'method': 'tools/call',
+        'params': {'name': 'stateengine_status', 'arguments': {}}}).encode(),
+        headers={**server['headers'], 'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        reply = json.load(response)
+    if 'result' not in reply:
+        raise AssertionError('HTTP status had no protocol result')
+    check_resources(case, 'http', reply['result'])
+
+
+def check_resources(case, transport, result):
+    (case.f.root / ('hosted-status-' + transport + '.json')).write_text(json.dumps(result, indent=2))
     value = result.get('structuredContent', {})
     if result.get('isError') or value.get('schema') != 'se.status/v1':
         case.failures.append('native resource failure made hosted status an error')
