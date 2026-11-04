@@ -49,6 +49,9 @@ pub fn repair(value: &RepairOutput, out: &mut impl Write) -> io::Result<()> {
             effect.subject, effect.outcome, effect.detail
         )?;
     }
+    for skipped in &value.skipped {
+        writeln!(out, "{}: {}.", skipped.subject, skipped.outcome)?;
+    }
     for check in &value.remaining_checks {
         writeln!(
             out,
