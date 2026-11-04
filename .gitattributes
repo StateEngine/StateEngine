@@ -1,0 +1,2 @@
+# Release inputs must retain the exact published license bytes on every host.
+scripts/release/licenses/** -text
