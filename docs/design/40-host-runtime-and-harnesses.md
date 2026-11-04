@@ -1153,7 +1153,8 @@ nonce and exact local origin. These fields let a local client
 authenticate this server against its protected native endpoint before sending a
 bearer. They carry no client authority; credentials, inbox state and private
 counts remain outside this response. Retain at most 64 proof
-nonces for five seconds, so a burst cannot occupy every challenge slot for the
+nonces for five seconds and at most eight per native TCP peer IP (never a
+forwarded header), so one peer's burst cannot occupy every challenge slot for the
 ordinary request's full timeout.
 
 Limits from shared 70/80: 16 KiB headers, 1 MiB body, depth 64, ten-second headers,

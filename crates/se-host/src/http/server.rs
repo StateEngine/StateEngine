@@ -22,7 +22,7 @@ use se_types::Result;
 use std::{
     convert::Infallible,
     future::{Future, poll_fn},
-    net::Ipv4Addr,
+    net::{IpAddr, Ipv4Addr},
     pin::pin,
     sync::{Arc, Mutex, atomic::AtomicBool},
     task::Poll,
@@ -106,12 +106,16 @@ pub(crate) async fn connection(
     permit: OwnedSemaphorePermit,
     mut shutdown: watch::Receiver<Option<Deadline>>,
 ) -> Result<()> {
+    let peer = stream
+        .peer_addr()
+        .map_err(|error| se_core::scope::unreadable("HTTP native peer", &error.to_string()))?
+        .ip();
     let permit = Arc::new(Mutex::new(Some(permit)));
     let active = Arc::clone(&permit);
     let service = hyper::service::service_fn(move |request| {
         let router = router.clone();
         let active = Arc::clone(&active);
-        async move { Ok::<_, Infallible>(respond(&router, request, port, active).await) }
+        async move { Ok::<_, Infallible>(respond(&router, request, port, peer, active).await) }
     });
     let mut builder = hyper::server::conn::http1::Builder::new();
     builder
@@ -157,6 +161,7 @@ async fn respond(
     router: &HostedRouter,
     request: Request<Incoming>,
     port: u16,
+    peer: IpAddr,
     active: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
 ) -> Response<Full<Bytes>> {
     let route = match admission::admit(&request, port) {
@@ -226,7 +231,10 @@ async fn respond(
                 Ok(challenge) => challenge,
                 Err(_) => return status_only(StatusCode::BAD_REQUEST),
             };
-            match router.local_http_proof(challenge, port, &deadline).await {
+            match router
+                .local_http_proof(challenge, port, peer, &deadline)
+                .await
+            {
                 Ok(value) => json(StatusCode::OK, &value),
                 Err(_) => json(
                     StatusCode::CONFLICT,
