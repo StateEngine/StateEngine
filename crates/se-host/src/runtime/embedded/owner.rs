@@ -116,7 +116,15 @@ async fn run_owner(
     let mail_owner = retained_owner.clone();
     let mail_state = retained_owner.upgrade().map(|owner| owner.mail.clone());
     let mail_router = router.clone();
-    let mail = tokio::spawn(super::mail::drive(mail_owner, mail_router));
+    let mail = retained_owner
+        .upgrade()
+        .filter(|owner| {
+            owner
+                .negotiated
+                .features
+                .contains(&api::Feature::NativeMail)
+        })
+        .map(|_| tokio::spawn(super::mail::drive(mail_owner, mail_router)));
     let _ = ready.send(Ok((router, stop)));
     let exit = host.serve(listener).await;
     if let Some(owner) = retained_owner.upgrade() {
@@ -127,7 +135,9 @@ async fn run_owner(
     if let Some(mail_state) = mail_state {
         mail_state.close();
     }
-    if mail.await.is_err() {
+    if let Some(mail) = mail
+        && mail.await.is_err()
+    {
         if let Some(owner) = retained_owner.upgrade() {
             owner.poison_now(true);
         }

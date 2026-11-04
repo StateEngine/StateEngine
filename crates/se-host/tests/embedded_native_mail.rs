@@ -240,6 +240,21 @@ fn native_mail_reconciles_commit_wakes_lost_replies_and_holds_without_read_marks
                 1,
                 "lost reply duplicated input"
             );
+            let before = native.0.lock().map_err(|_| "fixture lock")?.observations;
+            result(
+                opened
+                    .host
+                    .native_state_changed(&target, options.clone())
+                    .await,
+            )?;
+            let until = Instant::now() + Duration::from_secs(8);
+            while native.0.lock().map_err(|_| "fixture lock")?.observations < before + 2 {
+                assert!(
+                    Instant::now() < until,
+                    "repeated admission was not reconciled"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
             native.0.lock().map_err(|_| "fixture lock")?.status = api::TargetStatus::Held;
             result(
                 opened

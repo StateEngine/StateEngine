@@ -8,11 +8,17 @@ impl Generation {
         request: api::PageRequest,
         options: api::CallOptions,
     ) -> api::Result<api::Page<api::Adoption>> {
+        if !self.negotiated.features.contains(&api::Feature::NativeMail) {
+            return Err(support::unavailable("NativeMail was not negotiated"));
+        }
         let (_router, deadline, _cancel) = self
             .ready(&options)
             .await
             .map_err(|e| support::api_error(&e))?;
-        if !(1..=100).contains(&request.limit) || !(1..=65536).contains(&request.max_bytes) {
+        if !(1..=self.negotiated.limits.page_items.get().min(100)).contains(&request.limit)
+            || !(1..=self.negotiated.limits.payload_bytes.get().min(65536))
+                .contains(&request.max_bytes)
+        {
             return Err(support::refused(
                 "adoption page",
                 "1..100 items and 1..65536 bytes",
