@@ -244,7 +244,10 @@ claim that an original URL proves the final origin.
 - **Unix:** socket in a 0700 directory (00 §5.4) whose owner is checked before bind; a stale socket is
   replaced only under `runtime.lock`. Peer check: `SO_PEERCRED` (Linux), `LOCAL_PEERCRED` +
   `LOCAL_PEERPID` (macOS); another uid refuses.
-- **Windows:** `\\.\pipe\stateengine-<user-sid-hash>`, created with `FILE_FLAG_FIRST_PIPE_INSTANCE` (if
+- **Windows:** `\\.\pipe\stateengine-<sid-and-canonical-state-home-hash>` hashes the user SID and
+  the canonical state-home path (lossless UTF-16), so separate homes can host concurrently.
+  Publication and discovery use the same derivation; resolving an unreadable home refuses.
+  Created with `FILE_FLAG_FIRST_PIPE_INSTANCE` (if
   someone else created it first, the host refuses and names it), `PIPE_REJECT_REMOTE_CLIENTS`, and a
   DACL granting only the user's SID. The host reads `GetNamedPipeClientProcessId`, opens the client's
   token and compares its user SID. Clients connect with `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`
