@@ -118,9 +118,6 @@ done
 if [ "$recover" -eq 0 ]; then profile_metadata; fi
 # The inventory contains only safe relative names, so this list needs no path splitting.
 asset_files='manifest.json build.json NOTICE.txt notices.tar uninstall.sh'
-for relative in $actual_files; do
-    case "$relative" in notices/*) asset_files="$asset_files $relative" ;; esac
-done
 # Native preparation rejects unsafe existing homes, creates absent homes with
 # the same protection as init, and retains the account-wide installation claim.
 if [ "$native_held" -eq 0 ]; then
@@ -155,7 +152,7 @@ publish_file() {
     cp "$1" "$temp_payload"
     chmod "$3" "$temp_payload"
     flush "$temp_payload"
-    ln "$temp_payload" "$2" || fail "destination appeared during installation: $2"
+    ln -T "$temp_payload" "$2" || fail "destination appeared during installation: $2"
     rm "$temp_payload"
     temp_payload=''
     flush "$2" "$(dirname "$2")"
@@ -343,7 +340,7 @@ for name in $profiles; do set -- "$@" "$stage/$name.digest" "$stage/$name.bytes"
 if [ -n "$fish_file" ]; then set -- "$@" "$stage/fish-config"; fi
 flush "$@" "$stage" "$data"
 # Publish readiness only after the entire original journal is durable.
-ln "$stage/.manifest-ready" "$stage/manifest.sha256"
+ln -T "$stage/.manifest-ready" "$stage/manifest.sha256"
 rm "$stage/.manifest-ready"
 flush "$stage/manifest.sha256" "$stage"
 fi

@@ -195,6 +195,13 @@ namespace StateEngineInstall {
         [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         public static extern IntPtr SendMessageTimeout(IntPtr window, uint message, UIntPtr parameter,
             string text, uint flags, uint timeout, out UIntPtr result);
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern int RegFlushKey(IntPtr hKey);
+        public static void FlushRegistryKey(IntPtr hKey) {
+            // Persist the PATH value before the environment broadcast.
+            int result = RegFlushKey(hKey);
+            if (result != 0) throw new Win32Exception(result);
+        }
     }
 }
 '@
@@ -404,6 +411,8 @@ try {
     if (-not $alreadyPresent) {
         $after = if ([string]::IsNullOrEmpty($before)) { $bin } else { [string]$before + ';' + $bin }
         $registry.SetValue('Path', $after, $kind)
+        Initialize-NativeTypes
+        [StateEngineInstall.Native]::FlushRegistryKey($registry.Handle)
         if ($registry.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) -cne $after) { throw 'user PATH readback failed' }
         Notify-Environment
     }
