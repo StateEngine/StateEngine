@@ -344,6 +344,47 @@ fn staging_refuses_oversize_without_a_named_residue() -> Check {
 }
 
 #[test]
+fn staged_work_mail_keeps_its_body_and_recipient_wake() -> Check {
+    let f = Fixture::new()?;
+    let (mut store, lease) = f.direct()?;
+    let lease = StagingLease::new(&f, lease)?;
+    let body = "lossless work body 🦀";
+    let staged = store.stage_text(&mut Cursor::new(body.as_bytes()), 128, &lease)?;
+    let batch = f.batch(
+        f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
+        Some(request("staged-work")?),
+        vec![EventBody::WorkMessageSent {
+            message: message()?,
+            work: se_types::WorkAddressing {
+                action: se_types::WorkAction::Finding,
+                addressees: vec![f.b.clone()],
+            },
+            kind: "finding".into(),
+            body: InputText::Staged(staged),
+            refs: vec![],
+            reply_to: None,
+        }],
+    )?;
+    let result = store.append(batch, &lease);
+    assert!(
+        result.is_ok(),
+        "staged work mail was not materialized: {:?}",
+        result.as_ref().err()
+    );
+    let receipt = result?;
+    assert_eq!(receipt.wakes.len(), 1, "work addressee lost its wake");
+    assert_eq!(receipt.wakes[0].principal, Actor::Agent(f.b.clone()));
+    let mut read = store.snapshot(f.scoped(Visibility::Owner))?;
+    let saved = present(read.event(receipt.primary_event)?)?;
+    assert!(
+        matches!(saved.body, EventBody::WorkMessageSent { body: StoredText::Present(ref text), .. } if text == body)
+    );
+    read.close()?;
+    store.close()?;
+    Ok(())
+}
+
+#[test]
 fn rejected_staged_payload_drops_its_native_handle() -> Check {
     let f = Fixture::new()?;
     let (mut store, lease) = f.direct()?;

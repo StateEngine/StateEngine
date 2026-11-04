@@ -157,7 +157,7 @@ pub(crate) fn stage(
 pub(crate) fn texts(body: &mut EventBody<InputText>) -> Vec<&mut InputText> {
     use EventBody::*;
     match body {
-        MessageSent { body, .. } => vec![body],
+        MessageSent { body, .. } | WorkMessageSent { body, .. } => vec![body],
         WorkingStateSet { text, .. } | SessionTurn { text, .. } => vec![text],
         DecisionProposed {
             statement,
