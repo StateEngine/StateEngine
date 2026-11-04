@@ -24,7 +24,7 @@ use std::{
     future::{Future, poll_fn},
     net::Ipv4Addr,
     pin::pin,
-    sync::{Arc, atomic::AtomicBool},
+    sync::{Arc, Mutex, atomic::AtomicBool},
     task::Poll,
     time::Duration,
 };
@@ -33,7 +33,7 @@ use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, watch},
 };
 
-/// Active request connections; separate from any future parked mail waits.
+/// Active request connections; parked mail has its own negotiated session cap.
 pub(crate) const ACTIVE_CONNECTIONS: usize = 64;
 const HEADER_TIMEOUT: Duration = Duration::from_secs(10);
 /// hyper's smallest legal read buffer is 8 KiB; 16 KiB bounds the header block.
@@ -97,7 +97,8 @@ impl HttpListener {
 }
 
 /// Serve one connection to completion, or close it gracefully once the host
-/// fence publishes its shutdown deadline. The permit is held throughout.
+/// fence publishes its shutdown deadline. A proven parked wait releases the
+/// active permit only after acquiring its separate session slot.
 pub(crate) async fn connection(
     router: HostedRouter,
     stream: TcpStream,
@@ -105,9 +106,12 @@ pub(crate) async fn connection(
     permit: OwnedSemaphorePermit,
     mut shutdown: watch::Receiver<Option<Deadline>>,
 ) -> Result<()> {
+    let permit = Arc::new(Mutex::new(Some(permit)));
+    let active = Arc::clone(&permit);
     let service = hyper::service::service_fn(move |request| {
         let router = router.clone();
-        async move { Ok::<_, Infallible>(respond(&router, request, port).await) }
+        let active = Arc::clone(&active);
+        async move { Ok::<_, Infallible>(respond(&router, request, port, active).await) }
     });
     let mut builder = hyper::server::conn::http1::Builder::new();
     builder
@@ -153,6 +157,7 @@ async fn respond(
     router: &HostedRouter,
     request: Request<Incoming>,
     port: u16,
+    active: Arc<Mutex<Option<OwnedSemaphorePermit>>>,
 ) -> Response<Full<Bytes>> {
     let route = match admission::admit(&request, port) {
         Ok(route) => route,
@@ -164,6 +169,71 @@ async fn respond(
             Ok(api) => json(StatusCode::OK, &serde_json::json!({"ok": true, "api": api})),
             Err(_) => status_only(StatusCode::INTERNAL_SERVER_ERROR),
         },
+        Route::Mail => {
+            let secret = match admission::bearer(request.headers()) {
+                Ok(Some(secret)) => Arc::new(secret),
+                _ => {
+                    return refused(&Refusal {
+                        status: StatusCode::UNAUTHORIZED,
+                        reason: "an active session bearer is required; relaunch the agent",
+                        allow: None,
+                    });
+                }
+            };
+            let values = request.headers().get_all("last-event-id");
+            let mut values = values.iter();
+            let after = match values.next() {
+                None => None,
+                Some(value) => match value
+                    .to_str()
+                    .ok()
+                    .and_then(|text| se_types::Cursor::new(text).ok())
+                {
+                    Some(cursor) => Some(cursor.as_str().to_owned()),
+                    None => return status_only(StatusCode::BAD_REQUEST),
+                },
+            };
+            if values.next().is_some() {
+                return status_only(StatusCode::BAD_REQUEST);
+            }
+            let deadline = match request_deadline() {
+                Ok(deadline) => deadline,
+                Err(_) => return status_only(StatusCode::SERVICE_UNAVAILABLE),
+            };
+            match router.next_mail(secret, after, active, &deadline).await {
+                Ok(page) => match serde_json::to_value(page) {
+                    Ok(value) => json(StatusCode::OK, &value),
+                    Err(_) => status_only(StatusCode::INTERNAL_SERVER_ERROR),
+                },
+                Err(error) => json(
+                    StatusCode::CONFLICT,
+                    &serde_json::json!({"error": error.body}),
+                ),
+            }
+        }
+        Route::Proof => {
+            let deadline = match request_deadline() {
+                Ok(deadline) => deadline,
+                Err(_) => return status_only(StatusCode::SERVICE_UNAVAILABLE),
+            };
+            let body = Limited::new(request.into_body(), 1024).collect();
+            let body =
+                match tokio::time::timeout(deadline.remaining().unwrap_or_default(), body).await {
+                    Ok(Ok(body)) => body.to_bytes(),
+                    _ => return status_only(StatusCode::BAD_REQUEST),
+                };
+            let challenge = match serde_json::from_slice::<super::proof::Challenge>(&body) {
+                Ok(challenge) => challenge,
+                Err(_) => return status_only(StatusCode::BAD_REQUEST),
+            };
+            match router.local_http_proof(challenge, port, &deadline).await {
+                Ok(value) => json(StatusCode::OK, &value),
+                Err(_) => json(
+                    StatusCode::CONFLICT,
+                    &serde_json::json!({"error": "use a fresh challenge with the running host; obtain credentials only over protected IPC"}),
+                ),
+            }
+        }
         Route::Mcp => {
             // A malformed header is carried into dispatch: lifecycle methods
             // stay anonymous, and only tool methods refuse it.
@@ -248,4 +318,12 @@ fn status_only(status: StatusCode) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(Bytes::new()));
     *response.status_mut() = status;
     response
+}
+
+fn request_deadline() -> Result<Deadline> {
+    Deadline::from_options(&ClientOptions {
+        expected_generation: None,
+        timeout: CALL_TIMEOUT,
+        cancelled: Arc::new(AtomicBool::new(false)),
+    })
 }

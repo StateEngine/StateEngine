@@ -180,6 +180,7 @@ impl LaunchCoordinator {
                 pool: context.blocking.clone(),
                 generation: context.generation,
                 pending: context.pending_writes.clone(),
+                mail_waits: context.mail_waits.clone(),
             },
             options,
             capture: host_runtime.capture_handle(),

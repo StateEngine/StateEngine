@@ -55,11 +55,12 @@ pub struct AdmittedExchange {
 }
 #[derive(Clone)]
 pub struct HostedRouter {
+    pub(crate) image_sha256: se_types::Sha256,
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     pub(super) memory_reclaim: Option<super::memory::MemoryReclaim>,
     pub(crate) execution: ExecutionContext,
     pub(crate) sources: TranscriptBindings,
-    pub(super) context: AdmissionContext,
+    pub(crate) context: AdmissionContext,
     response_bytes: std::num::NonZeroU32,
     pub(crate) fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     http_port: std::sync::Arc<std::sync::OnceLock<u16>>,
@@ -70,6 +71,7 @@ impl HostedRuntime {
             return Err(SeError::invalid("host router", "a ready runtime"));
         }
         Ok(HostedRouter {
+            image_sha256: self.image_sha256,
             #[cfg(all(target_os = "linux", target_env = "gnu"))]
             memory_reclaim: self.memory_reclaim.clone(),
             execution: self.execution.clone(),

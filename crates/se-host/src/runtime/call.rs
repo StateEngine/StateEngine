@@ -31,6 +31,8 @@ pub struct HostedCall {
 }
 #[derive(Clone)]
 pub struct ExecutionContext {
+    pub(crate) mail_waits: Arc<crate::http::mail::Waits>,
+    pub(crate) http_proofs: Arc<crate::http::proof::Challenges>,
     pub(crate) state_directory: std::path::PathBuf,
     pub reader: Arc<SqliteReader>,
     pub(crate) reads: se_store::ReadPhasePool,

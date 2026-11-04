@@ -4,7 +4,7 @@ use super::{CommittedWrite, ExecutionContext, failure::WriteIdentity};
 use crate::client::lease::Deadline;
 use se_store::{AtomicBatch, CommitReceipt, WriterClient};
 use se_types::Result;
-use std::time::Instant;
+use std::{sync::Arc, time::Instant};
 
 #[cfg(feature = "secode")]
 pub(super) async fn submit(
@@ -28,6 +28,7 @@ pub(super) async fn measured(
     // part of the budget; the original request identity is unchanged.
     let recipients = super::mail::recipients(&batch);
     let custody = context.custody.get().cloned();
+    let mail_waits = Arc::clone(&context.mail_waits);
     let writer = context.writer.clone();
     let submit_deadline = deadline.clone();
     let submitted = identity.clone();
@@ -54,9 +55,11 @@ pub(super) async fn measured(
                             Err(_) => pending.failed_attempt(&submitted),
                         };
                         let notified = if receipt.is_ok() {
-                            custody
-                                .as_ref()
-                                .map_or(Ok(()), |custody| custody.notify_mail(&recipients))
+                            mail_waits.committed().and_then(|()| {
+                                custody
+                                    .as_ref()
+                                    .map_or(Ok(()), |custody| custody.notify_mail(&recipients))
+                            })
                         } else {
                             Ok(())
                         };
