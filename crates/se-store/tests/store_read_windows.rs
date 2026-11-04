@@ -31,6 +31,60 @@ fn search(text: &str) -> SearchQuery {
 }
 
 #[test]
+fn shared_work_history_and_search_include_only_the_admitted_recipient() -> Check {
+    let f = Fixture::new()?;
+    let (mut d, lease) = f.direct()?;
+    d.append(
+        f.batch(
+            f.owner_project(),
+            Some(request("work-history")?),
+            vec![EventBody::WorkMessageSent {
+                message: message()?,
+                work: se_types::WorkAddressing {
+                    action: se_types::WorkAction::Finding,
+                    addressees: vec![f.a.clone()],
+                },
+                kind: "finding".into(),
+                body: InputText::Inline("cutover searchable text".into()),
+                refs: vec![],
+                reply_to: None,
+            }],
+        )?,
+        &*lease,
+    )?;
+    let mut query = history();
+    query.kinds = vec![EventKind::WorkMessageSent];
+    for (agent, expected) in [(&f.a, 1), (&f.b, 0)] {
+        let mut snap = d.snapshot(f.self_scope(agent))?;
+        assert_eq!(
+            snap.history(query.clone(), budget(10, 65536, None)?)?
+                .items()
+                .len(),
+            expected
+        );
+        assert_eq!(
+            snap.search(
+                SearchQuery {
+                    text: "searchable".into(),
+                    history: query.clone()
+                },
+                budget(10, 65536, None)?
+            )?
+            .items()
+            .len(),
+            expected
+        );
+        assert_eq!(snap.message_count(query_mail(agent))?, expected as u64);
+        snap.close()?;
+    }
+    Ok(())
+}
+
+fn query_mail(agent: &se_types::AgentId) -> MessageQuery {
+    fixture::query(Some(Actor::Agent(agent.clone())), true)
+}
+
+#[test]
 fn search_advances_nonmatches_and_binds_scope_query_and_original_high_water() -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;

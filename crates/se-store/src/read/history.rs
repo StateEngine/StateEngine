@@ -92,10 +92,15 @@ impl SqliteSnapshot {
         }
         if let Visibility::SelfOnly(agent) = &self.scope.visibility {
             let a = self.agent_bytes(agent)?;
-            sql.push_str(" AND (e.actor_id=?
-                OR EXISTS(SELECT 1 FROM messages d WHERE d.sent_seq=e.seq AND d.project_id=? AND d.recipient_id=? AND d.sent_seq>? AND d.sent_seq<=?)
+            let mail = if self.info.schema_version >= 3 {
+                "message_deliveries"
+            } else {
+                "messages"
+            };
+            sql.push_str(&format!(" AND (e.actor_id=?
+                OR EXISTS(SELECT 1 FROM {mail} d WHERE d.sent_seq=e.seq AND d.project_id=? AND d.recipient_id=? AND d.sent_seq>? AND d.sent_seq<=?)
                 OR EXISTS(SELECT 1 FROM turn_data d WHERE d.event_seq=e.seq AND d.project_id=? AND d.agent_id=? AND d.event_seq>? AND d.event_seq<=?)
-                OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=e.seq AND d.principal_id=?))");
+                OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=e.seq AND d.principal_id=?))"));
             params.extend([
                 rusqlite::types::Value::Blob(a.clone()),
                 rusqlite::types::Value::Blob(self.project_bytes()?),

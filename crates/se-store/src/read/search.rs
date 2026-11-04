@@ -77,7 +77,7 @@ impl SqliteSnapshot {
 fn snippet(body: &EventBody<StoredText>, needle: &str) -> StoreResult<Option<(String, bool)>> {
     use EventBody::*;
     let fields = match body {
-        MessageSent { body, .. } => vec![body],
+        MessageSent { body, .. } | WorkMessageSent { body, .. } => vec![body],
         SessionTurn { text, .. } | WorkingStateSet { text, .. } => vec![text],
         DecisionProposed {
             statement,
