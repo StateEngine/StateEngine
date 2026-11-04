@@ -7,5 +7,6 @@ pub mod model;
 pub mod queries;
 
 pub mod cache;
+pub mod parse;
 pub mod scope;
 pub mod source;

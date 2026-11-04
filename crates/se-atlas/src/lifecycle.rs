@@ -176,13 +176,13 @@ pub enum CaseMode {
     Sensitive,
     InsensitivePreserving,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RevisionTrust {
     Unverified,
     QualifiedChangeSequence,
     QualifiedCtime,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FileIdentity {
     pub volume: [u8; 16],
     pub file: [u8; 16],
@@ -261,6 +261,7 @@ pub struct SymbolRecord {
     pub signature_hash: Option<ContentHash>,
     pub body_hash: Option<ContentHash>,
     pub doc_line: String,
+    pub lexical_scope: u32,
 }
 #[derive(Debug)]
 pub struct ImportRecord {
@@ -270,6 +271,34 @@ pub struct ImportRecord {
     pub target_file: Option<FileId>,
     pub target_symbol: Option<SymbolId>,
     pub span: Span,
+    pub kind: ImportKind,
+    pub lexical_scope: u32,
+    pub reexport: bool,
+    pub wildcard: bool,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportKind {
+    Esm,
+    CommonJs,
+    Rust,
+    Python,
+}
+#[derive(Debug)]
+pub struct LexicalScope {
+    pub parent: Option<u32>,
+    pub span: Span,
+}
+#[derive(Debug)]
+pub enum ReferenceQualifier {
+    Unqualified,
+    Namespace(Vec<String>),
+    Dynamic,
+}
+#[derive(Debug)]
+pub struct ParsedReference {
+    pub site: Reference,
+    pub lexical_scope: u32,
+    pub qualifier: ReferenceQualifier,
 }
 #[derive(Debug)]
 pub struct ParsedFile {
@@ -279,7 +308,8 @@ pub struct ParsedFile {
     pub coverage: FileCoverage,
     pub symbols: Vec<SymbolRecord>,
     pub imports: Vec<ImportRecord>,
-    pub references: Vec<Reference>,
+    pub references: Vec<ParsedReference>,
+    pub scopes: Vec<LexicalScope>,
 }
 
 pub trait AtlasParser {
