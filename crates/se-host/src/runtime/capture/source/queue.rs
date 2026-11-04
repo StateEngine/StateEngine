@@ -16,6 +16,7 @@ struct Prompt {
     text: std::sync::Arc<str>,
     operation: Outcome,
     matched: bool,
+    native_delivered: bool,
     position: Position,
 }
 impl Tracker {
@@ -40,7 +41,8 @@ impl Tracker {
                         || text.len() > (16 * 1024 * 1024usize).saturating_sub(self.bytes)
                     {
                         let completed = self.pending.iter().position(|prompt| {
-                            prompt.operation != Outcome::Unresolved && prompt.matched
+                            prompt.operation != Outcome::Unresolved
+                                && (prompt.matched || prompt.native_delivered)
                         });
                         let Some(completed) = completed else {
                             return Err(SeError::invalid(
@@ -49,7 +51,7 @@ impl Tracker {
                             ));
                         };
                         // Only finite correlation history is discarded. Enqueue,
-                        // native outcome and user delivery are already durable.
+                        // native outcome and witnessed delivery are already durable.
                         let retired = self.pending.remove(completed);
                         self.bytes -= retired.text.len();
                     }
@@ -58,6 +60,7 @@ impl Tracker {
                         text: text.into(),
                         operation: Outcome::Unresolved,
                         matched: false,
+                        native_delivered: false,
                         position: position.clone(),
                     });
                     let mut record = Record::new("queue-operation", Some("enqueue"));
@@ -179,6 +182,12 @@ impl Tracker {
             prompt.matched = true;
         } else {
             prompt.operation = outcome;
+        }
+        if matches!(
+            reason.as_deref(),
+            Some("absorbed_mid_turn" | "delivered_to_agent")
+        ) {
+            prompt.native_delivered = true;
         }
         let mut record = Record::new(
             "queue-operation",
@@ -338,40 +347,49 @@ mod tests {
     #[test]
     fn completed_history_releases_both_entry_and_text_capacity()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        for padding in [String::new(), "x".repeat(se_types::Body::MAX_BYTES / 2)] {
-            let mut tracker = Tracker::default();
-            let count = if padding.is_empty() {
-                4100
-            } else {
-                16 * 1024 * 1024 / padding.len() + 10
-            };
-            let mut offset = 0;
-            for i in 0..count {
-                let text = format!("queued-{i}:{padding}");
-                for value in [
-                    json!({"type":"queue-operation","operation":"enqueue","content":text}),
-                    json!({"type":"queue-operation","operation":"dequeue"}),
-                    json!({"type":"user","message":{"content":text}}),
-                ] {
-                    let rows = tracker
-                        .observe(&serde_json::to_vec(&value)?, Position { offset, length: 1 })?;
-                    assert_eq!(rows.len(), 1);
-                    rows[0]
-                        .queued_input
-                        .as_ref()
-                        .ok_or("provenance absent")?
-                        .validate()?;
-                    offset += 1;
+        for native_reason in [false, true] {
+            for padding in [String::new(), "x".repeat(se_types::Body::MAX_BYTES / 2)] {
+                let mut tracker = Tracker::default();
+                let count = if padding.is_empty() {
+                    4100
+                } else {
+                    16 * 1024 * 1024 / padding.len() + 10
+                };
+                let mut offset = 0;
+                for i in 0..count {
+                    let text = format!("queued-{i}:{padding}");
+                    let values = if native_reason {
+                        vec![
+                            json!({"type":"queue-operation","operation":"enqueue","content":text}),
+                            json!({"type":"queue-operation","operation":"remove","content":text,"reason":"absorbed_mid_turn"}),
+                        ]
+                    } else {
+                        vec![
+                            json!({"type":"queue-operation","operation":"enqueue","content":text}),
+                            json!({"type":"queue-operation","operation":"dequeue"}),
+                            json!({"type":"user","message":{"content":text}}),
+                        ]
+                    };
+                    for value in values {
+                        let rows = tracker.observe(
+                            &serde_json::to_vec(&value)?,
+                            Position { offset, length: 1 },
+                        )?;
+                        assert_eq!(rows.len(), 1);
+                        rows[0]
+                            .queued_input
+                            .as_ref()
+                            .ok_or("provenance absent")?
+                            .validate()?;
+                        offset += 1;
+                    }
                 }
+                assert!(tracker.pending.len() <= 4096);
+                assert!(tracker.bytes <= 16 * 1024 * 1024);
+                assert!(tracker.pending.iter().all(
+                    |p| (p.matched || p.native_delivered) && p.operation != Outcome::Unresolved
+                ));
             }
-            assert!(tracker.pending.len() <= 4096);
-            assert!(tracker.bytes <= 16 * 1024 * 1024);
-            assert!(
-                tracker
-                    .pending
-                    .iter()
-                    .all(|p| p.matched && p.operation == Outcome::Dequeued)
-            );
         }
         Ok(())
     }
