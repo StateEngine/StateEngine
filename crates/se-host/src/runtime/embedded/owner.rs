@@ -12,6 +12,13 @@ use tokio::{runtime::Handle, sync::oneshot};
 /// The standalone child's finite shutdown join budget.
 const SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
 
+/// References independent of the owner's polled future. A panic cannot drop
+/// the lease or collector; only an actual successful owner join clears them.
+pub(super) struct RetainedResources {
+    _lease: std::sync::Arc<crate::runtime::HostLease>,
+    _execution: crate::runtime::ExecutionContext,
+    _sources: crate::runtime::TranscriptBindings,
+}
 pub(super) struct OwnerInputs {
     pub(super) runtime: Handle,
     pub(super) home: PathBuf,
@@ -21,20 +28,34 @@ pub(super) struct OwnerInputs {
     pub(super) generation: api::Generation,
     pub(super) epoch: api::HostEpoch,
     pub(super) timeout: Duration,
+    pub(super) resources: std::sync::Arc<std::sync::Mutex<Option<RetainedResources>>>,
+    pub(super) poisoned: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) quarantined: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub(super) changed: std::sync::Arc<tokio::sync::Notify>,
+    pub(super) router_fence:
+        std::sync::Arc<std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
 }
 pub(super) type Started = core::Result<(HostedRouter, LocalStop)>;
 pub(super) type Stopped = core::Result<api::DrainReceipt>;
 
 pub(super) fn owner_thread(
     inputs: OwnerInputs,
-) -> (oneshot::Receiver<Started>, oneshot::Receiver<Stopped>) {
+) -> (
+    oneshot::Receiver<Started>,
+    oneshot::Receiver<Stopped>,
+    Option<std::thread::JoinHandle<()>>,
+) {
     let (ready, ready_rx) = oneshot::channel();
     let (exited, exited_rx) = oneshot::channel();
     let runtime = inputs.runtime.clone();
+    let poisoned = inputs.poisoned.clone();
+    let quarantined = inputs.quarantined.clone();
+    let fence = inputs.router_fence.clone();
+    let changed = inputs.changed.clone();
     let spawned = std::thread::Builder::new()
         .name("stateengine-embedded-host".into())
         .spawn(move || {
-            runtime.block_on(async move {
+            let outcome=runtime.block_on(crate::runtime::tasks::caught(async move {
                 let generation = inputs.generation;
                 let (host, listener, stop, router) = match take_ownership(inputs).await {
                     Ok(started) => started,
@@ -93,12 +114,18 @@ pub(super) fn owner_thread(
                     }
                 };
                 let _ = exited.send(Ok(receipt));
-            });
+            },true));
+            if outcome.is_err() {
+                poisoned.store(true,std::sync::atomic::Ordering::Release);quarantined.store(true,std::sync::atomic::Ordering::Release);
+                if let Some(fence)=fence.get() {fence.store(true,std::sync::atomic::Ordering::Release);}
+                changed.notify_waiters();
+                loop {std::thread::park();}
+            }
         });
     if spawned.is_err() {
         // Both receivers then report a closed channel: activation fails by name.
     }
-    (ready_rx, exited_rx)
+    (ready_rx, exited_rx, spawned.ok())
 }
 
 async fn take_ownership(
@@ -110,6 +137,8 @@ async fn take_ownership(
     HostedRouter,
 )> {
     let deadline = support::deadline(inputs.timeout)?;
+    let poisoned = inputs.poisoned;
+    let router_fence = inputs.router_fence;
     let current = support::current_epoch(inputs.epoch.generation.0, &inputs.home)?;
     // The epoch SE Code registered must be this exact process.
     if crate::linked::host_epoch(&current)? != inputs.epoch {
@@ -132,6 +161,16 @@ async fn take_ownership(
         &deadline,
     )
     .await?;
+    *inputs.resources.lock().map_err(|_| {
+        core::SeError::invalid(
+            "retained owner resources",
+            "an unpoisoned generation registry",
+        )
+    })? = Some(RetainedResources {
+        _lease: host.lease.clone(),
+        _execution: host.execution.clone(),
+        _sources: host.sources.clone(),
+    });
     // Another owner may have taken the store between open and activate.
     if host.generation().get() != inputs.generation.0 {
         return Err(core::SeError::invalid(
@@ -162,5 +201,11 @@ async fn take_ownership(
     let stop = host.local_stop();
     let listener = host.listen(inputs.runtime, &deadline).await?;
     let router = host.router()?;
+    let _ = router_fence.set(std::sync::Arc::clone(&router.fenced));
+    if poisoned.load(std::sync::atomic::Ordering::Acquire) {
+        router
+            .fenced
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
     Ok((host, listener, stop, router))
 }

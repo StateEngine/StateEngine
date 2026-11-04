@@ -83,6 +83,8 @@ pub use capture::{CaptureHandle, CaptureRestoreReport, CaptureUnavailable, Trans
 #[cfg(feature = "listener")]
 mod failure;
 #[cfg(feature = "listener")]
+mod tasks;
+#[cfg(feature = "listener")]
 pub(crate) use failure::{PendingWrites, WriteIdentity};
 #[cfg(feature = "listener")]
 mod shutdown;
