@@ -3,6 +3,89 @@ use se_core::ops::installation::{
 };
 use std::path::{Path, PathBuf};
 type Check = Result<(), Box<dyn std::error::Error>>;
+
+/// Real distribution archives include more than 256 executable and notice files.
+#[test]
+fn complete_release_license_inventory_fits_a_bounded_execution_plan() -> Check {
+    let mut plan = fixture();
+    let directory = PathBuf::from(&plan.files[0].path)
+        .parent()
+        .ok_or("parent")?
+        .to_owned();
+    plan.files = (0..512)
+        .map(|index| UninstallFile {
+            path: directory
+                .join(format!("notice-{index}"))
+                .display()
+                .to_string(),
+            sha256: "a".repeat(64),
+        })
+        .collect();
+    plan.created_directories.clear();
+    plan.path_edits.clear();
+    let admitted = plan.clone().validate()?;
+    assert_eq!(admitted.files().len(), 512);
+    // Exercise the real receipt consumer with unit readback inputs too. Native
+    // installation/removal is qualified separately through the release archive.
+    use se_core::ops::{
+        installation::{UninstallEffects, finish_uninstall},
+        outputs::*,
+    };
+    let witness = || Witness {
+        state: WitnessState::Witnessed,
+        method: "unit readback input".into(),
+        observed_at: "unit input".into(),
+        detail: None,
+    };
+    let effects = UninstallEffects {
+        install_files: admitted
+            .files()
+            .iter()
+            .map(|f| FileEffect {
+                path: f.path.clone(),
+                outcome: FileOutcome::Removed,
+                witness: witness(),
+            })
+            .collect(),
+        directories: vec![],
+        integrations: vec![],
+        stops: vec![],
+        revocations: vec![],
+        path: PathEffect {
+            scope: "unit input".into(),
+            before_entries: vec![],
+            after_entries: vec![],
+            witness: witness(),
+        },
+        path_complete: true,
+        preserved: vec![],
+        recovery: admitted
+            .recovery_directories()
+            .iter()
+            .map(|d| RecoveryDirectoryEffect {
+                directory: d.display().to_string(),
+                copies: se_types::Read::Present { value: vec![] },
+                temporary_files: se_types::Read::Present { value: vec![] },
+                witness: witness(),
+            })
+            .collect(),
+    };
+    let receipt = finish_uninstall(
+        &admitted,
+        se_types::IdempotencyKey::new("license-inventory")?,
+        effects,
+    )?;
+    assert!(receipt.complete);
+    assert!(receipt.issues.is_empty());
+    assert_eq!(receipt.install_files.len(), 512);
+    plan.files.push(UninstallFile {
+        path: directory.join("one-too-many").display().to_string(),
+        sha256: "a".repeat(64),
+    });
+    assert!(plan.validate().is_err());
+    Ok(())
+}
+
 fn fixture() -> UninstallPlan {
     let root = std::env::temp_dir().join("validated-uninstall-contract");
     UninstallPlan {
