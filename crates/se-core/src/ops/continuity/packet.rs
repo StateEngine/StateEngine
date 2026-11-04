@@ -323,13 +323,15 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             if value.command.is_some() && input.byte_budget <= DEFAULT_BYTES {
                 limit = limit.max(value.value.text.len().min(256));
             }
-            value.value.text = read::clip(&value.value.text, limit).into();
-            value.complete = false;
-            if let Some(index) = existing {
-                result.omissions[index].count =
-                    Some(value.bytes.saturating_sub(value.value.text.len() as u64));
+            if limit < value.value.text.len() {
+                value.value.text = read::clip(&value.value.text, limit).into();
+                value.complete = false;
+                if let Some(index) = existing {
+                    result.omissions[index].count =
+                        Some(value.bytes.saturating_sub(value.value.text.len() as u64));
+                }
+                continue;
             }
-            continue;
         }
         return Err(SeError::too_large(
             &format!(
