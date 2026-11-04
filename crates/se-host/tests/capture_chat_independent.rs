@@ -70,9 +70,7 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
         .build()?;
     rt.block_on(async {
         let mut host = HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
-        let mut configuration = se_core::config_policy::ConfigFile::default();
-        configuration.runtime.listen_port = Some(private_port()?);
-        host.configure(configuration)?;
+        configure_private_listener(&mut host)?;
         let capture = host.capture_handle();
         capture.bind(TranscriptPin { identity: SessionIdentity {project:f.project.clone(),agent:f.a.clone(),session:s.clone()}, conversation:conversation.clone(), path:native_path.clone(),file_identity:Sha256::from_bytes(pin.identity()) }, source, pin, &bound()?).await?;
         let execution = host.execution_context();
@@ -168,14 +166,4 @@ fn capture_case(bad_bookkeeping: bool) -> Check {
         require(report.transport_closed && report.endpoint_retired, "capture host transport cleanup incomplete")?;
         result
     })
-}
-fn private_port() -> std::result::Result<u16, Box<dyn std::error::Error>> {
-    for port in 20000..=29999 {
-        if port != 20800
-            && let Ok(probe) = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
-        {
-            return Ok(probe.local_addr()?.port());
-        }
-    }
-    Err("no available explicit test listener port".into())
 }

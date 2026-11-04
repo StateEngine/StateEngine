@@ -74,6 +74,7 @@ fn metadata_queue_records_are_counted_and_later_native_turns_are_readable() -> C
         .build()?;
     rt.block_on(async {
         let mut host = HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
+        configure_private_listener(&mut host)?;
         let capture = host.capture_handle();
         capture.bind(TranscriptPin {
             identity: SessionIdentity { project:f.project.clone(), agent:f.a.clone(), session:session.clone() },
