@@ -13,6 +13,7 @@ pub(super) struct Store {
     pub generation: Generation,
     pub pending: crate::runtime::PendingWrites,
     pub mail_waits: Arc<crate::http::mail::Waits>,
+    pub fault: Arc<crate::runtime::tasks::OwnershipFault>,
 }
 impl Store {
     pub async fn read<T: Send + 'static>(
@@ -84,6 +85,7 @@ impl Store {
         let pending = self.pending.clone();
         let mail_waits = self.mail_waits.clone();
         let runtime = self.pool.handle();
+        let fault = self.fault.clone();
         let completion = self
             .pool
             .run_owned(deadline, move || {
@@ -91,6 +93,9 @@ impl Store {
                 match writer.submit(batch) {
                     Ok(completion) => Ok(runtime.spawn(async move {
                         let receipt = completion.await;
+                        if let Err(error) = &receipt {
+                            fault.observe_writer(error);
+                        }
                         let settled = match &receipt {
                             Ok(_) => pending.resolve(&submitted),
                             Err(error)
@@ -110,6 +115,7 @@ impl Store {
                         (receipt, settled.and(notified))
                     })),
                     Err(error) => {
+                        fault.observe_writer(&error);
                         pending.failed_attempt(&submitted)?;
                         Err(submitted.store_error(&error))
                     }

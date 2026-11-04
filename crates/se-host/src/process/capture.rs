@@ -17,8 +17,17 @@ impl LaunchCoordinator {
         work: &mut Work,
         deadline: &Deadline,
     ) -> Result<()> {
+        self.capture_progress_using(work, deadline, &self.capture)
+            .await
+    }
+    pub(super) async fn capture_progress_using(
+        &self,
+        work: &mut Work,
+        deadline: &Deadline,
+        capture: &crate::runtime::CaptureHandle,
+    ) -> Result<()> {
         work.capture_failure = None;
-        let result = self.capture_progress_inner(work, deadline).await;
+        let result = self.capture_progress_inner(work, deadline, capture).await;
         if let Err(error) = &result {
             self.report_capture_failure(work, error).await?;
             work.capture_failure = Some(error.body.clone());
@@ -54,12 +63,17 @@ impl LaunchCoordinator {
             .map_err(|cause| error("live capture diagnostic", format!("capture failed: {failure}; retaining its public failure also failed: {cause}")).with_cause(cause))?;
         Ok(())
     }
-    async fn capture_progress_inner(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
+    async fn capture_progress_inner(
+        &self,
+        work: &mut Work,
+        deadline: &Deadline,
+        capture: &crate::runtime::CaptureHandle,
+    ) -> Result<()> {
         if work.capture_flushed || !work.meta.capture || !work.active {
             return Ok(());
         }
         if work.transcript.is_none() {
-            let restored = self.capture.binding(crate::SessionIdentity {
+            let restored = capture.binding(crate::SessionIdentity {
                 project: work.meta.project.id.clone(),
                 agent: work.meta.agent.id.clone(),
                 session: work.meta.session.clone(),
@@ -86,7 +100,7 @@ impl LaunchCoordinator {
             generation: self.store.generation.get(),
         };
         let result = if work.process_retired && work.last_witness.is_some() {
-            self.capture
+            capture
                 .catch_up_final(
                     admission,
                     transcript.conversation,
@@ -95,7 +109,7 @@ impl LaunchCoordinator {
                 )
                 .await?
         } else {
-            self.capture
+            capture
                 .catch_up(
                     admission,
                     transcript.conversation,

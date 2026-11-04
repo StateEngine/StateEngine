@@ -31,6 +31,7 @@ enum ConnectionEnd {
     Closed,
     Cancelled,
     Stop(Box<AuthorizedStop>),
+    CatchUp(Result<()>),
 }
 #[allow(
     clippy::large_enum_variant,
@@ -43,6 +44,8 @@ enum Event {
     LocalStop,
     /// An automatically started host stayed at zero activity for the full window.
     IdleExpired,
+    CatchUp,
+    OwnershipFault,
     Joined(std::result::Result<Result<ConnectionEnd>, tokio::task::JoinError>),
 }
 impl HostedRuntime {
@@ -80,6 +83,8 @@ impl HostedRuntime {
             return ended(self, listener, Some(error));
         };
         let mut local_stop = self.local_stop.take();
+        let activity = self.activity.clone();
+        let mut catch_up_running = false;
         // Only an automatically started host with a known activity count may
         // exit when idle; an explicit `se up` or an unknown count stays resident.
         // Built once: unrelated traffic must not restart its zero-activity window.
@@ -97,6 +102,11 @@ impl HostedRuntime {
             ));
         }
         let mut tasks = JoinSet::new();
+        let mut timers = super::live::Timers::new(
+            idle,
+            activity.clone(),
+            self.execution.ownership_fault.clone(),
+        );
         let mut accept_backoff = std::time::Duration::from_millis(1);
         let mut accept_retry_at = tokio::time::Instant::now();
         let mut http_backoff = std::time::Duration::from_millis(1);
@@ -107,14 +117,46 @@ impl HostedRuntime {
                 &http,
                 &mut tasks,
                 local_stop.as_mut(),
-                &mut idle,
+                &mut timers,
                 accept_retry_at,
                 http_retry_at,
             )
             .await
             {
                 Event::LocalStop | Event::IdleExpired => break ended(self, listener, None),
+                Event::OwnershipFault => {
+                    break ended(
+                        self,
+                        listener,
+                        Some(se_core::scope::unreadable(
+                            "writer/native collector ownership",
+                            "the writer or shared collector failed; this generation is fenced and retains custody for controlled recovery",
+                        )),
+                    );
+                }
+                Event::CatchUp => {
+                    timers.catch_up = super::live::timer(activity.clone());
+                    if !catch_up_running
+                        && let Some(custody) = self.execution.custody.get().cloned()
+                    {
+                        catch_up_running = true;
+                        tasks.spawn_on(
+                            async move {
+                                let result = match options(CALL_TIMEOUT) {
+                                    Ok(deadline) => custody.catch_up(&deadline).await,
+                                    Err(error) => Err(error),
+                                };
+                                Ok(ConnectionEnd::CatchUp(result))
+                            },
+                            &runtime,
+                        );
+                    }
+                }
                 Event::Accepted(Ok(stream)) => {
+                    if let Err(error) = self.execution.ownership_fault.route("IPC listener", false)
+                    {
+                        self.failed_connection(error);
+                    }
                     accept_backoff = std::time::Duration::from_millis(1);
                     let router = router.clone();
                     let cancelled = cancelled.clone();
@@ -126,8 +168,19 @@ impl HostedRuntime {
                     accept_backoff =
                         (accept_backoff * 2).min(std::time::Duration::from_millis(250));
                 }
-                Event::Accepted(Err(error)) => break ended(self, listener, Some(error)),
+                Event::Accepted(Err(error)) => {
+                    self.failed_connection(error);
+                    if let Err(error) = self.execution.ownership_fault.route("IPC listener", true) {
+                        self.failed_connection(error);
+                    }
+                    accept_retry_at =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+                }
                 Event::Http(Ok((stream, permit))) => {
+                    if let Err(error) = self.execution.ownership_fault.route("HTTP listener", false)
+                    {
+                        self.failed_connection(error);
+                    }
                     http_backoff = std::time::Duration::from_millis(1);
                     let (router, cancelled, port) =
                         (router.clone(), cancelled.clone(), http.port());
@@ -143,11 +196,25 @@ impl HostedRuntime {
                     http_retry_at = tokio::time::Instant::now() + http_backoff;
                     http_backoff = (http_backoff * 2).min(std::time::Duration::from_millis(250));
                 }
-                Event::Http(Err(error)) => break ended(self, listener, Some(error)),
+                Event::Http(Err(error)) => {
+                    self.failed_connection(error);
+                    if let Err(error) = self.execution.ownership_fault.route("HTTP listener", true)
+                    {
+                        self.failed_connection(error);
+                    }
+                    http_retry_at =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+                }
                 Event::Joined(Ok(Ok(ConnectionEnd::Stop(stop)))) => {
                     let mut exit = ended(self, listener, None);
                     exit.stop = Some(stop);
                     break exit;
+                }
+                Event::Joined(Ok(Ok(ConnectionEnd::CatchUp(result)))) => {
+                    catch_up_running = false;
+                    if let Err(error) = result {
+                        self.failed_connection(error);
+                    }
                 }
                 Event::Joined(Ok(Ok(ConnectionEnd::Closed | ConnectionEnd::Cancelled))) =>
                 {
@@ -160,14 +227,11 @@ impl HostedRuntime {
                     self.failed_connection(error);
                 }
                 Event::Joined(Err(error)) => {
-                    break ended(
-                        self,
-                        listener,
-                        Some(
-                            se_core::scope::unreadable("host connection task", &error.to_string())
-                                .with_cause(error),
-                        ),
+                    self.failed_connection(
+                        se_core::scope::unreadable("host connection task", &error.to_string())
+                            .with_cause(error),
                     );
+                    catch_up_running = false;
                 }
             }
         };
@@ -229,6 +293,9 @@ impl HostedRuntime {
                     }
                 }
                 Ok(Err(error)) => outcome.runtime.failed_connection(error),
+                Ok(Ok(ConnectionEnd::CatchUp(Err(error)))) => {
+                    outcome.runtime.failed_connection(error)
+                }
                 Err(error) => {
                     outcome.failure.get_or_insert_with(|| {
                         se_core::scope::unreadable("joined host task", &error.to_string())
@@ -269,7 +336,7 @@ async fn event(
     http: &crate::HttpListener,
     tasks: &mut JoinSet<Result<ConnectionEnd>>,
     local_stop: Option<&mut watch::Receiver<bool>>,
-    idle: &mut std::pin::Pin<Box<dyn Future<Output = ()> + Send>>,
+    timers: &mut super::live::Timers,
     retry_at: tokio::time::Instant,
     http_retry_at: tokio::time::Instant,
 ) -> Event {
@@ -294,8 +361,12 @@ async fn event(
         if stopping.as_mut().poll(cx).is_ready() {
             return Poll::Ready(Event::LocalStop);
         }
-        if idle.as_mut().poll(cx).is_ready() {
-            return Poll::Ready(Event::IdleExpired);
+        if let Poll::Ready(tick) = timers.poll(cx) {
+            return Poll::Ready(match tick {
+                super::live::Tick::Idle => Event::IdleExpired,
+                super::live::Tick::CatchUp => Event::CatchUp,
+                super::live::Tick::OwnershipFault => Event::OwnershipFault,
+            });
         }
         if !tasks.is_empty()
             && let Poll::Ready(Some(joined)) = tasks.poll_join_next(cx)

@@ -11,6 +11,8 @@
 mod binding;
 mod capture;
 mod context;
+mod factory;
+mod generation;
 mod owner;
 mod revoke;
 mod selector;
@@ -34,10 +36,16 @@ const STORE_APPLICATION_ID: u32 = 0x5345_4e47;
 /// Configured with SE Code's runtime; creates no runtime of its own.
 pub struct EmbeddedFactory {
     runtime: Handle,
+    retained: Mutex<factory::Retained>,
+    restart_gate: tokio::sync::Mutex<()>,
 }
 impl EmbeddedFactory {
     pub fn new(runtime: Handle) -> Self {
-        Self { runtime }
+        Self {
+            runtime,
+            retained: Mutex::new(factory::Retained::default()),
+            restart_gate: tokio::sync::Mutex::new(()),
+        }
     }
 }
 /// The commercial composition's constructor, with exactly the
@@ -66,16 +74,35 @@ enum Lifecycle {
     Drained(api::DrainReceipt),
     Failed(api::ApiError),
 }
-struct EmbeddedHost {
+struct Generation {
+    self_ref: std::sync::Weak<Generation>,
     runtime: Handle,
     config: api::HostConfig,
     negotiated: api::Negotiated,
     lifecycle: tokio::sync::Mutex<Lifecycle>,
     health: Mutex<api::GenerationHealth>,
-    changed: tokio::sync::Notify,
+    changed: Arc<tokio::sync::Notify>,
     native: Mutex<Option<(api::HostEpoch, Arc<dyn api::HostServices>)>>,
     bindings: binding::Bindings,
     binding_gate: tokio::sync::Mutex<()>,
+    owner_join: tokio::sync::Mutex<generation::OwnerJoin>,
+    resources: Arc<Mutex<Option<owner::RetainedResources>>>,
+    activated: std::sync::atomic::AtomicBool,
+    poisoned: Arc<std::sync::atomic::AtomicBool>,
+    quarantined: Arc<std::sync::atomic::AtomicBool>,
+    router_fence: Arc<std::sync::OnceLock<Arc<std::sync::atomic::AtomicBool>>>,
+    faults: Mutex<std::collections::BTreeMap<&'static str, super::tasks::FaultBudget>>,
+    incident: Mutex<Option<String>>,
+}
+
+struct EmbeddedHost {
+    generation: Arc<Generation>,
+}
+impl std::ops::Deref for EmbeddedHost {
+    type Target = Generation;
+    fn deref(&self) -> &Generation {
+        &self.generation
+    }
 }
 
 impl api::HostFactory for EmbeddedFactory {
@@ -84,7 +111,7 @@ impl api::HostFactory for EmbeddedFactory {
         config: api::HostConfig,
         options: api::OpenOptions,
     ) -> api::HostFuture<'a, api::Read<api::OpenedHost>> {
-        Box::pin(async move {
+        self.protected(None,async move {
             if config.kind != api::HostKind::EmbeddedSecode
                 || config.api.major != api::API_VERSION.major
             {
@@ -103,6 +130,7 @@ impl api::HostFactory for EmbeddedFactory {
                     checked: "setup-required: no StateEngine store at this state home; run se init for the workspace".into(),
                 });
             };
+            let generation = self.live_generation(&config)?.map_or(generation, |g| g.0);
             if options
                 .expected_generation
                 .is_some_and(|expected| expected.0 != generation)
@@ -129,17 +157,29 @@ impl api::HostFactory for EmbeddedFactory {
                     .collect(),
                 limits: config.limits.clone(),
             };
-            let host = Arc::new(EmbeddedHost {
+            let bindings = binding::Bindings::new().map_err(|e| api_error(&e))?;
+            let generation = Arc::new_cyclic(|self_ref| Generation {
+                self_ref: self_ref.clone(),
                 runtime: self.runtime.clone(),
                 config,
                 negotiated: negotiated.clone(),
                 lifecycle: tokio::sync::Mutex::new(Lifecycle::Prepared),
                 health: Mutex::new(api::GenerationHealth::Prepared),
-                changed: tokio::sync::Notify::new(),
+                changed: Arc::new(tokio::sync::Notify::new()),
                 native: Mutex::new(None),
-                bindings: binding::Bindings::new().map_err(|e| api_error(&e))?,
+                bindings,
                 binding_gate: tokio::sync::Mutex::new(()),
+                owner_join: tokio::sync::Mutex::new(generation::OwnerJoin::NotStarted),
+                resources: Arc::new(Mutex::new(None)),
+                activated: std::sync::atomic::AtomicBool::new(false),
+                poisoned: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                quarantined: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                router_fence: Arc::new(std::sync::OnceLock::new()),
+                faults: Mutex::new(std::collections::BTreeMap::new()),
+                incident: Mutex::new(None),
             });
+            let generation = self.remember(generation)?;
+            let host = Arc::new(EmbeddedHost { generation });
             Ok(api::Read::Present {
                 value: api::OpenedHost {
                     host,
@@ -157,11 +197,13 @@ impl api::HostFactory for EmbeddedFactory {
     }
     fn restart<'a>(
         &'a self,
-        _reason: api::RestartReason,
-        _key: api::IdempotencyKey,
-        _options: api::CallOptions,
+        reason: api::RestartReason,
+        key: api::IdempotencyKey,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Read<api::OpenedHost>> {
-        Box::pin(async { Err(unavailable("embedded restart")) })
+        self.protected(Some(options.generation), async move {
+            self.restart_generation(reason, key, options).await
+        })
     }
     fn handover<'a>(
         &'a self,
@@ -169,101 +211,7 @@ impl api::HostFactory for EmbeddedFactory {
         _native: Arc<dyn api::HandoverServices>,
         _options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Receipt<api::HandoverReport>> {
-        Box::pin(async { Err(unavailable("live handover")) })
-    }
-}
-
-impl EmbeddedHost {
-    async fn ready(
-        &self,
-        options: &api::CallOptions,
-    ) -> core::Result<(
-        HostedRouter,
-        crate::client::lease::Deadline,
-        support::CallCancellation,
-    )> {
-        if options.generation != self.negotiated.generation {
-            return Err(core::SeError::invalid(
-                "linked call",
-                "the negotiated generation and an uncancelled request",
-            ));
-        }
-        let (deadline, cancellation) = support::call_deadline(&self.runtime, options)?;
-        let lifecycle = super::pool::within(&deadline, self.lifecycle.lock()).await?;
-        match &*lifecycle {
-            Lifecycle::Ready(serving)
-                if api::Host::health(self) == api::GenerationHealth::Ready =>
-            {
-                Ok((serving.router.clone(), deadline, cancellation))
-            }
-            _ => Err(core::SeError::invalid(
-                "linked call",
-                "a ready embedded host before drain",
-            )),
-        }
-    }
-    fn set_health(&self, health: api::GenerationHealth) {
-        if let Ok(mut current) = self.health.lock() {
-            *current = health;
-        }
-        self.changed.notify_waiters();
-    }
-    /// Wait for an activating owner's readiness. Timeout keeps it Activating
-    /// (call again); a reported failure or a lost owner becomes Failed.
-    async fn await_ready(
-        &self,
-        lifecycle: &mut Lifecycle,
-        timeout: Duration,
-    ) -> Result<(), api::ApiError> {
-        let Lifecycle::Activating(activating) = lifecycle else {
-            return Ok(());
-        };
-        let started = match tokio::time::timeout(timeout, &mut activating.ready).await {
-            Ok(Ok(started)) => started,
-            Ok(Err(_)) => Err(core::SeError::invalid(
-                "embedded host",
-                "an owner thread that reports readiness",
-            )),
-            Err(_) => {
-                return Err(refused(
-                    "host activation",
-                    "readiness within the call timeout; call activate again to keep waiting",
-                ));
-            }
-        };
-        let Lifecycle::Activating(activating) = std::mem::replace(lifecycle, Lifecycle::Prepared)
-        else {
-            return Ok(());
-        };
-        match started {
-            Ok((router, stop)) => {
-                *lifecycle = Lifecycle::Ready(Box::new(Serving {
-                    router,
-                    stop,
-                    exited: activating.exited,
-                }));
-                self.set_health(api::GenerationHealth::Ready);
-                Ok(())
-            }
-            Err(error) => {
-                let failure = api_error(&error);
-                *lifecycle = Lifecycle::Failed(failure.clone());
-                self.set_health(api::GenerationHealth::Poisoned);
-                Err(failure)
-            }
-        }
-    }
-    fn owner_inputs(&self, epoch: api::HostEpoch, timeout: Duration) -> OwnerInputs {
-        OwnerInputs {
-            runtime: self.runtime.clone(),
-            home: self.config.state_home.clone(),
-            helper_executable: self.config.helper_executable.clone(),
-            linux_delegation: self.config.linux_delegation.clone(),
-            limits: self.config.limits.clone(),
-            generation: self.negotiated.generation,
-            epoch,
-            timeout,
-        }
+        self.protected(None, async { Err(unavailable("live handover")) })
     }
 }
 
@@ -274,7 +222,9 @@ impl api::Host for EmbeddedHost {
         page: api::PageRequest,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Read<api::Page<api::ProjectInfo>>> {
-        Box::pin(async move { self.selector_projects(page, options).await.map_err(|e| *e) })
+        self.protected("list_projects", false, async move {
+            self.selector_projects(page, options).await.map_err(|e| *e)
+        })
     }
     fn list_agents<'a>(
         &'a self,
@@ -283,7 +233,7 @@ impl api::Host for EmbeddedHost {
         page: api::PageRequest,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Read<api::Page<api::AgentInfo>>> {
-        Box::pin(async move {
+        self.protected("list_agents", false, async move {
             self.selector_agents(project, page, options)
                 .await
                 .map_err(|e| *e)
@@ -296,7 +246,7 @@ impl api::Host for EmbeddedHost {
         page: api::PageRequest,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Read<api::Page<api::ActiveSession>>> {
-        Box::pin(async move {
+        self.protected("project_active_sessions", false, async move {
             self.selector_sessions(project, page, options)
                 .await
                 .map_err(|e| *e)
@@ -304,29 +254,34 @@ impl api::Host for EmbeddedHost {
     }
     fn poison<'a>(
         &'a self,
-        _report: api::FaultReport,
-        _options: api::CallOptions,
+        report: api::FaultReport,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::GenerationHealth> {
-        Box::pin(async move {
-            self.set_health(api::GenerationHealth::Poisoned);
-            Ok(api::GenerationHealth::Poisoned)
+        self.protected("poison", true, async move {
+            self.poison_generation(&report, &options).await
         })
     }
     fn negotiated(&self) -> api::Negotiated {
         self.negotiated.clone()
     }
     fn health(&self) -> api::GenerationHealth {
-        self.health
-            .lock()
-            .map(|health| *health)
-            .unwrap_or(api::GenerationHealth::Poisoned)
+        self.generation.health()
     }
     fn wait_health<'a>(
         &'a self,
         after: api::GenerationHealth,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::GenerationHealth> {
-        Box::pin(async move {
+        self.protected("wait_health", false, async move {
+            if options.generation != self.negotiated.generation {
+                return Err(refused(
+                    "host health generation",
+                    "the exact negotiated generation",
+                ));
+            }
+            let (deadline, _cancel) =
+                support::call_deadline(&self.runtime, &options).map_err(|e| api_error(&e))?;
+            deadline.remaining().map_err(|e| api_error(&e))?;
             // Register before reading, so a change between the read and the
             // wait cannot be missed.
             let mut changed = std::pin::pin!(self.changed.notified());
@@ -334,9 +289,9 @@ impl api::Host for EmbeddedHost {
             if self.health() != after {
                 return Ok(self.health());
             }
-            tokio::time::timeout(options.timeout, changed)
+            super::pool::within(&deadline, changed)
                 .await
-                .map_err(|_| refused("host health", "a change within the call timeout"))?;
+                .map_err(|e| api_error(&e))?;
             Ok(self.health())
         })
     }
@@ -345,7 +300,7 @@ impl api::Host for EmbeddedHost {
         integration: api::HostIntegration,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Readiness> {
-        Box::pin(async move {
+        self.protected("activate", true, async move {
             let api::HostIntegration::Secode { epoch, services } = integration;
             if options.generation != self.negotiated.generation {
                 return Err(refused(
@@ -353,7 +308,11 @@ impl api::Host for EmbeddedHost {
                     "the generation this open negotiated",
                 ));
             }
-            let mut lifecycle = self.lifecycle.lock().await;
+            let (deadline, _cancel) =
+                support::call_deadline(&self.runtime, &options).map_err(|e| api_error(&e))?;
+            let mut lifecycle = super::pool::within(&deadline, self.lifecycle.lock())
+                .await
+                .map_err(|e| api_error(&e))?;
             match &*lifecycle {
                 Lifecycle::Prepared => {
                     *self
@@ -361,18 +320,51 @@ impl api::Host for EmbeddedHost {
                         .lock()
                         .map_err(|_| unavailable("native host registry"))? =
                         Some((epoch.clone(), services));
+                    let mut retained_join = super::pool::within(&deadline, self.owner_join.lock())
+                        .await
+                        .map_err(|e| api_error(&e))?;
+                    let inputs =
+                        self.owner_inputs(epoch, deadline.remaining().map_err(|e| api_error(&e))?);
                     self.set_health(api::GenerationHealth::Activating);
-                    let (ready, exited) = owner_thread(self.owner_inputs(epoch, options.timeout));
+                    self.activated
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    let (ready, exited, join) = owner_thread(inputs);
+                    *retained_join = join.map_or(
+                        generation::OwnerJoin::NotStarted,
+                        generation::OwnerJoin::Thread,
+                    );
                     *lifecycle = Lifecycle::Activating(Box::new(Activating { ready, exited }));
                 }
                 // A retry resumes the same owner; it never spawns another.
                 Lifecycle::Activating(_) => {}
-                Lifecycle::Ready(_) => return Ok(api::Readiness::Ready),
+                Lifecycle::Ready(_) if self.health() == api::GenerationHealth::Ready => {
+                    return Ok(api::Readiness::Ready);
+                }
+                Lifecycle::Ready(_) => {
+                    return Err(refused(
+                        "host activation",
+                        "independent recovery of the fenced generation",
+                    ));
+                }
                 Lifecycle::Drained(_) | Lifecycle::Failed(_) => {
                     return Err(refused("host activation", "one prepared generation"));
                 }
             }
-            self.await_ready(&mut lifecycle, options.timeout).await?;
+            super::pool::within(
+                &deadline,
+                self.await_ready(
+                    &mut lifecycle,
+                    deadline.remaining().map_err(|e| api_error(&e))?,
+                ),
+            )
+            .await
+            .map_err(|e| api_error(&e))??;
+            if self.health() != api::GenerationHealth::Ready {
+                return Err(refused(
+                    "host activation",
+                    "a healthy unfenced generation; use independent factory recovery",
+                ));
+            }
             Ok(api::Readiness::Ready)
         })
     }
@@ -381,7 +373,7 @@ impl api::Host for EmbeddedHost {
         _capability: &'a api::SessionCapability,
         _options: api::CallOptions,
     ) -> api::HostFuture<'a, api::BoundSession> {
-        Box::pin(async {
+        self.protected("verify_capability", false, async {
             Err(unavailable(
                 "process-bound session capabilities in an embedded host",
             ))
@@ -393,7 +385,9 @@ impl api::Host for EmbeddedHost {
         _project: api::ProjectId,
         _options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Read<api::ProjectInfo>> {
-        Box::pin(async { Err(unavailable("embedded project open")) })
+        self.protected("open_project", false, async {
+            Err(unavailable("embedded project open"))
+        })
     }
     fn bind_session<'a>(
         &'a self,
@@ -401,7 +395,7 @@ impl api::Host for EmbeddedHost {
         request: api::BindingRequest,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::IssuedSession> {
-        Box::pin(async move {
+        self.protected("bind_session", false, async move {
             self.bind(authority, request, options)
                 .await
                 .map_err(|e| api_error(&e))
@@ -413,7 +407,7 @@ impl api::Host for EmbeddedHost {
         request: api::RevokeRequest,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Receipt<api::SessionIdentity>> {
-        Box::pin(async move {
+        self.protected("revoke_session", false, async move {
             self.revoke(authority, request, options)
                 .await
                 .map_err(|e| api_error(&e))
@@ -425,7 +419,9 @@ impl api::Host for EmbeddedHost {
         _page: api::PageRequest,
         _options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Page<api::ToolDefinition>> {
-        Box::pin(async { Err(unavailable("embedded tool listing")) })
+        self.protected("tools", false, async {
+            Err(unavailable("embedded tool listing"))
+        })
     }
     fn call_tool<'a>(
         &'a self,
@@ -433,7 +429,9 @@ impl api::Host for EmbeddedHost {
         _call: api::ToolCall,
         _options: api::CallOptions,
     ) -> api::HostFuture<'a, api::ToolOutput> {
-        Box::pin(async { Err(unavailable("embedded tool calls")) })
+        self.protected("call_tool", false, async {
+            Err(unavailable("embedded tool calls"))
+        })
     }
     fn continuity<'a>(
         &'a self,
@@ -441,7 +439,7 @@ impl api::Host for EmbeddedHost {
         request: api::ContinuityRequest,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::SessionContext> {
-        Box::pin(async move {
+        self.protected("continuity", false, async move {
             self.context(session, request, options)
                 .await
                 .map_err(|e| api_error(&e))
@@ -453,7 +451,7 @@ impl api::Host for EmbeddedHost {
         turn: api::CapturedTurn,
         options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Receipt<api::EventRef>> {
-        Box::pin(async move {
+        self.protected("capture_turn", false, async move {
             self.capture(session, turn, options)
                 .await
                 .map_err(|e| api_error(&e))
@@ -464,7 +462,9 @@ impl api::Host for EmbeddedHost {
         _target: &'a api::HostSessionTarget,
         _options: api::CallOptions,
     ) -> api::HostFuture<'a, ()> {
-        Box::pin(async { Err(unavailable("native mail targets")) })
+        self.protected("native_state_changed", false, async {
+            Err(unavailable("native mail targets"))
+        })
     }
     fn adoption_status<'a>(
         &'a self,
@@ -472,100 +472,22 @@ impl api::Host for EmbeddedHost {
         _page: api::PageRequest,
         _options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Page<api::Adoption>> {
-        Box::pin(async { Err(unavailable("adoption status")) })
+        self.protected("adoption_status", false, async {
+            Err(unavailable("adoption status"))
+        })
     }
     fn drain<'a>(&'a self, options: api::CallOptions) -> api::HostFuture<'a, api::DrainReceipt> {
-        Box::pin(async move {
-            let mut lifecycle = self.lifecycle.lock().await;
-            // A generation still starting finishes starting before it stops.
-            self.await_ready(&mut lifecycle, options.timeout).await?;
-            let receipt = match &mut *lifecycle {
-                Lifecycle::Ready(serving) => {
-                    self.set_health(api::GenerationHealth::Draining);
-                    serving.stop.request();
-                    // Await by reference: a cancelled or timed-out drain keeps the
-                    // generation serving, so a later drain waits for the real report.
-                    match tokio::time::timeout(options.timeout, &mut serving.exited).await {
-                        Ok(Ok(Ok(receipt))) => receipt,
-                        Ok(Ok(Err(error))) => {
-                            let failure = api_error(&error);
-                            *lifecycle = Lifecycle::Failed(failure.clone());
-                            self.set_health(api::GenerationHealth::Poisoned);
-                            return Err(failure);
-                        }
-                        Ok(Err(_)) => {
-                            let failure = refused(
-                                "embedded host",
-                                "an owner thread that reports its shutdown",
-                            );
-                            *lifecycle = Lifecycle::Failed(failure.clone());
-                            return Err(failure);
-                        }
-                        Err(_) => {
-                            return Err(refused(
-                                "embedded drain",
-                                "shutdown within the call timeout; drain again",
-                            ));
-                        }
-                    }
-                }
-                // await_ready left it Ready or Failed, or already returned.
-                Lifecycle::Activating(_) => {
-                    return Err(refused(
-                        "embedded drain",
-                        "a generation that finished activating",
-                    ));
-                }
-                Lifecycle::Drained(receipt) => return Ok(receipt.clone()),
-                // Never activated: no writer, listener or effect ever existed.
-                Lifecycle::Prepared => api::DrainReceipt {
-                    generation: self.negotiated.generation,
-                    pending_notices: 0,
-                    unresolved_effects: 0,
-                    writer_flushed: true,
-                },
-                Lifecycle::Failed(error) => return Err(error.clone()),
-            };
-            *lifecycle = Lifecycle::Drained(receipt.clone());
-            self.set_health(
-                if receipt.writer_flushed
-                    && receipt.unresolved_effects == 0
-                    && receipt.pending_notices == 0
-                {
-                    api::GenerationHealth::Drained
-                } else {
-                    api::GenerationHealth::Poisoned
-                },
-            );
-            Ok(receipt)
+        self.protected("drain", true, async move {
+            self.drain_generation(options).await
         })
     }
     fn close<'a>(
         &'a self,
         drained: api::DrainReceipt,
-        _options: api::CallOptions,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::DrainReceipt> {
-        Box::pin(async move {
-            let lifecycle = self.lifecycle.lock().await;
-            match &*lifecycle {
-                Lifecycle::Drained(receipt) if *receipt == drained => {
-                    if !receipt.writer_flushed
-                        || receipt.unresolved_effects != 0
-                        || receipt.pending_notices != 0
-                    {
-                        return Err(refused(
-                            "embedded host close",
-                            "a completely flushed drain with no unresolved effects or notices; this runtime retains custody and requires controlled application restart",
-                        ));
-                    }
-                    self.set_health(api::GenerationHealth::Closed);
-                    Ok(receipt.clone())
-                }
-                _ => Err(refused(
-                    "host close",
-                    "the receipt this generation's drain returned",
-                )),
-            }
+        self.protected("close", true, async move {
+            self.close_generation(drained, options).await
         })
     }
 }

@@ -8,7 +8,7 @@ pub use crate::process::LaunchCoordinator;
 #[cfg(all(feature = "listener", target_os = "linux", target_env = "gnu"))]
 mod memory;
 #[cfg(feature = "listener")]
-mod pool;
+pub(crate) mod pool;
 #[cfg(feature = "listener")]
 pub use pool::*;
 #[cfg(feature = "listener")]
@@ -82,6 +82,10 @@ pub use capture::{CaptureHandle, CaptureRestoreReport, CaptureUnavailable, Trans
 
 #[cfg(feature = "listener")]
 mod failure;
+#[cfg(feature = "listener")]
+mod live;
+#[cfg(feature = "listener")]
+pub(crate) mod tasks;
 #[cfg(feature = "listener")]
 pub(crate) use failure::{PendingWrites, WriteIdentity};
 #[cfg(feature = "listener")]

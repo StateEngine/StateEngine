@@ -102,7 +102,35 @@ impl HostServeExit {
                 ));
             }
         }
-        let drained = if agents_stopped && before.is_some() {
+        let collector_joined = if agents_stopped {
+            match self
+                .runtime
+                .execution
+                .ownership_fault
+                .join_native(&drain_deadline)
+                .await
+            {
+                Ok(()) => true,
+                Err(error) => {
+                    pending.push(format!("Native collector tasks remain unjoined: {error}"));
+                    errors.push(error);
+                    false
+                }
+            }
+        } else {
+            false
+        };
+        let ownership_failed = self
+            .runtime
+            .execution
+            .ownership_fault
+            .failed
+            .load(std::sync::atomic::Ordering::Acquire);
+        if ownership_failed {
+            pending.push("Writer or shared native collector failed; retain the exact lease, writer and native custody until controlled application restart.".into());
+        }
+        let drained = if agents_stopped && before.is_some() && !ownership_failed && collector_joined
+        {
             Some(self.runtime.drain_storage(&drain_deadline).await)
         } else {
             None

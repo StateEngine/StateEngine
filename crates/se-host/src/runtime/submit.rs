@@ -35,6 +35,7 @@ pub(super) async fn measured(
     let submitted = identity.clone();
     let pending = context.pending_writes.clone();
     let runtime = context.blocking.handle();
+    let fault = context.ownership_fault.clone();
     let (completion, submission) =
         timings::blocking(&context.blocking, Mode::Owned, deadline, move || {
             submit_deadline.remaining()?;
@@ -46,6 +47,9 @@ pub(super) async fn measured(
                     // It holds no blocking permit while awaiting the store.
                     Ok(runtime.spawn(async move {
                         let receipt = completion.await;
+                        if let Err(error) = &receipt {
+                            fault.observe_writer(error);
+                        }
                         let settled = match &receipt {
                             Ok(_) => pending.resolve(&submitted),
                             Err(error)
@@ -71,6 +75,7 @@ pub(super) async fn measured(
                     }))
                 }
                 Err(error) => {
+                    fault.observe_writer(&error);
                     pending.failed_attempt(&submitted)?;
                     Err(submitted.store_error(&error))
                 }

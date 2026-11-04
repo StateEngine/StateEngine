@@ -311,6 +311,7 @@ fn prepare(
         generation,
         pending_writes,
         custody: Arc::default(),
+        ownership_fault: Arc::default(),
     };
     Ok(HostedRuntime {
         #[cfg(unix)]

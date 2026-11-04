@@ -16,6 +16,7 @@ pub struct BlockingPool {
     slots: Arc<Semaphore>,
     background: Arc<Semaphore>,
     capacity: u32,
+    class_override: Option<BlockingClass>,
 }
 #[derive(Clone, Copy)]
 pub enum BlockingClass {
@@ -44,6 +45,13 @@ impl BlockingPool {
             slots: Arc::new(Semaphore::new(capacity as usize)),
             background: Arc::new(Semaphore::new(1)),
             capacity,
+            class_override: None,
+        }
+    }
+    pub(crate) fn background_handle(&self) -> Self {
+        Self {
+            class_override: Some(BlockingClass::Background),
+            ..self.clone()
         }
     }
     /// Listener native checks share the foreground admission with planning and
@@ -57,6 +65,7 @@ impl BlockingPool {
         F: FnOnce() -> Result<T> + Send + 'static,
     {
         deadline.remaining()?;
+        let class = self.class_override.unwrap_or(class);
         // A maintenance job holds its gate before shared admission. At most
         // one such job can occupy a finite-work slot.
         let maintenance = match class {

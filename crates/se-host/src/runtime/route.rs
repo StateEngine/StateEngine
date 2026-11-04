@@ -85,7 +85,13 @@ impl HostedRuntime {
 }
 impl HostedRouter {
     pub(crate) fn check_open(&self) -> Result<()> {
-        if self.fenced.load(std::sync::atomic::Ordering::Acquire) {
+        if self.fenced.load(std::sync::atomic::Ordering::Acquire)
+            || self
+                .execution
+                .ownership_fault
+                .failed
+                .load(std::sync::atomic::Ordering::Acquire)
+        {
             return Err(SeError::invalid(
                 "host admission",
                 "a ready runtime before its drain fence",
