@@ -30,5 +30,5 @@ pub trait AtlasQueries {
     fn changes(&self, query: &ChangesQuery) -> AtlasResult<Answer<Read<Page<CodeChange>>>>;
     fn outline(&self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>>;
     fn resume_code(&self, request: &ResumeRequest) -> AtlasResult<ResumeCode>;
-    fn status(&self) -> IndexSummary;
+    fn status(&self) -> AtlasResult<IndexSummary>;
 }

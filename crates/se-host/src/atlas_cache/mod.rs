@@ -235,7 +235,7 @@ impl CacheFiles for NativeAtlasCache {
             .parent()
             .ok_or_else(|| fail("epoch parent missing"))?
             .to_path_buf();
-        epochs.prepare_directory(&directory).map_err(fail)?;
+        epochs.prepare_new_directory(&directory).map_err(fail)?;
         let files = NativeStateFiles::open(&directory).map_err(fail)?;
         let stage = files.create_staging(&directory).map_err(fail)?;
         drop(stage.file);
