@@ -14,7 +14,7 @@ import uuid
 
 
 class Fixture:
-    def __init__(self, se, root):
+    def __init__(self, se, root, provider_helper=None):
         self.se, self.root = se.resolve(), root.resolve()
         self.root.mkdir(parents=True, exist_ok=False)
         self.home = self.root / "state"
@@ -43,7 +43,7 @@ class Fixture:
             raise RuntimeError("no available listener port")
         text = config.read_text().replace(f'listen_port = {init["profile"]["native_server_port"]}',
                                          f"listen_port = {port}", 1)
-        helper = Path(__file__).with_name("mail_provider.py").resolve()
+        helper = (provider_helper or Path(__file__).with_name("mail_provider.py")).resolve()
         source = self.root / "provider.rs"
         source.write_text('''fn main(){let a:Vec<String>=std::env::args().collect();
 if a.get(1).map(String::as_str)==Some("--version"){println!("2.1.287 (Claude Code)");return;}
