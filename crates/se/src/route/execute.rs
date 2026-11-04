@@ -248,7 +248,7 @@ pub fn dispatch(
         return Ok(absent);
     }
     if let AnyOp::RuntimeDown(input) = op {
-        return super::runtime_control::down(&files, &reader, input);
+        return super::runtime_control::down(cx, &files, &reader, input);
     }
     if host_required && !matches!(op, AnyOp::RuntimeUp(_)) {
         return super::hosted::forward(cx, &files, &reader, &caller, op, &selections, diagnostic);

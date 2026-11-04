@@ -171,6 +171,21 @@ fn uninstall_report(
     deferred: bool,
     out: &mut impl Write,
 ) -> io::Result<()> {
+    if let Some(cleanup) = &value.home_cleanup {
+        writeln!(
+            out,
+            "Initialized-home cleanup; executable and PATH retained."
+        )?;
+        match &cleanup.runtime {
+            se_types::Read::Present { value } => runtime_stop(value, out)?,
+            other => writeln!(out, "Runtime closure pending: {other:?}")?,
+        }
+        for file in &cleanup.runtime_files {
+            writeln!(out, "{}: {}", file.path, outcome(file.outcome))?;
+            witness(&file.witness, out)?;
+        }
+        writeln!(out, "{}", cleanup.manual_data_removal)?;
+    }
     stops(&value.stops, out)?;
     for file in &value.install_files {
         writeln!(out, "{}: {}", file.path, outcome(file.outcome))?;

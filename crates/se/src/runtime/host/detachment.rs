@@ -142,3 +142,26 @@ pub fn read_detachment(
         value: record.observation,
     })
 }
+
+/// The human cleanup adapter retains exclusive home custody and proves the
+/// host exited before retiring this schema-checked observation. It is no
+/// authority over any other file or over retained store/identity data.
+pub fn retire_detachment(files: &crate::route::files::Files, bound: &Deadline) -> Result<bool> {
+    let Some(bytes) = read_bytes(files, bound)? else {
+        return Ok(false);
+    };
+    let _: Record = se_host::client::wire::decode_json(&bytes, MAX_BYTES)?;
+    let path = files.0.root().join(NAME);
+    let pin = se_proc::OwnedFile::open(&path)
+        .map_err(|e| scope::unreadable("runtime observation cleanup", &e.to_string()))?
+        .ok_or_else(|| {
+            scope::unreadable(
+                "runtime observation cleanup",
+                "record disappeared before pinning",
+            )
+        })?;
+    pin.remove(Hasher::digest(&bytes).into())
+        .map_err(|e| scope::unreadable("runtime observation cleanup", &e.to_string()))?;
+    bound.remaining()?;
+    Ok(true)
+}

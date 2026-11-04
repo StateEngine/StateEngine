@@ -50,6 +50,8 @@ pub struct RevocationEffect {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct UninstallOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_cleanup: Option<InitializedHomeCleanup>,
     pub idempotency_key: IdempotencyKey,
     pub complete: bool,
     pub install_files: Vec<FileEffect>,
@@ -93,4 +95,13 @@ pub struct LaunchOutput {
     pub model: Option<String>,
     pub permission_profile: ResolvedProfile,
     pub conversation_id: String,
+}
+
+/// Direct initialization grants authority only over named runtime artifacts,
+/// while the store and identity remain available for adoption or resume.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct InitializedHomeCleanup {
+    pub runtime: Read<RuntimeStop>,
+    pub runtime_files: Vec<FileEffect>,
+    pub manual_data_removal: String,
 }

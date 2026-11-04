@@ -120,6 +120,35 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
         se_host::IpcEndpoint::UnixSocket(se_types::NativePath::from_local(foreign_path.clone())?);
     let bytes = se_host::client::endpoint::encode_endpoint(&stale)?;
     let files = se_proc::NativeStateFiles::open(home)?;
+    // Down must retire obsolete routing records too, without touching even a
+    // live foreign socket named by the stale record. Both renderers expose it.
+    for json in [true, false] {
+        publish(&files, bytes.as_bytes())?;
+        let before = retained(home)?;
+        let output = command(&image, home, json).arg("down").output()?;
+        assert!(
+            output.status.success(),
+            "stale down refused: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!home.join("endpoint.json").exists());
+        let after = retained(home)?;
+        let added: Vec<_> = after.iter().filter(|path| !before.contains(path)).collect();
+        assert_eq!(added.len(), 1);
+        assert_eq!(fs::read(added[0])?, bytes.as_bytes());
+        let printed = String::from_utf8(output.stdout)?;
+        assert!(
+            printed.contains("Retained stale endpoint")
+                && printed.contains(&added[0].display().to_string())
+        );
+        if json {
+            let stop: se_core::ops::RuntimeStop = serde_json::from_str(&printed)?;
+            assert!(stop.complete && stop.already_down);
+            assert!(stop.stops.is_empty());
+        }
+        untouched_foreign(&foreign, &foreign_path, &foreign_metadata)?;
+    }
     let machine = fs::read(home.join("machine.json"))?;
     let credential = fs::read(home.join("credential"))?;
     for json in [true, false] {
