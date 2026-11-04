@@ -1,6 +1,6 @@
 //! Ordered launch barriers and real provider readiness. The supervisor retains
 //! every intermediate native reference and file digest through failures.
-use super::launch_util::{call, policy, resolve_command, token, wait};
+use super::launch_util::{call, policy, resolve_provider_command, token, wait};
 use super::*;
 use crate::{HarnessRequest, ProbeRequest, SessionIdentity, client::lease::Deadline};
 use se_core::ops::{LaunchResult, process_commit};
@@ -53,18 +53,22 @@ impl LaunchCoordinator {
                 "the original FULL reservation already exists; reconcile that lifecycle before another native effect",
             ));
         }
+        let provider = match plan.profile.provider {
+            se_store::Provider::Codex => se_types::Provider::Codex,
+            _ => se_types::Provider::Claude,
+        };
         let command = self
             .options
             .configuration
-            .provider_command(match plan.profile.provider {
-                se_store::Provider::Codex => se_types::Provider::Codex,
-                _ => se_types::Provider::Claude,
-            })
+            .provider_command(provider)
             .to_owned();
+        let home = self.options.home.clone();
         let executable = self
             .store
             .pool
-            .run_owned(deadline, move || resolve_command(&command))
+            .run_owned(deadline, move || {
+                resolve_provider_command(&command, provider, &home)
+            })
             .await?;
         harness
             .probe(
