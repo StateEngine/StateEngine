@@ -200,7 +200,7 @@ pub fn cli_command() -> Command {
         )
         .arg(
             toggle("json")
-                .help("Output the machine-readable JSON envelope")
+                .help("Print structured JSON instead of the default readable output")
                 .global(true),
         )
         .arg(
@@ -333,10 +333,10 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("governing_cursor").long("governing-cursor").help("Continue project rulings from decisions.next_cursor"))
             .arg(value("preview").help("Owner: inspect this saved agent without binding or acknowledging it")),
         "session.context" => c
-            .arg(value("since"))
-            .arg(value("budget").default_value("32768"))
-            .arg(value("governing_cursor").long("governing-cursor"))
-            .arg(value("limit").default_value("20")),
+            .arg(value("since").help("An opaque cursor from context for this same agent"))
+            .arg(value("budget").default_value("32768").help("Maximum UTF-8 bytes in the context reply"))
+            .arg(value("governing_cursor").long("governing-cursor").help("Continue project rulings from the previous context page"))
+            .arg(value("limit").default_value("20").help("Maximum recent entries per context section")),
         "project.remove" => c
             .arg(toggle("all").conflicts_with("project").help("Remove every registered project in this home"))
             .arg(toggle("keep-integrations").help("Keep registered integrations while removing the project")),
@@ -438,7 +438,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("expect").required(true).help("The revision you last read, or absent for the first write"))
             .arg(value("agent").help("Saved agent name or ID whose working state the owner replaces")),
         "runtime.up" => c.arg(toggle("foreground").help("Run the runtime in this terminal instead of detaching")),
-        "hook.claude" => c.arg(positional("event", 1, true).value_parser([
+        "hook.claude" => c.arg(positional("event", 1, true).help("Claude Code lifecycle event carried on stdin").value_parser([
             "session-start",
             "prompt",
             "stop",

@@ -75,9 +75,7 @@ impl CliSelections {
             }
             match op {
                 AnyOp::Resume(input) => {
-                    let se_store::Actor::Agent(agent) =
-                        crate::scope::actor_selector(cx.read, target)?
-                    else {
+                    let se_store::Actor::Agent(agent) = selected_agent(cx, target)? else {
                         return Err(SeError::invalid("preview", "a saved agent"));
                     };
                     input.preview_agent = Some(agent);
@@ -138,7 +136,7 @@ impl CliSelections {
                 | AnyOp::WorkingStateSet(_)
                 | AnyOp::AgentShow(_)
                 | AnyOp::HistoryList(_) => {
-                    let actor = crate::scope::actor_selector(cx.read, selector)?;
+                    let actor = selected_agent(cx, selector)?;
                     let se_store::Actor::Agent(agent) = actor else {
                         return Err(SeError::invalid("agent", "a project agent, not the owner"));
                     };
@@ -176,5 +174,49 @@ impl CliSelections {
             }
         }
         Ok(())
+    }
+}
+
+fn selected_agent<R: se_store::Snapshot>(
+    cx: &mut crate::commit::Cx<'_, R>,
+    selector: &str,
+) -> Result<se_store::Actor> {
+    let result = crate::scope::actor_selector(cx.read, selector);
+    let Err(mut error) = result else {
+        return result;
+    };
+    if matches!(cx.admission.actor, se_store::Actor::Human(_))
+        && let se_types::Detail::TargetUnknown(detail) = error.body.detail()
+    {
+        let mut detail = detail.clone();
+        if detail.reason == "not present in the admitted project snapshot" {
+            detail.reason =
+                "no agent with this ID or name was found in the selected project".into();
+        }
+        let text = "List this project's saved agents, then retry with an exact agent ID or registered name.";
+        detail.next_step = text.into();
+        let project = crate::scope::project(cx.admission)?;
+        error.body = se_types::ErrorBody::new(se_types::Detail::TargetUnknown(detail)).with_remedy(
+            se_types::Remedy {
+                text: text.into(),
+                command: Some(se_types::Cmd::Se {
+                    argv: se_types::Argv::from_op(&AgentChoices(&project))?,
+                }),
+            },
+        );
+    }
+    Err(error)
+}
+
+struct AgentChoices<'a>(&'a se_types::ProjectId);
+impl se_types::OperationCommand for AgentChoices<'_> {
+    fn cli_argv(&self) -> Vec<String> {
+        vec![
+            "se".into(),
+            "--project".into(),
+            self.0.to_string(),
+            "agent".into(),
+            "list".into(),
+        ]
     }
 }

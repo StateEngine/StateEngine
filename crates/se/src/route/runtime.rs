@@ -330,16 +330,28 @@ pub(super) fn down_endpoint(
             .filter(|fact| !achieved.contains(fact))
             .collect();
             if !missing.is_empty() {
-                pending.push(format!("Shutdown did not report these required facts: {missing:?}. Their absence is not a successful stop; preserve this data home and inspect the named obligations."));
+                let missing = missing
+                    .iter()
+                    .map(shutdown_fact)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                pending.push(format!("Shutdown has not verified: {missing}. Preserve this data home and resolve these pending shutdown steps."));
             }
             let complete = pending.is_empty() && stops.iter().all(|stop| stop.complete);
             if !complete {
                 pending.push(retry_cleanup(files, projects));
             }
-            let detail = format!(
-                "Achieved: {achieved:?}; retained resume references: {retained_count}; pending: {}",
-                pending.join("; ")
+            let mut detail = format!(
+                "Verified: {}; saved conversation references: {retained_count}.",
+                achieved
+                    .iter()
+                    .map(shutdown_fact)
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
+            if !pending.is_empty() {
+                detail.push_str(&format!(" Pending: {}", pending.join("; ")));
+            }
             Ok(RuntimeStop {
                 complete,
                 already_down: false,
@@ -412,4 +424,17 @@ fn retry_cleanup(files: &Files, projects: Vec<se_types::ProjectId>) -> String {
         "Cleanup is incomplete. {stop}, then `{}`. A stop refusal remains a failure; preserve the data home and the named lifecycle identities.",
         down.command
     )
+}
+
+fn shutdown_fact(fact: &se_host::client::endpoint::RuntimeStopFact) -> &'static str {
+    use se_host::client::endpoint::RuntimeStopFact as Fact;
+    match fact {
+        Fact::AgentsStopped => "agents stopped",
+        Fact::ResumeSaved => "resume information saved",
+        Fact::WriterJoined => "storage writer stopped",
+        Fact::CaptureFlushed => "captured work saved",
+        Fact::DebtFlushed => "pending writes saved",
+        Fact::ResourcesClosed => "service resources closed",
+        Fact::LeaseReleased => "service lock released",
+    }
 }
