@@ -2,12 +2,15 @@ use crate::{apply, codec, connection, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
-mod recovery;
 mod first_binding;
+mod idempotency;
 mod input;
+use idempotency::fingerprint;
 mod receipt;
-use receipt::{receipt, receipt_members, stamp, door};
-pub(crate) use input::batch_sizes;
+mod recovery;
+pub(crate) use input::{batch_sizes, natural_kind};
+pub(crate) use receipt::receipt;
+use receipt::{door, receipt_members, stamp};
 use recovery::Uncertain;
 pub(crate) struct Engine {
     pub db: Connection,
@@ -32,16 +35,24 @@ impl Engine {
     ) -> StoreResult<(Vec<StoreResult<CommitReceipt>>, Phases)> {
         self.commit(batches, maintenance, false)
     }
-    fn commit(&mut self, batches: Vec<AtomicBatch>, maintenance: bool, coupled: bool) -> StoreResult<(Vec<StoreResult<CommitReceipt>>, Phases)> {
+    fn commit(
+        &mut self,
+        batches: Vec<AtomicBatch>,
+        maintenance: bool,
+        coupled: bool,
+    ) -> StoreResult<(Vec<StoreResult<CommitReceipt>>, Phases)> {
         let attempted = batches
             .iter()
             .map(Uncertain::from_batch)
             .collect::<Vec<_>>();
         let info = connection::info(&self.db)?;
-        let batches = batches.into_iter().map(|batch| {
-            batch_sizes(&batch)?;
-            crate::staging::prepare(batch, &info, &self.identity)
-        }).collect();
+        let batches = batches
+            .into_iter()
+            .map(|batch| {
+                batch_sizes(&batch)?;
+                crate::staging::prepare(batch, &info, &self.identity)
+            })
+            .collect();
         let mut result = self.group_inner(batches, maintenance, coupled);
         if let Ok((results, _)) = &mut result {
             for (operation, outcome) in attempted.into_iter().zip(results) {
@@ -147,8 +158,14 @@ impl Engine {
         for batch in batches {
             let batch = match batch {
                 Ok(batch) => batch,
-                Err(error) if coupled => { self.rollback_confirmed()?; return Err(error); }
-                Err(error) => { results.push(Err(error)); continue; }
+                Err(error) if coupled => {
+                    self.rollback_confirmed()?;
+                    return Err(error);
+                }
+                Err(error) => {
+                    results.push(Err(error));
+                    continue;
+                }
             };
             if let Err(e) = self.db.execute_batch("SAVEPOINT operation") {
                 self.rollback();
@@ -177,7 +194,9 @@ impl Engine {
             if result.is_err() {
                 if coupled {
                     self.rollback_confirmed()?;
-                    return Err(result.err().ok_or_else(|| invalid("missing first binding error"))?);
+                    return Err(result
+                        .err()
+                        .ok_or_else(|| invalid("missing first binding error"))?);
                 }
                 if let Err(e) = self
                     .db
@@ -335,6 +354,18 @@ impl Engine {
             return Err(invalid("atomic batch needs 1..64 events"));
         }
         let importing = crate::import::validate_batch(&batch)?;
+        if batch.request.is_none()
+            && !maintenance
+            && !importing
+            && !batch
+                .events
+                .iter()
+                .all(|event| input::natural_kind(&event.body))
+        {
+            return Err(invalid(
+                "keyless writes are restricted to natural capture and recipient marks",
+            ));
+        }
         let scope = scope_key(&self.db, &batch.admission.scope, true)?;
         let actor = key(
             &self.db,
@@ -359,38 +390,8 @@ impl Engine {
                 ));
             }
         }
-        if let Some(request) = &batch.request {
-            let found:Option<(Vec<u8>,Option<Vec<u8>>,u16,bool)>=self.db.query_row("SELECT operation_id,fingerprint,fingerprint_codec,erased FROM operations WHERE scope_key=? AND actor_id=?
-                    AND request_key=?",crate::sql_value::sql_params![scope,actor,request.key.as_str()],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?))).optional().map_err(sql)?;
-            if let Some((op, digest, version, erased)) = found {
-                if erased { return Err(fail(StoreErrorCode::ContentErased, "caller key's content-derived fingerprint was erased")); }
-                if version != 1 { return Err(fail(StoreErrorCode::VersionUnsupported, "retained intent codec is unsupported")); }
-                if digest
-                    != Some(fingerprint(
-                        &scope,
-                        &actor,
-                        batch.admission.actor.kind(),
-                        &request.intent,
-                    )?.to_vec())
-                    || version != request.intent.codec_version
-                {
-                    let original = receipt(&self.db, &op, info, Some(request.key.clone()))?;
-                    let mut error = fail(
-                        StoreErrorCode::IdempotencyKeyReused,
-                        "caller key already owns a different semantic intent",
-                    );
-                    error.detail = StoreDetail::Request {
-                        scope: batch.admission.scope.clone(),
-                        actor: batch.admission.actor.clone(),
-                        key: request.key.clone(),
-                        original_event: Some(original.primary_event),
-                    };
-                    return Err(error);
-                }
-                let mut retained = receipt(&self.db, &op, info, Some(request.key.clone()))?;
-                retained.state = CommitState::Replayed;
-                return Ok(retained);
-            }
+        if let Some(retained) = idempotency::lookup(&self.db, &batch, info)? {
+            return Ok(retained);
         }
         if batch.expected_incarnation != info.incarnation
             || batch.admission.generation != self.identity.generation
@@ -407,7 +408,9 @@ impl Engine {
         for e in &batch.events {
             let d = descriptor(&e.body, |t| match t {
                 InputText::Inline(s) => Ok(text_fingerprint(s)),
-                InputText::Staged(_) => Err(invalid("staged payload was not prepared before BEGIN")),
+                InputText::Staged(_) => {
+                    Err(invalid("staged payload was not prepared before BEGIN"))
+                }
             })?;
             descriptors.push(d);
             let runtime = matches!(
@@ -581,35 +584,4 @@ fn security<T>(b: &EventBody<T>) -> bool {
 pub(crate) use crate::codec::semantic::descriptor;
 fn text_fingerprint(text: &str) -> serde_json::Value {
     serde_json::json!({"bytes":text.len(),"sha256":se_types::hex_lower(&Sha256::digest(text.as_bytes()))})
-}
-fn fingerprint(
-    scope: &[u8],
-    actor: &[u8],
-    actor_kind: &str,
-    intent: &IntentDigest,
-) -> StoreResult<[u8; 32]> {
-    if intent.codec_version != 1
-        || intent.operation.is_empty()
-        || intent.operation.len() > 128
-        || !intent
-            .operation
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
-    {
-        return Err(invalid("unsupported intent codec or operation label"));
-    }
-    let mut hash = Sha256::new();
-    hash.update(b"SEOP\0v1\0");
-    for value in [
-        scope,
-        actor_kind.as_bytes(),
-        actor,
-        intent.operation.as_bytes(),
-    ] {
-        hash.update((value.len() as u64).to_be_bytes());
-        hash.update(value);
-    }
-    hash.update(intent.codec_version.to_be_bytes());
-    hash.update(intent.sha256);
-    Ok(hash.finalize().into())
 }

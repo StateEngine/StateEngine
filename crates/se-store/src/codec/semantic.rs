@@ -42,7 +42,9 @@ pub(crate) fn descriptor<T, S: Serialize>(
         CaptureSource { .. } | CaptureProgress { .. } => {
             fields.remove("expected");
         }
-        RecoveryRecorded { receipt, .. } => { fields.insert("receipt".into(), json!(text(receipt)?)); }
+        RecoveryRecorded { receipt, .. } => {
+            fields.insert("receipt".into(), json!(text(receipt)?));
+        }
         _ => {}
     }
     encode(&(kind, fields))

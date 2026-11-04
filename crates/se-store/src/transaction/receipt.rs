@@ -37,7 +37,7 @@ pub(crate) fn receipt(
     }
     receipt_members(c, &seqs, info, request_key)
 }
-fn receipt_members(
+pub(super) fn receipt_members(
     c: &Connection,
     seqs: &[i64],
     info: &StoreInfo,

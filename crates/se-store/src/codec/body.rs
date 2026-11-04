@@ -9,7 +9,10 @@ pub(crate) fn body(
 ) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
     Ok(match kind {
-        "runtime.owner" | "runtime.handover" | "backup.recorded" | "turn.erased" | "message.erased" | "erasure.requested" | "erasure.completed" | "recovery.recorded" => super::maintenance::body(c,seq,kind)?,
+        "runtime.owner" | "runtime.handover" | "backup.recorded" | "turn.erased"
+        | "message.erased" | "erasure.requested" | "erasure.completed" | "recovery.recorded" => {
+            super::maintenance::body(c, seq, kind)?
+        }
         "import.started" | "import.progress" | "import.finished" | "import.unreadable"
         | "legacy.retained" | "alias.imported" => crate::import::decode(c, seq, kind)?,
         "process.registered" | "process.transition" => process::body(c, seq, kind, scope)?,

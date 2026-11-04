@@ -381,6 +381,13 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
         | ImportUnreadable { .. }
         | LegacyRetained { .. }
         | AliasImported { .. } => crate::import::metadata(body)?,
-        RuntimeOwnerEstablished { .. } | RuntimeHandoverRecorded { .. } | BackupRecorded { .. } | TurnErased { .. } | MessageErased { .. } | ErasureRequested { .. } | ErasureCompleted { .. } | RecoveryRecorded { .. } => super::maintenance::metadata(body)?,
+        RuntimeOwnerEstablished { .. }
+        | RuntimeHandoverRecorded { .. }
+        | BackupRecorded { .. }
+        | TurnErased { .. }
+        | MessageErased { .. }
+        | ErasureRequested { .. }
+        | ErasureCompleted { .. }
+        | RecoveryRecorded { .. } => super::maintenance::metadata(body)?,
     })
 }

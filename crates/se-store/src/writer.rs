@@ -69,6 +69,41 @@ enum Command {
 pub struct SqliteClient {
     sender: SyncSender<Command>,
     shared: Arc<Shared>,
+    staging: Arc<StagingContext>,
+}
+struct StagingContext {
+    path: std::path::PathBuf,
+    info: StoreInfo,
+    identity: LeaseIdentity,
+}
+impl TextStaging for SqliteClient {
+    fn stage_text(
+        &self,
+        source: &mut dyn std::io::Read,
+        maximum: u64,
+        lease: &dyn RuntimeLease,
+    ) -> StoreResult<StagedText> {
+        if self
+            .shared
+            .admission
+            .lock()
+            .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
+            .closed
+        {
+            return Err(fail(
+                StoreErrorCode::WriterClosed,
+                "writer is draining or closed",
+            ));
+        }
+        crate::staging::stage(
+            &self.staging.path,
+            &self.staging.info,
+            &self.staging.identity,
+            source,
+            maximum,
+            lease,
+        )
+    }
 }
 pub struct SqliteWriter {
     client: SqliteClient,
@@ -96,7 +131,12 @@ impl WriterClient for SqliteClient {
     type Completion = Completion<CommitReceipt>;
     fn submit(&self, batch: AtomicBatch) -> StoreResult<Self::Completion> {
         let (bytes, materialized) = crate::transaction::batch_sizes(&batch)?;
-        if materialized > self.shared.group_limit { return Err(fail(StoreErrorCode::BodyTooLarge, "request exceeds writer materialized group limit")); }
+        if materialized > self.shared.group_limit {
+            return Err(fail(
+                StoreErrorCode::BodyTooLarge,
+                "request exceeds writer materialized group limit",
+            ));
+        }
         // Serialize admission with the drain barrier, so no accepted request can
         // enter behind it. The lock protects counters only, never SQLite work.
         let mut s = self
@@ -206,6 +246,11 @@ pub(crate) fn start(
     let client = SqliteClient {
         sender,
         shared: shared.clone(),
+        staging: Arc::new(StagingContext {
+            path: host.reader.path.clone(),
+            info: connection::info(&host.engine.db)?,
+            identity,
+        }),
     };
     let context = host.context.clone();
     let thread = std::thread::Builder::new()

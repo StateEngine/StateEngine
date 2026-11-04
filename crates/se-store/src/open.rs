@@ -280,7 +280,14 @@ macro_rules! staging {
                 maximum: u64,
                 lease: &dyn RuntimeLease,
             ) -> StoreResult<StagedText> {
-                crate::staging::stage(&self.reader.path, &connection::info(&self.engine.db)?, &self.engine.identity, source, maximum, lease)
+                crate::staging::stage(
+                    &self.reader.path,
+                    &connection::info(&self.engine.db)?,
+                    &self.engine.identity,
+                    source,
+                    maximum,
+                    lease,
+                )
             }
         }
     };
@@ -369,7 +376,8 @@ impl HostStore for SqliteHost {
         binding: FirstBinding,
         lease: &dyn RuntimeLease,
     ) -> StoreResult<FirstBindingReceipt> {
-        self.engine.reopen(&self.reader.path, self.reader.timeout, lease)?;
+        self.engine
+            .reopen(&self.reader.path, self.reader.timeout, lease)?;
         connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
         self.engine.first_binding(binding)
     }
