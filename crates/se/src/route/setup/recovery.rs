@@ -148,8 +148,17 @@ pub(super) fn missing_database(files: &Files, init: bool, recovered: bool) -> Re
         }
     }
     let root = files.0.root();
-    // runtime.lock and a user-provided config alone do not prove prior setup.
-    for name in ["machine.json", "credential", "state.db-wal", "state.db-shm"] {
+    // Installation creates machine.json before the first database. Like a
+    // user-provided config or runtime.lock, it cannot prove a prior store.
+    // Credentials, database sidecars and published runtime/backup records do.
+    for name in [
+        "credential",
+        "state.db-wal",
+        "state.db-shm",
+        "runtime-info.json",
+        "endpoint.json",
+        "backups/backup-index.json",
+    ] {
         match files
             .readback(&root.join(name))
             .map_err(|e| store_error(&e))?
