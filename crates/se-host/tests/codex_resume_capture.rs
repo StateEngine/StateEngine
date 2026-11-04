@@ -57,7 +57,11 @@ fn rollout(path: &std::path::Path, prefix: bool, backend: Provider) -> Check {
                 json!({"type":"event_msg","payload":{"type":"task_started"}})
             )?;
         } else {
-            writeln!(file)?;
+            writeln!(
+                file,
+                "{}",
+                json!({"type":"user","sessionId":"native-thread","isSidechain":true})
+            )?;
         }
     }
     for n in 0..6 {
