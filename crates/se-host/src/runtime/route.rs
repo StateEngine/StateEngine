@@ -51,6 +51,8 @@ pub struct AdmittedExchange {
 }
 #[derive(Clone)]
 pub struct HostedRouter {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    pub(super) memory_reclaim: Option<super::memory::MemoryReclaim>,
     pub(crate) execution: ExecutionContext,
     pub(crate) sources: TranscriptBindings,
     pub(super) context: AdmissionContext,
@@ -64,6 +66,8 @@ impl HostedRuntime {
             return Err(SeError::invalid("host router", "a ready runtime"));
         }
         Ok(HostedRouter {
+            #[cfg(all(target_os = "linux", target_env = "gnu"))]
+            memory_reclaim: self.memory_reclaim.clone(),
             execution: self.execution.clone(),
             sources: self.sources.clone(),
             context: self.admission_context(),

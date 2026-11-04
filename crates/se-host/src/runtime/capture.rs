@@ -157,6 +157,11 @@ impl HostedRouter {
         call: RoutedCall,
         deadline: &Deadline,
     ) -> Result<ExecutedCall> {
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        let _memory_reclaim = self
+            .memory_reclaim
+            .as_ref()
+            .map(super::memory::MemoryReclaim::after_work);
         self.check_open()?;
         let Some(hook) = call.hook else {
             return execute(

@@ -89,6 +89,13 @@ impl HostedRuntime {
                 None => Box::pin(std::future::pending()),
             };
         let (shutdown, cancelled) = watch::channel(None);
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            idle = Box::pin(super::memory::while_serving(
+                idle,
+                self.memory_reclaim.clone(),
+            ));
+        }
         let mut tasks = JoinSet::new();
         let mut accept_backoff = std::time::Duration::from_millis(1);
         let mut accept_retry_at = tokio::time::Instant::now();
@@ -142,7 +149,13 @@ impl HostedRuntime {
                     exit.stop = Some(stop);
                     break exit;
                 }
-                Event::Joined(Ok(Ok(ConnectionEnd::Closed | ConnectionEnd::Cancelled))) => (),
+                Event::Joined(Ok(Ok(ConnectionEnd::Closed | ConnectionEnd::Cancelled))) =>
+                {
+                    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+                    if let Some(memory) = &self.memory_reclaim {
+                        memory.completed();
+                    }
+                }
                 Event::Joined(Ok(Err(error))) => {
                     self.failed_connection(error);
                 }
