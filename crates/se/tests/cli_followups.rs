@@ -783,9 +783,9 @@ impl StatusHost {
         ) {
             Ok(read) => self.classify(read, phase),
             Err(error) if Self::exit_race(&error) => self.settle_exit_race(error),
-            Err(error) => Err(
-                format!("outside native host observation during {phase}: {error:?}").into(),
-            ),
+            Err(error) => {
+                Err(format!("outside native host observation during {phase}: {error:?}").into())
+            }
         }
     }
 
@@ -815,8 +815,7 @@ impl StatusHost {
     fn exit_race(error: &se_proc::ProcError) -> bool {
         error.code == se_proc::ProcErrorCode::IdentityUnreadable
             && error.native.as_ref().is_some_and(|native| {
-                native.api == "read proc executable"
-                    && native.code == Some(i64::from(libc::ENOENT))
+                native.api == "read proc executable" && native.code == Some(i64::from(libc::ENOENT))
             })
     }
 
