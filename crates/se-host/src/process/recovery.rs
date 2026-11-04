@@ -277,6 +277,7 @@ impl LaunchCoordinator {
                 }
                 Ok(RecoveryOutcome::Exited(witness)) => {
                     work.native_already_reconciled = true;
+                    work.last_witness = Some((*witness).clone());
                     work.stop_method = Some("native-reconciliation".into());
                     match self.finish(&mut work, *witness, deadline).await {
                         Ok(()) => report.exited = report.exited.saturating_add(1),

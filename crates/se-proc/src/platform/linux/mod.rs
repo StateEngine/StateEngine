@@ -179,7 +179,7 @@ impl Driver {
                 },
             ));
         }
-        if identity::stat(root.pid)?.is_none_or(|s| s.group != *process_group) {
+        if identity::stat(root.pid)?.is_none_or(|s| s.group != Some(*process_group)) {
             return Err(changed(root, None));
         }
         if let Some(pin) = spawn::pidfd(root.pid)? {
@@ -318,7 +318,7 @@ impl Scope {
                     "pre-exec helper exited before root checkpoint",
                 ));
             };
-            if identity::stat(child.pid)?.is_none_or(|s| s.group != child.pid) {
+            if identity::stat(child.pid)?.is_none_or(|s| s.group != Some(child.pid)) {
                 return Err(changed(&live.identity, None));
             }
             child.pre_exec = Some(live.identity.clone());

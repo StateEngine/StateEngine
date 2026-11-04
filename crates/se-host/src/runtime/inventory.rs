@@ -145,6 +145,22 @@ pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<Pro
     Ok(records)
 }
 fn state_matches(native: LifecycleState, stored: ProcessState) -> bool {
+    // StopRequested is a FULL control-intent barrier before native effects;
+    // StopUnproved can retain that same checkpoint after a failed observation.
+    // Neither is a new native identity or an exit/release witness. The original
+    // root and custody remain necessary for the independent ancestry check.
+    if matches!(
+        stored,
+        ProcessState::StopRequested | ProcessState::StopUnproved
+    ) && matches!(
+        native,
+        LifecycleState::Running
+            | LifecycleState::LeaderExited
+            | LifecycleState::StopRequested
+            | LifecycleState::StopUnproved
+    ) {
+        return true;
+    }
     matches!(
         (native, stored),
         (LifecycleState::Reserved, ProcessState::Reserved)

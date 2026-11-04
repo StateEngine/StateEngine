@@ -182,7 +182,7 @@ impl LaunchCoordinator {
             if work.released{fill_stopped(&mut row,&work,true)?;return Ok(());}
             work.stop_key=Some(key.clone());
             work.admission=admission;
-            let witness=if work.native_already_reconciled {work.last_witness.clone().ok_or_else(||error("cold stop","no fresh native exit proof"))?} else {self.stop_native(&mut work,deadline).await?};
+            let witness=self.stop_native(&mut work,deadline).await?;
             work.last_witness=Some(witness.clone());
             work.admission=work.cleanup_admission.clone();
             self.finish(&mut work,witness,deadline).await?;

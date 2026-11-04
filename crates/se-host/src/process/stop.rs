@@ -96,6 +96,10 @@ impl LaunchCoordinator {
         if !work.committed {
             return Ok(());
         }
+        if work.native_already_reconciled {
+            let witness = self.stop_native(work, deadline).await?;
+            return self.finish(work, witness, deadline).await;
+        }
         let agent = work.meta.agent.id.clone();
         let session = work.meta.session.clone();
         let actual = self.store.read(work.cleanup_admission.clone(), deadline, move |cx| {
@@ -212,6 +216,15 @@ impl LaunchCoordinator {
         work: &mut Work,
         deadline: &Deadline,
     ) -> Result<se_proc::StopWitness> {
+        // Recovery can prove exit without adopting a live native handle. Both
+        // explicit stop and host shutdown must retain that fresh proof while
+        // retrying later capture, session or file cleanup.
+        if work.native_already_reconciled {
+            return work
+                .last_witness
+                .clone()
+                .ok_or_else(|| error("cold stop", "no fresh native exit proof"));
+        }
         if let StopObservation::Complete(witness) = self.exit_observation(work, deadline).await? {
             return Ok(*witness);
         }
