@@ -54,6 +54,11 @@ impl NativeSourcePin {
     /// native identity against the retained pin before any capture read.
     pub fn validate_path(&self, claimed: &Path) -> Result<()> {
         self.pin.check()?;
+        // check() already reopens this exact name and validates its current
+        // parent, file identity and ownership against the retained handles.
+        if claimed == self.path {
+            return Ok(());
+        }
         let Some(other) = ReadPin::open(claimed)? else {
             return Err(changed("claimed transcript is absent", claimed));
         };
