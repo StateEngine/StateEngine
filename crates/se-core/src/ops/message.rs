@@ -203,7 +203,12 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
             id: record.message,
             event_id: record.event,
             from: receipt::actor_ref(cx.read, &record.sender)?,
-            to: receipt::actor_ref(cx.read, &record.recipient)?,
+            to: if record.work.is_some() {
+                receipt::floor_ref()
+            } else {
+                receipt::actor_ref(cx.read, &record.recipient)?
+            },
+            work: record.work,
             kind,
             sent_at: receipt::timestamp(if event.header.door == se_store::Door::Import {
                 event.header.occurred_at_us

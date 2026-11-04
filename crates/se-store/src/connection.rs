@@ -2,7 +2,7 @@ use crate::{error::*, identity, *};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, functions::FunctionFlags};
 use std::{path::Path, time::Duration};
 pub(crate) const APP: u32 = 0x53454e47;
-pub(crate) const SCHEMA: u32 = 2;
+pub(crate) const SCHEMA: u32 = 3;
 /// Oldest schema still served: 002 only adds indexes, so the same SQL reads
 /// schema 1 correctly while its host migrates it.
 pub(crate) const MIN_SCHEMA: u32 = 1;
@@ -217,4 +217,13 @@ pub(crate) fn now() -> StoreResult<i64> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(invalid)?;
     i64::try_from(t.as_micros()).map_err(invalid)
+}
+
+/// The only two trusted projection names; no caller controls SQL identifiers.
+pub(crate) fn mail_table(c: &Connection) -> StoreResult<&'static str> {
+    Ok(if info(c)?.schema_version >= 3 {
+        "message_deliveries"
+    } else {
+        "messages"
+    })
 }

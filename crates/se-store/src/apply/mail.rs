@@ -109,7 +109,7 @@ pub(super) fn validate(
     if notice.through.sequence > high {
         return Err(invalid("mail boundary is ahead of committed history"));
     }
-    let mut query=c.prepare("SELECT d.message_id FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.recipient_id=? AND m.read_seq IS NULL AND m.dismissed_seq IS NULL AND d.sent_seq<=? ORDER BY d.sent_seq LIMIT ?").map_err(sql)?;
+    let mut query=c.prepare("SELECT d.message_id FROM message_deliveries d WHERE d.project_id=? AND d.recipient_id=? AND d.read_seq IS NULL AND d.dismissed_seq IS NULL AND d.sent_seq<=? ORDER BY d.sent_seq LIMIT ?").map_err(sql)?;
     let wanted = query
         .query_map(
             crate::sql_value::sql_params![p, agent, notice.through.sequence, notice.ids.len()],

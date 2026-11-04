@@ -171,7 +171,7 @@ impl crate::mail::MailSnapshot for SqliteSnapshot {
         let original: Option<i64> = self
             .db
             .query_row(
-                "SELECT sent_seq FROM messages WHERE project_id=? AND message_id=?",
+                if self.info.schema_version>=3 {"SELECT sent_seq FROM message_deliveries WHERE project_id=? AND message_id=? LIMIT 1"} else {"SELECT sent_seq FROM messages WHERE project_id=? AND message_id=?"},
                 rusqlite::params![project, message_key],
                 |r| r.get(0),
             )
@@ -190,7 +190,22 @@ impl crate::mail::MailSnapshot for SqliteSnapshot {
         .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
         if fact.header.scope != self.scope.admission.scope
             || original.header.scope != self.scope.admission.scope
-            || !matches!(&original.body, EventBody::MessageSent {message: actual, recipient, ..} if actual == message && *recipient == who)
+            || !match &original.body {
+                EventBody::MessageSent {
+                    message: actual,
+                    recipient,
+                    ..
+                } => actual == message && *recipient == who,
+                EventBody::WorkMessageSent {
+                    message: actual,
+                    work,
+                    ..
+                } => {
+                    actual == message
+                        && matches!(&who,Actor::Agent(agent) if work.addressees.contains(agent))
+                }
+                _ => false,
+            }
         {
             return Err(fail(
                 StoreErrorCode::ScopeMismatch,

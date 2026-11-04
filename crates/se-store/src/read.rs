@@ -16,6 +16,7 @@ mod decision;
 mod decision_heads;
 mod import;
 mod mail;
+mod mail_legacy;
 mod message;
 mod message_count;
 mod page;
@@ -274,7 +275,24 @@ impl Snapshot for SqliteSnapshot {
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let m = key(&self.db, "message", id.as_str(), &scope, false)?;
-        let row:Option<message::MarkRow>=self.db.query_row("SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?",crate::sql_value::sql_params![p,m],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?,crate::sql_value::value(r,4)?))).optional().map_err(|error| self.read_sql(error))?;
+        let statement = if self.info.schema_version >= 3 {
+            "SELECT d.sent_seq,d.revision,d.delivered_seq,d.read_seq,d.dismissed_seq FROM message_deliveries d WHERE d.project_id=? AND d.message_id=? LIMIT 1"
+        } else {
+            "SELECT d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq FROM messages d JOIN marks m ON m.message_seq=d.sent_seq WHERE d.project_id=? AND d.message_id=?"
+        };
+        let row: Option<message::MarkRow> = self
+            .db
+            .query_row(statement, crate::sql_value::sql_params![p, m], |r| {
+                Ok((
+                    crate::sql_value::value(r, 0)?,
+                    crate::sql_value::value(r, 1)?,
+                    crate::sql_value::value(r, 2)?,
+                    crate::sql_value::value(r, 3)?,
+                    crate::sql_value::value(r, 4)?,
+                ))
+            })
+            .optional()
+            .map_err(|error| self.read_sql(error))?;
         match row {
             None => Ok(self.absent("message ID")),
             Some((s, v, d, r, x)) => Ok(Read::Present {

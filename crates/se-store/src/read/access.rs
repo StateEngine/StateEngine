@@ -75,6 +75,7 @@ impl SqliteSnapshot {
                 }
                 match &e.body {
                     EventBody::MessageSent { recipient, .. } => *recipient == who,
+                    EventBody::WorkMessageSent { work, .. } => work.addressees.contains(a),
                     EventBody::WorkingStateSet { agent, .. }
                     | EventBody::SessionTurn { agent, .. } => agent == a,
                     EventBody::CaptureSource { session, .. }
@@ -274,22 +275,68 @@ impl SqliteSnapshot {
         dismissed: Option<u64>,
     ) -> StoreResult<MessageRecord> {
         let e = self.record(sent)?;
-        let EventBody::MessageSent {
-            message,
-            recipient,
-            kind,
-            body,
-            refs,
-            reply_to,
-        } = e.body
-        else {
-            return Err(invalid("message head points to another event kind"));
+        let (message, recipient, work, kind, body, refs, reply_to) = match e.body {
+            EventBody::MessageSent {
+                message,
+                recipient,
+                kind,
+                body,
+                refs,
+                reply_to,
+            } => (message, recipient, None, kind, body, refs, reply_to),
+            EventBody::WorkMessageSent {
+                message,
+                work,
+                kind,
+                body,
+                refs,
+                reply_to,
+            } => {
+                let agent = match &self.scope.admission.actor {
+                    Actor::Agent(agent) if work.addressees.contains(agent) => agent.clone(),
+                    _ => work
+                        .addressees
+                        .first()
+                        .cloned()
+                        .ok_or_else(|| invalid("work message has no addressees"))?,
+                };
+                (
+                    message,
+                    Actor::Agent(agent),
+                    Some(work),
+                    kind,
+                    body,
+                    refs,
+                    reply_to,
+                )
+            }
+            _ => return Err(invalid("message head points to another event kind")),
+        };
+        let (delivered, read, dismissed) = if work.is_some() {
+            if recipient == self.scope.admission.actor {
+                let id = key(
+                    &self.db,
+                    recipient.kind(),
+                    recipient.wire(),
+                    &scope_key(&self.db, &e.header.scope, false)?,
+                    false,
+                )?;
+                self.db.query_row("SELECT delivered_seq,read_seq,dismissed_seq FROM message_deliveries WHERE sent_seq=? AND recipient_id=?",rusqlite::params![sent,id],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).map_err(sql)?
+            } else {
+                (None, None, None)
+            }
+        } else {
+            (delivered, read, dismissed)
         };
         let pos = |s| StorePosition::new_internal(self.info.id.clone(), self.info.incarnation, s);
         let replacement: Option<Vec<u8>> = self
             .db
             .query_row(
-                "SELECT superseded_by FROM messages WHERE sent_seq=?",
+                if self.info.schema_version >= 3 {
+                    "SELECT superseded_by FROM message_deliveries WHERE sent_seq=? LIMIT 1"
+                } else {
+                    "SELECT superseded_by FROM messages WHERE sent_seq=?"
+                },
                 [sent],
                 |r| r.get(0),
             )
@@ -309,6 +356,7 @@ impl SqliteSnapshot {
             sent: e.position,
             sender: e.header.actor,
             recipient,
+            work,
             kind,
             body,
             refs,

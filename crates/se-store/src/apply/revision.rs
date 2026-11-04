@@ -132,12 +132,12 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
                 *want,
             )
         }
-        MessageSent { message, .. } => {
+        MessageSent { message, .. } | WorkMessageSent { message, .. } => {
             let p = project_id(c, &e.header.scope, false)?;
             let m = key(c, "message", message.as_str(), &s, false)?;
             expected(
                 c,
-                "messages",
+                connection::mail_table(c)?,
                 "project_id=? AND message_id=?",
                 &[&p, &m],
                 Expected::Absent,
@@ -165,7 +165,10 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
             let m = key(c, "message", message.as_str(), &s, false)?;
             let rev: u64 = c
                 .query_row(
-                    "SELECT revision FROM messages WHERE project_id=? AND message_id=?",
+                    &format!(
+                        "SELECT revision FROM {} WHERE project_id=? AND message_id=? LIMIT 1",
+                        connection::mail_table(c)?
+                    ),
                     crate::sql_value::sql_params![p, m],
                     |r| crate::sql_value::value(r, 0),
                 )

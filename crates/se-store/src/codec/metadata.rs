@@ -217,6 +217,17 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "message.sent",
             json!({"message":message,"recipient":recipient,"kind":kind,"refs":refs,"reply_to":reply_to}),
         ),
+        WorkMessageSent {
+            message,
+            work,
+            kind,
+            refs,
+            reply_to,
+            ..
+        } => (
+            "message.work_sent",
+            json!({"message":message,"work":work,"kind":kind,"refs":refs,"reply_to":reply_to}),
+        ),
         MessageSuperseded {
             message,
             replacement,

@@ -11,7 +11,7 @@ pub(crate) fn descriptor<T>(
         .ok_or_else(|| invalid("closed event metadata must be an object"))?;
     use EventBody::*;
     match body {
-        MessageSent { body, .. } => {
+        MessageSent { body, .. } | WorkMessageSent { body, .. } => {
             fields.insert("body".into(), json!(text(body)?));
         }
         WorkingStateSet { text: value, .. } => {

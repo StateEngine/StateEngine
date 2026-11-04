@@ -142,6 +142,7 @@ const PUBLIC_KINDS: &[(&str, se_store::EventKind)] = &[
     ("transcript.event", se_store::EventKind::SessionTurn),
     ("capture.suppressed", se_store::EventKind::CaptureSuppressed),
     ("message.sent", se_store::EventKind::MessageSent),
+    ("message.work_sent", se_store::EventKind::WorkMessageSent),
     ("message.read", se_store::EventKind::MessageRead),
     ("message.dismissed", se_store::EventKind::MessageDismissed),
     ("message.delivered", se_store::EventKind::MessageDelivered),

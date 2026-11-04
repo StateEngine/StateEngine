@@ -10,6 +10,7 @@ mod read;
 mod receipt;
 mod sensitive;
 mod surface;
+mod work_message;
 pub use error::*;
 pub use hex::hex_lower;
 pub use id::*;
@@ -18,6 +19,7 @@ pub use read::*;
 pub use receipt::*;
 pub use sensitive::*;
 pub use surface::*;
+pub use work_message::*;
 pub type Result<T> = std::result::Result<T, SeError>;
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,

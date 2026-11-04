@@ -97,6 +97,7 @@ fn run(serial: bool) -> Check {
                 kind: Default::default(),
                 refs: vec![],
                 reply_to: None,
+                work: None,
                 idempotency_key: key(WRITE_KEY)?,
             }),
             &se_core::ops::CliSelections {

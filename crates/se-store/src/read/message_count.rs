@@ -55,8 +55,16 @@ impl SqliteSnapshot {
                     .as_ref()
                     .map(StorePosition::sequence)
                     .unwrap_or(0);
-                let (statement, args) =
-                    message::mail_sql(&project, recipient, sender, &query, h, 0, "COUNT(*)");
+                let (statement, args) = message::mail_sql(
+                    &project,
+                    recipient,
+                    sender,
+                    &query,
+                    h,
+                    0,
+                    "COUNT(DISTINCT d.sent_seq)",
+                    self.info.schema_version,
+                );
                 self.db
                     .query_row(&statement, rusqlite::params_from_iter(args), |r| {
                         crate::sql_value::value::<u64>(r, 0)
