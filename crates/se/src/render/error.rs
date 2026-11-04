@@ -10,8 +10,31 @@ pub fn write(
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> io::Result<u8> {
-    let envelope = ErrorEnvelope::new(error.body.clone(), context).map_err(io::Error::other)?;
-    let remedy = error.body.remedy(context).map_err(io::Error::other)?;
+    let mut body = error.body.clone();
+    let mut remedy = body.remedy(context).map_err(io::Error::other)?;
+    if error.code() == se_types::Code::AgentNameConflict {
+        if let Some(se_types::Cmd::Se { argv }) = &remedy.command {
+            if let Some(command) = se_core::ops::AgentCommand::from_argv(argv.as_slice().to_vec()) {
+                remedy.text = format!(
+                    "{} {}: {}",
+                    remedy.text,
+                    se_core::ops::AgentCommand::instruction("Run"),
+                    command.command
+                );
+            } else {
+                remedy.text.push_str(" The data home contains a line break; use the literal remedy.command.argv instead of pasting it into a shell.");
+            }
+        }
+        body = body.with_remedy(remedy.clone());
+    }
+    // The conflict remedy already contains the resolved home. Do not resolve
+    // that literal command a second time while building the JSON envelope.
+    let envelope = if error.code() == se_types::Code::AgentNameConflict {
+        ErrorEnvelope::new(body, &RenderCx::default())
+    } else {
+        ErrorEnvelope::new(body, context)
+    }
+    .map_err(io::Error::other)?;
     let diagnostic = writeln!(
         stderr,
         "error[{}]: {}",

@@ -441,6 +441,11 @@ pub enum StoreIoStage {
 #[derive(Clone, Debug)]
 pub enum StoreDetail {
     None,
+    PrincipalNameConflict {
+        project: ProjectId,
+        name: String,
+        existing: Actor,
+    },
     Sqlite {
         extended_code: i32,
         native_os_code: Option<i32>,
