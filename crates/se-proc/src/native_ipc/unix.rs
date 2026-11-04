@@ -307,6 +307,11 @@ pub(super) fn peer(channel: BorrowedIpc<'_>, bound: &IpcIoBound) -> IpcNativeRes
             "IPC peer is a different native user",
         ));
     }
+    #[cfg(target_os = "linux")]
+    {
+        process::observe_connected(channel, pid, uid, bound)
+    }
+    #[cfg(target_os = "macos")]
     process::observe(pid, uid, bound)
 }
 pub(super) fn self_peer(bound: &IpcIoBound) -> IpcNativeResult<NativeIpcPeer> {

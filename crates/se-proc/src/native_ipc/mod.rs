@@ -96,6 +96,10 @@ pub struct NativeIpcPeer {
     started: StartIdentity,
     image: NativePath,
     image_sha256: Sha256,
+    #[cfg(windows)]
+    _process: std::os::windows::io::OwnedHandle,
+    #[cfg(target_os = "linux")]
+    _peer_pidfd: Option<std::os::fd::OwnedFd>,
 }
 impl NativeIpcPeer {
     pub fn principal(&self) -> &IpcPrincipal {
