@@ -79,12 +79,13 @@ pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_pro
 }
 #[cfg(target_os = "linux")]
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
-    find_command(command)?.ok_or_else(|| {
+    let found = find_command(command)?.ok_or_else(|| {
         se_core::scope::unreadable(
             "provider executable",
             "configured command was not found in absolute PATH entries",
         )
-    })
+    })?;
+    se_proc::canonicalize_path(found).map_err(|e| error("provider executable", e))
 }
 
 pub(super) fn resolve_provider_command(
@@ -129,12 +130,7 @@ pub(super) fn resolve_provider_command(
 fn find_command(command: &str) -> Result<Option<PathBuf>> {
     let path = PathBuf::from(command);
     if path.is_absolute() {
-        return native_executable(&path)
-            .map_err(|e| error("provider executable", e))?
-            .map(|resolved| {
-                se_proc::canonicalize_path(resolved).map_err(|e| error("provider executable", e))
-            })
-            .transpose();
+        return native_executable(&path).map_err(|e| error("provider executable", e));
     }
     if path.components().count() != 1 {
         return Err(se_types::SeError::invalid(
@@ -155,9 +151,9 @@ fn find_command(command: &str) -> Result<Option<PathBuf>> {
         }
         match native_executable(&directory.join(command)) {
             Ok(Some(candidate)) => {
-                return se_proc::canonicalize_path(candidate)
-                    .map(Some)
-                    .map_err(|e| error("provider executable", e));
+                // Multicall launchers select the provider through argv[0].
+                // Image identity is still observed by the native process arena.
+                return Ok(Some(candidate));
             }
             Ok(None) => (),
             Err(error) if unreadable.is_none() => unreadable = Some(error),
