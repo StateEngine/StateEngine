@@ -56,11 +56,13 @@ pub(super) fn finish<T>(
     items: Vec<T>,
     bytes: u64,
     request: &api::PageRequest,
+    unreadable: u64,
 ) -> Result<api::Read<api::Page<T>>> {
     let mut window = crate::linked::window(source.window()).map_err(bridge_error)?;
     window.limit = request.limit;
     window.max_bytes = request.max_bytes;
     window.bytes = bytes;
+    window.returned = items.len() as u64;
     if source
         .window()
         .fields()
@@ -70,6 +72,14 @@ pub(super) fn finish<T>(
         window.stop_reason = api::StopReason::ByteLimit;
         window.omitted_after = api::Omission::Unknown {
             reason: api::OmissionReason::Budget,
+        };
+    }
+    if unreadable > 0 {
+        window.unreadable += unreadable;
+        window.complete = false;
+        window.stop_reason = api::StopReason::Unreadable;
+        window.omitted_after = api::Omission::Unknown {
+            reason: api::OmissionReason::Unreadable,
         };
     }
     Ok(api::Read::Present {

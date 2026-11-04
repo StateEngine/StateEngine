@@ -14,42 +14,23 @@ pub(super) fn projects(
         let mut items = Vec::new();
         let mut bytes = 0;
         let mut fits = 0;
+        let mut unreadable = 0;
         for row in source.items() {
-            let (project, name, roots) = match &row.current.body {
-                EventBody::ProjectRegistered {
-                    project,
-                    name,
-                    roots,
-                    ..
+            match project_info(row) {
+                Ok((info, cost)) => {
+                    bytes += cost;
+                    items.push(info);
                 }
-                | EventBody::ProjectUpdated {
-                    project,
-                    name,
-                    roots,
-                    ..
-                } => (project, name, roots),
-                _ => return Err(invalid()),
-            };
-            id(project.as_str())?;
-            if name.len() > 256 {
-                return Err(invalid());
+                Err(_) => unreadable += 1,
             }
-            let root = roots.first().ok_or_else(invalid)?;
-            bytes += paging::cost(
-                serde_json::json!({"id":project.as_str(),"name":name,"root":root.path,"revision":row.revision.value.get()}),
-            )?;
+            // Count source slots, including unreadable records, so fitting a
+            // prefix can re-read exactly the same frontier in this snapshot.
             if bytes <= u64::from(page.max_bytes) {
                 fits += 1;
             }
-            items.push(api::ProjectInfo {
-                id: api::ProjectId(project.as_str().into()),
-                name: name.clone(),
-                root: root.path.to_local().map_err(|_| invalid())?,
-                revision: api::Revision(row.revision.value),
-            });
         }
         if bytes <= u64::from(page.max_bytes) {
-            return paging::finish(&source, items, bytes, &page);
+            return paging::finish(&source, items, bytes, &page, unreadable);
         }
         if fits == 0 {
             break;
@@ -87,7 +68,7 @@ pub(super) fn agents(
             items.push(info);
         }
         if bytes <= u64::from(page.max_bytes) {
-            return paging::finish(&source, items, bytes, &page);
+            return paging::finish(&source, items, bytes, &page, 0);
         }
         if fits == 0 {
             break;
@@ -132,3 +113,42 @@ fn agent(row: &ProjectionRecord, project: &se_types::ProjectId) -> Result<api::A
         revision: api::Revision(row.revision.value),
     })
 }
+
+fn project_info(row: &ProjectionRecord) -> Result<(api::ProjectInfo, u64)> {
+    let (project, name, roots) = match &row.current.body {
+        EventBody::ProjectRegistered {
+            project,
+            name,
+            roots,
+            ..
+        }
+        | EventBody::ProjectUpdated {
+            project,
+            name,
+            roots,
+            ..
+        } => (project, name, roots),
+        _ => return Err(invalid()),
+    };
+    id(project.as_str())?;
+    if name.len() > 256 {
+        return Err(invalid());
+    }
+    let root = roots.first().ok_or_else(invalid)?;
+    let cost = paging::cost(
+        serde_json::json!({"id":project.as_str(),"name":name,"root":root.path,"revision":row.revision.value.get()}),
+    )?;
+    Ok((
+        api::ProjectInfo {
+            id: api::ProjectId(project.as_str().into()),
+            name: name.clone(),
+            root: root.path.to_local().map_err(|_| invalid())?,
+            revision: api::Revision(row.revision.value),
+        },
+        cost,
+    ))
+}
+
+#[cfg(test)]
+#[path = "catalog_tests.rs"]
+mod tests;

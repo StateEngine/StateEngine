@@ -139,6 +139,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
         let project = selected.clone();
         let unavailable = Arc::new(AtomicBool::new(false));
         let source_incomplete = Arc::new(AtomicBool::new(false));
+        let scan_cap = Arc::new(AtomicBool::new(false));
         result(
             opened
                 .host
@@ -149,6 +150,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
                             project: project.clone(),
                             unavailable: unavailable.clone(),
                             source_incomplete: source_incomplete.clone(),
+                            scan_cap: scan_cap.clone(),
                         }),
                     },
                     options.clone(),
@@ -356,6 +358,28 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
             }
         ));
         source_incomplete.store(false, Ordering::Relaxed);
+        scan_cap.store(true, Ordering::Relaxed);
+        let capped = present(result(
+            opened
+                .host
+                .project_active_sessions(
+                    &api::OwnerAuthority,
+                    project.clone(),
+                    page(100),
+                    options.clone(),
+                )
+                .await,
+        )?)?;
+        assert!(capped.items.is_empty());
+        assert!(!capped.window.complete);
+        assert_eq!(capped.window.stop_reason, api::StopReason::ByteLimit);
+        assert!(matches!(
+            capped.window.omitted_after,
+            api::Omission::Unknown {
+                reason: api::OmissionReason::Budget
+            }
+        ));
+        scan_cap.store(false, Ordering::Relaxed);
         unavailable.store(true, Ordering::Relaxed);
         let stale = opened
             .host

@@ -6,6 +6,7 @@ pub struct Services {
     pub project: api::ProjectId,
     pub unavailable: Arc<AtomicBool>,
     pub source_incomplete: Arc<AtomicBool>,
+    pub scan_cap: Arc<AtomicBool>,
 }
 fn services_refused() -> api::ApiError {
     api::ApiError {
@@ -52,6 +53,36 @@ impl api::HostServices for Services {
         Box::pin(async move {
             if self.unavailable.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(services_refused());
+            }
+            if self.scan_cap.load(std::sync::atomic::Ordering::Relaxed) {
+                let index = page
+                    .after
+                    .as_ref()
+                    .map_or(0, |v| v.0.parse::<u32>().unwrap_or(0));
+                return Ok(api::Read::Present {
+                    value: api::Page {
+                        items: vec![],
+                        next: Some(api::Cursor((index + 1).to_string())),
+                        window: api::Window {
+                            source: api::Source::Host {
+                                epoch: epoch.clone(),
+                            },
+                            start_cursor: page.after,
+                            end_cursor: Some(api::Cursor((index + 1).to_string())),
+                            returned: 0,
+                            limit: page.limit,
+                            bytes: 0,
+                            max_bytes: page.max_bytes,
+                            omitted_before: api::Omission::None,
+                            omitted_after: api::Omission::Unknown {
+                                reason: api::OmissionReason::Limit,
+                            },
+                            unreadable: 0,
+                            stop_reason: api::StopReason::ItemLimit,
+                            complete: false,
+                        },
+                    },
+                });
             }
             let next = page.after.is_none();
             let specs = if next {
