@@ -21,6 +21,29 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def license_texts(package):
+    """Include version-pinned source texts when a published crate omits them."""
+    crate = Path(package["manifest_path"]).parent
+    key = f'{package["name"]}-{package["version"]}'
+    supplement = ROOT / "scripts/release/licenses" / key
+    texts = {}
+    for directory in (crate, supplement):
+        for pattern in ("LICENSE*", "COPYING*", "NOTICE*"):
+            for path in sorted(directory.glob(pattern)):
+                if path.is_file() and not path.is_symlink():
+                    if path.name in texts and digest(texts[path.name]) != digest(path):
+                        raise ValueError(f"license text differs from pinned input for {key}: {path.name}")
+                    texts[path.name] = path
+    if package.get("license_file"):
+        path = crate / package["license_file"]
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"declared license text is unavailable for {key}")
+        texts.setdefault(path.name, path)
+    if not texts:
+        raise ValueError(f"license texts missing for {key}; supply its licensed offline inputs")
+    return sorted(texts.values())
+
+
 def run(*argv):
     return subprocess.run(argv, cwd=ROOT, check=True, text=True,
                           stdout=subprocess.PIPE, env={**os.environ, "RUSTUP_AUTO_INSTALL": "0"}).stdout.strip()
@@ -169,13 +192,7 @@ def main():
         features[key] = sorted(set(features.get(key, []) + artifact["features"]))
         if package["source"] is None:
             continue
-        crate = Path(package["manifest_path"]).parent
-        texts = {p for pattern in ("LICENSE*", "COPYING*", "NOTICE*") for p in crate.glob(pattern)
-                 if p.is_file() and not p.is_symlink()}
-        if package.get("license_file"):
-            texts.add(crate / package["license_file"])
-        if not texts:
-            raise ValueError(f"license texts missing for {key}; supply its licensed offline inputs")
+        texts = license_texts(package)
         dest = notices / key
         dest.mkdir(exist_ok=True)
         (dest / "package.json").write_text(json.dumps({k: package.get(k) for k in
