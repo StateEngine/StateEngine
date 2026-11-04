@@ -30,17 +30,20 @@ impl HostServeExit {
             || drain_deadline.clone(),
             |bound| drain_deadline.capped_by(bound),
         );
+        // Leave part of the original request clock for per-agent facts, the
+        // reply and protected close receipt even if native cleanup times out.
+        let work_deadline = work_deadline(&drain_deadline);
         #[cfg(windows)]
         let started = std::time::Instant::now();
         #[cfg(windows)]
         trace("storage-drain-start", started, true);
         let mut errors: Vec<_> = self.failure.take().into_iter().collect();
         let mut pending: Vec<_> = errors.iter().map(ToString::to_string).collect();
-        let before = match facts::before(&self.runtime, &drain_deadline).await {
+        let before = match facts::before(&self.runtime, &work_deadline).await {
             Ok(value) => Some(value),
             Err(error) => {
                 pending.push(format!(
-                    "Shutdown resume inventory remains unreadable: {error}. Storage drain is withheld; this fenced host retains its writer and lease after retiring the endpoint, so another down cannot retry it. Preserve the data home and repair the original session metadata before controlled application restart/recovery."
+                    "Shutdown resume inventory remains unreadable: {error}. Storage drain is withheld. Preserve the data home and repair the original session metadata before retrying cleanup. An embedded owner retains its writer and lease; a standalone process may exit with unresolved providers."
                 ));
                 errors.push(error);
                 None
@@ -53,7 +56,7 @@ impl HostServeExit {
             None => before
                 .as_ref()
                 .is_some_and(|value| !value.had_process_records),
-            Some(custody) => match custody.shutdown(&drain_deadline).await {
+            Some(custody) => match custody.shutdown(&work_deadline).await {
                 Ok(report) => {
                     pending.extend(report.pending);
                     report.complete
@@ -92,7 +95,7 @@ impl HostServeExit {
         for target in &stops {
             if target.witness.is_none() {
                 pending.push(format!(
-                    "Agent {} lifecycle {} exit remains unproved: {}. After endpoint retirement this fenced runtime retains the lease; preserve the data home and use controlled application restart/recovery.",
+                    "Agent {} lifecycle {} exit remains unproved: {}. Preserve the data home and retry cleanup for this saved agent. If an embedded owner still holds the lease, use controlled application recovery.",
                     target.agent,
                     target.lifecycle,
                     target
@@ -107,7 +110,7 @@ impl HostServeExit {
                 .runtime
                 .execution
                 .ownership_fault
-                .join_native(&drain_deadline)
+                .join_native(&work_deadline)
                 .await
             {
                 Ok(()) => true,
@@ -131,7 +134,7 @@ impl HostServeExit {
         }
         let drained = if agents_stopped && before.is_some() && !ownership_failed && collector_joined
         {
-            Some(self.runtime.drain_storage(&drain_deadline).await)
+            Some(self.runtime.drain_storage(&work_deadline).await)
         } else {
             None
         };
@@ -225,10 +228,7 @@ impl HostServeExit {
                     pending: pending.clone(),
                 },
             };
-            let result = match cleanup_deadline() {
-                Ok(bound) => stop.reply(&reply, &bound).await,
-                Err(error) => Err(error),
-            };
+            let result = stop.reply(&reply, &drain_deadline).await;
             #[cfg(windows)]
             trace("stop-reply-return", started, result.is_ok());
             if let Err(error) = result {
@@ -307,4 +307,18 @@ pub(crate) fn cleanup_deadline() -> Result<Deadline> {
         timeout: Duration::from_secs(5),
         cancelled: Arc::new(AtomicBool::new(false)),
     })
+}
+
+/// Cleanup may consume most of the caller's clock, but not its only chance to
+/// learn which lifecycle remains unresolved. Never extend an expired bound.
+fn work_deadline(bound: &Deadline) -> Deadline {
+    match bound.remaining() {
+        Ok(remaining) => {
+            let reserve = (remaining / 4).min(Duration::from_secs(2));
+            bound
+                .stage(remaining - reserve)
+                .unwrap_or_else(|_| bound.clone())
+        }
+        Err(_) => bound.clone(),
+    }
 }
