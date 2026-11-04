@@ -1,4 +1,5 @@
 //! Provider metadata is durable capture evidence, separate from chat prose.
+pub mod tool;
 use crate::{commit::Cx, scope, store_error::store_error};
 use schemars::JsonSchema;
 use se_store::{EventBody, Snapshot, StoredEvent, StoredText};
