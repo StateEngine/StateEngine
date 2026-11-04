@@ -8,14 +8,12 @@ use super::claude::{self, ClaudeLaunch, Readiness};
 mod completion;
 mod io;
 use crate::{
-    BellOutcome, BindingWitness, BoundSession, CallContext, CaptureInput, ConfigPlan, Harness,
-    HarnessAttach, HarnessBinding, HarnessKind, HarnessRequest, HostFuture, LaunchOutcome,
-    OfferStage, OfferWitness, ProbeRequest, ProviderInterrupt, ProviderInvocation,
-    ProviderIoPlatform, ProviderNotice, ProviderStream, ProviderTransport, ProviderVersion,
-    StreamRead, TranscriptSource,
+    BindingWitness, CallContext, ConfigPlan, Harness, HarnessAttach, HarnessBinding, HarnessKind,
+    HarnessRequest, HostFuture, LaunchOutcome, ProbeRequest, ProviderInterrupt, ProviderInvocation,
+    ProviderIoPlatform, ProviderStream, ProviderTransport, ProviderVersion, StreamRead,
 };
 use io::{drain, parse_version, poisoned, version_output, within, write_frame};
-use se_types::{Body, NativePath, ProviderSessionId, Read, Result, SeError};
+use se_types::{NativePath, ProviderSessionId, Read, Result, SeError};
 use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
@@ -280,76 +278,6 @@ impl Harness for ClaudeHarness {
                     _private: (),
                 },
             })
-        })
-    }
-    fn adopt<'a>(
-        &'a self,
-        _witness: BindingWitness,
-        _cx: CallContext,
-    ) -> HostFuture<'a, Read<HarnessBinding>> {
-        Box::pin(async move {
-            Ok(Read::Unknown {
-                what: "re-adopting a running headless Claude after handover is not implemented"
-                    .into(),
-            })
-        })
-    }
-    fn bell<'a>(
-        &'a self,
-        binding: &'a HarnessBinding,
-        notice: &'a ProviderNotice,
-        cx: CallContext,
-    ) -> HostFuture<'a, BellOutcome> {
-        Box::pin(async move {
-            let binding = claude_binding(binding)?;
-            // IDs only: the agent reads bodies through its own MCP tools.
-            let ids: Vec<&str> = notice.messages.iter().map(|id| id.as_str()).collect();
-            let text = format!(
-                "New StateEngine mail for you: {}. Read it with the stateengine_msg_list tool and act on it.",
-                ids.join(", ")
-            );
-            write_frame(binding, &Body::new(text)?, &cx).await?;
-            Ok(BellOutcome::Offered(OfferWitness {
-                notice: notice.id.clone(),
-                identity: notice.identity.clone(),
-                conversation: binding.conversation.clone(),
-                digest: notice.digest,
-                stage: OfferStage::TransportWritten,
-                vendor_event: Read::Absent {
-                    checked: "headless Claude acknowledges input only by starting its next turn"
-                        .into(),
-                },
-            }))
-        })
-    }
-    fn transcript<'a>(
-        &'a self,
-        binding: &'a HarnessBinding,
-        _cx: CallContext,
-    ) -> HostFuture<'a, Read<TranscriptSource>> {
-        Box::pin(async move {
-            let binding = claude_binding(binding)?;
-            // The location only. The capture pin, not this path, authorizes reads,
-            // and the file's identity is taken when it is pinned.
-            Ok(Read::Unknown {
-                what: format!(
-                    "{} is pinned by the trusted capture bind, not reported here",
-                    binding.transcript.display()
-                ),
-            })
-        })
-    }
-    fn capture<'a>(
-        &'a self,
-        _session: &'a BoundSession,
-        _input: CaptureInput,
-        _cx: CallContext,
-    ) -> HostFuture<'a, se_types::Receipt<se_types::EventId>> {
-        Box::pin(async move {
-            Err(SeError::invalid(
-                "Claude capture",
-                "the pinned-source hook path; headless output is activity, not turns",
-            ))
         })
     }
     fn graceful_stop<'a>(

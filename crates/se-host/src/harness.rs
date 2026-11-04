@@ -1,7 +1,4 @@
-use crate::{
-    BoundSession, CallContext, CaptureInput, HarnessKind, HoldReason, HostFuture, ProviderNotice,
-    SessionIdentity,
-};
+use crate::{CallContext, HarnessKind, HostFuture, SessionIdentity};
 use se_types::{Body, IdempotencyKey, NativePath, ProviderSessionId, Read, Secret, Sha256};
 use std::{ffi::OsString, path::PathBuf};
 
@@ -163,33 +160,6 @@ pub struct LaunchOutcome {
     pub binding: HarnessBinding,
     pub witness: BindingWitness,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OfferStage {
-    TransportWritten,
-    InputAccepted,
-}
-#[derive(Clone, Debug)]
-pub struct OfferWitness {
-    pub notice: se_types::NoticeId,
-    pub identity: SessionIdentity,
-    pub conversation: ProviderSessionId,
-    pub digest: Sha256,
-    pub stage: OfferStage,
-    pub vendor_event: Read<String>,
-}
-#[derive(Clone, Debug)]
-pub enum BellOutcome {
-    Offered(OfferWitness),
-    Held { reason: HoldReason },
-    Refused(se_types::ErrorBody),
-}
-#[derive(Clone, Debug)]
-pub struct TranscriptSource {
-    pub path: Read<NativePath>,
-    pub conversation: ProviderSessionId,
-    pub next_offset: u64,
-    pub incarnation: Sha256,
-}
 #[derive(Clone, Debug)]
 pub struct ProviderInterrupt {
     pub conversation: ProviderSessionId,
@@ -220,28 +190,6 @@ pub trait Harness: Send + Sync {
         request: HarnessAttach,
         cx: CallContext,
     ) -> HostFuture<'a, LaunchOutcome>;
-    fn adopt<'a>(
-        &'a self,
-        witness: BindingWitness,
-        cx: CallContext,
-    ) -> HostFuture<'a, Read<HarnessBinding>>;
-    fn bell<'a>(
-        &'a self,
-        binding: &'a HarnessBinding,
-        notice: &'a ProviderNotice,
-        cx: CallContext,
-    ) -> HostFuture<'a, BellOutcome>;
-    fn transcript<'a>(
-        &'a self,
-        binding: &'a HarnessBinding,
-        cx: CallContext,
-    ) -> HostFuture<'a, Read<TranscriptSource>>;
-    fn capture<'a>(
-        &'a self,
-        session: &'a BoundSession,
-        input: CaptureInput,
-        cx: CallContext,
-    ) -> HostFuture<'a, se_types::Receipt<se_types::EventId>>;
     fn graceful_stop<'a>(
         &'a self,
         binding: &'a HarnessBinding,
@@ -268,23 +216,4 @@ pub struct ClaudeHookInput {
     pub conversation: ProviderSessionId,
     pub claimed_transcript: NativePath,
     pub payload: serde_json::Value,
-}
-pub struct HookOutput {
-    pub stdout: Vec<u8>,
-    pub captured: Read<se_types::EventId>,
-    pub failure: Option<se_types::ErrorBody>,
-}
-pub struct ClaudeHookAdapter {
-    pub(crate) _private: (),
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CodexTransport {
-    StdioJsonLines,
-    UnixWebSocket,
-}
-pub struct CodexInvocation {
-    pub executable: NativePath,
-    pub arguments: Vec<OsString>,
-    pub transport: CodexTransport,
-    pub private_endpoint: Option<NativePath>,
 }
