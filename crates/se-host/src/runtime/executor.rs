@@ -311,4 +311,4 @@ fn generation_phase(
 
 #[cfg(test)]
 #[path = "read_phase_tests.rs"]
-mod read_phase_tests;
+pub(crate) mod read_phase_tests;

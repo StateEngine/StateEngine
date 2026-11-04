@@ -1,10 +1,8 @@
 //! Author check through the production snapshot and selector decoder.
 use super::*;
+use crate::runtime::executor::read_phase_tests::fixture::*;
 use se_store::*;
 use se_types::{NativePath, ProjectId};
-#[path = "../../../../../se-store/tests/support/store_fixture.rs"]
-mod fixture;
-use fixture::*;
 #[test]
 fn bad_project_is_counted_without_hiding_readable_projects() -> Check {
     let f = Fixture::new()?;

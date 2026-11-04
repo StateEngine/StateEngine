@@ -16,7 +16,7 @@ use std::{
     time::Duration,
 };
 #[path = "../../../se-store/tests/support/store_fixture.rs"]
-mod fixture;
+pub(crate) mod fixture;
 use fixture::*;
 #[allow(dead_code, reason = "Only session event constructors are needed here.")]
 #[path = "../../../se-store/tests/support/capture_fixture.rs"]
