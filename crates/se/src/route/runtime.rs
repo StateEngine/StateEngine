@@ -260,7 +260,7 @@ fn down_live<R: se_store::ReadStore>(
     let inventory = reader.owner_guard(files, budget);
     let mut options = options;
     options.timeout = bound.remaining()?;
-    down_endpoint(files, &endpoint, input, &options).map_err(|mut error| {
+    down_endpoint(files, endpoint, input, &options).map_err(|mut error| {
         let identities = match &inventory {
             Ok(inventory) => inventory.processes.iter().map(|process| {
                 format!("project {} principal {:?} session {:?} lifecycle {}", process.project,
