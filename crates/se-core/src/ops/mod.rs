@@ -55,8 +55,8 @@ pub mod status;
 pub use crate::commit::{MessageSend, WorkingStateSet};
 use crate::registry::*;
 pub use cli::{
-    AgentCommand, CliSelections, CommonArgs, cli_command, from_matches, from_matches_with_key,
-    selected_meta,
+    AgentCommand, CliSelections, CommonArgs, cli_command, diagnostic_word, from_matches,
+    from_matches_with_key, selected_meta,
 };
 pub use event::{EventOutput, EventRead, HistoryEvent};
 pub use hook::{HookClaude, HookEvent, HookResult};

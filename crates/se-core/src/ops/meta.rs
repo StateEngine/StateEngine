@@ -37,13 +37,7 @@ pub fn metadata_output(op: &AnyOp) -> Result<Option<AnyOutput>> {
                         got: value
                             .path
                             .iter()
-                            .map(|part| {
-                                if part.starts_with('-') {
-                                    part.split('=').next().unwrap_or(part)
-                                } else {
-                                    part.as_str()
-                                }
-                            })
+                            .map(|part| diagnostic_word(part))
                             .collect::<Vec<_>>()
                             .join(" "),
                         suggestion: None,

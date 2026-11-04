@@ -117,15 +117,30 @@ fn deepest(mut matches: &ArgMatches) -> (Vec<String>, &ArgMatches) {
     }
     (path, matches)
 }
+/// Keep an option name while discarding both equals and attached-short values.
+/// A non-option positional word remains the caller's ordinary diagnostic.
+pub fn diagnostic_word(word: &str) -> &str {
+    if !word.starts_with('-') {
+        return word;
+    }
+    let option = word.split('=').next().unwrap_or(word);
+    if option.starts_with("--") {
+        return option;
+    }
+    option
+        .char_indices()
+        .nth(2)
+        .map_or(option, |(end, _)| &option[..end])
+}
 fn unknown(command: &str) -> SeError {
     SeError::new(Detail::UsageUnknownCommand(details::UsageUnknownCommand {
-        got: command.into(),
+        got: diagnostic_word(command).into(),
         suggestion: None,
     }))
 }
 fn unknown_flag(flag: &str, command: &str, reason: &str) -> SeError {
     SeError::new(Detail::UsageUnknownFlag(details::UsageUnknownFlag {
-        flag: flag.split('=').next().unwrap_or(flag).into(),
+        flag: diagnostic_word(flag).into(),
         command: command_name(command),
         reason: reason.into(),
     }))
@@ -403,7 +418,15 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::O
                     )
             })
         })
-        .ok_or_else(|| unknown(&path.join(" ")))
+        .ok_or_else(|| {
+            unknown(
+                &path
+                    .iter()
+                    .map(|part| diagnostic_word(part))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            )
+        })
 }
 fn number(m: &ArgMatches, id: &str) -> Result<u16> {
     required(m, id)?

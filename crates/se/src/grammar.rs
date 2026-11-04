@@ -75,16 +75,8 @@ fn context(error: &clap::Error, kind: ContextKind) -> String {
     error.get(kind).map(ToString::to_string).unwrap_or_default()
 }
 
-fn diagnostic_word(word: String) -> String {
-    if word.starts_with('-') {
-        word.split('=').next().unwrap_or(&word).to_owned()
-    } else {
-        word
-    }
-}
-
 fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
-    let argument = diagnostic_word(context(&error, ContextKind::InvalidArg));
+    let argument = ops::diagnostic_word(&context(&error, ContextKind::InvalidArg)).to_owned();
     let command = error_command(args);
     let flag = argument.split_whitespace().next().unwrap_or_default();
     let missing_value = error.kind() == ErrorKind::InvalidValue
@@ -107,17 +99,17 @@ fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
     }
     let detail = match error.kind() {
         ErrorKind::UnknownArgument if argument.starts_with('-') => Detail::UsageUnknownFlag(details::UsageUnknownFlag {
-            reason: match argument.split('=').next().unwrap_or(&argument) {
+            reason: match argument.as_str() {
                 "--registry-root" => "use --home DIR for the StateEngine state directory",
                 "--project-root" | "--repo-root" | "--root" => "use se init --repo DIR to register a folder; --home selects StateEngine state",
                 "--actor" | "--agent-id" | "--user-id" | "--human-actor" => "identity comes from the verified owner or launched session",
                 _ => "unknown or inapplicable flag; inspect this command's --help",
             }.into(),
-            flag: argument.split('=').next().unwrap_or(&argument).into(),
+            flag: ops::diagnostic_word(&argument).into(),
             command,
         }),
         ErrorKind::InvalidSubcommand | ErrorKind::UnknownArgument => {
-            let got = if argument.is_empty() { diagnostic_word(context(&error, ContextKind::InvalidSubcommand)) } else { argument };
+            let got = if argument.is_empty() { ops::diagnostic_word(&context(&error, ContextKind::InvalidSubcommand)).to_owned() } else { argument };
             let suggestion = match error.get(ContextKind::ValidSubcommand) {
                 Some(ContextValue::Strings(commands)) => spelling(&got, commands),
                 _ => None,
@@ -125,7 +117,7 @@ fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
             Detail::UsageUnknownCommand(details::UsageUnknownCommand { got, suggestion })
         }
         ErrorKind::ArgumentConflict => Detail::UsageConflictingFlags(details::UsageConflictingFlags {
-            flags: vec![argument, context(&error, ContextKind::PriorArg)],
+            flags: vec![argument, ops::diagnostic_word(&context(&error, ContextKind::PriorArg)).into()],
         }),
         ErrorKind::MissingRequiredArgument => Detail::UsageMissingArgument(details::UsageMissingArgument {
             command, argument,
@@ -222,33 +214,39 @@ pub fn mcp_options(args: &[OsString]) -> Option<se_types::Result<Option<std::pat
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn explicit_help_never_retains_inline_option_values() {
-        let args = ["se", "help", "--", "--token=private-inline-capability"]
-            .into_iter()
-            .map(OsString::from)
-            .collect();
-        let invocation = match parse(args) {
-            Ok(invocation) => invocation,
-            Err(_) => panic!("explicit help must reach the metadata reader"),
-        };
-        let error = ops::metadata_output(&invocation.operation)
-            .err()
-            .unwrap_or_else(|| panic!("unknown help target must refuse"));
-        let Detail::UsageUnknownCommand(detail) = error.body.detail() else {
-            panic!("unknown help target must retain its command diagnostic");
-        };
-        assert_eq!(detail.got, "--token");
-        assert!(
-            !serde_json::to_string(&error.body)
-                .unwrap()
-                .contains("private-inline-capability")
-        );
+    fn explicit_help_never_retains_option_values() {
+        for (path, expected) in [
+            (vec!["--token=private-inline-capability"], "--token"),
+            (vec!["-tprivate-inline-capability"], "-t"),
+            (vec!["foo", "--x=private-inline-capability"], "foo --x"),
+            (vec!["msg", "-tprivate-inline-capability"], "msg -t"),
+        ] {
+            let args = ["se", "help", "--"]
+                .into_iter()
+                .chain(path)
+                .map(OsString::from)
+                .collect();
+            let invocation = match parse(args) {
+                Ok(invocation) => invocation,
+                Err(_) => panic!("explicit help must reach the metadata reader"),
+            };
+            let error = ops::metadata_output(&invocation.operation)
+                .err()
+                .unwrap_or_else(|| panic!("unknown help target must refuse"));
+            let Detail::UsageUnknownCommand(detail) = error.body.detail() else {
+                panic!("unknown help target must retain its command diagnostic");
+            };
+            assert_eq!(detail.got, expected);
+            assert!(
+                !serde_json::to_string(&error.body)
+                    .unwrap()
+                    .contains("private-inline-capability")
+            );
+        }
     }
-
     #[test]
-    fn unknown_options_never_retain_inline_values() {
+    fn unknown_options_never_retain_values() {
         for prefix in [
             vec!["se"],
             vec!["se", "doctor"],
@@ -256,18 +254,31 @@ mod tests {
             vec!["se", "--"],
             vec!["se", "doctor", "--"],
         ] {
-            let mut args: Vec<OsString> = prefix.into_iter().map(OsString::from).collect();
-            args.push("--token=private-inline-capability".into());
-            let Err(failure) = parse(args) else {
-                panic!("an unknown option must refuse");
-            };
-            match failure.error.body.detail() {
-                Detail::UsageUnknownFlag(detail) => assert_eq!(detail.flag, "--token"),
-                Detail::UsageUnknownCommand(detail) => assert_eq!(detail.got, "--token"),
-                _ => panic!("the option must retain its diagnostic"),
+            for (option, expected) in [
+                ("--token=private-inline-capability", "--token"),
+                ("-tprivate-inline-capability", "-t"),
+                ("-t=private-inline-capability", "-t"),
+            ] {
+                let args = prefix
+                    .iter()
+                    .copied()
+                    .chain([option])
+                    .map(OsString::from)
+                    .collect();
+                let Err(failure) = parse(args) else {
+                    panic!("an unknown option must refuse");
+                };
+                match failure.error.body.detail() {
+                    Detail::UsageUnknownFlag(detail) => assert_eq!(detail.flag, expected),
+                    Detail::UsageUnknownCommand(detail) => assert_eq!(detail.got, expected),
+                    _ => panic!("the option must retain its diagnostic"),
+                }
+                assert!(
+                    !serde_json::to_string(&failure.error.body)
+                        .unwrap()
+                        .contains("private-inline-capability")
+                );
             }
-            let rendered = serde_json::to_string(&failure.error.body).unwrap();
-            assert!(!rendered.contains("private-inline-capability"));
         }
     }
 }
