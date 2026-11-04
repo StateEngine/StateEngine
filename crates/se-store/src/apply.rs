@@ -26,6 +26,19 @@ pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> 
         .optional()
         .map_err(sql)?;
     if existing.is_some() {
+        if e.header.door != Door::Import
+            && !crate::transaction::natural_kind(&e.body)
+            && !matches!(
+                e.body,
+                EventBody::RuntimeOwnerEstablished { .. }
+                    | EventBody::RuntimeHandoverRecorded { .. }
+            )
+        {
+            return Err(fail(
+                StoreErrorCode::NaturalKeyConflict,
+                "event ID already belongs to another operation",
+            ));
+        }
         return Ok(existing);
     }
     if let EventBody::MessageSent { message, .. } | EventBody::WorkMessageSent { message, .. } =
@@ -33,7 +46,7 @@ pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> 
     {
         let p = project_id(c, &e.header.scope, false)?;
         let m = key(c, "message", message.as_str(), &scope, false)?;
-        return c
+        let prior = c
             .query_row(
                 &format!(
                     "SELECT sent_seq FROM {} WHERE project_id=? AND message_id=? LIMIT 1",
@@ -43,7 +56,14 @@ pub(crate) fn natural(c: &Connection, e: &NewEvent) -> StoreResult<Option<i64>> 
                 |r| crate::sql_value::value(r, 0),
             )
             .optional()
-            .map_err(sql);
+            .map_err(sql)?;
+        if prior.is_some() && e.header.door != Door::Import {
+            return Err(fail(
+                StoreErrorCode::NaturalKeyConflict,
+                "message ID already belongs to another operation",
+            ));
+        }
+        return Ok(prior);
     }
     if matches!(
         e.body,
@@ -412,8 +432,12 @@ pub(crate) fn apply(
             epoch,
             generation,
             expected_owner_generation,
+            recovered,
             ..
         } => {
+            if recovered.is_some() {
+                return later("recovered runtime ownership projection");
+            }
             if pk.is_some() || lease.mode != LeaseMode::Host || lease.generation != generation.get()
             {
                 return Err(fail(

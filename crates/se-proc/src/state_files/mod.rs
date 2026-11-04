@@ -139,6 +139,39 @@ impl NativeStateFiles {
             directory,
         ))
     }
+    /// Retire a fresh empty staging name while keeping its exact writable file.
+    /// No user text may be written before this succeeds.
+    pub fn retire_empty_staging(&self, staged: ProtectedStateStaging) -> Result<File> {
+        self.check(&staged.path)?;
+        if !staged
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".se-stage-"))
+            || staged
+                .file
+                .metadata()
+                .map_err(|e| io_error("inspect empty staging", &staged.path, e))?
+                .len()
+                != 0
+        {
+            return Err(unsafe_path(
+                "only a fresh empty native staging file may become anonymous",
+                &staged.path,
+            ));
+        }
+        #[cfg(unix)]
+        {
+            use sha2::Digest;
+            let owned = effects::OwnedFile::open(&staged.path)?
+                .ok_or_else(|| unsafe_path("empty staging disappeared", &staged.path))?;
+            owned.remove(sha2::Sha256::digest([]).into())?;
+        }
+        #[cfg(windows)]
+        self.directory
+            .retire_empty_staging(&staged.path, &staged.file, &self.root)?;
+        Ok(staged.file)
+    }
     /// Some is a verified regular, owner-only file. None is witnessed native
     /// absence. Every other read outcome remains a typed error with its cause.
     pub fn readback(&self, path: &Path) -> Result<Option<File>> {

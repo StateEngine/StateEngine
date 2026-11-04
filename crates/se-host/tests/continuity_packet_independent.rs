@@ -44,7 +44,10 @@ impl Harness {
         direct.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(fixture::request(&format!(
+                    "fixture-continuity_packet_independent-45-{}",
+                    serial()
+                ))?),
                 vec![
                     capture::prepared(&f, &b, &f.b),
                     capture::activated(&b)?,
@@ -396,7 +399,10 @@ fn governing_source_is_complete_or_explicitly_failed() -> Check {
                 Scope::Project(h.f.project.clone()),
                 Actor::Agent(h.f.a.clone()),
             ),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-continuity_packet_independent-394-{}",
+                serial()
+            ))?),
             vec![EventBody::DecisionProposed {
                 decision: decision.clone(),
                 key: "governing.packet".into(),
@@ -411,7 +417,10 @@ fn governing_source_is_complete_or_explicitly_failed() -> Check {
     h.direct.append(
         h.f.batch(
             h.f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-continuity_packet_independent-412-{}",
+                serial()
+            ))?),
             vec![EventBody::DecisionRatified {
                 decision,
                 expected: revision(1)?,
@@ -462,7 +471,10 @@ fn unrelated_private_head_cannot_block_bound_continuity() -> Check {
                 Scope::Project(h.f.project.clone()),
                 Actor::Agent(h.f.b.clone()),
             ),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-continuity_packet_independent-460-{}",
+                serial()
+            ))?),
             vec![EventBody::WorkingStateSet {
                 agent: h.f.b.clone(),
                 text: InputText::Inline("PRIVATE B LAST HEAD".into()),

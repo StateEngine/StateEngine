@@ -87,7 +87,10 @@ impl Harness {
     ) -> Result<CommitReceipt, Box<dyn std::error::Error>> {
         Ok(wait(self.client.submit(self.f.batch(
             self.f.owner_project(),
-            None,
+            Some(super::fixture::request(&format!(
+                "fixture-process_barrier_fixture-88-{}",
+                serial()
+            ))?),
             bodies,
         )?)?)??)
     }

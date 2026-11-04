@@ -269,6 +269,17 @@ impl StateFiles for Files {
         self.check_root()
     }
 
+    fn retire_empty_staging(
+        &self,
+        staged: se_store::ProtectedStaging,
+    ) -> StoreResult<std::fs::File> {
+        self.0
+            .retire_empty_staging(se_proc::ProtectedStateStaging {
+                path: staged.path,
+                file: staged.file,
+            })
+            .map_err(native_error)
+    }
     fn create_staging(&self, directory: &Path) -> StoreResult<se_store::ProtectedStaging> {
         let staged = self.0.create_staging(directory).map_err(native_error)?;
         Ok(se_store::ProtectedStaging {

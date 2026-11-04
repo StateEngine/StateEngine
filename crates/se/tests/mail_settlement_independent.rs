@@ -44,7 +44,10 @@ fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Che
     let sid = session()?;
     wait(writer.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(fixture::request(&format!(
+            "fixture-mail_settlement_independent-45-{}",
+            serial()
+        ))?),
         vec![prepared(&f, &sid, &f.a), activated(&sid)?],
     )?)?)??;
     let first = message()?;

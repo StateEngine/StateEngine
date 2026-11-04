@@ -112,7 +112,7 @@ fn seed(f: &Fixture) -> Check {
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(request("finite-host-phase-session")?),
             vec![
                 session_fixture::prepared(f, &session, &f.a),
                 EventBody::CredentialIssued {

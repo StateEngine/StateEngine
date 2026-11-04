@@ -40,7 +40,10 @@ fn fixture(damage: u8) -> Result<Fixture, Box<dyn std::error::Error>> {
     d.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-decision_list_independent-41-{}",
+                serial()
+            ))?),
             vec![
                 EventBody::PrincipalRegistered {
                     principal: Actor::Human(f.owner.clone()),
@@ -67,7 +70,10 @@ fn fixture(damage: u8) -> Result<Fixture, Box<dyn std::error::Error>> {
     d.append(
         f.batch(
             f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.b.clone())),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-decision_list_independent-68-{}",
+                serial()
+            ))?),
             vec![EventBody::DecisionProposed {
                 decision,
                 key: "own.pending".into(),

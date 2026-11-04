@@ -125,7 +125,10 @@ fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() 
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-wave2_host_shutdown_independent-126-{}",
+                serial()
+            ))?),
             vec![
                 session::prepared(&f, &session, &f.a),
                 session::activated(&session)?,

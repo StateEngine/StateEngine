@@ -100,7 +100,10 @@ impl Case {
         store.record_runtime_ownership(
             f.batch(
                 f.admission(Scope::Registry, Actor::Human(f.owner.clone())),
-                None,
+                Some(fixture::request(&format!(
+                    "fixture-wave2_custody_cli_independent-101-{}",
+                    serial()
+                ))?),
                 vec![EventBody::RuntimeOwnerEstablished {
                     epoch: host::epoch()?,
                     generation: se_types::Generation::new(1)?,
@@ -125,7 +128,10 @@ impl Case {
         }
         let receipt = host::wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-wave2_custody_cli_independent-126-{}",
+                serial()
+            ))?),
             vec![
                 capture::prepared(&f, &session, &f.a),
                 control::registration(&identity, ProcessState::Running),
@@ -181,7 +187,10 @@ impl Case {
         let writer = self.writer.as_ref().ok_or("writer already drained")?;
         host::wait(writer.client().submit(self.f.batch(
             self.f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-wave2_custody_cli_independent-182-{}",
+                serial()
+            ))?),
             events,
         )?)?)??;
         Ok(())

@@ -28,7 +28,10 @@ fn setup() -> Outcome<(Fixture, SqliteDirect, Arc<Lease>)> {
     store.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-core_policy-29-{}",
+                serial()
+            ))?),
             vec![EventBody::PrincipalRegistered {
                 principal: Actor::Human(f.owner.clone()),
                 kind: PrincipalKind::Human,
@@ -213,7 +216,10 @@ fn direct_cli_keeps_fixed_and_key_selected_human_presence() -> Check {
     store.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-core_policy-214-{}",
+                serial()
+            ))?),
             vec![EventBody::DecisionProposed {
                 decision: id.clone(),
                 key: "presence.policy".into(),
@@ -331,7 +337,10 @@ fn pipe_human_presence_refuses_before_busy_writer_rendezvous() -> Check {
     store.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-core_policy-332-{}",
+                serial()
+            ))?),
             vec![EventBody::DecisionProposed {
                 decision: id.clone(),
                 key: "presence.busy".into(),

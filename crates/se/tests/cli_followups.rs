@@ -58,7 +58,10 @@ fn setup() -> Result<(Fixture, SqliteDirect, Arc<Lease>), Box<dyn std::error::Er
     store.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-cli_followups-59-{}",
+                serial()
+            ))?),
             vec![EventBody::PrincipalRegistered {
                 principal: Actor::Human(f.owner.clone()),
                 kind: PrincipalKind::Human,
@@ -85,7 +88,10 @@ fn send(
         .append(
             f.batch(
                 f.admission(Scope::Project(f.project.clone()), sender),
-                None,
+                Some(fixture::request(&format!(
+                    "fixture-cli_followups-86-{}",
+                    serial()
+                ))?),
                 vec![EventBody::MessageSent {
                     message: message()?,
                     recipient: Actor::Human(f.owner.clone()),

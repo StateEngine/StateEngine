@@ -36,7 +36,10 @@ fn tombstone(
     d.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-removed_history_independent-37-{}",
+                serial()
+            ))?),
             vec![EventBody::ProjectRemoved {
                 project: f.project.clone(),
                 expected: revision(1)?,
@@ -142,7 +145,10 @@ fn removed_metadata_fallback_does_not_widen_event_scope_or_privacy() -> Check {
     };
     let foreign_batch = f.batch(
         f.admission(Scope::Project(foreign), Actor::Human(f.owner.clone())),
-        None,
+        Some(fixture::request(&format!(
+            "fixture-removed_history_independent-143-{}",
+            serial()
+        ))?),
         vec![body],
     )?;
     let foreign_id = foreign_batch.events[0].header.event.clone();

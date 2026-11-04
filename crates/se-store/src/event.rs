@@ -199,12 +199,7 @@ pub trait StagedTextValue {
     fn byte_length(&self) -> u64;
     fn sha256(&self) -> [u8; 32];
 }
-/// Created only by the future staging implementation from a bounded owned stream.
-/// No public arbitrary-path constructor; not a credential or an event payload by itself.
-#[derive(Debug)]
-pub struct StagedText {
-    _private: (),
-}
+pub use crate::staging::StagedText;
 pub enum InputText {
     Inline(String),
     Staged(StagedText),

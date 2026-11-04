@@ -84,7 +84,7 @@ fn typed_process_registration_and_stop_transitions_roundtrip() -> Check {
     let mut i = identity(&f, false)?;
     let first = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-85-{}", serial()))?),
         vec![registration(&i, ProcessState::Reserved)],
     )?)?)??;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
@@ -105,7 +105,7 @@ fn typed_process_registration_and_stop_transitions_roundtrip() -> Check {
     ] {
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!("fixture-store_process-106-{}", serial()))?),
             vec![transition(&i, rev, from, to, first.primary_event.clone())?],
         )?)?)??;
         let current = head(&f, i.record.clone())?;
@@ -149,13 +149,13 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     let sid = capture_fixture::session()?;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-150-{}", serial()))?),
         vec![capture_fixture::prepared(&f, &sid, &f.a)],
     )?)?)??;
     let i = identity(&f, true)?;
     let first = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-156-{}", serial()))?),
         vec![registration(&i, ProcessState::Running)],
     )?)?)??;
     for (rev, from, to) in [
@@ -166,7 +166,10 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
         assert!(
             wait(client.submit(f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-store_process-167-{}",
+                    serial()
+                ))?),
                 vec![transition(&i, rev, from, to, first.primary_event.clone())?]
             )?)?)?
             .is_err()
@@ -189,7 +192,10 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
         assert_eq!(
             wait(client.submit(f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-store_process-190-{}",
+                    serial()
+                ))?),
                 vec![transition(
                     &drift,
                     1,
@@ -214,7 +220,10 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-store_process-215-{}",
+                serial()
+            ))?),
             vec![
                 transition(
                     &i,
@@ -231,7 +240,7 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 1);
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-232-{}", serial()))?),
         vec![transition(
             &i,
             1,
@@ -243,7 +252,10 @@ fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     assert!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-store_process-244-{}",
+                serial()
+            ))?),
             vec![transition(
                 &i,
                 2,
@@ -268,7 +280,7 @@ fn loss_never_discards_an_already_published_native_birth_identity() -> Check {
     let i = identity(&f, true)?;
     let first = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-269-{}", serial()))?),
         vec![registration(&i, ProcessState::Running)],
     )?)?)??;
     let mut lost = i.clone();
@@ -278,7 +290,7 @@ fn loss_never_discards_an_already_published_native_birth_identity() -> Check {
     };
     let result = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-279-{}", serial()))?),
         vec![transition(
             &lost,
             1,
@@ -310,7 +322,10 @@ fn direct_registration_and_foreign_session_refuse() -> Check {
         d.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(request(&format!(
+                    "judge-nested-store_process-311-{}",
+                    serial()
+                ))?),
                 vec![registration(&i, ProcessState::Reserved)]
             )?,
             &*lease
@@ -326,7 +341,7 @@ fn direct_registration_and_foreign_session_refuse() -> Check {
     let session = capture_fixture::session()?;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-327-{}", serial()))?),
         vec![capture_fixture::prepared(&f, &session, &f.b)],
     )?)?)??;
     i = identity(&f, false)?;
@@ -334,7 +349,10 @@ fn direct_registration_and_foreign_session_refuse() -> Check {
     assert_eq!(
         wait(client.submit(f.batch(
             f.owner_project(),
-            None,
+            Some(request(&format!(
+                "judge-nested-store_process-335-{}",
+                serial()
+            ))?),
             vec![registration(&i, ProcessState::Reserved)]
         )?)?)?
         .err()
@@ -362,12 +380,12 @@ fn saved_native_identity_survives_loss_and_recovery() -> Check {
     let i = identity(&f, true)?;
     let first = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-363-{}", serial()))?),
         vec![registration(&i, ProcessState::Running)],
     )?)?)??;
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-368-{}", serial()))?),
         vec![transition(
             &i,
             1,
@@ -392,7 +410,7 @@ fn saved_native_identity_survives_loss_and_recovery() -> Check {
     }
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("fixture-store_process-393-{}", serial()))?),
         vec![transition(
             &i,
             2,
@@ -432,7 +450,7 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     let mut i = identity(&f, false)?;
     let mut last = wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("judge-console-0-{}", serial()))?),
         vec![registration(&i, ProcessState::Reserved)],
     )?)?)??
     .primary_event;
@@ -441,14 +459,24 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     if let EventBody::ProcessTransition { outcome, .. } = &mut scope {
         *outcome = "scope-prepared".into();
     }
-    last = wait(client.submit(f.batch(f.owner_project(), None, vec![scope])?)?)??.primary_event;
+    last = wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("judge-console-1-{}", serial()))?),
+        vec![scope],
+    )?)?)??
+    .primary_event;
     i.root_identity = RootIdentityState::Identified;
     i.instance = RecordedIdentity::Present(epoch()?.owner);
     let mut root = transition(&i, 2, ProcessState::Starting, ProcessState::Starting, last)?;
     if let EventBody::ProcessTransition { outcome, .. } = &mut root {
         *outcome = "root-prepared".into();
     }
-    last = wait(client.submit(f.batch(f.owner_project(), None, vec![root])?)?)??.primary_event;
+    last = wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("judge-console-2-{}", serial()))?),
+        vec![root],
+    )?)?)??
+    .primary_event;
     let RecordedIdentity::Present(original) = &i.instance else {
         return Err("missing root".into());
     };
@@ -478,7 +506,14 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
         if let EventBody::ProcessTransition { outcome, .. } = &mut event {
             *outcome = phase.into();
         }
-        assert!(wait(client.submit(f.batch(f.owner_project(), None, vec![event])?)?)?.is_err());
+        assert!(
+            wait(client.submit(f.batch(
+                f.owner_project(),
+                Some(request(&format!("judge-console-3-{}", serial()))?),
+                vec![event]
+            )?)?)?
+            .is_err()
+        );
         assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 3);
     }
     let mut event = transition(
@@ -491,7 +526,12 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     if let EventBody::ProcessTransition { outcome, .. } = &mut event {
         *outcome = "console-prepared".into();
     }
-    last = wait(client.submit(f.batch(f.owner_project(), None, vec![event])?)?)??.primary_event;
+    last = wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("judge-console-4-{}", serial()))?),
+        vec![event],
+    )?)?)??
+    .primary_event;
     let mut repeat = transition(
         &i,
         4,
@@ -502,10 +542,17 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     if let EventBody::ProcessTransition { outcome, .. } = &mut repeat {
         *outcome = "console-prepared".into();
     }
-    assert!(wait(client.submit(f.batch(f.owner_project(), None, vec![repeat])?)?)?.is_err());
+    assert!(
+        wait(client.submit(f.batch(
+            f.owner_project(),
+            Some(request(&format!("judge-console-5-{}", serial()))?),
+            vec![repeat]
+        )?)?)?
+        .is_err()
+    );
     wait(client.submit(f.batch(
         f.owner_project(),
-        None,
+        Some(request(&format!("judge-console-6-{}", serial()))?),
         vec![transition(
             &console,
             4,

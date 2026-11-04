@@ -64,7 +64,10 @@ fn public_metadata_cannot_cross_admitted_projects() -> Check {
                 Scope::Project(foreign.clone()),
                 Actor::Human(f.owner.clone()),
             ),
-            None,
+            Some(request(&format!(
+                "fixture-project_metadata-62-{}",
+                serial()
+            ))?),
             vec![EventBody::ProjectRegistered {
                 project: foreign.clone(),
                 name: "Other project".into(),

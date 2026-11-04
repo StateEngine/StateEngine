@@ -14,7 +14,10 @@ fn register(
     let project = ProjectId::from_parts(1_700_000_000_000 + serial(), [71; 10])?;
     let batch = f.batch(
         f.admission(Scope::Registry, Actor::Human(f.owner.clone())),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_remove_independent-15-{}",
+            serial()
+        ))?),
         vec![EventBody::ProjectRegistered {
             project: project.clone(),
             name: "Never launched".into(),
@@ -38,7 +41,10 @@ fn remove(
             Scope::Project(project.clone()),
             Actor::Human(f.owner.clone()),
         ),
-        None,
+        Some(request(&format!(
+            "fixture-wave2_remove_independent-36-{}",
+            serial()
+        ))?),
         vec![EventBody::ProjectRemoved {
             project: project.clone(),
             expected: revision(1)?,

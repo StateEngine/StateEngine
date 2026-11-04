@@ -30,7 +30,10 @@ fn observe(
     store.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-resume_command_independent-31-{}",
+                serial()
+            ))?),
             vec![EventBody::ProfileSaved {
                 agent: f.a.clone(),
                 profile: Profile {

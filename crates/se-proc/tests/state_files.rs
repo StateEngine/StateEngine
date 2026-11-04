@@ -113,6 +113,38 @@ fn protected_staging_publishes_and_reads_back() -> Check {
     Ok(())
 }
 
+/// The original writable handle survives name retirement on Windows and Unix.
+#[test]
+fn empty_staging_is_anonymous_before_text_and_closes_without_a_residue() -> Check {
+    use std::io::{Seek, SeekFrom};
+    let home = Home::new()?;
+    let files = NativeStateFiles::create(&home.root())?;
+    let stage = files.create_staging(&home.root())?;
+    let path = stage.path.clone();
+    let mut file = files.retire_empty_staging(stage)?;
+    assert!(
+        files.readback(&path)?.is_none(),
+        "staging remained named before text"
+    );
+    file.write_all(b"private staged text")?;
+    file.seek(SeekFrom::Start(0))?;
+    assert_eq!(read(file)?, b"private staged text");
+    assert_eq!(fs::read_dir(home.root())?.count(), 0);
+    Ok(())
+}
+
+#[test]
+fn anonymous_staging_refuses_nonempty_files_without_removing_their_names() -> Check {
+    let home = Home::new()?;
+    let files = NativeStateFiles::create(&home.root())?;
+    let mut stage = files.create_staging(&home.root())?;
+    stage.file.write_all(b"preserve")?;
+    let path = stage.path.clone();
+    assert!(files.retire_empty_staging(stage).is_err());
+    assert_eq!(fs::read(path)?, b"preserve");
+    Ok(())
+}
+
 /// Protects: G8 — colliding publishers preserve exactly one winner and the losing bytes.
 #[test]
 fn concurrent_publication_preserves_the_winner_and_loser() -> Check {

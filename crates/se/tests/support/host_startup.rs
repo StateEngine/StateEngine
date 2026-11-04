@@ -122,7 +122,10 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(super::fixture::request(&format!(
+                "fixture-host_startup-123-{}",
+                serial()
+            ))?),
             vec![EventBody::PrincipalRegistered {
                 principal: Actor::Human(f.owner.clone()),
                 kind: PrincipalKind::Human,

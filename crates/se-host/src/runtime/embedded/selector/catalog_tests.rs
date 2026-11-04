@@ -11,7 +11,7 @@ fn bad_project_is_counted_without_hiding_readable_projects() -> Check {
     direct.append(
         f.batch(
             f.admission(Scope::Project(good.clone()), Actor::Human(f.owner.clone())),
-            None,
+            Some(request("readable-selector-project")?),
             vec![EventBody::ProjectRegistered {
                 project: good.clone(),
                 name: "Readable project".into(),

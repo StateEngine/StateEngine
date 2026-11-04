@@ -1,9 +1,9 @@
 //! One semantic descriptor derived from the closed event metadata codec.
 //! Owning text is added only for comparison, never copied into aux_data.
 use super::*;
-pub(crate) fn descriptor<T>(
+pub(crate) fn descriptor<T, S: Serialize>(
     body: &EventBody<T>,
-    text: impl Fn(&T) -> StoreResult<String>,
+    text: impl Fn(&T) -> StoreResult<S>,
 ) -> StoreResult<String> {
     let (kind, mut fields) = metadata(body)?;
     let fields = fields
@@ -41,6 +41,9 @@ pub(crate) fn descriptor<T>(
         }
         CaptureSource { .. } | CaptureProgress { .. } => {
             fields.remove("expected");
+        }
+        RecoveryRecorded { receipt, .. } => {
+            fields.insert("receipt".into(), json!(text(receipt)?));
         }
         _ => {}
     }

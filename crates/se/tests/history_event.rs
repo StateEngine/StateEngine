@@ -92,7 +92,10 @@ fn foreign_known_id_is_not_not_found() -> Check {
                 Scope::Project(foreign.clone()),
                 Actor::Human(f.owner.clone()),
             ),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-history_event-90-{}",
+                serial()
+            ))?),
             vec![EventBody::ProjectRegistered {
                 project: foreign,
                 name: "Foreign".into(),
@@ -176,7 +179,10 @@ fn default_output_keeps_registration_payload() -> Check {
     store.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request(&format!(
+                "fixture-history_event-177-{}",
+                serial()
+            ))?),
             vec![EventBody::PrincipalRegistered {
                 principal: Actor::Human(f.owner.clone()),
                 kind: PrincipalKind::Human,

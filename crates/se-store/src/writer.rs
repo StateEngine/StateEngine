@@ -39,12 +39,14 @@ struct Shared {
     admission: Mutex<AdmissionState>,
     byte_limit: usize,
     request_limit: usize,
+    group_limit: usize,
 }
 struct Request {
     batch: AtomicBatch,
     reply: Reply<CommitReceipt>,
     queued: Instant,
     bytes: usize,
+    materialized: usize,
 }
 #[allow(
     clippy::large_enum_variant,
@@ -67,6 +69,41 @@ enum Command {
 pub struct SqliteClient {
     sender: SyncSender<Command>,
     shared: Arc<Shared>,
+    staging: Arc<StagingContext>,
+}
+struct StagingContext {
+    path: std::path::PathBuf,
+    info: StoreInfo,
+    identity: LeaseIdentity,
+}
+impl TextStaging for SqliteClient {
+    fn stage_text(
+        &self,
+        source: &mut dyn std::io::Read,
+        maximum: u64,
+        lease: &dyn RuntimeLease,
+    ) -> StoreResult<StagedText> {
+        if self
+            .shared
+            .admission
+            .lock()
+            .map_err(|_| fail(StoreErrorCode::WriterClosed, "writer admission poisoned"))?
+            .closed
+        {
+            return Err(fail(
+                StoreErrorCode::WriterClosed,
+                "writer is draining or closed",
+            ));
+        }
+        crate::staging::stage(
+            &self.staging.path,
+            &self.staging.info,
+            &self.staging.identity,
+            source,
+            maximum,
+            lease,
+        )
+    }
 }
 pub struct SqliteWriter {
     client: SqliteClient,
@@ -93,7 +130,13 @@ impl Shared {
 impl WriterClient for SqliteClient {
     type Completion = Completion<CommitReceipt>;
     fn submit(&self, batch: AtomicBatch) -> StoreResult<Self::Completion> {
-        let bytes = crate::transaction::batch_bytes(&batch)?;
+        let (bytes, materialized) = crate::transaction::batch_sizes(&batch)?;
+        if materialized > self.shared.group_limit {
+            return Err(fail(
+                StoreErrorCode::BodyTooLarge,
+                "request exceeds writer materialized group limit",
+            ));
+        }
         // Serialize admission with the drain barrier, so no accepted request can
         // enter behind it. The lock protects counters only, never SQLite work.
         let mut s = self
@@ -133,6 +176,7 @@ impl WriterClient for SqliteClient {
                 reply,
                 queued: Instant::now(),
                 bytes,
+                materialized,
             }))
             .map_err(|e| {
                 fail(
@@ -196,11 +240,17 @@ pub(crate) fn start(
         }),
         byte_limit: options.resident_bytes.get() as usize,
         request_limit,
+        group_limit: options.group_bytes.get() as usize,
     });
     let (sender, receiver) = mpsc::sync_channel(request_limit + 3);
     let client = SqliteClient {
         sender,
         shared: shared.clone(),
+        staging: Arc::new(StagingContext {
+            path: host.reader.path.clone(),
+            info: connection::info(&host.engine.db)?,
+            identity,
+        }),
     };
     let context = host.context.clone();
     let thread = std::thread::Builder::new()
@@ -365,13 +415,13 @@ fn run(
         match command {
             Command::Append(first) => {
                 let mut group = vec![first];
-                let mut bytes = group[0].bytes;
+                let mut bytes = group[0].materialized;
                 while group.len() < options.maximum_requests.get() as usize {
                     match receiver.try_recv() {
                         Ok(Command::Append(r))
-                            if bytes + r.bytes <= options.group_bytes.get() as usize =>
+                            if bytes + r.materialized <= options.group_bytes.get() as usize =>
                         {
-                            bytes += r.bytes;
+                            bytes += r.materialized;
                             group.push(r)
                         }
                         Ok(other) => {

@@ -529,7 +529,10 @@ fn owner_registry_selection_narrows_once_without_reopening_its_snapshot() -> Che
                 Scope::Project(project.clone()),
                 Actor::Human(f.owner.clone()),
             ),
-            None,
+            Some(request(&format!(
+                "fixture-wave2_continuity_independent-527-{}",
+                serial()
+            ))?),
             vec![EventBody::ProjectRegistered {
                 project: project.clone(),
                 name: "Later project".into(),

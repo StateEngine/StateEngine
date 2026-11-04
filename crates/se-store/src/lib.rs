@@ -1,5 +1,7 @@
 //! SQLite authority and bounded direct/host writer paths.
 //! Normative behavior and formats: docs/design/20-data-model.md.
+#[cfg(all(test, any(target_os = "linux", windows)))]
+extern crate self as se_store;
 mod api;
 mod apply;
 mod backup;
@@ -23,8 +25,11 @@ mod read_phase;
 mod read_phase_pool;
 mod read_slots;
 mod sql_value;
+mod staging;
 mod transaction;
 mod transcript;
+#[cfg(all(test, any(target_os = "linux", windows)))]
+mod write_tests;
 mod writer;
 pub use api::*;
 pub use event::*;

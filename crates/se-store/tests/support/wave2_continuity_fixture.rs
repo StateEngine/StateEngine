@@ -70,7 +70,14 @@ impl Governing {
     }
     fn owner(&mut self, bodies: Vec<EventBody<InputText>>) -> Check {
         self.direct.append(
-            self.f.batch(self.f.owner_project(), None, bodies)?,
+            self.f.batch(
+                self.f.owner_project(),
+                Some(request(&format!(
+                    "fixture-wave2_continuity_fixture-73-{}",
+                    serial()
+                ))?),
+                bodies,
+            )?,
             &*self.lease,
         )?;
         Ok(())
@@ -104,7 +111,10 @@ impl Governing {
                     Scope::Project(self.f.project.clone()),
                     Actor::Agent(self.f.a.clone()),
                 ),
-                None,
+                Some(request(&format!(
+                    "fixture-wave2_continuity_fixture-102-{}",
+                    serial()
+                ))?),
                 vec![EventBody::DecisionProposed {
                     decision: decision.clone(),
                     key: key.into(),

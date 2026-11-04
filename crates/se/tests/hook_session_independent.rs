@@ -237,14 +237,27 @@ fn check_case(case: &str) -> Check {
     if case == "superseded" {
         bodies.push(session::prepared(&f, &session::session()?, &f.a));
     }
-    let receipt = writer.append(f.batch(f.owner_project(), None, bodies)?, &lease)?;
+    let receipt = writer.append(
+        f.batch(
+            f.owner_project(),
+            Some(fixture::request(&format!(
+                "fixture-hook_session_independent-240-{}",
+                serial()
+            ))?),
+            bodies,
+        )?,
+        &lease,
+    )?;
     if case == "stop-unproved" {
         let mut identity = process::identity(&f.a)?;
         identity.session = Some(id.clone());
         writer.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(fixture::request(&format!(
+                    "fixture-hook_session_independent-245-{}",
+                    serial()
+                ))?),
                 vec![process::registration(&identity, ProcessState::Starting)],
             )?,
             &lease,
@@ -252,7 +265,10 @@ fn check_case(case: &str) -> Check {
         writer.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(fixture::request(&format!(
+                    "fixture-hook_session_independent-253-{}",
+                    serial()
+                ))?),
                 vec![
                     process::transition(
                         &identity,
