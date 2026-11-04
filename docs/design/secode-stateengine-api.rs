@@ -2,7 +2,8 @@
 //! Proposal for Alpha's MIT/Apache secode-stateengine-api crate, not an engine API.
 //! Standalone trait/data declarations: deliberately no dependency on se-types.
 //! Checked independently as a crate root for design review, not published or wired.
-//! Closed Rust API: adding/removing/changing any public field, enum variant,
+//! API 2 remains unpublished; additions before its first release don't bump the major (Prime 2026-11-04).
+//! From the first published release onward, this is a closed Rust API: adding/removing/changing any public field, enum variant,
 //! trait method or its meaning requires a Cargo/API major version change.
 //! No blocking or joining in Drop; resources close through explicit async calls.
 use std::path::PathBuf;
@@ -377,6 +378,15 @@ pub struct ProjectInfo {
     pub id: ProjectId,
     pub name: String,
     pub root: NativePath,
+    pub revision: Revision,
+}
+/// Bounded display metadata; an AgentId is not an offered SE Code agent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AgentInfo {
+    pub project: ProjectId,
+    pub id: AgentId,
+    pub name: String,
+    pub role: String,
     pub revision: Revision,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -804,6 +814,47 @@ pub struct FaultReport {
 }
 
 pub trait Host: Send + Sync {
+    /// Owner-only selector reads. Each page has at most 100 rows and 64 KiB.
+    /// Reject zero/excessive limits, max_bytes outside 1..=65536, or cursors
+    /// above 256 UTF-8 bytes as Usage, code "selector-invalid-page".
+    /// Opaque cursors bind operation, project, generation and catalog revision.
+    /// Revision/generation changes return Conflict, "selector-stale-cursor",
+    /// AfterRefresh; never splice old/new revisions or auto-restart pagination.
+    /// Project order is ProjectId; agent order is AgentId; session order is
+    /// (binding.agent, binding.session, epoch identity, host session).
+    /// Page.window retains the existing completeness/omission distinctions.
+    /// Bound ApiError code to 64 bytes, message/remedy.text to 2048 each;
+    /// no provider/tool bodies or credentials in selector errors.
+    fn list_projects<'a>(
+        &'a self,
+        authority: &'a OwnerAuthority,
+        page: PageRequest,
+        options: CallOptions,
+    ) -> HostFuture<'a, Read<Page<ProjectInfo>>>;
+    /// The project is checked before paging: Unknown is not an empty roster.
+    /// name <= 256 bytes, role <= 2048 bytes, IDs <= 256 bytes; fail with
+    /// Unreadable/selector-invalid-record rather than silently dropping records.
+    fn list_agents<'a>(
+        &'a self,
+        authority: &'a OwnerAuthority,
+        project: ProjectId,
+        page: PageRequest,
+        options: CallOptions,
+    ) -> HostFuture<'a, Read<Page<AgentInfo>>>;
+    /// Engine-side project-filtered diagnostic projection of existing host
+    /// active_sessions pages. Each row's target.binding.project equals project.
+    /// Unavailable/unreadable hosts make the result incomplete, never empty.
+    /// No grant/capability is exposed; selecting a row cannot bind or take over.
+    /// Kept separate from HostServices::active_sessions(epoch, ...), whose
+    /// direction is host -> engine and whose diagnostic pages are not a catalog.
+    fn project_active_sessions<'a>(
+        &'a self,
+        authority: &'a OwnerAuthority,
+        project: ProjectId,
+        page: PageRequest,
+        options: CallOptions,
+    ) -> HostFuture<'a, Read<Page<ActiveSession>>>;
+
     fn poison<'a>(
         &'a self,
         report: FaultReport,
