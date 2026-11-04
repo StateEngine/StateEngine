@@ -236,8 +236,23 @@ pub fn location(path: &Path, home: &Path) -> Result<PathBuf> {
             "an absolute normalized rollout under the existing CODEX_HOME",
         ));
     }
-    let relative = path
-        .strip_prefix(home)
+    #[cfg(windows)]
+    let (comparison_path, comparison_home) = (
+        windows_comparison(
+            path.to_str()
+                .ok_or_else(|| invalid("a Unicode native rollout path"))?,
+        ),
+        windows_comparison(
+            home.to_str()
+                .ok_or_else(|| invalid("a Unicode CODEX_HOME"))?,
+        ),
+    );
+    #[cfg(windows)]
+    let (checked_path, checked_home) = (Path::new(&comparison_path), Path::new(&comparison_home));
+    #[cfg(not(windows))]
+    let (checked_path, checked_home) = (path, home);
+    let relative = checked_path
+        .strip_prefix(checked_home)
         .map_err(|_| invalid("a rollout inside the existing CODEX_HOME"))?;
     let mut parts = relative.components();
     if !matches!(parts.next(), Some(Component::Normal(name)) if name == "sessions" || name == "archived_sessions")
@@ -247,7 +262,28 @@ pub fn location(path: &Path, home: &Path) -> Result<PathBuf> {
     {
         return Err(invalid("a JSONL rollout in sessions or archived_sessions"));
     }
+    #[cfg(windows)]
+    {
+        // Open through the configured home spelling, retaining the provider's
+        // suffix. Case-sensitive Windows directories cannot redirect to a sibling.
+        let suffix: PathBuf = path.components().skip(home.components().count()).collect();
+        Ok(home.join(suffix))
+    }
+    #[cfg(not(windows))]
     Ok(path.into())
+}
+#[cfg(any(windows, test))]
+fn windows_comparison(path: &str) -> String {
+    let mut normalized = path.replace('/', "\\");
+    normalized.make_ascii_lowercase();
+    if let Some(unc) = normalized.strip_prefix(r"\\?\unc\") {
+        format!(r"\\{unc}")
+    } else {
+        normalized
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&normalized)
+            .to_owned()
+    }
 }
 pub fn existing_home() -> Result<PathBuf> {
     if let Some(home) = std::env::var_os("CODEX_HOME") {
@@ -325,6 +361,21 @@ mod tests {
             assert!(notification(&live, &thread)?.is_none());
         }
         Ok(())
+    }
+    #[test]
+    fn windows_aliases_share_one_comparison_spelling() {
+        assert_eq!(
+            windows_comparison(r"\\?\C:\Users\Capture\.codex\sessions\a.jsonl"),
+            windows_comparison(r"c:\users\capture\.CODEX\SESSIONS\a.jsonl")
+        );
+        assert_eq!(
+            windows_comparison(r"\\?\UNC\Server\Share\Capture"),
+            windows_comparison(r"\\server\share\capture")
+        );
+        assert_ne!(
+            windows_comparison(r"C:\Users\Capture"),
+            windows_comparison(r"C:\Users\Capture-other")
+        );
     }
     #[test]
     fn provider_metadata_cannot_authorize_an_unrelated_path() {
