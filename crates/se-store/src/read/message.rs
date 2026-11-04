@@ -8,6 +8,14 @@ impl SqliteSnapshot {
         query: MessageQuery,
         budget: ReadBudget,
     ) -> StoreResult<Page<MessageRecord>> {
+        self.read_messages_with_delivery(query, budget, false)
+    }
+    pub(super) fn read_messages_with_delivery(
+        &self,
+        query: MessageQuery,
+        budget: ReadBudget,
+        pending: bool,
+    ) -> StoreResult<Page<MessageRecord>> {
         let p = self.project_bytes()?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let binding = format!(
@@ -21,6 +29,11 @@ impl SqliteSnapshot {
                 query.full_body
             ))?
         );
+        let binding = if pending {
+            format!("delivery-pending:{binding}")
+        } else {
+            binding
+        };
         let (h, after) = self.window(&budget, &binding, true)?;
         let id = |a: &Actor| {
             key(
@@ -47,12 +60,30 @@ impl SqliteSnapshot {
                 // A sent-or-received view is two index streams, not a broad page
                 // followed by a visibility filter that can hide eligible rows.
                 let mut sent = if from.as_ref().is_none_or(|v| v == &own) {
-                    self.mail_stream(&p, to.as_deref(), Some(&own), &query, h, after, &budget)?
+                    self.mail_stream(
+                        &p,
+                        to.as_deref(),
+                        Some(&own),
+                        &query,
+                        h,
+                        after,
+                        &budget,
+                        pending,
+                    )?
                 } else {
                     Vec::new()
                 };
                 let received = if to.as_ref().is_none_or(|v| v == &own) {
-                    self.mail_stream(&p, Some(&own), from.as_deref(), &query, h, after, &budget)?
+                    self.mail_stream(
+                        &p,
+                        Some(&own),
+                        from.as_deref(),
+                        &query,
+                        h,
+                        after,
+                        &budget,
+                        pending,
+                    )?
                 } else {
                     Vec::new()
                 };
@@ -67,6 +98,7 @@ impl SqliteSnapshot {
                     h,
                     after,
                     &budget,
+                    pending,
                 )?
             };
             rows.sort_by_key(|r| r.0);
@@ -137,7 +169,8 @@ impl SqliteSnapshot {
             last = sent as u64;
             items.push(message);
         }
-        let remaining = if after == 0
+        let remaining = if !pending
+            && after == 0
             && query.unread_only
             && query.kind.is_none()
             && query.sender.is_none()
@@ -192,6 +225,7 @@ impl SqliteSnapshot {
         h: u64,
         after: u64,
         budget: &ReadBudget,
+        pending: bool,
     ) -> StoreResult<Vec<MarkRow>> {
         let unread = query.unread_only && to.is_some();
         let (mut statement, mut args) = mail_sql(
@@ -203,6 +237,9 @@ impl SqliteSnapshot {
             after,
             "d.sent_seq,d.revision,m.delivered_seq,m.read_seq,m.dismissed_seq",
         );
+        if pending {
+            statement.push_str(" AND m.delivered_seq IS NULL");
+        }
         statement.push_str(if unread {
             " ORDER BY m.message_seq LIMIT ?"
         } else {

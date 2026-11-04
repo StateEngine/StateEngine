@@ -377,6 +377,7 @@ impl LaunchCoordinator {
     }
     pub(super) fn retain_recovered(&self, work: Work) -> Result<Arc<Job>> {
         let key = format!("recovered/{}", work.meta.lifecycle);
+        let wake = work.wake.clone();
         let job = Arc::new(Job {
             intent: [0; 32],
             target: (work.meta.project.id.clone(), work.meta.agent.id.clone()),
@@ -384,6 +385,8 @@ impl LaunchCoordinator {
             state: AsyncMutex::new(work),
             ready: watch::channel(None).0,
             settled: AtomicBool::new(false),
+            mail_pending: AtomicBool::new(true),
+            wake,
             task: Mutex::new(None),
         });
         let mut jobs = self

@@ -4,6 +4,26 @@ use crate::{CustodyExecutor, HostFuture, client::lease::Deadline};
 use se_core::{ops::AnyOutput, ports::CustodyPlan};
 use se_store::Admission;
 impl CustodyExecutor for Arc<LaunchCoordinator> {
+    fn notify_mail(&self, recipients: &[crate::runtime::MailRecipient]) -> se_types::Result<()> {
+        use std::sync::atomic::Ordering;
+        let jobs = self
+            .jobs
+            .0
+            .lock()
+            .map_err(|_| error("mail wake registry", "launch registry is poisoned"))?;
+        for job in jobs.values() {
+            if !job.settled.load(Ordering::Acquire)
+                && recipients
+                    .iter()
+                    .any(|who| job.target == (who.project.clone(), who.agent.clone()))
+            {
+                job.mail_pending.store(true, Ordering::Release);
+                job.wake.event.notify_one();
+            }
+        }
+        Ok(())
+    }
+
     fn import_profiles(&self) -> se_types::Result<Vec<se_store::Profile>> {
         use se_core::config_policy::{EffectiveSandbox, Provider};
         let providers = match self.options.configuration.launch.provider {

@@ -26,6 +26,8 @@ pub(super) async fn measured(
     // submit performs finite bounded queue admission and serialization.
     // Preserve the returned waiter even if native work uses the final
     // part of the budget; the original request identity is unchanged.
+    let recipients = super::mail::recipients(&batch);
+    let custody = context.custody.get().cloned();
     let writer = context.writer.clone();
     let submit_deadline = deadline.clone();
     let submitted = identity.clone();
@@ -51,7 +53,14 @@ pub(super) async fn measured(
                             }
                             Err(_) => pending.failed_attempt(&submitted),
                         };
-                        (receipt, settled)
+                        let notified = if receipt.is_ok() {
+                            custody
+                                .as_ref()
+                                .map_or(Ok(()), |custody| custody.notify_mail(&recipients))
+                        } else {
+                            Ok(())
+                        };
+                        (receipt, settled.and(notified))
                     }))
                 }
                 Err(error) => {

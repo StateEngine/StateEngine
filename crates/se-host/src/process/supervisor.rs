@@ -25,6 +25,8 @@ pub(super) struct Job {
     pub state: AsyncMutex<Work>,
     pub ready: watch::Sender<Option<std::result::Result<LaunchResult, ErrorBody>>>,
     pub settled: AtomicBool,
+    pub mail_pending: AtomicBool,
+    pub wake: Arc<events::Wake>,
     pub task: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 impl LaunchCoordinator {
@@ -103,13 +105,19 @@ impl LaunchCoordinator {
                         "resolve retained active/cleanup jobs before launching more agents",
                     ));
                 }
+                let target = (plan.project.id.clone(), plan.agent.id.clone());
+                let lifecycle = plan.lifecycle.clone();
+                let work = Work::new(plan, admission);
+                let wake = work.wake.clone();
                 let job = Arc::new(Job {
                     intent,
-                    target: (plan.project.id.clone(), plan.agent.id.clone()),
-                    lifecycle: plan.lifecycle.clone(),
-                    state: AsyncMutex::new(Work::new(plan, admission)),
+                    target,
+                    lifecycle,
+                    state: AsyncMutex::new(work),
                     ready: watch::channel(None).0,
                     settled: AtomicBool::new(false),
+                    mail_pending: AtomicBool::new(true),
+                    wake,
                     task: Mutex::new(None),
                 });
                 jobs.insert(key, job.clone());

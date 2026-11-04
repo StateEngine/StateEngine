@@ -177,6 +177,29 @@ impl MailNotice {
 /// The core mail planner adds this bound to Snapshot; ordinary readers and
 /// pre-existing Snapshot implementations need no new capability.
 pub trait MailSnapshot: Snapshot {
+    /// Actual current read/dismiss evidence for this recipient's exact message.
+    fn mail_resolution(
+        &mut self,
+        message: se_types::MessageId,
+        recipient: AgentId,
+    ) -> StoreResult<se_types::Read<StoredEvent>>;
+    /// Most recent accepted user input after a checked notice boundary. This
+    /// excludes tools/assistant turns and remains bound to the exact session.
+    fn mail_input(
+        &mut self,
+        recipient: AgentId,
+        session: SessionId,
+        after: StorePosition,
+    ) -> StoreResult<se_types::Read<StoredEvent>>;
+
+    /// Indexed, unread and undelivered recipient mail. Delivered-but-unread
+    /// notices retain settlement debt without hiding a newer pending message.
+    fn mail_pending(
+        &mut self,
+        recipient: AgentId,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<MessageRecord>>;
+
     /// Read only a committed recipient read or dismiss
     /// concerning this verified recipient, without broad event visibility.
     fn mail_disposition(

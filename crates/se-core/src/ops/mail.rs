@@ -180,7 +180,21 @@ pub fn reserve_notice<S: MailSnapshot>(
         .map_err(|error| store_error(&error))?;
     for record in notices.items() {
         let (_, notice) = intent(record)?;
-        if matches_target(notice, &request.target) {
+        let mut pending = false;
+        for id in &notice.ids {
+            let message = scope::require_present(
+                cx.read
+                    .message(id.clone())
+                    .map_err(|error| store_error(&error))?,
+                "reserved mail",
+                scope::COMMITTED_READ_RECOVERY,
+            )?;
+            pending |= message.delivered.is_none()
+                && message.read.is_none()
+                && message.dismissed.is_none()
+                && message.superseded_by.is_none();
+        }
+        if matches_target(notice, &request.target) && pending {
             return readback(cx, &request.target, record.clone())
                 .map(|value| OpStep::Complete(Read::Present { value }));
         }
@@ -193,16 +207,7 @@ pub fn reserve_notice<S: MailSnapshot>(
     }
     let messages = cx
         .read
-        .messages(
-            se_store::MessageQuery {
-                recipient: Some(Actor::Agent(request.target.agent.clone())),
-                sender: None,
-                kind: None,
-                unread_only: true,
-                full_body: false,
-            },
-            budget(32, 262144)?,
-        )
+        .mail_pending(request.target.agent.clone(), budget(32, 262144)?)
         .map_err(|error| store_error(&error))?;
     let window = messages
         .window()
