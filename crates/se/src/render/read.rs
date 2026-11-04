@@ -1,3 +1,5 @@
+#[path = "notification.rs"]
+pub(super) mod notification;
 use se_core::ops::outputs::*;
 use se_types::{OmissionReason, Page, Read};
 use std::io::{self, Write};
@@ -124,6 +126,7 @@ pub fn messages(value: &MessagePage, out: &mut impl Write) -> io::Result<()> {
             "{}  {} → {}  {}",
             message.id, message.from.name, message.to.name, message.sent_at
         )?;
+        notification::render(&message.notification, out)?;
         if let Some(unreadable) = &message.unreadable {
             writeln!(out, "  Message unreadable: {}", unreadable.reason)?;
         } else {

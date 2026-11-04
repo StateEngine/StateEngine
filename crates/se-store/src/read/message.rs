@@ -16,6 +16,10 @@ impl SqliteSnapshot {
                 .prepare("SELECT sent_seq FROM message_deliveries WHERE 0")
                 .map_err(|error| self.read_sql(error))?;
         }
+        if self.info.schema_version >= 4 {
+            self.db.prepare("SELECT quiet,wake_state,wake_event_seq,wake_code FROM message_deliveries WHERE 0")
+                .map_err(|error| self.read_sql(error))?;
+        }
         Ok(())
     }
 
@@ -167,7 +171,17 @@ impl SqliteSnapshot {
                 &message.reply_to,
                 message.body_complete,
             ))?;
-            let cost = (body.len() + metadata.len()) as u64 + 1024;
+            let notifications = message
+                .notifications
+                .iter()
+                .map(|n| {
+                    n.recipient.wire().len()
+                        + n.state.len()
+                        + n.code.as_ref().map_or(0, String::len)
+                        + 256
+                })
+                .sum::<usize>();
+            let cost = (body.len() + metadata.len() + notifications) as u64 + 1024;
             if cost + bytes > u64::from(budget.page.max_bytes.get()) {
                 if items.is_empty() {
                     let mut e = fail(
@@ -258,6 +272,15 @@ impl SqliteSnapshot {
             self.info.schema_version,
         );
         if pending {
+            if self.info.schema_version >= 4 {
+                // Pending mail always has an explicit recipient and an unread
+                // predicate. Skip quiet rows in the index, before the limit.
+                statement = statement.replace(
+                    "INDEXED BY mail_unread",
+                    "INDEXED BY mail_notification_pending",
+                );
+                statement.push_str(" AND d.quiet=0");
+            }
             statement.push_str(if self.info.schema_version >= 3 {
                 " AND d.delivered_seq IS NULL"
             } else {

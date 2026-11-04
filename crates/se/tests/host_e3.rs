@@ -140,6 +140,7 @@ fn listener_message_working_and_hook() -> Check {
                 let message = || -> Result<se_core::ops::AnyOp, Box<dyn std::error::Error>> {
                     Ok(se_core::ops::AnyOp::MessageSend(
                         se_core::ops::MessageSend {
+                            quiet: false,
                             to: b.as_str().into(),
                             body: "real listener message".into(),
                             kind: Default::default(),

@@ -166,6 +166,7 @@ pub(super) fn decode<R: ImportSnapshot>(
                     message: id.clone(),
                     recipient: to,
                     kind: native_kind.into(),
+                    quiet: source_quiet(row)?,
                     body: InputText::Inline(text_at(row, "body")?.into()),
                     refs,
                     reply_to,
@@ -287,4 +288,29 @@ fn retained(row: &Value, id: MessageId, key: String, meaning: &str) -> StoreResu
         dropped_by_policy: false,
         dispositions: None,
     })
+}
+
+// Node stores notification intent in work_wake, not the message body. A legacy
+// message without work addressing was quiet and remains so after import.
+fn source_quiet(row: &Value) -> StoreResult<bool> {
+    let encoded;
+    let wake = match row.get("work_wake") {
+        None | Some(Value::Null) => match row.get("work_wake_json") {
+            None | Some(Value::Null) => return Ok(true),
+            Some(Value::String(text)) => {
+                encoded = serde_json::from_str::<Value>(text).map_err(invalid)?;
+                &encoded
+            }
+            Some(_) => return Err(invalid("Node work_wake_json must be a JSON string")),
+        },
+        Some(value) => value,
+    };
+    if !wake.is_object() {
+        return Err(invalid("Node work_wake must be an object"));
+    }
+    match wake.get("quiet") {
+        None => Ok(false),
+        Some(Value::Bool(quiet)) => Ok(*quiet),
+        Some(_) => Err(invalid("Node work_wake quiet must be a boolean")),
+    }
 }

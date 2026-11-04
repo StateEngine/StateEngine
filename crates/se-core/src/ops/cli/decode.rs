@@ -204,6 +204,7 @@ pub fn from_matches_with_key(
             "message.send" => AnyOp::MessageSend(MessageSend {
                 to: required(m, "to")?,
                 body: required(m, "body")?,
+                quiet: flag(m, "no_wake"),
                 kind: serde_json::from_value(serde_json::Value::String(required(m, "kind")?))
                     .map_err(|_| SeError::invalid("kind", "a registered message kind"))?,
                 work: work_addressing(m)?,

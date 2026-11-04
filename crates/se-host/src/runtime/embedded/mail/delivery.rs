@@ -46,14 +46,17 @@ impl Generation {
                 "the current unfenced epoch",
             ));
         }
-        match services
+        let held = match services
             .binding_state(native, self.service_options(&options, &deadline)?)
             .await?
         {
-            api::Read::Present { value } if value.status == api::TargetStatus::Eligible => (),
-            api::Read::Present { .. } => return Ok(()), // Held/revoked never selects or unholds.
+            api::Read::Present { value } => match value.status {
+                api::TargetStatus::Eligible => false,
+                api::TargetStatus::Held => true,
+                api::TargetStatus::Revoked => return Ok(()),
+            },
             other => return Err(read_error("native mail eligibility", other)),
-        }
+        };
         let current = target(native, options.generation).map_err(|e| support::api_error(&e))?;
         self.settle_native(router, native, &current, &deadline)
             .await
@@ -113,27 +116,78 @@ impl Generation {
         }
         // This is also the lost-reply path: only explicit Absent permits another
         // callback, always with the same durable notice identity and bytes.
-        let observed = services
-            .notice_status(
-                native,
-                &notice.id,
-                self.service_options(&options, &deadline)?,
-            )
-            .await?;
-        let admitted = match observed {
-            api::Read::Present { value } => value,
-            api::Read::Absent { .. } => {
-                deadline.remaining().map_err(|e| support::api_error(&e))?;
-                services
+        let outcome: api::Result<Option<api::NoticeAdmission>> = async {
+            match services
+                .notice_status(
+                    native,
+                    &notice.id,
+                    self.service_options(&options, &deadline)?,
+                )
+                .await?
+            {
+                api::Read::Present { value } => Ok(Some(value)),
+                api::Read::Absent { .. } if held => {
+                    self.observe_native(
+                        router,
+                        native,
+                        &reserved,
+                        se_store::mail::OfferReport::Held,
+                        &deadline,
+                    )
+                    .await?;
+                    // No callback may select or unhold this target.
+                    Ok(None)
+                }
+                api::Read::Absent { .. } => services
                     .deliver_notice(&notice, self.service_options(&options, &deadline)?)
-                    .await?
+                    .await
+                    .map(Some),
+                other => Err(read_error("native notice reconciliation", other)),
             }
-            other => return Err(read_error("native notice reconciliation", other)),
-        };
-        let admitted = match admitted {
-            api::NoticeAdmission::Admitted(value) | api::NoticeAdmission::Replayed(value) => value,
-            api::NoticeAdmission::Held(_) => return Ok(()),
-            api::NoticeAdmission::Refused(error) => return Err(error),
+        }
+        .await;
+        let admitted = match outcome {
+            Ok(None) => return Ok(()),
+            Err(error) => {
+                self.observe_native(
+                    router,
+                    native,
+                    &reserved,
+                    se_store::mail::OfferReport::Unknown {
+                        code: "native-outcome-unknown".into(),
+                    },
+                    &deadline,
+                )
+                .await?;
+                return Err(error);
+            }
+            Ok(Some(api::NoticeAdmission::Held(_))) => {
+                return self
+                    .observe_native(
+                        router,
+                        native,
+                        &reserved,
+                        se_store::mail::OfferReport::Held,
+                        &deadline,
+                    )
+                    .await;
+            }
+            Ok(Some(api::NoticeAdmission::Refused(error))) => {
+                self.observe_native(
+                    router,
+                    native,
+                    &reserved,
+                    se_store::mail::OfferReport::Failed {
+                        code: "native-refused".into(),
+                    },
+                    &deadline,
+                )
+                .await?;
+                return Err(error);
+            }
+            Ok(Some(
+                api::NoticeAdmission::Admitted(value) | api::NoticeAdmission::Replayed(value),
+            )) => value,
         };
         if admitted.dedupe_sha256 != notice.dedupe_sha256 {
             return Err(support::refused(
@@ -143,38 +197,17 @@ impl Generation {
         }
         // Queue commit is offered evidence only. It cannot produce message
         // delivered/read marks or claim the model has consumed the notice.
-        let request = core::ObserveOffer {
-            target: current,
-            effect: reserved.effect_id,
-            attempt: reserved.effect_id,
-            evidence: se_store::mail::OfferObservation {
-                version: 1,
-                notice_id: notice_record(&reserved.notice_id)
-                    .map_err(|e| support::api_error(&e))?,
-                target_agent: reserved.target.agent,
-                session: reserved.target.session,
-                epoch: reserved.target.epoch,
-                generation: reserved.target.generation,
-                fingerprint: reserved.target.fingerprint,
-                observed_at_us: crate::runtime::start::now_unix_micros()
-                    .map_err(|e| support::api_error(&e))?,
-                digest: *reserved.digest.as_bytes(),
-                report: se_store::mail::OfferReport::NativeAdmitted {
-                    event_id: admitted.committed.id.0,
-                    sequence: admitted.admitted_sequence.get(),
-                },
-            },
-        };
-        step::run(
+        self.observe_native(
             router,
             native,
-            options.generation,
+            &reserved,
+            se_store::mail::OfferReport::NativeAdmitted {
+                event_id: admitted.committed.id.0,
+                sequence: admitted.admitted_sequence.get(),
+            },
             &deadline,
-            move |kernel, cx| core::observe_offer(kernel, cx, request),
-            core::observation_committed,
         )
-        .await
-        .map_err(|e| support::api_error(&e))?;
+        .await?;
         Ok(())
     }
     async fn settle_native(
@@ -272,7 +305,7 @@ impl Generation {
         Ok(())
     }
 }
-fn notice_record(id: &se_types::NoticeId) -> Result<RecordId> {
+pub(super) fn notice_record(id: &se_types::NoticeId) -> Result<RecordId> {
     let hex = id
         .as_str()
         .strip_prefix("notice-")

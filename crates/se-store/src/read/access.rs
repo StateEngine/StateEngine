@@ -276,7 +276,7 @@ impl SqliteSnapshot {
         selected_recipient: Option<&[u8]>,
     ) -> StoreResult<MessageRecord> {
         let e = self.record(sent)?;
-        let (message, recipient, work, kind, body, refs, reply_to) = match e.body {
+        let (message, recipient, work, kind, body, refs, reply_to, quiet) = match e.body {
             EventBody::MessageSent {
                 message,
                 recipient,
@@ -284,7 +284,8 @@ impl SqliteSnapshot {
                 body,
                 refs,
                 reply_to,
-            } => (message, recipient, None, kind, body, refs, reply_to),
+                quiet,
+            } => (message, recipient, None, kind, body, refs, reply_to, quiet),
             EventBody::WorkMessageSent {
                 message,
                 work,
@@ -292,6 +293,7 @@ impl SqliteSnapshot {
                 body,
                 refs,
                 reply_to,
+                quiet,
             } => {
                 let preview = match &self.scope.visibility {
                     Visibility::SelfOnly(agent) => Some(Actor::Agent(agent.clone())),
@@ -330,6 +332,7 @@ impl SqliteSnapshot {
                     body,
                     refs,
                     reply_to,
+                    quiet,
                 )
             }
             _ => return Err(invalid("message head points to another event kind")),
@@ -367,6 +370,8 @@ impl SqliteSnapshot {
                     .map_err(invalid)
             })
             .transpose()?;
+        let notifications =
+            self.notification_rows(sent, &e.header.actor, &recipient, work.as_ref(), quiet)?;
         Ok(MessageRecord {
             message,
             event: e.header.event,
@@ -384,6 +389,8 @@ impl SqliteSnapshot {
             dismissed: dismissed.map(pos).transpose()?,
             superseded_by,
             body_complete: true,
+            quiet,
+            notifications,
         })
     }
 }

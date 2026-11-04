@@ -197,6 +197,7 @@ pub fn message<R: Snapshot>(
             body,
             refs,
             reply_to,
+            ..
         } => (message, Some(recipient), None, kind, body, refs, reply_to),
         EventBody::WorkMessageSent {
             message,
@@ -205,6 +206,7 @@ pub fn message<R: Snapshot>(
             body,
             refs,
             reply_to,
+            ..
         } => (message, None, Some(work), kind, body, refs, reply_to),
         _ => {
             return Err(scope::unreadable(
@@ -227,6 +229,14 @@ pub fn message<R: Snapshot>(
     };
     let kind = serde_json::from_value(serde_json::Value::String(kind))
         .map_err(|e| scope::unreadable("stored message kind", &e.to_string()))?;
+    let record = scope::require_present(
+        cx.read
+            .message(message.clone())
+            .map_err(|e| store_error(&e))?,
+        "message notification",
+        "Inspect the original message with its original key; do not send another message.",
+    )?;
+    let notification = notification(cx.read, record.quiet, record.notifications)?;
     Ok(MessageOutput {
         state: commit_state(&output.commit),
         message_id: message,
@@ -260,6 +270,7 @@ pub fn message<R: Snapshot>(
             at: None,
         },
         writer: writer(&output.commit),
+        notification,
     })
 }
 
@@ -336,4 +347,28 @@ pub fn working_state_get<R: Snapshot>(
         other => other.map(|_| unreachable!()),
     };
     Ok(WorkingStateOutput { agent: name, value })
+}
+
+/// Shared CLI/MCP wire projection; resolving actor names never changes marks.
+pub fn notification<R: Snapshot>(
+    read: &mut R,
+    quiet: bool,
+    records: Vec<se_store::NotificationRecord>,
+) -> Result<Notification> {
+    let recipients = records
+        .into_iter()
+        .map(|record| {
+            Ok(NotificationRecipient {
+                recipient: actor_ref(read, &record.recipient)?,
+                state: record.state,
+                event_id: record.event,
+                at: record.recorded_at_us.map(timestamp).transpose()?,
+                code: record.code,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Notification {
+        intent: if quiet { "quiet" } else { "notify" }.into(),
+        recipients,
+    })
 }

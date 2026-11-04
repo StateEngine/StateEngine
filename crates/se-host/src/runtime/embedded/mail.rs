@@ -5,6 +5,7 @@
     reason = "Preserve API 2 callback errors by value."
 )]
 mod delivery;
+mod observation;
 mod status;
 mod step;
 use super::{Generation, binding, store, support};

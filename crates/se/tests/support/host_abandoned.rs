@@ -9,6 +9,7 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
             admitted: se_host::HostedCall {
                 input: se_host::HostedInput::Operation(se_core::ops::AnyOp::MessageSend(
                     se_core::ops::MessageSend {
+                        quiet: false,
                         to: f.b.as_str().into(),
                         body: format!("actual abandoned wait {request}"),
                         kind: Default::default(),

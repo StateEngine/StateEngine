@@ -1,4 +1,4 @@
-use super::read::next_step;
+use super::read::{next_step, notification};
 use se_core::{
     config_policy::{Approval, EffectiveSandbox, Provider, ResolvedProfile},
     ops::outputs::*,
@@ -99,6 +99,7 @@ pub fn message(value: &MessageOutput, out: &mut impl Write) -> io::Result<()> {
         value.message_id, value.from.name, value.to.name
     )?;
     writeln!(out, "Delivery: {}", value.delivery.state)?;
+    notification::render(&value.notification, out)?;
     writeln!(
         out,
         "Event: {}; request key: {}",

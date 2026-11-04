@@ -15,6 +15,7 @@ fn work(
         f.owner_project(),
         Some(request(key)?),
         vec![EventBody::WorkMessageSent {
+            quiet: false,
             message: id,
             work: WorkAddressing {
                 action: WorkAction::Finding,

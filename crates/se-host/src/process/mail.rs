@@ -187,22 +187,27 @@ impl LaunchCoordinator {
                 })
                 .map_err(|failure| (failure.error, failure.completed_bytes))
         };
-        let report = match offered {
-            Ok(report) => report,
-            Err((error, completed_bytes)) => {
-                // Only an explicit zero-byte report permits a later event to retry
-                // this notice. Partial or unmeasured writes retain their attempt.
-                if completed_bytes == Some(0) {
-                    work.mail.flight = None;
-                }
-                return Err(error);
-            }
+        let (report, failure) = match offered {
+            Ok(report) => (report, None),
+            Err((error, Some(0))) => (
+                se_store::mail::OfferReport::Failed {
+                    code: "zero-byte-write".into(),
+                },
+                Some(error),
+            ),
+            Err((error, _)) => (
+                se_store::mail::OfferReport::Unknown {
+                    code: "acceptance-unknown".into(),
+                },
+                Some(error),
+            ),
         };
         let flight = work
             .mail
             .flight
             .as_mut()
             .ok_or_else(|| error("mail offer", "retained attempt missing"))?;
+        let no_input = matches!(&report, se_store::mail::OfferReport::Failed { .. });
         flight.evidence = Some(se_store::mail::OfferObservation {
             version: 1,
             notice_id: descriptor,
@@ -215,7 +220,14 @@ impl LaunchCoordinator {
             digest: *digest.as_bytes(),
             report,
         });
-        work.mail.idle = false;
-        self.reconcile_mail(work, &target, deadline).await
+        // A proved zero-byte failure did not start a turn; retain eligibility
+        // for an explicit same-key retry wake.
+        work.mail.idle = no_input;
+        let observed = self.reconcile_mail(work, &target, deadline).await;
+        match (observed, failure) {
+            (Err(record), Some(original)) => Err(record.with_cause(original)),
+            (Ok(()), Some(original)) => Err(original),
+            (result, None) => result,
+        }
     }
 }

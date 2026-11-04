@@ -166,6 +166,22 @@ fn native_mail_reconciles_commit_wakes_lost_replies_and_holds_without_read_marks
             // Let the initial debt sweep finish before a new real commit tests
             // the retained completion observer's native recipient wake.
             tokio::time::sleep(Duration::from_millis(100)).await;
+            send(
+                &home,
+                &owner,
+                &image,
+                &project,
+                &agent,
+                "native-quiet-note",
+                true,
+            )
+            .await?;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert_eq!(
+                native.0.lock().map_err(|_| "fixture lock")?.attempts,
+                0,
+                "quiet mail entered native delivery"
+            );
             native.0.lock().map_err(|_| "fixture lock")?.status = api::TargetStatus::Held;
             let before = native.0.lock().map_err(|_| "fixture lock")?.observations;
             send(
@@ -175,6 +191,7 @@ fn native_mail_reconciles_commit_wakes_lost_replies_and_holds_without_read_marks
                 &project,
                 &agent,
                 "native-mail-send-1",
+                false,
             )
             .await?;
             let until = Instant::now() + Duration::from_secs(8);
@@ -197,6 +214,7 @@ fn native_mail_reconciles_commit_wakes_lost_replies_and_holds_without_read_marks
                 &project,
                 &agent,
                 "native-mail-send-2",
+                false,
             )
             .await?;
             let until = Instant::now() + Duration::from_secs(8);
@@ -207,16 +225,26 @@ fn native_mail_reconciles_commit_wakes_lost_replies_and_holds_without_read_marks
                 );
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            let failed = result(
-                opened
-                    .host
-                    .adoption_status(&api::OwnerAuthority, page(), options.clone())
-                    .await,
-            )?;
-            assert!(
-                matches!(failed.items[0].state, api::AdoptionState::Unreadable(_)),
-                "transient failure was hidden during backoff"
-            );
+            // The callback attempt precedes its durable outcome and the
+            // worker's published error. Synchronize on the public completed
+            // failure, rather than the fixture's entry counter.
+            let until = Instant::now() + Duration::from_secs(8);
+            loop {
+                let failed = result(
+                    opened
+                        .host
+                        .adoption_status(&api::OwnerAuthority, page(), options.clone())
+                        .await,
+                )?;
+                if matches!(failed.items[0].state, api::AdoptionState::Unreadable(_)) {
+                    break;
+                }
+                assert!(
+                    Instant::now() < until,
+                    "transient failure was hidden during backoff: {failed:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
             // No new mail or native_state_changed nudge follows this failure.
             let until = Instant::now() + Duration::from_secs(8);
             loop {
@@ -357,8 +385,8 @@ fn native_mail_reconciles_commit_wakes_lost_replies_and_holds_without_read_marks
     assert!(outside.status.success());
     let counts: serde_json::Value = serde_json::from_slice(&outside.stdout)?;
     assert_eq!(
-        counts["effect.offered"], 1,
-        "native admission did not leave exactly one durable offer"
+        counts["effect.offered"], 3,
+        "native held, unknown and admitted observations were duplicated or lost"
     );
     assert!(
         counts.get("message.read") == baseline.get("message.read")
@@ -388,6 +416,7 @@ async fn send(
     project: &api::ProjectId,
     agent: &api::AgentId,
     key: &str,
+    quiet: bool,
 ) -> Check {
     let (home, owner, image, project, agent, key) = (
         home.to_path_buf(),
@@ -398,7 +427,8 @@ async fn send(
         key.to_owned(),
     );
     let sent = tokio::task::spawn_blocking(move || {
-        Command::new(image)
+        let mut command = Command::new(image);
+        command
             .arg("--home")
             .arg(home)
             .args([
@@ -412,6 +442,7 @@ async fn send(
                 "native mail body is never in the queue notice",
                 "--json",
             ])
+            .args(if quiet { vec!["--no-wake"] } else { vec![] })
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &owner)

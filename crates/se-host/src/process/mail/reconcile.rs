@@ -30,6 +30,16 @@ impl LaunchCoordinator {
                 .await?;
                 flight.observed = true;
             }
+            // Only a witnessed zero-byte failure permits a fresh attempt on a
+            // later commit/retry wake. Uncertain acceptance retains this flight.
+            if flight
+                .evidence
+                .as_ref()
+                .is_some_and(|e| matches!(e.report, se_store::mail::OfferReport::Failed { .. }))
+            {
+                work.mail.flight = None;
+                return self.settle_mail(target, deadline).await;
+            }
             let recipient = target.agent.clone();
             let session = target.session.clone();
             let through = flight.reservation.through.clone();

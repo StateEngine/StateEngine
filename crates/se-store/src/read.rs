@@ -20,6 +20,7 @@ mod mail;
 mod mail_legacy;
 mod message;
 mod message_count;
+mod notification;
 mod page;
 mod project;
 mod query;

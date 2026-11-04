@@ -60,7 +60,10 @@ pub(crate) fn recipients(batch: &AtomicBatch) -> Vec<MailRecipient> {
         let Scope::Project(project) = &event.header.scope else {
             continue;
         };
-        if let EventBody::WorkMessageSent { work, .. } = &event.body {
+        if let EventBody::WorkMessageSent {
+            work, quiet: false, ..
+        } = &event.body
+        {
             for agent in &work.addressees {
                 let recipient = MailRecipient {
                     project: project.clone(),
@@ -74,6 +77,7 @@ pub(crate) fn recipients(batch: &AtomicBatch) -> Vec<MailRecipient> {
         }
         let agent = match &event.body {
             EventBody::MessageSent {
+                quiet: false,
                 recipient: Actor::Agent(agent),
                 ..
             }

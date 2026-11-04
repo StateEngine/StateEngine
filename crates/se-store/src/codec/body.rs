@@ -32,6 +32,16 @@ pub(crate) fn body(
                     .try_into()
                     .map_err(invalid)?,
                 recipient: actor(c, &recipient, &s)?,
+                quiet: if connection::info(c)?.schema_version >= 4 {
+                    c.query_row(
+                        "SELECT quiet FROM message_data WHERE event_seq=?",
+                        [seq],
+                        |r| r.get(0),
+                    )
+                    .map_err(sql)?
+                } else {
+                    false
+                },
                 kind,
                 body: stored_text(c, seq, "body")?,
                 refs: serde_json::from_str(&refs).map_err(invalid)?,
@@ -45,6 +55,11 @@ pub(crate) fn body(
             WorkMessageSent {
                 message: field(&v, "message")?,
                 work: field(&v, "work")?,
+                quiet: v
+                    .get("quiet")
+                    .map(|v| serde_json::from_value(v.clone()).map_err(invalid))
+                    .transpose()?
+                    .unwrap_or(false),
                 kind: field(&v, "kind")?,
                 body: stored_text(c, seq, "body")?,
                 refs: field(&v, "refs")?,

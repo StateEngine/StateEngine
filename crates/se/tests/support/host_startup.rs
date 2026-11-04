@@ -280,6 +280,7 @@ pub fn without_temp_client(args: &[std::ffi::OsString]) -> Check {
         &ready.endpoint,
         se_host::client::lease::ClientCredential::Machine(copy_secret(&credential)?),
         se_core::ops::AnyOp::MessageSend(se_core::ops::MessageSend {
+            quiet: false,
             to: f.b.as_str().into(),
             body: "detached native message".into(),
             kind: Default::default(),

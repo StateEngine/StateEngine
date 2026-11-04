@@ -169,6 +169,7 @@ pub fn check(f: &Fixture, case: Capture<'_>) -> Check {
             &ready.endpoint,
             credential()?,
             se_core::ops::AnyOp::MessageSend(se_core::ops::MessageSend {
+                quiet: false,
                 to: f.b.as_str().into(),
                 body: "capture refusal leaves message available".into(),
                 kind: Default::default(),

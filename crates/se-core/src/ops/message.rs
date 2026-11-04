@@ -224,6 +224,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
             refs: record.refs,
             delivery,
             disposition,
+            notification: receipt::notification(cx.read, record.quiet, record.notifications)?,
             body: MessageBody {
                 text: body[..preview_end].into(),
                 complete,

@@ -303,6 +303,7 @@ fn input_command(name: &str, c: Command) -> Command {
         "message.send" => c
             .arg(positional("to", 1, true).help("A registered recipient, or floor with --work-action and --addressee"))
             .arg(positional("body", 2, true))
+            .arg(toggle("no_wake").long("no-wake").help("Keep this note unread in the inbox without notifying recipients"))
             .arg(value("kind").default_value("note").value_parser([
                 "note", "task", "question", "answer", "blocker", "done", "handoff", "finding",
             ]))

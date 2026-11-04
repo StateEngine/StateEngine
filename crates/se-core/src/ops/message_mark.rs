@@ -168,6 +168,7 @@ fn row<S: Snapshot>(cx: &mut Cx<'_, S>, record: MessageRecord) -> Result<Message
             .into(),
             at: None,
         },
+        notification: receipt::notification(cx.read, record.quiet, record.notifications)?,
         body: MessageBody {
             bytes: body.len() as u64,
             text: body,

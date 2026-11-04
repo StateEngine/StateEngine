@@ -191,6 +191,9 @@ impl CoreOps for Kernel {
         let kind = serde_json::to_value(&input.kind)
             .map_err(|e| scope::unreadable("message kind", &e.to_string()))?;
         let mut intent = serde_json::json!({"kind":kind,"body":input.body,"refs":refs,"reply_to":input.reply_to});
+        if input.quiet {
+            intent["quiet"] = serde_json::Value::Bool(true);
+        }
         if let Some(recipient) = &recipient {
             intent["recipient"] = serde_json::json!(scope::actor_id(recipient));
         } else {
@@ -210,6 +213,7 @@ impl CoreOps for Kernel {
                 body: InputText::Inline(input.body),
                 refs,
                 reply_to: input.reply_to,
+                quiet: input.quiet,
             }
         } else {
             EventBody::MessageSent {
@@ -221,6 +225,7 @@ impl CoreOps for Kernel {
                 body: InputText::Inline(input.body),
                 refs,
                 reply_to: input.reply_to,
+                quiet: input.quiet,
             }
         };
         let event = self.event(body, cx)?;

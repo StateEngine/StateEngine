@@ -51,6 +51,16 @@ pub struct OfferObservation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OfferReport {
+    /// Native target is explicitly held; no admission occurred.
+    Held,
+    /// The transport proved that no bytes were accepted; retry is safe.
+    Failed {
+        code: String,
+    },
+    /// A partial write or lost reply leaves acceptance unknown.
+    Unknown {
+        code: String,
+    },
     TransportWritten {
         transport: MailTransport,
         bytes: u64,
@@ -80,6 +90,14 @@ impl OfferObservation {
             ));
         }
         let valid = match &self.report {
+            OfferReport::Held => true,
+            OfferReport::Failed { code } | OfferReport::Unknown { code } => {
+                !code.is_empty()
+                    && code.len() <= 64
+                    && code
+                        .bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            }
             OfferReport::TransportWritten { bytes, .. } => (1..=8192).contains(bytes),
             OfferReport::VendorReported { event_id, .. } => id(event_id),
             OfferReport::NativeAdmitted { event_id, sequence } => id(event_id) && *sequence > 0,

@@ -6,6 +6,7 @@ pub(crate) mod decision;
 pub(crate) mod effect;
 mod mail;
 mod message;
+mod notification;
 mod revision;
 mod work_message;
 pub(crate) use revision::{expected, revision_for};
@@ -323,7 +324,9 @@ pub(crate) fn apply(
             body,
             refs,
             reply_to,
+            quiet,
         } => {
+            notification::require_schema(c, quiet)?;
             if refs.len() > 64
                 || !matches!(
                     kind.as_str(),
@@ -380,8 +383,27 @@ pub(crate) fn apply(
                     ));
                 }
             }
-            c.execute("INSERT INTO message_data(event_seq,message_id,recipient_id,message_kind,body_payload,refs,reply_to)
-                    VALUES(?,?,?,?,?,?,?)",crate::sql_value::sql_params![seq,m,recipient,kind,body,codec::encode(&refs)?,reply]).map_err(sql)?;
+            let message_insert = if connection::info(c)?.schema_version >= 4 {
+                format!(
+                    "INSERT INTO message_data(event_seq,message_id,recipient_id,message_kind,body_payload,refs,reply_to,quiet) VALUES(?,?,?,?,?,?,?,{})",
+                    u8::from(quiet)
+                )
+            } else {
+                "INSERT INTO message_data(event_seq,message_id,recipient_id,message_kind,body_payload,refs,reply_to) VALUES(?,?,?,?,?,?,?)".into()
+            };
+            c.execute(
+                &message_insert,
+                crate::sql_value::sql_params![
+                    seq,
+                    m,
+                    recipient,
+                    kind,
+                    body,
+                    codec::encode(&refs)?,
+                    reply
+                ],
+            )
+            .map_err(sql)?;
             c.execute("INSERT INTO messages(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,revision)
                     VALUES(?,?,?,?,?,?,?)",crate::sql_value::sql_params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
             c.execute(
@@ -392,6 +414,7 @@ pub(crate) fn apply(
             if connection::mail_table(c)? == "message_deliveries" {
                 c.execute("INSERT INTO message_deliveries(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,is_floor,revision) VALUES(?,?,?,?,?,?,0,?)",crate::sql_value::sql_params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
             }
+            notification::sent(c, seq, &recipient, quiet)?;
             count(c, project()?, &recipient, 1, seq)?;
         }
         body @ MessageSuperseded { .. } => {

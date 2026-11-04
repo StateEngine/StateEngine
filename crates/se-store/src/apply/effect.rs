@@ -246,6 +246,9 @@ pub(super) fn apply(
             )
             .map_err(sql)?;
             debt(c, &p, &a, k.as_deref().unwrap_or("human"), 1, seq)?;
+            if let EffectIntent::MailNotice(notice) = &intent {
+                super::notification::reserved(c, h, notice, seq)?;
+            }
         }
         EventBody::EffectOffered {
             effect,
@@ -303,6 +306,9 @@ pub(super) fn apply(
                 ));
             }
             update(c, &p, &id, rev, seq, "offered")?;
+            if let crate::mail::OfferEvidence::Observed(observation) = &evidence {
+                super::notification::observed(c, h, &effect, observation, seq)?;
+            }
         }
         EventBody::EffectSettled {
             effect,

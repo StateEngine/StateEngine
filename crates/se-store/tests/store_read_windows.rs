@@ -39,6 +39,7 @@ fn shared_work_history_and_search_include_only_the_admitted_recipient() -> Check
             f.owner_project(),
             Some(request("work-history")?),
             vec![EventBody::WorkMessageSent {
+                quiet: false,
                 message: message()?,
                 work: se_types::WorkAddressing {
                     action: se_types::WorkAction::Finding,

@@ -176,6 +176,7 @@ pub fn check() -> Check {
                 assert_eq!(text, proof.body);
             }
             EventBody::MessageSent {
+                quiet: false,
                 recipient,
                 body: StoredText::Present(text),
                 ..
@@ -240,6 +241,7 @@ fn write(
             })
         } else {
             AnyOp::MessageSend(se_core::ops::MessageSend {
+                quiet: false,
                 to: agent.as_str().into(),
                 body: body.clone(),
                 kind: Default::default(),

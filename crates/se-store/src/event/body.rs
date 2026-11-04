@@ -170,6 +170,7 @@ pub enum EventBody<T> {
         body: T,
         refs: Vec<EventId>,
         reply_to: Option<MessageId>,
+        quiet: bool,
     },
     WorkMessageSent {
         message: MessageId,
@@ -178,6 +179,7 @@ pub enum EventBody<T> {
         body: T,
         refs: Vec<EventId>,
         reply_to: Option<MessageId>,
+        quiet: bool,
     },
     MessageDelivered {
         message: MessageId,

@@ -50,8 +50,14 @@ pub(super) fn receipt_members(
     let primary = &events[0];
     let mut wakes = Vec::new();
     for e in &events {
-        if let (Scope::Project(p), EventBody::MessageSent { recipient, .. }) =
-            (&e.header.scope, &e.body)
+        if let (
+            Scope::Project(p),
+            EventBody::MessageSent {
+                recipient,
+                quiet: false,
+                ..
+            },
+        ) = (&e.header.scope, &e.body)
         {
             wakes.push(Wake {
                 project: p.clone(),
@@ -59,8 +65,12 @@ pub(super) fn receipt_members(
                 through: e.position.clone(),
             })
         }
-        if let (Scope::Project(project), EventBody::WorkMessageSent { work, .. }) =
-            (&e.header.scope, &e.body)
+        if let (
+            Scope::Project(project),
+            EventBody::WorkMessageSent {
+                work, quiet: false, ..
+            },
+        ) = (&e.header.scope, &e.body)
         {
             for agent in &work.addressees {
                 wakes.push(Wake {

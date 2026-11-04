@@ -76,6 +76,7 @@ fn payload(
             let mut body = pattern.repeat(24500usize.div_ceil(pattern.len()));
             body.truncate(24500);
             Ok(EventBody::MessageSent {
+                quiet: false,
                 message: message()?,
                 recipient: Actor::Agent(f.b.clone()),
                 kind: "finding".into(),

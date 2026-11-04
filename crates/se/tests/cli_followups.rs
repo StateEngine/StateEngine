@@ -93,6 +93,7 @@ fn send(
                     serial()
                 ))?),
                 vec![EventBody::MessageSent {
+                    quiet: false,
                     message: message()?,
                     recipient: Actor::Human(f.owner.clone()),
                     kind: kind.into(),

@@ -1,6 +1,14 @@
 //! Encode event metadata while payload text stays in its typed column.
 use super::*;
 
+// Omitting the default preserves pre-notification canonical fingerprints.
+fn notification(mut facts: Value, quiet: bool) -> Value {
+    if quiet {
+        facts["quiet"] = Value::Bool(true);
+    }
+    facts
+}
+
 pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
     use EventBody::*;
     Ok(match body {
@@ -212,10 +220,14 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             kind,
             refs,
             reply_to,
+            quiet,
             ..
         } => (
             "message.sent",
-            json!({"message":message,"recipient":recipient,"kind":kind,"refs":refs,"reply_to":reply_to}),
+            notification(
+                json!({"message":message,"recipient":recipient,"kind":kind,"refs":refs,"reply_to":reply_to}),
+                *quiet,
+            ),
         ),
         WorkMessageSent {
             message,
@@ -223,10 +235,14 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             kind,
             refs,
             reply_to,
+            quiet,
             ..
         } => (
             "message.work_sent",
-            json!({"message":message,"work":work,"kind":kind,"refs":refs,"reply_to":reply_to}),
+            notification(
+                json!({"message":message,"work":work,"kind":kind,"refs":refs,"reply_to":reply_to}),
+                *quiet,
+            ),
         ),
         MessageSuperseded {
             message,

@@ -32,6 +32,22 @@ pub struct MessageOutput {
     pub body: BodyDigest,
     pub delivery: Delivery,
     pub writer: Writer,
+    pub notification: Notification,
+}
+/// Notification observations are advisory; they never imply delivery or read.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct Notification {
+    /// `quiet` suppresses the wake only; the mail remains in unread views.
+    pub intent: String,
+    pub recipients: Vec<NotificationRecipient>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct NotificationRecipient {
+    pub recipient: ActorRef,
+    pub state: String,
+    pub event_id: Option<EventId>,
+    pub at: Option<String>,
+    pub code: Option<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct WorkingStateValue {
@@ -80,6 +96,7 @@ pub struct MessageRow {
     pub refs: Vec<EventId>,
     pub delivery: Delivery,
     pub disposition: Delivery,
+    pub notification: Notification,
     pub body: MessageBody,
     pub unreadable: Option<UnreadableRow>,
 }

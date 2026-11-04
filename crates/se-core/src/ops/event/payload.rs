@@ -22,8 +22,8 @@ pub(super) fn public<R: Snapshot>(
 ) -> Result<(&'static str, Value)> {
     use EventBody::*;
     Ok(match &event.body {
-        MessageSent { message, recipient, kind, body, refs, reply_to } => ("message.sent", json!({"message_id":message,"to":receipt::actor_ref(read,recipient)?,"kind":kind,"body":text(body)?,"refs":refs,"reply_to":reply_to})),
-        WorkMessageSent {message,work,kind,body,refs,reply_to}=>("message.work_sent",json!({"message_id":message,"to":receipt::floor_ref(),"work":work,"kind":kind,"body":text(body)?,"refs":refs,"reply_to":reply_to})),
+        MessageSent { message, recipient, kind, body, refs, reply_to, quiet } => ("message.sent", json!({"message_id":message,"to":receipt::actor_ref(read,recipient)?,"kind":kind,"body":text(body)?,"refs":refs,"reply_to":reply_to,"quiet":quiet})),
+        WorkMessageSent {message,work,kind,body,refs,reply_to,quiet}=>("message.work_sent",json!({"message_id":message,"to":receipt::floor_ref(),"work":work,"kind":kind,"body":text(body)?,"refs":refs,"reply_to":reply_to,"quiet":quiet})),
         MessageRead{message,recipient}=>("message.read",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?})),
         MessageDismissed{message,recipient}=>("message.dismissed",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?})),
         MessageDelivered{message,recipient,evidence}=>("message.delivered",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?,"evidence":evidence})),

@@ -16,6 +16,7 @@ pub(super) fn send(
         body,
         refs,
         reply_to: _,
+        quiet,
     } = body
     else {
         return Err(invalid("work message dispatch"));
@@ -26,6 +27,7 @@ pub(super) fn send(
             "shared work mail requires schema 3; start the native host with se up to perform its verified migration",
         ));
     }
+    notification::require_schema(c, quiet)?;
     work.validate().map_err(invalid)?;
     if refs.len() > 20
         || !matches!(
@@ -83,6 +85,7 @@ pub(super) fn send(
             ));
         }
         c.execute("INSERT INTO message_deliveries(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,is_floor,revision) VALUES(?,?,?,?,?,?,1,?)",crate::sql_value::sql_params![project,message,seq,sender,recipient,kind,revision]).map_err(sql)?;
+        notification::sent(c, seq, &recipient, quiet)?;
         count(c, &project, &recipient, 1, seq)?;
     }
     codec::aux(c, seq, facts)

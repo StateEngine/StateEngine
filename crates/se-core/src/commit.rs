@@ -45,6 +45,9 @@ pub struct MessageSend {
     /// A registered recipient, or floor with explicit work addressing.
     pub to: String,
     pub body: String,
+    /// Quiet mail remains unread and visible, but never enters notification debt.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub quiet: bool,
     #[serde(default)]
     pub kind: MessageKind,
     #[serde(default)]
@@ -54,6 +57,9 @@ pub struct MessageSend {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub work: Option<se_types::WorkAddressing>,
     pub idempotency_key: IdempotencyKey,
+}
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]

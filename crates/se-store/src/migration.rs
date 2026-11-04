@@ -4,9 +4,10 @@ use crate::{connection, error::*, *};
 use rusqlite::Connection;
 use std::time::Duration;
 /// Ordered additive steps; each runs only above the store's current version.
-const STEPS: [(u32, &str); 2] = [
+const STEPS: [(u32, &str); 3] = [
     (2, include_str!("../migrations/002.sql")),
     (3, include_str!("../migrations/003.sql")),
+    (4, include_str!("../migrations/004.sql")),
 ];
 /// Bound on the pre-migration backup; expiry refuses and leaves schema 1.
 const BACKUP_BOUND: Duration = Duration::from_secs(300);

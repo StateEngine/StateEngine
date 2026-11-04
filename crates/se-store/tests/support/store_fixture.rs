@@ -304,6 +304,7 @@ impl Fixture {
             self.admission(Scope::Project(self.project.clone()), sender),
             Some(request(key)?),
             vec![EventBody::MessageSent {
+                quiet: false,
                 message: id,
                 recipient,
                 kind: "finding".into(),

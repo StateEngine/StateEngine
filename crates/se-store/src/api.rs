@@ -321,6 +321,17 @@ pub struct MessageRecord {
     pub dismissed: Option<StorePosition>,
     pub superseded_by: Option<MessageId>,
     pub body_complete: bool,
+    pub quiet: bool,
+    pub notifications: Vec<NotificationRecord>,
+}
+/// Advisory wake observations; none imply accepted input or a read marker.
+#[derive(Clone, Debug)]
+pub struct NotificationRecord {
+    pub recipient: Actor,
+    pub state: String,
+    pub event: Option<EventId>,
+    pub recorded_at_us: Option<i64>,
+    pub code: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct CredentialRecord {
