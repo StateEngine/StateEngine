@@ -1,6 +1,7 @@
 //! The sole async store bridge. Synchronous planning, submission and continuation
 //! run on bounded blocking jobs; only the owned commit completion is awaited.
 use super::failure::WriteIdentity;
+use super::timings::{self, Mode};
 use super::*;
 use se_core::{
     admission::read_scope,
@@ -35,7 +36,7 @@ pub fn execute(
 ) -> impl Future<Output = Result<ExecutedCall>> + Send {
     async move {
         let ExecutionCall { admitted, deadline } = call;
-        let reader = std::sync::Arc::clone(&context.reader);
+        let reader = context.reads.clone();
         let generation = context.generation;
         if admitted.admission.generation != generation.get() {
             return Err(SeError::invalid(
@@ -44,14 +45,17 @@ pub fn execute(
             ));
         }
         let plan_deadline = deadline.clone();
-        let planned = context
-            .blocking
-            .run(BlockingClass::Foreground, &deadline, move || {
+        let (planned, planning) =
+            timings::blocking(&context.blocking, Mode::Finite, &deadline, move || {
                 plan_deadline.remaining()?;
-                let phase = checked_phase(&reader, generation)?;
+                let phase = checked_pooled_phase(&reader, generation)?;
                 plan(phase, admitted)
             })
             .await?;
+        let mut host_phases = se_core::ops::HostPhaseTimings {
+            planning: Some(planning),
+            ..Default::default()
+        };
         let Planned {
             step,
             observations,
@@ -81,6 +85,7 @@ pub fn execute(
                         .await?;
                 }
                 Ok(ExecutedCall {
+                    host_phases,
                     output,
                     write_timings: None,
                     committed: None,
@@ -103,8 +108,10 @@ pub fn execute(
                         Vec::new()
                     },
                 };
-                let mut receipt =
-                    super::submit::submit(&context, batch, &identity, &deadline).await?;
+                let (mut receipt, submission, completion_wait_us) =
+                    super::submit::measured(&context, batch, &identity, &deadline).await?;
+                host_phases.submission = Some(submission);
+                host_phases.completion_wait_us = Some(completion_wait_us);
                 let committed = CommittedWrite {
                     operation: identity.operation.into(),
                     key: identity.key.clone(),
@@ -113,11 +120,11 @@ pub fn execute(
                 };
                 let write_timings = receipt.write_timings.take();
                 let finish_deadline = deadline.clone();
-                let output = context
-                    .blocking
-                    .run(BlockingClass::Foreground, &deadline, move || {
+                let pool = context.blocking.clone();
+                let (output, continuation) =
+                    timings::blocking(&pool, Mode::Finite, &deadline, move || {
                         finish_deadline.remaining()?;
-                        let phase = checked_phase(&context.reader, generation)?;
+                        let phase = checked_pooled_phase(&context.reads, generation)?;
                         let mut read = phase
                             .into_snapshot(read_scope(&admission))
                             .map_err(|error| store_error(&error))?;
@@ -133,7 +140,9 @@ pub fn execute(
                     })
                     .await
                     .map_err(|error| committed.response_error(error))?;
+                host_phases.continuation = Some(continuation);
                 Ok(ExecutedCall {
+                    host_phases,
                     output,
                     write_timings,
                     committed: Some(committed),
@@ -142,6 +151,7 @@ pub fn execute(
                 })
             }
             OpStep::Custody(CustodyPlan::ImportNode(input)) => Ok(ExecutedCall {
+                host_phases,
                 output: super::history_import::execute(
                     context, input, admission, kernel, &deadline,
                 )
@@ -153,6 +163,7 @@ pub fn execute(
             }),
             OpStep::Custody(plan) => match context.custody.get() {
                 Some(custody) => Ok(ExecutedCall {
+                    host_phases,
                     output: custody.execute(plan, admission, &deadline).await?,
                     write_timings: None,
                     committed: None,
@@ -259,6 +270,19 @@ pub(super) fn checked_phase(
     expected: se_types::Generation,
 ) -> Result<se_store::ReadPhase> {
     let phase = reader.read_phase().map_err(|error| store_error(&error))?;
+    generation_phase(phase, expected)
+}
+pub(super) fn checked_pooled_phase(
+    reader: &se_store::ReadPhasePool,
+    expected: se_types::Generation,
+) -> Result<se_store::ReadPhase> {
+    let phase = reader.read_phase().map_err(|error| store_error(&error))?;
+    generation_phase(phase, expected)
+}
+fn generation_phase(
+    phase: se_store::ReadPhase,
+    expected: se_types::Generation,
+) -> Result<se_store::ReadPhase> {
     let result = phase
         .runtime_owner()
         .map_err(|error| store_error(&error))

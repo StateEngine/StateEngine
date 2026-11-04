@@ -1,5 +1,6 @@
 //! Native handshake and per-call routing around the sole core operation decoder.
 //! The concrete executor consumes RoutedCall; no second dispatcher trait exists.
+use super::timings::{self, Mode};
 use super::{
     admission::{AdmissionContext, ConnectionGrant},
     *,
@@ -13,6 +14,7 @@ use crate::{
     OperationOutput, PendingIpcHandshake,
 };
 use se_types::{ErrorEnvelope, RenderCx, Result, SeError};
+use std::time::Instant;
 
 pub enum AcceptedPeer {
     Operation(Box<HostedConnection>),
@@ -48,6 +50,8 @@ pub struct AdmittedExchange {
     connection: HostedConnection,
     request_id: u64,
     call: Option<Result<RoutedCall>>,
+    admission: Option<se_core::ops::HostPhaseSpan>,
+    admitted_at: Instant,
 }
 #[derive(Clone)]
 pub struct HostedRouter {
@@ -163,13 +167,13 @@ impl HostedRouter {
         wire: crate::IpcEnvelope,
         deadline: &Deadline,
     ) -> Result<Option<AdmittedExchange>> {
+        let admitted_at = Instant::now();
         let request_id = wire.request_id;
         self.check_open()?;
         let context = self.context.clone();
         let fenced = std::sync::Arc::clone(&self.fenced);
-        self.execution
-            .blocking
-            .run_owned(deadline, move || {
+        let (mut exchange, span) =
+            timings::blocking(&self.execution.blocking, Mode::Owned, deadline, move || {
                 let call = if fenced.load(std::sync::atomic::Ordering::Acquire) {
                     Err(SeError::invalid(
                         "host admission",
@@ -182,9 +186,15 @@ impl HostedRouter {
                     connection,
                     request_id,
                     call: Some(call),
+                    admission: None,
+                    admitted_at,
                 }))
             })
-            .await
+            .await?;
+        if let Some(exchange) = &mut exchange {
+            exchange.admission = Some(span);
+        }
+        Ok(exchange)
     }
 }
 impl AdmittedExchange {
@@ -244,7 +254,12 @@ impl AdmittedExchange {
             .map(|commit| commit.event_id.clone())
             .collect();
         let result = match output {
-            Ok(completed) => encode_executed(completed).map(|o| IpcResult::Output(Box::new(o))),
+            Ok(mut completed) => {
+                completed.host_phases.admission = self.admission;
+                completed.host_phases.admitted_to_encode_us =
+                    Some(timings::micros(self.admitted_at.elapsed()));
+                encode_executed(completed).map(|o| IpcResult::Output(Box::new(o)))
+            }
             Err(error) => envelope(&error).map(IpcResult::Error),
         };
         let response_error = |error: SeError| {
@@ -344,7 +359,8 @@ pub(crate) fn encode_executed(completed: ExecutedCall) -> Result<OperationOutput
         }
         None => completed.output,
     }
-    .with_capture_commits(completed.capture_commits)?;
+    .with_capture_commits(completed.capture_commits)?
+    .with_host_phases(completed.host_phases);
     let schema = output.family().schema();
     let value = serde_json::to_value(output)
         .map_err(|e| se_core::scope::unreadable("core output encoding", &e.to_string()))?;
@@ -372,13 +388,12 @@ impl HostedRouter {
         operation: se_core::ops::AnyOp,
         deadline: &Deadline,
     ) -> Result<OperationOutput> {
+        let admitted_at = Instant::now();
         self.check_open()?;
         let context = self.context.clone();
         let fenced = std::sync::Arc::clone(&self.fenced);
-        let admitted = self
-            .execution
-            .blocking
-            .run_owned(deadline, move || {
+        let (admitted, admission) =
+            timings::blocking(&self.execution.blocking, Mode::Owned, deadline, move || {
                 if fenced.load(std::sync::atomic::Ordering::Acquire) {
                     return Err(SeError::invalid(
                         "host admission",
@@ -388,7 +403,7 @@ impl HostedRouter {
                 context.mcp_call(&secret, operation)
             })
             .await?;
-        let completed = self
+        let mut completed = self
             .execute_call(
                 RoutedCall {
                     admitted,
@@ -397,6 +412,8 @@ impl HostedRouter {
                 deadline,
             )
             .await?;
+        completed.host_phases.admission = Some(admission);
+        completed.host_phases.admitted_to_encode_us = Some(timings::micros(admitted_at.elapsed()));
         let committed = completed.committed.clone();
         encode_executed(completed).map_err(|error| match committed {
             Some(known) => known.response_error(error),

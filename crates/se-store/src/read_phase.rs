@@ -24,6 +24,7 @@ pub struct ReadPhase {
     pub(crate) path: PathBuf,
     pub(crate) slot: crate::read_slots::ReadSlot,
     pub(crate) local: PhantomData<Rc<()>>,
+    pub(crate) recycle: Option<crate::read_phase_pool::Recycle>,
 }
 
 impl SqliteReader {
@@ -34,7 +35,8 @@ impl SqliteReader {
         let db = self.connect()?;
         self.read_phase_on(slot, db)
     }
-    // Parameters drop in reverse order on failure: close SQLite before returning capacity.
+    // Parameters drop in reverse order on BEGIN/header failure: SQLite must
+    // close before its shared reader reservation is returned.
     pub(crate) fn read_phase_on(
         &self,
         slot: crate::read_slots::ReadSlot,
@@ -48,6 +50,7 @@ impl SqliteReader {
             path: self.path.clone(),
             slot,
             local: PhantomData,
+            recycle: None,
         })
     }
 }
@@ -112,15 +115,20 @@ impl ReadPhase {
         SqliteSnapshot::from_phase(self, scope)
     }
 
-    /// End the read pin and close its connection before returning its capacity.
+    /// End the read pin before returning its capacity. Ordinary phases close
+    /// physically; a host admission phase may return its idle connection to its pool.
     /// Early errors and unwinding also drop the connection and its transaction.
     pub fn close(self) -> StoreResult<()> {
         self.db
             .execute_batch("ROLLBACK")
             .map_err(|e| context(sql(e), &self.path, StoreIoStage::ReadSnapshot))?;
-        self.db
-            .close()
-            .map_err(|(_, e)| context(sql(e), &self.path, StoreIoStage::ReadSnapshot))
+        match self.recycle {
+            Some(recycle) => recycle.release(self.db),
+            None => self
+                .db
+                .close()
+                .map_err(|(_, e)| context(sql(e), &self.path, StoreIoStage::ReadSnapshot)),
+        }
     }
 
     pub(crate) fn finish<T>(self, result: StoreResult<T>) -> StoreResult<T> {

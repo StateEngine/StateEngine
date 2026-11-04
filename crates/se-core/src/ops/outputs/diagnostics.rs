@@ -1,13 +1,18 @@
+//! Extensible same-call observations, separate from immutable receipts.
+use super::host_phases::HostPhaseTimings;
 use schemars::JsonSchema;
 use se_types::EventId;
 use serde::{Deserialize, Serialize};
 
 /// Host measurements for the exact completed request, outside its immutable
 /// semantic receipt. There is no diagnostics object on a direct write.
+/// Readers ignore future top-level observations; required measurements and
+/// nested timing/capture records retain their existing closed validation.
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct OutputDiagnostics {
     pub write_timings: ReceiptWriteTimings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_phases: Option<HostPhaseTimings>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capture_commits: Vec<CaptureCommitDiagnostics>,
 }
