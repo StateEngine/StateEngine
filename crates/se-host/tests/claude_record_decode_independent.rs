@@ -1,4 +1,4 @@
-//! Production decoder: metadata and tool evidence must not become chat prose.
+//! Protects: metadata stays separate from chat while malformed known chat still refuses.
 //! Public capture publication is exercised separately by capture_chat_independent.
 #[path = "../src/runtime/capture/claude.rs"]
 mod claude;
@@ -35,36 +35,39 @@ fn ownership_tools_and_request_shape_records_are_metadata() -> Result<()> {
             "type":kind, "sessionId":"independent-h05-conversation",
             "owner":"native-owner", "tools":["Read","Write"], "requestId":"request-1"
         });
-        assert!(decode(record)?.is_none(), "metadata became chat: {kind}");
+        metadata(record, kind)?;
     }
     Ok(())
 }
 
+fn metadata(value: Value, kind: &str) -> Result<()> {
+    let record = decode(value)?
+        .ok_or_else(|| se_types::SeError::invalid("metadata", "a durable System record"))?;
+    assert_eq!(record.role, se_store::Role::System);
+    let body: Value = serde_json::from_str(record.text.as_str())
+        .map_err(|_| se_types::SeError::invalid("metadata", "JSON"))?;
+    assert_eq!(body["schema"], "se.transcript-event/v1");
+    assert_eq!(body["kind"], kind);
+    assert!(!record.text.as_str().contains("REQUEST_CACHE_SECRET"));
+    assert!(!record.text.as_str().contains("MUST_NOT_DISAPPEAR"));
+    Ok(())
+}
+
 #[test]
-fn request_cache_accepts_its_envelope_and_refuses_disguised_text_records() -> Result<()> {
+fn request_cache_is_metadata_even_when_it_contains_provider_text() -> Result<()> {
     for role in ["system", "user", "assistant"] {
         for content in [
             json!("REQUEST_CACHE_SECRET"),
             json!([{"type":"text","text":"REQUEST_CACHE_SECRET"}]),
         ] {
-            let record = json!({"type":"api-request-blob", "hash":"ab".repeat(32),
-                "message":{"role":role,"content":content}});
-            assert!(
-                decode(record.clone())?.is_none(),
-                "cached API text became chat"
-            );
-            let mut text_record = record.clone();
-            text_record["uuid"] = json!("turn-shaped-cache");
-            assert!(
-                decode(text_record).is_err(),
-                "a turn-shaped cache envelope was discarded"
-            );
-            let mut wrong_hash = record;
-            wrong_hash["hash"] = json!("not-a-sha256");
-            assert!(
-                decode(wrong_hash).is_err(),
-                "a malformed cache envelope was discarded"
-            );
+            let record = json!({"type":"api-request-blob", "hash":"ab".repeat(32), "message":{"role":role,"content":content}});
+            metadata(record.clone(), "api-request-blob")?;
+            let mut with_uuid = record.clone();
+            with_uuid["uuid"] = json!("turn-shaped-cache");
+            metadata(with_uuid, "api-request-blob")?;
+            let mut unknown_cache_shape = record;
+            unknown_cache_shape["hash"] = json!("not-a-sha256");
+            metadata(unknown_cache_shape, "api-request-blob")?;
         }
     }
     Ok(())
@@ -110,19 +113,18 @@ fn assistant_text_survives_known_non_chat_blocks() -> Result<()> {
 }
 
 #[test]
-fn message_bearing_metadata_and_mismatched_conversations_refuse() -> Result<()> {
+fn message_bearing_metadata_is_non_chat_and_mismatched_chat_refuses() -> Result<()> {
     for kind in [
         "session-owner",
         "tools-used",
         "api-request-shape",
         "api-request",
     ] {
-        assert!(
-            decode(json!({"type":kind, "message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}}))
-                .is_err()
-        );
-        assert!(decode(json!({"type":kind, "content":"MUST_NOT_DISAPPEAR"})).is_err());
-        assert!(decode(json!({"type":kind, "sessionId":"another-conversation"})).is_err());
+        metadata(
+            json!({"type":kind, "message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}}),
+            kind,
+        )?;
+        metadata(json!({"type":kind, "content":"MUST_NOT_DISAPPEAR"}), kind)?;
     }
     let mut wrong_session = user(json!("visible"));
     wrong_session["sessionId"] = json!("another-conversation");
@@ -152,32 +154,29 @@ fn malformed_tool_results_and_unknown_blocks_refuse() {
 }
 
 #[test]
-fn unknown_record_names_are_escaped_bounded_and_explicitly_truncated() -> Result<()> {
-    let kind = "λ\n\"".repeat(20_000);
-    let error = decode(json!({"type":kind}))
-        .err()
-        .ok_or_else(|| se_types::SeError::invalid("unknown record", "an explicit refusal"))?;
-    let message = error.to_string();
-    assert!(
-        message.len() < 1200,
-        "unknown-record refusal grew to {} bytes",
-        message.len()
-    );
-    assert!(
-        message.contains("truncated"),
-        "unknown record omitted its truncation notice"
-    );
-    assert!(
-        !message.contains('\n'),
-        "unknown record injected a diagnostic line"
-    );
-    assert!(
-        message.contains("\\n") && message.contains("\\\""),
-        "unknown record lost diagnostic escaping"
-    );
-    assert!(
-        message.contains("preserve the old cursor"),
-        "schema drift omitted the recovery boundary"
-    );
+fn unknown_record_names_and_payload_are_tolerated_as_metadata() -> Result<()> {
+    metadata(
+        json!({"type":"future-λ\n\"", "content":"MUST_NOT_DISAPPEAR"}),
+        "future-λ\n\"",
+    )?;
+    Ok(())
+}
+
+/// Protects: malformed JSON and known message shapes still refuse after metadata tolerance.
+#[test]
+fn malformed_json_and_known_message_shapes_still_refuse() -> Result<()> {
+    for kind in ["user", "assistant"] {
+        for value in [
+            json!({"type":kind}),
+            json!({"type":kind,"sessionId":"independent-h05-conversation","uuid":"broken"}),
+            json!({"type":kind,"sessionId":"independent-h05-conversation","uuid":"broken","message":{"role":kind}}),
+        ] {
+            assert!(
+                decode(value).is_err(),
+                "malformed known {kind} was accepted"
+            );
+        }
+    }
+    assert!(claude::decode(b"{broken json}\n", &conversation()?).is_err());
     Ok(())
 }
