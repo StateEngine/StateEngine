@@ -1,8 +1,6 @@
 use super::*;
 use sha2::{Digest, Sha256};
-
-const HOST_PAGES: usize = 64;
-const SNAPSHOT_BYTES: u64 = 1024 * 1024;
+mod scan;
 
 impl EmbeddedHost {
     pub(in super::super) async fn selector_sessions(
@@ -51,218 +49,120 @@ impl EmbeddedHost {
                     "No native host session service is registered.",
                 )
             })?;
-        let mut rows = Vec::new();
-        let mut source_cursor = None;
-        let mut seen = std::collections::BTreeSet::new();
-        let mut reason = None;
-        let mut unreadable = 0;
-        let mut retained_bytes = 0;
-        for index in 0..HOST_PAGES {
-            let request = api::PageRequest {
-                after: source_cursor.clone(),
-                limit: 100,
-                max_bytes: 65536,
-            };
-            let call = services.active_sessions(
-                &epoch,
-                request,
-                api::ServiceOptions {
-                    generation: options.generation,
-                    timeout: deadline.remaining().map_err(bridge_error)?,
-                    cancellation: options.cancellation.clone(),
-                },
-            );
-            let observation = super::super::super::pool::within(&deadline, call)
-                .await
-                .map_err(bridge_error)?;
-            let observed = match observation {
-                Ok(api::Read::Present { value }) => value,
-                Ok(api::Read::Unreadable { .. }) => {
-                    unreadable += 1;
-                    remember(&mut reason, api::OmissionReason::Unreadable);
-                    break;
-                }
-                Err(e) if e.kind == api::ApiFailure::Conflict => return Err(stale()),
-                Err(e) if e.kind == api::ApiFailure::Unreadable => {
-                    unreadable += 1;
-                    remember(&mut reason, api::OmissionReason::Unreadable);
-                    break;
-                }
-                Err(e) if e.kind == api::ApiFailure::Cancelled => {
-                    return Err(error(
-                        api::ApiFailure::Cancelled,
-                        "selector-cancelled",
-                        "The selector read was cancelled.",
-                    ));
-                }
-                Ok(api::Read::Absent { .. } | api::Read::Unknown { .. }) | Err(_) => {
-                    remember(&mut reason, api::OmissionReason::SourceIncomplete);
-                    break;
-                }
-            };
-            if observed.items.len() > 100
-                || observed.window.bytes > 65536
-                || observed.window.returned != observed.items.len() as u64
-                || !matches!(&observed.window.source, api::Source::Host { epoch: source } if source == &epoch)
-            {
-                return Err(invalid());
-            }
-            let mut host_bytes = 0;
-            for row in observed.items {
-                validate(&row)?;
-                if row.target.epoch != epoch {
-                    return Err(invalid());
-                }
-                let cost = cost(&row)?;
-                host_bytes += cost;
-                if host_bytes > 65536 {
-                    return Err(invalid());
-                }
-                if row.target.binding.project == selected {
-                    if !seen.insert(key(&row)) {
-                        return Err(invalid());
-                    }
-                    retained_bytes += cost;
-                    if retained_bytes > SNAPSHOT_BYTES {
-                        remember(&mut reason, api::OmissionReason::Budget);
-                        break;
-                    }
-                    rows.push(row);
-                }
-            }
-            if retained_bytes > SNAPSHOT_BYTES {
-                break;
-            }
-            unreadable += observed.window.unreadable;
-            if observed.window.unreadable > 0 {
-                remember(&mut reason, api::OmissionReason::Unreadable);
-            }
-            // Limit/Budget omissions with a continuation are ordinary paging.
-            // Source loss survives even when a later page exhausts its own rows.
-            for omission in [
-                &observed.window.omitted_before,
-                &observed.window.omitted_after,
-            ] {
-                match omission {
-                    api::Omission::Known { reason: issue, .. }
-                    | api::Omission::Unknown { reason: issue }
-                        if matches!(
-                            issue,
-                            api::OmissionReason::Unreadable | api::OmissionReason::SourceIncomplete
-                        ) =>
-                    {
-                        remember(&mut reason, *issue)
-                    }
-                    _ => (),
-                }
-            }
-            match observed.next {
-                Some(next) if next.0.len() <= 256 && Some(&next) != source_cursor.as_ref() => {
-                    source_cursor = Some(next)
-                }
-                Some(_) => return Err(invalid()),
-                None => {
-                    if !observed.window.complete {
-                        reason.get_or_insert(api::OmissionReason::SourceIncomplete);
-                    }
-                    break;
-                }
-            }
-            if index + 1 == HOST_PAGES {
-                remember(&mut reason, api::OmissionReason::Budget);
-            }
-        }
-        rows.sort_by_key(key);
-        let mut digest = Sha256::new();
-        digest.update(
-            serde_json::to_vec(&serde_json::json!([
-                "selector-sessions-v1",
-                catalog,
-                options.generation.0,
-                selected.0,
-                epoch_value(&epoch)?,
-                omission_tag(reason),
-                unreadable
-            ]))
-            .map_err(|_| invalid())?,
-        );
-        for row in &rows {
-            digest.update(serde_json::to_vec(&row_value(row)?).map_err(|_| invalid())?);
-        }
-        let fingerprint = format!("{:x}", digest.finalize());
-        let offset = decode(&page, &fingerprint)?;
-        if offset > rows.len() {
-            return Err(stale());
-        }
-        let mut bytes = 0;
-        let mut items = Vec::new();
-        let mut stop = api::StopReason::Exhausted;
-        for row in rows.iter().skip(offset) {
-            if items.len() >= page.limit as usize {
-                stop = api::StopReason::ItemLimit;
-                break;
-            }
-            let cost = cost(row)?;
-            if bytes + cost > u64::from(page.max_bytes) {
-                if items.is_empty() {
-                    return Err(error(
-                        api::ApiFailure::Incomplete,
-                        "selector-row-too-large",
-                        "The first session row exceeds max_bytes; increase the byte budget.",
-                    ));
-                }
-                stop = api::StopReason::ByteLimit;
-                break;
-            }
-            bytes += cost;
-            items.push(row.clone());
-        }
-        let end = offset + items.len();
-        let more = end < rows.len();
-        let cursor = api::Cursor(format!("s1.{end}.{fingerprint}"));
-        let incomplete = reason.is_some();
-        let omitted_after = if let Some(reason) = reason {
-            api::Omission::Unknown { reason }
-        } else if more {
-            api::Omission::Known {
-                count: (rows.len() - end) as u64,
-                reason: if stop == api::StopReason::ByteLimit {
-                    api::OmissionReason::Budget
-                } else {
-                    api::OmissionReason::Limit
-                },
-            }
-        } else {
-            api::Omission::None
-        };
-        if !more && incomplete {
-            stop = if reason == Some(api::OmissionReason::Unreadable) {
-                api::StopReason::Unreadable
-            } else {
-                api::StopReason::Unsupported
-            };
-        }
-        Ok(api::Read::Present {
-            value: api::Page {
-                window: api::Window {
-                    source: api::Source::Host { epoch },
-                    start_cursor: page.after,
-                    end_cursor: Some(cursor.clone()),
-                    returned: items.len() as u64,
-                    limit: page.limit,
-                    bytes,
-                    max_bytes: page.max_bytes,
-                    omitted_before: api::Omission::None,
-                    omitted_after,
-                    unreadable,
-                    stop_reason: stop,
-                    complete: !more && !incomplete,
-                },
-                items,
-                next: more.then_some(cursor),
-            },
-        })
+        let observed =
+            scan::sessions(&deadline, &options, selected.clone(), epoch, services).await?;
+        render_page(observed, page, catalog, selected, options.generation)
     }
+}
+struct Observation {
+    rows: Vec<api::ActiveSession>,
+    epoch: api::HostEpoch,
+    reason: Option<api::OmissionReason>,
+    unreadable: u64,
+}
+fn render_page(
+    observed: Observation,
+    page: api::PageRequest,
+    catalog: (String, u64, u64),
+    selected: api::ProjectId,
+    generation: api::Generation,
+) -> Result<api::Read<api::Page<api::ActiveSession>>> {
+    let Observation {
+        mut rows,
+        epoch,
+        reason,
+        unreadable,
+    } = observed;
+    rows.sort_by_key(key);
+    let mut digest = Sha256::new();
+    digest.update(
+        serde_json::to_vec(&serde_json::json!([
+            "selector-sessions-v1",
+            catalog,
+            generation.0,
+            selected.0,
+            epoch_value(&epoch)?,
+            omission_tag(reason),
+            unreadable
+        ]))
+        .map_err(|_| invalid())?,
+    );
+    for row in &rows {
+        digest.update(serde_json::to_vec(&row_value(row)?).map_err(|_| invalid())?);
+    }
+    let fingerprint = format!("{:x}", digest.finalize());
+    let offset = decode(&page, &fingerprint)?;
+    if offset > rows.len() {
+        return Err(stale());
+    }
+    let mut bytes = 0;
+    let mut items = Vec::new();
+    let mut stop = api::StopReason::Exhausted;
+    for row in rows.iter().skip(offset) {
+        if items.len() >= page.limit as usize {
+            stop = api::StopReason::ItemLimit;
+            break;
+        }
+        let cost = cost(row)?;
+        if bytes + cost > u64::from(page.max_bytes) {
+            if items.is_empty() {
+                return Err(error(
+                    api::ApiFailure::Incomplete,
+                    "selector-row-too-large",
+                    "The first session row exceeds max_bytes; increase the byte budget.",
+                ));
+            }
+            stop = api::StopReason::ByteLimit;
+            break;
+        }
+        bytes += cost;
+        items.push(row.clone());
+    }
+    let end = offset + items.len();
+    let more = end < rows.len();
+    let cursor = api::Cursor(format!("s1.{end}.{fingerprint}"));
+    let incomplete = reason.is_some();
+    let omitted_after = if let Some(reason) = reason {
+        api::Omission::Unknown { reason }
+    } else if more {
+        api::Omission::Known {
+            count: (rows.len() - end) as u64,
+            reason: if stop == api::StopReason::ByteLimit {
+                api::OmissionReason::Budget
+            } else {
+                api::OmissionReason::Limit
+            },
+        }
+    } else {
+        api::Omission::None
+    };
+    if !more && incomplete {
+        stop = match reason {
+            Some(api::OmissionReason::Unreadable) => api::StopReason::Unreadable,
+            Some(api::OmissionReason::Budget) => api::StopReason::ByteLimit,
+            _ => api::StopReason::Unsupported,
+        };
+    }
+    Ok(api::Read::Present {
+        value: api::Page {
+            window: api::Window {
+                source: api::Source::Host { epoch },
+                start_cursor: page.after,
+                end_cursor: Some(cursor.clone()),
+                returned: items.len() as u64,
+                limit: page.limit,
+                bytes,
+                max_bytes: page.max_bytes,
+                omitted_before: api::Omission::None,
+                omitted_after,
+                unreadable,
+                stop_reason: stop,
+                complete: !more && !incomplete,
+            },
+            items,
+            next: more.then_some(cursor),
+        },
+    })
 }
 // Every row has the single registered epoch, checked above. Thus sorting
 // (agent, session, host session) is exactly the requested order with that
