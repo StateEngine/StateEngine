@@ -780,9 +780,52 @@ impl StatusHost {
             self.identity.machine.clone(),
             self.identity.pid,
             deadline,
+        ) {
+            Ok(read) => self.classify(read, phase),
+            Err(error) if Self::exit_race(&error) => self.settle_exit_race(error),
+            Err(error) => Err(
+                format!("outside native host observation during {phase}: {error:?}").into(),
+            ),
+        }
+    }
+
+    /// The kernel can drop /proc/PID/exe while our exact instance's state has
+    /// not reached zombie yet, so read_process reports the executable as
+    /// unreadable for a process that is exiting normally. One fresh
+    /// observation settles that race without masking a real refusal: proven
+    /// absence or our exact zombie is an exit, a still-present exact instance
+    /// is alive, and anything else keeps the original error.
+    fn settle_exit_race(
+        &self,
+        original: se_proc::ProcError,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let confirmed = se_proc::NativeProcessRuntime::read_process_until(
+            self.identity.machine.clone(),
+            self.identity.pid,
+            Instant::now() + Duration::from_secs(5),
         )
-        .map_err(|error| format!("outside native host observation during {phase}: {error:?}"))?
-        {
+        .map_err(|again| {
+            format!("exit-race confirmation failed: original {original:?}, confirmation {again:?}")
+        })?;
+        self.classify(confirmed, "exit-race confirmation")
+    }
+
+    /// The exact read_process signature of that exit race: the executable read
+    /// failed with ENOENT while a same-born instance still existed.
+    fn exit_race(error: &se_proc::ProcError) -> bool {
+        error.code == se_proc::ProcErrorCode::IdentityUnreadable
+            && error.native.as_ref().is_some_and(|native| {
+                native.api == "read proc executable"
+                    && native.code == Some(i64::from(libc::ENOENT))
+            })
+    }
+
+    fn classify(
+        &self,
+        read: se_proc::ProcessRead,
+        phase: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        match read {
             se_proc::ProcessRead::Present(observed) if observed.identity == self.identity => {
                 Ok(!matches!(
                     observed.state,
@@ -798,8 +841,8 @@ impl StatusHost {
             {
                 Ok(false)
             }
-            _ => Err(format!(
-                "host identity changed during {phase}; refusing to act on another instance"
+            other => Err(format!(
+                "host identity changed during {phase}; refusing to act on another instance: {other:?}"
             )
             .into()),
         }

@@ -34,3 +34,4 @@ harness = false
 
 [dev-dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }
+libc = "0.2"
