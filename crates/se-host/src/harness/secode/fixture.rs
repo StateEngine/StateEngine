@@ -88,7 +88,8 @@ pub(super) fn notice(target: api::HostSessionTarget) -> api::MailNotice {
     notice
 }
 pub(super) struct Native {
-    pub(super) state: Mutex<State>,
+    pub(super) state: Arc<Mutex<State>>,
+    generation: api::Generation,
     pub(super) committed: tokio::sync::Notify,
     pub(super) release: tokio::sync::Notify,
 }
@@ -104,7 +105,8 @@ pub(super) struct State {
 impl Native {
     pub(super) fn new() -> Arc<Self> {
         Arc::new(Self {
-            state: Mutex::new(State {
+            generation: api::Generation(7),
+            state: Arc::new(Mutex::new(State {
                 calls: 0,
                 admissions: vec![],
                 lose_reply: false,
@@ -112,14 +114,22 @@ impl Native {
                 activity: api::Read::Present { value: None },
                 refusal: None,
                 corrupt: false,
-            }),
+            })),
+            committed: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        })
+    }
+    pub(super) fn rebound(&self, generation: api::Generation) -> Arc<Self> {
+        Arc::new(Self {
+            state: self.state.clone(),
+            generation,
             committed: tokio::sync::Notify::new(),
             release: tokio::sync::Notify::new(),
         })
     }
     async fn enter(&self, options: &api::ServiceOptions) {
         tokio::task::yield_now().await;
-        assert_eq!(options.generation, api::Generation(7));
+        assert_eq!(options.generation, self.generation);
         self.state.lock().unwrap().calls += 1;
     }
     fn observation(&self, target: api::HostSessionTarget) -> api::BindingObservation {
