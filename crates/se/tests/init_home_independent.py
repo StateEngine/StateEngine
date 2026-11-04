@@ -114,6 +114,9 @@ def main():
             failures.append(name + ' user work changed')
         if (state / 'endpoint.json').exists():
             failures.append(name + ' unexpectedly left a host endpoint')
+        if not (state / 'runtime.lock').exists():
+            failures.append(name + ' has no runtime lease file after setup')
+            continue
         with (state / 'runtime.lock').open('rb') as handle:
             try:
                 fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
