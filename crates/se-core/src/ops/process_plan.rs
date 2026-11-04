@@ -186,7 +186,8 @@ pub fn launch<R: Snapshot>(
                     .unwrap_or(&value.current)
                     .header
                     .door
-                    == se_store::Door::Import =>
+                    == se_store::Door::Import
+                    && profile.provider != se_store::Provider::Codex =>
             {
                 Read::Absent {
                     checked:
@@ -213,7 +214,11 @@ pub fn launch<R: Snapshot>(
                         provider,
                         ..
                     } if owner == &agent && *provider == profile.provider => {
-                        super::session_reference::read(cx.read, value)?
+                        let reference = super::session_reference::read(cx.read, value)?;
+                        if original.header.door == se_store::Door::Import && !matches!(reference, Read::Present { .. }) {
+                            return Err(SeError::invalid("imported Codex conversation", "a retained native thread reference; use --new explicitly when it is missing or unsupported"));
+                        }
+                        reference
                     }
                     _ => {
                         return Err(scope::unreadable(
