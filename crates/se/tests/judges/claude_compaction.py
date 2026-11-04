@@ -78,11 +78,8 @@ def one(f, malformed):
         status = f.ok("--project", f.project, "status")
         row = next(row for row in status["agents"]["items"] if row["id"] == f.agent)
         assert window(row["session"], expected) == compact
-        response = f.call("--project", f.project, "resume", "--preview", f.agent)
-        assert response.returncode in (0, 2), (response.stdout, response.stderr)
-        resumed = json.loads(response.stdout)
-        if response.returncode == 2:
-            assert resumed["complete"] is False, "partial exit lost its explicit incompleteness"
+        resumed = f.ok("--project", f.project, "resume", "--preview", f.agent)
+        assert resumed["complete"] is True, "exact bounded metadata window is a complete answer"
         assert window(resumed, expected) == compact
         assert all(turn["role"] in ("user", "assistant") for turn in resumed["recent_turns"]), resumed
         assert all("PRIVATE_PROVIDER_PAYLOAD" not in turn["preview"] for turn in resumed["recent_turns"])
