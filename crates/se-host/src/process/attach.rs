@@ -85,27 +85,34 @@ impl LaunchCoordinator {
                 .as_ref()
                 .ok_or_else(|| error("capture readiness", "provider binding absent"))?;
             let path = if plan.profile.provider == se_store::Provider::Codex {
-                se_core::scope::require_present(
+                let path = se_core::scope::require_present(
                     crate::codex_rpc::bound(binding)?.rollout_path()?,
                     "Codex rollout readiness",
                     "Restore the exact provider-reported persistent thread path.",
                 )?
-                .to_local()?
+                .to_local()?;
+                crate::codex_capture::location(&path, &crate::codex_capture::existing_home()?)?
             } else {
                 crate::claude_transcript_location(binding)?
             };
+            let provider = plan.profile.provider;
+            let conversation = outcome.witness.conversation.clone();
             let pin = self
                 .store
                 .pool
                 .run_owned(deadline, move || {
-                    se_proc::NativeSourcePin::open(&path)
+                    let mut pin = se_proc::NativeSourcePin::open(&path)
                         .map_err(|e| error("provider transcript pin", e))?
                         .ok_or_else(|| {
                             error(
                                 "provider transcript readiness",
                                 "the provider has not created its transcript",
                             )
-                        })
+                        })?;
+                    if provider == se_store::Provider::Codex {
+                        crate::codex_capture::validate_header(&mut pin, &conversation)?;
+                    }
+                    Ok(pin)
                 })
                 .await?;
             work.transcript = Some(crate::TranscriptPin {

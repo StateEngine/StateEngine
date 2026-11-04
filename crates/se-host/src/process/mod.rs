@@ -2,6 +2,7 @@
 //! never drops a native lifecycle, accepted write, provider drain or cleanup debt.
 mod attach;
 mod capture;
+mod codex_capture;
 mod cold_stop;
 mod control;
 mod dispatch;

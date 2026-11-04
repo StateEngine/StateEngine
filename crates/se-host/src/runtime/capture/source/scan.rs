@@ -12,9 +12,13 @@ pub(super) fn next(
     source: &mut BoundTranscript,
     revision: se_store::Revision,
     offset: u64,
+    provider: se_store::Provider,
     deadline: &Deadline,
     final_capture: bool,
 ) -> Result<Option<TrustedCapture>> {
+    if provider == se_store::Provider::Codex {
+        return super::codex::next(source, revision, offset, deadline, final_capture);
+    }
     let mut position = offset;
     let mut consumed = offset;
     let mut complete = offset;

@@ -27,6 +27,8 @@ pub mod codex_rpc;
 #[cfg(feature = "listener")]
 pub use codex_rpc::CodexHarness;
 
+pub mod codex_capture;
+
 /// One stock Codex feature/version floor for every launch/probe mode.
 pub const CODEX_MINIMUM_VERSION: (u16, u16, u16) = (0, 152, 0);
 

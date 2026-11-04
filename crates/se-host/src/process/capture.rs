@@ -124,6 +124,9 @@ impl LaunchCoordinator {
             }
             Read::Unknown { what } => return Err(error("final transcript capture", what)),
         }
+        if work.meta.provider == se_store::Provider::Codex {
+            self.acknowledge_codex_capture(work, deadline).await?;
+        }
         Ok(())
     }
 }
