@@ -3,7 +3,7 @@
 codes! {
     AtlasSymbolAmbiguous => ("atlas-symbol-ambiguous", Usage) { symbol: String, candidates: Vec<String> } => "`{symbol}` names {candidates.len} symbols", "add `--path`";
     CommandRetired => ("command-retired", Usage) { old: String, reason: String, workflow: String } => "`{old}` was retired: {reason}", "{workflow}";
-    CursorInvalid => ("cursor-invalid", Usage) { reason: String } => "this cursor isn't valid here ({reason})", "rerun without `--since`";
+    CursorInvalid => ("cursor-invalid", Usage) { reason: String, next_step: String } => "this cursor isn't valid here ({reason})", "{next_step}";
     InputTooLarge => ("input-too-large", Usage) { field: String, limit_bytes: u64, got_bytes: u64 } => "{field} is {got_bytes} bytes; limit {limit_bytes}", "shorten or split it";
     InputUnknownField => ("input-unknown-field", Usage) { op: String, field: String, next_step: String } => "`{field}` is not accepted by {op}", "{next_step}";
     ProjectConflictsSession => ("project-conflicts-session", Usage) { flag_project: String, session_project: String } => "`-p {flag_project}` conflicts with this session's project {session_project}", "drop `-p`";
@@ -12,9 +12,9 @@ codes! {
     SelectorAmbiguous => ("selector-ambiguous", Usage) { kind: String, selector: String, matches: Vec<String> } => "{selector} matches {matches.len} {kind} entries: {matches}", "Select an exact ID from {matches}";
     UsageConflictingFlags => ("usage-conflicting-flags", Usage) { flags: Vec<String> } => "{flags} cannot be used together", "pick one";
     UsageInvalidValue => ("usage-invalid-value", Usage) { argument: String, got: String, expected: String } => "{argument}: `{got}` is not {expected}", "correct the value";
-    UsageMissingArgument => ("usage-missing-argument", Usage) { command: String, argument: String } => "`{command}` needs {argument}", "Use `se help {command}`";
+    UsageMissingArgument => ("usage-missing-argument", Usage) { command: String, argument: String } => "`{command}` needs {argument}", "Use `{command} --help`";
     UsageUnknownCommand => ("usage-unknown-command", Usage) { got: String, suggestion: Option<String> } => "unknown command `{got}`", "Use `se help`";
-    UsageUnknownFlag => ("usage-unknown-flag", Usage) { flag: String, command: String, reason: String } => "`{command}` does not accept {flag}: {reason}", "Use `se help {command}`";
+    UsageUnknownFlag => ("usage-unknown-flag", Usage) { flag: String, command: String, reason: String } => "`{command}` does not accept {flag}: {reason}", "Use `{command} --help`";
     CapabilityInvalid => ("capability-invalid", Unauthorized) { subject: String, reason: String, next_step: String } => "Session credential {subject}: {reason}", "{next_step}";
     GrantRequired => ("grant-required", Unauthorized) { grant: String, agent: AgentId } => "Session for {agent} lacks permission {grant}", "Owner: `se config set agent.{agent}.can-create true`";
     HumanTerminalRequired => ("human-terminal-required", Unauthorized) { op: String, reason: String } => "`{op}` needs you at an interactive terminal not started by an agent: {reason}", "Open your own terminal outside an agent tree; this mistake/drift guard is not proof against a determined agent using your account";
@@ -81,7 +81,7 @@ codes! {
     StateConflict => ("state-conflict", Conflict) { subject: String, reason: String, next_step: String } => "State conflict {subject}: {reason}", "{next_step}";
     AtlasIndexing => ("atlas-indexing", Incomplete) { indexed: u64, total: u64 } => "index is {indexed}/{total} files; results may be partial", "retry later";
     AtlasParseFailed => ("atlas-parse-failed", Incomplete) { path: String, language: String, reason: String } => "Atlas couldn't parse {path} ({language}): {reason}", "results for this file use bounded text search; → `se doctor --bundle` to report the diagnostic";
-    CursorExpired => ("cursor-expired", Incomplete) { oldest_available: Cursor } => "the cursor is older than retained history", "rerun without `--since`";
+    CursorExpired => ("cursor-expired", Incomplete) { oldest_available: Cursor } => "the cursor is older than retained history", "remove or replace the invalid `--cursor` (list pagination) or `--since` (history position)";
     ForgetIncomplete => ("forget-incomplete", Incomplete) { erased: Vec<String>, residual: Vec<String> } => "erased in the store; copies remain in {residual}", "delete or let backups expire; provider transcripts belong to Claude/Codex";
     ImportIncomplete => ("import-incomplete", Incomplete) { families: Vec<ImportFamilyIssue> } => "import finished with rejected rows", "rerun (idempotent); see the receipt";
     LaunchReadinessTimeout => ("launch-readiness-timeout", Incomplete) { agent: AgentId, waited_ms: u64, last_observed: String } => "{agent} started but wasn't ready after {waited_ms} ms", "Use `se agent show {agent}`";

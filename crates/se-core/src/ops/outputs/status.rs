@@ -91,7 +91,7 @@ pub struct ProjectSummary {
     pub id: ProjectId,
     pub name: String,
     pub root: String,
-    pub agents_running: u64,
+    pub agents_running: Option<u64>,
     pub owner_unread: u64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

@@ -12,7 +12,7 @@ pub fn from_matches_with_key(
     let (path, m) = deepest(matches);
     let meta = selected_meta(matches)?;
     let common = CommonArgs::from_matches(matches)?;
-    if meta.scope == Scope::None && common.home.is_some() {
+    if meta.name != "meta.help" && meta.scope == Scope::None && common.home.is_some() {
         return Err(unknown_flag(
             "--home",
             meta.name,
@@ -23,6 +23,7 @@ pub fn from_matches_with_key(
         meta.scope,
         Scope::Project | Scope::ProjectOrAll | Scope::Session
     ) && common.project.is_some()
+        && meta.name != "meta.help"
     {
         return Err(unknown_flag(
             "--project",
@@ -59,7 +60,7 @@ pub fn from_matches_with_key(
             .ok_or_else(|| {
                 SeError::new(Detail::UsageMissingArgument(
                     details::UsageMissingArgument {
-                        command: meta.name.into(),
+                        command: command_name(meta.name),
                         argument:
                             "request identity generated before first send (or --key for retry)"
                                 .into(),

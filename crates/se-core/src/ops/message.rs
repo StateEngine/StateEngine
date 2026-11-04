@@ -127,7 +127,17 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
                 deadline: Duration::from_secs(5),
             },
         )
-        .map_err(|e| store_error(&e))?;
+        .map_err(|e| {
+            let mut error = store_error(&e);
+            if let Detail::CursorInvalid(detail) = error.body.detail() {
+                let mut detail = detail.clone();
+                detail.next_step =
+                    "Remove or replace --cursor, then rerun the same message list (MCP: cursor)."
+                        .into();
+                error.body = se_types::ErrorBody::new(Detail::CursorInvalid(detail));
+            }
+            error
+        })?;
     let window = page.window().clone();
     let next = page.next().cloned();
     let mut items = Vec::with_capacity(page.items().len());
