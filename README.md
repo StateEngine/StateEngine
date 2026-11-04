@@ -3,6 +3,76 @@
 The StateEngine product, rebuilt in Rust. One `se` binary; library crates that SE Code links.
 Plan: https://claude.ai/artifact/F82qoYRSPSaVZfXevnWU5D (ledger: rust-redesign-planned-before-rebuild-2026-10-30).
 
+## Your first agent
+
+StateEngine is one command, `se`. A **home** is its data directory on your machine
+(default `~/.local/state/stateengine`); a **project** is a folder it tracks, usually a
+git repo; an **agent** is one saved coding assistant (Claude Code or Codex) in a
+project; the **floor** is the append-only message log between you and your agents.
+
+1. Build or install the release. `se --help` opens with `StateEngine — durable agent
+   work and context`; check the version:
+
+       $ se --version
+       stateengine 0.0.1
+
+2. In an existing git repo, register the project and create your first agent.
+   `--provider codex` makes it a Codex agent; the default is Claude Code.
+
+       $ se init --provider codex
+       Project repo registered at /path/to/repo
+       State home: /home/you/.local/state/stateengine
+       Agent main uses Codex
+       Permission profile default: workspace-write, approval on-request, network false, bypass false
+         registered the home owner / registered the project / registered the project owner
+         created the initial saved agent / persisted the initial listener port
+       Launch your first agent: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
+
+   The profile line says what the agent may do; init prints the exact `se config set`
+   command (run it in your own terminal) if you want to change it.
+
+3. Launch the agent headless with a one-line task:
+
+       $ se launch main --task "Create a file called notes.md with one sentence describing what this repo is for." --detach
+       Agent main: running (Codex, headless)
+       Conversation: 01a1a815-7e8a-...
+
+4. Check on it:
+
+       $ se status
+       Project: repo (/path/to/repo)
+       Runtime: running
+         main: running — unread 0
+
+5. Read what it did. A plain task launch reports in its conversation and in your
+   folder, not by floor mail:
+
+       $ se msg list
+       Unread messages: 0
+       $ se history --agent main
+       session.turn — repo
+         text: Created [notes.md](/path/to/repo/notes.md) with: "This repository is a small demo for the StateEngine quickstart."
+
+6. Resume it: `se resume --preview AGENT` reads the saved context without restarting
+   the agent; `se stop AGENT` ends a running session; `se launch AGENT --detach`
+   restarts the same saved conversation.
+
+       $ se resume --preview main
+       Who am I?
+       main in repo — ready (owner preview; nothing acknowledged)
+       $ se stop main
+       Stop agent: stopped (complete: true)
+       Resume ready: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
+       $ se launch main --detach
+       Agent main: running (Codex, headless)
+       Conversation: 01a1a815-7e8a-...
+
+7. When you are done, stop the runtime; the next launch starts it again.
+
+       $ se down
+       Runtime stop complete
+         witnessed via authenticated shutdown stages and outside native completion readback: Achieved: [AgentsStopped, ResumeSaved, WriterJoined, CaptureFlushed, DebtFlushed, ResourcesClosed, LeaseReleased]
+
 | Crate | Holds |
 | --- | --- |
 | se-types | IDs, errors with remedies, Read/Window types, host API types |
