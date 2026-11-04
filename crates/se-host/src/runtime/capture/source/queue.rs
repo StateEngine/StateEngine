@@ -36,13 +36,22 @@ impl Tracker {
                     if text.is_empty() {
                         return Err(SeError::invalid("queued input", "nonempty native input"));
                     }
-                    if self.pending.len() >= 4096
+                    while self.pending.len() >= 4096
                         || text.len() > (16 * 1024 * 1024usize).saturating_sub(self.bytes)
                     {
-                        return Err(SeError::invalid(
-                            "pending queued input",
-                            "at most 4096 inputs and 16 MiB; preserve the source cursor and resolve pending input",
-                        ));
+                        let completed = self.pending.iter().position(|prompt| {
+                            prompt.operation != Outcome::Unresolved && prompt.matched
+                        });
+                        let Some(completed) = completed else {
+                            return Err(SeError::invalid(
+                                "pending queued input",
+                                "at most 4096 unresolved inputs and 16 MiB; preserve the source cursor and resolve pending input",
+                            ));
+                        };
+                        // Only finite correlation history is discarded. Enqueue,
+                        // native outcome and user delivery are already durable.
+                        let retired = self.pending.remove(completed);
+                        self.bytes -= retired.text.len();
                     }
                     self.bytes += text.len();
                     self.pending.push(Prompt {
@@ -324,6 +333,46 @@ mod tests {
         orphan.validate()?;
         let repeated = tracker.observe(&serde_json::to_vec(&json!({"type":"queue-operation","operation":"remove","content":"queued text","reason":"absorbed_mid_turn"}))?, Position{offset:50,length:10})?;
         assert_eq!(repeated.len(), 1);
+        Ok(())
+    }
+    #[test]
+    fn completed_history_releases_both_entry_and_text_capacity()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for padding in [String::new(), "x".repeat(se_types::Body::MAX_BYTES / 2)] {
+            let mut tracker = Tracker::default();
+            let count = if padding.is_empty() {
+                4100
+            } else {
+                16 * 1024 * 1024 / padding.len() + 10
+            };
+            let mut offset = 0;
+            for i in 0..count {
+                let text = format!("queued-{i}:{padding}");
+                for value in [
+                    json!({"type":"queue-operation","operation":"enqueue","content":text}),
+                    json!({"type":"queue-operation","operation":"dequeue"}),
+                    json!({"type":"user","message":{"content":text}}),
+                ] {
+                    let rows = tracker
+                        .observe(&serde_json::to_vec(&value)?, Position { offset, length: 1 })?;
+                    assert_eq!(rows.len(), 1);
+                    rows[0]
+                        .queued_input
+                        .as_ref()
+                        .ok_or("provenance absent")?
+                        .validate()?;
+                    offset += 1;
+                }
+            }
+            assert!(tracker.pending.len() <= 4096);
+            assert!(tracker.bytes <= 16 * 1024 * 1024);
+            assert!(
+                tracker
+                    .pending
+                    .iter()
+                    .all(|p| p.matched && p.operation == Outcome::Dequeued)
+            );
+        }
         Ok(())
     }
 }
