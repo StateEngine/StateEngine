@@ -574,7 +574,10 @@ fn plain_status_labels_the_owner_unread_scope() -> Check {
         store.append(
             f.batch(
                 f.owner_project(),
-                None,
+                Some(fixture::request(&format!(
+                    "fixture-cli_followups-status-agent-{}",
+                    serial()
+                ))?),
                 vec![EventBody::ProfileSaved {
                     agent: agent.clone(),
                     profile: Profile {
