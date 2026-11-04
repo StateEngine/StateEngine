@@ -158,6 +158,8 @@ pub fn build_epoch(generation: u64, home: &Path) -> Result<api::HostEpoch, Strin
 }
 /// Length-prefixed native argv bytes, the same digest the standalone child uses.
 fn argv_digest() -> se_types::Sha256 {
+    #[cfg(windows)]
+    use std::os::windows::ffi::OsStrExt;
     let mut hasher = Sha256::new();
     for arg in std::env::args_os() {
         #[cfg(unix)]
