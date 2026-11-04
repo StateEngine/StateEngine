@@ -129,7 +129,7 @@ impl Binding {
     ) -> Result<Option<SeError>> {
         let conversation = self.conversation()?;
         let response = match self
-            .request(
+            .request_classified(
                 "thread/read",
                 json!({"threadId":conversation.as_str(),"includeTurns":true}),
                 cx,
@@ -140,13 +140,10 @@ impl Binding {
             // Stock 0.163 persists the fresh header, then its unsupported
             // history listing refuses. Preserve that diagnostic; the caller
             // must independently pin and validate the native header before C3.
-            Err(error)
-                if matches!(error.body.detail(), se_types::Detail::ProviderIncompatible(detail)
-                if detail.reason == "provider refused request (-32601): list_turns is not supported yet") =>
-            {
-                return Ok(Some(error));
+            Err(failure) if failure.code == Some(-32601) => {
+                return Ok(Some(failure.error));
             }
-            Err(error) => return Err(error),
+            Err(failure) => return Err(failure.error),
         };
         let thread = response.get("thread").ok_or_else(|| {
             incompatible(
