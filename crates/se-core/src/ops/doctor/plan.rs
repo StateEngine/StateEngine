@@ -26,6 +26,7 @@ pub struct PermissionBefore {
 #[serde(tag = "platform", rename_all = "kebab-case")]
 pub enum PermissionProtection {
     Unix { mode: u32, group: u32 },
+    Macos { mode: u32, group: u32, acl: String },
     Windows { sddl: String, control: u16 },
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

@@ -1,13 +1,13 @@
 //! Metadata-only repair custody. A permission snapshot is data, never authority
 //! to open another object or to mutate its contents or ownership.
 use super::Result;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use super::effects::changed;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::unix::effects::permissions as os;
 #[cfg(windows)]
 use super::windows::effects::permissions as os;
-#[cfg(not(any(target_os = "linux", windows)))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 use super::{StateFileErrorCode, failure};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -19,8 +19,20 @@ pub enum PermissionKind {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub enum PermissionProtection {
-    UnixMode { mode: u32, group: u32 },
-    WindowsDacl { sddl: String, control: u16 },
+    UnixMode {
+        mode: u32,
+        group: u32,
+    },
+    #[cfg(target_os = "macos")]
+    MacOsAcl {
+        mode: u32,
+        group: u32,
+        acl: String,
+    },
+    WindowsDacl {
+        sddl: String,
+        control: u16,
+    },
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct PermissionSnapshot {
@@ -37,14 +49,14 @@ pub struct PermissionRepairWitness {
 pub struct PermissionRepairPin {
     path: PathBuf,
     observed: PermissionSnapshot,
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pin: os::Pin,
 }
 impl PermissionRepairPin {
     /// Absent is None. Links, unreadability and foreign ownership refuse.
     /// No content is read, and NativeStateFiles' protection policy is unchanged.
     pub fn open(path: &Path) -> Result<Option<Self>> {
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         {
             let Some(pin) = os::Pin::open(path)? else {
                 return Ok(None);
@@ -56,10 +68,10 @@ impl PermissionRepairPin {
                 pin,
             }))
         }
-        #[cfg(not(any(target_os = "linux", windows)))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         Err(failure(
             StateFileErrorCode::Unsupported,
-            "permission repair requires Linux or Windows",
+            "permission repair requires Linux, macOS or Windows",
             path,
         ))
     }
@@ -73,7 +85,7 @@ impl PermissionRepairPin {
     /// Read-only native policy observation. Unreadable metadata and changed
     /// ownership remain errors; a readable loose mode/DACL is false.
     pub fn is_owner_only(&self) -> Result<bool> {
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         {
             self.pin.check()?;
             let before = self.pin.snapshot()?;
@@ -87,10 +99,10 @@ impl PermissionRepairPin {
             }
             Ok(private)
         }
-        #[cfg(not(any(target_os = "linux", windows)))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         Err(failure(
             StateFileErrorCode::Unsupported,
-            "permission observation requires Linux or Windows",
+            "permission observation requires Linux, macOS or Windows",
             &self.path,
         ))
     }
@@ -102,7 +114,7 @@ impl PermissionRepairPin {
         &mut self,
         expected: &PermissionSnapshot,
     ) -> Result<PermissionRepairWitness> {
-        #[cfg(any(target_os = "linux", windows))]
+        #[cfg(any(target_os = "linux", target_os = "macos", windows))]
         {
             if &self.observed != expected || self.pin.snapshot()? != *expected {
                 return Err(changed(
@@ -159,12 +171,12 @@ impl PermissionRepairPin {
                 after: self.observed.clone(),
             })
         }
-        #[cfg(not(any(target_os = "linux", windows)))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
         {
             let _ = expected;
             Err(failure(
                 StateFileErrorCode::Unsupported,
-                "permission repair requires Linux or Windows",
+                "permission repair requires Linux, macOS or Windows",
                 &self.path,
             ))
         }

@@ -32,7 +32,7 @@ pub(in crate::state_files) fn inherited_installation_claim(raw: libc::c_int) -> 
         ));
     }
     #[cfg(target_os = "macos")]
-    metadata::check_directory_acl(&inherited, &path)?;
+    super::super::metadata(&inherited, &path, false)?;
     // A fresh open must be excluded, while the inherited open file description
     // must already own the exclusive lock. A busy unrelated holder is no proof.
     // SAFETY: nonblocking locks on retained descriptors for this exact claim.

@@ -171,6 +171,14 @@ fn tighten(
             mode: *mode,
             group: *group,
         },
+        #[cfg(target_os = "macos")]
+        se_proc::PermissionProtection::MacOsAcl { mode, group, acl } => {
+            PermissionProtection::Macos {
+                mode: *mode,
+                group: *group,
+                acl: acl.clone(),
+            }
+        }
         se_proc::PermissionProtection::WindowsDacl { sddl, control } => {
             PermissionProtection::Windows {
                 sddl: sddl.clone(),

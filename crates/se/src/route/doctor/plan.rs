@@ -13,6 +13,7 @@ pub(super) fn emit(
         RepairPlan::TightenPermissions(plan) => {
             let before = match &plan.expected_before.protection {
                 PermissionProtection::Unix { mode, .. } => format!("Unix mode {mode:04o}"),
+                PermissionProtection::Macos { mode, .. } => format!("macOS mode {mode:04o} and extended ACL (clear all entries on repair)"),
                 PermissionProtection::Windows { .. } => "the pinned Windows DACL".into(),
             };
             (&plan.check_id, &plan.target,

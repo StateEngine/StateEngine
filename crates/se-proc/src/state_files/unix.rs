@@ -1,5 +1,11 @@
 use super::*;
+#[cfg(target_os = "macos")]
+mod acl;
 mod ancestors;
+#[cfg(target_os = "macos")]
+mod created_acl;
+#[cfg(target_os = "macos")]
+use created_acl::clear as clear_created_acl;
 #[path = "effects/unix.rs"]
 pub(super) mod effects;
 use std::{
@@ -44,6 +50,8 @@ fn metadata(file: &File, path: &Path, directory: bool) -> Result<std::fs::Metada
             path,
         ));
     }
+    #[cfg(target_os = "macos")]
+    acl::verify(file, meta.uid(), path)?;
     Ok(meta)
 }
 fn components(path: &Path) -> Result<Vec<&OsStr>> {
@@ -96,15 +104,26 @@ fn walk_with_private_root(
         let component = name(value, path)?;
         let mut created = false;
         if create {
-            // SAFETY: single literal component relative to the held parent FD.
-            let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o700) };
-            created = rc == 0;
-            if !created && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
-                return Err(io_error(
-                    "create private directory",
-                    path,
-                    io::Error::last_os_error(),
-                ));
+            #[cfg(target_os = "macos")]
+            {
+                // Clear inheritance on an exclusively named staging directory,
+                // before publishing it. Never clear an incumbent opened later.
+                let mut custody = Vec::new();
+                effects::prepare_created_directory(&traversed, &mut custody)?;
+                created = !custody.is_empty();
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                // SAFETY: single literal component relative to the held parent FD.
+                let rc = unsafe { libc::mkdirat(parent.as_raw_fd(), component.as_ptr(), 0o700) };
+                created = rc == 0;
+                if !created && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
+                    return Err(io_error(
+                        "create private directory",
+                        path,
+                        io::Error::last_os_error(),
+                    ));
+                }
             }
         }
         private |= created || (private_root && index + 1 == parts.len());
@@ -265,15 +284,25 @@ impl Directory {
     }
     pub fn prepare_directory(&self, path: &Path, root: &Path) -> Result<()> {
         let (parent, name) = self.parent(path, root)?;
-        // SAFETY: one normal component relative to the retained private parent.
-        let created = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } == 0;
-        if !created && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
-            return Err(io_error(
-                "create protected child directory",
-                path,
-                io::Error::last_os_error(),
-            ));
-        }
+        #[cfg(target_os = "macos")]
+        let created = {
+            let mut custody = Vec::new();
+            effects::prepare_created_directory(path, &mut custody)?;
+            !custody.is_empty()
+        };
+        #[cfg(not(target_os = "macos"))]
+        let created = {
+            // SAFETY: one normal component relative to the retained private parent.
+            let created = unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } == 0;
+            if !created && io::Error::last_os_error().raw_os_error() != Some(libc::EEXIST) {
+                return Err(io_error(
+                    "create protected child directory",
+                    path,
+                    io::Error::last_os_error(),
+                ));
+            }
+            created
+        };
         // SAFETY: retained parent and literal child; never follow a final link.
         let file = owned(
             unsafe {
@@ -322,6 +351,8 @@ impl Directory {
             )
         };
         let file = owned(raw, "create protected staging file", path)?;
+        #[cfg(target_os = "macos")]
+        clear_created_acl(&file, path, false)?;
         // SAFETY: newly created unique regular-file descriptor, no path mutation.
         if unsafe { libc::fchmod(file.as_raw_fd(), 0o600) } < 0 {
             return Err(io_error(

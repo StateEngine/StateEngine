@@ -286,6 +286,13 @@ its normal permissions. The native file-custody adapter creates DB and side file
 qualifies SQLite WAL/SHM creation/readback without a process-global mask change. A standalone
 binary may set its own startup mask. On each store/credential open, a looser mode refuses with the
 exact `se doctor --fix CHECK-ID` diagnosis, never a silent chmod or hidden credential rotation.
+On macOS, private-root and secret-file admission also reads the pinned object's Darwin
+extended ACL: every allow entry must name the owner's native UUID, including inherited
+and inherit-only entries. Deny entries do not grant access. Newly created private objects
+have their extended ACL cleared before publication; existing objects are never silently
+repaired. The named doctor permission repair compares the full ACL with the recorded
+mode/owner/object, removes non-owner mode bits before clearing all ACL entries, and reopens
+the exact name to verify the same private object. Its plan names ACL removal explicitly.
 No encryption at rest: the key would sit beside the data under the same user, so OS disk encryption is the honest answer.
 
 ## 6. Secrets in captured turns, and `se forget`
