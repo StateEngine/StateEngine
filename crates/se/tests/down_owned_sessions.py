@@ -106,7 +106,18 @@ except Exception:result['error']=traceback.format_exc();print(result['error'],fl
 finally:
  if lock is not None:lock.rollback();lock.close()
  try:
-  if pins and not all(p.exited() for p in pins.values()):
+  if args.block_writer and result.get('down',{}).get('complete') is False:
+   commands=re.findall(r'`([^`]+)`',result['down']['witness']['detail'])
+   assert len(commands)>=2,'literal cleanup commands absent'
+   for index,command in enumerate(commands):
+    words=shlex.split(command);assert words[0]=='se' and words[words.index('--home')+1]==str(state)
+    if 'stop' in words:assert words[words.index('--project')+1]==project
+    p=subprocess.run([str(binary),'--json',*words[1:]],cwd=repo,env=env,stdin=subprocess.DEVNULL,capture_output=True,timeout=75)
+    (root/f'printed-retry-{index}.stdout').write_bytes(p.stdout);(root/f'printed-retry-{index}.stderr').write_bytes(p.stderr)
+    assert p.returncode==0,(command,p.stdout,p.stderr)
+    assert json.loads(p.stdout)['complete'], 'printed cleanup command did not witness completion'
+   result['printed_retry_executed']=True
+  elif pins and not all(p.exited() for p in pins.values()):
    call('recovery-status','status',required=False);call('recovery-stop','stop','--all',required=False);call('recovery-down','down',required=False)
   time.sleep(.5);result['outside_final']={pid:p.exited() for pid,p in pins.items()};result['endpoint_absent']=not (state/'endpoint.json').exists();result['user_work_preserved']=(repo/'user.txt').read_text()=='preserved\n'
  except Exception:result['cleanup_error']=traceback.format_exc()
