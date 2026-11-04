@@ -54,11 +54,15 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         );
         if kind == "queue-operation"
             && object.get("operation").and_then(Value::as_str) == Some("enqueue")
+            && object.contains_key("content")
         {
             let text = object
                 .get("content")
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid("the actual queued input text"))?;
+            if text.is_empty() {
+                return Err(invalid("nonempty queued input text"));
+            }
             Body::new(text)?;
             notice.subtype = Some("enqueue".into());
             notice.queued_input = Some(se_core::ops::queued_input::QueuedInput {
