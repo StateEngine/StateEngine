@@ -6,6 +6,7 @@ pub(crate) mod capture;
 pub(crate) mod event;
 pub(crate) mod process;
 pub(crate) mod semantic;
+mod maintenance;
 pub(crate) mod session;
 // Closed wave-1 metadata codec; text lives only in its typed payload column.
 use crate::{error::*, identity::*, *};
@@ -53,6 +54,9 @@ pub(crate) fn text(input: InputText, max: usize) -> StoreResult<String> {
     Ok(s)
 }
 pub(crate) fn stored_text(c: &Connection, seq: i64, field: &str) -> StoreResult<StoredText> {
+    use rusqlite::OptionalExtension;
+    let erased: Option<Vec<u8>> = c.query_row("SELECT erasure_id FROM erased_fields WHERE event_seq=? AND field=?", rusqlite::params![seq,field], |row| row.get(0)).optional().map_err(sql)?;
+    if let Some(erasure) = erased { return Ok(StoredText::Erased { erasure: capture::record(erasure)? }); }
     let (length, encoding, hash): (u64, String, Vec<u8>) = c
         .prepare_cached(
             "SELECT length(content),encoding,sha256 FROM payloads WHERE event_seq=? AND field=?",

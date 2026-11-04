@@ -576,6 +576,9 @@ impl StorePosition {
     pub(crate) fn sequence(&self) -> u64 {
         self._sequence.get()
     }
+    pub(crate) fn storage_parts(&self) -> (&StoreId, u64, u64) {
+        (&self._store, self._incarnation, self.sequence())
+    }
     pub(crate) fn belongs(&self, info: &StoreInfo) -> bool {
         self._store == info.id && self._incarnation == info.incarnation
     }

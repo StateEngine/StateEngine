@@ -9,6 +9,7 @@ pub(crate) fn body(
 ) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
     Ok(match kind {
+        "runtime.owner" | "runtime.handover" | "backup.recorded" | "turn.erased" | "message.erased" | "erasure.requested" | "erasure.completed" | "recovery.recorded" => super::maintenance::body(c,seq,kind)?,
         "import.started" | "import.progress" | "import.finished" | "import.unreadable"
         | "legacy.retained" | "alias.imported" => crate::import::decode(c, seq, kind)?,
         "process.registered" | "process.transition" => process::body(c, seq, kind, scope)?,
@@ -282,14 +283,6 @@ pub(crate) fn body(
                     state: field(&v, "state")?,
                     witness: field(&v, "witness")?,
                     expected: field(&v, "expected")?,
-                },
-                "runtime.owner" => RuntimeOwnerEstablished {
-                    epoch: field(&v, "epoch")?,
-                    generation: field(&v, "generation")?,
-                    expected_owner_generation: field(&v, "expected_owner_generation")?,
-                    expected: field(&v, "expected")?,
-                    witnesses: field(&v, "witnesses")?,
-                    recovered: None,
                 },
                 _ => {
                     return Err(fail(

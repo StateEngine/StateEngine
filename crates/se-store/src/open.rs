@@ -276,11 +276,11 @@ macro_rules! staging {
         impl TextStaging for $t {
             fn stage_text(
                 &self,
-                _: &mut dyn std::io::Read,
-                _: u64,
-                _: &dyn RuntimeLease,
+                source: &mut dyn std::io::Read,
+                maximum: u64,
+                lease: &dyn RuntimeLease,
             ) -> StoreResult<StagedText> {
-                later("large capture staging")
+                crate::staging::stage(&self.reader.path, &connection::info(&self.engine.db)?, &self.engine.identity, source, maximum, lease)
             }
         }
     };
@@ -366,10 +366,12 @@ impl HostStore for SqliteHost {
     }
     fn record_first_binding(
         &mut self,
-        _: FirstBinding,
-        _: &dyn RuntimeLease,
+        binding: FirstBinding,
+        lease: &dyn RuntimeLease,
     ) -> StoreResult<FirstBindingReceipt> {
-        later("embedded first binding")
+        self.engine.reopen(&self.reader.path, self.reader.timeout, lease)?;
+        connection::validate_lease(&connection::info(&self.engine.db)?, lease, LeaseMode::Host)?;
+        self.engine.first_binding(binding)
     }
     fn checkpoint(
         &mut self,

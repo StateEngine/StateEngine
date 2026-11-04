@@ -3,6 +3,11 @@ use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 mod recovery;
+mod first_binding;
+mod input;
+mod receipt;
+use receipt::{receipt, receipt_members, stamp, door};
+pub(crate) use input::batch_sizes;
 use recovery::Uncertain;
 pub(crate) struct Engine {
     pub db: Connection,
@@ -25,11 +30,19 @@ impl Engine {
         batches: Vec<AtomicBatch>,
         maintenance: bool,
     ) -> StoreResult<(Vec<StoreResult<CommitReceipt>>, Phases)> {
+        self.commit(batches, maintenance, false)
+    }
+    fn commit(&mut self, batches: Vec<AtomicBatch>, maintenance: bool, coupled: bool) -> StoreResult<(Vec<StoreResult<CommitReceipt>>, Phases)> {
         let attempted = batches
             .iter()
             .map(Uncertain::from_batch)
             .collect::<Vec<_>>();
-        let mut result = self.group_inner(batches, maintenance);
+        let info = connection::info(&self.db)?;
+        let batches = batches.into_iter().map(|batch| {
+            batch_sizes(&batch)?;
+            crate::staging::prepare(batch, &info, &self.identity)
+        }).collect();
+        let mut result = self.group_inner(batches, maintenance, coupled);
         if let Ok((results, _)) = &mut result {
             for (operation, outcome) in attempted.into_iter().zip(results) {
                 match outcome {
@@ -51,8 +64,9 @@ impl Engine {
     }
     fn group_inner(
         &mut self,
-        batches: Vec<AtomicBatch>,
+        batches: Vec<StoreResult<AtomicBatch>>,
         maintenance: bool,
+        coupled: bool,
     ) -> StoreResult<(Vec<StoreResult<CommitReceipt>>, Phases)> {
         if self.poisoned {
             return Err(fail(
@@ -65,6 +79,7 @@ impl Engine {
         }
         let full = batches
             .iter()
+            .filter_map(|b| b.as_ref().ok())
             .flat_map(|b| &b.events)
             .any(|e| security(&e.body));
         self.db
@@ -126,7 +141,15 @@ impl Engine {
             }
         }
         let mut results = Vec::with_capacity(batches.len());
+        if coupled {
+            first_binding::check_pair(&self.db, &batches, &info)?;
+        }
         for batch in batches {
+            let batch = match batch {
+                Ok(batch) => batch,
+                Err(error) if coupled => { self.rollback_confirmed()?; return Err(error); }
+                Err(error) => { results.push(Err(error)); continue; }
+            };
             if let Err(e) = self.db.execute_batch("SAVEPOINT operation") {
                 self.rollback();
                 return Err(sql(e));
@@ -152,6 +175,10 @@ impl Engine {
                 ));
             }
             if result.is_err() {
+                if coupled {
+                    self.rollback_confirmed()?;
+                    return Err(result.err().ok_or_else(|| invalid("missing first binding error"))?);
+                }
                 if let Err(e) = self
                     .db
                     .execute_batch("ROLLBACK TO operation; RELEASE operation")
@@ -280,7 +307,7 @@ impl Engine {
     ) -> StoreResult<()> {
         let old = crate::read::load_event(&self.db, seq, info)?;
         let retained = descriptor(&old.body, |text| match text {
-            StoredText::Present(value) => Ok(value.clone()),
+            StoredText::Present(value) => Ok(text_fingerprint(value)),
             StoredText::Erased { .. } => {
                 Err(fail(StoreErrorCode::ContentErased, "event content erased"))
             }
@@ -333,16 +360,18 @@ impl Engine {
             }
         }
         if let Some(request) = &batch.request {
-            let found:Option<(Vec<u8>,Vec<u8>,u16)>=self.db.query_row("SELECT operation_id,fingerprint,fingerprint_codec FROM operations WHERE scope_key=? AND actor_id=?
-                    AND request_key=? AND erased=0",crate::sql_value::sql_params![scope,actor,request.key.as_str()],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?))).optional().map_err(sql)?;
-            if let Some((op, digest, version)) = found {
+            let found:Option<(Vec<u8>,Option<Vec<u8>>,u16,bool)>=self.db.query_row("SELECT operation_id,fingerprint,fingerprint_codec,erased FROM operations WHERE scope_key=? AND actor_id=?
+                    AND request_key=?",crate::sql_value::sql_params![scope,actor,request.key.as_str()],|r|Ok((crate::sql_value::value(r,0)?,crate::sql_value::value(r,1)?,crate::sql_value::value(r,2)?,crate::sql_value::value(r,3)?))).optional().map_err(sql)?;
+            if let Some((op, digest, version, erased)) = found {
+                if erased { return Err(fail(StoreErrorCode::ContentErased, "caller key's content-derived fingerprint was erased")); }
+                if version != 1 { return Err(fail(StoreErrorCode::VersionUnsupported, "retained intent codec is unsupported")); }
                 if digest
-                    != fingerprint(
+                    != Some(fingerprint(
                         &scope,
                         &actor,
                         batch.admission.actor.kind(),
                         &request.intent,
-                    )?
+                    )?.to_vec())
                     || version != request.intent.codec_version
                 {
                     let original = receipt(&self.db, &op, info, Some(request.key.clone()))?;
@@ -375,21 +404,11 @@ impl Engine {
         crate::import::validate_checkpoint(&batch)?;
         apply::capture::canonicalize(&self.db, &mut batch)?;
         let mut descriptors = Vec::new();
-        let mut total = 0usize;
         for e in &batch.events {
             let d = descriptor(&e.body, |t| match t {
-                InputText::Inline(s) => Ok(s.clone()),
-                InputText::Staged(_) => later("staged payload"),
+                InputText::Inline(s) => Ok(text_fingerprint(s)),
+                InputText::Staged(_) => Err(invalid("staged payload was not prepared before BEGIN")),
             })?;
-            total = total
-                .checked_add(d.len())
-                .ok_or_else(|| invalid("batch bytes overflow"))?;
-            if total > 2 * 1024 * 1024 {
-                return Err(fail(
-                    StoreErrorCode::BodyTooLarge,
-                    "atomic batch exceeds 2 MiB",
-                ));
-            }
             descriptors.push(d);
             let runtime = matches!(
                 e.body,
@@ -530,101 +549,6 @@ impl Engine {
         receipt(&self.db, &op, info, batch.request.map(|r| r.key))
     }
 }
-pub(crate) fn stamp(writer: &WriterMode) -> (&'static str, Option<u64>) {
-    match writer.kind() {
-        WriterKind::Direct => ("direct", None),
-        WriterKind::Host { generation } => ("host", Some(generation)),
-    }
-}
-pub(crate) fn door(d: Door) -> &'static str {
-    match d {
-        Door::Cli => "cli",
-        Door::Mcp => "mcp",
-        Door::Hook => "hook",
-        Door::Host => "host",
-        Door::Import => "import",
-    }
-}
-pub(crate) fn receipt(
-    c: &Connection,
-    op: &[u8],
-    info: &StoreInfo,
-    request_key: Option<se_types::IdempotencyKey>,
-) -> StoreResult<CommitReceipt> {
-    let mut q = c
-        .prepare("SELECT event_seq FROM operation_events WHERE operation_id=? ORDER BY ordinal")
-        .map_err(sql)?;
-    let seqs = q
-        .query_map([op], |r| crate::sql_value::value::<i64>(r, 0))
-        .map_err(sql)?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(sql)?;
-    if seqs.is_empty() || seqs.len() > 64 {
-        return Err(fail(
-            StoreErrorCode::ProjectionInconsistent,
-            "operation membership absent or exceeds bound",
-        ));
-    }
-    receipt_members(c, &seqs, info, request_key)
-}
-fn receipt_members(
-    c: &Connection,
-    seqs: &[i64],
-    info: &StoreInfo,
-    request_key: Option<se_types::IdempotencyKey>,
-) -> StoreResult<CommitReceipt> {
-    let events = seqs
-        .iter()
-        .map(|s| crate::read::load_event(c, *s, info))
-        .collect::<StoreResult<Vec<_>>>()?;
-    let primary = &events[0];
-    let mut wakes = Vec::new();
-    for e in &events {
-        if let (Scope::Project(p), EventBody::MessageSent { recipient, .. }) =
-            (&e.header.scope, &e.body)
-        {
-            wakes.push(Wake {
-                project: p.clone(),
-                principal: recipient.clone(),
-                through: e.position.clone(),
-            })
-        }
-        if let (Scope::Project(project), EventBody::WorkMessageSent { work, .. }) =
-            (&e.header.scope, &e.body)
-        {
-            for agent in &work.addressees {
-                wakes.push(Wake {
-                    project: project.clone(),
-                    principal: Actor::Agent(agent.clone()),
-                    through: e.position.clone(),
-                });
-            }
-        }
-    }
-    Ok(CommitReceipt {
-        write_timings: None,
-        maintenance_pending: false,
-        request_key,
-        state: CommitState::Committed,
-        primary_event: primary.header.event.clone(),
-        writer: primary.writer.clone(),
-        durability: primary.durability,
-        wakes,
-        first: events
-            .iter()
-            .min_by_key(|e| e.position.sequence())
-            .ok_or_else(|| invalid("empty membership"))?
-            .position
-            .clone(),
-        last: events
-            .iter()
-            .max_by_key(|e| e.position.sequence())
-            .ok_or_else(|| invalid("empty membership"))?
-            .position
-            .clone(),
-        events: events.into_iter().map(|e| e.header.event).collect(),
-    })
-}
 fn security<T>(b: &EventBody<T>) -> bool {
     use EventBody::*;
     matches!(
@@ -655,28 +579,9 @@ fn security<T>(b: &EventBody<T>) -> bool {
     )
 }
 pub(crate) use crate::codec::semantic::descriptor;
-pub(crate) fn batch_bytes(batch: &AtomicBatch) -> StoreResult<usize> {
-    let mut bytes = 0usize;
-    for e in &batch.events {
-        let n = descriptor(&e.body, |t| match t {
-            InputText::Inline(s) => Ok(s.clone()),
-            InputText::Staged(_) => later("staged text"),
-        })?
-        .len()
-            + 512;
-        bytes = bytes
-            .checked_add(n)
-            .ok_or_else(|| invalid("batch byte overflow"))?;
-    }
-    if bytes > 2 * 1024 * 1024 || batch.events.is_empty() || batch.events.len() > 64 {
-        return Err(fail(
-            StoreErrorCode::BodyTooLarge,
-            "batch exceeds 64 events or 2 MiB",
-        ));
-    }
-    Ok(bytes)
+fn text_fingerprint(text: &str) -> serde_json::Value {
+    serde_json::json!({"bytes":text.len(),"sha256":se_types::hex_lower(&Sha256::digest(text.as_bytes()))})
 }
-
 fn fingerprint(
     scope: &[u8],
     actor: &[u8],
