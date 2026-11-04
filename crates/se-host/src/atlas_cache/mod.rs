@@ -1,6 +1,7 @@
 //! Protected cache files shared by hosted and hostless readers. Only activation
 //! creates directories or acquires the permanent kernel-owned writer lock.
 mod inventory;
+mod reservation;
 use se_atlas::{cache::*, errors::AtlasResult, model::CacheEpoch, scope::Scope};
 use se_proc::{NativeStateFiles, OwnedFile, observe_file_revision};
 use se_types::{Detail, SeError, details};
@@ -91,7 +92,7 @@ impl NativeAtlasCache {
         let root = NativeStateFiles::open(&path).map_err(fail)?;
         root.prepare_directory(&path.join("epochs")).map_err(fail)?;
         let (total, root_bytes) = inventory::measure(&home, root.root())?;
-        Ok(Self {
+        let cache = Self {
             home,
             root,
             scope,
@@ -99,7 +100,9 @@ impl NativeAtlasCache {
             reserved: RefCell::new(None),
             growth: Cell::new(0),
             other_roots_bytes: total - root_bytes,
-        })
+        };
+        cache.recover_reservation()?;
+        Ok(cache)
     }
     fn require_writer(&self) -> AtlasResult<()> {
         let Some(writer) = &self.writer else {
@@ -196,6 +199,7 @@ impl CacheFiles for NativeAtlasCache {
             .as_ref()
             .is_some_and(|(e, _)| e == &pointer.epoch)
         {
+            self.clear_reservation()?;
             self.reserved.borrow_mut().take();
         }
         Ok(())
@@ -246,6 +250,7 @@ impl CacheFiles for NativeAtlasCache {
             .pin_database(epoch)?
             .ok_or_else(|| fail("reserved database absent on readback"))?;
         let identity = observe_file_revision(&pin.file).map_err(fail)?;
+        self.remember_reservation(epoch, &pin)?;
         *self.reserved.borrow_mut() = Some((epoch.clone(), identity));
         Ok(pin)
     }
@@ -304,6 +309,7 @@ impl CacheFiles for NativeAtlasCache {
         {
             return Err(fail("epoch directory remains nonempty"));
         }
+        self.clear_reservation()?;
         self.reserved.borrow_mut().take();
         Ok(())
     }
@@ -369,7 +375,7 @@ struct Reservation<'a> {
 impl GrowthReservation for Reservation<'_> {}
 impl Drop for Reservation<'_> {
     fn drop(&mut self) {
-        self.held.set(self.held.get() - self.bytes);
+        self.held.set(self.held.get().saturating_sub(self.bytes));
     }
 }
 fn cache_path(home: &NativeStateFiles, scope: &Scope) -> AtlasResult<PathBuf> {

@@ -63,7 +63,7 @@ fn walk(
             let allowed = name.starts_with(".se-stage-")
                 || match depth {
                     0 => name == "writer.lock",
-                    2 => name == "current.json",
+                    2 => matches!(name.as_str(), "current.json" | "reservation.json"),
                     4 => matches!(name.as_str(), "atlas.db" | "atlas.db-wal" | "atlas.db-shm"),
                     _ => false,
                 };
