@@ -62,7 +62,7 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
             Body::new(text)?;
             notice.subtype = Some("enqueue".into());
             notice.queued_input = Some(se_core::ops::queued_input::QueuedInput {
-                enqueue: notice.position.clone(),
+                enqueue: Some(notice.position.clone()),
                 outcome: se_core::ops::queued_input::Outcome::Unresolved,
                 reason: None,
                 delivery: se_core::ops::queued_input::Delivery::Unresolved,

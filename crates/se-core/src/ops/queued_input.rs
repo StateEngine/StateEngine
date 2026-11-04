@@ -22,12 +22,13 @@ pub enum Delivery {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QueuedInput {
-    pub enqueue: Position,
+    /// None when native evidence has no matching enqueue; never fabricate a link.
+    pub enqueue: Option<Position>,
     pub outcome: Outcome,
     pub reason: Option<String>,
     pub delivery: Delivery,
     pub outcome_position: Option<Position>,
-    /// Original text is preserved on enqueue. Later rows link to that evidence.
+    /// Enqueue text, or unmatched native remove text. Linked outcomes avoid a copy.
     pub text: Option<String>,
 }
 impl QueuedInput {
@@ -37,14 +38,15 @@ impl QueuedInput {
             self.reason.as_deref(),
             Some("absorbed_mid_turn" | "delivered_to_agent")
         );
-        if !position(&self.enqueue)
+        if self.enqueue.as_ref().is_some_and(|p| !position(p))
             || self
                 .reason
                 .as_ref()
                 .is_some_and(|s| s.len() > 4096 || s.contains('\0'))
             || match self.outcome {
                 Outcome::Unresolved => {
-                    self.outcome_position.is_some()
+                    self.enqueue.is_none()
+                        || self.outcome_position.is_some()
                         || self.reason.is_some()
                         || self.delivery != Delivery::Unresolved
                         || self.text.as_ref().is_none_or(|s| {
@@ -52,14 +54,22 @@ impl QueuedInput {
                         })
                 }
                 Outcome::Dequeued | Outcome::Removed | Outcome::Delivered => {
-                    self.text.is_some()
-                        || self
-                            .outcome_position
-                            .as_ref()
-                            .is_none_or(|p| !position(p) || p.offset < self.enqueue.offset)
+                    (self.text.is_some() && self.enqueue.is_some())
+                        || self.text.as_ref().is_some_and(|s| {
+                            s.is_empty() || s.len() > Body::MAX_BYTES || s.contains('\0')
+                        })
+                        || self.outcome_position.as_ref().is_none_or(|p| {
+                            !position(p)
+                                || self
+                                    .enqueue
+                                    .as_ref()
+                                    .is_some_and(|enqueue| p.offset < enqueue.offset)
+                        })
                         || match self.outcome {
                             Outcome::Delivered => {
-                                self.delivery != Delivery::UserRecord || self.reason.is_some()
+                                self.enqueue.is_none()
+                                    || self.delivery != Delivery::UserRecord
+                                    || self.reason.is_some()
                             }
                             Outcome::Dequeued => {
                                 self.delivery != Delivery::Unresolved || self.reason.is_some()

@@ -220,7 +220,11 @@ fn finish(
                 &format!(
                     "{}:{}",
                     record.kind,
-                    record.queued_input.as_ref().map_or(0, |q| q.enqueue.offset)
+                    record
+                        .queued_input
+                        .as_ref()
+                        .and_then(|q| q.enqueue.as_ref())
+                        .map_or(0, |p| p.offset)
                 ),
             ),
             record,

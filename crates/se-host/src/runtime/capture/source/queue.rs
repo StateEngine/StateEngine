@@ -54,7 +54,7 @@ impl Tracker {
                     let mut record = Record::new("queue-operation", Some("enqueue"));
                     record.position = position.clone();
                     record.queued_input = Some(QueuedInput {
-                        enqueue: position,
+                        enqueue: Some(position),
                         outcome: Outcome::Unresolved,
                         reason: None,
                         delivery: Delivery::Unresolved,
@@ -73,26 +73,55 @@ impl Tracker {
                     }
                 }
                 Some("remove") => {
-                    if let Some(text) = value.get("content").and_then(Value::as_str)
-                        && let Some(index) = self.pending.iter().position(|p| {
-                            p.text.as_ref() == text && p.operation == Outcome::Unresolved
-                        })
-                    {
-                        let reason = match value.get("reason") {
-                            None | Some(Value::Null) => None,
-                            Some(Value::String(reason))
-                                if reason.len() <= 4096 && !reason.contains('\0') =>
-                            {
-                                Some(reason.clone())
-                            }
-                            _ => {
-                                return Err(SeError::invalid(
-                                    "native queue reason",
-                                    "a bounded native reason string",
-                                ));
-                            }
-                        };
+                    let text = value
+                        .get("content")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            SeError::invalid("native queue remove", "the native input string")
+                        })?;
+                    let reason = match value.get("reason") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::String(reason))
+                            if reason.len() <= 4096 && !reason.contains('\0') =>
+                        {
+                            Some(reason.clone())
+                        }
+                        _ => {
+                            return Err(SeError::invalid(
+                                "native queue reason",
+                                "a bounded native reason string",
+                            ));
+                        }
+                    };
+                    let index = self
+                        .pending
+                        .iter()
+                        .position(|p| p.text.as_ref() == text && p.operation == Outcome::Unresolved)
+                        .or_else(|| self.pending.iter().rposition(|p| p.text.as_ref() == text));
+                    if let Some(index) = index {
                         outcomes.push(self.resolve(index, Outcome::Removed, reason, &position));
+                    } else {
+                        // Native logs can start after enqueue or remove transformed text.
+                        // Retain the operation without inventing an enqueue relationship.
+                        let mut record = Record::new("queue-operation", Some("remove"));
+                        record.position = position.clone();
+                        let delivery = if matches!(
+                            reason.as_deref(),
+                            Some("absorbed_mid_turn" | "delivered_to_agent")
+                        ) {
+                            Delivery::NativeReason
+                        } else {
+                            Delivery::Unresolved
+                        };
+                        record.queued_input = Some(QueuedInput {
+                            enqueue: None,
+                            outcome: Outcome::Removed,
+                            reason,
+                            delivery,
+                            outcome_position: Some(position.clone()),
+                            text: Some(text.into()),
+                        });
+                        outcomes.push(record);
                     }
                 }
                 _ => (),
@@ -162,7 +191,7 @@ impl Tracker {
             Delivery::Unresolved
         };
         record.queued_input = Some(QueuedInput {
-            enqueue: prompt.position.clone(),
+            enqueue: Some(prompt.position.clone()),
             outcome,
             reason,
             delivery,
@@ -285,6 +314,16 @@ mod tests {
                 )?
                 .is_empty()
         );
+        let orphan = tracker.observe(&serde_json::to_vec(&json!({"type":"queue-operation","operation":"remove","content":"not enqueued here","reason":"absorbed_mid_turn"}))?, Position{offset:40,length:10})?;
+        let orphan = orphan[0]
+            .queued_input
+            .as_ref()
+            .ok_or("orphan remove lost")?;
+        assert!(orphan.enqueue.is_none());
+        assert_eq!(orphan.text.as_deref(), Some("not enqueued here"));
+        orphan.validate()?;
+        let repeated = tracker.observe(&serde_json::to_vec(&json!({"type":"queue-operation","operation":"remove","content":"queued text","reason":"absorbed_mid_turn"}))?, Position{offset:50,length:10})?;
+        assert_eq!(repeated.len(), 1);
         Ok(())
     }
 }
