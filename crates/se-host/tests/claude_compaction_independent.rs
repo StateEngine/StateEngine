@@ -111,6 +111,17 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
             f.owner_project(),
             None,
             vec![
+                EventBody::ProfileSaved {
+                    agent: f.a.clone(),
+                    profile: Profile {
+                        provider: Provider::Claude,
+                        model: None,
+                        permission: PermissionProfile::WorkspaceWrite,
+                        named_profile: "default".into(),
+                        effort: None,
+                    },
+                    expected: Expected::Absent,
+                },
                 prepared,
                 session::activated(&s)?,
                 session::source(source, &s, &pin.identity(), Expected::Absent),
