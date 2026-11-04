@@ -302,6 +302,9 @@ pub(super) fn down_endpoint(
                 pending.push(format!("Shutdown did not report these required facts: {missing:?}. Their absence is not a successful stop; preserve this data home and inspect the named obligations."));
             }
             let complete = pending.is_empty() && stops.iter().all(|stop| stop.complete);
+            if !complete {
+                pending.push(retry_cleanup(files));
+            }
             let detail = format!(
                 "Achieved: {achieved:?}; retained resume references: {retained_count}; pending: {}",
                 pending.join("; ")
@@ -328,5 +331,25 @@ pub(super) fn down_endpoint(
             }
             .into())
         }
+    }
+}
+
+fn retry_cleanup(files: &Files) -> String {
+    let Some(home) = AgentCommand::home_argument(files.0.root()) else {
+        return AgentCommand::HOME_UNAVAILABLE.into();
+    };
+    let command = |verb: &str, all: bool| {
+        let mut argv = vec!["se".into(), "--home".into(), home.into(), verb.into()];
+        if all {
+            argv.push("--all".into());
+        }
+        AgentCommand::from_argv(argv).map(|value| value.command)
+    };
+    match (command("stop", true), command("down", false)) {
+        (Some(stop), Some(down)) => format!(
+            "Cleanup is incomplete. {} `{stop}` to retry stopping the saved agents, then `{down}`. A stop refusal remains a failure; preserve the data home and the named lifecycle identities.",
+            AgentCommand::instruction("Run")
+        ),
+        _ => AgentCommand::HOME_UNAVAILABLE.into(),
     }
 }

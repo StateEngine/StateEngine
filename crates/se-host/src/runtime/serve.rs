@@ -240,7 +240,7 @@ impl HostedRuntime {
         // Waiting for the next request is cancellable; an admitted request owns
         // its execution and reply until completion. Charge that join against the
         // same shutdown budget used by storage drain, rather than renewing it.
-        outcome.runtime.shutdown_deadline = match options(CALL_TIMEOUT) {
+        outcome.runtime.shutdown_deadline = match shutdown_bound(outcome.stop.as_deref()) {
             Ok(deadline) => Some(deadline),
             Err(error) => {
                 outcome.failure.get_or_insert(error);
@@ -433,6 +433,22 @@ async fn connection(
         };
     }
 }
+// The authenticated caller's clock already includes connection/authentication.
+// Starting another thirty seconds here loses the stop reply at the client.
+fn shutdown_bound(stop: Option<&AuthorizedStop>) -> Result<Deadline> {
+    let timeout = match stop {
+        Some(stop) => {
+            let now = u64::try_from(super::start::now_unix_micros()?)
+                .map_err(|_| SeError::invalid("stop clock", "positive Unix microseconds"))?;
+            std::time::Duration::from_micros(
+                stop.request().deadline_at.get().saturating_sub(now).max(1),
+            )
+        }
+        None => CALL_TIMEOUT,
+    };
+    options(timeout)
+}
+
 fn options(timeout: std::time::Duration) -> Result<Deadline> {
     Deadline::from_options(&ClientOptions {
         expected_generation: None,
