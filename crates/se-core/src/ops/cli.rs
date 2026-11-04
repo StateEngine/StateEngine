@@ -238,7 +238,7 @@ fn input_command(name: &str, c: Command) -> Command {
         "continuity.resume" => c
             .about("Restore your saved context without acknowledging packets or mail")
             .arg(value("since").help("An opaque cursor from resume for this same agent"))
-            .arg(value("budget").default_value("32768").help("Maximum UTF-8 bytes in the JSON reply (1024..1048576)"))
+            .arg(value("budget").default_value("4096").help("Maximum UTF-8 bytes in the JSON reply (1024..1048576)"))
             .arg(value("limit").default_value("20").help("Maximum recent turns and governing decisions per section (1..100)"))
             .arg(value("governing_cursor").long("governing-cursor").help("Continue project rulings from decisions.next_cursor"))
             .arg(value("preview").help("Owner: inspect this saved agent without binding or acknowledging it")),

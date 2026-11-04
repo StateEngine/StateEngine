@@ -13,6 +13,25 @@ mod write;
 use se_core::{ops::AnyOutput, registry::HumanKind};
 use std::io::{self, Write};
 
+/// Commands printed by a local consumer retain its resolved state home.
+pub fn output_at(
+    value: &AnyOutput,
+    json: bool,
+    quiet: bool,
+    home: &std::path::Path,
+    out: &mut impl Write,
+) -> io::Result<u8> {
+    if !json
+        && !quiet
+        && let AnyOutput::Resume(resume) = value
+    {
+        continuity::resume_at(&resume.value, Some(home), out)?;
+        out.flush()?;
+        return Ok(value.exit_code());
+    }
+    output(value, json, quiet, out)
+}
+
 pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) -> io::Result<u8> {
     if !json && matches!(value, AnyOutput::HookClaude(_)) {
         return Err(io::Error::other(

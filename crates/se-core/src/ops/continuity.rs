@@ -1,5 +1,6 @@
 //! One read-only continuity assembler for CLI/MCP resume and linked session
 //! context. Authority, clock and the finite store snapshot come from adapters.
+mod compact;
 mod identity;
 mod packet;
 mod read;

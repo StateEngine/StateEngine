@@ -40,6 +40,7 @@ pub(super) fn budget(limit: u32) -> Result<ReadBudget> {
 pub(super) fn unread<R: Snapshot>(
     identity: &Identity,
     limit: u16,
+    byte_budget: u32,
     cx: &mut Cx<'_, R>,
 ) -> Result<crate::ops::MessagePage> {
     message::list(
@@ -51,7 +52,11 @@ pub(super) fn unread<R: Snapshot>(
             kind: None,
             full: false,
             limit,
-            preview_chars: Some(400),
+            preview_chars: Some(if byte_budget <= DEFAULT_BYTES {
+                100
+            } else {
+                400
+            }),
             cursor: None,
             owner_to: identity
                 .principal
@@ -117,7 +122,7 @@ pub(super) fn gather<R: Snapshot>(
             command: None,
             argv: None,
         });
-    let mail = unread(identity, limit, cx)?;
+    let mail = unread(identity, limit, input.byte_budget, cx)?;
     let unread_total = mail.unread_total.ok_or_else(|| {
         scope::unreadable(
             "continuity unread count",
@@ -338,6 +343,7 @@ pub(super) fn omission(
     Omission {
         section: section.into(),
         count,
+        unit: None,
         reason: reason.into(),
         tool: tool.into(),
         argv: command.split(' ').map(str::to_owned).collect(),

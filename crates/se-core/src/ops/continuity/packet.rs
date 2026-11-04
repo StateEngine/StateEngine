@@ -231,40 +231,9 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             );
             continue;
         }
-        if let Read::Present { value } = &mut result.working_state
-            && !value.value.text.is_empty()
-        {
-            let limit = value
-                .value
-                .text
-                .len()
-                .saturating_sub(needed - input.byte_budget as usize + 256);
-            value.value.text = read::clip(&value.value.text, limit).into();
-            value.complete = false;
-            let command = format!(
-                "se --project {} working-state --agent {}",
-                identity.principal.project.id, identity.principal.agent.id
-            );
-            value.command = Some(command.clone());
-            value.argv = Some(command.split(' ').map(str::to_owned).collect());
-            if !result
-                .omissions
-                .iter()
-                .any(|v| v.section == "working_state")
-            {
-                add_omission(
-                    result,
-                    "working_state",
-                    None,
-                    command,
-                    "stateengine_working_state_get",
-                );
-            }
-            continue;
-        }
         if result.unread.items().len() > 1 {
             let count = (result.unread.items().len() / 2).max(1) as u16;
-            let smaller = read::unread(identity, count, cx)?;
+            let smaller = read::unread(identity, count, input.byte_budget, cx)?;
             result.unread = smaller.page;
             result.required_reads.retain(|v| v.kind != "message");
             result
@@ -287,8 +256,87 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             ));
             continue;
         }
+        if input.byte_budget <= DEFAULT_BYTES && super::compact::recovery(result)? {
+            continue;
+        }
+        if input.byte_budget <= DEFAULT_BYTES
+            && result
+                .omissions
+                .iter()
+                .any(|item| item.section == "working_state")
+            && super::compact::expanded(
+                result,
+                read::resume_command(identity, input.governing_cursor.as_ref()),
+            )?
+        {
+            continue;
+        }
+        if let Read::Present { value } = &mut result.working_state
+            && !value.value.text.is_empty()
+        {
+            if value.value.text.len() <= 256
+                && value.command.is_some()
+                && result
+                    .omissions
+                    .iter()
+                    .any(|item| item.section == "recovery_commands")
+            {
+                // With unusually long IDs, use the shared recovery command
+                // before sacrificing the last useful fragment of saved work.
+                value.command = None;
+                value.argv = None;
+                continue;
+            }
+            let existing = result
+                .omissions
+                .iter()
+                .position(|item| item.section == "working_state");
+            if existing.is_none() {
+                // Account for the recovery metadata before choosing a text cut.
+                // Otherwise adding the remedy after clipping can erase the note.
+                let command = format!(
+                    "se --project {} working-state --agent {}",
+                    identity.principal.project.id, identity.principal.agent.id
+                );
+                let mut omitted = read::omission(
+                    "working_state",
+                    Some(0),
+                    "packet byte budget",
+                    command,
+                    "stateengine_working_state_get",
+                );
+                omitted.unit = Some("UTF-8 bytes".into());
+                value.command = Some(omitted.command.clone());
+                value.argv = Some(omitted.argv.clone());
+                if input.byte_budget <= DEFAULT_BYTES {
+                    omitted.argv.clear();
+                }
+                result.omissions.push(omitted);
+                value.complete = false;
+                continue;
+            }
+            let mut limit = value
+                .value
+                .text
+                .len()
+                .saturating_sub(needed - input.byte_budget as usize + 8);
+            if value.command.is_some() && input.byte_budget <= DEFAULT_BYTES {
+                limit = limit.max(value.value.text.len().min(256));
+            }
+            if limit < value.value.text.len() {
+                value.value.text = read::clip(&value.value.text, limit).into();
+                value.complete = false;
+                if let Some(index) = existing {
+                    result.omissions[index].count =
+                        Some(value.bytes.saturating_sub(value.value.text.len() as u64));
+                }
+                continue;
+            }
+        }
         return Err(SeError::too_large(
-            "continuity structural metadata and first unread item; increase --budget",
+            &format!(
+                "continuity structural metadata and first unread item (retry with --budget {needed})"
+            ),
             input.byte_budget as usize,
             needed,
         ));
