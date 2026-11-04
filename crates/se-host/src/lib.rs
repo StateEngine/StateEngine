@@ -29,6 +29,7 @@ mod process;
 mod runtime;
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub use process::{ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation};
+pub mod atlas_cache;
 pub mod atlas_source;
 mod session;
 pub mod state_files;

@@ -3,6 +3,7 @@ pub mod connection;
 pub mod pointer;
 pub mod prune;
 pub mod schema;
+pub mod write;
 use crate::{errors::AtlasResult, model::*, scope::Scope};
 use std::{fs::File, path::PathBuf};
 /// The native adapter retains the directory/root and file pins while SQLite is

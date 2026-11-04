@@ -17,8 +17,8 @@ CREATE TABLE files (
 CREATE TABLE names(id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL UNIQUE CHECK(length(CAST(text AS BLOB))<=1024)) STRICT;
 CREATE TABLE symbols (
  id INTEGER PRIMARY KEY AUTOINCREMENT, key BLOB NOT NULL UNIQUE CHECK(length(key)=32),
- file INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
- parent INTEGER REFERENCES symbols(id) ON DELETE CASCADE,
+ file INTEGER NOT NULL REFERENCES files(id),
+ parent INTEGER REFERENCES symbols(id),
  name INTEGER NOT NULL REFERENCES names(id), kind TEXT NOT NULL,
  start_byte INTEGER NOT NULL CHECK(start_byte>=0), end_byte INTEGER NOT NULL CHECK(end_byte>=0),
  start_line INTEGER NOT NULL CHECK(start_line>=1), start_column INTEGER NOT NULL CHECK(start_column>=0),
@@ -28,7 +28,7 @@ CREATE TABLE symbols (
 CREATE INDEX symbols_name ON symbols(name,file,start_byte);
 CREATE INDEX symbols_file ON symbols(file,start_byte,id);
 CREATE TABLE refs (
- id INTEGER PRIMARY KEY AUTOINCREMENT, file INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+ id INTEGER PRIMARY KEY AUTOINCREMENT, file INTEGER NOT NULL REFERENCES files(id),
  enclosing INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
  target INTEGER REFERENCES symbols(id) ON DELETE SET NULL,
  spelling INTEGER NOT NULL REFERENCES names(id), kind TEXT NOT NULL,
@@ -39,7 +39,7 @@ CREATE TABLE refs (
 CREATE INDEX refs_target ON refs(target,file,start_byte);
 CREATE INDEX refs_spelling ON refs(spelling,file,start_byte);
 CREATE TABLE imports (
- id INTEGER PRIMARY KEY AUTOINCREMENT, file INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+ id INTEGER PRIMARY KEY AUTOINCREMENT, file INTEGER NOT NULL REFERENCES files(id),
  spelling TEXT NOT NULL, local_name INTEGER REFERENCES names(id),
  imported_name INTEGER REFERENCES names(id), target_file INTEGER REFERENCES files(id)
  ON DELETE SET NULL, target_symbol INTEGER REFERENCES symbols(id) ON DELETE SET NULL,

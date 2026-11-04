@@ -38,7 +38,9 @@ pub use uninstall::{
 mod ownership;
 mod source_root;
 mod state_files;
-pub use source_root::{NativeFileRevision, NativeRootFile, NativeSourceRoot};
+pub use source_root::{
+    NativeFileRevision, NativeRootFile, NativeSourceRoot, observe_file_revision,
+};
 pub use state_files::{
     NativeStateFiles, PermissionKind, PermissionProtection, PermissionRepairPin,
     PermissionRepairWitness, PermissionSnapshot, ProtectedStateStaging, StateFileError,

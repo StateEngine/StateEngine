@@ -23,6 +23,11 @@ pub struct NativeFileRevision {
     pub mtime_unix_nanos: i128,
     pub ctime_unix_nanos: Option<i128>,
 }
+/// Generic native facts for an already retained regular file. Ownership and
+/// permission policy belong to the caller's file port.
+pub fn observe_file_revision(file: &File) -> io::Result<NativeFileRevision> {
+    os::revision(file, false)
+}
 impl NativeFileRevision {
     fn same_object(&self, other: &Self) -> bool {
         self.volume == other.volume && self.file == other.file
