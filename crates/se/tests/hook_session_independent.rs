@@ -72,7 +72,11 @@ fn check_case(case: &str) -> Check {
     let source = std::env::var_os("SE_HOOK_REVIEW_SE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_se").into());
-    std::fs::copy(source, &image)?;
+    // Publish only after the writable copy handle has closed. Parallel cases
+    // may start child processes while this executable is being prepared.
+    let staged_image = image.with_extension("pending");
+    std::fs::copy(source, &staged_image)?;
+    std::fs::rename(staged_image, &image)?;
     let initialized = checked(
         &image,
         &f,
