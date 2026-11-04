@@ -16,11 +16,13 @@ fn count_lines(path: &Path) -> usize {
 }
 
 fn collect_sources(dir: &Path, found: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
+    let entries = fs::read_dir(dir).unwrap_or_else(|error| {
+        panic!("no-god-files: cannot read directory {}: {}", dir.display(), error)
+    });
+    for entry in entries {
+        let entry = entry.unwrap_or_else(|error| {
+            panic!("no-god-files: cannot read entry in {}: {}", dir.display(), error)
+        });
         let path = entry.path();
         if path.is_dir() {
             collect_sources(&path, found);
@@ -36,7 +38,10 @@ fn no_source_file_exceeds_the_god_file_limit() {
         .expect("no-god-files: cannot resolve workspace root");
     let crates_dir = workspace.join("crates");
     let mut offenders = Vec::new();
-    for crate_entry in fs::read_dir(&crates_dir).expect("workspace crates directory").flatten() {
+    for crate_entry in fs::read_dir(&crates_dir).expect("no-god-files: workspace crates directory") {
+        let crate_entry = crate_entry.unwrap_or_else(|error| {
+            panic!("no-god-files: cannot read entry in {}: {}", crates_dir.display(), error)
+        });
         let src = crate_entry.path().join("src");
         if !src.is_dir() {
             continue;
