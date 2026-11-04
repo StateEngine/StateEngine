@@ -85,6 +85,9 @@ pub(super) fn page<R: ReadStore>(
                 }
                 match snap.close() {
                     Err(error) => {
+                        if let Err(read_error) = observed {
+                            errors.push(read_error.body);
+                        }
                         errors.push(store_error(&error).body);
                         owner_unread = None;
                     }
