@@ -135,6 +135,9 @@ def run(options):
             config.write_text(text)
             f.agent = f.ok('--project', f.project, 'agent', 'add', 'First Codex', '--provider', 'codex', '--model', 'gpt-6.1-sol')['agent']['id']
             for as_json in [False, True]:
+                # Cover both PATH lookup and an explicit native alias path.
+                configured = command.name if case == 'alias' and not as_json else str(command)
+                config.write_text(text.replace(json.dumps(str(command)), json.dumps(configured), 1))
                 model.sent, model.readback = False, False
                 task_file = f.repo / 'sum.txt'
                 task_file.unlink(missing_ok=True)
@@ -152,6 +155,25 @@ def run(options):
                     fields = (proc / 'stat').read_text().rsplit(') ', 1)[1].split()
                     assert str((proc / 'exe').resolve()) == pin['exe'], pin
                     f.processes.append((pin['pid'], fields[19]))
+                # Retain actual provider descendants too: the stable alias
+                # parent alone is not an outside proof that Codex has exited.
+                roots = {pin['pid'] for pin in pins[1:]}
+                processes = {}
+                for proc in Path('/proc').iterdir():
+                    if not proc.name.isdigit():
+                        continue
+                    try:
+                        fields = (proc / 'stat').read_text().rsplit(') ', 1)[1].split()
+                        processes[int(proc.name)] = (int(fields[1]), fields[19])
+                    except (FileNotFoundError, ProcessLookupError):
+                        pass
+                while True:
+                    more = {pid for pid, (parent, _) in processes.items() if parent in roots}
+                    if more <= roots:
+                        break
+                    roots.update(more)
+                for pid in roots:
+                    f.processes.append((pid, processes[pid][1]))
                 if options.expect_red:
                     assert result.returncode != 0, (case, result.stdout)
                     expected = 'version output does not identify codex-cli' if case == 'alias' else 'no protected Unix socket path fits the provider limit'
@@ -168,6 +190,7 @@ def run(options):
                     check(case + ': ' + ('JSON' if as_json else 'plain') + ' launch performs and reads back the real task')
                     stopped = f.ok('--project', f.project, 'stop', f.agent)
                     assert stopped['complete'] and stopped['witness']['state'] == 'witnessed'
+                    f.close()
             if not options.expect_red:
                 f.close()
                 config.write_text(text.replace(json.dumps(str(command)), json.dumps('/bin/echo'), 1))
