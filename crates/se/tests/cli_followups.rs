@@ -8,8 +8,9 @@ use std::{
     path::Path,
     process::{Command, Output},
     sync::Arc,
-    time::{Duration, Instant},
 };
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
 use fixture::*;
@@ -723,6 +724,7 @@ fn send_to(
                     body: InputText::Inline(text.into()),
                     refs: vec![],
                     reply_to: None,
+                    quiet: false,
                 }],
             )?,
             lease,
