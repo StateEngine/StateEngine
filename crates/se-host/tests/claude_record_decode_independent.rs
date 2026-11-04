@@ -55,21 +55,48 @@ fn metadata(value: Value, kind: &str) -> Result<()> {
 
 #[test]
 fn request_cache_is_metadata_even_when_it_contains_provider_text() -> Result<()> {
-    for role in ["system", "user", "assistant"] {
-        for content in [
-            json!("REQUEST_CACHE_SECRET"),
-            json!([{"type":"text","text":"REQUEST_CACHE_SECRET"}]),
-        ] {
-            let record = json!({"type":"api-request-blob", "hash":"ab".repeat(32), "message":{"role":role,"content":content}});
-            metadata(record.clone(), "api-request-blob")?;
-            let mut with_uuid = record.clone();
-            with_uuid["uuid"] = json!("turn-shaped-cache");
-            metadata(with_uuid, "api-request-blob")?;
-            let mut unknown_cache_shape = record;
-            unknown_cache_shape["hash"] = json!("not-a-sha256");
-            metadata(unknown_cache_shape, "api-request-blob")?;
+    for kind in ["api-request-blob", "queue-operation"] {
+        for role in ["system", "user", "assistant"] {
+            for content in [
+                json!("REQUEST_CACHE_SECRET"),
+                json!([{"type":"text","text":"REQUEST_CACHE_SECRET"}]),
+            ] {
+                let record = json!({"type":kind, "operation":"dequeue", "hash":"ab".repeat(32), "message":{"role":role,"content":content}});
+                metadata(record.clone(), kind)?;
+                let mut with_uuid = record.clone();
+                with_uuid["uuid"] = json!("turn-shaped-cache");
+                metadata(with_uuid, kind)?;
+                let mut unknown_cache_shape = record;
+                unknown_cache_shape["hash"] = json!("not-a-sha256");
+                metadata(unknown_cache_shape, kind)?;
+                metadata(
+                    json!({"type":kind,"operation":"dequeue","content":"REQUEST_CACHE_SECRET"}),
+                    kind,
+                )?;
+            }
         }
     }
+    Ok(())
+}
+
+/// Protects: queue input is not discarded when no later native user record exists.
+#[test]
+fn queued_enqueue_input_is_retained_with_queue_provenance() -> Result<()> {
+    let record = decode(json!({
+        "type":"queue-operation", "operation":"enqueue",
+        "sessionId":"independent-h05-conversation",
+        "timestamp":"2026-11-04T00:00:00.000Z",
+        "content":"QUEUED_INPUT_MUST_SURVIVE"
+    }))?
+    .ok_or_else(|| se_types::SeError::invalid("queued input", "a retained record"))?;
+    assert!(
+        record.text.as_str().contains("QUEUED_INPUT_MUST_SURVIVE"),
+        "queued input payload was dropped"
+    );
+    assert!(
+        record.text.as_str().contains("queue") || record.vendor_turn.contains("queue"),
+        "queued input lost its distinct provenance"
+    );
     Ok(())
 }
 
@@ -113,18 +140,39 @@ fn assistant_text_survives_known_non_chat_blocks() -> Result<()> {
 }
 
 #[test]
-fn message_bearing_metadata_is_non_chat_and_mismatched_chat_refuses() -> Result<()> {
+fn other_noise_payloads_and_mismatched_metadata_sessions_refuse() -> Result<()> {
     for kind in [
         "session-owner",
         "tools-used",
         "api-request-shape",
         "api-request",
+        "file-history-snapshot",
     ] {
+        assert!(
+            decode(json!({"type":kind, "message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}}))
+                .is_err(),
+            "message-bearing {kind} silently dropped"
+        );
+        assert!(
+            decode(json!({"type":kind, "content":"MUST_NOT_DISAPPEAR"})).is_err(),
+            "content-bearing {kind} silently dropped"
+        );
+    }
+    for kind in [
+        "api-request-blob",
+        "queue-operation",
+        "file-history-snapshot",
+        "mode",
+    ] {
+        assert!(
+            decode(json!({"type":kind,"operation":"dequeue","sessionId":"another-conversation"}))
+                .is_err(),
+            "foreign metadata session accepted for {kind}"
+        );
         metadata(
-            json!({"type":kind, "message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}}),
+            json!({"type":kind,"operation":"dequeue","sessionId":"independent-h05-conversation"}),
             kind,
         )?;
-        metadata(json!({"type":kind, "content":"MUST_NOT_DISAPPEAR"}), kind)?;
     }
     let mut wrong_session = user(json!("visible"));
     wrong_session["sessionId"] = json!("another-conversation");

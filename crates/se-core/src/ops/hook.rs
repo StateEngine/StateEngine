@@ -150,7 +150,7 @@ pub fn plan<R: Snapshot>(
     for item in input.metadata {
         item.record.validate_evidence(&input.evidence)?;
         super::inputs::bounded("metadata identity", &item.vendor_turn, 512, false)?;
-        if item.record.count.is_none()
+        if item.record.count.is_none() && item.record.queued_input.is_none()
             || !item
                 .vendor_turn
                 .starts_with(se_store::TRANSCRIPT_EVENT_PREFIX)

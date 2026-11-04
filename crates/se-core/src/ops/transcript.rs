@@ -23,6 +23,8 @@ pub struct Record {
     pub first_position: Option<Position>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_position: Option<Position>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_input: Option<super::queued_input::QueuedInput>,
     pub kind_truncated: bool,
     pub subtype_truncated: bool,
 }
@@ -39,6 +41,7 @@ impl Record {
                 .is_some_and(|(a, b)| a.len() != b.len()),
             kind: k,
             subtype: sub,
+            queued_input: None,
             count: None,
             first_position: None,
             last_position: None,
@@ -73,6 +76,15 @@ impl Record {
             }
             _ => false,
         };
+        if let Some(queued) = &self.queued_input {
+            queued.validate()?;
+            if self.count.is_some() {
+                return Err(SeError::invalid(
+                    "queued input",
+                    "individual provenance, never a counted aggregate",
+                ));
+            }
+        }
         if !valid {
             return Err(scope::unreadable(
                 "transcript metadata",

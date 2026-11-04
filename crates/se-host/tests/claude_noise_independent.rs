@@ -19,7 +19,11 @@ fn line(value: Value) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     Ok(bytes)
 }
 fn noise(kind: &str) -> Value {
-    json!({"type":kind,"hash":"ab".repeat(32),"message":{"role":"system","content":"PRIVATE_NOISE_PAYLOAD"}})
+    if matches!(kind, "api-request-blob" | "queue-operation") {
+        json!({"type":kind,"operation":"dequeue","hash":"ab".repeat(32),"content":"PRIVATE_NOISE_PAYLOAD"})
+    } else {
+        json!({"type":kind,"hash":"ab".repeat(32)})
+    }
 }
 fn measured(bytes: &mut Vec<u8>, kind: &str, expected: &mut BTreeMap<String, Value>) -> Check {
     let raw = line(noise(kind))?;
@@ -70,7 +74,7 @@ fn noise_accompanies_real_turns_and_a_live_noise_only_tail_waits() -> Check {
         measured(
             &mut bytes,
             if n % 2 == 0 {
-                "file-history-snapshot"
+                "queue-operation"
             } else {
                 "api-request-blob"
             },
@@ -149,9 +153,9 @@ fn noise_accompanies_real_turns_and_a_live_noise_only_tail_waits() -> Check {
     require(current.revision==before.revision && current.current.header.event==before.current.header.event,"live noise-only EOF advanced capture progress")?;
     require(pending.turns(f.a.clone(),budget(100,200_000,None)?)?.items().len()==4,"live noise-only tail created a standalone commit")?;pending.close()?;
     file.write_all(&line(json!({"type":"mode","content":"PRIVATE_NOISE_PAYLOAD"}))?)?;file.sync_all()?;
-    let final_batch=capture.catch_up(admission.clone(),conversation,native,&bound()?).await?;
+    let final_batch=capture.catch_up(admission.clone(),conversation.clone(),native.clone(),&bound()?).await?;
     require(final_batch.capture_commits.len()==1,"individual continuity record did not batch preceding noise")?;
-    let mut after=execution.reader.snapshot(scope)?;
+    let mut after=execution.reader.snapshot(scope.clone())?;
     let shown=serde_json::to_value(agent_status::show(AgentShow {target_agent_id:Some(f.a.clone())},&mut Cx {read:&mut after,admission:&admission})?)?;
     let view=&shown["agent"]["value"]["session"]["transcript_events"];
     require(view["state"]=="present","noise view unavailable")?;
@@ -164,7 +168,28 @@ fn noise_accompanies_real_turns_and_a_live_noise_only_tail_waits() -> Check {
     for name in ["first_position","last_position"] { let offset=expected_tail[name]["offset"].as_u64().ok_or("tail offset")?; expected_tail[name]["offset"]=json!(offset+bytes.len() as u64); }
     check_summary(tail_summary,&expected_tail)?;
     require(after.turns(f.a.clone(),budget(100,200_000,None)?)?.items().len()==6,"tail batch lost records")?;
-    after.close()?;Ok(())
+    after.close()?;
+    file.write_all(&line(json!({"type":"queue-operation","operation":"enqueue","sessionId":conversation.as_str(),"timestamp":"2026-11-04T00:00:00.000Z","content":"QUEUED_INPUT_MUST_SURVIVE"}))?)?;file.sync_all()?;
+    capture.catch_up(admission.clone(),conversation.clone(),native.clone(),&bound()?).await?;
+    let mut enqueued=execution.reader.snapshot(scope.clone())?;
+    let queued_rows=enqueued.turns(f.a.clone(),budget(100,200_000,None)?)?;
+    require(queued_rows.items().len()>=7,"standalone queue enqueue was dropped")?;
+    let queued=queued_rows.items().iter().find(|row|matches!(&row.body,EventBody::SessionTurn {text:StoredText::Present(text),..} if text.contains("QUEUED_INPUT_MUST_SURVIVE"))).ok_or("queued input disappeared without a later user record")?;
+    let queued_id=queued.header.event.clone();enqueued.close()?;
+    file.write_all(&line(json!({"type":"user","sessionId":conversation.as_str(),"uuid":"queue-consumed-user","message":{"role":"user","content":"QUEUED_INPUT_MUST_SURVIVE"}}))?)?;file.sync_all()?;
+    capture.catch_up(admission.clone(),conversation.clone(),native.clone(),&bound()?).await?;
+    let mut both=execution.reader.snapshot(scope.clone())?;
+    let both_rows=both.turns(f.a.clone(),budget(100,200_000,None)?)?;
+    require(both_rows.items().len()>=8 && both_rows.items().iter().any(|row|row.header.event==queued_id),"native user replaced or erased its prior queue provenance")?;
+    require(both_rows.items().iter().any(|row|matches!(&row.body,EventBody::SessionTurn {vendor_ref,role:Role::User,text:StoredText::Present(text),..} if vendor_ref=="queue-consumed-user" && text=="QUEUED_INPUT_MUST_SURVIVE")),"native user UUID was lost after its queue input was captured")?;
+    let before_refusal=present(both.capture_source(source)?)?;let retained_rows=both_rows.items().len();both.close()?;
+    file.write_all(&line(json!({"type":"file-history-snapshot","content":"PRIVATE_NOISE_PAYLOAD"}))?)?;file.sync_all()?;
+    require(capture.catch_up(admission,conversation,native,&bound()?).await.is_err(),"content-bearing non-allowlisted noise was silently dropped")?;
+    let mut refused=execution.reader.snapshot(scope.clone())?;
+    let unchanged=present(refused.capture_source(source)?)?;
+    require(unchanged.revision==before_refusal.revision && unchanged.current.header.event==before_refusal.current.header.event,"refused noise advanced the capture cursor")?;
+    require(refused.turns(f.a.clone(),budget(100,200_000,None)?)?.items().len()==retained_rows,"refused noise changed captured history")?;
+    refused.close()?;Ok(())
    }.await;
    stop.request();result
   };

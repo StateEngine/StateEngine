@@ -63,6 +63,7 @@ impl Record {
             },
             source: self.source,
             pin,
+            queue: Default::default(),
         })
     }
 }

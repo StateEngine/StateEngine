@@ -5,6 +5,7 @@ use se_core::{admission::read_scope, scope, store_error::store_error};
 use se_store::{Consent, EventBody, Snapshot};
 use sha2::{Digest, Sha256};
 mod codex;
+pub(super) mod queue;
 mod scan;
 const CHUNK: usize = 256 * 1024;
 const LINE: usize = 4 * 1024 * 1024;

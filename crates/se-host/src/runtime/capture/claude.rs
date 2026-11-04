@@ -22,6 +22,19 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("an explicit string record type"))?;
     if kind != "user" && kind != "assistant" {
+        if object.contains_key("sessionId")
+            && object.get("sessionId").and_then(Value::as_str) != Some(conversation.as_str())
+        {
+            return Err(invalid(
+                "the bound conversation when metadata names a session",
+            ));
+        }
+        if noise_kind(kind)
+            && !matches!(kind, "api-request-blob" | "queue-operation")
+            && (object.contains_key("message") || object.contains_key("content"))
+        {
+            return Err(invalid("bookkeeping without message or content fields"));
+        }
         if !known_metadata(kind)
             && matches!(
                 object
@@ -35,10 +48,28 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
                 "a recognized text record type; an unknown message-bearing record may be a real turn",
             ));
         }
-        let notice = se_core::ops::transcript::Record::new(
+        let mut notice = se_core::ops::transcript::Record::new(
             kind,
             object.get("subtype").and_then(Value::as_str),
         );
+        if kind == "queue-operation"
+            && object.get("operation").and_then(Value::as_str) == Some("enqueue")
+        {
+            let text = object
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid("the actual queued input text"))?;
+            Body::new(text)?;
+            notice.subtype = Some("enqueue".into());
+            notice.queued_input = Some(se_core::ops::queued_input::QueuedInput {
+                enqueue: Some(notice.position.clone()),
+                outcome: se_core::ops::queued_input::Outcome::Unresolved,
+                reason: None,
+                delivery: se_core::ops::queued_input::Delivery::Unresolved,
+                outcome_position: None,
+                text: Some(text.into()),
+            });
+        }
         return Ok(Some(TextRecord {
             vendor_turn: String::new(),
             role: se_store::Role::System,
@@ -200,4 +231,32 @@ fn known_metadata(kind: &str) -> bool {
             kind,
             "system" | "compact_boundary" | "mode" | "permission-mode" | "ai-title"
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn metadata_cannot_override_the_bound_session_or_hide_content()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let session = ProviderSessionId::new("bound-session")?;
+        for value in [
+            json!({"type":"file-history-snapshot","message":null}),
+            json!({"type":"mode","sessionId":"foreign-session"}),
+            json!({"type":"mode","sessionId":null}),
+        ] {
+            assert!(decode(&serde_json::to_vec(&value)?, &session).is_err());
+        }
+        for value in [
+            json!({"type":"file-history-snapshot","snapshot":{}}),
+            json!({"type":"api-request-blob","content":"native model traffic"}),
+            json!({"type":"queue-operation","operation":"remove","content":"provider bookkeeping"}),
+            json!({"type":"mode","sessionId":"bound-session"}),
+        ] {
+            assert!(decode(&serde_json::to_vec(&value)?, &session)?.is_some());
+        }
+        Ok(())
+    }
 }
