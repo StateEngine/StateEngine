@@ -75,6 +75,9 @@ impl LaunchCoordinator {
                                 Err(error) => Err(error),
                             };
                             if let Err(error) = result {
+                                if state.mail.flight.is_none() {
+                                    job.mail_pending.store(true, Ordering::Release);
+                                }
                                 super::mail::diagnostic::report(&state, &error);
                             }
                         }

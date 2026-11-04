@@ -144,6 +144,7 @@ impl LaunchCoordinator {
             .ok_or_else(|| error("mail transport", "live binding disappeared"))?;
         let call = launch_util::call(self.store.generation, deadline)?;
         let attempt = id()?;
+        let observed_at_us = crate::runtime::start::now_unix_micros()?;
         work.mail.flight = Some(Flight {
             reservation: reserved,
             text_sha256: Sha256::digest(text.as_str().as_bytes()).into(),
@@ -178,7 +179,7 @@ impl LaunchCoordinator {
             epoch: target.epoch.clone(),
             generation: target.generation,
             fingerprint: target.fingerprint,
-            observed_at_us: crate::runtime::start::now_unix_micros()?,
+            observed_at_us,
             digest: *digest.as_bytes(),
             report: se_store::mail::OfferReport::TransportWritten {
                 transport: se_store::mail::MailTransport::Stdio,
