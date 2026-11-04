@@ -2,9 +2,7 @@
 //! every intermediate native reference and file digest through failures.
 use super::launch_util::{call, policy, resolve_command, token, wait};
 use super::*;
-use crate::{
-    Harness, HarnessKind, HarnessRequest, ProbeRequest, SessionIdentity, client::lease::Deadline,
-};
+use crate::{HarnessRequest, ProbeRequest, SessionIdentity, client::lease::Deadline};
 use se_core::ops::{LaunchResult, process_commit};
 use se_proc::{CheckpointKind, LaunchProgress, LaunchStart, ProcessRuntime};
 use se_store::{ProcessState, ProjectionRecord, Snapshot};
@@ -20,12 +18,7 @@ impl LaunchCoordinator {
                 "a recovered lifecycle cannot create another provider",
             )
         })?;
-        if plan.profile.provider != se_store::Provider::Claude {
-            return Err(se_types::SeError::invalid(
-                "provider launch",
-                "Claude Code is the supported headless provider in this release",
-            ));
-        }
+        let harness = self.harness_for(plan.profile.provider)?;
         if !plan.control.processes.is_empty()
             || plan
                 .control
@@ -49,17 +42,20 @@ impl LaunchCoordinator {
         let command = self
             .options
             .configuration
-            .provider_command(se_types::Provider::Claude)
+            .provider_command(match plan.profile.provider {
+                se_store::Provider::Codex => se_types::Provider::Codex,
+                _ => se_types::Provider::Claude,
+            })
             .to_owned();
         let executable = self
             .store
             .pool
             .run_owned(deadline, move || resolve_command(&command))
             .await?;
-        self.harness
+        harness
             .probe(
                 ProbeRequest {
-                    kind: HarnessKind::ClaudeCode,
+                    kind: harness.kind(),
                     command: executable.clone(),
                 },
                 call(self.store.generation, deadline)?,
@@ -90,12 +86,10 @@ impl LaunchCoordinator {
             mcp_bearer: bearer,
             key: plan.input.idempotency_key.clone(),
         };
-        let configuration = self
-            .harness
+        let configuration = harness
             .configuration(&request, call(self.store.generation, deadline)?)
             .await?;
-        let invocation = self
-            .harness
+        let invocation = harness
             .invocation(&request, call(self.store.generation, deadline)?)
             .await?;
         let mut nonce = [0; 16];
@@ -183,6 +177,11 @@ impl LaunchCoordinator {
                 Ok(request)
             })
             .await?;
+        if plan.profile.provider == se_store::Provider::Codex {
+            self.codex
+                .prepare_socket(&request, &call(self.store.generation, deadline)?)
+                .await?;
+        }
         let spec = se_proc::LaunchSpec {
             lifecycle: plan.lifecycle.clone(),
             generation: self.options.epoch.generation,

@@ -1,6 +1,6 @@
 use super::*;
 use super::{launch::Work, launch_util::call};
-use crate::{Harness, HarnessAttach, HarnessRequest, client::lease::Deadline};
+use crate::{HarnessAttach, HarnessRequest, client::lease::Deadline};
 use se_core::ops::{LaunchResult, ResumeCommand, process_commit};
 use se_proc::{CheckpointKind, ProcessRuntime};
 use se_types::{Read, Result};
@@ -36,7 +36,7 @@ impl LaunchCoordinator {
             })
             .await?;
         let outcome = self
-            .harness
+            .harness_for(plan.profile.provider)?
             .attach(
                 HarnessAttach {
                     request,
@@ -69,29 +69,81 @@ impl LaunchCoordinator {
         {
             binding.completion.arm(&work.wake.event)?;
         }
+        if let Some(binding) = work
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.codex.as_ref())
+        {
+            binding.completion.arm(&work.wake.event)?;
+        }
         work.meta.conversation = Read::Present {
             value: outcome.witness.conversation.clone(),
         };
         let native_pin = if plan.capture {
-            let path = crate::claude_transcript_location(
-                work.binding
-                    .as_ref()
-                    .ok_or_else(|| error("capture readiness", "provider binding absent"))?,
-            )?;
+            let binding = work
+                .binding
+                .as_ref()
+                .ok_or_else(|| error("capture readiness", "provider binding absent"))?;
+            let path = if plan.profile.provider == se_store::Provider::Codex {
+                let path = se_core::scope::require_present(
+                    crate::codex_rpc::bound(binding)?.rollout_path()?,
+                    "Codex rollout readiness",
+                    "Restore the exact provider-reported persistent thread path.",
+                )?
+                .to_local()?;
+                crate::codex_capture::location(&path, &crate::codex_capture::existing_home()?)?
+            } else {
+                crate::claude_transcript_location(binding)?
+            };
+            let provider = plan.profile.provider;
+            let conversation = outcome.witness.conversation.clone();
+            let candidate_path = path.clone();
+            let mut pin = self
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    se_proc::NativeSourcePin::open(&candidate_path)
+                        .map_err(|e| error("provider transcript pin", e))
+                })
+                .await?;
+            let mut history_diagnostic = None;
+            if pin.is_none()
+                && provider == se_store::Provider::Codex
+                && matches!(plan.conversation, Read::Absent { .. })
+            {
+                history_diagnostic = crate::codex_rpc::bound(binding)?
+                    .materialize_fresh_rollout(&call(self.store.generation, deadline)?)
+                    .await?;
+                pin = self
+                    .store
+                    .pool
+                    .run_owned(deadline, move || {
+                        se_proc::NativeSourcePin::open(&path)
+                            .map_err(|e| error("provider transcript pin", e))
+                    })
+                    .await?;
+            }
+            let mut pin = pin.ok_or_else(|| {
+                error(
+                    "provider transcript readiness",
+                    "the provider has not created its transcript",
+                )
+            })?;
             let pin = self
                 .store
                 .pool
                 .run_owned(deadline, move || {
-                    se_proc::NativeSourcePin::open(&path)
-                        .map_err(|e| error("provider transcript pin", e))?
-                        .ok_or_else(|| {
-                            error(
-                                "provider transcript readiness",
-                                "the provider has not created its transcript",
-                            )
-                        })
+                    if provider == se_store::Provider::Codex {
+                        crate::codex_capture::validate_header(&mut pin, &conversation)?;
+                    }
+                    Ok(pin)
                 })
                 .await?;
+            if let Some(diagnostic) = history_diagnostic {
+                eprintln!(
+                    "Codex capture: native rollout header verified; optional empty-history read failed: {diagnostic}"
+                );
+            }
             work.transcript = Some(crate::TranscriptPin {
                 identity: outcome.witness.identity.clone(),
                 conversation: outcome.witness.conversation.clone(),
@@ -188,6 +240,20 @@ impl LaunchCoordinator {
                 native_ref: pin.conversation.to_string(),
                 incarnation: pin.file_identity.as_bytes().to_vec(),
             });
+        let capture = if plan.profile.provider == se_store::Provider::Codex && capture.is_none() {
+            Some(process_commit::CaptureActivation {
+                source: process_commit::credential_id(&plan, "capture-source")?,
+                native_ref: outcome.witness.conversation.as_str().to_owned(),
+                // With capture suppressed this is a logical vendor source,
+                // never a file-incarnation claim or authority to read bytes.
+                incarnation: <sha2::Sha256 as sha2::Digest>::digest(
+                    outcome.witness.conversation.as_str().as_bytes(),
+                )
+                .to_vec(),
+            })
+        } else {
+            capture
+        };
         let receipt = self
             .store
             .commit(work.admission.clone(), deadline, None, move |kernel, cx| {
@@ -219,6 +285,16 @@ impl LaunchCoordinator {
                 )
                 .await?;
         }
+        if plan.profile.provider == se_store::Provider::Codex {
+            self.codex
+                .start_initial(
+                    work.binding
+                        .as_ref()
+                        .ok_or_else(|| error("Codex initial task", "retained binding absent"))?,
+                    call(self.store.generation, deadline)?,
+                )
+                .await?;
+        }
         let resume = se_core::ops::AgentCommand::launch_in_home(
             &plan.agent.id,
             &self.options.home,
@@ -234,7 +310,10 @@ impl LaunchCoordinator {
             project: plan.project.clone(),
             agent: plan.agent.clone(),
             session_id: plan.session.clone(),
-            provider: se_types::Provider::Claude,
+            provider: match plan.profile.provider {
+                se_store::Provider::Codex => se_types::Provider::Codex,
+                _ => se_types::Provider::Claude,
+            },
             model: plan.profile.model.clone(),
             permission_profile: plan.resolved.clone(),
             conversation_id: outcome.witness.conversation,

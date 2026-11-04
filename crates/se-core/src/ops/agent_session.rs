@@ -102,7 +102,6 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
         session: id,
         agent: recorded_agent,
         surface,
-        native_ref,
         ..
     } = &first.body
     else {
@@ -180,10 +179,23 @@ fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views>
     session.session_id = Some(id.clone());
     session.since = Some(receipt::timestamp(receipt::event_time(&latest.current))?);
     recorded::apply(agent, id, &latest.current.body, &mut session, cx)?;
+    let conversation = match super::session_reference::read(cx.read, &latest)? {
+        Read::Present { value } => Some(value.as_str().to_owned()),
+        Read::Absent { .. } => None,
+        other => Some(
+            scope::require_present(
+                other,
+                "saved provider conversation",
+                "Restore the original binding before resuming.",
+            )?
+            .as_str()
+            .to_owned(),
+        ),
+    };
     Ok((
         session,
         ConversationView {
-            id: Some(native_ref.clone()),
+            id: conversation,
             state: "unverifiable".into(),
         },
         ResumeCommand {

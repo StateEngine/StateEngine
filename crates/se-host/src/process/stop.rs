@@ -8,7 +8,7 @@ use super::{
     launch_util::{call, wait},
     supervisor::Job,
 };
-use crate::{Harness, client::lease::Deadline};
+use crate::client::lease::Deadline;
 use se_core::ops::process_commit;
 use se_proc::{CheckpointKind, CheckpointSource, ProcessRuntime, StopObservation};
 use se_store::{EventBody, ProcessState, Snapshot};
@@ -53,6 +53,28 @@ impl LaunchCoordinator {
                         Err(error) => {
                             let reported = self.report_capture_failure(&state, &error).await;
                             state.cleanup_failure = Some(reported.err().unwrap_or(error).body);
+                        }
+                    }
+                }
+                if let Some(binding) = state
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| binding.codex.as_ref())
+                {
+                    let changed = binding.completion.take();
+                    let activity = binding.active_turn();
+                    match activity {
+                        Ok(turn) => state.mail.idle = turn.is_none(),
+                        Err(error) => state.cleanup_failure = Some(error.body),
+                    }
+                    if changed {
+                        job.mail_pending.store(true, Ordering::Release);
+                        let result = match deadline.stage(Duration::from_secs(10)) {
+                            Ok(bound) => self.capture_progress(&mut state, &bound).await,
+                            Err(error) => Err(error),
+                        };
+                        if let Err(error) = result {
+                            state.cleanup_failure = Some(error.body);
                         }
                     }
                 }
@@ -287,7 +309,7 @@ impl LaunchCoordinator {
         if let Some(binding) = &work.binding {
             let graceful = deadline.stage(Duration::from_secs(5))?;
             match self
-                .harness
+                .harness_for(work.meta.provider)?
                 .graceful_stop(binding, call(self.store.generation, &graceful)?)
                 .await
             {

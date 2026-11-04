@@ -249,6 +249,11 @@ async fn respond(
                 Ok(secret) => (secret, false),
                 Err(_) => (None, true),
             };
+            let (session_proof, malformed_proof) = match admission::session_proof(request.headers())
+            {
+                Ok(value) => (value.map(Arc::new), false),
+                Err(_) => (None, true),
+            };
             let deadline = match Deadline::from_options(&ClientOptions {
                 expected_generation: None,
                 timeout: CALL_TIMEOUT,
@@ -275,6 +280,8 @@ async fn respond(
                 router,
                 deadline: &deadline,
                 malformed,
+                session_proof,
+                malformed_proof,
             };
             match crate::mcp::dispatch(&body, secret.map(Arc::new), &mut backend).await {
                 McpReply::Json(value) => json(StatusCode::OK, &value),

@@ -65,7 +65,7 @@ impl LaunchCoordinator {
             || work
                 .binding
                 .as_ref()
-                .is_none_or(|binding| binding.claude.is_none())
+                .is_none_or(|binding| binding.claude.is_none() && binding.codex.is_none())
         {
             return Ok(());
         }
@@ -80,7 +80,11 @@ impl LaunchCoordinator {
                 .ok_or_else(|| error("mail target", "verified launch pin is unavailable"))?,
         };
         self.reconcile_mail(work, &target, deadline).await?;
-        if !work.mail.idle || work.mail.flight.is_some() {
+        let codex = work
+            .binding
+            .as_ref()
+            .is_some_and(|binding| binding.codex.is_some());
+        if (!codex && !work.mail.idle) || work.mail.flight.is_some() {
             return Ok(());
         }
         let notice = id()?;
@@ -154,18 +158,46 @@ impl LaunchCoordinator {
         });
         // Retain the attempted notice before crossing the transport boundary.
         // A partial/uncertain write is never blindly sent again on this binding.
-        if let Err(failure) = self
-            .harness
-            .offer_mail(binding, &expected_conversation, &text, call)
-            .await
-        {
-            // Only an explicit zero-byte report permits a later event to retry
-            // this notice. Partial or unmeasured writes retain their attempt.
-            if failure.completed_bytes == Some(0) {
-                work.mail.flight = None;
+        let offered = if codex {
+            self.codex
+                .offer_mail(
+                    binding,
+                    &expected_conversation,
+                    &text,
+                    &format!(
+                        "{}:{}",
+                        se_types::hex_lower(descriptor.as_bytes()),
+                        se_types::hex_lower(attempt.as_bytes())
+                    ),
+                    call,
+                )
+                .await
+                .map(|event_id| se_store::mail::OfferReport::VendorReported {
+                    provider: se_store::Provider::Codex,
+                    event_id,
+                })
+                .map_err(|failure| (failure.error, failure.completed_bytes))
+        } else {
+            self.harness
+                .offer_mail(binding, &expected_conversation, &text, call)
+                .await
+                .map(|()| se_store::mail::OfferReport::TransportWritten {
+                    transport: se_store::mail::MailTransport::Stdio,
+                    bytes,
+                })
+                .map_err(|failure| (failure.error, failure.completed_bytes))
+        };
+        let report = match offered {
+            Ok(report) => report,
+            Err((error, completed_bytes)) => {
+                // Only an explicit zero-byte report permits a later event to retry
+                // this notice. Partial or unmeasured writes retain their attempt.
+                if completed_bytes == Some(0) {
+                    work.mail.flight = None;
+                }
+                return Err(error);
             }
-            return Err(failure.error);
-        }
+        };
         let flight = work
             .mail
             .flight
@@ -181,10 +213,7 @@ impl LaunchCoordinator {
             fingerprint: target.fingerprint,
             observed_at_us,
             digest: *digest.as_bytes(),
-            report: se_store::mail::OfferReport::TransportWritten {
-                transport: se_store::mail::MailTransport::Stdio,
-                bytes,
-            },
+            report,
         });
         work.mail.idle = false;
         self.reconcile_mail(work, &target, deadline).await

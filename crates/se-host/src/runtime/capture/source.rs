@@ -4,10 +4,12 @@ use super::*;
 use se_core::{admission::read_scope, scope, store_error::store_error};
 use se_store::{Consent, EventBody, Snapshot};
 use sha2::{Digest, Sha256};
+mod codex;
 mod scan;
 const CHUNK: usize = 256 * 1024;
 const LINE: usize = 4 * 1024 * 1024;
 struct Cursor {
+    provider: se_store::Provider,
     revision: se_store::Revision,
     offset: u64,
     previous: Option<(u64, u64)>,
@@ -47,19 +49,27 @@ pub fn next(
         source,
         cursor.revision,
         cursor.offset,
+        cursor.provider,
         deadline,
         final_capture,
     )? {
         return Ok(Some((request, false)));
     }
     if replay && let Some((from, to)) = cursor.previous {
-        let request = scan::next(source, cursor.revision, from, deadline, final_capture)?
-            .ok_or_else(|| {
-                scope::unreadable(
-                    "captured source range",
-                    "the original captured text record no longer decodes",
-                )
-            })?;
+        let request = scan::next(
+            source,
+            cursor.revision,
+            from,
+            cursor.provider,
+            deadline,
+            final_capture,
+        )?
+        .ok_or_else(|| {
+            scope::unreadable(
+                "captured source range",
+                "the original captured text record no longer decodes",
+            )
+        })?;
         if request.request.new_offset != to {
             return Err(scope::unreadable(
                 "captured source range",
@@ -119,9 +129,24 @@ fn cursor(
                 },
             )));
         }
+        let reference = se_core::ops::session_reference::read(&mut read, &session)?;
+        let provider = match session.original.as_ref().map(|event| &event.body) {
+            Some(EventBody::SessionPrepared { provider, .. }) => *provider,
+            _ => {
+                return Err(scope::unreadable(
+                    "capture provider",
+                    "original session is unavailable",
+                ));
+            }
+        };
         if !matches!(session.original.as_ref().map(|event| &event.body),
-            Some(EventBody::SessionPrepared {session,agent,provider:se_store::Provider::Claude,native_ref,consent:Consent::Capture,..})
-            if session==&source.binding.identity.session && agent==&source.binding.identity.agent && native_ref==source.binding.conversation.as_str())
+            Some(EventBody::SessionPrepared {session,agent,consent:Consent::Capture,..})
+            if session==&source.binding.identity.session && agent==&source.binding.identity.agent)
+            || !matches!(reference, Read::Present { value } if value == source.binding.conversation)
+            || !matches!(
+                provider,
+                se_store::Provider::Claude | se_store::Provider::Codex
+            )
         {
             return Err(scope::unreadable(
                 "capture session",
@@ -208,6 +233,7 @@ fn cursor(
             }
         };
         Ok(Cursor {
+            provider,
             revision: record.revision,
             offset,
             previous,
@@ -244,6 +270,9 @@ pub(super) fn validate(
         generation: context.generation.get(),
     };
     let current = cursor(context, &admission, source)?;
+    if current.provider == se_store::Provider::Codex {
+        crate::codex_capture::validate_header(&mut source.pin, &source.binding.conversation)?;
+    }
     verify_prefix(source, current.evidence.as_ref(), deadline)
 }
 /// All SQL reads are closed before these bounded native reads. Verify the last

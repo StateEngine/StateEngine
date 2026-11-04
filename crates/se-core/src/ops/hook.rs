@@ -117,7 +117,16 @@ pub fn plan<R: Snapshot>(
     };
     let session = session.clone();
     let agent = agent.clone();
-    super::inputs::bounded("vendor turn", &input.vendor_turn, 512, false)?;
+    super::inputs::bounded(
+        "vendor turn",
+        &input.vendor_turn,
+        if input.provider == Provider::Codex {
+            4096
+        } else {
+            512
+        },
+        false,
+    )?;
     if input.role == Role::System {
         let notice = super::transcript::Record::decode(input.text.as_str())?;
         notice.validate_evidence(&input.evidence)?;
@@ -196,18 +205,18 @@ pub fn plan<R: Snapshot>(
     let prepared = bound.original.as_ref().map(|v| &v.body).ok_or_else(|| {
         scope::unreadable("capture session", "original session binding is missing")
     })?;
+    let reference = super::session_reference::read(cx.read, &bound)?;
     match prepared {
         EventBody::SessionPrepared {
             session: recorded,
             agent: recorded_agent,
             provider,
-            native_ref,
             consent: Consent::Capture,
             ..
         } if recorded == &session
             && recorded_agent == &agent
             && provider == &input.provider
-            && native_ref == input.conversation.as_str() => {}
+            && matches!(&reference, Read::Present { value } if value == &input.conversation) => {}
         EventBody::SessionPrepared {
             consent: Consent::Suppressed,
             ..

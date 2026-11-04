@@ -20,6 +20,14 @@ pub use claude::{
 };
 #[cfg(feature = "listener")]
 pub use claude_harness::{ClaudeHarness, transcript_location as claude_transcript_location};
+#[cfg(feature = "listener")]
+pub mod codex_input;
+#[cfg(feature = "listener")]
+pub mod codex_rpc;
+#[cfg(feature = "listener")]
+pub use codex_rpc::CodexHarness;
+
+pub mod codex_capture;
 
 /// One stock Codex feature/version floor for every launch/probe mode.
 pub const CODEX_MINIMUM_VERSION: (u16, u16, u16) = (0, 152, 0);
@@ -147,6 +155,8 @@ pub struct HarnessAttach {
 pub struct HarnessBinding {
     #[cfg(feature = "listener")]
     pub(crate) claude: Option<std::sync::Arc<claude_harness::Binding>>,
+    #[cfg(feature = "listener")]
+    pub(crate) codex: Option<std::sync::Arc<codex_rpc::Binding>>,
     pub(crate) _private: (),
 }
 #[derive(Clone, Debug)]

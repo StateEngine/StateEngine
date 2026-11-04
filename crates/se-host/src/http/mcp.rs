@@ -10,6 +10,8 @@ pub(crate) struct HttpBackend<'a> {
     pub deadline: &'a Deadline,
     /// The Authorization header was present but not a readable bearer.
     pub malformed: bool,
+    pub session_proof: Option<Arc<Secret>>,
+    pub malformed_proof: bool,
 }
 impl McpBackend for HttpBackend<'_> {
     /// HTTP's capability is only its bearer; a malformed header never falls
@@ -28,6 +30,18 @@ impl McpBackend for HttpBackend<'_> {
         Ok(supplied)
     }
     async fn check_session(&mut self, capability: Arc<Secret>) -> Result<()> {
+        if self.malformed_proof {
+            return Err(se_types::SeError::invalid(
+                "session first-use proof",
+                "one well-formed separately issued session capability",
+            ));
+        }
+        if let Some(pin) = &self.session_proof {
+            return self
+                .router
+                .codex_discovery(capability, Arc::clone(pin), self.deadline)
+                .await;
+        }
         self.router.check_session(capability, self.deadline).await
     }
     async fn call(

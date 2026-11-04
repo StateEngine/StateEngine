@@ -104,7 +104,6 @@ pub(super) fn resolve<R: Snapshot>(
                 session: prepared,
                 agent: target,
                 provider,
-                native_ref,
                 generation,
                 ..
             } = &first.body
@@ -130,7 +129,20 @@ pub(super) fn resolve<R: Snapshot>(
                     "the exact active session and current admitted generation; ended, prepared, revoked and superseded bindings cannot resume context",
                 ));
             }
-            (*provider, Some(native_ref.clone()), Some(prepared.clone()))
+            let reference = match super::super::session_reference::read(cx.read, &saved)? {
+                Read::Present { value } => Some(value.as_str().to_owned()),
+                Read::Absent { .. } => None,
+                other => Some(
+                    scope::require_present(
+                        other,
+                        "continuity provider reference",
+                        "Restore its original actual provider binding.",
+                    )?
+                    .as_str()
+                    .to_owned(),
+                ),
+            };
+            (*provider, reference, Some(prepared.clone()))
         }
     };
     let harness = match provider {

@@ -1,0 +1,72 @@
+//! Queue acknowledgement follows outside-the-writer readback of the exact
+//! canonical message. A failed or not-yet-persisted completion remains queued.
+use super::{owned::Work, *};
+use crate::client::lease::Deadline;
+use se_store::{EventBody, Snapshot, StoredText};
+use se_types::{Read, Result};
+impl LaunchCoordinator {
+    pub(super) async fn acknowledge_codex_capture(
+        &self,
+        work: &Work,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let Some(binding) = work
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.codex.as_ref())
+            .cloned()
+        else {
+            // Cold native exit has no live connection. Its protected pin and
+            // complete native rollout are the recovery reader instead.
+            return Ok(());
+        };
+        let conversation = binding.conversation()?;
+        if !matches!(&work.meta.conversation, Read::Present { value } if value == &conversation) {
+            return Err(error(
+                "Codex capture acknowledgement",
+                "the owned conversation differs",
+            ));
+        }
+        let pending = binding.retained_notifications()?;
+        let mut committed = Vec::new();
+        let admission = se_store::Admission {
+            scope: se_store::Scope::Project(work.meta.project.id.clone()),
+            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
+            session: Some(work.meta.session.clone()),
+            generation: self.store.generation.get(),
+        };
+        for notification in &pending {
+            let Some(record) = crate::codex_capture::notification(notification, &conversation)?
+            else {
+                committed.push(notification.clone());
+                continue;
+            };
+            let session = work.meta.session.clone();
+            let turn = crate::codex_capture::turn_id(&session, &record.vendor)?;
+            let matched = self.store.read(admission.clone(), deadline, move |cx| {
+                match cx.read.turn(turn).map_err(|cause| se_core::store_error::store_error(&cause))? {
+                    Read::Absent { .. } => Ok(false),
+                    Read::Present { value } => match value.body {
+                        EventBody::SessionTurn {session: found, provider: se_store::Provider::Codex, vendor_ref, role, text: StoredText::Present(text), ..}
+                            if found == session && vendor_ref == record.vendor && role == record.role && text == record.text.as_str() => Ok(true),
+                        _ => Err(error("Codex capture acknowledgement", "the immutable item differs or was erased; preserve its original identity")),
+                    },
+                    Read::Unreadable { reason, .. } => Err(error("Codex committed item", reason)),
+                    Read::Unknown { what } => Err(error("Codex committed item", what)),
+                }
+            }).await?;
+            if !matched {
+                break;
+            }
+            committed.push(notification.clone());
+        }
+        binding.acknowledge_notifications(&committed)?;
+        if committed.len() < pending.len() && work.process_retired {
+            return Err(error(
+                "Codex final capture",
+                "a completed provider item is missing from the pinned rollout; retain the queue and committed cursor",
+            ));
+        }
+        Ok(())
+    }
+}

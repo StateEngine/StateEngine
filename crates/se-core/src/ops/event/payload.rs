@@ -52,18 +52,23 @@ pub(super) fn public<R: Snapshot>(
             };
             let record = scope::require_present(read.session(session.clone()).map_err(|e| store_error(&e))?, "turn's original session metadata", "Restore access to the turn's original session metadata, then reread the same event ID; preserve the recorded session identity.")?;
             let native = record.original.as_deref().unwrap_or(&record.current);
-            let SessionPrepared { session: original, provider: original_provider, native_ref, .. } = &native.body else {
+            let SessionPrepared { session: original, provider: original_provider, .. } = &native.body else {
                 return Err(scope::unreadable("turn session provenance", "original prepared session metadata is unavailable"));
             };
             if original != session || original_provider != provider {
                 return Err(scope::unreadable("turn session provenance", "session or provider differs from the committed turn"));
             }
+            let reference = match crate::ops::session_reference::read(read, &record)? {
+                Read::Absent { .. } if native.header.door == se_store::Door::Import => None,
+                other => Some(scope::require_present(other, "turn provider reference", "Restore the original actual provider binding.")?),
+            };
+            let native_ref = reference.as_ref().map(|reference| reference.as_str());
             let provider = match provider { se_store::Provider::Claude => "claude", se_store::Provider::Codex => "codex", se_store::Provider::SeCode => "secode" };
             let role = match role {
                 se_store::Role::User => "user", se_store::Role::Assistant => "assistant",
                 _ => return Err(scope::unreadable("turn role", "the public capture family requires an actual user or assistant turn")),
             };
-            ("session.turn", json!({"session_id":session,"turn_id":if vendor_ref.is_empty() {None} else {Some(vendor_ref)},"provider":provider,"provider_session":if native_ref.is_empty() {None} else {Some(native_ref)},"role":role,"source":source,"occurred_at":receipt::timestamp(event.header.occurred_at_us)?,"body":text(body)?}))
+            ("session.turn", json!({"session_id":session,"turn_id":if vendor_ref.is_empty() {None} else {Some(vendor_ref)},"provider":provider,"provider_session":native_ref,"role":role,"source":source,"occurred_at":receipt::timestamp(event.header.occurred_at_us)?,"body":text(body)?}))
         }
         CaptureSuppressed { session, count, reason, .. } => ("capture.suppressed", json!({"session_id":session,"count":count,"reason":reason})),
         LegacyRetained{family,legacy_id,bytes,retained_from,..} => {

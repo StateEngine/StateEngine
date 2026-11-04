@@ -10,6 +10,16 @@ pub(super) fn prepare(files: &se_proc::NativeStateFiles) -> Result<se_proc::Envi
             .with_cause(error)
     })?;
     let mut entries = se_host::provider_environment();
+    // The host launches either provider. Each child is filtered again through
+    // its own provider allowlist, so Codex login/config does not reach Claude.
+    for (name, value) in se_host::codex_input::provider_environment() {
+        if !entries
+            .iter()
+            .any(|(existing, _)| existing.eq_ignore_ascii_case(&name))
+        {
+            entries.push((name, value));
+        }
+    }
     entries.retain(|(name, _)| {
         !["TMPDIR", "TEMP", "TMP", "SystemRoot", "windir"]
             .iter()
