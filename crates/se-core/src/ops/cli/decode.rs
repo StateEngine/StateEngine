@@ -75,7 +75,9 @@ pub fn from_matches_with_key(
                     .parse()
                     .map_err(|_| SeError::invalid("limit", "1..100"))?,
                 governing_cursor: text(m, "governing_cursor").map(Cursor::new).transpose()?,
-                since: text(m, "since").map(Cursor::new).transpose()?,
+                since: text(m, "since")
+                    .map(crate::ops::continuity::resume_since)
+                    .transpose()?,
                 byte_budget: required(m, "budget")?
                     .parse()
                     .map_err(|_| SeError::invalid("budget", "1024..1048576"))?,

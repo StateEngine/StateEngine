@@ -1,12 +1,30 @@
 //! CLI receipt commands use the same positional selectors as the live grammar.
 use se_types::{AgentId, ProjectId};
 
-#[derive(Clone)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct AgentCommand {
     pub command: String,
     pub argv: Vec<String>,
 }
 impl AgentCommand {
+    pub fn history_in_home(
+        agent: &AgentId,
+        home: &std::path::Path,
+        project: &ProjectId,
+    ) -> Option<Self> {
+        Self::from_argv(vec![
+            "se".into(),
+            "--home".into(),
+            Self::home_argument(home)?.into(),
+            "--project".into(),
+            project.to_string(),
+            "history".into(),
+            "--agent".into(),
+            agent.to_string(),
+            "--kind".into(),
+            "session.turn".into(),
+        ])
+    }
     /// On Windows, the readable command uses PowerShell quoting. Literal argv
     /// remains shell-independent for programmatic consumers.
     pub fn instruction(text: &str) -> String {
@@ -140,6 +158,12 @@ impl AgentCommand {
             .collect::<Vec<_>>()
             .join(" ");
         Self { command, argv }
+    }
+}
+
+impl se_types::OperationCommand for AgentCommand {
+    fn cli_argv(&self) -> Vec<String> {
+        self.argv.clone()
     }
 }
 

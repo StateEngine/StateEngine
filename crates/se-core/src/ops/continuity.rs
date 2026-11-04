@@ -2,6 +2,8 @@
 //! context. Authority, clock and the finite store snapshot come from adapters.
 mod commands;
 mod compact;
+mod cursor;
+pub(crate) use cursor::{resume_since, validate_resume_since};
 mod identity;
 mod packet;
 mod read;

@@ -16,7 +16,9 @@ pub fn write(
         || (error.code() == se_types::Code::TargetUnknown
             && matches!(remedy.command, Some(se_types::Cmd::Se { .. })))
         || matches!(error.body.detail(), se_types::Detail::UsageMissingArgument(detail)
-            if detail.command == "se resume" && detail.argument == "--preview AGENT");
+            if detail.command == "se resume" && detail.argument == "--preview AGENT")
+        || matches!(error.body.detail(), se_types::Detail::UsageInvalidValue(detail)
+            if detail.argument == "se resume AGENT");
     if literal_recovery {
         if let Some(se_types::Cmd::Se { argv }) = &remedy.command {
             if let Some(command) = se_core::ops::AgentCommand::from_argv(argv.as_slice().to_vec()) {

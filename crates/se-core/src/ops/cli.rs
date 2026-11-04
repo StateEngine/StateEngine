@@ -9,6 +9,7 @@ mod agent_command;
 pub use agent_command::AgentCommand;
 mod decode;
 mod help;
+mod reopen;
 mod selections;
 pub use decode::{from_matches, from_matches_with_key};
 pub use selections::CliSelections;
@@ -30,6 +31,7 @@ impl CommonArgs {
         let selections = match name {
             "continuity.resume" => CliSelections {
                 preview: text(m, "preview"),
+                resume_agent: text(m, "agent"),
                 ..CliSelections::default()
             },
             "project.status" => CliSelections {
@@ -327,7 +329,8 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("all").conflicts_with("release").help("Stop every running agent in this project"))
             .arg(toggle("release").help("Also release the stopped agent's reserved resources; one target only")),
         "continuity.resume" => c
-            .arg(value("since").help("An opaque cursor from resume for this same agent"))
+            .arg(positional("agent", 1, false).conflicts_with("preview").help("Show the launch command that reopens this agent's saved conversation"))
+            .arg(value("since").value_parser(clap::builder::StringValueParser::new()).help("An opaque cursor from resume for this same agent"))
             .arg(value("budget").default_value("4096").help("Maximum UTF-8 bytes in the JSON reply (1024..1048576)"))
             .arg(value("limit").default_value("20").help("Maximum recent turns and governing decisions per section (1..100)"))
             .arg(value("governing_cursor").long("governing-cursor").help("Continue project rulings from decisions.next_cursor"))
