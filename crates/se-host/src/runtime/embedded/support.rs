@@ -139,21 +139,7 @@ pub(super) fn call_deadline(
 }
 
 /// The canonical rendered error; a rendering failure is reported, not hidden.
-pub(super) fn api_error(error: &SeError) -> api::ApiError {
-    crate::linked::error_body(&error.body, &se_types::RenderCx::default()).unwrap_or_else(
-        |render| api::ApiError {
-            kind: api::ApiFailure::Internal,
-            code: "internal".into(),
-            message: format!("{error} (rendering its remedy failed: {render})"),
-            remedy: api::ApiRemedy {
-                text: "Report this StateEngine host error; the original cause is in the message."
-                    .into(),
-                command: None,
-            },
-            retry: api::ApiRetry::Never,
-        },
-    )
-}
+pub(super) use crate::linked::api_error;
 pub(super) fn refused(subject: &str, expected: &str) -> api::ApiError {
     api_error(&SeError::invalid(subject, expected))
 }

@@ -57,3 +57,20 @@ pub fn error_body(
         retry,
     })
 }
+
+/// Translate a host error without losing its original cause if remedy rendering fails.
+pub fn api_error(error: &core::SeError) -> api::ApiError {
+    crate::linked::error_body(&error.body, &se_types::RenderCx::default()).unwrap_or_else(
+        |render| api::ApiError {
+            kind: api::ApiFailure::Internal,
+            code: "internal".into(),
+            message: format!("{error} (rendering its remedy failed: {render})"),
+            remedy: api::ApiRemedy {
+                text: "Report this StateEngine host error; the original cause is in the message."
+                    .into(),
+                command: None,
+            },
+            retry: api::ApiRetry::Never,
+        },
+    )
+}

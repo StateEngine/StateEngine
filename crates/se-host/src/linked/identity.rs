@@ -41,6 +41,47 @@ ids!(
     Cursor
 );
 
+impl FromLinked<api::ProcessInstance> for core::ProcessInstance {
+    fn from_linked(value: api::ProcessInstance) -> core::Result<Self> {
+        use std::num::{NonZeroU32, NonZeroU64};
+        let invalid = || {
+            core::SeError::invalid(
+                "native process identity",
+                "a nonzero PID and valid OS birth identity",
+            )
+        };
+        let started = match value.started {
+            api::StartIdentity::Windows { creation_filetime } => core::StartIdentity::Windows {
+                creation_filetime: NonZeroU64::new(creation_filetime).ok_or_else(invalid)?,
+            },
+            api::StartIdentity::Linux { start_ticks } => core::StartIdentity::Linux { start_ticks },
+            api::StartIdentity::Macos {
+                start_seconds,
+                start_micros,
+            } => core::StartIdentity::Macos {
+                start_seconds,
+                start_micros,
+            },
+        };
+        Self::from_observation(core::ProcessFields {
+            machine: core::MachineId::new(value.machine)?,
+            boot: core::BootId::new(value.boot)?,
+            pid: NonZeroU32::new(value.pid).ok_or_else(invalid)?,
+            started,
+            executable: core::NativePath::from_local(value.executable)?,
+            argv_sha256: core::Sha256::from_bytes(value.argv_sha256.0),
+        })
+    }
+}
+impl FromLinked<api::HostEpoch> for core::HostEpoch {
+    fn from_linked(value: api::HostEpoch) -> core::Result<Self> {
+        Ok(Self {
+            owner: core::ProcessInstance::from_linked(value.owner)?,
+            generation: core::HostGeneration::new(value.generation.0)?,
+        })
+    }
+}
+
 pub fn host_epoch(value: &core::HostEpoch) -> core::Result<api::HostEpoch> {
     let fields = value.owner.fields();
     let started = match fields.started {

@@ -85,6 +85,7 @@ struct Generation {
     native: Mutex<Option<(api::HostEpoch, Arc<dyn api::HostServices>)>>,
     bindings: binding::Bindings,
     binding_gate: tokio::sync::Mutex<()>,
+    native_fence: Arc<std::sync::atomic::AtomicBool>,
     owner_join: tokio::sync::Mutex<generation::OwnerJoin>,
     resources: Arc<Mutex<Option<owner::RetainedResources>>>,
     activated: std::sync::atomic::AtomicBool,
@@ -113,7 +114,7 @@ impl api::HostFactory for EmbeddedFactory {
     ) -> api::HostFuture<'a, api::Read<api::OpenedHost>> {
         self.protected(None,async move {
             if config.kind != api::HostKind::EmbeddedSecode
-                || config.api.major != api::API_VERSION.major
+                || config.api != api::API_VERSION
             {
                 return Err(refused(
                     "embedded host",
@@ -169,6 +170,7 @@ impl api::HostFactory for EmbeddedFactory {
                 native: Mutex::new(None),
                 bindings,
                 binding_gate: tokio::sync::Mutex::new(()),
+                native_fence: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 owner_join: tokio::sync::Mutex::new(generation::OwnerJoin::NotStarted),
                 resources: Arc::new(Mutex::new(None)),
                 activated: std::sync::atomic::AtomicBool::new(false),
@@ -315,6 +317,9 @@ impl api::Host for EmbeddedHost {
                 .map_err(|e| api_error(&e))?;
             match &*lifecycle {
                 Lifecycle::Prepared => {
+                    let services = Arc::new(crate::harness::secode::SecodeAdapter::new(
+                        epoch.clone(), self.negotiated.generation, services, self.native_fence.clone(),
+                    )?);
                     *self
                         .native
                         .lock()
