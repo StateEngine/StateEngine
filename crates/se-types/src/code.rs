@@ -359,6 +359,7 @@ pub struct Dependent {
 pub struct Impact {
     pub dependents: Vec<Dependent>,
     pub tests: Vec<Dependent>,
+    pub records: Vec<RecordHit>,
     pub omitted_frontier: u64,
     pub frontier_count_complete: bool,
     pub next: Option<AtlasCursor>,
@@ -467,12 +468,17 @@ pub struct Outline {
     pub language: Option<Language>,
     pub coverage: FileCoverage,
     pub symbols: Vec<OutlineSymbol>,
+    pub records: Vec<RecordHit>,
     pub complete: bool,
     pub next: Option<AtlasCursor>,
 }
 
 mod query;
 pub use query::*;
+mod records;
+pub use records::*;
+mod search;
+pub use search::*;
 mod validation;
 pub use validation::Validate;
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]

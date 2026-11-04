@@ -78,9 +78,16 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
             )));
         }
         let mut bytes = Vec::with_capacity(before.size as usize);
-        let hash = stream(&mut *file, path, before.size, deadline, |chunk| {
-            bytes.extend_from_slice(chunk);
-        })?;
+        let hash = stream(
+            &mut *file,
+            path,
+            before.size,
+            deadline,
+            budget.max_work,
+            |chunk| {
+                bytes.extend_from_slice(chunk);
+            },
+        )?;
         if file.identity()? != before || !file.validate_path()? {
             return Err(changed());
         }
@@ -110,6 +117,7 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
             &snapshot.path,
             identity.size,
             Instant::now() + Duration::from_millis(200),
+            Duration::from_millis(200),
             |_| {},
         )?;
         if file.identity()? != identity || !file.validate_path()? || hash != snapshot.content_hash {
@@ -122,12 +130,12 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
         path: &RelativePath,
         offset: u64,
         max_bytes: u32,
-    ) -> AtlasResult<SourceChunk> {
+    ) -> AtlasResult<Option<SourceChunk>> {
         if !(1..=16384).contains(&max_bytes) {
             return Err(SeError::invalid("Atlas source chunk", "1..16384 bytes"));
         }
         let Some(mut file) = self.open(path)? else {
-            return Err(source_error(path, "file is absent"));
+            return Ok(None);
         };
         let before = file.identity()?;
         if before.size > 64 * 1024 * 1024 || offset > before.size {
@@ -148,16 +156,15 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
             .map_err(|e| source_error(path, e))?;
         file.read_exact(&mut again)
             .map_err(|e| source_error(path, e))?;
-        if Instant::now() >= deadline
-            || bytes != again
-            || file.identity()? != before
-            || !file.validate_path()?
-        {
+        if Instant::now() >= deadline {
+            return Err(source_timeout(Duration::from_millis(200)));
+        }
+        if bytes != again || file.identity()? != before || !file.validate_path()? {
             return Err(changed());
         }
         let range_hash = ContentHash(*blake3::hash(&bytes).as_bytes());
         let eof = offset + count as u64 == before.size;
-        Ok(SourceChunk {
+        Ok(Some(SourceChunk {
             path: path.clone(),
             identity: before,
             offset,
@@ -165,7 +172,7 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
             end_of_file: eof,
             range_hash,
             content_revision: (offset == 0 && eof).then_some(range_hash),
-        })
+        }))
     }
 }
 fn stream(
@@ -173,6 +180,7 @@ fn stream(
     path: &RelativePath,
     expected: u64,
     deadline: Instant,
+    budget: Duration,
     mut consume: impl FnMut(&[u8]),
 ) -> AtlasResult<ContentHash> {
     let mut hash = blake3::Hasher::new();
@@ -180,7 +188,7 @@ fn stream(
     let mut size = 0u64;
     loop {
         if Instant::now() >= deadline {
-            return Err(changed());
+            return Err(source_timeout(budget));
         }
         let count = file.read(&mut buffer).map_err(|e| source_error(path, e))?;
         if count == 0 {
@@ -193,7 +201,10 @@ fn stream(
         hash.update(&buffer[..count]);
         consume(&buffer[..count]);
     }
-    if size != expected || Instant::now() >= deadline {
+    if Instant::now() >= deadline {
+        return Err(source_timeout(budget));
+    }
+    if size != expected {
         return Err(changed());
     }
     Ok(ContentHash(*hash.finalize().as_bytes()))
@@ -207,8 +218,15 @@ fn source_error(path: &RelativePath, error: impl std::fmt::Display) -> SeError {
     ))
 }
 fn changed() -> SeError {
-    SeError::new(Detail::AtlasIndexing(details::AtlasIndexing {
-        indexed: 0,
-        total: 1,
+    SeError::new(Detail::RevisionConflict(details::RevisionConflict {
+        entity: "Atlas source snapshot".into(),
+        expected: "the retained file and verified bytes".into(),
+        current: "source changed during read; retry from the registered root".into(),
+    }))
+}
+fn source_timeout(budget: Duration) -> SeError {
+    SeError::new(Detail::DeadlineExceeded(details::DeadlineExceeded {
+        op: "Atlas source read".into(),
+        deadline_ms: budget.as_millis() as u64,
     }))
 }

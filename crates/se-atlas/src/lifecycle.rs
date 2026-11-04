@@ -246,7 +246,7 @@ pub trait AtlasSource {
         path: &RelativePath,
         offset: u64,
         max_bytes: u32,
-    ) -> AtlasResult<SourceChunk>;
+    ) -> AtlasResult<Option<SourceChunk>>;
 }
 
 #[derive(Debug)]

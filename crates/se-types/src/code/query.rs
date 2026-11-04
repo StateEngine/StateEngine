@@ -16,7 +16,9 @@ pub struct SearchScope {
     pub paths: Vec<RelativePath>,
     pub languages: Vec<Language>,
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(deny_unknown_fields)]
 pub enum SymbolSelector {
     Id(SymbolId),
@@ -34,9 +36,16 @@ pub enum SymbolSelector {
     Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 pub enum SearchKind {
+    All,
+    Code,
     Symbol,
     Text,
     Path,
+    Decision,
+    Message,
+    Working,
+    Edit,
+    Commit,
 }
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -46,11 +55,20 @@ pub struct FindQuery {
     pub scope: SearchScope,
     pub next: Option<AtlasCursor>,
     pub budget: QueryBudget,
+    /// None selects the documented automatic mode/fallback sequence.
+    #[serde(default)]
+    pub mode: Option<SearchMode>,
+    #[serde(default)]
+    pub order: SearchOrder,
+    #[serde(default)]
+    pub full: bool,
+    #[serde(default)]
+    pub regex: bool,
 }
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RefsQuery {
-    pub symbol: SymbolSelector,
+    pub target: AtlasTarget,
     pub kinds: Vec<ReferenceKind>,
     pub include_name_only: bool,
     pub next: Option<AtlasCursor>,
@@ -59,13 +77,15 @@ pub struct RefsQuery {
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ImpactQuery {
-    pub symbol: SymbolSelector,
+    pub target: AtlasTarget,
     pub depth: u8,
     pub include_name_only: bool,
     pub next: Option<AtlasCursor>,
     pub budget: QueryBudget,
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub enum GitObjectId {
     Sha1([u8; 20]),
     Sha256([u8; 32]),

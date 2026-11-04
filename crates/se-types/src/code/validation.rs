@@ -39,19 +39,36 @@ impl RelativePath {
         let drive = value.as_bytes().get(1) == Some(&b':');
         if value.is_empty()
             || value.len() > 4096
-            || value.contains(['\0', '\\'])
+            || value.contains(['\0', '\\', ':'])
             || drive
             || value
                 .split('/')
-                .any(|p| p.is_empty() || p == "." || p == "..")
+                .any(|p| p.is_empty() || p == "." || p == ".." || windows_ambiguous(p))
         {
             return Err(SeError::invalid(
                 "Atlas path",
-                "1..4096 UTF-8 bytes, relative slash-separated components without dot, dot-dot, NUL or a drive prefix",
+                "1..4096 UTF-8 bytes, relative slash-separated portable components without dot, dot-dot, NUL, colon, device names or trailing dot/space",
             ));
         }
         Ok(Self(value))
     }
+}
+fn windows_ambiguous(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or("");
+    let stem = stem.to_ascii_uppercase();
+    component.ends_with(['.', ' '])
+        || matches!(
+            stem.as_str(),
+            "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+        )
+        || ["COM", "LPT"].iter().any(|prefix| {
+            stem.strip_prefix(prefix).is_some_and(|n| {
+                matches!(
+                    n,
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+            })
+        })
 }
 impl QueryText {
     pub fn new(value: impl Into<String>) -> Result<Self> {
