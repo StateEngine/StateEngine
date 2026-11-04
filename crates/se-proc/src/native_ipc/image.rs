@@ -1,8 +1,7 @@
 //! Bounded executable proofs, cached only by stable native file identity,
-//! modification time and size. A pathname is never a cache identity.
-//! Same-inode rewrites which preserve size and restore the exact modification
-//! timestamp can reuse a cached digest. This cache detects ordinary upgrades and
-//! drift; it is not protection against hostile same-user file mutation.
+//! modification/change times and size. A pathname is never a cache identity.
+//! Native change time invalidates same-inode rewrites even when mtime is restored;
+//! it is not a qualified persistent journal or protection against hostile same-user mutation.
 use super::*;
 use sha2::{Digest, Sha256 as Hasher};
 use std::{
@@ -17,6 +16,9 @@ pub(super) struct ImageKey {
     identity: Vec<u8>,
     modified: (bool, u64, u32),
     size: u64,
+    // Older protected hints lack this field and therefore miss current native keys.
+    #[serde(default)]
+    changed: Option<(i64, i64)>,
 }
 type Cache = VecDeque<(ImageKey, Sha256)>;
 static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
@@ -54,8 +56,34 @@ pub(super) fn key(file: &File, metadata: &std::fs::Metadata) -> IpcNativeResult<
         ]
         .concat()
     };
+    #[cfg(unix)]
+    let changed = {
+        use std::os::unix::fs::MetadataExt;
+        (metadata.ctime(), metadata.ctime_nsec())
+    };
+    #[cfg(windows)]
+    let changed = {
+        use std::{mem::size_of, os::windows::io::AsRawHandle};
+        use windows_sys::Win32::Storage::FileSystem::*;
+        // SAFETY: FILE_BASIC_INFO is an all-integer native output structure.
+        let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+        // SAFETY: retained file handle, initialized exact-size native output.
+        if unsafe {
+            GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&mut basic as *mut FILE_BASIC_INFO).cast(),
+                size_of::<FILE_BASIC_INFO>() as u32,
+            )
+        } == 0
+        {
+            return Err(last("read executable cache change time"));
+        }
+        (basic.ChangeTime, 0)
+    };
     let _ = file;
     Ok(ImageKey {
+        changed: Some(changed),
         identity,
         modified: match metadata
             .modified()
