@@ -19,14 +19,14 @@ se-types has no separate breakdown and keeps its earlier estimate.
 | --- | ---: | ---: | --- | --- |
 | Shared types (se-types) | ~2,000 | ~2,000 | earlier estimate | Atlas DTOs moved in from se-atlas (counted once) |
 | Store (se-store) | ~9,250 | 8,800 | 95-store S01–S15 | no decision chain, no general settings in the store, live keysets for non-mail lists, six import families, no salvage, automatic migration without approval |
-| Process ownership (se-proc) | ~10,950 | 11,400 | 95-se-proc P00–P09 | three launch barriers (four on Unix terminal, macOS, uncontained); five handover outcomes; process.* operations removed; +450 for the Linux scoped helper and D-Bus scope adapter (E7) |
+| Process ownership (se-proc) | ~10,950 | 20,809 | 95-se-proc P00–P11 | three launch barriers (four on Unix terminal, macOS, uncontained); five handover outcomes; process.* operations removed; +450 for the Linux scoped helper and D-Bus scope adapter (E7); retained native security counted once: P10 native_ipc 2,411, P11 state_files 6,998 |
 | Core and CLI/MCP surface | ~9,050 | 8,200 | 95-core-cli K01–K10, B01–B06 | process tools, N-1 encoders, FTS and project settings removed; owner actions added; the Atlas bridge (`ops/atlas.rs`) is owned and counted once, by Atlas A12 |
 | Host runtime and harnesses | ~8,900 + 200–350 JS | 9,050 + 200–350 JS | 95-host H01–H20 | automatic migration, readback-reconciled file operations, async commit join, version-independent stop |
 | Release and packaging | 920–1,600 | 960–1,600 | 95-release R01–R07 | one `se uninstall` path; early unsigned archives |
-| **Core product (alpha critical path)** | | **40,410–41,050 + 200–350 JS** | | |
+| **Core product (alpha critical path)** | | **49,819–50,459 + 200–350 JS** | | |
 | Atlas (after journeys and handover; Jimmy) | 6,000–9,300 | 6,000–9,300 | 95-atlas A01–A13 (A12 owns the core bridge) | standalone only, disabled by default |
 | macOS backends (Mac campaign) | ~1,350 | 1,350 | 95-se-proc P03-M, P07-M | qualified on Jimmy's borrowed Mac before alpha ships |
-| **Everything** | 48,420–52,400 | **47,760–51,700 + 200–350 JS** | | |
+| **Everything** | 48,420–52,400 | **57,169–61,109 + 200–350 JS** | | |
 
 The first reconciled overview claimed a core of ~38,500–39,700 without per-task sums behind it.
 The summed figure is about 900–1,400 lines higher: se-proc's native scope did not shrink, and the

@@ -84,7 +84,7 @@ Files: `src/apply/capture.rs`, `src/apply/process.rs`, `src/apply/effect.rs`, `s
 
 Depends S02–S06 and H/P's capture/offer/native checkpoint producers.
 
-Clauses: 20 catalogue/state/custody rules, 00 §2.6/§2.7, accepted 30, 50 containment pair, 70 consent. Persist complete turn/progress or named capture.failed without cursor overrun; preserve the full section-30 transition matrix, no-child/unpublished cancellation and exit observations, immutable published root identity, recoverable Lost and the five landed containment causes. Persist/project ownership release under section 30’s contract; section 50 owns its command. Apply pending/offered/terminal effects, deterministic offer-attempt keys, principal debt and owned integration readback references.
+Clauses: 20 catalogue/state/custody rules, 00 §2.6/§2.7, accepted 30, 40 §6.1 handover store record, 50 containment pair, 70 consent. Persist complete turn/progress or named capture.failed without cursor overrun; preserve the full section-30 transition matrix, no-child/unpublished cancellation and exit observations, immutable published root identity, recoverable Lost and the five landed containment causes. Persist/project ownership release under section 30’s contract; section 50 owns its command. Apply pending/offered/terminal effects, deterministic offer-attempt keys, principal debt and owned integration readback references.
 
 Witness: Q's T13–T16/T23/T27/T28, P1/P8 and J2–J5 use actual provider output, outside native scope observations and recipient markers. An offer, root exit, saved process row or hook exit 0 cannot substitute for the requested witness; P/H still perform effects.
 
