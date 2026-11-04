@@ -290,11 +290,7 @@ pub(super) fn finish<R: ReadStore>(
                 None
             };
             if let Some(command) = command {
-                value.next = NextStep {
-                    text: "Launch your first agent".into(),
-                    command: command.command,
-                    argv: command.argv,
-                };
+                value.next = super::command_hint::next(command, "Launch your first agent");
             } else {
                 value.next = next_command(
                     cx,
@@ -322,32 +318,11 @@ fn listing(cx: &Bootstrap) -> Result<NextStep> {
     )
 }
 fn next_command(cx: &Bootstrap, text: &str, tail: Vec<String>) -> Result<NextStep> {
-    let home = cx
-        .home
-        .to_str()
+    let home = AgentCommand::home_argument(&cx.home)
         .ok_or_else(|| scope::unreadable("status command", AgentCommand::HOME_UNAVAILABLE))?;
     let mut argv = vec!["se".into(), "--home".into(), home.into()];
     argv.extend(tail);
-    let command = argv
-        .iter()
-        .map(|word| {
-            if !word.is_empty()
-                && word
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || b"_-.:/".contains(&byte))
-            {
-                word.clone()
-            } else if cfg!(windows) {
-                format!("'{}'", word.replace('\'', "''"))
-            } else {
-                format!("'{}'", word.replace('\'', "'\"'\"'"))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    Ok(NextStep {
-        text: text.into(),
-        command,
-        argv,
-    })
+    let command = AgentCommand::from_argv(argv)
+        .ok_or_else(|| scope::unreadable("status command", AgentCommand::HOME_UNAVAILABLE))?;
+    Ok(super::command_hint::next(command, text))
 }

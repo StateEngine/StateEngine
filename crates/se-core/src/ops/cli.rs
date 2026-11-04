@@ -246,8 +246,8 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("agent").default_value("main"))
             .arg(value("provider").value_parser(["claude", "codex"]))
             .arg(value("model"))
-            .arg(toggle("launch"))
-            .arg(toggle("adopt")),
+            .arg(toggle("launch").hide(true))
+            .arg(toggle("adopt").hide(true)),
         "doctor.inspect" => c.about("Check this installation and name exact supported repairs"),
         "doctor.repair" => c.arg(value("fix").help("Apply only this currently diagnosed CHECK-ID after printing its plan")),
         "store.import_node" => c.about("Import supported user history without changing the original Node state").arg(value("from_node").long("from-node").required(true)).arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner")).arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),

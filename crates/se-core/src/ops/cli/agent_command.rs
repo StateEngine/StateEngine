@@ -6,8 +6,19 @@ pub struct AgentCommand {
     pub argv: Vec<String>,
 }
 impl AgentCommand {
-    pub const HOME_UNAVAILABLE: &str =
-        "The data home is not UTF-8; no portable CLI command can name it exactly.";
+    /// On Windows, the readable command uses PowerShell quoting. Literal argv
+    /// remains shell-independent for programmatic consumers.
+    pub fn instruction(text: &str) -> String {
+        if cfg!(windows) {
+            format!("Open PowerShell, then {}", text.to_lowercase())
+        } else {
+            text.into()
+        }
+    }
+    pub const HOME_UNAVAILABLE: &str = "The data home is not UTF-8 or contains a line break; no portable CLI command can name it exactly.";
+    pub fn home_argument(home: &std::path::Path) -> Option<&str> {
+        home.to_str().filter(|value| !value.contains(['\r', '\n']))
+    }
     pub fn launch_in_home(
         agent: &AgentId,
         home: &std::path::Path,
@@ -16,7 +27,7 @@ impl AgentCommand {
     ) -> Option<Self> {
         Some(Self::launch(
             agent,
-            Some(home.to_str()?),
+            Some(Self::home_argument(home)?),
             Some(project),
             new,
         ))
@@ -26,7 +37,11 @@ impl AgentCommand {
         home: &std::path::Path,
         project: &ProjectId,
     ) -> Option<Self> {
-        Some(Self::stop(agent, Some(home.to_str()?), Some(project)))
+        Some(Self::stop(
+            agent,
+            Some(Self::home_argument(home)?),
+            Some(project),
+        ))
     }
     pub fn launch(
         agent: &AgentId,
@@ -39,10 +54,10 @@ impl AgentCommand {
         if new {
             argv.push("--new".into());
         }
-        Self::from_argv(argv)
+        Self::render(argv)
     }
     pub fn stop(agent: &AgentId, home: Option<&str>, project: Option<&ProjectId>) -> Self {
-        Self::from_argv(Self::arguments("stop", agent, home, project))
+        Self::render(Self::arguments("stop", agent, home, project))
     }
     fn arguments(
         verb: &str,
@@ -60,7 +75,40 @@ impl AgentCommand {
         argv.extend([verb.into(), agent.to_string()]);
         argv
     }
-    fn from_argv(argv: Vec<String>) -> Self {
+    /// cmd.exe expands percent/exclamation variables even inside double quotes.
+    /// Such arguments require the explicitly named PowerShell form instead.
+    pub fn for_cmd(&self) -> Option<Self> {
+        let words: Option<Vec<_>> = self
+            .argv
+            .iter()
+            .map(|word| {
+                if word.contains(['%', '!', '"', '\r', '\n']) {
+                    return None;
+                }
+                if !word.is_empty()
+                    && word
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-.:'\\/".contains(&b))
+                {
+                    Some(word.clone())
+                } else {
+                    let trailing = word.chars().rev().take_while(|c| *c == '\\').count();
+                    Some(format!("\"{}{}\"", word, "\\".repeat(trailing)))
+                }
+            })
+            .collect();
+        Some(Self {
+            command: words?.join(" "),
+            argv: self.argv.clone(),
+        })
+    }
+    pub fn from_argv(argv: Vec<String>) -> Option<Self> {
+        if argv.iter().any(|word| word.contains(['\r', '\n'])) {
+            return None;
+        }
+        Some(Self::render(argv))
+    }
+    fn render(argv: Vec<String>) -> Self {
         let command = argv
             .iter()
             .map(|word| {
@@ -71,7 +119,7 @@ impl AgentCommand {
                 {
                     word.clone()
                 } else if cfg!(windows) {
-                    format!("'{}'", word.replace('\'', "''"))
+                    powershell_word(word)
                 } else {
                     format!("'{}'", word.replace('\'', "'\"'\"'"))
                 }
@@ -79,5 +127,69 @@ impl AgentCommand {
             .collect::<Vec<_>>()
             .join(" ");
         Self { command, argv }
+    }
+}
+
+fn powershell_word(word: &str) -> String {
+    let mut quoted = String::from("'");
+    for character in word.chars() {
+        quoted.push(character);
+        if matches!(
+            character,
+            '\'' | '\u{2018}' | '\u{2019}' | '\u{201a}' | '\u{201b}'
+        ) {
+            quoted.push(character);
+        }
+    }
+    quoted.push('\'');
+    quoted
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn cmd_form_preserves_spaces_apostrophes_and_trailing_backslashes()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let original = AgentCommand::from_argv(vec![
+            "se".into(),
+            "--home".into(),
+            "C:\\state home's\\".into(),
+        ])
+        .ok_or("ordinary command refused")?;
+        let cmd = original.for_cmd().ok_or("ordinary cmd form refused")?;
+        assert_eq!(cmd.argv, original.argv);
+        assert_eq!(cmd.command, "se --home \"C:\\state home's\\\\\"");
+        Ok(())
+    }
+    #[test]
+    fn cmd_form_refuses_variable_expansion_and_embedded_quotes() {
+        for word in ["%TEMP%", "!private!", "line\nnext", "embedded\"quote"] {
+            assert!(
+                AgentCommand::from_argv(vec![word.into()])
+                    .and_then(|command| command.for_cmd())
+                    .is_none()
+            );
+        }
+    }
+    #[test]
+    fn powershell_quotes_every_single_quote_delimiter() {
+        for character in ['\'', '\u{2018}', '\u{2019}', '\u{201a}', '\u{201b}'] {
+            let word = format!("C:\\O{character}Brien; Write-Output injected");
+            assert_eq!(
+                powershell_word(&word),
+                format!(
+                    "'{}'",
+                    word.replace(character, &format!("{character}{character}"))
+                )
+            );
+        }
+    }
+    #[test]
+    fn command_and_home_refuse_line_breaks() {
+        for word in ["C:\\line\rnext", "C:\\line\nnext"] {
+            assert!(AgentCommand::from_argv(vec![word.into()]).is_none());
+            assert!(AgentCommand::home_argument(std::path::Path::new(word)).is_none());
+        }
     }
 }

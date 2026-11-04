@@ -28,9 +28,22 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
     } else {
         cx.cwd.join(requested)
     })
-    .map_err(|e| scope::unreadable("repository root", &e.to_string()))?;
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            SeError::new(se_types::Detail::RepoInvalid(se_types::details::RepoInvalid {
+                subject: "--repo".into(), reason: "the requested directory does not exist".into(),
+                next_step: "Select an existing directory with --repo DIR, or create that directory and retry.".into(),
+            }))
+        } else { scope::unreadable("repository root", &e.to_string()) }
+    })?;
     if !path.is_dir() {
-        return Err(SeError::invalid("repository root", "an existing directory"));
+        return Err(SeError::new(se_types::Detail::RepoInvalid(
+            se_types::details::RepoInvalid {
+                subject: "--repo".into(),
+                reason: "the selected path is not a directory".into(),
+                next_step: "Select an existing directory with --repo DIR.".into(),
+            },
+        )));
     }
     if canonical_destination(&cx.home)?.starts_with(&path) {
         return Err(SeError::invalid(
@@ -53,7 +66,7 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
     let name = input
         .name
         .clone()
-        .or_else(|| path.file_name().and_then(|s| s.to_str()).map(str::to_owned))
+        .or_else(|| path.file_name().and_then(|s| s.to_str()).map(derived_name))
         .ok_or_else(|| {
             SeError::invalid(
                 "project name",
@@ -62,7 +75,14 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
         })?;
     let mut resolved = input.clone();
     resolved.name = Some(name.clone());
-    se_core::ops::inputs::Validate::validate(&resolved)?;
+    se_core::ops::inputs::Validate::validate(&resolved).map_err(|error| {
+        if input.name.is_none() && matches!(error.body.detail(), se_types::Detail::UsageInvalidValue(detail) if detail.argument == "name") {
+            SeError::new(se_types::Detail::RepoInvalid(se_types::details::RepoInvalid {
+                subject: "derived project name".into(), reason: "the directory name is not a supported project name".into(),
+                next_step: "Add --name NAME using 1..64 ASCII letters, digits, spaces, periods, underscores or hyphens, starting with a letter or digit.".into(),
+            })).with_cause(error)
+        } else { error }
+    })?;
     let nonempty = std::fs::read_dir(&path)
         .map_err(|e| scope::unreadable("repository contents", &e.to_string()))?
         .next()
@@ -77,6 +97,26 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
         git,
     })
 }
+fn derived_name(directory: &str) -> String {
+    let name: String = directory
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || " ._-".contains(character) {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect();
+    let name = name.trim_start_matches(|character: char| !character.is_ascii_alphanumeric());
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        "Project".into()
+    } else {
+        name[..name.len().min(64)].trim_end().into()
+    }
+}
+
 fn git(root: &Path) -> Result<Option<GitView>> {
     let mut candidate = Some(root);
     let mut registered = false;
@@ -201,5 +241,26 @@ fn canonical_destination(path: &Path) -> Result<PathBuf> {
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::derived_name;
+    #[test]
+    fn directory_labels_produce_valid_bounded_project_names() -> se_types::Result<()> {
+        for (directory, expected) in [
+            ("my repo (v2)", "my repo v2"),
+            (".private", "private"),
+            ("café ü", "caf"),
+            ("日本語", "Project"),
+        ] {
+            let name = derived_name(directory);
+            assert_eq!(name, expected);
+            se_core::ops::inputs::name("name", &name)?;
+        }
+        let name = derived_name(&"a".repeat(100));
+        assert_eq!(name.len(), 64);
+        se_core::ops::inputs::name("name", &name)
     }
 }

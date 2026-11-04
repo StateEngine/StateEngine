@@ -90,9 +90,10 @@ pub struct PendingFact {
 pub struct ProjectSummary {
     pub id: ProjectId,
     pub name: String,
-    pub root: String,
+    pub root: Option<String>,
     pub agents_running: Option<u64>,
-    pub owner_unread: u64,
+    pub owner_unread: Option<u64>,
+    pub errors: Vec<se_types::ErrorBody>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct StatusOutput {
