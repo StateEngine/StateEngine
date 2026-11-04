@@ -101,6 +101,23 @@ fn queued_enqueue_input_is_retained_with_queue_provenance() -> Result<()> {
 }
 
 #[test]
+fn metadata_only_queue_records_need_no_text_but_present_invalid_text_refuses() -> Result<()> {
+    for operation in ["enqueue", "dequeue"] {
+        metadata(
+            json!({"type":"queue-operation", "operation":operation}),
+            "queue-operation",
+        )?;
+    }
+    for content in [Value::Null, json!(42), json!([]), json!("")] {
+        assert!(
+            decode(json!({"type":"queue-operation", "operation":"enqueue", "content":content}))
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn tool_replies_are_dropped_and_mixed_user_prose_keeps_its_identity() -> Result<()> {
     for tool_content in [
         json!("TOOL_SECRET"),

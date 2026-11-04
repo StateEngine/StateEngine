@@ -27,12 +27,14 @@ impl Tracker {
         if kind == Some("queue-operation") {
             match value.get("operation").and_then(Value::as_str) {
                 Some("enqueue") => {
-                    let text = value
-                        .get("content")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            SeError::invalid("queued input", "the native enqueue string")
-                        })?;
+                    // Stock Claude also writes queue bookkeeping without input.
+                    // The scanner counts it; no prompt or outcome can be inferred.
+                    let Some(content) = value.get("content") else {
+                        return Ok(outcomes);
+                    };
+                    let text = content.as_str().ok_or_else(|| {
+                        SeError::invalid("queued input", "the native enqueue string")
+                    })?;
                     if text.is_empty() {
                         return Err(SeError::invalid("queued input", "nonempty native input"));
                     }
@@ -85,12 +87,12 @@ impl Tracker {
                     }
                 }
                 Some("remove") => {
-                    let text = value
-                        .get("content")
-                        .and_then(Value::as_str)
-                        .ok_or_else(|| {
-                            SeError::invalid("native queue remove", "the native input string")
-                        })?;
+                    let Some(content) = value.get("content") else {
+                        return Ok(outcomes);
+                    };
+                    let text = content.as_str().ok_or_else(|| {
+                        SeError::invalid("native queue remove", "the native input string")
+                    })?;
                     let reason = match value.get("reason") {
                         None | Some(Value::Null) => None,
                         Some(Value::String(reason))
@@ -280,6 +282,47 @@ pub(super) fn restore(
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn textless_queue_bookkeeping_has_no_input_or_outcome()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut tracker = Tracker::default();
+        for operation in ["enqueue", "dequeue", "remove"] {
+            let bytes =
+                serde_json::to_vec(&json!({"type":"queue-operation", "operation":operation}))?;
+            assert!(
+                tracker
+                    .observe(
+                        &bytes,
+                        Position {
+                            offset: 0,
+                            length: 1
+                        }
+                    )?
+                    .is_empty()
+            );
+            assert!(tracker.pending.is_empty());
+            assert_eq!(tracker.bytes, 0);
+        }
+        for operation in ["enqueue", "remove"] {
+            for content in [Value::Null, json!(42), json!([])] {
+                let bytes = serde_json::to_vec(
+                    &json!({"type":"queue-operation", "operation":operation, "content":content}),
+                )?;
+                assert!(
+                    tracker
+                        .observe(
+                            &bytes,
+                            Position {
+                                offset: 0,
+                                length: 1
+                            }
+                        )
+                        .is_err()
+                );
+            }
+        }
+        Ok(())
+    }
     #[test]
     fn queue_operations_do_not_infer_cancellation_or_replace_user_delivery()
     -> std::result::Result<(), Box<dyn std::error::Error>> {

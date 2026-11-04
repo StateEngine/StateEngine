@@ -54,6 +54,7 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
         );
         if kind == "queue-operation"
             && object.get("operation").and_then(Value::as_str) == Some("enqueue")
+            && object.contains_key("content")
         {
             let text = object
                 .get("content")
