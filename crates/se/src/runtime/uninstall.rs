@@ -73,9 +73,9 @@ pub(super) fn execute(
     )?;
     let mut installation_claim =
         Some(se_proc::NativeInstallationClaim::acquire().map_err(native_error)?);
-    // Same order as setup/removal: obtain home-local exclusion before any
-    // credential or installation mutation, then re-read under that exclusion.
-    // The account claim above protects install/PATH effects across homes.
+    // Only uninstall takes the account claim, protecting install/PATH effects
+    // across homes. Share setup's persistent home lock through every effect,
+    // including when no store exists yet, then re-observe under exclusion.
     let files =
         route::files::Files::open(&cx.home).map_err(|e| se_core::store_error::store_error(&e))?;
     let record_path = cx.home.join("standalone-install.json");

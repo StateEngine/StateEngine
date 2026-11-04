@@ -49,6 +49,8 @@ fn inspect_with<T>(
         Ok(_) => (),
     }
     // Protection and directory identity are native facts, independent of DB bytes.
+    // Only the store reader below establishes initialization. A runtime.lock
+    // may already exist for an uninstall or an init still holding exclusion.
     let files = Files::open(home).map_err(|e| store_error(&e))?;
     match open(&StoreOptions {
         state_directory: home.to_owned(),

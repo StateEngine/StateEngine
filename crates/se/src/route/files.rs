@@ -5,7 +5,12 @@ use se_store::{
 };
 use se_types::{Read, Remedy, Retry};
 use sha2::{Digest, Sha256};
-use std::{borrow::Borrow, fs::File, path::Path};
+use std::{
+    borrow::Borrow,
+    fs::File,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 /// Persistent home-local exclusion for setup and uninstall. Never replace a
 /// published lock: every cooperating operation must retain the same inode.
@@ -67,8 +72,18 @@ impl<F: Borrow<Files>> DirectLease<F> {
                 "setup lease requires DirectClient mode",
             ));
         }
-        let Some(file) = setup_lock(files.borrow())? else {
-            return Ok(None);
+        // Status/hooks may briefly hold shared reads. Each acquisition stays
+        // nonblocking, and contention never extends this original short bound.
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let file = loop {
+            if let Some(file) = setup_lock(files.borrow())? {
+                break file;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(2)));
         };
         Ok(Some(Self {
             files,
