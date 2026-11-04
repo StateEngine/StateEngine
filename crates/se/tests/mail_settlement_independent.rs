@@ -269,10 +269,11 @@ fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Che
     // A new request must still reserve later unread mail, without resurrecting
     // the terminal effect or changing its stable settlement receipt.
     let fresh_effect = record()?;
+    let fresh_kernel = kernel()?;
     let fresh_step = {
         let mut read = reader.snapshot(scope.clone())?;
         reserve_notice(
-            &k,
+            &fresh_kernel,
             &mut Cx {
                 read: &mut read,
                 admission: &scope.admission,
@@ -292,7 +293,7 @@ fn actual_recipient_read_and_dismiss_settle_only_complete_original_debt() -> Che
     {
         let mut read = reader.snapshot(scope.clone())?;
         let fresh = committed(
-            &k,
+            &fresh_kernel,
             &mut Cx {
                 read: &mut read,
                 admission: &scope.admission,
