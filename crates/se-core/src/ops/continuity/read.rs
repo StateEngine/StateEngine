@@ -199,20 +199,6 @@ pub(super) fn gather<R: Snapshot>(
             value.record.position.offset, value.event_id
         ));
     }
-    if let Read::Present { value: count } = transcript.transcript_events_omitted
-        && count > 0
-    {
-        omissions.push(omission(
-            "transcript_events",
-            Some(count),
-            "newest provider metadata window",
-            format!(
-                "se --project {} history --agent {} --kind session.turn",
-                identity.principal.project.id, agent
-            ),
-            "stateengine_history",
-        ));
-    }
     let turns = cx
         .read
         .recent_turns(agent.clone(), since, budget(u32::from(limit))?)

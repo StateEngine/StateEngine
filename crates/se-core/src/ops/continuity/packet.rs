@@ -179,22 +179,12 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             return Ok(());
         }
         if let Read::Present { value } = &mut result.transcript.transcript_events
-            && let Some(omitted) = value.pop()
+            && value.pop().is_some()
         {
             if let Read::Present { value: count } = &mut result.transcript.transcript_events_omitted
             {
                 *count = count.saturating_add(1);
             }
-            add_omission(
-                result,
-                "transcript_events",
-                Some(1),
-                format!(
-                    "se --project {} history --event {}",
-                    identity.principal.project.id, omitted.event_id
-                ),
-                "stateengine_event_read",
-            );
             continue;
         }
         if !result.recent_turns.is_empty() {
