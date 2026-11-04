@@ -73,7 +73,7 @@ pub(super) fn event() -> api::HostEventRef {
     }
 }
 pub(super) fn notice(target: api::HostSessionTarget) -> api::MailNotice {
-    api::MailNotice {
+    let mut notice = api::MailNotice {
         id: api::NoticeId("notice-test".into()),
         target,
         messages: vec![
@@ -82,8 +82,10 @@ pub(super) fn notice(target: api::HostSessionTarget) -> api::MailNotice {
                 .to_linked(),
         ],
         through: api::Cursor("mail-cursor-original".into()),
-        dedupe_sha256: api::Sha256([8; 32]),
-    }
+        dedupe_sha256: api::Sha256([0; 32]),
+    };
+    notice.dedupe_sha256 = crate::linked::native_notice_digest(&notice).unwrap();
+    notice
 }
 pub(super) struct Native {
     pub(super) state: Mutex<State>,

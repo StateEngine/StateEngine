@@ -78,12 +78,13 @@ pub(super) fn notice(value: &api::MailNotice) -> api::Result<()> {
         "messages":value.messages.iter().map(|id| &id.0).collect::<Vec<_>>(),
         "through":value.through.0,"dedupe":value.dedupe_sha256.0,
     })).map_err(|_| invalid())?;
-    same(bytes.len() <= 8192)
+    same(bytes.len() <= 8192)?;
+    same(crate::linked::native_notice_digest(value).map_err(conversion)? == value.dedupe_sha256)
 }
 pub(super) fn page_request(value: &api::PageRequest) -> api::Result<()> {
-    same((1..=100).contains(&value.limit) && (1..=65536).contains(&value.max_bytes))?;
+    same(value.limit > 0 && value.max_bytes > 0)?;
     if let Some(cursor) = &value.after {
-        same(!cursor.0.is_empty() && cursor.0.len() <= 256)?;
+        se_types::Cursor::from_linked(cursor.clone()).map_err(conversion)?;
     }
     Ok(())
 }
@@ -105,7 +106,7 @@ pub(super) fn page<T>(
         .into_iter()
         .flatten()
     {
-        same(!cursor.0.is_empty() && cursor.0.len() <= 256)?;
+        se_types::Cursor::from_linked(cursor.clone()).map_err(conversion)?;
     }
     if let Some(next) = &value.next {
         same(Some(next) != request.after.as_ref() && !value.window.complete)?;

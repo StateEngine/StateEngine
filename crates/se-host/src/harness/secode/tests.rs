@@ -134,6 +134,12 @@ fn invalid_and_stale_requests_never_reach_native_callbacks() {
             .map(|i| api::MessageId(format!("msg-{i:08x}")))
             .collect();
         assert!(adapter.deliver_notice(&excess, options()).await.is_err());
+        let mut wide = notice(fixture::target());
+        wide.messages = (0..32)
+            .map(|i| api::MessageId(format!("msg-{i:0500x}")))
+            .collect();
+        wide.dedupe_sha256 = crate::linked::native_notice_digest(&wide).unwrap();
+        assert!(adapter.deliver_notice(&wide, options()).await.is_err());
         let mut oversize = notice(fixture::target());
         oversize.target.epoch.owner.executable =
             std::path::PathBuf::from(format!("/{}", "x".repeat(12000)));
@@ -416,4 +422,34 @@ fn native_epoch_paths_preserve_non_unicode_units() {
     }
     let checked = se_types::HostEpoch::from_linked(original.clone()).unwrap();
     assert_eq!(crate::linked::host_epoch(&checked).unwrap(), original);
+}
+
+#[test]
+fn native_notice_digest_has_an_independent_vector_and_excludes_transient_epochs() {
+    let mut notice = notice(target());
+    let original = crate::linked::native_notice_digest(&notice).unwrap();
+    // Independently encoded with Python's compact UTF-8 JSON and hashlib.
+    assert_eq!(
+        se_types::hex_lower(&original.0),
+        "adee2c7621cf64c19af47e40ab8a9329b35f24cf0a9d5e8216938408eaed3d8a"
+    );
+    notice.target.epoch.generation = api::HostGeneration(999);
+    notice.target.epoch.owner.pid = 99;
+    assert_eq!(
+        crate::linked::native_notice_digest(&notice).unwrap(),
+        original
+    );
+    notice.messages.push(api::MessageId("msg-01234567".into()));
+    let ordered = crate::linked::native_notice_digest(&notice).unwrap();
+    notice.messages.reverse();
+    assert_ne!(
+        crate::linked::native_notice_digest(&notice).unwrap(),
+        ordered
+    );
+    notice.messages.pop();
+    notice.through = api::Cursor("different-cut".into());
+    assert_ne!(
+        crate::linked::native_notice_digest(&notice).unwrap(),
+        original
+    );
 }
