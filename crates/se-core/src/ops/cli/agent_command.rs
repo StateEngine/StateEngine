@@ -122,15 +122,17 @@ impl AgentCommand {
 mod tests {
     use super::*;
     #[test]
-    fn cmd_form_preserves_spaces_apostrophes_and_trailing_backslashes() {
+    fn cmd_form_preserves_spaces_apostrophes_and_trailing_backslashes()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let original = AgentCommand::from_argv(vec![
             "se".into(),
             "--home".into(),
             "C:\\state home's\\".into(),
         ]);
-        let cmd = original.for_cmd().unwrap();
+        let cmd = original.for_cmd().ok_or("ordinary cmd form refused")?;
         assert_eq!(cmd.argv, original.argv);
         assert_eq!(cmd.command, "se --home \"C:\\state home's\\\\\"");
+        Ok(())
     }
     #[test]
     fn cmd_form_refuses_variable_expansion_and_embedded_quotes() {
