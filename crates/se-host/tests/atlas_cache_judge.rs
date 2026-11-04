@@ -238,7 +238,13 @@ fn atlas_cache_writer_child() -> Check {
         },
         [3; 32],
     )?;
-    let _cache = NativeAtlasCache::create(&home, scope)?;
+    let cache = NativeAtlasCache::create(&home, scope)?;
+    let _reservation = std::env::var("ATLAS_JUDGE_RESERVED_EPOCH")
+        .ok()
+        .map(|value| -> Result<_, Box<dyn Error>> {
+            Ok(cache.reserve_database(&epoch(value.parse()?)?)?)
+        })
+        .transpose()?;
     use std::io::{Read, Write};
     println!("ATLAS_WRITER_READY");
     std::io::stdout().flush()?;
@@ -315,5 +321,202 @@ fn new_reservation_cannot_claim_or_erase_preexisting_epoch_sidecars() -> Check {
             panic!("a new epoch reservation claimed a nonfresh directory with prior sidecars");
         }
     }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn kill_reserved_writer(f: &Fixture, number: u8) -> Check {
+    use std::{
+        io::BufRead,
+        process::{Child, Command, Stdio},
+    };
+    // Reap our exact child on every error path; EOF makes the helper exit even
+    // when identity observation refuses the requested hard kill.
+    struct OwnedChild(Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            drop(self.0.stdin.take());
+            let _ = self.0.wait();
+        }
+    }
+    let executable = std::env::current_exe()?;
+    let mut child = OwnedChild(
+        Command::new(&executable)
+            .args(["--exact", "atlas_cache_writer_child", "--nocapture"])
+            .env("ATLAS_JUDGE_CHILD_DIRECTORY", &f.dir)
+            .env("ATLAS_JUDGE_RESERVED_EPOCH", number.to_string())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?,
+    );
+    let stdout = child.0.stdout.take().ok_or("child stdout")?;
+    let (send, receive) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            match line {
+                Ok(line) if line.trim() == "ATLAS_WRITER_READY" => {
+                    let _ = send.send(true);
+                    return;
+                }
+                Ok(_) => (),
+                Err(_) => break,
+            }
+        }
+        let _ = send.send(false);
+    });
+    let ready = receive.recv_timeout(Duration::from_secs(10));
+    if !matches!(ready, Ok(true)) {
+        drop(child);
+        let _ = reader.join();
+        return Err(format!("reservation helper did not become ready: {ready:?}").into());
+    }
+    reader.join().map_err(|_| "child output reader panicked")?;
+    let database = f
+        .scope
+        .registration
+        .cache
+        .directory
+        .join("epochs")
+        .join(epoch(number)?.as_str())
+        .join("atlas.db");
+    assert!(
+        database.is_file(),
+        "kill point precedes durable reservation"
+    );
+    let pid = child.0.id();
+    // Read the complete native command line before acting on this exact owned
+    // process. No executable-name scan or pattern-based termination is used.
+    #[cfg(target_os = "linux")]
+    let command = String::from_utf8(fs::read(format!("/proc/{pid}/cmdline"))?)?;
+    #[cfg(windows)]
+    let command = {
+        let output = Command::new("powershell.exe")
+            .args(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+            .arg(format!("$ErrorActionPreference='Stop'; (Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"))
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "cannot observe owned child command line: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        String::from_utf8(output.stdout)?
+    };
+    assert!(command.contains("atlas_cache_writer_child") && command.contains("--exact"));
+    assert!(
+        command
+            .to_lowercase()
+            .contains(&executable.to_string_lossy().to_lowercase())
+    );
+    eprintln!("kill owned reservation helper pid={pid} command={command:?}");
+    child.0.kill()?;
+    assert!(
+        !child.0.wait()?.success(),
+        "helper exited normally before the crash point"
+    );
+    assert!(
+        database.is_file(),
+        "process teardown unexpectedly removed the reservation"
+    );
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn three_killed_unpublished_writers_do_not_exhaust_epoch_slots() -> Check {
+    let serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = fixture()?;
+    for number in [5, 6, 7] {
+        kill_reserved_writer(&f, number)?;
+    }
+    let cache = NativeAtlasCache::create(&f.home, f.scope.clone())?;
+    let seed = seed(&f)?;
+    let result = CacheConnection::create(
+        &cache,
+        &seed,
+        ConnectionRole::HostWriter,
+        &SqlProfile::from_qualified_overhead(1)?,
+        deadline(),
+    );
+    drop(serial); // a real recovery failure must not poison unrelated judges
+    let database = result.map_err(|error| {
+        format!("three killed reservations permanently exhausted epoch slots: {error}")
+    })?;
+    pointer::publish(&cache, &database, None, deadline())?;
+    assert!(cache.read_pointer()?.is_some());
+    for number in [5, 6, 7] {
+        assert!(
+            !f.scope
+                .registration
+                .cache
+                .directory
+                .join("epochs")
+                .join(epoch(number)?.as_str())
+                .exists(),
+            "crashed unpublished epoch was not reclaimed"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn crash_recovery_preserves_published_epoch_and_unowned_sidecars() -> Check {
+    let serial = SERIAL.lock().map_err(|_| "lock")?;
+    let f = fixture()?;
+    let profile = SqlProfile::from_qualified_overhead(1)?;
+    let published;
+    {
+        let cache = NativeAtlasCache::create(&f.home, f.scope.clone())?;
+        let database = CacheConnection::create(
+            &cache,
+            &seed(&f)?,
+            ConnectionRole::HostWriter,
+            &profile,
+            deadline(),
+        )?;
+        pointer::publish(&cache, &database, None, deadline())?;
+        published = cache.read_pointer()?.ok_or("published pointer absent")?;
+    }
+    let epochs = f.scope.registration.cache.directory.join("epochs");
+    let unknown = epochs.join(epoch(8)?.as_str());
+    se_proc::NativeStateFiles::open(&epochs)?.prepare_directory(&unknown)?;
+    let files = se_proc::NativeStateFiles::open(&unknown)?;
+    let mut stage = files.create_staging(&unknown)?;
+    {
+        use std::io::Write;
+        stage
+            .file
+            .write_all(b"unowned WAL must survive crash recovery")?;
+    }
+    drop(stage.file);
+    let wal = unknown.join("atlas.db-wal");
+    files.publish_no_replace(&stage.path, &wal)?;
+    drop(files);
+    kill_reserved_writer(&f, 5)?;
+    let cache = NativeAtlasCache::create(&f.home, f.scope.clone())?;
+    assert_eq!(cache.read_pointer()?, Some(published));
+    assert_eq!(fs::read(&wal)?, b"unowned WAL must survive crash recovery");
+    let reader = pointer::open_current(
+        &cache,
+        &f.scope,
+        ConnectionRole::ExternalReader,
+        &profile,
+        deadline(),
+    )?
+    .ok_or("published cache lost after recovery")?;
+    let count: i64 = reader.connection.read(deadline(), |view| {
+        view.prepare("SELECT count(*) FROM names")?
+            .query_row([], |row| row.get(0))
+            .map_err(|error| se_types::SeError::invalid("judge SQL", &error.to_string()))
+    })?;
+    assert_eq!(count, 0);
+    let reserved = cache.reserve_database(&epoch(9)?);
+    drop(serial);
+    let pin = reserved
+        .map_err(|error| format!("crashed reservation still occupies an epoch slot: {error}"))?;
+    cache.discard_unpublished(&pin)?;
+    assert_eq!(fs::read(wal)?, b"unowned WAL must survive crash recovery");
     Ok(())
 }
