@@ -26,7 +26,7 @@ mod supervisor;
 pub use recovery::Reconciliation;
 pub use shutdown::ProcessDrain;
 
-use crate::{BlockingPool, ClaudeHarness, PreparedRequestProofs, ProviderIoPlatform};
+use crate::{BlockingPool, ClaudeHarness, CodexHarness, PreparedRequestProofs, ProviderIoPlatform};
 use se_core::config_policy::ConfigFile;
 use se_proc::{NativeProcessRuntime, ProcessRuntime};
 use se_types::{HostEpoch, NativePath, Result};
@@ -57,6 +57,7 @@ pub struct LaunchCoordinator {
     native: Arc<NativeProcessRuntime>,
     io: Arc<dyn ProviderIoPlatform>,
     harness: Arc<ClaudeHarness>,
+    codex: Arc<CodexHarness>,
     options: ProcessConfiguration,
     store: store::Store,
     owner: se_proc::ProcessIdentity,
@@ -169,11 +170,29 @@ impl LaunchCoordinator {
             options.home.clone(),
             options.http_port,
         ));
+        #[cfg(unix)]
+        let socket_root = host_runtime
+            .socket_paths
+            .runtime_directory
+            .clone()
+            .or_else(|| host_runtime.socket_paths.temporary_directory.clone())
+            .unwrap_or_else(std::env::temp_dir);
+        #[cfg(not(unix))]
+        let socket_root = options.home.clone();
+        let codex = Arc::new(CodexHarness::new(
+            io.clone(),
+            pool.clone(),
+            options.home.clone(),
+            socket_root,
+            options.http_port,
+            options.configuration.clone(),
+        ));
         Ok(Arc::new(Self {
             kind: host_runtime.kind,
             native,
             io,
             harness,
+            codex,
             store: store::Store {
                 reader: context.reader.clone(),
                 writer: context.writer.clone(),
@@ -194,6 +213,18 @@ impl LaunchCoordinator {
             stopping: std::sync::atomic::AtomicBool::new(false),
             orphans: std::sync::Mutex::default(),
         }))
+    }
+}
+impl LaunchCoordinator {
+    fn harness_for(&self, provider: se_store::Provider) -> Result<&dyn crate::Harness> {
+        match provider {
+            se_store::Provider::Claude => Ok(self.harness.as_ref()),
+            se_store::Provider::Codex => Ok(self.codex.as_ref()),
+            _ => Err(se_types::SeError::invalid(
+                "managed provider",
+                "Claude Code or Codex; linked SE Code owns its native binding",
+            )),
+        }
     }
 }
 fn error(subject: &str, cause: impl std::fmt::Debug) -> se_types::SeError {

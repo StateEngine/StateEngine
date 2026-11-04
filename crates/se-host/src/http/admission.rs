@@ -227,3 +227,26 @@ pub(crate) fn bearer(headers: &HeaderMap) -> Result<Option<Secret>, Refusal> {
         .map(Some)
         .map_err(|_| malformed())
 }
+
+/// Supplemental first-use possession, never operation or owner authority.
+pub(crate) fn session_proof(headers: &HeaderMap) -> Result<Option<Secret>, Refusal> {
+    let bad = || {
+        Refusal::new(
+            StatusCode::UNAUTHORIZED,
+            "malformed session first-use proof",
+        )
+    };
+    let Some(value) = single(
+        headers,
+        &header::HeaderName::from_static("x-stateengine-session-proof"),
+    )?
+    else {
+        return Ok(None);
+    };
+    let bytes = value.as_bytes();
+    if bytes.len() > 512 || !bytes.starts_with(b"sec1.") || !bytes.iter().all(u8::is_ascii_graphic)
+    {
+        return Err(bad());
+    }
+    Secret::new(bytes.to_vec()).map(Some).map_err(|_| bad())
+}

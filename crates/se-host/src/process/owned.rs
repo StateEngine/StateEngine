@@ -13,6 +13,7 @@ pub(super) struct LifecycleMetadata {
     pub request: se_types::IdempotencyKey,
     pub conversation: se_types::Read<se_types::ProviderSessionId>,
     pub model: Option<String>,
+    pub provider: se_store::Provider,
     pub capture: bool,
 }
 impl LifecycleMetadata {
@@ -26,6 +27,7 @@ impl LifecycleMetadata {
             request: plan.input.idempotency_key.clone(),
             conversation: plan.conversation.clone(),
             model: plan.profile.model.clone(),
+            provider: plan.profile.provider,
             capture: plan.capture,
         }
     }

@@ -20,6 +20,7 @@ use std::{
 };
 use zeroize::Zeroizing;
 mod http;
+mod codex;
 
 /// Whether a still-prepared credential may be used: only for read-only tool
 /// discovery during its launch, never for an operation.
@@ -27,6 +28,7 @@ mod http;
 enum Pending {
     Discover,
     Refuse,
+    ValidateOnly,
 }
 const RELAUNCH: &str = "relaunch the agent with `se launch AGENT`";
 /// Purpose of the pin capability (`sec1.`) CLI, hooks and IPC present.
@@ -307,7 +309,7 @@ impl AdmissionContext {
                 match credential.state {
                 // Reconciliation could not prove this launch stopped: its agent
                 // stays fenced until the owner releases it, active or not.
-                _ if pending == Pending::Refuse
+                _ if pending != Pending::Discover
                     && phase.credential_stop_unproved(hash).map_err(|e| store_error(&e))? =>
                 {
                     Some((
@@ -332,7 +334,9 @@ impl AdmissionContext {
                     Some(("superseded by a later launch of this agent".to_owned(), RELAUNCH))
                 }
                 se_store::CredentialState::Prepared => {
-                    self.observe_prepared(phase, &credential, hash, purpose)?;
+                    if pending != Pending::ValidateOnly {
+                        self.observe_prepared(phase, &credential, hash, purpose)?;
+                    }
                     if pending == Pending::Refuse {
                         return Err(SeError::new(se_types::Detail::SessionNotActive(
                             se_types::details::SessionNotActive {

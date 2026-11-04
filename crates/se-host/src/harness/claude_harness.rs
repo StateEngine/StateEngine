@@ -276,6 +276,7 @@ impl Harness for ClaudeHarness {
                 },
                 binding: HarnessBinding {
                     claude: Some(binding),
+                    codex: None,
                     _private: (),
                 },
             })

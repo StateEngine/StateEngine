@@ -30,6 +30,11 @@ pub fn reserve<R: Snapshot>(
             }),
             native_ref: match &plan.conversation {
                 se_types::Read::Present { value } => value.to_string(),
+                _ if plan.profile.provider == se_store::Provider::Codex => format!(
+                    "{}{}",
+                    super::super::session_reference::CODEX_PENDING,
+                    plan.session
+                ),
                 _ => plan.session.as_str()[se_types::SessionId::PREFIX.len()..].into(),
             },
             consent: if plan.capture {
@@ -72,13 +77,16 @@ pub fn reserve<R: Snapshot>(
                 ));
             }
         };
-        if provider != se_store::Provider::Claude {
+        if !matches!(
+            provider,
+            se_store::Provider::Claude | se_store::Provider::Codex
+        ) {
             return Err(se_types::SeError::invalid(
                 "launch preparation",
                 "reconcile the existing provider preparation before changing provider",
             ));
         }
-        // Managed Claude preparations have exactly these two capabilities;
+        // Managed Claude/Codex preparations have exactly these two capabilities;
         // missing or independently changed credentials refuse the whole batch.
         for purpose in ["session", "http"] {
             bodies.push(EventBody::CredentialRevoked {
@@ -175,7 +183,11 @@ pub fn activate<R: Snapshot>(
         capture,
         credentials,
     } = activation;
-    if plan.capture != capture.is_some() {
+    if (plan.capture && capture.is_none())
+        || (!plan.capture
+            && capture.is_some()
+            && plan.profile.provider != se_store::Provider::Codex)
+    {
         return Err(se_types::SeError::invalid(
             "capture activation",
             "a trusted native transcript pin exactly when capture was consented",
@@ -207,7 +219,11 @@ pub fn activate<R: Snapshot>(
         bodies.push(EventBody::CaptureSource {
             source: capture.source,
             session: plan.session.clone(),
-            consent: se_store::Consent::Capture,
+            consent: if plan.capture {
+                se_store::Consent::Capture
+            } else {
+                se_store::Consent::Suppressed
+            },
             native_ref: capture.native_ref,
             incarnation: capture.incarnation,
             expected: Expected::Absent,

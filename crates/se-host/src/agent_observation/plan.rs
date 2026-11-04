@@ -62,8 +62,21 @@ fn prepare<S: Snapshot>(
             "the exact selected project for the observed session",
         ));
     }
-    if !matches!(&first.body, EventBody::SessionPrepared {session:found, agent, native_ref, ..}
-        if found == &session && agent == &row.id && row.conversation.id.as_ref() == Some(native_ref))
+    let reference = match se_core::ops::session_reference::read(read, &head)? {
+        Read::Present { value } => Some(value.as_str().to_owned()),
+        Read::Absent { .. } => None,
+        other => Some(
+            scope::require_present(
+                other,
+                "observed provider reference",
+                "Restore the original provider binding.",
+            )?
+            .as_str()
+            .to_owned(),
+        ),
+    };
+    if !matches!(&first.body, EventBody::SessionPrepared {session:found, agent, ..}
+        if found == &session && agent == &row.id && row.conversation.id == reference)
     {
         return Err(invalid("the original session/agent/conversation binding"));
     }

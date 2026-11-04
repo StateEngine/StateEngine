@@ -70,24 +70,22 @@ impl LaunchCoordinator {
                     .original
                     .as_deref()
                     .unwrap_or(&session_head.current);
-                let (conversation, capture) = match &prepared.body {
+                let (conversation, capture, provider) = match &prepared.body {
                     EventBody::SessionPrepared {
                         session: found,
                         agent: principal,
-                        native_ref,
                         consent,
-                        provider: se_store::Provider::Claude,
+                        provider,
                         ..
                     } if found == &session && principal == &agent => (
-                        Read::Present {
-                            value: native_ref.parse()?,
-                        },
+                        se_core::ops::session_reference::read(cx.read, &session_head)?,
                         *consent == se_store::Consent::Capture,
+                        *provider,
                     ),
                     _ => {
                         return Err(error(
                             "recovery session",
-                            "original Claude preparation differs from retained identity",
+                            "original provider preparation differs from retained identity",
                         ));
                     }
                 };
@@ -125,6 +123,7 @@ impl LaunchCoordinator {
                         conversation,
                         model,
                         capture,
+                        provider,
                     },
                     active,
                     retired,

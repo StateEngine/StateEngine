@@ -211,11 +211,10 @@ pub fn launch<R: Snapshot>(
                     EventBody::SessionPrepared {
                         agent: owner,
                         provider,
-                        native_ref,
                         ..
-                    } if owner == &agent && *provider == profile.provider => Read::Present {
-                        value: native_ref.parse()?,
-                    },
+                    } if owner == &agent && *provider == profile.provider => {
+                        super::session_reference::read(cx.read, value)?
+                    }
                     _ => {
                         return Err(scope::unreadable(
                             "resume conversation",
@@ -247,7 +246,7 @@ pub fn launch<R: Snapshot>(
         profile,
         resolved,
         conversation,
-        capture: true,
+        capture: configuration.capture.enabled,
         control,
         seed,
         replayed,

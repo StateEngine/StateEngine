@@ -131,7 +131,7 @@ impl LaunchCoordinator {
             self.restore_cleanup(work, deadline).await?;
         }
         if let Some(binding) = &work.binding {
-            self.harness
+            self.harness_for(work.meta.provider)?
                 .close_binding(binding, call(self.store.generation, deadline)?)
                 .await?;
         }
@@ -139,11 +139,16 @@ impl LaunchCoordinator {
         let session = work.meta.session.clone();
         let pin = work.pin_hash;
         let files = work.files.clone();
+        let codex = self.codex.clone();
+        let is_codex = work.meta.provider == se_store::Provider::Codex;
         self.store
             .pool
             .run_owned(deadline, move || {
                 let state = se_proc::NativeStateFiles::open(&home)
                     .map_err(|e| error("session cleanup state", e))?;
+                if is_codex {
+                    codex.retire_socket(&session)?;
+                }
                 if let Some(pin) = pin {
                     se_proc::remove_session_pin(&state, &session, pin)
                         .map_err(|e| error("revoked session pin removal", e))?;
