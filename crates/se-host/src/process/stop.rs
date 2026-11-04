@@ -278,6 +278,10 @@ impl LaunchCoordinator {
             )
             .await?;
         }
+        // Standalone takeover uses stop followed by launch. Close the old
+        // binding durably before any interruption, even with an empty inbox;
+        // failed native closure must never reopen external admission.
+        self.revoke_credentials(work, deadline).await?;
         // The FULL transition rechecks the current control grant before even
         // closing provider stdin. Graceful closure is already a stop effect.
         if let Some(binding) = &work.binding {
