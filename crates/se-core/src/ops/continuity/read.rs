@@ -412,6 +412,8 @@ impl se_types::OperationCommand for BudgetRecovery<'_> {
             "--project".into(),
             self.identity.principal.project.id.to_string(),
             "resume".into(),
+            "--limit".into(),
+            self.input.limit.to_string(),
             "--budget".into(),
             self.needed.to_string(),
         ];
