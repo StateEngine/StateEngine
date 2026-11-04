@@ -55,7 +55,15 @@ class Reader:
     def good(self, session, transport, tool, arguments):
         reply = self.call(session, transport, tool, arguments)
         assert "error" not in reply and not reply.get("isError"), reply
-        return reply["structuredContent"]
+        if "structuredContent" in reply:
+            return reply["structuredContent"]
+        # Resume deliberately renders one JSON text block on current main.
+        content = reply.get("content")
+        assert tool == "stateengine_resume" and isinstance(content, list), reply
+        assert len(content) == 1 and content[0]["type"] == "text", reply
+        value = json.loads(content[0]["text"])
+        assert isinstance(value, dict), reply
+        return value
 
     def bad(self, session, transport, tool, arguments):
         reply = self.call(session, transport, tool, arguments)
