@@ -109,10 +109,14 @@ pub(super) fn missing_database(files: &Files, init: bool, recovered: bool) -> Re
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            &format!(
-                "Retry the original init command with the same --key and --home {}; init will preserve these files in a dated quarantine and continue.",
-                super::quote(&files.0.root().display().to_string())
-            ),
+            &match se_core::ops::AgentCommand::home_argument(files.0.root())
+                .and_then(se_core::ops::AgentCommand::quoted_word)
+            {
+                Some(home) => format!(
+                    "Retry the original init command with the same --key and --home {home}; init will preserve these files in a dated quarantine and continue."
+                ),
+                None => se_core::ops::AgentCommand::HOME_UNAVAILABLE.into(),
+            },
         ));
     }
     // A completed default init writes config after DB publication. Historical
@@ -174,6 +178,10 @@ pub(super) fn missing_database(files: &Files, init: bool, recovered: bool) -> Re
 }
 
 fn remedy(root: &Path) -> Result<String> {
+    use se_core::ops::AgentCommand;
+    if AgentCommand::home_argument(root).is_none() {
+        return Ok(AgentCommand::HOME_UNAVAILABLE.into());
+    }
     let stamp =
         se_core::ops::receipt::timestamp(crate::route::execute::now_us()?)?.replace(':', "-");
     let fresh = root.with_file_name(format!(
@@ -183,34 +191,69 @@ fn remedy(root: &Path) -> Result<String> {
             .unwrap_or("stateengine")
     ));
     let preserved = root.join(format!("recovery-sidecars-{stamp}"));
-    let q = |p: &Path| super::quote(&p.display().to_string());
+    let q = |path: &Path| {
+        path.to_str()
+            .and_then(AgentCommand::quoted_word)
+            .ok_or_else(|| SeError::invalid("recovery path", AgentCommand::HOME_UNAVAILABLE))
+    };
     #[cfg(not(windows))]
     let restore = format!(
-        "Stop all writers first. Set COPY_DIR to a CLOSED retained copy directory, then run these commands to restore exactly state.db and its matching state.db-wal if present; old WAL/SHM are preserved and SHM is never restored:\nset -eu\n: \"${{COPY_DIR:?Set COPY_DIR to a closed retained copy}}\"\ntest -f \"$COPY_DIR/state.db\"\ntest ! -e {}\nmkdir -m 700 -- {}\nif [ ! -e {} ]; then :; else mv -- {} {}; fi\nif [ ! -e {} ]; then :; else mv -- {} {}; fi\numask 077\ncp -- \"$COPY_DIR/state.db\" {}\nif [ ! -f \"$COPY_DIR/state.db-wal\" ]; then :; else cp -- \"$COPY_DIR/state.db-wal\" {}; fi\nse --home {} status",
-        q(&root.join("state.db")),
-        q(&preserved),
-        q(&root.join("state.db-wal")),
-        q(&root.join("state.db-wal")),
-        q(&preserved.join("state.db-wal")),
-        q(&root.join("state.db-shm")),
-        q(&root.join("state.db-shm")),
-        q(&preserved.join("state.db-shm")),
-        q(&root.join("state.db")),
-        q(&root.join("state.db-wal")),
-        q(root)
+        r#"set -eu
+printf 'Directory of a CLOSED retained copy: '
+IFS= read -r COPY_DIR
+: "${{COPY_DIR:?A closed retained copy directory is required}}"
+test -f "$COPY_DIR/state.db"
+test ! -e {db}
+mkdir -m 700 -- {preserved}
+if [ ! -e {wal} ]; then :; else mv -- {wal} {saved_wal}; fi
+if [ ! -e {shm} ]; then :; else mv -- {shm} {saved_shm}; fi
+umask 077
+cp -n -- "$COPY_DIR/state.db" {db}
+if [ ! -f "$COPY_DIR/state.db-wal" ]; then :; else cp -n -- "$COPY_DIR/state.db-wal" {wal}; fi
+se --home {home} status"#,
+        db = q(&root.join("state.db"))?,
+        preserved = q(&preserved)?,
+        wal = q(&root.join("state.db-wal"))?,
+        saved_wal = q(&preserved.join("state.db-wal"))?,
+        shm = q(&root.join("state.db-shm"))?,
+        saved_shm = q(&preserved.join("state.db-shm"))?,
+        home = q(root)?,
     );
     #[cfg(windows)]
     let restore = format!(
-        "Stop all writers first. Set $COPY_DIR to a CLOSED retained copy directory. Restore exactly state.db and its matching state.db-wal if present; preserve old WAL/SHM and never restore SHM:\nNew-Item -ItemType Directory -Path {} -ErrorAction Stop\nforeach ($leaf in @('state.db-wal','state.db-shm')) {{ $old=Join-Path {} $leaf; if (Test-Path -LiteralPath $old) {{ Move-Item -LiteralPath $old -Destination (Join-Path {} $leaf) -ErrorAction Stop }} }}\nCopy-Item -LiteralPath (Join-Path $COPY_DIR 'state.db') -Destination {} -ErrorAction Stop\nif (Test-Path -LiteralPath (Join-Path $COPY_DIR 'state.db-wal')) {{ Copy-Item -LiteralPath (Join-Path $COPY_DIR 'state.db-wal') -Destination {} -ErrorAction Stop }}\nse --home {} status",
-        q(&preserved),
-        q(root),
-        q(&preserved),
-        q(&root.join("state.db")),
-        q(&root.join("state.db-wal")),
-        q(root)
+        r#"$ErrorActionPreference = 'Stop'
+$COPY_DIR = Read-Host 'Directory of a CLOSED retained copy'
+if ([string]::IsNullOrWhiteSpace($COPY_DIR)) {{ throw 'A closed retained copy directory is required' }}
+$source = Join-Path $COPY_DIR 'state.db'
+if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {{ throw 'The copy must contain state.db' }}
+$homePath = {home}
+$target = Join-Path $homePath 'state.db'
+if (Test-Path -LiteralPath $target) {{ throw 'state.db already exists; nothing was restored' }}
+$preserved = {preserved}
+if (Test-Path -LiteralPath $preserved) {{ throw 'The sidecar preservation directory already exists' }}
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl = [System.Security.AccessControl.DirectorySecurity]::new()
+$acl.SetOwner($sid)
+$acl.SetAccessRuleProtection($true, $false)
+$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
+if ($PSVersionTable.PSEdition -eq 'Core') {{
+    [System.IO.FileSystemAclExtensions]::Create([System.IO.DirectoryInfo]::new($preserved), $acl)
+}} else {{
+    [void][System.IO.Directory]::CreateDirectory($preserved, $acl)
+}}
+foreach ($leaf in @('state.db-wal','state.db-shm')) {{
+    $old = Join-Path $homePath $leaf
+    if (Test-Path -LiteralPath $old) {{ Move-Item -LiteralPath $old -Destination (Join-Path $preserved $leaf) -ErrorAction Stop }}
+}}
+[System.IO.File]::Copy($source, $target, $false)
+$sourceWal = Join-Path $COPY_DIR 'state.db-wal'
+if (Test-Path -LiteralPath $sourceWal -PathType Leaf) {{ [System.IO.File]::Copy($sourceWal, (Join-Path $homePath 'state.db-wal'), $false) }}
+se --home {home} status"#,
+        home = q(root)?,
+        preserved = q(&preserved)?,
     );
     Ok(format!(
-        "{restore}\nNo backup? Keep this home intact and create fresh identities and empty history in a separate home:\nse --home {} init --repo .\nThe recorded human identity cannot be reconstructed from the machine credential alone.",
-        q(&fresh)
+        "Stop all writers first. Restore exactly state.db and its matching state.db-wal from a CLOSED retained copy; old WAL/SHM are preserved and SHM is never restored.\nBEGIN SE RESTORE COMMANDS\n{restore}\nEND SE RESTORE COMMANDS\nNo backup? Keep this home intact and create fresh identities and empty history in a separate home:\nBEGIN SE FRESH COMMAND\nse --home {} init --repo .\nEND SE FRESH COMMAND\nThe recorded human identity cannot be reconstructed from the machine credential alone.",
+        q(&fresh)?
     ))
 }

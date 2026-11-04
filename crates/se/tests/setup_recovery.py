@@ -19,6 +19,12 @@ def snapshot(home):
             for p in home.rglob("*") if p.is_file() and not p.is_symlink()}
 
 
+def command_block(remedy, name):
+    start, end = f"BEGIN SE {name}\n", f"\nEND SE {name}"
+    assert remedy.count(start) == remedy.count(end) == 1
+    return remedy.split(start, 1)[1].split(end, 1)[0]
+
+
 def deleted_state(f):
     f.ok("down")
     saved = f.root / "closed-copy"
@@ -35,11 +41,9 @@ def deleted_state(f):
             assert value["code"] == "state-conflict" and "Recorded state is missing" in value["message"]
             assert snapshot(f.home) == before and not (f.home / "state.db").exists()
         remedy = value["remedy"]["text"]
-        lines = remedy.splitlines()
-        first = next(i for i, line in enumerate(lines) if line == "set -eu")
-        end = next(i for i, line in enumerate(lines) if line.startswith("No backup?"))
-        environment = dict(f.environment, COPY_DIR=str(saved), PATH=str(f.se.parent) + os.pathsep + "/usr/bin:/bin")
-        recovered = subprocess.run(["/bin/sh", "-c", "\n".join(lines[first:end])], env=environment,
+        environment = dict(f.environment, PATH=str(f.se.parent) + os.pathsep + "/usr/bin:/bin")
+        recovered = subprocess.run(["/bin/sh", "-c", command_block(remedy, "RESTORE COMMANDS")], env=environment,
+            input=(str(saved) + "\n").encode(),
             cwd=f.root / "repo", capture_output=True, timeout=90)
         (f.root / "restore.stdout").write_bytes(recovered.stdout)
         (f.root / "restore.stderr").write_bytes(recovered.stderr)
@@ -48,7 +52,7 @@ def deleted_state(f):
         assert snapshot(saved) == source
         # Exercise the printed no-backup command too: the original home and its
         # owner remain intact while a separate home gets fresh identities.
-        argv = shlex.split([line for line in lines if line.startswith("se --home ")][-1])
+        argv = shlex.split(command_block(remedy, "FRESH COMMAND"))
         argv[0] = str(f.se)
         fresh = subprocess.run(argv, env=f.environment, cwd=f.root / "repo", capture_output=True, timeout=90)
         (f.root / "fresh.stdout").write_bytes(fresh.stdout)
@@ -117,16 +121,37 @@ def linked_stage_refuses(f):
         link.unlink()
 
 
+def line_break_home_has_no_shell_command(f):
+    home = f.root / "line\nbreak"
+    home.mkdir(mode=0o700)
+    for name in ["machine.json", "credential"]:
+        path = home / name
+        path.write_bytes((f.home / name).read_bytes())
+        path.chmod(0o600)
+    before = snapshot(home)
+    original = f.home
+    try:
+        f.home = home
+        result = f.call("status")
+    finally:
+        f.home = original
+    value = json.loads(result.stdout)
+    assert result.returncode != 0 and value["code"] == "state-conflict"
+    assert "contains a line break" in value["remedy"]["text"]
+    assert "BEGIN SE" not in value["remedy"]["text"]
+    assert before == snapshot(home) and not (home / "state.db").exists()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    cases = [deleted_state, fresh_home, unclaimed_staging, linked_stage_refuses]
+    cases = [deleted_state, fresh_home, unclaimed_staging, linked_stage_refuses, line_break_home_has_no_shell_command]
     print(f"1..{len(cases)}", flush=True)
     for number, case in enumerate(cases, 1):
-        f = Fixture(args.se.resolve(), args.output.resolve() / (case.__name__ + "-" + uuid.uuid4().hex[:6]))
+        f = Fixture(args.se.resolve(), args.output.resolve() / (case.__name__ + "-O’Brien's-" + uuid.uuid4().hex[:6]))
         try:
             case(f)
         finally:

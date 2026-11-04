@@ -29,6 +29,10 @@ impl AgentCommand {
         // No caller-supplied word is introduced by changing this fixed flag.
         Self::render(argv)
     }
+    /// A literal shell word, including in assignments and compound remedies.
+    pub fn quoted_word(word: &str) -> Option<String> {
+        (!word.contains(['\r', '\n'])).then(|| shell_word(word))
+    }
     pub fn launch_in_home(
         agent: &AgentId,
         home: &std::path::Path,
@@ -128,15 +132,21 @@ impl AgentCommand {
                         .all(|byte| byte.is_ascii_alphanumeric() || b"_-.:/".contains(&byte))
                 {
                     word.clone()
-                } else if cfg!(windows) {
-                    powershell_word(word)
                 } else {
-                    format!("'{}'", word.replace('\'', "'\"'\"'"))
+                    shell_word(word)
                 }
             })
             .collect::<Vec<_>>()
             .join(" ");
         Self { command, argv }
+    }
+}
+
+fn shell_word(word: &str) -> String {
+    if cfg!(windows) {
+        powershell_word(word)
+    } else {
+        format!("'{}'", word.replace('\'', "'\"'\"'"))
     }
 }
 
@@ -199,6 +209,7 @@ mod tests {
     fn command_and_home_refuse_line_breaks() {
         for word in ["C:\\line\rnext", "C:\\line\nnext"] {
             assert!(AgentCommand::from_argv(vec![word.into()]).is_none());
+            assert!(AgentCommand::quoted_word(word).is_none());
             assert!(AgentCommand::home_argument(std::path::Path::new(word)).is_none());
         }
     }
