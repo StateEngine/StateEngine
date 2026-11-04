@@ -289,7 +289,7 @@ fn config_reused_message_key_names_the_original_event() -> Check {
     Ok(())
 }
 
-/// Protects: missing selection reports the actual two registered project choices in structured and plain output; init's suggested argv executes a supported operation in the saved home.
+/// Protects: missing selection reports both registered project choices; the first-launch hint has executable grammar and exact saved scope without spending a provider account.
 #[test]
 fn project_choices_and_init_next_step_are_real_and_executable() -> Check {
     se_proc::initialize_file_creation_owner()?;
@@ -315,8 +315,24 @@ fn project_choices_and_init_next_step_are_real_and_executable() -> Check {
             .collect::<Result<Vec<_>, _>>()?;
         let mut next = Command::new(env!("CARGO_BIN_EXE_se"));
         clean(&mut next);
-        next.arg("--json").args(&argv[1..]);
-        success(next.output()?)?;
+        assert_eq!(argv.first(), Some(&"se"));
+        assert!(argv.contains(&"launch") && argv.contains(&"--detach"));
+        let saved_home = f.options.state_directory.to_str().ok_or("fixture UTF-8")?;
+        let saved_project = initialized["project"]["id"].as_str().ok_or("project ID")?;
+        assert!(argv.windows(2).any(|pair| pair == ["--home", saved_home]));
+        assert!(
+            argv.windows(2)
+                .any(|pair| pair == ["--project", saved_project])
+        );
+        assert!(argv.contains(&initialized["agent"]["id"].as_str().ok_or("agent ID")?));
+        next.args(&argv[1..]).arg("--help");
+        let help = next.output()?;
+        assert!(
+            help.status.success(),
+            "printed launch argv refused: {}",
+            String::from_utf8_lossy(&help.stderr)
+        );
+        assert!(String::from_utf8_lossy(&help.stdout).contains("Usage:"));
     }
     let output = command(&f.options.state_directory)
         .current_dir(&f.home)
