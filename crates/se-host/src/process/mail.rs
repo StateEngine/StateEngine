@@ -112,7 +112,13 @@ impl LaunchCoordinator {
         };
         let text = Body::new(format!(
             "StateEngine notice {}: new mail for you: {}. Read each with the stateengine_msg_read tool, then act on it.",
-            reserved.notice_id.as_str(), reserved.ids.iter().map(|id| id.as_str()).collect::<Vec<_>>().join(", ")
+            reserved.notice_id.as_str(),
+            reserved
+                .ids
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ))?;
         let digest = reserved.digest;
         let bytes = crate::harness::claude::input_frame(&text)?.len() as u64;
@@ -130,10 +136,19 @@ impl LaunchCoordinator {
             .binding
             .as_ref()
             .ok_or_else(|| error("mail transport", "live binding disappeared"))?;
-        let conversation = self.harness.offer_mail(binding, &text,
-            launch_util::call(self.store.generation, deadline)?).await?;
+        let conversation = self
+            .harness
+            .offer_mail(
+                binding,
+                &text,
+                launch_util::call(self.store.generation, deadline)?,
+            )
+            .await?;
         if !matches!(&work.meta.conversation,Read::Present {value} if *value==conversation) {
-            return Err(error("mail offer", "provider conversation differs from the retained session"));
+            return Err(error(
+                "mail offer",
+                "provider conversation differs from the retained session",
+            ));
         }
         let effect = work
             .mail
