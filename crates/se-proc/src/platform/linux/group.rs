@@ -31,6 +31,27 @@ fn in_group(live: &LiveObservation, group: ProcessId) -> ProcResult<bool> {
     }))
 }
 
+// Linux exposes no process-group member list. Select by the kernel's group
+// identity before opening any process metadata; directory names alone grant
+// no custody. The full birth/image/membership checks below still bracket every
+// selected member, including a PID that changes between this query and open.
+fn selected_group(pid: ProcessId, group: ProcessId) -> ProcResult<bool> {
+    // SAFETY: getpgid only queries membership and never signals the process.
+    let observed = unsafe { libc::getpgid(pid.0 as libc::pid_t) };
+    if observed >= 0 {
+        return Ok(observed as u32 == group.0);
+    }
+    let cause = io::Error::last_os_error();
+    if cause.raw_os_error() == Some(libc::ESRCH) {
+        return Ok(false);
+    }
+    Err(native(
+        ProcErrorCode::ScopeUnreadable,
+        "query tracked process-group membership",
+        cause,
+    ))
+}
+
 impl Scope {
     pub fn observe(&mut self) -> ProcResult<ScopeObservation> {
         match self.observe_inner() {
@@ -100,8 +121,9 @@ impl Scope {
             }
         }
         let mut live = Vec::new();
-        // Streaming census: bounded per-read/member storage, no executable-name
-        // filter. Enumeration errors remain errors, never population zero.
+        // Enumerate PID names, then query this exact process group without
+        // opening every process on the machine. No executable-name filter;
+        // enumeration/membership errors remain errors, never population zero.
         for entry in fs::read_dir("/proc")
             .map_err(|e| native(ProcErrorCode::ScopeUnreadable, "enumerate tracked group", e))?
         {
@@ -115,6 +137,9 @@ impl Scope {
             else {
                 continue;
             };
+            if !selected_group(pid, group)? {
+                continue;
+            }
             let Some(stat) = identity::stat(pid)? else {
                 continue;
             };
