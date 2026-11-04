@@ -7,6 +7,7 @@ mod probe;
 mod rpc;
 pub use rpc::RequestFailure;
 mod state;
+pub use state::IgnoredNotifications;
 mod transport;
 #[cfg(windows)]
 mod windows_shell;

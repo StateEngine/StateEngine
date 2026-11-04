@@ -10,9 +10,18 @@ use std::{
 };
 use tokio::sync::{Notify, oneshot};
 type Reply = std::result::Result<Value, rpc::RequestFailure>;
+/// Bounded diagnostics for events which cannot change this retained binding.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct IgnoredNotifications {
+    pub foreign_threads: u64,
+    pub foreign_turns: u64,
+    pub untracked_own_turns: u64,
+    pub before_binding: u64,
+}
 #[derive(Default)]
 pub(super) struct State {
     pub capture: bool,
+    pub ignored: IgnoredNotifications,
     pub sequence: wire::Requests,
     pub pending: BTreeMap<i64, oneshot::Sender<Reply>>,
     pub conversation: Option<ProviderSessionId>,
@@ -48,6 +57,9 @@ impl Completion {
     }
 }
 impl Binding {
+    pub fn ignored_notifications(&self) -> Result<IgnoredNotifications> {
+        Ok(self.state.lock().map_err(|_| poisoned())?.ignored)
+    }
     pub fn conversation(&self) -> Result<ProviderSessionId> {
         self.state
             .lock()
@@ -131,14 +143,16 @@ impl State {
             .and_then(Value::as_str)
             .ok_or_else(|| SeError::invalid("Codex event", "the actual threadId"))?;
         let state = self;
-        if state
-            .conversation
-            .as_ref()
-            .is_none_or(|actual| actual.as_str() != thread)
-        {
-            // App-server also publishes live sub-agent threads. They do not
-            // change this binding or grant capture/input authority here.
-            return Ok(false);
+        match state.conversation.as_ref() {
+            None => {
+                state.ignored.before_binding = state.ignored.before_binding.saturating_add(1);
+                return Ok(false);
+            }
+            Some(actual) if actual.as_str() != thread => {
+                state.ignored.foreign_threads = state.ignored.foreign_threads.saturating_add(1);
+                return Ok(false);
+            }
+            Some(_) => (),
         }
         if method.starts_with("turn/") {
             let id = params
@@ -153,6 +167,7 @@ impl State {
                     .as_ref()
                     .is_some_and(|active| active != &id)
                 {
+                    state.ignored.foreign_turns = state.ignored.foreign_turns.saturating_add(1);
                     return Ok(false);
                 }
                 state.active_turn = Some(id);
@@ -171,9 +186,12 @@ impl State {
                     .as_ref()
                     .is_some_and(|active| active != &id)
                 {
+                    state.ignored.foreign_turns = state.ignored.foreign_turns.saturating_add(1);
                     return Ok(false);
                 }
                 if state.active_turn.as_ref() != Some(&id) {
+                    state.ignored.untracked_own_turns =
+                        state.ignored.untracked_own_turns.saturating_add(1);
                     return Ok(false);
                 }
                 state.active_turn = None;
@@ -192,6 +210,12 @@ impl State {
             if state.active_turn.as_deref() != Some(turn)
                 && !state.completed.iter().any(|id| id == turn)
             {
+                if state.active_turn.is_some() {
+                    state.ignored.foreign_turns = state.ignored.foreign_turns.saturating_add(1);
+                } else {
+                    state.ignored.untracked_own_turns =
+                        state.ignored.untracked_own_turns.saturating_add(1);
+                }
                 return Ok(false);
             }
         }
@@ -268,11 +292,26 @@ mod tests {
         }
         assert_eq!(state.active_turn.as_deref(), Some("main-turn"));
         assert!(state.canonical.is_empty() && state.completed.is_empty());
+        assert_eq!(state.ignored.foreign_threads, 1);
+        assert_eq!(state.ignored.foreign_turns, 2);
         assert!(state.observe(
             "item/completed".into(),
             json!({"threadId":"main-thread","turnId":"main-turn","item":{"id":"actual-item"}})
         )?);
         assert_eq!(state.canonical.len(), 1);
+        Ok(())
+    }
+    #[test]
+    fn own_completion_without_a_tracked_turn_is_counted_and_left_to_native_capture() -> Result<()> {
+        let mut state = state(true)?;
+        state.active_turn = None;
+        assert!(!state.observe(
+            "item/completed".into(),
+            json!({"threadId":"main-thread","turnId":"resumed-turn","item":{"id":"native-item"}})
+        )?);
+        assert_eq!(state.ignored.untracked_own_turns, 1);
+        assert!(state.canonical.is_empty());
+        assert!(state.active_turn.is_none());
         Ok(())
     }
     #[test]

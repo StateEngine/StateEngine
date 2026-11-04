@@ -153,6 +153,10 @@ pub fn thread(launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
     config["mcp_servers.stateengine"] = json!({
         "url":format!("http://127.0.0.1:{}/mcp", launch.mcp_port),
         "enabled":true, "required":true,
+        // Match Claude's host-only allowedTools grant. Recipient capabilities
+        // are still checked by this authenticated host; other servers retain
+        // their own approval policy and the saved sandbox stays unchanged.
+        "default_tools_approval_mode":"approve",
         "http_headers": {
             "Authorization":format!("Bearer {}", secret(&launch.request.mcp_bearer)?),
             "X-StateEngine-Session-Proof":secret(&launch.request.launch_credential)?,
