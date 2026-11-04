@@ -7,7 +7,10 @@ hash_input() {
     if [ "$macos" -eq 1 ]; then shasum -a 256; else sha256sum; fi
 }
 file_digest() { sum=$(hash_input < "$1") || return "$?"; printf '%s' "${sum%% *}"; }
-flush() { if [ "$macos" -eq 1 ]; then "$bundle/se" __install-sync "$@"; else sync "$@"; fi; }
+# Flush exact paths with the bundled per-file fsync on every platform. A system `sync FILE` is
+# not a per-file flush everywhere: uutils coreutils (Ubuntu 26.04) calls the global sync(), which
+# waits on every filesystem's writeback while the installation claim is held.
+flush() { "$bundle/se" __install-sync "$@"; }
 json_string() { printf '"'; printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; printf '"'; }
 json_block() {
     awk 'BEGIN { printf "\"" } { for (i=1; i<=length($0); i++) { c=substr($0,i,1); if (c=="\\" || c=="\"") printf "\\"; printf "%s",c } printf "\\n" } END { printf "\"" }' "$1"
