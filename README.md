@@ -58,8 +58,9 @@ project; the **floor** is the append-only message log between you and your agent
          text: Created [notes.md](/path/to/repo/notes.md) with: "This repository is a small demo for the StateEngine quickstart."
 
 6. Resume it: `se resume --preview AGENT` reads the saved context without restarting
-   the agent; `se stop AGENT` ends a running session; `se launch AGENT --detach`
-   restarts the same saved conversation.
+   the agent; `se resume AGENT` refuses, because resume is a context read, and hands
+   back the exact launch command that reopens the saved conversation; `se stop AGENT`
+   ends a running session; `se launch AGENT --detach` restarts the same conversation.
 
        $ se resume --preview main
        Who am I?
@@ -67,12 +68,17 @@ project; the **floor** is the append-only message log between you and your agent
        $ se stop main
        Stop agent: stopped (complete: true)
        Resume ready: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
+       $ se resume main
+       error[usage-invalid-value]: se resume AGENT: `provider conversation reopen` is not a context read; use launch to reopen the saved conversation
+         fix: Reopen this agent's saved conversation with the command below. Run: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
 
-7. When you are done, stop the runtime; the next launch starts it again.
+7. When you are done, stop the runtime; the next launch starts it again. `se down`
+   reports each verified shutdown step in plain words, and names any step it could
+   not verify as pending instead of implying success.
 
        $ se down
        Runtime stop complete
-         witnessed via authenticated shutdown stages and outside native completion readback: Achieved: [AgentsStopped, ResumeSaved, WriterJoined, CaptureFlushed, DebtFlushed, ResourcesClosed, LeaseReleased]
+         witnessed via authenticated shutdown stages and outside native completion readback: Verified: agents stopped, resume information saved, storage writer stopped, captured work saved, pending writes saved, service resources closed, service lock released; saved conversation references: 0.
 
 | Crate | Holds |
 | --- | --- |
