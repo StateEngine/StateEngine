@@ -6,6 +6,15 @@ pub struct AgentCommand {
     pub argv: Vec<String>,
 }
 impl AgentCommand {
+    /// On Windows, the readable command uses PowerShell quoting. Literal argv
+    /// remains shell-independent for programmatic consumers.
+    pub fn instruction(text: &str) -> String {
+        if cfg!(windows) {
+            format!("Open PowerShell, then {}", text.to_lowercase())
+        } else {
+            text.into()
+        }
+    }
     pub const HOME_UNAVAILABLE: &str =
         "The data home is not UTF-8; no portable CLI command can name it exactly.";
     pub fn launch_in_home(
@@ -60,7 +69,7 @@ impl AgentCommand {
         argv.extend([verb.into(), agent.to_string()]);
         argv
     }
-    fn from_argv(argv: Vec<String>) -> Self {
+    pub fn from_argv(argv: Vec<String>) -> Self {
         let command = argv
             .iter()
             .map(|word| {
