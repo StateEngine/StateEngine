@@ -12,7 +12,17 @@ use crate::{
     store_error::store_error,
 };
 use se_store::{Actor, EventBody, PermissionProfile, Snapshot};
-use se_types::{AgentId, Named, Read, Result, SeError};
+use se_types::{AgentId, Named, ProviderSessionId, Read, Result, SeError};
+
+fn imported_reference(reference: Read<ProviderSessionId>) -> Result<Read<ProviderSessionId>> {
+    if matches!(reference, Read::Absent { .. }) {
+        return Err(SeError::invalid(
+            "imported Codex conversation",
+            "a retained native thread reference; use --new explicitly when it is missing or unsupported",
+        ));
+    }
+    Ok(reference)
+}
 
 pub fn target<R: Snapshot>(
     selected: Option<&AgentId>,
@@ -215,15 +225,11 @@ pub fn launch<R: Snapshot>(
                         ..
                     } if owner == &agent && *provider == profile.provider => {
                         let reference = super::session_reference::read(cx.read, value)?;
-                        if original.header.door == se_store::Door::Import
-                            && !matches!(reference, Read::Present { .. })
-                        {
-                            return Err(SeError::invalid(
-                                "imported Codex conversation",
-                                "a retained native thread reference; use --new explicitly when it is missing or unsupported",
-                            ));
+                        if original.header.door == se_store::Door::Import {
+                            imported_reference(reference)?
+                        } else {
+                            reference
                         }
-                        reference
                     }
                     _ => {
                         return Err(scope::unreadable(
@@ -263,4 +269,38 @@ pub fn launch<R: Snapshot>(
         session: se_types::SessionId::from_bytes(bytes)?,
         lifecycle: se_types::LifecycleId::from_bytes(bytes)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unreadable_import_keeps_its_repair_reason_instead_of_fresh_thread_advice() -> Result<()> {
+        let reference = Read::Unreadable {
+            source: "retained native binding".into(),
+            reason: "the committed source record cannot be read".into(),
+            error: None,
+        };
+        let retained = imported_reference(reference.clone())?;
+        assert_eq!(retained, reference);
+        let error = scope::require_present(
+            retained,
+            "saved Codex thread",
+            "Repair the retained native binding before resuming.",
+        )
+        .err()
+        .ok_or_else(|| SeError::invalid("unreadable native history", "a refusal"))?;
+        assert_eq!(error.code(), se_types::Code::SourceUnreadable);
+        let rendered = format!("{error:?}");
+        assert!(rendered.contains("the committed source record cannot be read"));
+        assert!(!rendered.contains("--new"));
+        assert!(
+            imported_reference(Read::Absent {
+                checked: "the historical session contains no native reference".into(),
+            })
+            .is_err()
+        );
+        Ok(())
+    }
 }
