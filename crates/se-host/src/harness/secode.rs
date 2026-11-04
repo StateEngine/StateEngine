@@ -2,6 +2,10 @@
 //! The registration binds one immutable G/epoch; replacement never rebinds it.
 //! The debt planner reserves before deliver and queries original notice_status
 //! after uncertainty; this adapter never invents a reservation or read marker.
+#![allow(
+    clippy::result_large_err,
+    reason = "API 2.0 defines ApiError by value; preserve the native callback error channel unchanged."
+)]
 #[cfg(test)]
 mod fixture;
 #[cfg(test)]

@@ -318,7 +318,10 @@ impl api::Host for EmbeddedHost {
             match &*lifecycle {
                 Lifecycle::Prepared => {
                     let services = Arc::new(crate::harness::secode::SecodeAdapter::new(
-                        epoch.clone(), self.negotiated.generation, services, self.native_fence.clone(),
+                        epoch.clone(),
+                        self.negotiated.generation,
+                        services,
+                        self.native_fence.clone(),
                     )?);
                     *self
                         .native

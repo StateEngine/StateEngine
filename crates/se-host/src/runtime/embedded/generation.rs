@@ -36,7 +36,13 @@ impl Generation {
         }
     }
     pub(super) fn set_health(&self, health: api::GenerationHealth) {
-        if matches!(health, api::GenerationHealth::Draining | api::GenerationHealth::Drained | api::GenerationHealth::Poisoned | api::GenerationHealth::Closed) {
+        if matches!(
+            health,
+            api::GenerationHealth::Draining
+                | api::GenerationHealth::Drained
+                | api::GenerationHealth::Poisoned
+                | api::GenerationHealth::Closed
+        ) {
             self.native_fence.store(true, Ordering::Release);
         }
         if let Ok(mut current) = self.health.lock() {

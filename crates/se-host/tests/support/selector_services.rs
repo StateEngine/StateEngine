@@ -95,37 +95,30 @@ impl api::HostServices for Services {
             };
             let items = specs
                 .into_iter()
-                .map(|(agent, project)| {
-                    Ok(api::ActiveSession {
-                        target: api::HostSessionTarget {
-                            epoch: epoch.clone(),
-                            session: api::HostSessionId(agent.into()),
-                            binding: api::SessionIdentity {
-                                project,
-                                agent: api::AgentId(
-                                    match agent {
-                                        "aardvark" => "agt-0000-0000-0000",
-                                        "zulu" => "agt-zzzz-zzzz-zzzz",
-                                        _ => "agt-ffff-ffff-ffff",
-                                    }
-                                    .into(),
-                                ),
-                                session: api::SessionId(
-                                    se_types::SessionId::from_parts(
-                                        1_700_000_000_000,
-                                        [agent.as_bytes()[0]; 10],
-                                    )
-                                    .map_err(|error| se_host::linked::api_error(&error))?
-                                    .as_str()
-                                    .into(),
-                                ),
-                            },
-                            binding_fingerprint: api::Sha256([3; 32]),
+                .map(|(agent, project)| api::ActiveSession {
+                    target: api::HostSessionTarget {
+                        epoch: epoch.clone(),
+                        session: api::HostSessionId(agent.into()),
+                        binding: api::SessionIdentity {
+                            project,
+                            agent: api::AgentId(
+                                match agent {
+                                    "aardvark" => "agt-0000-0000-0000",
+                                    "zulu" => "agt-zzzz-zzzz-zzzz",
+                                    _ => "agt-ffff-ffff-ffff",
+                                }
+                                .into(),
+                            ),
+                            session: api::SessionId(format!(
+                                "ses_018bcfe5-6800-7000-8000-{:012x}",
+                                agent.as_bytes()[0]
+                            )),
                         },
-                        activity: api::SessionActivity::Idle,
-                    })
+                        binding_fingerprint: api::Sha256([3; 32]),
+                    },
+                    activity: api::SessionActivity::Idle,
                 })
-                .collect::<api::Result<Vec<_>>>()?;
+                .collect::<Vec<_>>();
             Ok(api::Read::Present {
                 value: api::Page {
                     window: api::Window {
