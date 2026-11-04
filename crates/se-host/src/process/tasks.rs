@@ -11,6 +11,9 @@ impl LaunchCoordinator {
         let se_core::ops::AnyOutput::ProjectStatus(status) = output else {
             return Ok(());
         };
+        for name in self.store.fault.failed_routes()? {
+            status.value.pending.push(se_core::ops::PendingFact { what: name.into(), since: None, detail: "This listener route failed; retry is bounded to once per minute while other routes and native sessions remain available.".into() });
+        }
         let jobs = self
             .jobs
             .0

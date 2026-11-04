@@ -153,6 +153,10 @@ impl HostedRuntime {
                     }
                 }
                 Event::Accepted(Ok(stream)) => {
+                    if let Err(error) = self.execution.ownership_fault.route("IPC listener", false)
+                    {
+                        self.failed_connection(error);
+                    }
                     accept_backoff = std::time::Duration::from_millis(1);
                     let router = router.clone();
                     let cancelled = cancelled.clone();
@@ -164,8 +168,19 @@ impl HostedRuntime {
                     accept_backoff =
                         (accept_backoff * 2).min(std::time::Duration::from_millis(250));
                 }
-                Event::Accepted(Err(error)) => break ended(self, listener, Some(error)),
+                Event::Accepted(Err(error)) => {
+                    self.failed_connection(error);
+                    if let Err(error) = self.execution.ownership_fault.route("IPC listener", true) {
+                        self.failed_connection(error);
+                    }
+                    accept_retry_at =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+                }
                 Event::Http(Ok((stream, permit))) => {
+                    if let Err(error) = self.execution.ownership_fault.route("HTTP listener", false)
+                    {
+                        self.failed_connection(error);
+                    }
                     http_backoff = std::time::Duration::from_millis(1);
                     let (router, cancelled, port) =
                         (router.clone(), cancelled.clone(), http.port());
@@ -181,7 +196,15 @@ impl HostedRuntime {
                     http_retry_at = tokio::time::Instant::now() + http_backoff;
                     http_backoff = (http_backoff * 2).min(std::time::Duration::from_millis(250));
                 }
-                Event::Http(Err(error)) => break ended(self, listener, Some(error)),
+                Event::Http(Err(error)) => {
+                    self.failed_connection(error);
+                    if let Err(error) = self.execution.ownership_fault.route("HTTP listener", true)
+                    {
+                        self.failed_connection(error);
+                    }
+                    http_retry_at =
+                        tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+                }
                 Event::Joined(Ok(Ok(ConnectionEnd::Stop(stop)))) => {
                     let mut exit = ended(self, listener, None);
                     exit.stop = Some(stop);

@@ -12,8 +12,35 @@ pub(crate) struct OwnershipFault {
     changed: tokio::sync::Notify,
     native_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     joining: tokio::sync::Mutex<()>,
+    routes: std::sync::Mutex<std::collections::BTreeSet<&'static str>>,
 }
 impl OwnershipFault {
+    pub(crate) fn route(&self, name: &'static str, failed: bool) -> se_types::Result<()> {
+        let mut routes = self.routes.lock().map_err(|_| {
+            self.poison();
+            se_core::scope::unreadable(
+                "host route diagnostics",
+                "retained fault registry is poisoned",
+            )
+        })?;
+        if failed {
+            routes.insert(name);
+        } else {
+            routes.remove(name);
+        }
+        Ok(())
+    }
+    pub(crate) fn failed_routes(&self) -> se_types::Result<Vec<&'static str>> {
+        self.routes
+            .lock()
+            .map(|routes| routes.iter().copied().collect())
+            .map_err(|_| {
+                se_core::scope::unreadable(
+                    "host route diagnostics",
+                    "retained fault registry is poisoned",
+                )
+            })
+    }
     #[cfg(any(target_os = "linux", test))]
     pub(crate) fn retain_native(
         &self,
