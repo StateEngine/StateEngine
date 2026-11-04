@@ -116,8 +116,9 @@ pub fn actor_selector<R: Snapshot>(read: &mut R, selector: &str) -> Result<Actor
                 | EventBody::PrincipalRenamed {
                     principal, name, ..
                 } if (selector != "owner" && name == selector)
-                    || (selector == "owner"
-                        && matches!(&record.original.as_deref().unwrap_or(&record.current).body,EventBody::PrincipalRegistered{principal:Actor::Human(human),owner,..} if human==owner)) =>
+                    || matches!(&record.original.as_deref().unwrap_or(&record.current).body,
+                        EventBody::PrincipalRegistered { principal: Actor::Human(human), owner, .. }
+                        if human == owner && (selector == "owner" || human.as_str() == selector)) =>
                 {
                     matches.push(principal.clone())
                 }
