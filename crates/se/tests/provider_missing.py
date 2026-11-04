@@ -94,8 +94,23 @@ def run(se, output):
         denied.chmod(0o700)
         f.close()
         config.write_text(original)
+        selected = f.root / "selected provider O’Brien's.toml"
+        absent = f.root / "missing-selected-claude"
+        selected.write_text(original.replace(json.dumps(str(f.root / "provider")),
+                                             json.dumps(str(absent)), 1))
+        f.env["SE_CONFIG"] = str(selected)
+        result = f.call("--project", f.project, "launch", f.agent, "--detach")
+        assert result.returncode != 0
+        value = json.loads(result.stdout)
+        guidance(value, "claude", str(absent))
+        assert "file selected by SE_CONFIG, otherwise " + str(config) in value["remedy"]["text"], value
+        assert config.read_text() == original
+        check("external SE_CONFIG failure explains selection and never advertises the default file as active")
+        f.close()
+        selected.write_text(original)
         f.launch()
-        check("configured native provider still launches with a session pin and both discovery transports")
+        assert config.read_text() == original
+        check("fixing only the selected file launches the native provider with both discovery transports")
     finally:
         if denied.exists():
             denied.chmod(0o700)

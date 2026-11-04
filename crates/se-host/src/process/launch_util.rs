@@ -101,7 +101,7 @@ pub(super) fn resolve_provider_command(
     };
     let help = se_types::Remedy {
         text: format!(
-            "Configured {title} command: {command:?}. Install {title} using {install}, or set command to its native executable's absolute path under [providers.{name}] in {}. Restart this home's runtime from your owner terminal after changing PATH or configuration, then retry the launch.",
+            "Configured {title} command: {command:?}. Install {title} using {install}, or set command to its native executable's absolute path under [providers.{name}] in the configuration used to start this runtime: the file selected by SE_CONFIG, otherwise {}. Restart this home's runtime from your owner terminal with the same configuration selection after changing PATH or configuration, then retry the launch.",
             home.join("config.toml").display()
         ),
         command: Some(se_types::Cmd::Manual),
