@@ -97,24 +97,53 @@ impl LaunchCoordinator {
             };
             let provider = plan.profile.provider;
             let conversation = outcome.witness.conversation.clone();
+            let candidate_path = path.clone();
+            let mut pin = self
+                .store
+                .pool
+                .run_owned(deadline, move || {
+                    se_proc::NativeSourcePin::open(&candidate_path)
+                        .map_err(|e| error("provider transcript pin", e))
+                })
+                .await?;
+            let mut history_diagnostic = None;
+            if pin.is_none()
+                && provider == se_store::Provider::Codex
+                && matches!(plan.conversation, Read::Absent { .. })
+            {
+                history_diagnostic = crate::codex_rpc::bound(binding)?
+                    .materialize_fresh_rollout(&call(self.store.generation, deadline)?)
+                    .await?;
+                pin = self
+                    .store
+                    .pool
+                    .run_owned(deadline, move || {
+                        se_proc::NativeSourcePin::open(&path)
+                            .map_err(|e| error("provider transcript pin", e))
+                    })
+                    .await?;
+            }
+            let mut pin = pin.ok_or_else(|| {
+                error(
+                    "provider transcript readiness",
+                    "the provider has not created its transcript",
+                )
+            })?;
             let pin = self
                 .store
                 .pool
                 .run_owned(deadline, move || {
-                    let mut pin = se_proc::NativeSourcePin::open(&path)
-                        .map_err(|e| error("provider transcript pin", e))?
-                        .ok_or_else(|| {
-                            error(
-                                "provider transcript readiness",
-                                "the provider has not created its transcript",
-                            )
-                        })?;
                     if provider == se_store::Provider::Codex {
                         crate::codex_capture::validate_header(&mut pin, &conversation)?;
                     }
                     Ok(pin)
                 })
                 .await?;
+            if let Some(diagnostic) = history_diagnostic {
+                eprintln!(
+                    "Codex capture: native rollout header verified; optional empty-history read failed: {diagnostic}"
+                );
+            }
             work.transcript = Some(crate::TranscriptPin {
                 identity: outcome.witness.identity.clone(),
                 conversation: outcome.witness.conversation.clone(),

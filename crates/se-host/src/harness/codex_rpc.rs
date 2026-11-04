@@ -121,6 +121,65 @@ impl CodexHarness {
     }
 }
 impl Binding {
+    /// A fresh persistent thread buffers its header until persistence is requested.
+    /// Reading its empty history materializes it without executing user input.
+    pub(crate) async fn materialize_fresh_rollout(
+        &self,
+        cx: &CallContext,
+    ) -> Result<Option<SeError>> {
+        let conversation = self.conversation()?;
+        let response = match self
+            .request(
+                "thread/read",
+                json!({"threadId":conversation.as_str(),"includeTurns":true}),
+                cx,
+            )
+            .await
+        {
+            Ok(response) => response,
+            // Stock 0.163 persists the fresh header, then its unsupported
+            // history listing refuses. Preserve that diagnostic; the caller
+            // must independently pin and validate the native header before C3.
+            Err(error)
+                if matches!(error.body.detail(), se_types::Detail::ProviderIncompatible(detail)
+                if detail.reason == "provider refused request (-32601): list_turns is not supported yet") =>
+            {
+                return Ok(Some(error));
+            }
+            Err(error) => return Err(error),
+        };
+        let thread = response.get("thread").ok_or_else(|| {
+            incompatible(
+                "empty thread read omitted its thread",
+                "Restore native rollout readiness.",
+            )
+        })?;
+        if thread.get("id").and_then(Value::as_str) != Some(conversation.as_str())
+            || thread
+                .get("turns")
+                .and_then(Value::as_array)
+                .is_none_or(|turns| !turns.is_empty())
+        {
+            return Err(incompatible(
+                "fresh rollout read returned another thread or nonempty history",
+                "Inspect the exact native thread; no task was submitted.",
+            ));
+        }
+        let path = thread.get("path").and_then(Value::as_str).ok_or_else(|| {
+            incompatible(
+                "empty thread read omitted its persistent path",
+                "Restore native rollout readiness.",
+            )
+        })?;
+        if !matches!(self.rollout_path()?, Read::Present { value } if value.to_local().ok().as_deref() == Some(Path::new(path)))
+        {
+            return Err(incompatible(
+                "fresh rollout read changed its persistent path",
+                "Inspect the exact native thread; no task was submitted.",
+            ));
+        }
+        Ok(None)
+    }
     /// Provider-reported metadata only. L2 validates and pins the path under the
     /// existing CODEX_HOME before it grants file-read authority.
     pub fn rollout_path(&self) -> Result<Read<NativePath>> {

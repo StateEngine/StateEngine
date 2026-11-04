@@ -25,11 +25,24 @@ fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>> {
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(|| invalid("an explicit completed item type"))?;
+    if native
+        && kind == "Extension"
+        && !matches!(
+            item.get("kind").and_then(Value::as_str),
+            Some("clock.sleep" | "image_gen.generation" | "web.search")
+        )
+    {
+        return Err(invalid("a supported native extension kind"));
+    }
     let role = match (kind, native) {
         ("UserMessage", true) | ("userMessage", false) => se_store::Role::User,
         ("AgentMessage", true) | ("agentMessage", false) => se_store::Role::Assistant,
         (
-            "Reasoning"
+            "FunctionCallOutput"
+            | "HookPrompt"
+            | "SubAgentActivity"
+            | "Extension"
+            | "Reasoning"
             | "CommandExecution"
             | "FileChange"
             | "McpToolCall"
@@ -45,7 +58,11 @@ fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>> {
             true,
         )
         | (
-            "reasoning"
+            "functionCallOutput"
+            | "hookPrompt"
+            | "subAgentActivity"
+            | "sleep"
+            | "reasoning"
             | "commandExecution"
             | "fileChange"
             | "mcpToolCall"
@@ -103,8 +120,7 @@ fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>> {
                 // Non-text inputs remain in native evidence. Never reinterpret
                 // image bytes or references as user conversation prose.
                 Some("image" | "localImage" | "skill" | "mention")
-                    if role == se_store::Role::User =>
-                {}
+                    if role == se_store::Role::User => {}
                 _ => return Err(invalid("supported completed message content")),
             }
         }
@@ -297,6 +313,17 @@ mod tests {
         assert!(decode(&serde_json::to_vec(&native)?, &"foreign-thread".parse()?).is_err());
         let raw = json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"duplicate"}]}});
         assert!(decode(&serde_json::to_vec(&raw)?, &thread)?.is_none());
+        for (native_type, live_type) in [
+            ("FunctionCallOutput", "functionCallOutput"),
+            ("HookPrompt", "hookPrompt"),
+            ("SubAgentActivity", "subAgentActivity"),
+            ("Extension", "sleep"),
+        ] {
+            let persisted = json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":"provider-thread","turn_id":"t","item":{"id":"tool","type":native_type,"kind":"clock.sleep","durationMs":1000}}});
+            let live = json!({"method":"item/completed","params":{"threadId":"provider-thread","turnId":"t","item":{"id":"tool","type":live_type,"durationMs":1000}}});
+            assert!(decode(&serde_json::to_vec(&persisted)?, &thread)?.is_none());
+            assert!(notification(&live, &thread)?.is_none());
+        }
         Ok(())
     }
     #[test]
