@@ -1,4 +1,5 @@
 //! Exercises actual native binds shared by standalone and embedded hosts.
+#![cfg(feature = "listener")]
 
 #[test]
 fn busy_explicit_port_refuses_with_configuration_repair() -> Result<(), Box<dyn std::error::Error>>
