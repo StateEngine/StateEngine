@@ -262,14 +262,16 @@ done
 stage=$partial
 resume=0
 if [ "$recover" -eq 1 ]; then
-    recovery=$("$bundle/se" __install-recovery-check "$data") || fail 'partial journal or matching archive is unreadable'
+    recovery=$("$bundle/se" __install-recovery-check "$data" && printf 'end\n') || fail 'partial journal or matching archive is unreadable'
     {
         IFS= read -r mode
         IFS= read -r saved_profiles
         IFS= read -r saved_fish
+        IFS= read -r end_marker
     } <<RECOVERY
 $recovery
 RECOVERY
+    [ "$end_marker" = end ] || fail 'native recovery response is incomplete'
     if [ "$mode" = resume ]; then
         resume=1; profiles=$saved_profiles; fish_file=$saved_fish
     elif [ "$mode" = fresh ]; then
