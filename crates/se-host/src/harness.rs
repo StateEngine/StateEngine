@@ -4,14 +4,6 @@ use std::{ffi::OsString, path::PathBuf};
 
 /// Headless Claude launch plan: settings/MCP files, argv, readiness, transcript.
 pub mod claude;
-#[cfg(all(unix, feature = "listener"))]
-mod unix_io;
-#[cfg(all(unix, feature = "listener"))]
-pub use unix_io::UnixProviderIo;
-#[cfg(all(windows, feature = "listener"))]
-mod windows_io;
-#[cfg(all(windows, feature = "listener"))]
-pub use windows_io::WindowsProviderIo;
 #[cfg(feature = "listener")]
 mod claude_harness;
 #[cfg(feature = "listener")]
@@ -83,9 +75,9 @@ pub const MCP_BEARER_PURPOSE: &str = "http";
 /// opened it can operate on it; dropping it closes the host ends.
 pub struct ProviderTransport {
     #[cfg(all(unix, feature = "listener"))]
-    pub(crate) unix: Option<unix_io::Pipes>,
+    pub(crate) unix: Option<crate::process_io::Pipes>,
     #[cfg(all(windows, feature = "listener"))]
-    pub(crate) windows: Option<windows_io::Port>,
+    pub(crate) windows: Option<crate::process_io::Port>,
     pub(crate) _private: (),
 }
 impl ProviderTransport {

@@ -26,9 +26,16 @@ pub use mcp::{McpBackend, McpReply};
 mod model;
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 mod process;
+#[cfg(feature = "listener")]
+#[path = "process/io/mod.rs"]
+mod process_io;
 mod runtime;
 #[cfg(all(feature = "listener", any(target_os = "linux", windows)))]
 pub use process::{ProcessConfiguration, ProcessDrain, ProcessOptions, Reconciliation};
+#[cfg(all(unix, feature = "listener"))]
+pub use process_io::UnixProviderIo;
+#[cfg(all(windows, feature = "listener"))]
+pub use process_io::WindowsProviderIo;
 pub mod atlas_cache;
 pub mod atlas_source;
 mod session;
