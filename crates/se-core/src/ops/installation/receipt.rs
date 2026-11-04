@@ -22,6 +22,7 @@ pub fn finish_uninstall(
         missing_outcomes(plan, &mut effects);
     }
     Ok(UninstallOutput {
+        home_cleanup: None,
         idempotency_key: key,
         complete,
         install_files: effects.install_files,

@@ -4,7 +4,7 @@
 #[path = "host/detachment.rs"]
 mod detachment;
 #[cfg(any(target_os = "linux", windows))]
-pub use detachment::{DetachmentObservation, read_detachment};
+pub use detachment::{DetachmentObservation, read_detachment, retire_detachment};
 #[cfg(any(target_os = "linux", windows))]
 #[path = "host/child.rs"]
 mod child;

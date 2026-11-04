@@ -193,29 +193,74 @@ impl std::error::Error for RetainedStartup {
 }
 
 pub fn down<R: se_store::ReadStore>(
+    cx: &Bootstrap,
     files: &Files,
     reader: &R,
     input: RuntimeDown,
 ) -> Result<AnyOutput> {
     let options = execute::options();
-    let observed = execute::endpoint(files)?;
-    if matches!(observed, se_types::Read::Absent { .. }) {
-        return already_down::observe(files, reader, &options);
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        // Connection failure is not authority. Startup's protected native lease
+        // distinguishes a live owner from an obsolete routing record first.
+        match discovery::route(cx)? {
+            se_host::EndpointRoute::Live(endpoint) => {
+                down_live(files, reader, &endpoint, input, options)
+            }
+            se_host::EndpointRoute::Start { recovery } => {
+                let observed = already_down::observe(files, reader, &options);
+                match (observed, recovery) {
+                    (Ok(AnyOutput::RuntimeDown(mut report)), Some(retained)) => {
+                        report.value.witness.detail.get_or_insert_default().push_str(&format!(
+                            " Retained stale endpoint {} as {}; no connection was made to its recorded address.",
+                            retained.original.to_local()?.display(), retained.retained.to_local()?.display(),
+                        ));
+                        Ok(AnyOutput::RuntimeDown(report))
+                    }
+                    (Err(error), Some(retained)) => Err(SeError::new(se_types::Detail::StateConflict(
+                        se_types::details::StateConflict {
+                            subject: cx.home.display().to_string(),
+                            reason: format!("Retained stale endpoint {} as {}, but shutdown remains unproved: {error}",
+                                retained.original.to_local()?.display(), retained.retained.to_local()?.display()),
+                            next_step: "Keep the retained record and run se status with this same --home; resolve the named custody before retrying se down.".into(),
+                        }
+                    )).with_cause(error)),
+                    (result, _) => result,
+                }
+            }
+        }
     }
-    let endpoint = scope::require_present(
-        observed,
-        "a live authenticated runtime endpoint for graceful down",
-        "Run se status for this same data home and verify its recorded host; endpoint absence alone does not prove the host stopped.",
-    )?;
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = cx;
+        let observed = execute::endpoint(files)?;
+        if matches!(observed, se_types::Read::Absent { .. }) {
+            return already_down::observe(files, reader, &options);
+        }
+        let endpoint = scope::require_present(
+            observed,
+            "a live authenticated runtime endpoint for graceful down",
+            "Run se status for this same data home and verify its recorded host; endpoint absence alone does not prove the host stopped.",
+        )?;
+        down_live(files, reader, &endpoint, input, options)
+    }
+}
+fn down_live<R: se_store::ReadStore>(
+    files: &Files,
+    reader: &R,
+    endpoint: &se_host::EndpointRecord,
+    input: RuntimeDown,
+    options: se_host::client::ClientOptions,
+) -> Result<AnyOutput> {
     // Retain a bounded inventory before sending stop: loss of the control
     // channel must not discard the identities that may still own providers.
-    let bound = Deadline::from_options(&options)?;
+    let bound = se_host::client::lease::Deadline::from_options(&options)?;
     let mut budget = super::owner::budget()?;
     budget.deadline = budget.deadline.min(bound.remaining()?);
     let inventory = reader.owner_guard(files, budget);
     let mut options = options;
     options.timeout = bound.remaining()?;
-    down_endpoint(files, &endpoint, input, &options).map_err(|mut error| {
+    down_endpoint(files, endpoint, input, &options).map_err(|mut error| {
         let identities = match &inventory {
             Ok(inventory) => inventory.processes.iter().map(|process| {
                 format!("project {} principal {:?} session {:?} lifecycle {}", process.project,
