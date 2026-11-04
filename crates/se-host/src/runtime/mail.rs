@@ -3,6 +3,24 @@
 use se_store::{Actor, AtomicBatch, EventBody, Role, Scope};
 use se_types::{AgentId, ProjectId};
 
+/// A coalesced scheduling hint, with no message bodies or queue admission state.
+pub(crate) struct NativeSignal {
+    pub(crate) dirty: std::sync::atomic::AtomicBool,
+    changed: std::sync::Arc<tokio::sync::Notify>,
+}
+impl NativeSignal {
+    pub(crate) fn new(changed: std::sync::Arc<tokio::sync::Notify>) -> Self {
+        Self {
+            dirty: std::sync::atomic::AtomicBool::new(false),
+            changed,
+        }
+    }
+    pub(crate) fn wake(&self) {
+        self.dirty.store(true, std::sync::atomic::Ordering::Release);
+        self.changed.notify_one();
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MailRecipient {
     pub project: ProjectId,

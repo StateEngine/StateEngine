@@ -26,6 +26,24 @@ pub(super) struct Bindings {
     values: Mutex<BTreeMap<se_types::SessionId, Binding>>,
 }
 impl Bindings {
+    pub(super) fn current(&self, identity: &api::SessionIdentity) -> Result<Binding> {
+        let binding =
+            self.for_revoke(&se_types::SessionId::from_linked(identity.session.clone())?)?;
+        if binding.fenced || binding.identity != *identity {
+            return Err(denied("native target is not a current issued binding"));
+        }
+        Ok(binding)
+    }
+    pub(super) fn inventory(&self) -> Result<Vec<Binding>> {
+        Ok(self
+            .values
+            .lock()
+            .map_err(|_| scope::unreadable("linked bindings", "registry poisoned"))?
+            .values()
+            .filter(|binding| !binding.fenced)
+            .cloned()
+            .collect())
+    }
     pub(super) fn new() -> Result<Self> {
         let mut key = vec![0; 32];
         se_proc::fill_entropy(&mut key)

@@ -18,6 +18,9 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
+pub(crate) fn notice_bytes(notice: &api::MailNotice) -> api::Result<usize> {
+    validate::notice(notice)
+}
 pub(crate) struct SecodeAdapter {
     epoch: api::HostEpoch,
     generation: api::Generation,

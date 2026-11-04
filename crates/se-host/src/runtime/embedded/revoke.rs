@@ -36,6 +36,10 @@ impl EmbeddedHost {
                 "session":request.session.0,"reason":format!("{:?}",request.reason),"generation":options.generation.0
             }),
         )?;
+        // Native hold/revoke precedes retiring the engine grant. Previously
+        // queued notices cannot promote into a revoked binding.
+        self.revoke_native(&id, &request.key, &options, &deadline)
+            .await?;
         self.bindings.fence(&id)?;
         let batch = store::read(&router, scope.clone(), &deadline, move |read| {
             let record = scope::require_present(

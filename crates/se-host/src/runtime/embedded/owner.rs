@@ -113,8 +113,33 @@ async fn run_owner(
     };
     // Undelivered, or delivered but never claimed, the dropped
     // stop ends this generation instead of serving unreachably.
+    let mail_owner = retained_owner.clone();
+    let mail_state = retained_owner.upgrade().map(|owner| owner.mail.clone());
+    let mail_router = router.clone();
+    let mail = tokio::spawn(super::mail::drive(mail_owner, mail_router));
     let _ = ready.send(Ok((router, stop)));
     let exit = host.serve(listener).await;
+    if let Some(owner) = retained_owner.upgrade() {
+        owner
+            .native_fence
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+    if let Some(mail_state) = mail_state {
+        mail_state.close();
+    }
+    if mail.await.is_err() {
+        if let Some(owner) = retained_owner.upgrade() {
+            owner.poison_now(true);
+        }
+        let _ = exited.send(Err(se_core::scope::unreadable(
+            "native mail worker",
+            "its task did not join cleanly; generation resources remain quarantined",
+        )));
+        let _retained = exit;
+        loop {
+            std::thread::park();
+        }
+    }
     if exit
         .runtime
         .execution

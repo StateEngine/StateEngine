@@ -19,6 +19,12 @@ pub(crate) struct Waits {
     // Bound those retained resources separately from the live session map.
     retained: Arc<Semaphore>,
     closed: AtomicBool,
+    native: Mutex<
+        Vec<(
+            crate::runtime::MailRecipient,
+            std::sync::Weak<crate::runtime::mail::NativeSignal>,
+        )>,
+    >,
 }
 struct Signal {
     changed: Notify,
@@ -39,6 +45,7 @@ impl Waits {
             sessions: Mutex::new(BTreeMap::new()),
             retained: Arc::new(Semaphore::new(maximum.saturating_mul(2))),
             closed: AtomicBool::new(false),
+            native: Mutex::new(Vec::new()),
         })
     }
     fn register(
@@ -92,6 +99,45 @@ impl Waits {
                 signal.changed.notify_one();
             }
         }
+        let mut native = self.native.lock().map_err(|_| poisoned())?;
+        native.retain(|(_, signal)| signal.strong_count() > 0);
+        for (recipient, signal) in native.iter() {
+            if recipients.contains(recipient)
+                && let Some(signal) = signal.upgrade()
+            {
+                signal.wake();
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn register_native(
+        &self,
+        recipient: crate::runtime::MailRecipient,
+        signal: &Arc<crate::runtime::mail::NativeSignal>,
+    ) -> Result<()> {
+        let mut native = self.native.lock().map_err(|_| poisoned())?;
+        native.retain(|(_, signal)| signal.strong_count() > 0);
+        if native
+            .iter()
+            .any(|(_, old)| old.ptr_eq(&Arc::downgrade(signal)))
+        {
+            return Ok(());
+        }
+        if self.closed.load(Ordering::Acquire) || native.len() >= self.maximum {
+            return Err(SeError::invalid(
+                "native mail subscriptions",
+                "available session capacity before drain",
+            ));
+        }
+        native.push((recipient, Arc::downgrade(signal)));
+        Ok(())
+    }
+    pub(crate) fn catch_up_native(&self) -> Result<()> {
+        for (_, signal) in self.native.lock().map_err(|_| poisoned())?.iter() {
+            if let Some(signal) = signal.upgrade() {
+                signal.wake();
+            }
+        }
         Ok(())
     }
     pub(crate) fn close(&self) -> Result<()> {
@@ -99,6 +145,11 @@ impl Waits {
         for signal in self.sessions.lock().map_err(|_| poisoned())?.values() {
             signal.cancelled.store(true, Ordering::Release);
             signal.changed.notify_one();
+        }
+        for (_, signal) in self.native.lock().map_err(|_| poisoned())?.iter() {
+            if let Some(signal) = signal.upgrade() {
+                signal.wake();
+            }
         }
         Ok(())
     }

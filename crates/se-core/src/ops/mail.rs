@@ -150,6 +150,19 @@ pub fn reserve_notice<S: MailSnapshot>(
     cx: &mut Cx<'_, S>,
     request: ReserveNotice,
 ) -> Result<OpStep<Read<Reservation>, MailThen>> {
+    reserve_notice_bounded(kernel, cx, request, 32)
+}
+/// A native consumer may negotiate a smaller IDs-per-notice ceiling. The
+/// committed descriptor remains whole; no adapter truncates it after commit.
+pub fn reserve_notice_bounded<S: MailSnapshot>(
+    kernel: &Kernel,
+    cx: &mut Cx<'_, S>,
+    request: ReserveNotice,
+    maximum_ids: u32,
+) -> Result<OpStep<Read<Reservation>, MailThen>> {
+    if !(1..=32).contains(&maximum_ids) {
+        return Err(SeError::invalid("notice IDs", "1..32"));
+    }
     authorize(cx, &request.target)?;
     match cx
         .read
@@ -207,7 +220,7 @@ pub fn reserve_notice<S: MailSnapshot>(
     }
     let messages = cx
         .read
-        .mail_pending(request.target.agent.clone(), budget(32, 262144)?)
+        .mail_pending(request.target.agent.clone(), budget(maximum_ids, 262144)?)
         .map_err(|error| store_error(&error))?;
     let window = messages
         .window()
