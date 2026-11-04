@@ -31,13 +31,13 @@ def run(se, output):
         checks.append(name)
         print(f"ok {len(checks)} - {name}", flush=True)
 
-    def guidance(value, provider, command):
+    def guidance(value, provider, command, source=config):
         assert value["code"] == "provider-cli-not-found", value
         assert value["detail"]["provider"] == provider, value
         assert command in value["detail"]["searched"], value
         text = value["remedy"]["text"]
         assert command in text and f"[providers.{provider}]" in text, value
-        assert str(config) in text and "https://" in text, value
+        assert str(source) in text and "https://" in text, value
         assert "unreadable state" not in text and "se config set providers." not in text, value
 
     try:
@@ -102,10 +102,20 @@ def run(se, output):
         result = f.call("--project", f.project, "launch", f.agent, "--detach")
         assert result.returncode != 0
         value = json.loads(result.stdout)
-        guidance(value, "claude", str(absent))
-        assert "file selected by SE_CONFIG, otherwise " + str(config) in value["remedy"]["text"], value
+        guidance(value, "claude", str(absent), selected)
+        assert str(config) not in value["remedy"]["text"], value
         assert config.read_text() == original
-        check("external SE_CONFIG failure explains selection and never advertises the default file as active")
+        check("external SE_CONFIG failure prints the exact selected file and excludes the inactive default")
+        other = f.root / "later-client-selection.toml"
+        other.write_text(original)
+        f.env["SE_CONFIG"] = str(other)
+        result = f.call("--project", f.project, "launch", f.agent, "--detach")
+        assert result.returncode != 0
+        value = json.loads(result.stdout)
+        guidance(value, "claude", str(absent), selected)
+        assert str(other) not in value["remedy"]["text"], value
+        check("a later client's selection cannot replace the running host's retained configuration path")
+        f.env["SE_CONFIG"] = str(selected)
         f.close()
         selected.write_text(original)
         f.launch()

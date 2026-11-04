@@ -54,6 +54,7 @@ pub struct HostedRuntime {
     pub(crate) sources: TranscriptBindings,
     pub(crate) admission_reads: se_store::ReadPhasePool,
     pub(crate) configuration: Option<se_core::config_policy::ConfigFile>,
+    pub(crate) configuration_file: Option<PathBuf>,
     pub(crate) prepared_requests: Arc<std::sync::OnceLock<crate::PreparedRequestProofs>>,
     pub(crate) writer: Option<se_store::SqliteWriter>,
     pub(crate) drain: Option<std::pin::Pin<Box<super::drain::WriterDrain>>>,
@@ -131,6 +132,24 @@ impl HostedRuntime {
         }
         configuration.validate()?;
         self.configuration = Some(configuration);
+        self.configuration_file = None;
+        Ok(())
+    }
+    /// Attach validated configuration and the exact file selected by the entry
+    /// adapter. Embedded callers without a file continue to use `configure`.
+    pub fn configure_file(
+        &mut self,
+        configuration: se_core::config_policy::ConfigFile,
+        file: PathBuf,
+    ) -> Result<()> {
+        if !file.is_absolute() {
+            return Err(SeError::invalid(
+                "configuration file",
+                "an absolute selected path",
+            ));
+        }
+        self.configure(configuration)?;
+        self.configuration_file = Some(file);
         Ok(())
     }
     pub fn blocking_pool(&self) -> BlockingPool {
@@ -319,6 +338,7 @@ fn prepare(
         execution,
         admission_reads,
         configuration: None,
+        configuration_file: None,
         prepared_requests: Arc::default(),
         writer: Some(writer),
         drain: None,
