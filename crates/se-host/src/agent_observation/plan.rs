@@ -153,6 +153,7 @@ fn capture_evidence<S: Snapshot>(
                     session: Some(session.clone()),
                     kinds: vec![se_store::EventKind::CaptureFailed],
                     families: Vec::new(),
+                    transcript: se_store::TranscriptFilter::All,
                     since: Some(source.current.position.clone()),
                 },
                 se_store::ReadBudget {

@@ -71,6 +71,15 @@ pub fn list<R: Snapshot>(input: HistoryList, cx: &mut Cx<'_, R>) -> Result<Histo
                 .collect::<Result<_>>()?
         },
         families: Vec::new(),
+        transcript: match (
+            input.kinds.iter().any(|k| k == "session.turn"),
+            input.kinds.iter().any(|k| k == "transcript.event"),
+        ) {
+            _ if input.kinds.is_empty() => se_store::TranscriptFilter::All,
+            (true, false) => se_store::TranscriptFilter::Chat,
+            (false, true) => se_store::TranscriptFilter::Metadata,
+            _ => se_store::TranscriptFilter::All,
+        },
         since: input
             .since
             .as_ref()
@@ -130,6 +139,7 @@ const PUBLIC_KINDS: &[(&str, se_store::EventKind)] = &[
     ("alias.imported", se_store::EventKind::AliasImported),
     ("message.superseded", se_store::EventKind::MessageSuperseded),
     ("session.turn", se_store::EventKind::SessionTurn),
+    ("transcript.event", se_store::EventKind::SessionTurn),
     ("capture.suppressed", se_store::EventKind::CaptureSuppressed),
     ("message.sent", se_store::EventKind::MessageSent),
     ("message.read", se_store::EventKind::MessageRead),

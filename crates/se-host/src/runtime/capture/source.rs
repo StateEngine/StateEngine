@@ -4,6 +4,7 @@ use super::*;
 use se_core::{admission::read_scope, scope, store_error::store_error};
 use se_store::{Consent, EventBody, Snapshot};
 use sha2::{Digest, Sha256};
+mod scan;
 const CHUNK: usize = 256 * 1024;
 const LINE: usize = 4 * 1024 * 1024;
 struct Cursor {
@@ -42,7 +43,7 @@ pub fn next(
     if matches!(hook.kind, crate::ClaudeHookKind::SessionStart) {
         return Ok(None);
     }
-    if let Some(request) = scan(
+    if let Some(request) = scan::next(
         source,
         cursor.revision,
         cursor.offset,
@@ -52,8 +53,8 @@ pub fn next(
         return Ok(Some((request, false)));
     }
     if replay && let Some((from, to)) = cursor.previous {
-        let request =
-            scan(source, cursor.revision, from, deadline, final_capture)?.ok_or_else(|| {
+        let request = scan::next(source, cursor.revision, from, deadline, final_capture)?
+            .ok_or_else(|| {
                 scope::unreadable(
                     "captured source range",
                     "the original captured text record no longer decodes",
@@ -214,94 +215,6 @@ fn cursor(
         })
     })();
     super::super::executor::close_read(result, read.close())
-}
-fn scan(
-    source: &mut BoundTranscript,
-    revision: se_store::Revision,
-    offset: u64,
-    deadline: &Deadline,
-    final_capture: bool,
-) -> Result<Option<TrustedCapture>> {
-    let mut position = offset;
-    let mut consumed = offset;
-    let mut line = Vec::new();
-    let mut digest = Sha256::new();
-    loop {
-        deadline.remaining()?;
-        let chunk = source.pin.read_at(position, CHUNK).map_err(native_error)?;
-        for byte in chunk.bytes {
-            consumed = consumed.checked_add(1).ok_or_else(|| {
-                SeError::invalid("capture offset", "a representable source range")
-            })?;
-            line.push(byte);
-            if line.len() > LINE {
-                return Err(SeError::too_large(
-                    "provider transcript line",
-                    LINE,
-                    line.len(),
-                ));
-            }
-            if byte == b'\n' {
-                digest.update(&line);
-                if let Some(mut record) =
-                    super::claude::decode(&line, &source.binding.conversation)?
-                {
-                    if record.role == se_store::Role::System {
-                        let mut notice =
-                            se_core::ops::transcript::Record::decode(record.text.as_str())?;
-                        notice.position = se_core::ops::transcript::Position {
-                            offset: consumed - line.len() as u64,
-                            length: line.len() as u64,
-                        };
-                        record.vendor_turn = format!(
-                            "{}{}{}/{}",
-                            se_store::TRANSCRIPT_EVENT_PREFIX,
-                            if notice.is_compaction() {
-                                "compact/"
-                            } else {
-                                "record/"
-                            },
-                            notice.position.offset,
-                            se_types::hex_lower(&source.pin.identity())
-                        );
-                        record.text = notice.body()?;
-                    }
-                    return Ok(Some(TrustedCapture {
-                        request: se_core::ops::hook::CaptureRequest {
-                            source: source.source,
-                            expected: revision,
-                            conversation: source.binding.conversation.clone(),
-                            provider: se_store::Provider::Claude,
-                            vendor_turn: record.vendor_turn,
-                            role: record.role,
-                            text: record.text,
-                            evidence: se_store::SourceEvidence {
-                                path: Some(source.binding.path.clone()),
-                                incarnation: source.pin.identity().to_vec(),
-                                offset,
-                                length: consumed - offset,
-                                sha256: Some(digest.finalize().into()),
-                            },
-                            new_offset: consumed,
-                        },
-                        facts: facts()?,
-                    }));
-                }
-                line.clear();
-            }
-        }
-        position = chunk.next_offset;
-        if chunk.end_of_file || position == consumed && position == offset {
-            if final_capture && !line.is_empty() {
-                return Err(SeError::invalid(
-                    "pinned Claude transcript framing",
-                    "a newline-terminated final record after the native writer has exited; preserve the source and committed cursor",
-                ));
-            }
-            // While the native writer is live, an incomplete line stays pending.
-            return Ok(None);
-        }
-    }
 }
 fn facts() -> Result<se_core::ops::hook::CaptureFacts> {
     use se_store::RecordIdentity;

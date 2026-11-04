@@ -20,8 +20,21 @@ pub fn decode(bytes: &[u8], conversation: &ProviderSessionId) -> Result<Option<T
     let kind = object
         .get("type")
         .and_then(Value::as_str)
-        .unwrap_or("<untyped>");
+        .ok_or_else(|| invalid("an explicit string record type"))?;
     if kind != "user" && kind != "assistant" {
+        if !known_metadata(kind)
+            && matches!(
+                object
+                    .get("message")
+                    .and_then(|m| m.get("role"))
+                    .and_then(Value::as_str),
+                Some("user" | "assistant")
+            )
+        {
+            return Err(invalid(
+                "a recognized text record type; an unknown message-bearing record may be a real turn",
+            ));
+        }
         let notice = se_core::ops::transcript::Record::new(
             kind,
             object.get("subtype").and_then(Value::as_str),
@@ -162,4 +175,29 @@ fn append(target: &mut String, value: &str) -> Result<()> {
 }
 fn invalid(expected: &str) -> SeError {
     SeError::invalid("pinned Claude transcript", expected)
+}
+
+/// Frequent provider bookkeeping, summarized with the next captured record.
+pub fn noise_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "file-history-snapshot"
+            | "api-request-blob"
+            | "api-request"
+            | "api-request-shape"
+            | "session-owner"
+            | "tools-used"
+            | "attachment"
+            | "queue-operation"
+            | "atis-latch"
+            | "last-prompt"
+            | "cost-state"
+    )
+}
+fn known_metadata(kind: &str) -> bool {
+    noise_kind(kind)
+        || matches!(
+            kind,
+            "system" | "compact_boundary" | "mode" | "permission-mode" | "ai-title"
+        )
 }

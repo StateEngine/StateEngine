@@ -76,6 +76,13 @@ pub struct CaptureRequest {
     pub text: Body,
     pub evidence: SourceEvidence,
     pub new_offset: u64,
+    pub metadata: Vec<CaptureMetadata>,
+}
+pub struct CaptureMetadata {
+    pub record: super::transcript::Record,
+    pub vendor_turn: String,
+    pub turn: RecordId,
+    pub event: EventId,
 }
 /// Allocated before first submission and retained across an uncertain result.
 /// The store's natural identity is bound session/provider/vendor_turn, not these
@@ -91,6 +98,7 @@ pub struct CaptureThen {
     source: RecordId,
     vendor_turn: String,
     text_sha256: [u8; 32],
+    metadata: Vec<(String, [u8; 32])>,
 }
 /// The host releases this snapshot before awaiting the canonical writer. A
 /// continuation subsequently opens a fresh snapshot through Kernel::committed.
@@ -112,18 +120,38 @@ pub fn plan<R: Snapshot>(
     super::inputs::bounded("vendor turn", &input.vendor_turn, 512, false)?;
     if input.role == Role::System {
         let notice = super::transcript::Record::decode(input.text.as_str())?;
-        if notice.position.length == 0
-            || notice.position.offset < input.evidence.offset
-            || notice.position.offset.checked_add(notice.position.length) != Some(input.new_offset)
-            || !input
+        notice.validate_evidence(&input.evidence)?;
+        if !input
+            .vendor_turn
+            .starts_with(se_store::TRANSCRIPT_EVENT_PREFIX)
+        {
+            return Err(SeError::invalid(
+                "provider metadata",
+                "the native metadata identity",
+            ));
+        }
+    }
+    if input.metadata.len() > 32 {
+        return Err(SeError::invalid(
+            "capture metadata batch",
+            "at most 32 counted kinds",
+        ));
+    }
+    let mut metadata = Vec::new();
+    for item in input.metadata {
+        item.record.validate_evidence(&input.evidence)?;
+        super::inputs::bounded("metadata identity", &item.vendor_turn, 512, false)?;
+        if item.record.count.is_none()
+            || !item
                 .vendor_turn
                 .starts_with(se_store::TRANSCRIPT_EVENT_PREFIX)
         {
             return Err(SeError::invalid(
-                "provider metadata",
-                "an exact bounded source position and native metadata identity",
+                "capture metadata batch",
+                "counted native metadata",
             ));
         }
+        metadata.push((item.turn, item.event, item.vendor_turn, item.record.body()?));
     }
     if !matches!(
         input.role,
@@ -246,37 +274,59 @@ pub fn plan<R: Snapshot>(
         source: input.source,
         vendor_turn: input.vendor_turn.clone(),
         text_sha256: Sha256::digest(input.text.as_str().as_bytes()).into(),
+        metadata: metadata
+            .iter()
+            .map(|(_, _, vendor, text)| {
+                (
+                    vendor.clone(),
+                    Sha256::digest(text.as_str().as_bytes()).into(),
+                )
+            })
+            .collect(),
     };
     let old_offset = input.evidence.offset;
     let incarnation = input.evidence.incarnation.clone();
     let turn_header = header(facts.turn_event);
     let progress_header = header(facts.progress_event);
-    let events = vec![
-        NewEvent {
-            header: turn_header,
+    let mut events = vec![NewEvent {
+        header: turn_header,
+        body: EventBody::SessionTurn {
+            turn: facts.turn,
+            agent: agent.clone(),
+            session: session.clone(),
+            provider: input.provider,
+            vendor_ref: input.vendor_turn,
+            role: input.role,
+            text: InputText::Inline(input.text.into()),
+            evidence: input.evidence.clone(),
+        },
+    }];
+    for (turn, event, vendor_ref, text) in metadata {
+        events.push(NewEvent {
+            header: header(event),
             body: EventBody::SessionTurn {
-                turn: facts.turn,
-                agent,
-                session,
+                turn,
+                agent: agent.clone(),
+                session: session.clone(),
                 provider: input.provider,
-                vendor_ref: input.vendor_turn,
-                role: input.role,
-                text: InputText::Inline(input.text.into()),
-                evidence: input.evidence,
+                vendor_ref,
+                role: Role::System,
+                text: InputText::Inline(text.into()),
+                evidence: input.evidence.clone(),
             },
+        });
+    }
+    events.push(NewEvent {
+        header: progress_header,
+        body: EventBody::CaptureProgress {
+            source: input.source,
+            expected: Expected::Revision(input.expected),
+            incarnation,
+            old_offset,
+            new_offset: input.new_offset,
+            last_turn: facts.turn,
         },
-        NewEvent {
-            header: progress_header,
-            body: EventBody::CaptureProgress {
-                source: input.source,
-                expected: Expected::Revision(input.expected),
-                incarnation,
-                old_offset,
-                new_offset: input.new_offset,
-                last_turn: facts.turn,
-            },
-        },
-    ];
+    });
     Ok(OpStep::Commit {
         batch: AtomicBatch {
             expected_incarnation: cx.read.info().incarnation,
@@ -295,7 +345,7 @@ pub fn committed<R: Snapshot>(
     cx: &mut Cx<'_, R>,
 ) -> Result<HookResult> {
     if receipt.request_key.is_some()
-        || receipt.events.len() != 2
+        || receipt.events.len() != 2 + then.metadata.len()
         || !receipt.events.contains(&receipt.primary_event)
         || !matches!(
             se_store::WriterModeValue::kind(&receipt.writer),
@@ -304,7 +354,7 @@ pub fn committed<R: Snapshot>(
     {
         return Err(scope::unreadable(
             "capture receipt",
-            "expected the original two-member natural receipt from the host writer",
+            "expected the original capture batch natural receipt from the host writer",
         ));
     }
     let event = scope::require_present(
@@ -346,8 +396,7 @@ pub fn committed<R: Snapshot>(
     };
     let progress_id = receipt
         .events
-        .iter()
-        .find(|id| **id != receipt.primary_event)
+        .last()
         .ok_or_else(|| scope::unreadable("capture receipt", "missing cursor member"))?;
     let progress = scope::require_present(
         cx.read
@@ -365,6 +414,28 @@ pub fn committed<R: Snapshot>(
             "capture receipt",
             "cursor member does not advance the original captured turn",
         ));
+    }
+    for ((vendor, digest), id) in then
+        .metadata
+        .iter()
+        .zip(&receipt.events[1..receipt.events.len() - 1])
+    {
+        let event = scope::require_present(
+            cx.read.event(id.clone()).map_err(|e| store_error(&e))?,
+            "captured metadata",
+            scope::COMMITTED_READ_RECOVERY,
+        )?;
+        if event.header.scope != cx.admission.scope
+            || event.header.actor != cx.admission.actor
+            || event.header.session.as_ref() != Some(&then.session)
+            || !matches!(event.body, EventBody::SessionTurn {session, role: Role::System, vendor_ref, text: StoredText::Present(text), ..}
+                if session == then.session && vendor_ref == *vendor && <[u8;32]>::from(Sha256::digest(text.as_bytes())) == *digest)
+        {
+            return Err(scope::unreadable(
+                "capture receipt",
+                "counted metadata differs from its original batch",
+            ));
+        }
     }
     Ok(HookResult {
         stdout: String::new(),

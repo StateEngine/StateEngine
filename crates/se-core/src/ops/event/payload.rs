@@ -37,6 +37,12 @@ pub(super) fn public<R: Snapshot>(
         DecisionRejected { decision, reason, .. } => ("decision.rejected", json!({"decision_id":decision,"reason":text(reason)?})),
         DecisionRetracted { decision, reason, .. } => ("decision.retracted", json!({"decision_id":decision,"reason":text(reason)?})),
         DecisionSuperseded { prior, replacement, approval, .. } => ("decision.superseded", json!({"prior":prior,"replacement":replacement,"approval":approval})),
+        SessionTurn { session, role: se_store::Role::System, vendor_ref, text: StoredText::Present(body), evidence, .. }
+            if vendor_ref.starts_with(se_store::TRANSCRIPT_EVENT_PREFIX) => {
+                let record = crate::ops::transcript::Record::decode(body)?;
+                record.validate_evidence(evidence)?;
+                ("transcript.event", json!({"session_id":session,"metadata":record}))
+            }
         SessionTurn { session, provider, vendor_ref, role, text: body, evidence, .. } => {
             let source = match (event.header.door, provider, evidence.path.as_ref()) {
                 (se_store::Door::Hook, _, _) => "hook",

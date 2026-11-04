@@ -123,7 +123,7 @@ impl SqliteSnapshot {
             self.scope.admission.actor,
             query.agent,
             query.session,
-            (&query.kinds, &query.families),
+            (&query.kinds, &query.families, query.transcript),
             query.since.as_ref().map(StorePosition::sequence)
         );
         let (h, mut after) = self.window(&budget, &binding, false)?;
@@ -193,6 +193,11 @@ impl SqliteSnapshot {
                 rusqlite::types::Value::Integer(h as i64),
                 rusqlite::types::Value::Blob(a),
             ]);
+        }
+        match query.transcript {
+            TranscriptFilter::All => {},
+            TranscriptFilter::Chat => sql.push_str(" AND NOT EXISTS(SELECT 1 FROM turn_data t WHERE t.event_seq=events.seq AND t.role='system' AND t.vendor_ref LIKE 'se.notice.v1/%')"),
+            TranscriptFilter::Metadata => sql.push_str(" AND (kind<>'session.turn' OR EXISTS(SELECT 1 FROM turn_data t WHERE t.event_seq=events.seq AND t.role='system' AND t.vendor_ref LIKE 'se.notice.v1/%'))"),
         }
         if !query.kinds.is_empty() {
             if query.kinds.len() > 52 {

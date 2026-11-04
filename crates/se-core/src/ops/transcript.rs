@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use se_store::{EventBody, Snapshot, StoredEvent, StoredText};
 use se_types::{AgentId, Body, EventId, Read, Result, SeError, SessionId};
 use serde::{Deserialize, Serialize};
-#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Position {
     pub offset: u64,
@@ -17,6 +17,12 @@ pub struct Record {
     pub kind: String,
     pub subtype: Option<String>,
     pub position: Position,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_position: Option<Position>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_position: Option<Position>,
     pub kind_truncated: bool,
     pub subtype_truncated: bool,
 }
@@ -33,11 +39,47 @@ impl Record {
                 .is_some_and(|(a, b)| a.len() != b.len()),
             kind: k,
             subtype: sub,
+            count: None,
+            first_position: None,
+            last_position: None,
             position: Position {
                 offset: 0,
                 length: 0,
             },
         }
+    }
+    pub fn validate_evidence(&self, evidence: &se_store::SourceEvidence) -> Result<()> {
+        let end = evidence.offset.checked_add(evidence.length);
+        let bounded = |p: &Position| {
+            p.length > 0
+                && p.offset >= evidence.offset
+                && p.offset
+                    .checked_add(p.length)
+                    .zip(end)
+                    .is_some_and(|(a, b)| a <= b)
+        };
+        let valid = match (self.count, &self.first_position, &self.last_position) {
+            (None, None, None) => {
+                bounded(&self.position)
+                    && self.position.offset.checked_add(self.position.length) == end
+            }
+            (Some(count), Some(first), Some(last)) => {
+                count > 0
+                    && count <= evidence.length
+                    && bounded(first)
+                    && bounded(last)
+                    && first.offset <= last.offset
+                    && self.position == *last
+            }
+            _ => false,
+        };
+        if !valid {
+            return Err(scope::unreadable(
+                "transcript metadata",
+                "the recorded positions/count differ from native source evidence",
+            ));
+        }
+        Ok(())
     }
     pub fn is_compaction(&self) -> bool {
         self.kind == "compact_boundary"
@@ -115,20 +157,7 @@ fn event(value: StoredEvent) -> Result<TranscriptEvent> {
         ));
     }
     let record = Record::decode(text.as_str())?;
-    let end = record
-        .position
-        .offset
-        .checked_add(record.position.length)
-        .ok_or_else(|| SeError::invalid("transcript position", "a bounded native range"))?;
-    if record.position.length == 0
-        || record.position.offset < evidence.offset
-        || Some(end) != evidence.offset.checked_add(evidence.length)
-    {
-        return Err(scope::unreadable(
-            "transcript metadata",
-            "the recorded position differs from native source evidence",
-        ));
-    }
+    record.validate_evidence(&evidence)?;
     Ok(TranscriptEvent {
         event_id: value.header.event,
         session_id: session,

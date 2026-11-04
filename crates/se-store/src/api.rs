@@ -277,6 +277,13 @@ pub enum HistoryFamily {
     Import,
     Recovery,
 }
+#[derive(Clone, Copy, Debug, Default)]
+pub enum TranscriptFilter {
+    #[default]
+    All,
+    Chat,
+    Metadata,
+}
 #[derive(Clone, Debug)]
 pub struct HistoryQuery {
     pub agent: Option<AgentId>,
@@ -284,6 +291,7 @@ pub struct HistoryQuery {
     /// Empty means every authorized kind; codec rejects unknown exact names.
     pub kinds: Vec<EventKind>,
     pub families: Vec<HistoryFamily>,
+    pub transcript: TranscriptFilter,
     pub since: Option<StorePosition>,
 }
 #[derive(Clone, Debug)]
