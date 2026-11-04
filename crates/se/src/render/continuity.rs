@@ -2,6 +2,7 @@ use se_core::ops::continuity::ResumeOutput;
 use se_types::Read;
 use std::io::{self, Write};
 pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
+    writeln!(out, "Who am I?")?;
     writeln!(
         out,
         "{} in {} — {}{}",
@@ -17,6 +18,7 @@ pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(session) = &value.principal.session_id {
         writeln!(out, "Session: {session}")?;
     }
+    writeln!(out, "\nWhat was I doing?")?;
     match &value.working_state {
         Read::Present { value } => {
             writeln!(out, "Working state (revision {}):", value.value.revision)?;
@@ -31,6 +33,7 @@ pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
             writeln!(out, "Working state unreadable at {source}: {reason}")?
         }
     }
+    writeln!(out, "\nWhat's waiting?")?;
     for message in value.unread.items() {
         writeln!(
             out,
@@ -56,6 +59,13 @@ pub fn resume(value: &ResumeOutput, out: &mut impl Write) -> io::Result<()> {
         "Pending decisions in this authorized view: {}",
         value.decisions.pending
     )?;
+    writeln!(out, "\nWhat changed?")?;
+    if value.since.is_none() {
+        writeln!(
+            out,
+            "Recent context; use --since with the returned cursor for later changes."
+        )?;
+    }
     super::transcript::render(&value.transcript, out)?;
     for turn in &value.recent_turns {
         writeln!(

@@ -308,7 +308,7 @@ own diagnosis; init cannot overwrite them.
 One closed input type per operation is shared by CLI, MCP, IPC and linked calls;
 CLI flag names may select/rename those fields but cannot define different limits
 or defaults. General lists use limit 1–100, default 20; search 1–50, default 20;
-message previews default 400 characters; resume defaults 32 KiB and caps at 1 MiB.
+message previews default 400 characters; resume defaults 4 KiB and caps at 1 MiB.
 The host has one shared permit for resume requests with budgets above 32 KiB,
 acquired before allocating the larger packet and held through serialization and
 packet delivery/release, including cancellation. Admission uses the existing
@@ -376,7 +376,7 @@ foreground mode never takes that host over.
 | agent.launch | `se launch AGENT [--new] [--provider PROVIDER] [--model MODEL] [--task TEXT] [--detach] [-p P]` — creates the first conversation if none ever existed, otherwise resumes the saved conversation unless `--new`; window by default, `--detach` = headless | `Started main (claude), first conversation ready.` or `Resumed main (claude) in a new window — conversation 7f3a…, ready in 1.9 s. Stop: se stop main`; when not contained it prints the achieved process-group bound and actual reason. | `se.launch/v1` |
 | agent.stop | `se stop AGENT [--release] \| --all [-p P]` — `--release` is owner-human only, single-agent only, after a stop that could not be proved (StopUnproved) | `Stopped main (exit witnessed). Resume: se launch main`; release prints possible remaining members and `Ownership released without an exit witness; processes may remain.` | `se.stop/v1` (`receipt = seat-stop/v1`) |
 | agent.wake | `se wake AGENT [-p P]` | `Offered 2 unread messages to main (delivered to its session; not yet read).` | `se.wake/v1` |
-| continuity.resume | `se resume [--since CURSOR] [--budget BYTES] [--preview AGENT]` (`--budget` 1024–1048576, default 32768, max 1048576; `--preview` owner only) | sections: who you are, working state, unread, required reads, omissions, next cursor | `se.resume/v1` |
+| continuity.resume | `se resume [--since CURSOR] [--budget BYTES] [--preview AGENT]` (`--budget` 1024–1048576, default 4096, max 1048576; `--preview` owner only) | sections: who you are, working state, unread, required reads, omissions, next cursor | `se.resume/v1` |
 | working_state.get | `se working-state [--agent AGENT]` | text + `revision 12` or `no working state yet` | `se.working-state/v1` |
 | working_state.set | `se working-state set TEXT --expect REV [--agent AGENT]` | `Saved revision 13.` | `se.working-state-receipt/v1` |
 | history.search | `se search QUERY [--kind turn\|message\|decision]... [--since TIME] [--until TIME] [--agent AGENT] [--limit N] [--cursor C]` | hits: time, kind, who, snippet, `history --event` id | `se.search-page/v1` |
@@ -449,7 +449,7 @@ Session-bound: no tool takes an actor/authority override or project selector. Ex
 | --- | --- | --- | --- | --- |
 | `stateengine_whoami` | "Who you are in StateEngine: your project, agent identity, session and what you are allowed to do." | — | `Principal`: project{id,name}, agent{id,name}, session{id,source,generation}, grants[], binding | — |
 | `stateengine_status` | "Your project at a glance: runtime, your agent's state, unread messages, pending decisions and the suggested next step." | — | `Status` (session view) | `runtime-incompatible` |
-| `stateengine_resume` | "Restore your context after a restart or compaction: working state, unread mail, required reads and what was left out. Pass `since` from the last result to get only what changed." | `since?` cursor, `byte_budget?` int 1024–1048576 (32768) | `Resume`: principal, status ready/needs_read/integrity_blocked, working_state, unread[], required_reads[], omissions[], next_cursor, complete | `cursor-invalid`, `cursor-expired` |
+| `stateengine_resume` | "Restore your context after a restart or compaction: working state, unread mail, required reads and what was left out. Pass `since` from the last result to get only what changed." | `since?` cursor, `byte_budget?` int 1024–1048576 (4096) | `Resume`: principal, status ready/needs_read/integrity_blocked, working_state, unread[], required_reads[], omissions[], next_cursor, complete | `cursor-invalid`, `cursor-expired` |
 | `stateengine_working_state_set` | "Replace your working-state note (what you are doing, what is next). Send the revision you last read as `expect`, or \"absent\" for the first write." | `text` ≤16 KiB, `expect` int\|"absent", `idempotency_key` 1–128 | `WorkingStateReceipt`: revision, committed\|replayed, current_revision; conflicts use se.error/v1 | `revision-conflict` |
 | `stateengine_search` | "Search your project's history (turns, messages, decisions) you are allowed to see. Results are pointers; read an event with stateengine_event_read before relying on it." | `query` 1–512, `kinds?` [turn,message,decision], `since?`/`until?` RFC 3339, `limit?` 1–50 (20), `char_budget?` 500–32000 (8000), `cursor?` | `Page<SearchHit>`: event_id, kind, at, who, snippet; window | `cursor-invalid` |
 | `stateengine_event_read` | "Read one committed event back from the store by id, with its provenance." | `event_id` | `Read<HistoryEvent>` | `target-unknown`, `source-unreadable` |
@@ -813,7 +813,7 @@ constant; it is not configurable. Hash inputs/owner identity stay private.
 
 Autostart on custody demand, default handback on SE Code exit, launch readiness
 60 s, list default 20/max 100, search max 50, preview default 400, resume default
-32 KiB/max 1 MiB, two automatic backups, 4 MiB log rotation with three files, and
+4 KiB/max 1 MiB, two automatic backups, 4 MiB log rotation with three files, and
 the Atlas parse budget are constants with one owning module. No config knobs
 control those fixed policies. Existing per-call limit/budget flags remain bounded
 by the shared input DTO. SE_LOG and CLI/no-color environment choices remain the

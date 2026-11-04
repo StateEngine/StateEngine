@@ -2,12 +2,17 @@ use crate::ops::{MessageRow, WorkingStateValue, inputs::Validate};
 use schemars::JsonSchema;
 use se_types::{AgentId, Cursor, Named, Page, ProjectId, Read, Result, SeError, SessionId, Window};
 use serde::{Deserialize, Serialize};
-pub const DEFAULT_BYTES: u32 = 32768;
+pub const DEFAULT_BYTES: u32 = 4096;
 pub fn default_limit() -> u16 {
     20
 }
 pub fn default_bytes() -> u32 {
     DEFAULT_BYTES
+}
+// Linked session context includes the provider envelope and assembled input.
+// Preserve that separate wire contract; compact CLI/MCP resume uses 4 KiB.
+pub fn default_context_bytes() -> u32 {
+    32768
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -33,7 +38,7 @@ pub struct SessionContextRequest {
     pub limit: u16,
     #[serde(default)]
     pub since: Option<Cursor>,
-    #[serde(default = "default_bytes")]
+    #[serde(default = "default_context_bytes")]
     pub byte_budget: u32,
 }
 fn bytes(value: u32) -> Result<()> {

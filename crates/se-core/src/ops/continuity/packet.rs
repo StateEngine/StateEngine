@@ -231,6 +231,31 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             );
             continue;
         }
+        if result.unread.items().len() > 1 {
+            let count = (result.unread.items().len() / 2).max(1) as u16;
+            let smaller = read::unread(identity, count, input.byte_budget, cx)?;
+            result.unread = smaller.page;
+            result.required_reads.retain(|v| v.kind != "message");
+            result
+                .required_reads
+                .extend(result.unread.items().iter().map(|m| RequiredRead {
+                    kind: "message".into(),
+                    id: m.id.to_string(),
+                    why: "Unread message addressed to you; listing does not acknowledge it.".into(),
+                }));
+            result.omissions.retain(|v| v.section != "unread");
+            result.omissions.push(read::omission(
+                "unread",
+                Some(
+                    data.unread_total
+                        .saturating_sub(result.unread.items().len() as u64),
+                ),
+                "packet byte budget",
+                read::mail_command(identity),
+                "stateengine_msg_list",
+            ));
+            continue;
+        }
         if let Read::Present { value } = &mut result.working_state
             && !value.value.text.is_empty()
         {
@@ -260,31 +285,6 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                     "stateengine_working_state_get",
                 );
             }
-            continue;
-        }
-        if result.unread.items().len() > 1 {
-            let count = (result.unread.items().len() / 2).max(1) as u16;
-            let smaller = read::unread(identity, count, cx)?;
-            result.unread = smaller.page;
-            result.required_reads.retain(|v| v.kind != "message");
-            result
-                .required_reads
-                .extend(result.unread.items().iter().map(|m| RequiredRead {
-                    kind: "message".into(),
-                    id: m.id.to_string(),
-                    why: "Unread message addressed to you; listing does not acknowledge it.".into(),
-                }));
-            result.omissions.retain(|v| v.section != "unread");
-            result.omissions.push(read::omission(
-                "unread",
-                Some(
-                    data.unread_total
-                        .saturating_sub(result.unread.items().len() as u64),
-                ),
-                "packet byte budget",
-                read::mail_command(identity),
-                "stateengine_msg_list",
-            ));
             continue;
         }
         return Err(SeError::too_large(
