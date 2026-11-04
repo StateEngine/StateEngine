@@ -46,6 +46,8 @@ impl RuntimeLease for HostLease {
     }
 }
 pub struct HostedRuntime {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    pub(super) memory_reclaim: Option<super::memory::MemoryReclaim>,
     #[cfg(unix)]
     pub(crate) socket_paths: se_proc::native_ipc::UnixSocketPaths,
     pub(crate) execution: ExecutionContext,
@@ -335,6 +337,9 @@ fn prepare(
         local_stop: None,
         auto_start: false,
         activity: None,
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        memory_reclaim: matches!(options.kind, crate::HostKind::Standalone)
+            .then(super::memory::MemoryReclaim::default),
     })
 }
 pub(crate) fn owner_budget() -> Result<se_store::ReadBudget> {

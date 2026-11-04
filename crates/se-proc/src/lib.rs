@@ -10,7 +10,11 @@
 mod windows_directory;
 #[cfg(windows)]
 pub use windows_directory::windows_directory;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+mod allocator;
 mod canonical_path;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+pub use allocator::reclaim_unused_allocator_pages;
 mod checkpoint;
 pub use canonical_path::canonicalize_path;
 pub use checkpoint::{

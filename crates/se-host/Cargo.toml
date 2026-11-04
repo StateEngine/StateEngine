@@ -43,4 +43,4 @@ path = "tests/w3_realhost_independent.rs"
 required-features = ["secode"]
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }

@@ -99,6 +99,8 @@ pub struct HandoverState {
     pub unresolved: Vec<se_types::ErrorBody>,
 }
 
+#[cfg(all(feature = "listener", target_os = "linux", target_env = "gnu"))]
+mod memory;
 #[cfg(feature = "listener")]
 mod pool;
 #[cfg(feature = "listener")]
