@@ -1,5 +1,134 @@
 use super::*;
 impl crate::mail::MailSnapshot for SqliteSnapshot {
+    fn mail_resolution(
+        &mut self,
+        message: se_types::MessageId,
+        recipient: AgentId,
+    ) -> StoreResult<Read<StoredEvent>> {
+        let record = match self.message(message)? {
+            Read::Present { value } => value,
+            Read::Absent { checked } => return Ok(Read::Absent { checked }),
+            Read::Unknown { what } => return Ok(Read::Unknown { what }),
+            Read::Unreadable {
+                source,
+                reason,
+                error,
+            } => {
+                return Ok(Read::Unreadable {
+                    source,
+                    reason,
+                    error,
+                });
+            }
+        };
+        if record.recipient != Actor::Agent(recipient.clone()) {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "mail resolution belongs to another recipient",
+            ));
+        }
+        let Some(position) = record.read.or(record.dismissed) else {
+            return Ok(self.absent("recipient has not read or dismissed this message"));
+        };
+        let event = load_event(&self.db, position.sequence() as i64, &self.info)
+            .map_err(|error| context(error, &self.path, StoreIoStage::ReadSnapshot))?;
+        self.mail_disposition(event.header.event, recipient)
+    }
+    fn mail_input(
+        &mut self,
+        recipient: AgentId,
+        session: SessionId,
+        after: StorePosition,
+        text_sha256: [u8; 32],
+        deadline: std::time::Duration,
+    ) -> StoreResult<Read<StoredEvent>> {
+        if !matches!((&self.scope.admission.actor, &self.scope.visibility),
+            (Actor::Agent(actor), Visibility::SelfOnly(visible)) if *actor == recipient && *visible == recipient)
+            || !after.belongs(&self.info)
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "mail input requires its recipient and checked store boundary",
+            ));
+        }
+        let project = self.project_bytes()?;
+        let agent = self.agent_bytes(&recipient)?;
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let session_key = key(&self.db, "session", session.as_str(), &scope, false)?;
+        let until = Instant::now() + deadline.min(std::time::Duration::from_secs(1));
+        self.db
+            .progress_handler(1000, Some(move || Instant::now() >= until))
+            .map_err(|error| self.read_sql(error))?;
+        // Apply the hash predicate before LIMIT. A later unrelated turn cannot
+        // hide the accepted notice; payload bytes are independently checked by record().
+        let result = (|| -> StoreResult<(Option<i64>, bool)> {
+            let seq = self.db.query_row(
+                "SELECT t.event_seq FROM turn_data t INDEXED BY turn_data_agent_seq JOIN payloads p ON p.payload_id=t.text_payload AND p.event_seq=t.event_seq AND p.field='body' WHERE t.project_id=? AND t.agent_id=? AND t.session_id=? AND t.role='user' AND t.event_seq>? AND p.sha256=? ORDER BY t.event_seq LIMIT 1",
+                rusqlite::params![project,agent,session_key,after.sequence() as i64,text_sha256.as_slice()], |row|row.get(0))
+                .optional().map_err(|error|self.read_sql(error))?;
+            let erased = if seq.is_none() {
+                self.db.query_row("SELECT EXISTS(SELECT 1 FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND session_id=? AND role='user' AND event_seq>? AND text_payload IS NULL)",
+                    rusqlite::params![project,agent,session_key,after.sequence() as i64], |row|row.get::<_,bool>(0)).map_err(|error|self.read_sql(error))?
+            } else {
+                false
+            };
+            Ok((seq, erased))
+        })();
+        self.db
+            .progress_handler(0, None::<fn() -> bool>)
+            .map_err(|error| self.read_sql(error))?;
+        let (seq, erased) = result?;
+        if Instant::now() >= until {
+            return Err(fail(
+                StoreErrorCode::ReadIncomplete,
+                "mail input correlation scan exceeded its finite deadline; preserve the notice and retry its original interval",
+            ));
+        }
+        if erased {
+            return Err(fail(
+                StoreErrorCode::Unreadable,
+                "unmatched recipient input was erased inside the notice interval; absence of the expected input cannot be proved",
+            ));
+        }
+        let Some(seq) = seq else {
+            return Ok(self.absent("complete checked recipient/session input interval contains no matching notice hash"));
+        };
+        let event = self.record(seq)?;
+        if !matches!(&event.body, EventBody::SessionTurn { agent, session: actual, role: Role::User, .. } if *agent == recipient && *actual == session)
+        {
+            return Err(fail(
+                StoreErrorCode::ProjectionInconsistent,
+                "mail input index differs from its captured event",
+            ));
+        }
+        Ok(Read::Present { value: event })
+    }
+    fn mail_pending(
+        &mut self,
+        recipient: AgentId,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<MessageRecord>> {
+        if !matches!((&self.scope.admission.actor, &self.scope.visibility),
+            (Actor::Agent(actor), Visibility::SelfOnly(visible)) if *actor == recipient && *visible == recipient)
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "pending mail requires the verified recipient scope",
+            ));
+        }
+        self.read_messages_with_delivery(
+            MessageQuery {
+                recipient: Some(Actor::Agent(recipient)),
+                sender: None,
+                kind: None,
+                unread_only: true,
+                full_body: false,
+            },
+            budget,
+            true,
+        )
+    }
+
     fn mail_disposition(
         &mut self,
         event: EventId,

@@ -37,6 +37,8 @@ impl LaunchCoordinator {
                 {
                     match binding.completion.take() {
                         Ok(true) => {
+                            state.mail.idle = true;
+                            job.mail_pending.store(true, Ordering::Release);
                             let result = match deadline.stage(Duration::from_secs(10)) {
                                 Ok(bound) => self.capture_progress(&mut state, &bound).await,
                                 Err(error) => Err(error),
@@ -66,7 +68,18 @@ impl LaunchCoordinator {
                         }
                         return;
                     }
-                    Ok(_) => state.wake.clone(),
+                    Ok(_) => {
+                        if job.mail_pending.swap(false, Ordering::AcqRel) {
+                            let result = match deadline.stage(Duration::from_secs(10)) {
+                                Ok(bound) => self.deliver_mail(&mut state, &bound).await,
+                                Err(error) => Err(error),
+                            };
+                            if let Err(error) = result {
+                                super::mail::diagnostic::report(&state, &error);
+                            }
+                        }
+                        state.wake.clone()
+                    }
                     Err(error) => {
                         state.cleanup_failure = Some(error.body);
                         return;

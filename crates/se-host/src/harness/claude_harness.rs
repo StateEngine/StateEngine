@@ -7,6 +7,7 @@
 use super::claude::{self, ClaudeLaunch, Readiness};
 mod completion;
 mod io;
+mod mail;
 use crate::{
     BindingWitness, CallContext, ConfigPlan, Harness, HarnessAttach, HarnessBinding, HarnessKind,
     HarnessRequest, HostFuture, LaunchOutcome, ProbeRequest, ProviderInterrupt, ProviderInvocation,
