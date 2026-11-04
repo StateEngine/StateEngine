@@ -60,6 +60,76 @@ fn item(
 }
 
 #[test]
+fn fresh_import_can_prepare_its_codex_session_and_capture_in_one_batch() -> Check {
+    let f = Fixture::new()?;
+    let (mut d, lease) = f.direct()?;
+    let session = session()?;
+    let src = record()?;
+    let mut setup = prepared(&f, &session, &f.a);
+    if let EventBody::SessionPrepared {
+        provider,
+        native_ref,
+        ..
+    } = &mut setup
+    {
+        *provider = Provider::Codex;
+        *native_ref = "imported-thread".into();
+    }
+    let mut binding = source(src, &session, b"first", Expected::Absent);
+    if let EventBody::CaptureSource { native_ref, .. } = &mut binding {
+        *native_ref = "imported-thread".into();
+    }
+    let mut bodies = vec![setup, activated(&session)?, binding];
+    bodies.extend(
+        item(&f, &session, src, 0, "imported-item")?
+            .events
+            .into_iter()
+            .map(|event| event.body),
+    );
+    let mut batch = f.batch(f.owner_project(), Some(request("first-import")?), bodies)?;
+    batch.admission.session = Some(session.clone());
+    for event in &mut batch.events {
+        event.header.session = Some(session.clone());
+    }
+    let receipt = d.append(batch, &*lease)?;
+    let mut read = d.snapshot(f.self_scope(&f.a))?;
+    let rows = read.turns(f.a.clone(), budget(10, 100_000, None)?)?;
+    assert_eq!(rows.items().len(), 1);
+    assert!(receipt.events.contains(&rows.items()[0].header.event));
+    assert!(matches!(
+        present(read.capture_source(src)?)?.current.body,
+        EventBody::CaptureProgress { new_offset: 10, .. }
+    ));
+    Ok(())
+}
+
+#[test]
+fn an_existing_session_with_unreadable_data_still_refuses_without_capture() -> Check {
+    let f = Fixture::new()?;
+    let (mut d, lease) = f.direct()?;
+    let session = session()?;
+    let src = record()?;
+    bind(&f, &mut d, &lease, &session, src, "damaged-thread")?;
+    let head = d.info()?.head;
+    let external = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    external.execute(
+        "ALTER TABLE session_data RENAME TO retained_session_data",
+        [],
+    )?;
+    let error = d
+        .append(item(&f, &session, src, 0, "new-item")?, &*lease)
+        .err()
+        .ok_or("damaged session was accepted as a fresh session")?;
+    assert_eq!(error.code, StoreErrorCode::Unreadable);
+    assert_eq!(
+        d.info()?.head,
+        head,
+        "unreadable session advanced the floor"
+    );
+    Ok(())
+}
+
+#[test]
 fn resume_reuses_six_native_events_and_timestamps_but_appends_new_items() -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;

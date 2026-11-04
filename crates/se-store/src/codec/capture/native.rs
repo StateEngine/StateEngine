@@ -26,6 +26,19 @@ pub(crate) fn find(
     if backend != Provider::Codex {
         return Ok(None);
     }
+    // Import canonicalizes before applying its same-batch SessionPrepared.
+    // Only an absent session has no retained match; an existing broken head
+    // still takes the ordinary strict reader below and must refuse.
+    let exists: bool = c
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE project_id=? AND session_id=?)",
+            rusqlite::params![project, id],
+            |row| row.get(0),
+        )
+        .map_err(sql)?;
+    if !exists {
+        return Ok(None);
+    }
     let head = crate::codec::session::head(c, &project, &id)?;
     if head.provider != provider(backend) || head.consent != "capture" {
         return Ok(None);
