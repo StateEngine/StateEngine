@@ -8,6 +8,7 @@ use std::{
     path::Path,
     process::{Command, Output},
     sync::Arc,
+    time::{Duration, Instant},
 };
 #[path = "../../se-store/tests/support/store_fixture.rs"]
 mod fixture;
@@ -557,6 +558,371 @@ fn renamed_commands_keep_supported_replacements_without_opening_state() -> Check
         assert!(!home.exists());
     }
     Ok(())
+}
+
+/// Protects: the plain project row of status --all labels the recipient scope of its
+/// unread count, and an agent's unread mail appears on the agent's own row, under both
+/// the runtime-down/direct and the runtime-up/hosted read.
+#[cfg(unix)]
+#[test]
+fn plain_status_labels_the_owner_unread_scope() -> Check {
+    use std::os::unix::fs::PermissionsExt;
+    let (f, mut store, lease) = setup()?;
+    // Both saved agents need their saved profile for the status agent rows.
+    for agent in [&f.a, &f.b] {
+        store.append(
+            f.batch(
+                f.owner_project(),
+                None,
+                vec![EventBody::ProfileSaved {
+                    agent: agent.clone(),
+                    profile: Profile {
+                        provider: Provider::Codex,
+                        model: None,
+                        permission: PermissionProfile::WorkspaceWrite,
+                        named_profile: "default".into(),
+                        effort: None,
+                    },
+                    expected: Expected::Absent,
+                }],
+            )?,
+            &*lease,
+        )?;
+    }
+    // One unread message addressed to the saved agent; zero to the owner.
+    send_to(
+        &f,
+        &mut store,
+        &lease,
+        Actor::Human(f.owner.clone()),
+        Actor::Agent(f.a.clone()),
+        "note",
+        "agent mail",
+    )?;
+    let home = &f.options.state_directory;
+    // The fixture store makes this home a present installation, so the installer's
+    // create-once protected files must already be in place for init and up.
+    let machine = format!(
+        "{{\"schema\":\"stateengine-machine/v1\",\"machine_id\":\"{}\"}}",
+        uuid::Uuid::new_v4()
+    );
+    let machine_path = home.join("machine.json");
+    std::fs::write(&machine_path, machine)?;
+    std::fs::set_permissions(&machine_path, std::fs::Permissions::from_mode(0o600))?;
+    let credential = se_proc::random_secret()?;
+    let exposed = credential.expose();
+    let credential_bytes: [u8; 32] = exposed
+        .get(..32)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or("native entropy short")?;
+    let credential_path = home.join("credential");
+    std::fs::write(&credential_path, credential_bytes)?;
+    std::fs::set_permissions(&credential_path, std::fs::Permissions::from_mode(0o600))?;
+    assert_plain_status_labels(home)?;
+    // Release the fixture's shared lease so the independent `se init` can
+    // acquire the home lease; the fixture writer has no further appends.
+    store.close()?;
+    drop(lease);
+    // Repeat the identical reads while the runtime is up: the host keeps its writer
+    // custody and status takes its short shared read.
+    let repository = f.home.join("repository");
+    std::fs::create_dir(&repository)?;
+    let mut init = Command::new(env!("CARGO_BIN_EXE_se"));
+    clean(&mut init);
+    let init = init
+        .arg("--home")
+        .arg(home)
+        .arg("init")
+        .arg("--repo")
+        .arg(&repository)
+        .output()?;
+    assert!(
+        init.status.success(),
+        "se init refused: {} {}",
+        String::from_utf8_lossy(&init.stdout),
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let image = f.home.join("status-se");
+    std::fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
+    let host = StatusHost::start(&image, home)?;
+    assert_plain_status_labels(home)?;
+    host.stop()?;
+    Ok(())
+}
+
+fn assert_plain_status_labels(home: &Path) -> Check {
+    let mut status = Command::new(env!("CARGO_BIN_EXE_se"));
+    clean(&mut status);
+    let status = status
+        .arg("--home")
+        .arg(home)
+        .arg("--project")
+        .arg("Project")
+        .arg("status")
+        .output()?;
+    let text = String::from_utf8_lossy(&status.stdout).into_owned();
+    assert!(
+        status.status.success(),
+        "plain status refused: {text} {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+    assert!(
+        text.lines()
+            .any(|line| line.contains("Alpha") && line.contains("unread 1")),
+        "the agent's unread mail is missing from the plain project status:\n{text}"
+    );
+    assert!(
+        text.contains("Owner unread messages: 0"),
+        "the owner's own unread count changed: {text}"
+    );
+    let mut all = Command::new(env!("CARGO_BIN_EXE_se"));
+    clean(&mut all);
+    let all = all
+        .arg("--home")
+        .arg(home)
+        .arg("--project")
+        .arg("Project")
+        .arg("status")
+        .arg("--all")
+        .output()?;
+    let text = String::from_utf8_lossy(&all.stdout).into_owned();
+    assert!(
+        all.status.success(),
+        "plain status --all refused: {text} {}",
+        String::from_utf8_lossy(&all.stderr)
+    );
+    let project_line = text
+        .lines()
+        .find(|line| line.starts_with("  Project:"))
+        .ok_or("the Project row is missing from status --all")?;
+    assert!(
+        project_line.contains("0 unread for owner"),
+        "the project row does not name the owner scope: {project_line}"
+    );
+    Ok(())
+}
+
+fn send_to(
+    f: &Fixture,
+    store: &mut SqliteDirect,
+    lease: &Lease,
+    sender: Actor,
+    recipient: Actor,
+    kind: &str,
+    text: &str,
+) -> Result<EventId, Box<dyn std::error::Error>> {
+    Ok(store
+        .append(
+            f.batch(
+                f.admission(Scope::Project(f.project.clone()), sender),
+                None,
+                vec![EventBody::MessageSent {
+                    message: message()?,
+                    recipient,
+                    kind: kind.into(),
+                    body: InputText::Inline(text.into()),
+                    refs: vec![],
+                    reply_to: None,
+                }],
+            )?,
+            lease,
+        )?
+        .primary_event)
+}
+
+/// Holds the exact observed native instance; PID reuse never proves its exit.
+#[cfg(unix)]
+struct StatusHost {
+    endpoint: se_host::EndpointRecord,
+    key: se_types::Secret,
+    identity: se_proc::ProcessIdentity,
+}
+#[cfg(unix)]
+impl StatusHost {
+    fn start(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut up = Command::new(image);
+        clean(&mut up);
+        let up = up
+            .arg("--json")
+            .arg("--home")
+            .arg(home)
+            .arg("up")
+            .output()?;
+        assert!(
+            up.status.success(),
+            "se up refused: {} {}",
+            String::from_utf8_lossy(&up.stdout),
+            String::from_utf8_lossy(&up.stderr)
+        );
+        let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
+            home.join("endpoint.json"),
+        )?)?;
+        let expected = endpoint.epoch.owner.fields();
+        let observed = se_proc::NativeProcessRuntime::read_process_until(
+            expected.machine.clone(),
+            se_proc::ProcessId(expected.pid.get()),
+            Instant::now() + Duration::from_secs(10),
+        )
+        .map_err(|error| format!("outside native host observation during start: {error:?}"))?;
+        let se_proc::ProcessRead::Present(observed) = observed else {
+            return Err(format!("fixture host is not live: {observed:?}").into());
+        };
+        assert_eq!(
+            std::fs::canonicalize(&observed.identity.image)?,
+            std::fs::canonicalize(image)?,
+            "published host is not this fixture's copied image"
+        );
+        Ok(Self {
+            endpoint,
+            key: se_types::Secret::new(std::fs::read(home.join("credential"))?)?,
+            identity: observed.identity,
+        })
+    }
+    fn live_until(
+        &self,
+        deadline: Instant,
+        phase: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        match se_proc::NativeProcessRuntime::read_process_until(
+            self.identity.machine.clone(),
+            self.identity.pid,
+            deadline,
+        ) {
+            Ok(read) => self.classify(read, phase),
+            Err(error) if Self::exit_race(&error) => self.settle_exit_race(error),
+            Err(error) => {
+                Err(format!("outside native host observation during {phase}: {error:?}").into())
+            }
+        }
+    }
+
+    /// The kernel can drop /proc/PID/exe while the exiting instance's state
+    /// has not reached zombie yet, and that window can outlast one re-read.
+    /// Poll the bounded observation until it settles: absence or our exact
+    /// zombie proves the exit, a live exact instance means the refusal was
+    /// transient, and anything else keeps the original error.
+    fn settle_exit_race(
+        &self,
+        original: se_proc::ProcError,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match se_proc::NativeProcessRuntime::read_process_until(
+                self.identity.machine.clone(),
+                self.identity.pid,
+                Instant::now() + Duration::from_millis(100),
+            ) {
+                Ok(read) => return self.classify(read, "exit-race confirmation"),
+                Err(again) if Self::exit_race(&again) => {
+                    if Instant::now() >= deadline {
+                        return Err(format!(
+                            "exit-race confirmation unsettled: original {original:?}, last {again:?}"
+                        )
+                        .into());
+                    }
+                    std::thread::park_timeout(Duration::from_millis(10));
+                }
+                Err(again) => {
+                    return Err(format!(
+                        "exit-race confirmation failed: original {original:?}, confirmation {again:?}"
+                    )
+                    .into());
+                }
+            }
+        }
+    }
+
+    /// The exact read_process signature of that exit race: the executable read
+    /// failed with a not-found native code while a same-born instance still
+    /// existed. Classified through std so the test needs no native dependency.
+    fn exit_race(error: &se_proc::ProcError) -> bool {
+        let Some(native) = error.native.as_ref() else {
+            return false;
+        };
+        error.code == se_proc::ProcErrorCode::IdentityUnreadable
+            && native.api == "read proc executable"
+            && native.code.is_some_and(|code| {
+                let Ok(code) = i32::try_from(code) else {
+                    return false;
+                };
+                std::io::Error::from_raw_os_error(code).kind() == std::io::ErrorKind::NotFound
+            })
+    }
+
+    fn classify(
+        &self,
+        read: se_proc::ProcessRead,
+        phase: &str,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        match read {
+            se_proc::ProcessRead::Present(observed) if observed.identity == self.identity => {
+                Ok(!matches!(
+                    observed.state,
+                    se_proc::NativeState::Exited | se_proc::NativeState::ExitedAwaitingReap
+                ))
+            }
+            se_proc::ProcessRead::Absent { .. } => Ok(false),
+            se_proc::ProcessRead::ExitedRecord {
+                pid, boot, start, ..
+            } if pid == self.identity.pid
+                && boot == self.identity.boot
+                && start == self.identity.start =>
+            {
+                Ok(false)
+            }
+            other => Err(format!(
+                "host identity changed during {phase}; refusing to act on another instance: {other:?}"
+            )
+            .into()),
+        }
+    }
+    fn live(&self) -> Result<bool, Box<dyn std::error::Error>> {
+        self.live_until(Instant::now() + Duration::from_secs(10), "live")
+    }
+    fn stop(&self) -> Check {
+        if !self
+            .live()
+            .map_err(|error| format!("stop preflight: {error}"))?
+        {
+            return Ok(());
+        }
+        let until = se_types::UnixMicros::new(
+            (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_micros()
+                + 5_000_000) as u64,
+        )?;
+        se_host::client::BlockingIpcClient::stop(
+            &self.endpoint,
+            &self.key,
+            se_types::IdempotencyKey::new("plain-status-fixture-cleanup")?,
+            until,
+            &se_host::client::ClientOptions {
+                expected_generation: Some(self.endpoint.generation),
+                timeout: Duration::from_secs(5),
+                cancelled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            },
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while self.live_until(deadline, "stop exit")? {
+            if Instant::now() >= deadline {
+                return Err("exact fixture host did not exit after graceful stop".into());
+            }
+            std::thread::park_timeout(Duration::from_millis(10));
+        }
+        Ok(())
+    }
+}
+#[cfg(unix)]
+impl Drop for StatusHost {
+    fn drop(&mut self) {
+        if let Err(error) = self.stop() {
+            eprintln!(
+                "retaining exact runtime fixture host {}: {error}",
+                self.identity.pid.0
+            );
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
