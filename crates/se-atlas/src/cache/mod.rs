@@ -19,6 +19,10 @@ pub trait CacheFiles {
     fn pin_database(&self, epoch: &CacheEpoch) -> AtlasResult<Option<DatabasePin>>;
     /// Exclusively reserve a protected empty regular database, never replace one.
     fn reserve_database(&self, epoch: &CacheEpoch) -> AtlasResult<DatabasePin>;
+    /// After a failed create and after SQLite closes: remove only this reserved,
+    /// unpublished epoch and its owned sidecars, by retained identity. Refuse a
+    /// current/published epoch or replacement. Witness absence; preserve unknowns.
+    fn discard_unpublished(&self, pin: &DatabasePin) -> AtlasResult<()>;
     fn validate_database(&self, pin: &DatabasePin) -> AtlasResult<()>;
     fn wal_bytes(&self, pin: &DatabasePin) -> AtlasResult<u64>;
     /// Global/project usage includes all DB/WAL/SHM/staging/retired files. This

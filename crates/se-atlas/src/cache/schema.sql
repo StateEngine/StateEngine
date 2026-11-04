@@ -136,3 +136,20 @@ CREATE INDEX changes_generation ON changes(generation);
 CREATE INDEX mentions_source ON mentions(source_kind,source_id);
 
 CREATE INDEX touches_source ON touches(source_record);
+
+-- Virtual tables do not participate in FK cascades. The bundled FTS5 marks
+-- these tables innocuous, so these triggers also run with trusted_schema=OFF.
+CREATE TRIGGER symbols_search_delete AFTER DELETE ON symbols BEGIN
+ DELETE FROM symbol_fts WHERE rowid=old.id;
+END;
+CREATE TRIGGER records_search_delete AFTER DELETE ON records BEGIN
+ DELETE FROM record_fts WHERE rowid=old.id;
+ DELETE FROM record_text_fts WHERE rowid=old.id;
+ DELETE FROM mentions WHERE source_kind='record' AND source_id=old.id;
+ DELETE FROM mentions WHERE target_kind='record' AND target_key=CAST(old.record_id AS BLOB);
+END;
+CREATE TRIGGER commits_links_delete AFTER DELETE ON commits BEGIN
+ DELETE FROM mentions WHERE source_kind='commit' AND source_id=old.id;
+ DELETE FROM touches WHERE target_kind='commit' AND target_key=old.oid;
+ DELETE FROM activity WHERE target_kind='commit' AND target_key=old.oid;
+END;

@@ -9,6 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 static SLOTS: AtomicU8 = AtomicU8::new(0);
+const READER_SLOT: u8 = 1;
+const WRITER_SLOT: u8 = 2;
+const QUERY_ARENA_SLOT: u8 = 4;
 const PAGE_BYTES: u64 = 4096;
 const WAL_STOP: u64 = 8_000_000;
 const STATEMENT_BYTES: usize = 16_384;
@@ -47,8 +50,8 @@ struct Slot(u8);
 impl Slot {
     fn take(role: ConnectionRole) -> AtlasResult<Self> {
         let bit = match role {
-            ConnectionRole::HostReader => 1,
-            ConnectionRole::HostWriter => 2,
+            ConnectionRole::HostReader => READER_SLOT,
+            ConnectionRole::HostWriter => WRITER_SLOT,
             _ => 0,
         };
         if bit != 0 && SLOTS.fetch_or(bit, Ordering::AcqRel) & bit != 0 {
@@ -84,7 +87,13 @@ impl<'a> CacheConnection<'a> {
         let slot = Slot::take(role)?;
         files.validate_database(&pin)?;
         let db = open(&pin, role, deadline)?;
-        finite(&db, deadline, |_| schema::validate(&db, &id))?;
+        finite(&db, deadline, |_| {
+            schema::validate(&db, &id)?;
+            if role.writable() {
+                schema::validate_integrity(&db)?;
+            }
+            Ok(())
+        })?;
         configure(&db, role, profile)?;
         files.validate_database(&pin)?;
         Ok(Some(Self {
@@ -111,28 +120,42 @@ impl<'a> CacheConnection<'a> {
         let slot = Slot::take(role)?;
         let _growth = files.reserve_growth(1_000_000)?;
         let pin = files.reserve_database(&seed.identity.epoch)?;
-        files.validate_database(&pin)?;
-        if pin.file.metadata().map_err(cache_error)?.len() != 0 {
-            return Err(cache_error("new epoch reservation is not empty"));
-        }
-        let db = open(&pin, role, deadline)?;
-        db.execute_batch("PRAGMA page_size=4096")
-            .map_err(cache_error)?;
-        configure(&db, role, profile)?;
-        finite(&db, deadline, |_| {
-            db.execute_batch("BEGIN EXCLUSIVE").map_err(cache_error)?;
-            let result = schema::initialize(&db, seed);
-            if result.is_err() {
-                let rollback = db.execute_batch("ROLLBACK");
-                rollback.map_err(cache_error)?;
-                return result;
+        let initialized = (|| {
+            files.validate_database(&pin)?;
+            if pin.file.metadata().map_err(cache_error)?.len() != 0 {
+                return Err(cache_error("new epoch reservation is not empty"));
             }
-            db.execute_batch("COMMIT").map_err(cache_error)?;
-            schema::validate(&db, &seed.identity)
-        })?;
-        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
-            .map_err(cache_error)?;
-        files.validate_database(&pin)?;
+            let db = open(&pin, role, deadline)?;
+            db.execute_batch("PRAGMA page_size=4096")
+                .map_err(cache_error)?;
+            configure(&db, role, profile)?;
+            finite(&db, deadline, |_| {
+                db.execute_batch("BEGIN EXCLUSIVE").map_err(cache_error)?;
+                let result = schema::initialize(&db, seed);
+                if let Err(original) = result {
+                    return match db.execute_batch("ROLLBACK") {
+                        Ok(()) => Err(original),
+                        Err(rollback) => Err(original.with_cause(rollback)),
+                    };
+                }
+                db.execute_batch("COMMIT").map_err(cache_error)?;
+                schema::validate(&db, &seed.identity)?;
+                schema::validate_integrity(&db)
+            })?;
+            db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .map_err(cache_error)?;
+            files.validate_database(&pin)?;
+            Ok(db)
+        })();
+        let db = match initialized {
+            Ok(db) => db,
+            Err(original) => {
+                return match files.discard_unpublished(&pin) {
+                    Ok(()) => Err(original),
+                    Err(cleanup) => Err(original.with_cause(cleanup)),
+                };
+            }
+        };
         Ok(Self {
             db,
             files,
@@ -185,10 +208,10 @@ impl<'a> CacheConnection<'a> {
             self.role,
             ConnectionRole::HostReader | ConnectionRole::HostWriter
         ) {
-            if SLOTS.fetch_or(4, Ordering::AcqRel) & 4 != 0 {
+            if SLOTS.fetch_or(QUERY_ARENA_SLOT, Ordering::AcqRel) & QUERY_ARENA_SLOT != 0 {
                 return Err(capacity("Atlas shared SQL/query arena", 1, 0));
             }
-            Some(Slot(4))
+            Some(Slot(QUERY_ARENA_SLOT))
         } else {
             None
         };

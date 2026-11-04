@@ -79,6 +79,11 @@ pub fn validate(db: &Connection, id: &CacheIdentity) -> AtlasResult<()> {
             "cache project/root/physical identity/epoch differs from registration",
         ));
     }
+    Ok(())
+}
+/// Writers validate integrity on open/create; read opens check only the scope
+/// and schema above, never a database-wide scan on the query path.
+pub fn validate_integrity(db: &Connection) -> AtlasResult<()> {
     let check: String = db
         .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
         .map_err(cache_error)?;
