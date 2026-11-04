@@ -281,10 +281,16 @@ impl Harness for CodexHarness {
                 channel::open(self.io.clone(), port.clone(), socket.as_deref(), &cx).await?;
             if let Some(socket) = &socket {
                 let socket = socket.clone();
+                let runtime_record = self
+                    .directory(&request.request.identity.session)?
+                    .join("codex-runtime.json");
+                let session = request.request.identity.session.clone();
                 let deadline = crate::client::lease::Deadline::idle()?
                     .stage(until.saturating_duration_since(std::time::Instant::now()))?;
                 self.pool
-                    .run_owned(&deadline, move || Self::validate_socket(&socket))
+                    .run_owned(&deadline, move || {
+                        Self::validate_socket(&socket, &runtime_record, &session)
+                    })
                     .await?;
             }
             let cx = context(

@@ -158,10 +158,16 @@ pub fn thread(launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
             "X-StateEngine-Session-Proof":secret(&launch.request.launch_credential)?,
         }
     });
+    let local_cwd = launch.request.cwd.to_local()?;
+    let cwd = path(&local_cwd)?;
     let mut params = json!({
-        "cwd": path(&launch.request.cwd.to_local()?)?,
+        "cwd": cwd,
         "approvalPolicy":approval(launch.resolved),
         "sandbox":mode(launch.resolved), "config":config,
+        // Resumption otherwise restores the prior launch's scratch directory
+        // as an implicit writable root, even when config overrides are supplied.
+        "runtimeWorkspaceRoots":policy.get("writableRoots").cloned()
+            .unwrap_or_else(|| json!([cwd])),
     });
     if let Some(model) = &launch.request.profile.model {
         params["model"] = json!(model);

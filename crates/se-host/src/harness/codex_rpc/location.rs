@@ -2,6 +2,8 @@
 //! actual directory incarnation is journaled before the provider can start.
 use super::*;
 use std::io::Write;
+#[cfg(unix)]
+mod endpoint;
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
@@ -13,31 +15,17 @@ struct Record {
     inode: u64,
 }
 impl CodexHarness {
-    pub(super) fn validate_socket(socket: &Path) -> Result<()> {
+    pub(super) fn validate_socket(
+        socket: &Path,
+        record: &Path,
+        session: &se_types::SessionId,
+    ) -> Result<()> {
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{FileTypeExt, MetadataExt};
-            let parent = socket
-                .parent()
-                .ok_or_else(|| SeError::invalid("Codex private socket", "a protected parent"))?;
-            let _directory = se_proc::NativeStateFiles::open(parent).map_err(native_error)?;
-            let directory = std::fs::symlink_metadata(parent).map_err(|e| {
-                se_core::scope::unreadable("Codex private socket parent", &e.to_string())
-            })?;
-            let metadata = std::fs::symlink_metadata(socket)
-                .map_err(|e| se_core::scope::unreadable("Codex private socket", &e.to_string()))?;
-            if !metadata.file_type().is_socket()
-                || metadata.uid() != directory.uid()
-                || metadata.mode() & 0o777 != 0o600
-            {
-                return Err(incompatible(
-                    "the listener is not a current-owner mode-0600 Unix socket",
-                    "Use a stock private-listener build; no unsafe socket is repaired or trusted.",
-                ));
-            }
+            endpoint::prepare(socket, record, session)?;
         }
         #[cfg(not(unix))]
-        let _ = socket;
+        let _ = (socket, record, session);
         Ok(())
     }
     pub(super) fn socket(&self, request: &HarnessRequest) -> Result<Option<PathBuf>> {
@@ -162,10 +150,14 @@ impl CodexHarness {
                 "the exact original session",
             ));
         }
+        // OwnedFile takes an exclusive parent hold. Release it before opening
+        // the endpoint sibling, then reacquire and compare the original bytes
+        // before removing the runtime record.
+        drop(owned);
         let socket = value.socket.to_local()?;
         #[cfg(unix)]
         {
-            use std::os::unix::fs::{FileTypeExt, MetadataExt};
+            use std::os::unix::fs::MetadataExt;
             let parent = socket
                 .parent()
                 .ok_or_else(|| SeError::invalid("Codex socket", "a private parent"))?;
@@ -179,7 +171,7 @@ impl CodexHarness {
                     ));
                 }
             };
-            if let Some(metadata) = directory {
+            if let Some(metadata) = &directory {
                 let _pin = se_proc::NativeStateFiles::open(parent).map_err(native_error)?;
                 if metadata.dev() != value.device
                     || metadata.ino() != value.inode
@@ -190,26 +182,9 @@ impl CodexHarness {
                         "recorded directory incarnation differs; preserve the replacement",
                     ));
                 }
-                match std::fs::symlink_metadata(&socket) {
-                    Ok(leaf) if leaf.file_type().is_socket() && leaf.uid() == metadata.uid() => {
-                        std::fs::remove_file(&socket).map_err(|e| {
-                            se_core::scope::unreadable("Codex socket removal", &e.to_string())
-                        })?
-                    }
-                    Ok(_) => {
-                        return Err(se_core::scope::unreadable(
-                            "Codex socket cleanup",
-                            "the leaf is no longer the owned socket",
-                        ));
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                    Err(e) => {
-                        return Err(se_core::scope::unreadable(
-                            "Codex socket cleanup",
-                            &e.to_string(),
-                        ));
-                    }
-                }
+            }
+            endpoint::retire(&socket, &path, &value)?;
+            if directory.is_some() {
                 match se_proc::remove_empty_directory(parent).map_err(native_error)? {
                     se_proc::DirectoryRemoval::Removed
                     | se_proc::DirectoryRemoval::AlreadyAbsent => (),
@@ -224,7 +199,14 @@ impl CodexHarness {
         }
         #[cfg(not(unix))]
         let _ = socket;
-        owned
+        se_proc::OwnedFile::open(&path)
+            .map_err(native_error)?
+            .ok_or_else(|| {
+                se_core::scope::unreadable(
+                    "Codex runtime cleanup",
+                    "original record disappeared before removal",
+                )
+            })?
             .remove(Sha256::digest(&bytes).into())
             .map_err(native_error)
     }
