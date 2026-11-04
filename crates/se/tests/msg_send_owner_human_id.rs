@@ -80,7 +80,7 @@ fn setup() -> Result<(Fixture, SqliteDirect, Arc<Lease>), Box<dyn std::error::Er
 /// Protects: `se msg send` accepts the exact owner human ID the CLI printed during init, resolves it to the same actor the `owner` selector resolves to, and still refuses a foreign human ID as target-unknown.
 #[test]
 fn msg_send_accepts_the_registered_owner_human_id() -> Check {
-    let (f, mut store, _lease) = setup()?;
+    let (f, store, _lease) = setup()?;
     let home = &f.options.state_directory;
     let to_selector = success(
         command(home)
