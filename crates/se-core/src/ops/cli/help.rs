@@ -11,6 +11,8 @@ pub(super) fn group(name: &str) -> Option<&'static str> {
         "working-state" => "Read or save an agent's working notes",
         "agent" => "Create and inspect saved agents",
         "config" => "Read or change saved agent settings",
+        "hook" => "Receive provider lifecycle events",
+        "session" => "Read the current agent session",
         "decision" => "Inspect proposals and record owner decisions",
         _ => return None,
     })
@@ -38,6 +40,8 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "message.dismiss" => "Dismiss your received message without marking it read",
         "message.list" => "List authorized messages with explicit completeness",
         "message.inbox" => "List unread inbox messages",
+        "session.context" => "Read context for the currently bound agent session",
+        "hook.claude" => "Receive a Claude Code lifecycle event on stdin",
         "working_state.get" => "Read or save an agent's working notes",
         "working_state.set" => "Replace a working-state note behind a revision guard",
         "runtime.up" => "Start this data home's background runtime",

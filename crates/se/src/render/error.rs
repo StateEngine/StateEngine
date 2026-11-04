@@ -13,6 +13,8 @@ pub fn write(
     let mut body = error.body.clone();
     let mut remedy = body.remedy(context).map_err(io::Error::other)?;
     let literal_recovery = error.code() == se_types::Code::AgentNameConflict
+        || (error.code() == se_types::Code::TargetUnknown
+            && matches!(remedy.command, Some(se_types::Cmd::Se { .. })))
         || matches!(error.body.detail(), se_types::Detail::UsageMissingArgument(detail)
             if detail.command == "se resume" && detail.argument == "--preview AGENT");
     if literal_recovery {
