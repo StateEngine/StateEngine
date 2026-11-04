@@ -30,7 +30,7 @@ mod unix {
     use tokio::{
         io::{Interest, unix::AsyncFd},
         runtime::Handle,
-        task::JoinHandle,
+        task::AbortHandle,
     };
 
     pub(crate) struct Reactor {
@@ -41,7 +41,7 @@ mod unix {
     struct Registration {
         active: Arc<AtomicBool>,
         arm: Arc<Notify>,
-        task: JoinHandle<()>,
+        task: AbortHandle,
     }
     impl NativeRegistration for Registration {
         fn rearm(&self) {
@@ -88,32 +88,53 @@ mod unix {
             let (enabled, armed) = (active.clone(), arm.clone());
             let (fault, fence) = (self.fault.clone(), self.fence.clone());
             let task = self.runtime.spawn(async move {
-                loop {
-                    armed.notified().await;
-                    if !enabled.load(Ordering::Acquire) {
-                        break;
-                    }
-                    let ready = fd.ready(interest).await;
-                    if !enabled.load(Ordering::Acquire) {
-                        break;
-                    }
-                    match ready {
-                        Ok(mut ready) => ready.clear_ready(),
-                        Err(_) => {
-                            fence.store(true, Ordering::Release);
-                            fault.poison();
-                            break;
+                let result = crate::runtime::tasks::caught(
+                    async {
+                        loop {
+                            armed.notified().await;
+                            if !enabled.load(Ordering::Acquire) {
+                                break;
+                            }
+                            let ready = fd.ready(interest).await;
+                            if !enabled.load(Ordering::Acquire) {
+                                break;
+                            }
+                            match ready {
+                                Ok(mut ready) => ready.clear_ready(),
+                                Err(_) => {
+                                    fence.store(true, Ordering::Release);
+                                    fault.poison();
+                                    break;
+                                }
+                            }
+                            // One notification per explicit native re-arm prevents a
+                            // terminal pidfd or EOF from turning into an idle spin loop.
+                            if catch_unwind(AssertUnwindSafe(|| sink.ready())).is_err() {
+                                fence.store(true, Ordering::Release);
+                                fault.poison();
+                                break;
+                            }
                         }
-                    }
-                    // One notification per explicit native re-arm prevents a
-                    // terminal pidfd or EOF from turning into an idle spin loop.
-                    if catch_unwind(AssertUnwindSafe(|| sink.ready())).is_err() {
-                        fence.store(true, Ordering::Release);
-                        fault.poison();
-                        break;
-                    }
+                    },
+                    false,
+                )
+                .await;
+                if result.is_err() {
+                    fence.store(true, Ordering::Release);
+                    fault.poison();
                 }
             });
+            let task = self.fault.retain_native(task).map_err(|error| {
+                self.fault.poison();
+                ProcError {
+                    code: ProcErrorCode::ContainmentUnavailable,
+                    detail: Box::new(ProcErrorDetail::Input {
+                        field: "native collector join registry".into(),
+                        reason: error.to_string(),
+                    }),
+                    native: None,
+                }
+            })?;
             Ok(Box::new(Registration { active, arm, task }))
         }
     }
