@@ -39,15 +39,21 @@ def run(args):
     for _ in sys.stdin:
         pass''')
     helper.write_text(provider)
-    f = Fixture(args.se, args.output / "home with spaces'", provider_helper=helper)
     runtime = Path(tempfile.mkdtemp(prefix='ot-first-', dir='/tmp'))
-    f.env.update(XDG_RUNTIME_DIR=str(runtime), TMPDIR='/tmp')
+    private_env = {'XDG_RUNTIME_DIR': str(runtime), 'TMPDIR': '/tmp'}
     for key, leaf in [('CODEX_HOME', 'codex'), ('XDG_CONFIG_HOME', 'config'),
                       ('XDG_CACHE_HOME', 'cache'), ('XDG_DATA_HOME', 'data'),
                       ('XDG_STATE_HOME', 'xdg-state')]:
-        private = f.root / leaf
+        private = args.output / leaf
         private.mkdir(mode=0o700)
-        f.env[key] = str(private)
+        private_env[key] = str(private)
+
+    class IsolatedFixture(Fixture):
+        def call(self, *arguments, **options):
+            self.env.update(private_env)
+            return super().call(*arguments, **options)
+
+    f = IsolatedFixture(args.se, args.output / "home with spaces'", provider_helper=helper)
     config = f.home / 'config.toml'
     with socket.socket() as available:
         available.bind(('127.0.0.1', args.port))
