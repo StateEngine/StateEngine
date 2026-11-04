@@ -2,9 +2,7 @@ use super::*;
 use std::io::Write;
 use std::{
     mem::{size_of, zeroed},
-    os::windows::{
-        io::{AsRawHandle, OwnedHandle},
-    },
+    os::windows::io::{AsRawHandle, OwnedHandle},
     ptr,
 };
 use windows_sys::Win32::{
