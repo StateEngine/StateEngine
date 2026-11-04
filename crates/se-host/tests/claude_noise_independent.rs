@@ -33,6 +33,10 @@ fn measured(bytes: &mut Vec<u8>, kind: &str, expected: &mut BTreeMap<String, Val
     Ok(())
 }
 fn check_summary(body: &Value, want: &Value) -> Check {
+    require(
+        body["schema"] == "se.transcript-event/v1",
+        "aggregate schema missing",
+    )?;
     for field in ["count", "first_position", "last_position"] {
         require(
             body[field] == want[field],
@@ -119,7 +123,10 @@ fn noise_accompanies_real_turns_and_a_live_noise_only_tail_waits() -> Check {
    let result:Check=async {
     let began=Instant::now();let drain=capture.catch_up(admission.clone(),conversation.clone(),native.clone(),&bound()?).await;
     let elapsed=began.elapsed();
-    if let Ok(value)=&drain { eprintln!("noise_bytes={} native_noise_records=1000 capture_writer_submissions={} drain_seconds={:.6}",bytes.len(),value.capture_commits.len(),elapsed.as_secs_f64()); }
+    match &drain {
+     Ok(value)=>eprintln!("noise_bytes={} native_noise_records=1000 capture_writer_submissions={} drain_seconds={:.6} complete=true",bytes.len(),value.capture_commits.len(),elapsed.as_secs_f64()),
+     Err(error)=>{ let committed=match error.body.detail() { se_types::Detail::CaptureIncomplete(detail)=>Some(detail.committed_events.len()),_=>None }; eprintln!("noise_bytes={} native_noise_records=1000 capture_writer_submissions={committed:?} drain_seconds={:.6} complete=false",bytes.len(),elapsed.as_secs_f64()); }
+    }
     let drained=drain?;
     require(drained.capture_commits.len()==2,"noise was committed individually instead of with its accompanying turn")?;
     let mut snapshot=execution.reader.snapshot(scope.clone())?;
@@ -153,7 +160,9 @@ fn noise_accompanies_real_turns_and_a_live_noise_only_tail_waits() -> Check {
     let mode=values.iter().find(|v|v["kind"]=="mode").ok_or("mode missing")?;
     require(mode.get("count").is_none() && mode.get("first_position").is_none() && mode.get("last_position").is_none(),"individual record carried aggregate fields")?;
     let tail_summary=values.iter().find(|v|v["kind"]=="file-history-snapshot" && v["count"]==4).ok_or("live tail count lost")?;
-    require(tail_summary["position"]["offset"].as_u64().is_some_and(|n|n>=bytes.len() as u64),"tail position did not advance to actual native bytes")?;
+    let mut expected_tail=tail_expected.get("file-history-snapshot").ok_or("tail expectation missing")?.clone();
+    for name in ["first_position","last_position"] { let offset=expected_tail[name]["offset"].as_u64().ok_or("tail offset")?; expected_tail[name]["offset"]=json!(offset+bytes.len() as u64); }
+    check_summary(tail_summary,&expected_tail)?;
     require(after.turns(f.a.clone(),budget(100,200_000,None)?)?.items().len()==6,"tail batch lost records")?;
     after.close()?;Ok(())
    }.await;
