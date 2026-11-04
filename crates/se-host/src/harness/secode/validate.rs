@@ -59,7 +59,7 @@ pub(super) fn binding(
     }
     Ok(())
 }
-pub(super) fn notice(value: &api::MailNotice) -> api::Result<()> {
+pub(super) fn notice(value: &api::MailNotice) -> api::Result<usize> {
     se_types::NoticeId::from_linked(value.id.clone()).map_err(conversion)?;
     se_types::Cursor::from_linked(value.through.clone()).map_err(conversion)?;
     same(!value.messages.is_empty() && value.messages.len() <= 32)?;
@@ -79,7 +79,8 @@ pub(super) fn notice(value: &api::MailNotice) -> api::Result<()> {
         "through":value.through.0,"dedupe":value.dedupe_sha256.0,
     })).map_err(|_| invalid())?;
     same(bytes.len() <= 8192)?;
-    same(crate::linked::native_notice_digest(value).map_err(conversion)? == value.dedupe_sha256)
+    same(crate::linked::native_notice_digest(value).map_err(conversion)? == value.dedupe_sha256)?;
+    Ok(bytes.len())
 }
 pub(super) fn page_request(value: &api::PageRequest) -> api::Result<()> {
     same(value.limit > 0 && value.max_bytes > 0)?;

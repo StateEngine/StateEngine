@@ -13,6 +13,7 @@ mod capture;
 mod context;
 mod factory;
 mod generation;
+mod mail;
 mod owner;
 mod revoke;
 mod selector;
@@ -84,6 +85,7 @@ struct Generation {
     changed: Arc<tokio::sync::Notify>,
     native: Mutex<Option<(api::HostEpoch, Arc<dyn api::HostServices>)>>,
     bindings: binding::Bindings,
+    mail: Arc<mail::Registry>,
     binding_gate: tokio::sync::Mutex<()>,
     native_fence: Arc<std::sync::atomic::AtomicBool>,
     owner_join: tokio::sync::Mutex<generation::OwnerJoin>,
@@ -149,12 +151,11 @@ impl api::HostFactory for EmbeddedFactory {
                 api: api::API_VERSION,
                 store: version,
                 generation: api::Generation(generation),
-                // Native mail is not offered by this slice; the local listener is.
                 features: config
                     .features
                     .iter()
                     .copied()
-                    .filter(|feature| *feature == api::Feature::LocalListener)
+                    .filter(|feature| matches!(feature, api::Feature::LocalListener | api::Feature::NativeMail))
                     .collect(),
                 limits: config.limits.clone(),
             };
@@ -169,6 +170,7 @@ impl api::HostFactory for EmbeddedFactory {
                 changed: Arc::new(tokio::sync::Notify::new()),
                 native: Mutex::new(None),
                 bindings,
+                mail: Arc::new(mail::Registry::new()),
                 binding_gate: tokio::sync::Mutex::new(()),
                 native_fence: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 owner_join: tokio::sync::Mutex::new(generation::OwnerJoin::NotStarted),
@@ -467,21 +469,21 @@ impl api::Host for EmbeddedHost {
     }
     fn native_state_changed<'a>(
         &'a self,
-        _target: &'a api::HostSessionTarget,
-        _options: api::CallOptions,
+        target: &'a api::HostSessionTarget,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, ()> {
-        self.protected("native_state_changed", false, async {
-            Err(unavailable("native mail targets"))
+        self.protected("native_state_changed", false, async move {
+            self.register_native(target, options).await
         })
     }
     fn adoption_status<'a>(
         &'a self,
         _authority: &'a api::OwnerAuthority,
-        _page: api::PageRequest,
-        _options: api::CallOptions,
+        page: api::PageRequest,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Page<api::Adoption>> {
-        self.protected("adoption_status", false, async {
-            Err(unavailable("adoption status"))
+        self.protected("adoption_status", false, async move {
+            self.native_adoptions(page, options).await
         })
     }
     fn drain<'a>(&'a self, options: api::CallOptions) -> api::HostFuture<'a, api::DrainReceipt> {

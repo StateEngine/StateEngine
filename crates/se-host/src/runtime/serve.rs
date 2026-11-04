@@ -133,6 +133,9 @@ impl HostedRuntime {
                 }
                 Event::CatchUp => {
                     timers.catch_up = super::live::timer(activity.clone());
+                    if let Err(error) = self.execution.mail_waits.catch_up_native() {
+                        self.failed_connection(error);
+                    }
                     if !catch_up_running
                         && let Some(custody) = self.execution.custody.get().cloned()
                     {
