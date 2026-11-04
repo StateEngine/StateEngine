@@ -15,6 +15,8 @@ use se_types::Read;
 use se_types::{Result, SeError};
 #[cfg(any(target_os = "linux", windows))]
 use std::num::NonZeroU32;
+#[path = "runtime/already_down.rs"]
+mod already_down;
 #[cfg(any(target_os = "linux", windows))]
 #[path = "runtime/completion.rs"]
 mod completion;
@@ -206,10 +208,18 @@ impl std::error::Error for RetainedStartup {
     }
 }
 
-pub fn down(files: &Files, input: RuntimeDown) -> Result<AnyOutput> {
+pub fn down<R: se_store::ReadStore>(
+    files: &Files,
+    reader: &R,
+    input: RuntimeDown,
+) -> Result<AnyOutput> {
     let options = execute::options();
+    let observed = execute::endpoint(files)?;
+    if matches!(observed, se_types::Read::Absent { .. }) {
+        return already_down::observe(files, reader, &options);
+    }
     let endpoint = scope::require_present(
-        execute::endpoint(files)?,
+        observed,
         "a live authenticated runtime endpoint for graceful down",
         "Run se status for this same data home and verify its recorded host; endpoint absence alone does not prove the host stopped.",
     )?;
@@ -308,6 +318,7 @@ pub(super) fn down_endpoint(
             );
             Ok(RuntimeStop {
                 complete,
+                already_down: false,
                 stops,
                 witness: Witness {
                     state: if complete {

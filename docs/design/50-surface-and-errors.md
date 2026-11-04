@@ -350,6 +350,13 @@ Human examples are abridged. `Family` is the `--json` schema family (§4).
 
 **Runtime, agents, continuity**
 
+When an initialized home is already down, `se down` exits 0 with
+`Already down; no host was running.` Its `se.runtime-stop/v1` reply sets
+`already_down: true`, `complete: true` and `stops: []`; this proves an existing
+state and claims no stop effect. The optional `already_down` field is omitted
+for an actual shutdown. A missing endpoint with a held lease, unresolved native
+custody or unreadable prior-host identity still refuses.
+
 | Op | Command line | Human output | Family |
 | --- | --- | --- | --- |
 | runtime.up | `se up [--foreground]` | `StateEngine running (daemon, pid 4120, generation 7, 127.0.0.1:24731).` | `se.runtime-start/v1` |
