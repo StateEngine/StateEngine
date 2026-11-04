@@ -13,6 +13,13 @@ use support::*;
 
 #[test]
 fn pinned_capture_keeps_chat_separate_and_refuses_broken_known_records() -> Check {
+    for bad_bookkeeping in [false, true] {
+        capture_case(bad_bookkeeping)?;
+    }
+    Ok(())
+}
+
+fn capture_case(bad_bookkeeping: bool) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
     seed(&f)?;
@@ -101,22 +108,45 @@ fn pinned_capture_keeps_chat_separate_and_refuses_broken_known_records() -> Chec
 
                 snapshot.close()?;
                 let mut file = OpenOptions::new().append(true).open(&path)?;
-                writeln!(file, "{}", json!({"type":"api-request","sessionId":conversation.as_str(),"message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}}))?;
+                // The allow-list admits payloads only for api-request-blob and
+                // queue-operation; api-request with payload must refuse below.
+                writeln!(file, "{}", json!({"type":"api-request-blob","message":{"role":"user","content":"REQUEST_CACHE_SECRET"}}))?;
                 file.sync_all()?;
                 writeln!(file, "{}", json!({"type":"assistant","sessionId":conversation.as_str(),"uuid":"after-metadata","message":{"role":"assistant","content":"after metadata"}}))?;
                 file.sync_all()?;
                 let added = capture.catch_up(admitted.clone(), conversation.clone(), native_path.clone(), &bound()?).await?;
-                require(added.capture_commits.len() == 1, "message-bearing metadata was not retained separately")?;
+                require(added.capture_commits.len() == 1, "permitted cache metadata blocked the real assistant")?;
                 let mut stable = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let before = present(stable.capture_source(source)?)?;
+                let retained = stable.turns(f.a.clone(), budget(10,100_000,None)?)?;
+                require(retained.items().len() == 10, "permitted cache and real assistant were not retained exactly")?;
+                let mut found_assistant = false;
+                for event in retained.items() {
+                    let EventBody::SessionTurn { role, text:StoredText::Present(text), .. } = &event.body
+                        else { return Err("unreadable captured tail".into()); };
+                    require(!text.contains("REQUEST_CACHE_SECRET") && !text.contains("MUST_NOT_DISAPPEAR"),
+                        "refused or allowed cache payload leaked into captured text")?;
+                    found_assistant |= *role == Role::Assistant && text == "after metadata";
+                }
+                require(found_assistant, "assistant after permitted bookkeeping was lost")?;
                 stable.close()?;
-                writeln!(file, "{}", json!({"type":"user","sessionId":conversation.as_str(),"uuid":"broken-known","message":{"role":"user"}}))?;
+                let invalid = if bad_bookkeeping {
+                    json!({"type":"api-request","sessionId":conversation.as_str(),"message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}})
+                } else {
+                    json!({"type":"user","sessionId":conversation.as_str(),"uuid":"broken-known","message":{"role":"user"}})
+                };
+                writeln!(file, "{}", invalid)?;
                 file.sync_all()?;
-                require(capture.catch_up(admitted, conversation, native_path, &bound()?).await.is_err(), "malformed known user silently discarded")?;
+                let error = capture.catch_up(admitted, conversation, native_path, &bound()?).await
+                    .err().ok_or("invalid known record was silently discarded")?;
+                if bad_bookkeeping {
+                    require(matches!(error.body.detail(), se_types::Detail::UsageInvalidValue(detail)
+                        if detail.expected == "bookkeeping without message or content fields"), "wrong refusal for message-bearing bookkeeping")?;
+                }
                 let mut after = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let current = present(after.capture_source(source)?)?;
-                require(current.revision == before.revision && current.current.header.event == before.current.header.event, "schema drift advanced the durable cursor")?;
-                require(after.turns(f.a.clone(), budget(10,100_000,None)?)?.items().len() == 10, "malformed known record fabricated a turn")?;
+                require(current.revision == before.revision && current.current.header.event == before.current.header.event, "invalid known record advanced the durable cursor")?;
+                require(after.turns(f.a.clone(), budget(10,100_000,None)?)?.items().len() == 10, "invalid known record fabricated a turn")?;
                 after.close()?;
                 Ok(())
             }.await;

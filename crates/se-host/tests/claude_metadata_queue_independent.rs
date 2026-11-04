@@ -57,7 +57,7 @@ fn metadata_queue_records_are_counted_and_later_native_turns_are_readable() -> C
     direct.append(
         f.batch(
             f.owner_project(),
-            None,
+            Some(fixture::request("fixture-metadata-queue-setup")?),
             vec![
                 prepared,
                 session::activated(&session)?,
