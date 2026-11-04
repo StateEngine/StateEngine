@@ -52,3 +52,67 @@ fn unreadable_project_root_does_not_hide_other_projects() -> fixture::Check {
     store.close()?;
     Ok(())
 }
+
+#[test]
+fn unreadable_agent_profile_refuses_a_running_total() -> fixture::Check {
+    se_proc::initialize_file_creation_owner()?;
+    let f = fixture::Fixture::new()?;
+    let (store, _lease) = f.direct()?;
+    // The real store contains saved principals without their profile rows.
+    // Counting only sessions would incorrectly call these unreadable rows zero.
+    let admission = f.owner_project();
+    let mut snap = store.snapshot(read_scope(&admission))?;
+    let result = prepare_running(
+        &mut snap,
+        &admission,
+        fixture::budget(100, 1024 * 1024, None)?,
+    );
+    snap.close()?;
+    let error = result
+        .err()
+        .ok_or("missing profiles supplied a running count")?;
+    assert!(error.to_string().contains("profile"));
+    store.close()?;
+    Ok(())
+}
+
+#[test]
+fn partial_agent_page_refuses_a_running_total() -> fixture::Check {
+    se_proc::initialize_file_creation_owner()?;
+    let f = fixture::Fixture::new()?;
+    let (mut store, lease) = f.direct()?;
+    for agent in [&f.a, &f.b] {
+        store.append(
+            f.batch(
+                f.owner_project(),
+                None,
+                vec![se_store::EventBody::ProfileSaved {
+                    agent: agent.clone(),
+                    profile: se_store::Profile {
+                        provider: se_store::Provider::Claude,
+                        model: None,
+                        permission: se_store::PermissionProfile::WorkspaceWrite,
+                        named_profile: "default".into(),
+                        effort: None,
+                    },
+                    expected: Expected::Absent,
+                }],
+            )?,
+            &*lease,
+        )?;
+    }
+    let admission = f.owner_project();
+    let mut snap = store.snapshot(read_scope(&admission))?;
+    let result = prepare_running(
+        &mut snap,
+        &admission,
+        fixture::budget(1, 1024 * 1024, None)?,
+    );
+    snap.close()?;
+    let error = result
+        .err()
+        .ok_or("partial page supplied an exact running count")?;
+    assert!(error.to_string().contains("incomplete"));
+    store.close()?;
+    Ok(())
+}
