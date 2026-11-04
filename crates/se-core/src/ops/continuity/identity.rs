@@ -4,6 +4,7 @@ use se_store::{Actor, EventBody, Snapshot};
 use se_types::{AgentId, Read, Result, SeError};
 
 pub(super) struct Identity {
+    pub command_home: Option<std::path::PathBuf>,
     pub principal: ContinuityPrincipal,
     pub role: Option<String>,
     pub harness: String,
@@ -167,6 +168,7 @@ pub(super) fn resolve<R: Snapshot>(
     }
     .into();
     Ok(Identity {
+        command_home: None,
         principal: ContinuityPrincipal {
             project,
             agent: se_types::Named { id: agent, name },

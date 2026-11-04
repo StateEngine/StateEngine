@@ -145,7 +145,7 @@ fn add_omission(
     result: &mut ResumeOutput,
     section: &str,
     count: Option<u64>,
-    command: String,
+    command: crate::ops::AgentCommand,
     tool: &str,
 ) {
     if let Some(old) = result
@@ -193,7 +193,10 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                 result,
                 "recent_turns",
                 Some(1),
-                omitted.command,
+                crate::ops::AgentCommand {
+                    command: omitted.command,
+                    argv: omitted.argv,
+                },
                 "stateengine_event_read",
             );
             let mut fields = data.window.fields().cloned().ok_or_else(|| {
@@ -221,7 +224,7 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             continue;
         }
         if result.decisions.governing.pop().is_some() {
-            let command = read::resume_command(identity, input.governing_cursor.as_ref());
+            let command = read::resume_command(identity, input.governing_cursor.as_ref())?;
             add_omission(
                 result,
                 "governing_decisions",
@@ -251,7 +254,7 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                         .saturating_sub(result.unread.items().len() as u64),
                 ),
                 "packet byte budget",
-                read::mail_command(identity),
+                read::mail_command(identity)?,
                 "stateengine_msg_list",
             ));
             continue;
@@ -266,7 +269,7 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                 .any(|item| item.section == "working_state")
             && super::compact::expanded(
                 result,
-                read::resume_command(identity, input.governing_cursor.as_ref()),
+                read::resume_command(identity, input.governing_cursor.as_ref())?,
             )?
         {
             continue;
@@ -294,10 +297,7 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             if existing.is_none() {
                 // Account for the recovery metadata before choosing a text cut.
                 // Otherwise adding the remedy after clipping can erase the note.
-                let command = format!(
-                    "se --project {} working-state --agent {}",
-                    identity.principal.project.id, identity.principal.agent.id
-                );
+                let command = identity.working_state()?;
                 let mut omitted = read::omission(
                     "working_state",
                     Some(0),

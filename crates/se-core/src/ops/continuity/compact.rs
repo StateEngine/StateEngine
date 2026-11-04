@@ -46,7 +46,10 @@ pub(super) fn recovery(value: &mut ResumeOutput) -> Result<bool> {
     Ok(changed)
 }
 
-pub(super) fn expanded(value: &mut ResumeOutput, command: String) -> Result<bool> {
+pub(super) fn expanded(
+    value: &mut ResumeOutput,
+    command: crate::ops::AgentCommand,
+) -> Result<bool> {
     if value
         .omissions
         .iter()

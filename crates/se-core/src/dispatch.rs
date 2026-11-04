@@ -28,6 +28,7 @@ pub struct Kernel {
     facts: Option<CallFacts>,
     configuration: Option<crate::config_policy::ConfigFile>,
     read_at: Option<se_types::UnixMicros>,
+    command_home: Option<std::path::PathBuf>,
 }
 impl Kernel {
     pub fn new(facts: CallFacts) -> Result<Self> {
@@ -41,6 +42,7 @@ impl Kernel {
             facts: Some(facts),
             configuration: None,
             read_at: None,
+            command_home: None,
         })
     }
     pub const fn read_only() -> Self {
@@ -48,6 +50,7 @@ impl Kernel {
             facts: None,
             configuration: None,
             read_at: None,
+            command_home: None,
         }
     }
     pub fn read_only_at(at: se_types::UnixMicros) -> Self {
@@ -55,7 +58,13 @@ impl Kernel {
             facts: None,
             configuration: None,
             read_at: Some(at),
+            command_home: None,
         }
+    }
+    /// Adapter-resolved presentation scope, never a model-supplied selector.
+    pub fn with_command_home(mut self, home: &std::path::Path) -> Self {
+        self.command_home = Some(home.to_owned());
+        self
     }
     fn observed_at(&self) -> Result<se_types::UnixMicros> {
         match (self.read_at, self.facts.as_ref()) {
@@ -352,10 +361,22 @@ impl Kernel {
         }
         Ok(match op {
             AnyOp::Resume(input) => OpStep::Complete(
-                crate::ops::continuity::resume(input, self.observed_at()?, cx)?.into(),
+                crate::ops::continuity::resume_at_home(
+                    input,
+                    self.observed_at()?,
+                    self.command_home.as_deref(),
+                    cx,
+                )?
+                .into(),
             ),
             AnyOp::SessionContext(input) => OpStep::Complete(
-                crate::ops::continuity::context(input, self.observed_at()?, cx)?.into(),
+                crate::ops::continuity::context_at_home(
+                    input,
+                    self.observed_at()?,
+                    self.command_home.as_deref(),
+                    cx,
+                )?
+                .into(),
             ),
             AnyOp::AgentList(input) => {
                 OpStep::Complete(crate::ops::listing::agents(input, cx)?.into())

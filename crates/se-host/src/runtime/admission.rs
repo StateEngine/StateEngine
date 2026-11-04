@@ -248,11 +248,11 @@ impl AdmissionContext {
         super::executor::close_read(result, phase.close())
     }
     fn kernel(&self, facts: se_core::dispatch::CallFacts) -> Result<se_core::dispatch::Kernel> {
+        let kernel =
+            se_core::dispatch::Kernel::new(facts)?.with_command_home(&self.state_directory);
         match &self.configuration {
-            Some(configuration) => {
-                se_core::dispatch::Kernel::new(facts)?.with_configuration(configuration.clone())
-            }
-            None => se_core::dispatch::Kernel::new(facts),
+            Some(configuration) => kernel.with_configuration(configuration.clone()),
+            None => Ok(kernel),
         }
     }
     fn session(&self, phase: &se_store::ReadPhase, secret: &se_types::Secret) -> Result<Admission> {

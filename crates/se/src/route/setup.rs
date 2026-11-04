@@ -138,7 +138,10 @@ struct RecoveryInHome<'a> {
 impl se_types::OperationCommand for RecoveryInHome<'_> {
     fn cli_argv(&self) -> Vec<String> {
         let mut argv = self.argv.as_slice().to_vec();
-        argv.splice(1..1, ["--home".into(), self.home.into()]);
+        // Core recovery commands may already carry their adapter-resolved home.
+        if argv.get(1).is_none_or(|word| word != "--home") {
+            argv.splice(1..1, ["--home".into(), self.home.into()]);
+        }
         argv
     }
 }
