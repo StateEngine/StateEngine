@@ -98,7 +98,7 @@ pub(super) fn decode<R: ImportSnapshot>(
         {
             Actor::Agent(declared_agent(str_at(row, "agent_id")?)?)
         } else {
-            actor(read, row)?
+            actor(cx, read, row)?
         };
         if (kind != "agent.created"
             || row.get("agent_id").and_then(Value::as_str) != Some(actor_id(&by)))

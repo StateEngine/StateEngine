@@ -11,7 +11,7 @@ pub(super) fn decode<R: Snapshot>(
         .get("author")
         .ok_or_else(|| invalid("Node working state needs explicit author correspondence"))?;
     let actor_row = json!({"actor_type":author.get("type"),"actor_id":author.get("id")});
-    let by = actor(read, &actor_row)?;
+    let by = actor(cx, read, &actor_row)?;
     let ts = time::micros(str_at(row, "updated_at")?)?;
     let text = text_at(row, "text")?;
     let key = format!(

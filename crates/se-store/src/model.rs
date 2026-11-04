@@ -401,16 +401,7 @@ pub struct ImportCheckpoint {
     pub row_offset: u64,
     pub expected: Expected,
 }
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ImportCounts {
-    #[serde(default)]
-    pub deferred: u64,
-    pub read: u64,
-    pub imported: u64,
-    pub duplicate: u64,
-    pub unreadable: u64,
-    pub dropped_by_policy: u64,
-}
+pub use crate::import::counts::ImportCounts;
 #[derive(Clone, Debug)]
 pub struct ResumeHead {
     pub principal: Actor,

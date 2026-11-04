@@ -40,6 +40,8 @@ pub(super) fn context(
         observed_at_us: now,
         owner_profiles,
         prerequisites_pending: false,
+        human_mappings: Default::default(),
+        human_names: Default::default(),
     })
 }
 pub(super) fn start(

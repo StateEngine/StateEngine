@@ -162,21 +162,51 @@ pub(super) fn owner<R: Snapshot>(
         ));
     }
     let human = HumanId::from_legacy(str_at(row, "human_id")?).map_err(invalid)?;
-    let principal = Actor::Human(human.clone());
+    let target = mapped_human(cx, human.clone());
+    let principal = Actor::Human(target.clone());
     let key = format!("human:{human}");
     let mut out = result(
         ImportFamily::Owners,
         key.clone(),
         LegacyTarget::Principal(principal.clone()),
     );
+    out.retained = Some(
+        json!({"source_human_id":human,"display_name":str_at(row,"display_name")?,"mapped_human_id":target,"created_at":str_at(row,"created_at")?}),
+    );
     let current = expected(read.principal(principal.clone())?)?;
     if current != Expected::Absent {
         out.duplicate = true;
         return Ok(out);
     }
+    if target != human {
+        return Err(fail(
+            StoreErrorCode::ReferenceMissing,
+            "--map-human target must already be registered in this project; correspondence never creates another home owner",
+        ));
+    }
     let Actor::Human(owner) = &cx.admission.actor else {
         return Err(invalid("owner import admission required"));
     };
+    let planned = cx
+        .human_names
+        .get(&human)
+        .ok_or_else(|| invalid("source human name plan is absent"))?;
+    let display_name = super::human_name::available(read, planned)?;
+    if display_name != str_at(row, "display_name")? {
+        let retained = out
+            .retained
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| invalid("human provenance is absent"))?;
+        retained.insert(
+            "import_note".into(),
+            Value::String("historical-human-name-disambiguated".into()),
+        );
+        retained.insert(
+            "imported_display_name".into(),
+            Value::String(display_name.clone()),
+        );
+    }
     out.events.push(event(
         cx,
         cx.admission.actor.clone(),
@@ -188,7 +218,7 @@ pub(super) fn owner<R: Snapshot>(
             kind: PrincipalKind::Human,
             owner: owner.clone(),
             created_by: None,
-            name: str_at(row, "display_name")?.into(),
+            name: display_name,
             role: "historical human identity".into(),
             expected: Expected::Absent,
         },

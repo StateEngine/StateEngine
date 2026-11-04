@@ -32,11 +32,11 @@ fn materialize(
         .map_err(|e| store_error(&e))?;
     match legacy {
         Read::Present { value } => {
-            if !matches!(value.body,EventBody::LegacyRetained{source,..} if source.sha256==row.evidence.sha256)
+            if !matches!(&value.body,EventBody::LegacyRetained{source,mapped_id,..} if source.sha256==row.evidence.sha256 && mapped_id==&decoded.target)
             {
                 return Err(scope::unreadable(
                     "Node source duplicate",
-                    "the same original identity has conflicting bytes",
+                    "the same original identity has conflicting bytes or identity correspondence",
                 ));
             }
             counts.duplicate += units;
@@ -57,11 +57,11 @@ fn materialize(
                 .map_err(|e| store_error(&e))?
             {
                 Read::Present { value } => {
-                    if !matches!(&value.body,EventBody::LegacyRetained{source,..} if source.sha256==row.evidence.sha256)
+                    if !matches!(&value.body,EventBody::LegacyRetained{source,mapped_id,..} if source.sha256==row.evidence.sha256 && mapped_id==&decoded.target)
                     {
                         return Err(scope::unreadable(
                             "Node source conflict",
-                            "the original scoped source identity has conflicting bytes",
+                            "the original scoped source identity has conflicting bytes or identity correspondence",
                         ));
                     }
                     true
@@ -77,6 +77,18 @@ fn materialize(
             if existing {
                 counts.duplicate += units;
             } else {
+                if decoded
+                    .retained
+                    .as_ref()
+                    .and_then(|v| v.get("import_note"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some("historical-human-name-disambiguated")
+                {
+                    *counts
+                        .notes
+                        .entry("historical-human-name-disambiguated".into())
+                        .or_default() += 1;
+                }
                 let bytes = decoded
                     .retained
                     .map(|v| {

@@ -5,6 +5,7 @@ mod chain;
 mod commit;
 mod default_profiles;
 mod file;
+mod human_plan;
 mod node;
 mod ownership;
 mod plan;
@@ -81,6 +82,7 @@ fn receipt(
         dropped_by_policy: counts.dropped_by_policy,
         deferred,
         reason,
+        notes: counts.notes.clone(),
     })
 }
 fn total(into: &mut ImportCounts, other: &ImportCounts) -> Result<()> {
@@ -88,6 +90,10 @@ fn total(into: &mut ImportCounts, other: &ImportCounts) -> Result<()> {
         a.checked_add(b)
             .ok_or_else(|| scope::unreadable("import total", "counter overflow"))
     };
+    for (note, count) in &other.notes {
+        let entry = into.notes.entry(note.clone()).or_default();
+        *entry = add(*entry, *count)?;
+    }
     into.deferred = add(into.deferred, other.deferred)?;
     into.read = add(into.read, other.read)?;
     into.imported = add(into.imported, other.imported)?;
@@ -135,18 +141,30 @@ pub(super) async fn execute(
     };
     let owner = owner.clone();
     let selected = input.source_owner.clone();
+    let human_mappings = std::sync::Arc::new(input.mappings()?);
+    let plan_mappings = human_mappings.clone();
     let plan = job(&context, deadline, move |_| {
-        plan::inspect(&from, &owner, selected.as_ref(), &bound)
+        plan::inspect(&from, &owner, selected.as_ref(), &plan_mappings, &bound)
+    })
+    .await?;
+    let own = admission.clone();
+    let mappings = human_mappings.clone();
+    let bound = deadline.clone();
+    let (plan, human_names) = job(&context, deadline, move |context| {
+        let names = human_plan::inspect(context, &own, &plan, &mappings, &bound)?;
+        Ok((plan, names))
     })
     .await?;
     let root_path = NativePath::from_local(plan.root.clone())?;
     let root_id = id(&root_path, &Scope::Registry, &plan.source_owner)?;
     let source = plan.source.clone();
     let root_admission = admission.clone();
-    let root = job(&context, deadline, move |context| {
+    let mut root = job(&context, deadline, move |context| {
         state::context(context, root_admission, root_id, source, now()?)
     })
     .await?;
+    root.human_mappings = human_mappings.clone();
+    root.human_names = human_names.clone();
     ensure(&context, root.clone(), deadline).await?;
     let bindcx = root.clone();
     let bind_input = input.clone();
@@ -206,6 +224,8 @@ pub(super) async fn execute(
                 root_path: &root_path,
                 source_root: &source_root,
                 source_owner: &plan.source_owner,
+                human_mappings: &human_mappings,
+                human_names: &human_names,
                 registry: &plan.source,
             },
             project,

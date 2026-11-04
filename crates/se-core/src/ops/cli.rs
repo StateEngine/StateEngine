@@ -250,7 +250,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("adopt")),
         "doctor.inspect" => c.about("Check this installation and name exact supported repairs"),
         "doctor.repair" => c.arg(value("fix").help("Apply only this currently diagnosed CHECK-ID after printing its plan")),
-        "store.import_node" => c.about("Import supported user history without changing the original Node state").arg(value("from_node").long("from-node").required(true)).arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner")),
+        "store.import_node" => c.about("Import supported user history without changing the original Node state").arg(value("from_node").long("from-node").required(true)).arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner")).arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),
         "project.status" => c.arg(toggle("all")),
         "agent.launch" => c
             .about("Start or resume a saved agent; this release supports headless --detach")
