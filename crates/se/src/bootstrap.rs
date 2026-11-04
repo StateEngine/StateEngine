@@ -1,7 +1,11 @@
 //! Ambient inputs are collected only after metadata and syntax have completed.
 //! This module does not open a store, create directories or establish authority.
 use se_types::{Detail, Result, SeError, Secret, details};
-use std::{ffi::OsString, io::Read, path::PathBuf};
+use std::{
+    ffi::OsString,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 /// Called by the process entry before file/store access or worker creation.
 /// Windows fixes only the default owner for newly created files; existing
@@ -69,12 +73,7 @@ impl Bootstrap {
                 origin: crate::config::Origin::BuiltIn,
             }
         } else {
-            let selected = variable("SE_CONFIG")?;
-            let explicit = selected.is_some();
-            let path = match selected {
-                Some(path) => absolute(PathBuf::from(path), "SE_CONFIG")?,
-                None => home.join("config.toml"),
-            };
+            let (path, explicit) = configuration_path(&home)?;
             crate::config::load::<se_core::config_policy::ConfigFile>(&path, explicit)?
         };
         let session = session_input(&home)?;
@@ -109,6 +108,19 @@ impl Bootstrap {
             }),
         })
     }
+}
+
+/// Share runtime selection with doctor, which must defer the actual read until
+/// protected admission. An absent default file and an absent explicit file
+/// retain their different meanings in the config loader.
+pub(crate) fn configuration_path(home: &Path) -> Result<(PathBuf, bool)> {
+    let selected = variable("SE_CONFIG")?;
+    let explicit = selected.is_some();
+    let path = match selected {
+        Some(path) => absolute(PathBuf::from(path), "SE_CONFIG")?,
+        None => home.join("config.toml"),
+    };
+    Ok((path, explicit))
 }
 
 /// Resolve only the state-home selection. The private installer entry uses the

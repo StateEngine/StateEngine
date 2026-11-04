@@ -9,6 +9,7 @@ use se_core::{
 use se_types::{Result, SeError};
 use sha2::{Digest, Sha256};
 use std::{fs::TryLockError, io::Read};
+mod configuration;
 mod installation;
 pub(super) mod permissions;
 mod plan;
@@ -111,6 +112,7 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
             endpoint: None,
         });
     }
+    checks.push(configuration::check(cx, &at)?);
     let lock = files
         .0
         .readback(&cx.home.join("runtime.lock"))
