@@ -362,6 +362,7 @@ fn staged_work_mail_keeps_its_body_and_recipient_wake() -> Check {
         f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone())),
         Some(request("staged-work")?),
         vec![EventBody::WorkMessageSent {
+            quiet: false,
             message: message()?,
             work: se_types::WorkAddressing {
                 action: se_types::WorkAction::Finding,
