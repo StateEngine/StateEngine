@@ -143,21 +143,16 @@ impl se_types::OperationCommand for RecoveryInHome<'_> {
     }
 }
 pub fn required(cx: &crate::bootstrap::Bootstrap) -> se_types::SeError {
+    use se_core::ops::AgentCommand;
     use se_types::{Detail, SeError, details};
+    let next_step = AgentCommand::home_argument(&cx.home)
+        .and_then(AgentCommand::quoted_word)
+        .zip(AgentCommand::home_argument(&cx.cwd).and_then(AgentCommand::quoted_word))
+        .map(|(home, repo)| format!("Run se --home {home} init --repo {repo}"))
+        .unwrap_or_else(|| AgentCommand::HOME_UNAVAILABLE.into());
     SeError::new(Detail::SetupRequired(details::SetupRequired {
         subject: "StateEngine store".into(),
         reason: "not initialized for the selected state home".into(),
-        next_step: format!(
-            "Run se --home {} init --repo {}",
-            quote(&cx.home.display().to_string()),
-            quote(&cx.cwd.display().to_string())
-        ),
+        next_step,
     }))
-}
-fn quote(value: &str) -> String {
-    #[cfg(windows)]
-    let escaped = value.replace('\'', "''");
-    #[cfg(not(windows))]
-    let escaped = value.replace('\'', "'\"'\"'");
-    format!("'{escaped}'")
 }

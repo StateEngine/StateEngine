@@ -85,6 +85,34 @@ def fresh_home(f):
     assert snapshot(home) == before
 
 
+def setup_required_command_keeps_curly_home(f):
+    home = f.root / "fresh O’Brien's home"
+    home.mkdir(mode=0o700)
+    original = f.home
+    try:
+        f.home = home
+        result = subprocess.run(f.command("resume"), env=f.environment, cwd=f.root / "repo",
+                                capture_output=True, timeout=90)
+        (f.root / "setup-required.stdout").write_bytes(result.stdout)
+        value = json.loads(result.stdout)
+        assert result.returncode != 0 and value["code"] == "setup-required"
+        text = value["remedy"]["text"]
+        assert text.startswith("Run se ")
+        argv = shlex.split(text.removeprefix("Run "))
+        assert argv[argv.index("--home") + 1] == str(home)
+        assert argv[argv.index("--repo") + 1] == str(f.root / "repo")
+        argv[0] = str(f.se)
+        initialized = subprocess.run(argv, env=f.environment, cwd=f.root / "repo",
+                                     capture_output=True, timeout=90)
+        (f.root / "setup-command.stdout").write_bytes(initialized.stdout)
+        (f.root / "setup-command.stderr").write_bytes(initialized.stderr)
+        assert initialized.returncode == 0, initialized.stderr
+        assert f.ok("status")["setup"]["state"] == "configured"
+        f.close()
+    finally:
+        f.home = original
+
+
 def unclaimed_staging(f):
     names = [".se-stage-" + "0" * 32, ".se-stage-" + "0" * 32 + "-journal"]
     unrelated = f.home / ".se-stage-user-notes"
@@ -140,6 +168,18 @@ def line_break_home_has_no_shell_command(f):
     assert "contains a line break" in value["remedy"]["text"]
     assert "BEGIN SE" not in value["remedy"]["text"]
     assert before == snapshot(home) and not (home / "state.db").exists()
+    fresh = f.root / "first\nsetup"
+    fresh.mkdir(mode=0o700)
+    try:
+        f.home = fresh
+        result = f.call("resume")
+    finally:
+        f.home = original
+    value = json.loads(result.stdout)
+    assert result.returncode != 0 and value["code"] == "setup-required"
+    assert "contains a line break" in value["remedy"]["text"]
+    assert "Run se" not in value["remedy"]["text"]
+    assert not (fresh / "state.db").exists()
 
 
 def main():
@@ -148,7 +188,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
-    cases = [deleted_state, fresh_home, unclaimed_staging, linked_stage_refuses, line_break_home_has_no_shell_command]
+    cases = [deleted_state, fresh_home, setup_required_command_keeps_curly_home, unclaimed_staging, linked_stage_refuses, line_break_home_has_no_shell_command]
     print(f"1..{len(cases)}", flush=True)
     for number, case in enumerate(cases, 1):
         f = Fixture(args.se.resolve(), args.output.resolve() / (case.__name__ + "-O’Brien's-" + uuid.uuid4().hex[:6]))

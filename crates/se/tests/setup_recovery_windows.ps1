@@ -95,6 +95,19 @@ try {
     $freshInit = Invoke-Se -StateHome $freshHomes[0].FullName -Words @('init','--repo',$repo)
     Require ($freshInit.Code -eq 0 -and $freshInit.Value.owner.human_id -ne $owner) 'Fresh setup reused a lost identity'
     $passed++; Write-Output 'ok 3 - printed separate fresh home creates new identities'
+    $firstHome = Join-Path $parent 'never initialized'
+    $homes.Add($firstHome)
+    Push-Location -LiteralPath $repo
+    try {
+        $required = Invoke-Se -StateHome $firstHome -Words @('resume')
+        Require ($required.Code -ne 0 -and $required.Value.code -eq 'setup-required') 'First-time setup remedy missing'
+        $hint = $required.Value.remedy.text
+        Require ($hint.StartsWith('Run se ')) 'First-time command missing'
+        [System.IO.File]::WriteAllText((Join-Path $OutputRoot 'printed-setup.ps1'), $hint.Substring(4))
+        & ([scriptblock]::Create($hint.Substring(4))) *> (Join-Path $OutputRoot 'setup.log')
+        Require ((Invoke-Se -StateHome $firstHome -Words @('status')).Value.setup.state -eq 'configured') 'Printed first-time command failed'
+    } finally { Pop-Location }
+    $passed++; Write-Output 'ok 4 - first-time setup command preserves curly quote home'
     $stage = '.se-stage-' + ('0' * 32)
     foreach ($leaf in @($stage,($stage + '-journal'))) { [System.IO.File]::WriteAllText((Join-Path $state $leaf), "Preserve $leaf") }
     $retry = Invoke-Se -StateHome $state -Words @('--key','windows-recovery-fixed-key','init','--repo',$repo)
@@ -106,14 +119,14 @@ try {
         Require ([System.IO.File]::ReadAllText((Join-Path $quarantine[0].FullName $leaf)) -eq "Preserve $leaf") 'Quarantine bytes changed'
     }
     Require ([System.IO.File]::ReadAllText((Join-Path $repo 'user-work.txt')) -eq 'User work survives recovery.') 'User work changed'
-    $passed++; Write-Output 'ok 4 - staging quarantined and owner preserved'
+    $passed++; Write-Output 'ok 5 - staging quarantined and owner preserved'
 } finally {
     foreach ($stateHome in $homes) {
         $down = Invoke-Se -StateHome $stateHome -Words @('down')
         Require ($down.Code -eq 0 -and $down.Value.complete) 'Public down incomplete'
         Require (-not (Test-Path -LiteralPath (Join-Path $stateHome 'endpoint.json'))) 'Endpoint remains'
     }
-    [System.IO.File]::WriteAllText((Join-Path $OutputRoot 'result.json'), (@{passed=$passed; expected=4; homes=$homes; public_down=$true} | ConvertTo-Json -Depth 5))
+    [System.IO.File]::WriteAllText((Join-Path $OutputRoot 'result.json'), (@{passed=$passed; expected=5; homes=$homes; public_down=$true} | ConvertTo-Json -Depth 5))
 }
-Require ($passed -eq 4) 'Not all consumers ran'
-Write-Output '1..4'
+Require ($passed -eq 5) 'Not all consumers ran'
+Write-Output '1..5'
