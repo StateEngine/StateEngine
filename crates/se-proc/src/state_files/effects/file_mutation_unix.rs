@@ -66,7 +66,7 @@ impl Pin {
             )),
         }
     }
-    fn retain_raced_bytes(&self, path: &Path, name: &CString) -> Result<()> {
+    fn retain_raced_bytes(&self, path: &Path, _name: &CString) -> Result<()> {
         // SAFETY: exclusive no-follow creation of a recovery sibling; no user name
         // is overwritten. Preserve any bytes that raced through the old open FD.
         #[cfg(not(target_os = "macos"))]
@@ -74,7 +74,7 @@ impl Pin {
             unsafe {
                 libc::openat(
                     self.parent.as_raw_fd(),
-                    name.as_ptr(),
+                    _name.as_ptr(),
                     libc::O_WRONLY
                         | libc::O_CREAT
                         | libc::O_EXCL
