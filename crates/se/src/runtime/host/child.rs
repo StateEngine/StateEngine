@@ -13,8 +13,12 @@ pub(super) fn receive(guard: se_proc::RuntimeBootstrap) -> Result<u8> {
     let mut guard = Some(guard);
     let result = receive_inner(&mut guard);
     if let (Err(error), Some(bootstrap)) = (&result, guard.as_mut()) {
+        let diagnostic = match error.body.remedy(&se_types::RenderCx::default()) {
+            Ok(remedy) => format!("{error}\n  fix: {}", remedy.text),
+            Err(render_error) => format!("{error}\n  remedy unreadable: {render_error}"),
+        };
         bootstrap
-            .report_startup_failure("host preparation", &error.to_string())
+            .report_startup_failure("host preparation", &diagnostic)
             .map_err(native_error)?;
     }
     result
