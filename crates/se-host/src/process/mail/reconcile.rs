@@ -43,7 +43,13 @@ impl LaunchCoordinator {
                         .map_err(|e| store_error(&e))?;
                     match cx
                         .read
-                        .mail_input(recipient, session, position)
+                        .mail_input(
+                            recipient,
+                            session,
+                            position,
+                            expected,
+                            Duration::from_secs(1),
+                        )
                         .map_err(|e| store_error(&e))?
                     {
                         Read::Present { value } => match &value.body {

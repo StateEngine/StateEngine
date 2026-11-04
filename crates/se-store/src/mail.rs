@@ -183,13 +183,15 @@ pub trait MailSnapshot: Snapshot {
         message: se_types::MessageId,
         recipient: AgentId,
     ) -> StoreResult<se_types::Read<StoredEvent>>;
-    /// Most recent accepted user input after a checked notice boundary. This
-    /// excludes tools/assistant turns and remains bound to the exact session.
+    /// Matching accepted input across the checked session interval, bounded by
+    /// the supplied deadline. An interrupted scan is ReadIncomplete, never Absent.
     fn mail_input(
         &mut self,
         recipient: AgentId,
         session: SessionId,
         after: StorePosition,
+        text_sha256: [u8; 32],
+        deadline: std::time::Duration,
     ) -> StoreResult<se_types::Read<StoredEvent>>;
 
     /// Indexed, unread and undelivered recipient mail. Delivered-but-unread

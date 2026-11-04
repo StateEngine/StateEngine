@@ -75,8 +75,7 @@ impl LaunchCoordinator {
                                 Err(error) => Err(error),
                             };
                             if let Err(error) = result {
-                                eprintln!("StateEngine mail delivery remains pending: {error}");
-                                state.cleanup_failure = Some(error.body);
+                                super::mail::diagnostic::report(&state, &error);
                             }
                         }
                         state.wake.clone()

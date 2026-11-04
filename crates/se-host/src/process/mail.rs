@@ -8,6 +8,8 @@ use se_types::{Body, IdempotencyKey, Read, Result};
 use sha2::{Digest, Sha256};
 use std::{num::NonZeroU32, time::Duration};
 mod commit;
+pub(super) mod diagnostic;
+mod notice;
 mod reconcile;
 
 #[derive(Default)]
@@ -110,53 +112,15 @@ impl LaunchCoordinator {
                 return Err(scope::unreadable(&source, &reason));
             }
         };
-        let text = Body::new(format!(
-            "StateEngine notice {}: new mail for you: {}. Read each with the stateengine_msg_read tool, then act on it.",
-            reserved.notice_id.as_str(),
-            reserved
-                .ids
-                .iter()
-                .map(|id| id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))?;
+        let text = self.mail_notice_text(&target, &reserved, deadline).await?;
+        let expected_conversation = scope::require_present(
+            work.meta.conversation.clone(),
+            "mail provider conversation",
+            "Restore the exact live provider binding before another offer.",
+        )?;
         let digest = reserved.digest;
         let bytes = crate::harness::claude::input_frame(&text)?.len() as u64;
-        let attempt = id()?;
-        work.mail.flight = Some(Flight {
-            reservation: reserved,
-            text_sha256: Sha256::digest(text.as_str().as_bytes()).into(),
-            attempt,
-            evidence: None,
-            observed: false,
-        });
-        // Retain the attempted notice before crossing the transport boundary.
-        // A partial/uncertain write is never blindly sent again on this binding.
-        let binding = work
-            .binding
-            .as_ref()
-            .ok_or_else(|| error("mail transport", "live binding disappeared"))?;
-        let conversation = self
-            .harness
-            .offer_mail(
-                binding,
-                &text,
-                launch_util::call(self.store.generation, deadline)?,
-            )
-            .await?;
-        if !matches!(&work.meta.conversation,Read::Present {value} if *value==conversation) {
-            return Err(error(
-                "mail offer",
-                "provider conversation differs from the retained session",
-            ));
-        }
-        let effect = work
-            .mail
-            .flight
-            .as_ref()
-            .ok_or_else(|| error("mail offer", "retained attempt missing"))?
-            .reservation
-            .effect_id;
+        let effect = reserved.effect_id;
         let descriptor = self
             .store
             .read(admission(&target), deadline, move |cx| {
@@ -174,6 +138,33 @@ impl LaunchCoordinator {
                 }
             })
             .await?;
+        let binding = work
+            .binding
+            .as_ref()
+            .ok_or_else(|| error("mail transport", "live binding disappeared"))?;
+        let call = launch_util::call(self.store.generation, deadline)?;
+        let attempt = id()?;
+        work.mail.flight = Some(Flight {
+            reservation: reserved,
+            text_sha256: Sha256::digest(text.as_str().as_bytes()).into(),
+            attempt,
+            evidence: None,
+            observed: false,
+        });
+        // Retain the attempted notice before crossing the transport boundary.
+        // A partial/uncertain write is never blindly sent again on this binding.
+        if let Err(failure) = self
+            .harness
+            .offer_mail(binding, &expected_conversation, &text, call)
+            .await
+        {
+            // Only an explicit zero-byte report permits a later event to retry
+            // this notice. Partial or unmeasured writes retain their attempt.
+            if failure.completed_bytes == Some(0) {
+                work.mail.flight = None;
+            }
+            return Err(failure.error);
+        }
         let flight = work
             .mail
             .flight

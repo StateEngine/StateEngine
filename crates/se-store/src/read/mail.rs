@@ -39,6 +39,8 @@ impl crate::mail::MailSnapshot for SqliteSnapshot {
         recipient: AgentId,
         session: SessionId,
         after: StorePosition,
+        text_sha256: [u8; 32],
+        deadline: std::time::Duration,
     ) -> StoreResult<Read<StoredEvent>> {
         if !matches!((&self.scope.admission.actor, &self.scope.visibility),
             (Actor::Agent(actor), Visibility::SelfOnly(visible)) if *actor == recipient && *visible == recipient)
@@ -53,12 +55,43 @@ impl crate::mail::MailSnapshot for SqliteSnapshot {
         let agent = self.agent_bytes(&recipient)?;
         let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
         let session_key = key(&self.db, "session", session.as_str(), &scope, false)?;
-        let seq: Option<i64> = self.db.query_row(
-            "SELECT event_seq FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND session_id=? AND role='user' AND event_seq>? ORDER BY event_seq DESC LIMIT 1",
-            rusqlite::params![project, agent, session_key, after.sequence() as i64], |row| row.get(0))
-            .optional().map_err(|error| self.read_sql(error))?;
+        let until = Instant::now() + deadline.min(std::time::Duration::from_secs(1));
+        self.db
+            .progress_handler(1000, Some(move || Instant::now() >= until))
+            .map_err(|error| self.read_sql(error))?;
+        // Apply the hash predicate before LIMIT. A later unrelated turn cannot
+        // hide the accepted notice; payload bytes are independently checked by record().
+        let result = (|| -> StoreResult<(Option<i64>, bool)> {
+            let seq = self.db.query_row(
+                "SELECT t.event_seq FROM turn_data t INDEXED BY turn_data_agent_seq JOIN payloads p ON p.payload_id=t.text_payload AND p.event_seq=t.event_seq AND p.field='body' WHERE t.project_id=? AND t.agent_id=? AND t.session_id=? AND t.role='user' AND t.event_seq>? AND p.sha256=? ORDER BY t.event_seq LIMIT 1",
+                rusqlite::params![project,agent,session_key,after.sequence() as i64,text_sha256.as_slice()], |row|row.get(0))
+                .optional().map_err(|error|self.read_sql(error))?;
+            let erased = if seq.is_none() {
+                self.db.query_row("SELECT EXISTS(SELECT 1 FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND session_id=? AND role='user' AND event_seq>? AND text_payload IS NULL)",
+                    rusqlite::params![project,agent,session_key,after.sequence() as i64], |row|row.get::<_,bool>(0)).map_err(|error|self.read_sql(error))?
+            } else {
+                false
+            };
+            Ok((seq, erased))
+        })();
+        self.db
+            .progress_handler(0, None::<fn() -> bool>)
+            .map_err(|error| self.read_sql(error))?;
+        let (seq, erased) = result?;
+        if Instant::now() >= until {
+            return Err(fail(
+                StoreErrorCode::ReadIncomplete,
+                "mail input correlation scan exceeded its finite deadline; preserve the notice and retry its original interval",
+            ));
+        }
+        if erased {
+            return Err(fail(
+                StoreErrorCode::Unreadable,
+                "unmatched recipient input was erased inside the notice interval; absence of the expected input cannot be proved",
+            ));
+        }
         let Some(seq) = seq else {
-            return Ok(self.absent("no captured recipient user input after the notice"));
+            return Ok(self.absent("complete checked recipient/session input interval contains no matching notice hash"));
         };
         let event = self.record(seq)?;
         if !matches!(&event.body, EventBody::SessionTurn { agent, session: actual, role: Role::User, .. } if *agent == recipient && *actual == session)
