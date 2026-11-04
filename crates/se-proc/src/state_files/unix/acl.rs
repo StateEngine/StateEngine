@@ -12,6 +12,7 @@ unsafe extern "C" {
     fn acl_free(value: *mut c_void) -> i32;
     fn acl_get_entry(acl: *mut c_void, index: i32, entry: *mut *mut c_void) -> i32;
     fn acl_get_tag_type(entry: *mut c_void, tag: *mut i32) -> i32;
+    fn acl_get_permset_mask_np(entry: *mut c_void, mask: *mut u64) -> i32;
     fn acl_get_qualifier(entry: *mut c_void) -> *mut c_void;
     fn acl_size(acl: *mut c_void) -> isize;
     fn acl_copy_ext(buffer: *mut c_void, acl: *mut c_void, size: isize) -> isize;
@@ -121,6 +122,54 @@ pub(super) fn verify(file: &File, uid: u32, path: &Path) -> Result<()> {
         ));
     }
     Ok(())
+}
+/// Mutation parents may allow ordinary reads, but no additional authority to
+/// replace names or change security. Share the private reader's absent-ACL rule.
+pub(super) fn verify_mutation_directory(file: &File, path: &Path) -> Result<()> {
+    let Some(acl) = read(file, path)? else {
+        return Ok(());
+    };
+    let mut index = 0;
+    loop {
+        let mut entry = std::ptr::null_mut();
+        // SAFETY: owned ACL and initialized native entry output.
+        if unsafe { acl_get_entry(acl.0, index, &mut entry) } < 0 {
+            let error = io::Error::last_os_error();
+            return if error.raw_os_error() == Some(libc::EINVAL) {
+                Ok(())
+            } else {
+                Err(io_error("iterate mutation directory ACL", path, error))
+            };
+        }
+        index = -1;
+        let mut tag = 0;
+        let mut mask = 0;
+        // SAFETY: entry belongs to the held ACL and outputs have native widths.
+        if unsafe { acl_get_tag_type(entry, &mut tag) } < 0
+            // SAFETY: the same borrowed entry and initialized native mask output.
+            || unsafe { acl_get_permset_mask_np(entry, &mut mask) } < 0
+        {
+            return Err(io_error(
+                "inspect mutation directory ACL grant",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        const MUTATION: u64 = (1 << 2)
+            | (1 << 4)
+            | (1 << 5)
+            | (1 << 6)
+            | (1 << 8)
+            | (1 << 10)
+            | (1 << 12)
+            | (1 << 13);
+        if tag != DENY && (tag != ALLOW || mask & MUTATION != 0) {
+            return Err(unsafe_path(
+                "mutation directory ACL grants additional name/security authority",
+                path,
+            ));
+        }
+    }
 }
 /// Portable native ACL bytes preserve ordering, principals, permissions and all
 /// inheritance flags. No name-service formatting can erase a metadata change.

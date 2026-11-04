@@ -1,6 +1,6 @@
 //! Only called for newly created native objects, before publishing any bytes.
 use super::*;
-pub(super) fn clear(file: &File, path: &Path, directory: bool) -> Result<()> {
+pub(in crate::state_files) fn clear(file: &File, path: &Path, directory: bool) -> Result<()> {
     let meta = file
         .metadata()
         .map_err(|e| io_error("inspect new Darwin object", path, e))?;
