@@ -8,6 +8,11 @@ use se_core::ops::{
 };
 use std::collections::BTreeMap;
 
+// Commit counted progress even without a following turn once either bound is
+// reached. An ordinary short live tail still waits for the next real record.
+const TAIL_RECORDS: usize = 1024;
+const TAIL_BYTES: u64 = 4 * 1024 * 1024;
+
 pub(super) fn next(
     source: &mut BoundTranscript,
     revision: se_store::Revision,
@@ -25,6 +30,7 @@ pub(super) fn next(
     let mut line = Vec::new();
     let mut digest = Sha256::new();
     let mut noise = BTreeMap::<String, Record>::new();
+    let mut noise_records = 0;
     loop {
         deadline.remaining()?;
         let chunk = source.pin.read_at(position, CHUNK).map_err(native_error)?;
@@ -54,6 +60,11 @@ pub(super) fn next(
                     };
                     if claude::noise_kind(&notice.kind) {
                         count(&mut noise, notice)?;
+                        noise_records += 1;
+                        if noise_records >= TAIL_RECORDS || consumed - offset >= TAIL_BYTES {
+                            return finish(source, revision, offset, consumed, digest, noise, None)
+                                .map(Some);
+                        }
                         line.clear();
                         continue;
                     }
@@ -177,4 +188,61 @@ fn finish(
         },
         facts: facts()?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use se_store::RecordIdentity;
+
+    #[test]
+    fn long_live_noise_tail_commits_a_bounded_prefix()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let directory = std::env::temp_dir().join(format!("se-noise-unit-{}", std::process::id()));
+        std::fs::create_dir(&directory)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+        }
+        let path = directory.join("transcript.jsonl");
+        let line = b"{\"type\":\"file-history-snapshot\",\"snapshot\":{}}\n";
+        std::fs::write(&path, line.repeat(TAIL_RECORDS + 1))?;
+        let pin = se_proc::NativeSourcePin::open(&path)?.ok_or("missing unit source")?;
+        let mut source = BoundTranscript {
+            binding: crate::TranscriptPin {
+                identity: crate::SessionIdentity {
+                    project: se_types::ProjectId::from_parts(1_700_000_000_000, [3; 10])?,
+                    agent: se_types::AgentId::from_parts(1_700_000_000_000, [4; 10])?,
+                    session: se_types::SessionId::from_parts(1_700_000_000_000, [1; 10])?,
+                },
+                conversation: "noise-unit".parse()?,
+                path: se_types::NativePath::from_local(path.clone())?,
+                file_identity: se_types::Sha256::from_bytes(pin.identity()),
+            },
+            source: se_store::RecordId::from_parts(1_700_000_000_000, [2; 10])?,
+            pin,
+        };
+        let revision = se_store::Revision {
+            value: std::num::NonZeroU64::new(1).ok_or("zero revision")?,
+        };
+        let deadline = Deadline::idle()?.stage(std::time::Duration::from_secs(10))?;
+        let batch =
+            next(&mut source, revision, 0, &deadline, false)?.ok_or("no bounded progress")?;
+        let end = (TAIL_RECORDS * line.len()) as u64;
+        assert_eq!(batch.request.new_offset, end);
+        let record = Record::decode(batch.request.text.as_str())?;
+        assert_eq!(record.count, Some(TAIL_RECORDS as u64));
+        assert!(next(&mut source, revision, end, &deadline, false)?.is_none());
+        let final_batch =
+            next(&mut source, revision, end, &deadline, true)?.ok_or("final tail lost")?;
+        assert_eq!(
+            Record::decode(final_batch.request.text.as_str())?.count,
+            Some(1)
+        );
+        drop(source);
+        std::fs::remove_file(path)?;
+        std::fs::remove_dir(directory)?;
+        Ok(())
+    }
 }
