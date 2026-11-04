@@ -1,12 +1,13 @@
-//! Protects: Jimmy ruling 2026-11-04 — no god files: no non-test .rs source file over 800
-//! lines (a split is planned once a file reaches 600). This check walks every
-//! `crates/*/src/**/*.rs` file in the workspace and fails naming each over-limit file and its
-//! line count. It starts red on `crates/se-store/src/read.rs` until its split lands.
+//! Protects: Jimmy rulings 2026-11-04 — no god files. No non-test .rs source file under
+//! `crates/*/src` may exceed 800 lines (a split is planned once a file reaches 600), and no test
+//! .rs file under `crates/*/tests` may exceed 1000 lines. Each check walks its tree and fails
+//! naming every over-limit file and its line count.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const LIMIT: usize = 800;
+const SOURCE_LIMIT: usize = 800;
+const TEST_LIMIT: usize = 1000;
 
 fn count_lines(path: &Path) -> usize {
     let bytes = fs::read(path)
@@ -39,8 +40,8 @@ fn collect_sources(dir: &Path, found: &mut Vec<PathBuf>) {
     }
 }
 
-#[test]
-fn no_source_file_exceeds_the_god_file_limit() {
+/// Every `crates/*/<tree>/**/*.rs` file over `limit` lines, sorted, with its line count.
+fn offenders(tree: &str, limit: usize) -> Vec<(PathBuf, usize)> {
     let workspace = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
         .unwrap_or_else(|error| panic!("no-god-files: cannot resolve workspace root: {error}"));
     let crates_dir = workspace.join("crates");
@@ -60,26 +61,41 @@ fn no_source_file_exceeds_the_god_file_limit() {
                 error
             )
         });
-        let src = crate_entry.path().join("src");
-        if !src.is_dir() {
+        let root = crate_entry.path().join(tree);
+        if !root.is_dir() {
             continue;
         }
         let mut sources = Vec::new();
-        collect_sources(&src, &mut sources);
+        collect_sources(&root, &mut sources);
         for source in sources {
             let lines = count_lines(&source);
-            if lines > LIMIT {
+            if lines > limit {
                 offenders.push((source, lines));
             }
         }
     }
+    offenders.sort();
+    offenders
+}
+
+fn assert_within(tree: &str, limit: usize, what: &str) {
+    let offenders = offenders(tree, limit);
     if !offenders.is_empty() {
-        offenders.sort();
         let named = offenders
             .iter()
             .map(|(path, lines)| format!("{}: {} lines", path.display(), lines))
             .collect::<Vec<_>>()
             .join("; ");
-        panic!("god-file limit of {LIMIT} non-test source lines exceeded: {named}");
+        panic!("god-file limit of {limit} {what} lines exceeded: {named}");
     }
+}
+
+#[test]
+fn no_source_file_exceeds_the_god_file_limit() {
+    assert_within("src", SOURCE_LIMIT, "non-test source");
+}
+
+#[test]
+fn no_test_file_exceeds_the_god_file_limit() {
+    assert_within("tests", TEST_LIMIT, "test");
 }
