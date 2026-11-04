@@ -70,7 +70,7 @@ fn pinned_capture_keeps_chat_separate_and_refuses_broken_known_records() -> Chec
         let consumer = async {
             let result: Check = async {
                 let result = capture.catch_up(admitted.clone(), conversation.clone(), native_path.clone(), &bound()?).await?;
-                require(result.capture_commits.len() == 8, "metadata or real chat missing; tool result became a turn")?;
+                require(result.capture_commits.len() == 3, "metadata or real chat missing; tool result became a turn")?;
                 let mut snapshot = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let page = snapshot.turns(f.a.clone(), budget(10, 100_000, None)?)?;
                 let mut texts = Vec::new();
@@ -100,6 +100,8 @@ fn pinned_capture_keeps_chat_separate_and_refuses_broken_known_records() -> Chec
                 let mut file = OpenOptions::new().append(true).open(&path)?;
                 writeln!(file, "{}", json!({"type":"api-request","sessionId":conversation.as_str(),"message":{"role":"user","content":"MUST_NOT_DISAPPEAR"}}))?;
                 file.sync_all()?;
+                writeln!(file, "{}", json!({"type":"assistant","sessionId":conversation.as_str(),"uuid":"after-metadata","message":{"role":"assistant","content":"after metadata"}}))?;
+                file.sync_all()?;
                 let added = capture.catch_up(admitted.clone(), conversation.clone(), native_path.clone(), &bound()?).await?;
                 require(added.capture_commits.len() == 1, "message-bearing metadata was not retained separately")?;
                 let mut stable = execution.reader.snapshot(f.self_scope(&f.a))?;
@@ -111,7 +113,7 @@ fn pinned_capture_keeps_chat_separate_and_refuses_broken_known_records() -> Chec
                 let mut after = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let current = present(after.capture_source(source)?)?;
                 require(current.revision == before.revision && current.current.header.event == before.current.header.event, "schema drift advanced the durable cursor")?;
-                require(after.turns(f.a.clone(), budget(10,100_000,None)?)?.items().len() == 9, "malformed known record fabricated a turn")?;
+                require(after.turns(f.a.clone(), budget(10,100_000,None)?)?.items().len() == 10, "malformed known record fabricated a turn")?;
                 after.close()?;
                 Ok(())
             }.await;

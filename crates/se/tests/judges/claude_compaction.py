@@ -94,6 +94,42 @@ def one(f, malformed):
     f.session = launched["session_id"]
 
 
+def noise_tail(f):
+    f.launch()
+    conversation, path = transcript(f)
+    offset = path.stat().st_size
+    expected = {}
+    with path.open("ab") as stream:
+        for n in range(1000):
+            kind = "file-history-snapshot" if n % 2 == 0 else "api-request-blob"
+            raw = (json.dumps({"type":kind,"sessionId":conversation,"hash":"ab"*32,"content":"PRIVATE_PROVIDER_PAYLOAD"})+"\n").encode()
+            position = {"offset":offset,"length":len(raw)}
+            summary = expected.setdefault(kind,{"count":0,"first_position":position,"last_position":position})
+            summary["count"] += 1
+            summary["last_position"] = position
+            stream.write(raw)
+            offset += len(raw)
+        stream.flush()
+        import os
+        os.fsync(stream.fileno())
+    began = time.monotonic()
+    stopped = f.ok("--project",f.project,"stop",f.agent)
+    elapsed = time.monotonic()-began
+    assert stopped["complete"] and stopped["capture"]["flushed"], stopped
+    outside(f)
+    shown = f.ok("--project",f.project,"agent","show",f.agent)
+    view = present(shown["agent"])["session"]
+    events = present(view["transcript_events"])
+    assert len(events) == 2 and present(view["transcript_events_omitted"]) == 0, view
+    for event in events:
+        want = expected[event["kind"]]
+        for field in ("count","first_position","last_position"):
+            assert event[field] == want[field], (event,want)
+        assert event["position"] == want["last_position"]
+        assert "PRIVATE_PROVIDER_PAYLOAD" not in json.dumps(event)
+    (f.root/"noise-stop-measurement.json").write_text(json.dumps({"native_noise_records":1000,"stop_seconds":elapsed,"aggregate_records":len(events)},indent=2))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
@@ -101,11 +137,11 @@ def main():
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     results = []
-    for name, malformed in (("compaction", False), ("malformed-known", True)):
+    for name, malformed in (("compaction", False), ("malformed-known", True), ("noise-tail", None)):
         f = Fixture(args.se, args.output / name)
         error = None
         try:
-            one(f, malformed)
+            noise_tail(f) if malformed is None else one(f, malformed)
         except Exception as caught:
             error = repr(caught)
         cleanup = None
