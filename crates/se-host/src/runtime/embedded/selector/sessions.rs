@@ -79,13 +79,13 @@ impl EmbeddedHost {
                 Ok(api::Read::Present { value }) => value,
                 Ok(api::Read::Unreadable { .. }) => {
                     unreadable += 1;
-                    reason = Some(api::OmissionReason::Unreadable);
+                    remember(&mut reason, api::OmissionReason::Unreadable);
                     break;
                 }
                 Err(e) if e.kind == api::ApiFailure::Conflict => return Err(stale()),
                 Err(e) if e.kind == api::ApiFailure::Unreadable => {
                     unreadable += 1;
-                    reason = Some(api::OmissionReason::Unreadable);
+                    remember(&mut reason, api::OmissionReason::Unreadable);
                     break;
                 }
                 Err(e) if e.kind == api::ApiFailure::Cancelled => {
@@ -96,7 +96,7 @@ impl EmbeddedHost {
                     ));
                 }
                 Ok(api::Read::Absent { .. } | api::Read::Unknown { .. }) | Err(_) => {
-                    reason = Some(api::OmissionReason::SourceIncomplete);
+                    remember(&mut reason, api::OmissionReason::SourceIncomplete);
                     break;
                 }
             };
@@ -124,20 +124,37 @@ impl EmbeddedHost {
                     }
                     retained_bytes += cost;
                     if retained_bytes > SNAPSHOT_BYTES {
-                        reason = Some(api::OmissionReason::Budget);
+                        remember(&mut reason, api::OmissionReason::Budget);
                         break;
                     }
                     rows.push(row);
                 }
             }
-            if reason.is_some() {
+            if retained_bytes > SNAPSHOT_BYTES {
                 break;
             }
             unreadable += observed.window.unreadable;
-            if observed.window.unreadable > 0
-                || !matches!(observed.window.omitted_before, api::Omission::None)
-            {
-                reason = Some(api::OmissionReason::Unreadable);
+            if observed.window.unreadable > 0 {
+                remember(&mut reason, api::OmissionReason::Unreadable);
+            }
+            // Limit/Budget omissions with a continuation are ordinary paging.
+            // Source loss survives even when a later page exhausts its own rows.
+            for omission in [
+                &observed.window.omitted_before,
+                &observed.window.omitted_after,
+            ] {
+                match omission {
+                    api::Omission::Known { reason: issue, .. }
+                    | api::Omission::Unknown { reason: issue }
+                        if matches!(
+                            issue,
+                            api::OmissionReason::Unreadable | api::OmissionReason::SourceIncomplete
+                        ) =>
+                    {
+                        remember(&mut reason, *issue)
+                    }
+                    _ => (),
+                }
             }
             match observed.next {
                 Some(next) if next.0.len() <= 256 && Some(&next) != source_cursor.as_ref() => {
@@ -152,7 +169,7 @@ impl EmbeddedHost {
                 }
             }
             if index + 1 == HOST_PAGES {
-                reason = Some(api::OmissionReason::Budget);
+                remember(&mut reason, api::OmissionReason::Budget);
             }
         }
         rows.sort_by_key(key);
@@ -333,4 +350,16 @@ fn decode(page: &api::PageRequest, digest: &str) -> Result<usize> {
         return Err(stale());
     }
     parts[1].parse().map_err(|_| paging::usage())
+}
+
+fn remember(current: &mut Option<api::OmissionReason>, issue: api::OmissionReason) {
+    let rank = |reason| match reason {
+        api::OmissionReason::Limit => 0,
+        api::OmissionReason::Budget => 1,
+        api::OmissionReason::SourceIncomplete => 2,
+        api::OmissionReason::Unreadable => 3,
+    };
+    if current.is_none_or(|prior| rank(issue) > rank(prior)) {
+        *current = Some(issue);
+    }
 }

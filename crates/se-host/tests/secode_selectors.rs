@@ -138,6 +138,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
         let epoch = build_epoch(opened.negotiated.generation.0, &home)?;
         let project = selected.clone();
         let unavailable = Arc::new(AtomicBool::new(false));
+        let source_incomplete = Arc::new(AtomicBool::new(false));
         result(
             opened
                 .host
@@ -147,6 +148,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
                         services: Arc::new(services::Services {
                             project: project.clone(),
                             unavailable: unavailable.clone(),
+                            source_incomplete: source_incomplete.clone(),
                         }),
                     },
                     options.clone(),
@@ -314,6 +316,46 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
                 .iter()
                 .all(|r| r.target.binding.project == project)
         );
+        // Independent 5p counterexample (7d2291d): an earlier native
+        // SourceIncomplete omission must survive a later exhausted page.
+        source_incomplete.store(true, Ordering::Relaxed);
+        let partial_first = present(result(
+            opened
+                .host
+                .project_active_sessions(
+                    &api::OwnerAuthority,
+                    project.clone(),
+                    page(1),
+                    options.clone(),
+                )
+                .await,
+        )?)?;
+        let partial_last = present(result(
+            opened
+                .host
+                .project_active_sessions(
+                    &api::OwnerAuthority,
+                    project.clone(),
+                    api::PageRequest {
+                        after: partial_first.next,
+                        ..page(1)
+                    },
+                    options.clone(),
+                )
+                .await,
+        )?)?;
+        assert_eq!(partial_last.items[0].target.binding.agent.0, "zulu");
+        assert!(
+            !partial_last.window.complete,
+            "source-incomplete omission vanished after the final native page"
+        );
+        assert!(matches!(
+            partial_last.window.omitted_after,
+            api::Omission::Unknown {
+                reason: api::OmissionReason::SourceIncomplete
+            }
+        ));
+        source_incomplete.store(false, Ordering::Relaxed);
         unavailable.store(true, Ordering::Relaxed);
         let stale = opened
             .host

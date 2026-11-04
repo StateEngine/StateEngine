@@ -5,6 +5,7 @@ use std::sync::{Arc, atomic::AtomicBool};
 pub struct Services {
     pub project: api::ProjectId,
     pub unavailable: Arc<AtomicBool>,
+    pub source_incomplete: Arc<AtomicBool>,
 }
 fn services_refused() -> api::ApiError {
     api::ApiError {
@@ -90,7 +91,15 @@ impl api::HostServices for Services {
                         bytes: 4096,
                         max_bytes: page.max_bytes,
                         omitted_before: api::Omission::None,
-                        omitted_after: if next {
+                        omitted_after: if next
+                            && self
+                                .source_incomplete
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                        {
+                            api::Omission::Unknown {
+                                reason: api::OmissionReason::SourceIncomplete,
+                            }
+                        } else if next {
                             api::Omission::Known {
                                 count: 1,
                                 reason: api::OmissionReason::Limit,
