@@ -143,6 +143,10 @@ applicable T14–T16/T21–T23/T27/T28. Include serial durable barriers, idle co
 and exact custody inventory. Unmeasured/native-Mac work is not green; no new
 gate family or author tests.
 
+**P10 - Native IPC peer/ACL surface (2,411 lines at f00ea79f; retained code).** Owner 5p. Files: `src/native_ipc/**` (11 files). Consumed by the se-host IPC listener/lease (NativeUnixEndpoint/NativePipeReservation/NativeUnixStream). Qualifies the existing peer/ACL unsafe code as a named plan unit: SO_PEERCRED on Linux, LOCAL_PEERCRED/LOCAL_PEERPID on macOS, Windows pipe DACL plus GetNamedPipe{Server,Client}ProcessId and token-SID checks, image and image-cache proof, and the IpcPlatform BorrowedFd/BorrowedHandle boundary. No new implementation scope; corrections are sized as separate candidates. Review record: Prime's Opus security review ACCEPT (msg-41f95b08); 5p's E1/D3 a449bc93 and D1 6953ac37 landed in batch 15 (3108f870).
+
+**P11 - State-file native security (6,998 lines at f00ea79f; retained code).** Owner: maintainer to assign. Files: `src/state_files/**` (33 files). Qualifies the existing state-file security code as a named plan unit: Windows ACLs and install claims, Unix ownership/permission checks, atomic replace and PATH edits; the count includes the batch 16b macOS ACL work (8340be56). No new implementation scope; corrections are sized as separate candidates. Review record: dedicated GPT security review by Otto (commissioned in msg-72a325f3), treating state_files as a process boundary with a hostile local process.
+
 ## Joins and total
 
 After P00, PROC serializes P01/P02 then ready-platform P04/P05/P06/P08/P09;
@@ -152,11 +156,15 @@ runtime. Other workstreams retain authority, store, framing, public transport,
 binary dispatch, schemas, packaging and reviewer ownership. The project maintainer alone assigns
 and lands; a declaration stub never completes a behavioral task.
 
-Production estimate: **~11,400 Windows/Linux + shared lines**, plus **~1,350
-Mac-specific lines in the pre-alpha Mac campaign** (P03-M ~1,000; P07-M ~350), for **~12,750 total**.
-The active subtotal includes ~1,000 retained/shared contracts and ~10,400 further
-native/common lines; it excludes the separate core/CLI, host, store, foundation,
-Atlas, release and reviewer implementations. These are rough planning amounts,
+Production estimate: **~20,800 Windows/Linux + shared lines** (11,400 build-order
+units plus the retained-code units P10 2,411 and P11 6,998 measured at f00ea79f),
+plus **~1,350 Mac-specific lines in the pre-alpha Mac campaign** (P03-M ~1,000;
+P07-M ~350), for **~22,150 total**. P10/P11 record existing code under plan
+ownership; they add no new build order, and their lines are counted once.
+The active subtotal includes ~1,000 retained/shared contracts, ~10,400 further
+native/common lines and ~9,400 retained native security lines under P10/P11; it
+excludes the separate core/CLI, host, store, foundation, Atlas, release and
+reviewer implementations. These are rough planning amounts,
 not measured finished code or an implementation authorization. Removing generic
 process operations reduces the core/CLI surface, not the native arena, stop,
 identity or transfer mechanisms needed by agent consumers; this part therefore
