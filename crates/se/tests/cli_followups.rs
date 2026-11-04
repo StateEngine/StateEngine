@@ -604,10 +604,10 @@ fn plain_status_labels_the_owner_unread_scope() -> Check {
     std::fs::set_permissions(&machine_path, std::fs::Permissions::from_mode(0o600))?;
     let credential = se_proc::random_secret()?;
     let exposed = credential.expose();
-    if exposed.len() < 32 {
-        return Err("native entropy short".into());
-    }
-    let credential_bytes: [u8; 32] = exposed[..32].try_into().unwrap();
+    let credential_bytes: [u8; 32] = exposed
+        .get(..32)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or("native entropy short")?;
     let credential_path = home.join("credential");
     std::fs::write(&credential_path, credential_bytes)?;
     std::fs::set_permissions(&credential_path, std::fs::Permissions::from_mode(0o600))?;
