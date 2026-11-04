@@ -7,14 +7,27 @@ use se_core::{
 use se_store::{ReadPhase, SqliteFactory, SqliteReader, StoreFactory, StoreOptions};
 use se_types::{Read, Result};
 use std::{path::Path, time::Duration};
+#[path = "setup/recovery.rs"]
+mod recovery;
+pub(super) use recovery::quarantine;
 
 pub enum Setup<T = SqliteReader> {
     Absent(Box<StatusOutput>),
     Present(T),
 }
 pub fn inspect(home: &Path, generated_at: String) -> Result<Setup> {
+    inspect_home(home, generated_at, None)
+}
+pub(super) fn inspect_for_init(
+    home: &Path,
+    generated_at: String,
+    recovered: bool,
+) -> Result<Setup> {
+    inspect_home(home, generated_at, Some(recovered))
+}
+fn inspect_home(home: &Path, generated_at: String, pending_init: Option<bool>) -> Result<Setup> {
     Ok(
-        match inspect_with(home, generated_at, SqliteFactory::open_reader)? {
+        match inspect_with(home, generated_at, SqliteFactory::open_reader, pending_init)? {
             Setup::Absent(output) => Setup::Absent(output),
             Setup::Present((_, reader)) => Setup::Present(reader),
         },
@@ -24,12 +37,18 @@ pub fn inspect_phase(
     home: &Path,
     generated_at: String,
 ) -> Result<Setup<(Files, (SqliteReader, ReadPhase))>> {
-    inspect_with(home, generated_at, SqliteFactory::open_reader_with_phase)
+    inspect_with(
+        home,
+        generated_at,
+        SqliteFactory::open_reader_with_phase,
+        None,
+    )
 }
 fn inspect_with<T>(
     home: &Path,
     generated_at: String,
     open: impl FnOnce(&StoreOptions) -> se_store::StoreResult<Read<T>>,
+    pending_init: Option<bool>,
 ) -> Result<Setup<(Files, T)>> {
     match std::fs::symlink_metadata(home) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -49,8 +68,8 @@ fn inspect_with<T>(
         Ok(_) => (),
     }
     // Protection and directory identity are native facts, independent of DB bytes.
-    // Only the store reader below establishes initialization. A runtime.lock
-    // may already exist for an uninstall or an init still holding exclusion.
+    // A lock or config alone does not establish initialization. Surviving
+    // identity/state records prevent an absent DB becoming first-time setup.
     let files = Files::open(home).map_err(|e| store_error(&e))?;
     match open(&StoreOptions {
         state_directory: home.to_owned(),
@@ -58,7 +77,14 @@ fn inspect_with<T>(
     })
     .map_err(|e| store_error(&e))?
     {
-        Read::Absent { checked } => Ok(missing(home, generated_at, checked)),
+        Read::Absent { checked } => {
+            recovery::missing_database(
+                &files,
+                pending_init.is_some(),
+                pending_init.unwrap_or(false),
+            )?;
+            Ok(missing(home, generated_at, checked))
+        }
         Read::Present { value } => Ok(Setup::Present((files, value))),
         Read::Unreadable { source, reason, .. } => {
             Err(se_core::scope::unreadable(&source, &reason))
@@ -117,21 +143,16 @@ impl se_types::OperationCommand for RecoveryInHome<'_> {
     }
 }
 pub fn required(cx: &crate::bootstrap::Bootstrap) -> se_types::SeError {
+    use se_core::ops::AgentCommand;
     use se_types::{Detail, SeError, details};
+    let next_step = AgentCommand::home_argument(&cx.home)
+        .and_then(AgentCommand::quoted_word)
+        .zip(AgentCommand::home_argument(&cx.cwd).and_then(AgentCommand::quoted_word))
+        .map(|(home, repo)| format!("Run se --home {home} init --repo {repo}"))
+        .unwrap_or_else(|| AgentCommand::HOME_UNAVAILABLE.into());
     SeError::new(Detail::SetupRequired(details::SetupRequired {
         subject: "StateEngine store".into(),
         reason: "not initialized for the selected state home".into(),
-        next_step: format!(
-            "Run se --home {} init --repo {}",
-            quote(&cx.home.display().to_string()),
-            quote(&cx.cwd.display().to_string())
-        ),
+        next_step,
     }))
-}
-fn quote(value: &str) -> String {
-    #[cfg(windows)]
-    let escaped = value.replace('\'', "''");
-    #[cfg(not(windows))]
-    let escaped = value.replace('\'', "'\"'\"'");
-    format!("'{escaped}'")
 }
