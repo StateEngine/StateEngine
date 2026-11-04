@@ -3,6 +3,29 @@
 use super::*;
 use tokio::sync::oneshot;
 
+/// The numeric code is provider classification; the diagnostic is presentation.
+#[derive(Debug)]
+pub struct RequestFailure {
+    pub code: Option<i64>,
+    pub error: SeError,
+}
+impl From<SeError> for RequestFailure {
+    fn from(error: SeError) -> Self {
+        Self { code: None, error }
+    }
+}
+struct Pending<'a> {
+    state: &'a Mutex<state::State>,
+    id: i64,
+}
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.pending.remove(&self.id);
+        }
+    }
+}
+
 impl Binding {
     pub(super) async fn request(
         &self,
@@ -10,25 +33,40 @@ impl Binding {
         params: Value,
         cx: &CallContext,
     ) -> Result<Value> {
+        self.request_classified(method, params, cx)
+            .await
+            .map_err(|failure| failure.error)
+    }
+    pub(super) async fn request_classified(
+        &self,
+        method: &str,
+        params: Value,
+        cx: &CallContext,
+    ) -> std::result::Result<Value, RequestFailure> {
         let until = tokio::time::Instant::now() + cx.timeout;
         let (id, frame, reply) = {
             let mut state = self.state.lock().map_err(|_| poisoned())?;
             if let Some(error) = &state.failure {
-                return Err(error.clone().into());
+                return Err(SeError::from(error.clone()).into());
             }
             if state.pending.len() >= 16 {
                 return Err(SeError::invalid(
                     "Codex RPC capacity",
                     "resolve retained requests before another operation",
-                ));
+                )
+                .into());
             }
             let (id, frame) = state.sequence.request(method, params)?;
             let wire::RequestId::Number(id) = id else {
-                return Err(poisoned());
+                return Err(poisoned().into());
             };
             let (send, receive) = oneshot::channel();
             state.pending.insert(id, send);
             (id, frame, receive)
+        };
+        let _pending = Pending {
+            state: &self.state,
+            id,
         };
         let written = async {
             let mut sender = self.sender.lock().await;
@@ -46,7 +84,7 @@ impl Binding {
             Ok(Ok(())) => (),
             Ok(Err(error)) => {
                 self.fail(error.body.clone().into());
-                return Err(error);
+                return Err(error.into());
             }
             Err(_) => {
                 let error = incompatible(
@@ -54,21 +92,21 @@ impl Binding {
                     "Preserve the original input and native binding; do not resend blindly.",
                 );
                 self.fail(error.body.clone().into());
-                return Err(error);
+                return Err(error.into());
             }
         }
         match tokio::time::timeout_at(until, reply).await {
-            Ok(Ok(result)) => result.map_err(SeError::from),
+            Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(se_core::scope::unreadable(
                 "Codex RPC response",
                 "the retained dispatcher closed before a correlated response",
-            )),
+            ).into()),
             Err(_) => Err(se_core::scope::unreadable(
                 "Codex RPC response",
                 &format!(
                     "request {id} timed out; its original input remains uncertain and is not automatically retried"
                 ),
-            )),
+            ).into()),
         }
     }
     pub(super) async fn notify(&self, method: &str, params: Value, cx: &CallContext) -> Result<()> {
@@ -110,16 +148,17 @@ pub(super) async fn read(
                     .state
                     .lock()
                     .map_err(|_| poisoned())
-                    .map(|mut state| state.pending.remove(&id));
+                    .map(|mut state| (state.pending.remove(&id), state.sequence.issued(id)));
                 match reply {
-                    Ok(Some(reply)) => {
+                    Ok((Some(reply), _)) => {
                         let _ = reply.send(result.map_err(|failure| {
-                            let reason = diagnostic(failure.code, &failure.message, &binding.diagnostic_secrets);
-                            incompatible(&reason, "Inspect the provider/profile and retry only after resolving the original input.").body
+                            let reason = diagnostic(failure.code, &failure.message);
+                            RequestFailure { code: Some(failure.code), error: incompatible(&reason, "Inspect the provider/profile and retry only after resolving the original input.") }
                         }));
                         Ok(())
                     }
-                    Ok(None) => Err(SeError::invalid(
+                    Ok((None, true)) => Ok(()),
+                    Ok((None, false)) => Err(SeError::invalid(
                         "Codex response",
                         "an outstanding exact request ID",
                     )),
@@ -163,40 +202,53 @@ pub(super) async fn read(
     }
 }
 
-fn diagnostic(code: i64, message: &str, secrets: &[se_types::Secret]) -> String {
-    if message.len() > 2048 {
-        return format!(
-            "provider refused request ({code}); its diagnostic exceeds 2048 bytes ({} bytes)",
-            message.len()
-        );
-    }
-    let mut safe = message.to_owned();
-    for secret in secrets {
-        if let Ok(value) = std::str::from_utf8(secret.expose()) {
-            safe = safe.replace(value, "[redacted]");
-        }
-    }
-    format!("provider refused request ({code}): {safe}")
+// Provider text can contain encoded, escaped or partial credentials, so exact
+// substring replacement cannot make it safe. Retain classification, never the
+// untrusted text or data, in durable/public diagnostics.
+fn diagnostic(code: i64, message: &str) -> String {
+    format!(
+        "provider refused request ({code}); untrusted diagnostic withheld ({} bytes)",
+        message.len()
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn provider_errors_preserve_the_reason_without_reflecting_launch_capabilities() -> Result<()> {
-        let secrets = [
-            se_types::Secret::new(b"test-http-bearer".to_vec())?,
-            se_types::Secret::new(b"test-session-pin".to_vec())?,
-        ];
-        let actual = diagnostic(
-            -32602,
-            "invalid headers: Bearer test-http-bearer and test-session-pin",
-            &secrets,
-        );
-        assert!(actual.contains("invalid headers") && actual.contains("-32602"));
-        assert!(!actual.contains("test-http-bearer") && !actual.contains("test-session-pin"));
-        let oversized = diagnostic(-32000, &"x".repeat(2049), &secrets);
-        assert!(oversized.contains("2049 bytes") && !oversized.contains(&"x".repeat(32)));
+    fn dropping_request_waiters_releases_capacity_without_reusing_ids() -> Result<()> {
+        let state = Mutex::new(state::State::default());
+        for _ in 0..40 {
+            let (id, _) = state
+                .lock()
+                .unwrap()
+                .sequence
+                .request("thread/read", json!({}))?;
+            let wire::RequestId::Number(id) = id else {
+                panic!("numeric id required")
+            };
+            let (send, _receive) = oneshot::channel();
+            state.lock().unwrap().pending.insert(id, send);
+            let pending = Pending { state: &state, id };
+            assert_eq!(state.lock().unwrap().pending.len(), 1);
+            drop(pending);
+            assert!(state.lock().unwrap().pending.is_empty());
+            assert!(state.lock().unwrap().sequence.issued(id));
+            assert!(!state.lock().unwrap().sequence.issued(id + 1));
+        }
         Ok(())
+    }
+    #[test]
+    fn provider_diagnostics_never_reflect_credentials_or_their_encodings() {
+        for message in [
+            "Bearer test-http-bearer",
+            "test%2Dhttp%2Dbearer",
+            "dGVzdC1odHRwLWJlYXJlcg==",
+            "test-http",
+        ] {
+            let actual = diagnostic(-32602, message);
+            assert!(actual.contains("-32602") && actual.contains("withheld"));
+            assert!(!actual.contains(message));
+        }
     }
 }

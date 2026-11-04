@@ -147,6 +147,9 @@ pub struct Requests {
     next: i64,
 }
 impl Requests {
+    pub(super) fn issued(&self, id: i64) -> bool {
+        id > 0 && id <= self.next
+    }
     pub fn request(&mut self, method: &str, params: Value) -> Result<(RequestId, Vec<u8>)> {
         self.next = self
             .next

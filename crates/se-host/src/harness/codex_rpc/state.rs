@@ -9,9 +9,10 @@ use std::{
     },
 };
 use tokio::sync::{Notify, oneshot};
-type Reply = std::result::Result<Value, se_types::ErrorBody>;
+type Reply = std::result::Result<Value, rpc::RequestFailure>;
 #[derive(Default)]
 pub(super) struct State {
+    pub capture: bool,
     pub sequence: wire::Requests,
     pub pending: BTreeMap<i64, oneshot::Sender<Reply>>,
     pub conversation: Option<ProviderSessionId>,
@@ -100,32 +101,44 @@ impl Binding {
         if let Ok(mut state) = self.state.lock() {
             state.failure.get_or_insert_with(|| error.body.clone());
             for (_, reply) in std::mem::take(&mut state.pending) {
-                let _ = reply.send(Err(error.body.clone()));
+                let _ = reply.send(Err(SeError::from(error.body.clone()).into()));
             }
         }
         self.completion.nudge();
     }
     pub(super) fn observe(&self, method: String, params: Value) -> Result<()> {
+        if self
+            .state
+            .lock()
+            .map_err(|_| poisoned())?
+            .observe(method, params)?
+        {
+            self.completion.nudge();
+        }
+        Ok(())
+    }
+}
+impl State {
+    fn observe(&mut self, method: String, params: Value) -> Result<bool> {
         if !matches!(
             method.as_str(),
             "turn/started" | "turn/completed" | "item/completed"
         ) {
-            return Ok(());
+            return Ok(false);
         }
         let thread = params
             .get("threadId")
             .and_then(Value::as_str)
             .ok_or_else(|| SeError::invalid("Codex event", "the actual threadId"))?;
-        let mut state = self.state.lock().map_err(|_| poisoned())?;
+        let state = self;
         if state
             .conversation
             .as_ref()
             .is_none_or(|actual| actual.as_str() != thread)
         {
-            return Err(SeError::invalid(
-                "Codex event thread",
-                "the exact initialized conversation",
-            ));
+            // App-server also publishes live sub-agent threads. They do not
+            // change this binding or grant capture/input authority here.
+            return Ok(false);
         }
         if method.starts_with("turn/") {
             let id = params
@@ -140,10 +153,7 @@ impl Binding {
                     .as_ref()
                     .is_some_and(|active| active != &id)
                 {
-                    return Err(SeError::invalid(
-                        "Codex turn state",
-                        "one exact active turn",
-                    ));
+                    return Ok(false);
                 }
                 state.active_turn = Some(id);
             } else {
@@ -161,10 +171,10 @@ impl Binding {
                     .as_ref()
                     .is_some_and(|active| active != &id)
                 {
-                    return Err(SeError::invalid(
-                        "Codex turn completion",
-                        "the exact active turn",
-                    ));
+                    return Ok(false);
+                }
+                if state.active_turn.as_ref() != Some(&id) {
+                    return Ok(false);
                 }
                 state.active_turn = None;
                 if state.completed.len() >= 64 {
@@ -173,7 +183,19 @@ impl Binding {
                 state.completed.push_back(id);
             }
         }
-        if method != "turn/started" {
+        if method == "item/completed" {
+            let turn = params
+                .get("turnId")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 512)
+                .ok_or_else(|| SeError::invalid("Codex item turn", "a bounded actual turnId"))?;
+            if state.active_turn.as_deref() != Some(turn)
+                && !state.completed.iter().any(|id| id == turn)
+            {
+                return Ok(false);
+            }
+        }
+        if state.capture && method != "turn/started" {
             let event = serde_json::json!({"method":method,"params":params});
             let size = encoded_size(&event)?;
             if state.canonical.len() >= 128
@@ -187,13 +209,87 @@ impl Binding {
             state.canonical_bytes += size;
             state.canonical.push_back(event);
         }
-        drop(state);
-        self.completion.nudge();
-        Ok(())
+        Ok(true)
     }
 }
 fn encoded_size(value: &Value) -> Result<usize> {
     serde_json::to_vec(value)
         .map(|bytes| bytes.len())
         .map_err(|e| se_core::scope::unreadable("Codex event encoding", &e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn state(capture: bool) -> State {
+        State {
+            capture,
+            conversation: Some(ProviderSessionId::new("main-thread").unwrap()),
+            active_turn: Some("main-turn".into()),
+            ..Default::default()
+        }
+    }
+    #[test]
+    fn disabled_capture_does_not_accumulate_items_or_terminal_turns() -> Result<()> {
+        let mut state = state(false);
+        for n in 0..256 {
+            assert!(state.observe("item/completed".into(), json!({"threadId":"main-thread","turnId":"main-turn","item":{"id":format!("item-{n}")}}))?);
+        }
+        state.observe(
+            "turn/completed".into(),
+            json!({"threadId":"main-thread","turn":{"id":"main-turn","status":"completed"}}),
+        )?;
+        assert!(state.active_turn.is_none());
+        assert_eq!(
+            state.completed.back().map(String::as_str),
+            Some("main-turn")
+        );
+        assert!(state.canonical.is_empty() && state.canonical_bytes == 0);
+        Ok(())
+    }
+    #[test]
+    fn other_threads_and_turns_cannot_change_the_retained_parent() -> Result<()> {
+        let mut state = state(true);
+        for (method, params) in [
+            (
+                "turn/started",
+                json!({"threadId":"sub-agent","turn":{"id":"child-turn"}}),
+            ),
+            (
+                "turn/completed",
+                json!({"threadId":"main-thread","turn":{"id":"another-turn","status":"completed"}}),
+            ),
+            (
+                "item/completed",
+                json!({"threadId":"main-thread","turnId":"another-turn","item":{"id":"foreign-item"}}),
+            ),
+        ] {
+            assert!(!state.observe(method.into(), params)?);
+        }
+        assert_eq!(state.active_turn.as_deref(), Some("main-turn"));
+        assert!(state.canonical.is_empty() && state.completed.is_empty());
+        assert!(state.observe(
+            "item/completed".into(),
+            json!({"threadId":"main-thread","turnId":"main-turn","item":{"id":"actual-item"}})
+        )?);
+        assert_eq!(state.canonical.len(), 1);
+        Ok(())
+    }
+    #[test]
+    fn enabled_capture_keeps_its_explicit_unacknowledged_capacity_bound() -> Result<()> {
+        let mut state = state(true);
+        for n in 0..128 {
+            state.observe("item/completed".into(), json!({"threadId":"main-thread","turnId":"main-turn","item":{"id":format!("item-{n}")}}))?;
+        }
+        assert!(
+            state
+                .observe(
+                    "item/completed".into(),
+                    json!({"threadId":"main-thread","turnId":"main-turn","item":{"id":"overflow"}})
+                )
+                .is_err()
+        );
+        assert_eq!(state.canonical.len(), 128);
+        Ok(())
+    }
 }
