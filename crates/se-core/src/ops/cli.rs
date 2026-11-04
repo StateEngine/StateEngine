@@ -363,6 +363,7 @@ fn input_command(name: &str, c: Command) -> Command {
         "message.send" => c
             .arg(positional("to", 1, true).help("Registered recipient name or ID, the owner, or floor (shared project messages) with --work-action and --addressee"))
             .arg(positional("body", 2, true).help("Message text; - reads it from stdin"))
+            .arg(toggle("no_wake").long("no-wake").help("Keep this note unread in the inbox without notifying recipients"))
             .arg(value("kind").default_value("note").value_parser([
                 "note", "task", "question", "answer", "blocker", "done", "handoff", "finding",
             ]).help("Message kind: note, task, question, answer, blocker, done, handoff or finding"))
