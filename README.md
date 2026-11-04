@@ -11,7 +11,7 @@ usually a git repo; an **agent** is one saved coding assistant (Claude Code or C
 project; the **floor** is the append-only message log between you and your agents.
 
 1. Install the release: extract the release archive for your platform and, from the
-   extracted folder, run `sh ./install.sh` (Linux, macOS) or `install.ps1` (Windows),
+   extracted folder, run `sh ./install.sh` (Linux, macOS) or `./install.ps1` (Windows),
    or build one from this tree on the target platform with `python3
    scripts/release/build.py --target <target> --out <new-dir>` and `python3
    scripts/release/assemble.py --build <new-dir> --out <archive-dir>`. Verify:
