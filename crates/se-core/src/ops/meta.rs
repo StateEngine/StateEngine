@@ -34,7 +34,18 @@ pub fn metadata_output(op: &AnyOp) -> Result<Option<AnyOutput>> {
             for part in &value.path {
                 command = command.find_subcommand(part).cloned().ok_or_else(|| {
                     SeError::new(Detail::UsageUnknownCommand(details::UsageUnknownCommand {
-                        got: value.path.join(" "),
+                        got: value
+                            .path
+                            .iter()
+                            .map(|part| {
+                                if part.starts_with('-') {
+                                    part.split('=').next().unwrap_or(part)
+                                } else {
+                                    part.as_str()
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" "),
                         suggestion: None,
                     }))
                 })?;

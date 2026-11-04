@@ -224,6 +224,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn explicit_help_never_retains_inline_option_values() {
+        let args = ["se", "help", "--", "--token=private-inline-capability"]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
+        let invocation = match parse(args) {
+            Ok(invocation) => invocation,
+            Err(_) => panic!("explicit help must reach the metadata reader"),
+        };
+        let error = ops::metadata_output(&invocation.operation)
+            .err()
+            .unwrap_or_else(|| panic!("unknown help target must refuse"));
+        let Detail::UsageUnknownCommand(detail) = error.body.detail() else {
+            panic!("unknown help target must retain its command diagnostic");
+        };
+        assert_eq!(detail.got, "--token");
+        assert!(
+            !serde_json::to_string(&error.body)
+                .unwrap()
+                .contains("private-inline-capability")
+        );
+    }
+
+    #[test]
     fn unknown_options_never_retain_inline_values() {
         for prefix in [
             vec!["se"],
