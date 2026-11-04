@@ -15,6 +15,7 @@ fn setup(
     source: RecordId,
     identity: &[u8],
     conversation: &ProviderSessionId,
+    backend: Provider,
 ) -> Result<Vec<EventBody<InputText>>, Box<dyn std::error::Error>> {
     let mut prepared = session::prepared(f, id, &f.a);
     if let EventBody::SessionPrepared {
@@ -23,8 +24,8 @@ fn setup(
         ..
     } = &mut prepared
     {
-        *provider = Provider::Codex;
-        *native_ref = format!("se-codex-pending:{id}");
+        *provider = backend;
+        *native_ref = conversation.as_str().into();
     }
     let mut bound = session::source(source, id, identity, Expected::Absent);
     if let EventBody::CaptureSource { native_ref, .. } = &mut bound {
@@ -32,25 +33,35 @@ fn setup(
     }
     Ok(vec![prepared, session::activated(id)?, bound])
 }
-fn record(n: u64) -> serde_json::Value {
-    json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":"native-thread","turn_id":format!("turn-{n}"),"item":{"type":"AgentMessage","id":format!("item-{n}"),"content":[{"type":"Text","text":format!("same native text {n}")}]}}})
+fn record(n: u64, backend: Provider) -> serde_json::Value {
+    if backend == Provider::Claude {
+        json!({"type":"assistant","sessionId":"native-thread","uuid":format!("uuid-{n}"),"message":{"role":"assistant","content":format!("same native text {n}")}})
+    } else {
+        json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":"native-thread","turn_id":format!("turn-{n}"),"item":{"type":"AgentMessage","id":format!("item-{n}"),"content":[{"type":"Text","text":format!("same native text {n}")}]}}})
+    }
 }
-fn rollout(path: &std::path::Path, prefix: bool) -> Check {
+fn rollout(path: &std::path::Path, prefix: bool, backend: Provider) -> Check {
     let mut file = std::fs::File::create(path)?;
-    writeln!(
-        file,
-        "{}",
-        json!({"type":"session_meta","payload":{"id":"native-thread"}})
-    )?;
-    if prefix {
+    if backend == Provider::Codex {
         writeln!(
             file,
             "{}",
-            json!({"type":"event_msg","payload":{"type":"task_started"}})
+            json!({"type":"session_meta","payload":{"id":"native-thread"}})
         )?;
     }
+    if prefix {
+        if backend == Provider::Codex {
+            writeln!(
+                file,
+                "{}",
+                json!({"type":"event_msg","payload":{"type":"task_started"}})
+            )?;
+        } else {
+            writeln!(file)?;
+        }
+    }
     for n in 0..6 {
-        writeln!(file, "{}", record(n))?;
+        writeln!(file, "{}", record(n, backend))?;
     }
     file.sync_all()?;
     Ok(())
@@ -58,6 +69,13 @@ fn rollout(path: &std::path::Path, prefix: bool) -> Check {
 
 #[test]
 fn resumed_rollout_keeps_original_events_and_verifies_its_own_source_ranges() -> Check {
+    resume_capture(Provider::Codex)
+}
+#[test]
+fn resumed_claude_uuids_keep_original_events_and_verify_new_source_ranges() -> Check {
+    resume_capture(Provider::Claude)
+}
+fn resume_capture(backend: Provider) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
     seed(&f)?;
@@ -70,8 +88,8 @@ fn resumed_rollout_keeps_original_events_and_verifies_its_own_source_ranges() ->
     let conversation = ProviderSessionId::new("native-thread")?;
     let original_path = f.home.join("first.jsonl");
     let resumed_path = f.home.join("resumed.jsonl");
-    rollout(&original_path, false)?;
-    rollout(&resumed_path, true)?;
+    rollout(&original_path, false, backend)?;
+    rollout(&resumed_path, true, backend)?;
     let first_pin = se_proc::NativeSourcePin::open(&original_path)?.ok_or("first pin absent")?;
     let second_pin = se_proc::NativeSourcePin::open(&resumed_path)?.ok_or("second pin absent")?;
     let (mut direct, lease) = direct(&f)?;
@@ -85,6 +103,7 @@ fn resumed_rollout_keeps_original_events_and_verifies_its_own_source_ranges() ->
                 first_source,
                 &first_pin.identity(),
                 &conversation,
+                backend,
             )?,
         )?,
         &*lease,
@@ -98,6 +117,7 @@ fn resumed_rollout_keeps_original_events_and_verifies_its_own_source_ranges() ->
     rt.block_on(async {
         let mut host =
             HostedRuntime::prepare(initialized, start(&f)?, rt.handle().clone(), &bound()?).await?;
+        configure_private_listener(&mut host)?;
         let capture = host.capture_handle();
         let execution = host.execution_context();
         let stop = host.local_stop();
@@ -147,6 +167,7 @@ fn resumed_rollout_keeps_original_events_and_verifies_its_own_source_ranges() ->
                     resumed_source,
                     &second_pin.identity(),
                     &conversation,
+                    backend,
                 )?);
                 execution
                     .writer
@@ -211,7 +232,7 @@ fn resumed_rollout_keeps_original_events_and_verifies_its_own_source_ranges() ->
                 snapshot.close()?;
                 let mut file = OpenOptions::new().append(true).open(&resumed_path)?;
                 for n in 6..9 {
-                    writeln!(file, "{}", record(n))?;
+                    writeln!(file, "{}", record(n, backend))?;
                 }
                 file.sync_all()?;
                 capture

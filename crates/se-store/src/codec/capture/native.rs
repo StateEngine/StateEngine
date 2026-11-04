@@ -1,4 +1,4 @@
-//! Codex's native conversation survives engine-session replacement. Search
+//! Native Claude/Codex conversations survive engine-session replacement. Search
 //! source bindings, then exact indexed per-session item keys, never chat text.
 use super::*;
 use se_types::SessionId;
@@ -13,17 +13,17 @@ pub(crate) fn find(
     let project = crate::connection::project_id(c, scope, false)?;
     let storage_scope = scope_key(c, scope, false)?;
     let id = key(c, "session", session.as_str(), &storage_scope, false)?;
-    let exact = |id: &[u8], agent: Option<&[u8]>| -> StoreResult<Option<i64>> {
+    let exact = |id: &[u8], agent: Option<&[u8]>, chat_only: bool| -> StoreResult<Option<i64>> {
         c.query_row(
-            "SELECT event_seq FROM turn_data WHERE project_id=? AND session_id=? AND provider=? AND vendor_ref=? AND (? IS NULL OR agent_id=?)",
-            rusqlite::params![project, id, provider(backend), vendor, agent, agent],
+            "SELECT event_seq FROM turn_data WHERE project_id=? AND session_id=? AND provider=? AND vendor_ref=? AND (? IS NULL OR agent_id=?) AND (?=0 OR role IN ('user','assistant'))",
+            rusqlite::params![project, id, provider(backend), vendor, agent, agent, chat_only],
             |row| row.get(0),
         ).optional().map_err(sql)
     };
-    if let Some(seq) = exact(&id, None)? {
+    if let Some(seq) = exact(&id, None, false)? {
         return Ok(Some(seq));
     }
-    if backend != Provider::Codex {
+    if !matches!(backend, Provider::Claude | Provider::Codex) {
         return Ok(None);
     }
     // Import canonicalizes before applying its same-batch SessionPrepared.
@@ -69,7 +69,9 @@ pub(crate) fn find(
     for candidate in sessions {
         let candidate = candidate.map_err(sql)?;
         let id = key(c, "session", &candidate, &storage_scope, false)?;
-        if let Some(seq) = exact(&id, Some(&head.agent))? {
+        // Claude metadata embeds its engine-session/source binding. Reuse its
+        // native chat UUIDs while preserving the existing Codex item contract.
+        if let Some(seq) = exact(&id, Some(&head.agent), backend == Provider::Claude)? {
             first = Some(first.map_or(seq, |old: i64| old.min(seq)));
         }
     }
@@ -80,7 +82,7 @@ pub(crate) fn find(
 /// event keeps its original session, source evidence and occurrence time.
 pub(crate) fn resumed(event: &NewEvent, old: &StoredEvent) -> bool {
     matches!((&event.body, &old.body), (
-        EventBody::SessionTurn { session: new_session, agent, provider: Provider::Codex, vendor_ref, role, text: InputText::Inline(text), .. },
-        EventBody::SessionTurn { session: old_session, agent: old_agent, provider: Provider::Codex, vendor_ref: old_vendor, role: old_role, text: StoredText::Present(old_text), .. }
-    ) if new_session != old_session && agent == old_agent && vendor_ref == old_vendor && role == old_role && text == old_text)
+        EventBody::SessionTurn { session: new_session, agent, provider, vendor_ref, role, text: InputText::Inline(text), .. },
+        EventBody::SessionTurn { session: old_session, agent: old_agent, provider: old_provider, vendor_ref: old_vendor, role: old_role, text: StoredText::Present(old_text), .. }
+    ) if new_session != old_session && agent == old_agent && matches!(provider,Provider::Claude|Provider::Codex) && provider==old_provider && vendor_ref == old_vendor && role == old_role && (*provider == Provider::Codex || matches!(role,Role::User|Role::Assistant)) && text == old_text)
 }

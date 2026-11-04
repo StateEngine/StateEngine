@@ -202,20 +202,20 @@ fn cursor(
                 )?;
                 if let Some(range) = replay_evidence {
                     let EventBody::SessionTurn {
-                        provider: se_store::Provider::Codex,
+                        provider: backend @ (se_store::Provider::Claude | se_store::Provider::Codex),
                         vendor_ref,
                         ..
                     } = &turn.body
                     else {
                         return Err(scope::unreadable(
                             "capture replay",
-                            "only a bound Codex item can retain an earlier session's turn",
+                            "only a bound Claude/Codex item can retain an earlier session's turn",
                         ));
                     };
                     let original = scope::require_present(
                         read.native_turn(
                             source.binding.identity.session.clone(),
-                            se_store::Provider::Codex,
+                            *backend,
                             vendor_ref,
                         )
                         .map_err(|error| store_error(&error))?,

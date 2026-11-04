@@ -85,7 +85,7 @@ pub struct CaptureMetadata {
     pub event: EventId,
 }
 /// Allocated before first submission and retained across an uncertain result.
-/// Codex natural identity is bound native conversation/provider/vendor_turn, not these
+/// Native chat identity is bound conversation/provider/vendor_turn, not these
 /// allocated event/turn identifiers, and replay resolves its original members.
 pub struct CaptureFacts {
     pub turn: RecordId,
@@ -405,7 +405,9 @@ pub fn committed<R: Snapshot>(
             "resumed native item",
             scope::COMMITTED_READ_RECOVERY,
         )?;
-        if then.provider != Provider::Codex || original.header.event != event.header.event {
+        if !matches!(then.provider, Provider::Claude | Provider::Codex)
+            || original.header.event != event.header.event
+        {
             return Err(scope::unreadable(
                 "captured turn",
                 "receipt differs from the bound native conversation item",

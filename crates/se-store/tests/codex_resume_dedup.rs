@@ -20,6 +20,17 @@ fn bind(
     src: RecordId,
     conversation: &str,
 ) -> Check {
+    bind_provider(f, d, lease, id, src, conversation, Provider::Codex)
+}
+fn bind_provider(
+    f: &Fixture,
+    d: &mut SqliteDirect,
+    lease: &Lease,
+    id: &SessionId,
+    src: RecordId,
+    conversation: &str,
+    backend: Provider,
+) -> Check {
     let mut preparation = prepared(f, id, &f.a);
     if let EventBody::SessionPrepared {
         provider,
@@ -27,9 +38,9 @@ fn bind(
         ..
     } = &mut preparation
     {
-        *provider = Provider::Codex;
-        // Fresh Codex launch learns its actual conversation from CaptureSource.
-        *native_ref = format!("se-codex-pending:{id}");
+        *provider = backend;
+        // CaptureSource pins the conversation independently of the engine session.
+        *native_ref = conversation.into();
     }
     let mut binding = source(src, id, b"first", Expected::Absent);
     if let EventBody::CaptureSource { native_ref, .. } = &mut binding {
@@ -52,9 +63,19 @@ fn item(
     n: u64,
     vendor: &str,
 ) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
+    item_provider(f, id, src, n, vendor, Provider::Codex)
+}
+fn item_provider(
+    f: &Fixture,
+    id: &SessionId,
+    src: RecordId,
+    n: u64,
+    vendor: &str,
+    backend: Provider,
+) -> Result<AtomicBatch, Box<dyn std::error::Error>> {
     let mut batch = capture(f, id, src, b"first", n * 10, n + 1, vendor)?;
     if let EventBody::SessionTurn { provider, .. } = &mut batch.events[0].body {
-        *provider = Provider::Codex;
+        *provider = backend;
     }
     Ok(batch)
 }
@@ -131,17 +152,34 @@ fn an_existing_session_with_unreadable_data_still_refuses_without_capture() -> C
 
 #[test]
 fn resume_reuses_six_native_events_and_timestamps_but_appends_new_items() -> Check {
+    resume_twice(Provider::Codex)
+}
+#[test]
+fn claude_two_resumes_keep_nine_native_uuids_once() -> Check {
+    resume_twice(Provider::Claude)
+}
+fn resume_twice(backend: Provider) -> Check {
     let f = Fixture::new()?;
     let (mut d, lease) = f.direct()?;
     let first = session()?;
     let resumed = session()?;
+    let third = session()?;
     let first_src = record()?;
     let resumed_src = record()?;
-    bind(&f, &mut d, &lease, &first, first_src, "native-thread")?;
+    let third_src = record()?;
+    bind_provider(
+        &f,
+        &mut d,
+        &lease,
+        &first,
+        first_src,
+        "native-thread",
+        backend,
+    )?;
     let mut originals = Vec::new();
     for n in 0..6 {
         let receipt = d.append(
-            item(&f, &first, first_src, n, &format!("turn-{n}"))?,
+            item_provider(&f, &first, first_src, n, &format!("turn-{n}"), backend)?,
             &*lease,
         )?;
         let mut snap = d.snapshot(f.self_scope(&f.a))?;
@@ -161,9 +199,55 @@ fn resume_reuses_six_native_events_and_timestamps_but_appends_new_items() -> Che
         )?,
         &*lease,
     )?;
-    bind(&f, &mut d, &lease, &resumed, resumed_src, "native-thread")?;
+    bind_provider(
+        &f,
+        &mut d,
+        &lease,
+        &resumed,
+        resumed_src,
+        "native-thread",
+        backend,
+    )?;
+    let head = d.info()?.head;
+    for change_role in [false, true] {
+        let mut changed = item_provider(&f, &resumed, resumed_src, 0, "turn-0", backend)?;
+        if let EventBody::SessionTurn { role, text, .. } = &mut changed.events[0].body {
+            if change_role {
+                *role = Role::User;
+            } else {
+                *text = InputText::Inline("conflicting native text".into());
+            }
+        }
+        let error = d
+            .append(changed, &*lease)
+            .err()
+            .ok_or("conflicting native identity was accepted")?;
+        assert_eq!(error.code, StoreErrorCode::NaturalKeyConflict);
+        assert_eq!(
+            d.info()?.head,
+            head,
+            "conflict advanced floor or source cursor"
+        );
+    }
+    for n in 0..6 {
+        let replay = d.append(
+            item_provider(&f, &resumed, resumed_src, n, &format!("turn-{n}"), backend)?,
+            &*lease,
+        )?;
+        assert_eq!(replay.primary_event, originals[n as usize].header.event);
+    }
+    end(&f, &mut d, &lease, &resumed)?;
+    bind_provider(
+        &f,
+        &mut d,
+        &lease,
+        &third,
+        third_src,
+        "native-thread",
+        backend,
+    )?;
     for n in 0..9 {
-        let mut batch = item(&f, &resumed, resumed_src, n, &format!("turn-{n}"))?;
+        let mut batch = item_provider(&f, &third, third_src, n, &format!("turn-{n}"), backend)?;
         for event in &mut batch.events {
             event.header.occurred_at_us = 1_800_000_000_000_000;
         }
@@ -183,14 +267,17 @@ fn resume_reuses_six_native_events_and_timestamps_but_appends_new_items() -> Che
         assert_eq!(retained.header.occurred_at_us, old.header.occurred_at_us);
         assert_eq!(retained.header.session, Some(first.clone()));
     }
-    let cursor = present(snap.capture_source(resumed_src)?)?;
+    let cursor = present(snap.capture_source(third_src)?)?;
     assert!(matches!(
         cursor.current.body,
         EventBody::CaptureProgress { new_offset: 90, .. }
     ));
     snap.close()?;
     let head = d.info()?.head;
-    let replay = d.append(item(&f, &resumed, resumed_src, 8, "turn-8")?, &*lease)?;
+    let replay = d.append(
+        item_provider(&f, &third, third_src, 8, "turn-8", backend)?,
+        &*lease,
+    )?;
     assert_eq!(replay.state, CommitState::NaturalKeyReplay);
     assert_eq!(d.info()?.head, head);
     Ok(())
