@@ -114,6 +114,8 @@ pub(in crate::state_files) fn prepare_created_directory(
     use std::os::unix::fs::PermissionsExt;
     file.set_permissions(std::fs::Permissions::from_mode(0o700))
         .map_err(|error| io_error("protect created staging directory", &stage_path, error))?;
+    #[cfg(target_os = "macos")]
+    super::super::clear_created_acl(&file, &stage_path, true)?;
     let stat = file
         .metadata()
         .map_err(|error| io_error("inspect created staging directory", path, error))?;
