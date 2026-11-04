@@ -71,6 +71,14 @@ impl Binding {
         }
         Ok(state.canonical.iter().cloned().collect())
     }
+    /// Retained source bytes only, including after EOF or a failed transport.
+    /// Final capture must independently prove them against the pinned rollout
+    /// and committed items before acknowledgement. This does not clear failure
+    /// or grant authority to issue further input on the broken connection.
+    pub fn retained_notifications(&self) -> Result<Vec<Value>> {
+        let state = self.state.lock().map_err(|_| poisoned())?;
+        Ok(state.canonical.iter().cloned().collect())
+    }
     pub fn acknowledge_notifications(&self, committed: &[Value]) -> Result<()> {
         let mut state = self.state.lock().map_err(|_| poisoned())?;
         if committed.len() > state.canonical.len()
