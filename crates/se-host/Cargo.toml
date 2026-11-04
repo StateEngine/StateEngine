@@ -18,6 +18,7 @@ se-types = { path = "../se-types" }
 se-core = { path = "../se-core" }
 se-store = { path = "../se-store" }
 se-proc = { path = "../se-proc" }
+se-atlas = { path = "../se-atlas" }
 serde_json.workspace = true
 serde.workspace = true
 hmac = "0.12.1"

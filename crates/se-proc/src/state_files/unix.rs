@@ -283,7 +283,26 @@ impl Directory {
         Ok((self.directory(parent, root)?, name))
     }
     pub fn prepare_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        self.prepare_directory_impl(path, root, false)
+    }
+    pub fn prepare_new_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        self.prepare_directory_impl(path, root, true)
+    }
+    fn prepare_directory_impl(&self, path: &Path, root: &Path, exclusive: bool) -> Result<()> {
         let (parent, name) = self.parent(path, root)?;
+        if exclusive {
+            let mut custody = Vec::new();
+            effects::prepare_created_directory(path, &mut custody)?;
+            if custody.is_empty() {
+                return Err(failure(
+                    StateFileErrorCode::AlreadyExists,
+                    "fresh directory already exists; preserve it",
+                    path,
+                ));
+            }
+            self.directory(path, root)?;
+            return Ok(());
+        }
         #[cfg(target_os = "macos")]
         let created = {
             let mut custody = Vec::new();

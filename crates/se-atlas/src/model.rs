@@ -1,12 +1,13 @@
 // Shared code DTOs have one identity across core, host and Atlas.
 use se_types::ProjectId;
 pub use se_types::code::{
-    Accuracy, Answer, AtlasCursor, AtlasJobId, AuthorHint, BulkChange, BulkReason, ChangeId,
-    ChangeKind, CodeChange, CodeEdit, CodeHit, CodePointer, ContentHash, Coverage, CoverageReason,
-    Dependent, DependentCount, FileCoverage, FileId, FindMethod, Generation, Impact, ImpactHop,
-    IndexState, IndexSummary, Language, Outline, OutlineSymbol, Position, QueryBudget, QueryText,
-    Reference, ReferenceKind, RelativePath, SnapshotFreshness, Span, SurfaceAtlasState, SymbolId,
-    SymbolKind,
+    Accuracy, Answer, AtlasCursor, AtlasJobId, AtlasPrincipal, AuthorHint, BulkChange, BulkReason,
+    ChangeId, ChangeKind, CodeChange, CodeEdit, CodeHit, CodePointer, CommitHit, ContentHash,
+    Coverage, CoverageReason, Dependent, DependentCount, FileCoverage, FileId, FindMethod,
+    Generation, HitReason, HitTarget, Impact, ImpactHop, IndexState, IndexSummary, Language,
+    MentionTarget, Outline, OutlineSymbol, Position, QueryBudget, QueryText, RecordHit, RecordKey,
+    RecordKind, RecordPointer, RecordVisibility, Reference, ReferenceHit, ReferenceKind,
+    RelativePath, SearchHit, SnapshotFreshness, Span, SurfaceAtlasState, SymbolId, SymbolKind,
 };
 pub use se_types::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::{path::PathBuf, time::Duration};
@@ -15,7 +16,8 @@ use std::{path::PathBuf, time::Duration};
 pub struct CacheLocation {
     pub directory: PathBuf,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CachePointer {
     pub schema: u32,
     pub project: ProjectId,

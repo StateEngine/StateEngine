@@ -1,9 +1,12 @@
-//! Compile-only Atlas contract. See docs/design/60-atlas.md.
-//! No indexer, watcher, SQL executor, runtime stub or transport is implemented.
-
-#![allow(dead_code, reason = "Declarations only until design approval")]
+//! Rebuildable Atlas foundation. Native custody is supplied by host adapters.
+#![forbid(unsafe_code)]
 
 pub mod errors;
 pub mod lifecycle;
 pub mod model;
 pub mod queries;
+
+pub mod cache;
+pub mod parse;
+pub mod scope;
+pub mod source;

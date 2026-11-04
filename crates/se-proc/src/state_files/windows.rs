@@ -325,6 +325,12 @@ impl Directory {
         )
     }
     pub fn prepare_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        self.prepare_directory_impl(path, root, false)
+    }
+    pub fn prepare_new_directory(&self, path: &Path, root: &Path) -> Result<()> {
+        self.prepare_directory_impl(path, root, true)
+    }
+    fn prepare_directory_impl(&self, path: &Path, root: &Path, exclusive: bool) -> Result<()> {
         let parent = self.parent(path, root)?;
         let absolute = self.absolute(path, root)?;
         let descriptor = descriptor(path, true)?;
@@ -335,10 +341,17 @@ impl Directory {
         };
         // SAFETY: resolved held-root descendant, retained parent and descriptor;
         // this creates one leaf only and never changes an existing directory.
-        if unsafe { CreateDirectoryW(wide(&absolute)?.as_ptr(), &attributes) } == 0
-            && io::Error::last_os_error().raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32)
-        {
-            return Err(last("create protected child directory", path));
+        if unsafe { CreateDirectoryW(wide(&absolute)?.as_ptr(), &attributes) } == 0 {
+            if io::Error::last_os_error().raw_os_error() != Some(ERROR_ALREADY_EXISTS as i32) {
+                return Err(last("create protected child directory", path));
+            }
+            if exclusive {
+                return Err(failure(
+                    StateFileErrorCode::AlreadyExists,
+                    "fresh directory already exists; preserve it",
+                    path,
+                ));
+            }
         }
         let file = open(&absolute, true, false, true)?;
         let before = metadata(&file, path, true, true)?;
