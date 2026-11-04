@@ -12,6 +12,7 @@ pub(super) struct Store {
     pub pool: BlockingPool,
     pub generation: Generation,
     pub pending: crate::runtime::PendingWrites,
+    pub mail_waits: Arc<crate::http::mail::Waits>,
 }
 impl Store {
     pub async fn read<T: Send + 'static>(
@@ -77,8 +78,11 @@ impl Store {
             natural_events: Vec::new(),
         };
         let submitted = identity.clone();
+        let recipients = crate::runtime::mail::recipients(&batch);
+        let revocations = crate::runtime::mail::revocations(&batch);
         let writer = self.writer.clone();
         let pending = self.pending.clone();
+        let mail_waits = self.mail_waits.clone();
         let runtime = self.pool.handle();
         let completion = self
             .pool
@@ -96,7 +100,14 @@ impl Store {
                             }
                             Err(_) => pending.failed_attempt(&submitted),
                         };
-                        (receipt, settled)
+                        let notified = if receipt.is_ok() {
+                            mail_waits
+                                .committed(&recipients)
+                                .and_then(|()| mail_waits.revoked(&revocations))
+                        } else {
+                            Ok(())
+                        };
+                        (receipt, settled.and(notified))
                     })),
                     Err(error) => {
                         pending.failed_attempt(&submitted)?;

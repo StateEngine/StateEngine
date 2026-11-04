@@ -17,6 +17,8 @@ use std::{sync::atomic::Ordering, time::Duration};
 
 impl LaunchCoordinator {
     pub(super) async fn monitor(self: &Arc<Self>, job: Arc<Job>) {
+        let mut retry_at = None;
+        let mut backoff = Duration::from_millis(100);
         loop {
             let wake = {
                 let mut state = job.state.lock().await;
@@ -69,13 +71,25 @@ impl LaunchCoordinator {
                         return;
                     }
                     Ok(_) => {
-                        if job.mail_pending.swap(false, Ordering::AcqRel) {
+                        if retry_at.is_none_or(|at| tokio::time::Instant::now() >= at)
+                            && job.mail_pending.swap(false, Ordering::AcqRel)
+                        {
                             let result = match deadline.stage(Duration::from_secs(10)) {
                                 Ok(bound) => self.deliver_mail(&mut state, &bound).await,
                                 Err(error) => Err(error),
                             };
                             if let Err(error) = result {
+                                if state.mail.flight.is_none() {
+                                    job.mail_pending.store(true, Ordering::Release);
+                                    retry_at = Some(tokio::time::Instant::now() + backoff);
+                                    backoff = (backoff * 2).min(Duration::from_secs(2));
+                                } else {
+                                    retry_at = None;
+                                }
                                 super::mail::diagnostic::report(&state, &error);
+                            } else {
+                                retry_at = None;
+                                backoff = Duration::from_millis(100);
                             }
                         }
                         state.wake.clone()
@@ -86,7 +100,7 @@ impl LaunchCoordinator {
                     }
                 }
             };
-            wake.event.notified().await;
+            monitor_wake(&wake.event, retry_at).await;
         }
     }
     pub(super) async fn cleanup_failed(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
@@ -451,6 +465,54 @@ impl LaunchCoordinator {
             .await?;
         work.session_retired = true;
         self.proofs.remove(&work.meta.session)?;
+        Ok(())
+    }
+}
+
+async fn monitor_wake(wake: &tokio::sync::Notify, retry_at: Option<tokio::time::Instant>) {
+    let Some(at) = retry_at else {
+        return wake.notified().await;
+    };
+    use std::{future::Future, task::Poll};
+    let changed = wake.notified();
+    let delayed = tokio::time::sleep_until(at);
+    tokio::pin!(changed, delayed);
+    std::future::poll_fn(|cx| {
+        if changed.as_mut().poll(cx).is_ready() {
+            return Poll::Ready(());
+        }
+        delayed.as_mut().poll(cx)
+    })
+    .await;
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    #[test]
+    fn retry_timer_wakes_without_an_unrelated_event_and_keeps_native_events_prompt() -> Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .map_err(|error| {
+                se_core::scope::unreadable("retry test executor", &error.to_string())
+            })?;
+        runtime.block_on(async {
+            let wake = tokio::sync::Notify::new();
+            let at = tokio::time::Instant::now() + Duration::from_millis(20);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), monitor_wake(&wake, Some(at)))
+                    .await
+                    .is_ok()
+            );
+            wake.notify_one();
+            let later = tokio::time::Instant::now() + Duration::from_secs(60);
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), monitor_wake(&wake, Some(later)))
+                    .await
+                    .is_ok()
+            );
+        });
         Ok(())
     }
 }

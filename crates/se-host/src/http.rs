@@ -3,7 +3,9 @@
 //! accepts owner authority; the session bearer is the only credential. MCP
 //! protocol handling itself is the shared consumer in `crate::mcp`.
 mod admission;
+pub(crate) mod mail;
 mod mcp;
+pub(crate) mod proof;
 mod server;
 pub use server::HttpListener;
 pub(crate) use server::connection;

@@ -301,6 +301,8 @@ fn prepare(
         .start_writer(options.writer, lease.clone())
         .map_err(|e| store_error(&e))?;
     let execution = ExecutionContext {
+        mail_waits: crate::http::mail::Waits::new(options.limits.sessions.get() as usize),
+        http_proofs: Arc::default(),
         state_directory: options.state_directory.clone(),
         reader: Arc::new(reader),
         reads: admission_reads.clone(),

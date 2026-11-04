@@ -172,6 +172,9 @@ impl HostedRuntime {
             }
         };
         outcome.runtime.fenced.store(true, Ordering::Release);
+        if let Err(error) = outcome.runtime.execution.mail_waits.close() {
+            outcome.failure.get_or_insert(error);
+        }
         outcome.runtime.phase = crate::HostPhase::Draining;
         // Waiting for the next request is cancellable; an admitted request owns
         // its execution and reply until completion. Charge that join against the

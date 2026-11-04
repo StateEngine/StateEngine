@@ -19,6 +19,7 @@ use std::{
     sync::{Arc, Weak},
 };
 use zeroize::Zeroizing;
+mod http;
 
 /// Whether a still-prepared credential may be used: only for read-only tool
 /// discovery during its launch, never for an operation.

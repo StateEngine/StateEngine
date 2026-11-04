@@ -13,6 +13,8 @@ use se_types::Secret;
 pub(crate) enum Route {
     Mcp,
     Livez,
+    Mail,
+    Proof,
 }
 #[derive(Debug)]
 pub(crate) struct Refusal {
@@ -46,6 +48,8 @@ pub(crate) fn admit<B>(request: &Request<B>, port: u16) -> Result<Route, Refusal
     let route = match uri.path() {
         "/mcp" => Route::Mcp,
         "/stateengine/livez" => Route::Livez,
+        "/stateengine/mail/next_change" => Route::Mail,
+        "/stateengine/local-http-proof" => Route::Proof,
         _ => return Err(Refusal::new(StatusCode::NOT_FOUND, "no such route")),
     };
     let headers = request.headers();
@@ -55,22 +59,22 @@ pub(crate) fn admit<B>(request: &Request<B>, port: u16) -> Result<Route, Refusal
     framing(headers)?;
     let method = request.method();
     match route {
-        Route::Mcp if method == Method::POST => json_media(headers)?,
-        Route::Livez if method == Method::GET => {
+        Route::Mcp | Route::Proof if method == Method::POST => json_media(headers)?,
+        Route::Livez | Route::Mail if method == Method::GET => {
             // An exact zero declares no body; `framing` has already refused
             // duplicate, unreadable or oversized lengths.
             if single(headers, &header::CONTENT_LENGTH)?.is_some_and(|length| length != "0") {
                 return Err(Refusal::new(StatusCode::BAD_REQUEST, "GET carries no body"));
             }
         }
-        Route::Mcp => {
+        Route::Mcp | Route::Proof => {
             return Err(Refusal {
                 status: StatusCode::METHOD_NOT_ALLOWED,
                 reason: "POST only",
                 allow: Some("POST"),
             });
         }
-        Route::Livez => {
+        Route::Livez | Route::Mail => {
             return Err(Refusal {
                 status: StatusCode::METHOD_NOT_ALLOWED,
                 reason: "GET only",
