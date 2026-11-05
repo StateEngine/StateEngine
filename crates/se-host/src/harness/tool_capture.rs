@@ -6,6 +6,8 @@ use sha2::{Digest, Sha256};
 
 pub(crate) mod claude;
 pub(crate) mod codex;
+#[cfg(test)]
+mod command_tests;
 mod targets;
 #[cfg(test)]
 mod tests;

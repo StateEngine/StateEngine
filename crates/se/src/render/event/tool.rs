@@ -31,6 +31,17 @@ pub(super) fn render(value: Option<&serde_json::Value>, out: &mut impl Write) ->
         _ => "tool",
     };
     match &tool.target {
+        Target::Command(command) => {
+            write!(out, "  {}: ", if succeeded { "ran" } else { "command" })?;
+            for character in command.chars() {
+                if character.is_control() {
+                    write!(out, "{}", character.escape_default())?;
+                } else {
+                    write!(out, "{character}")?;
+                }
+            }
+            writeln!(out)?;
+        }
         Target::Paths(paths) => {
             for path in paths {
                 if editing || reading {
