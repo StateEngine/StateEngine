@@ -10,6 +10,9 @@ StateEngine is one command, `se`. A **home** is its data directory (Linux defaul
 usually a git repo; an **agent** is one saved coding assistant (Claude Code or Codex) in a
 project; the **floor** is the append-only message log between you and your agents.
 
+These examples show one Linux run; only machine-specific paths and IDs are
+shortened. Your agent’s wording and timestamps will differ.
+
 1. Install the release: extract the release archive for your platform and, from the
    extracted folder, run `sh ./install.sh` (Linux, macOS) or `./install.ps1` (Windows),
    or build one from this tree on the target platform with `python3
@@ -27,10 +30,15 @@ project; the **floor** is the append-only message log between you and your agent
        $ se init --provider codex
        Project repo registered at /path/to/repo
        State home: /home/you/.local/state/stateengine
+       Repository files written: 0
        Agent main uses Codex
-       Permission profile default: workspace-write, approval on-request, network false, bypass false
-         registered the home owner / registered the project / registered the project owner
-         created the initial saved agent / persisted the initial listener port
+       Permission profile default: workspace-write, approval never, network false, bypass false
+       To enable network for this profile: se config set profiles.default.network true
+         registered the home owner
+         registered the project
+         registered the project owner
+         created the initial saved agent
+         persisted the initial listener port
        Launch your first agent: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
 
    `State home` above is the Linux default; macOS: `~/Library/Application Support/StateEngine`,
@@ -41,13 +49,32 @@ project; the **floor** is the append-only message log between you and your agent
 
        $ se launch main --task "Create a file called notes.md with one sentence describing what this repo is for." --detach
        Agent main: running (Codex, headless)
+       Process: PID ..., started 2026-11-05T02:06:07.860000Z
+       Containment: uncontained
+       Containment reason: The OS has not delegated a containment scope to this user.
+       Permission profile default: workspace-write, approval never, network false, bypass false
+       To enable network for this profile: se config set profiles.default.network true
+       Conversation: ...
+       Resume: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
+       Read replies: se --home /home/you/.local/state/stateengine --project prj_... history --agent ag_... --kind session.turn
+       Event: ev_...; request key: ...
 
 4. Check on it:
 
        $ se status
+       StateEngine 0.0.1
+       State home: /home/you/.local/state/stateengine
        Project: repo (/path/to/repo)
        Runtime: running
+       Host: runs as a session process and stops when this login session ends
+         PID ... (started 2026-11-05T02:06:07.140000Z)
          main: running — unread 0
+           Containment reason: The OS has not delegated a containment scope to this user.
+           Resume: The captured conversation prefix is verified; stop or reconcile the existing scope before resuming its saved conversation.
+       Owner unread messages: 0
+       Pending decisions: unknown
+       Capture: unknown; code index: not-built
+       Inspect your saved agent: se --home /home/you/.local/state/stateengine --project prj_... agent show ag_...
 
 5. Read what it did: a plain task launch reports in its conversation and in your folder, not by floor mail:
 
@@ -55,7 +82,25 @@ project; the **floor** is the append-only message log between you and your agent
        Unread messages: 0
        $ se history --agent main
        session.turn — repo
-         text: Created [notes.md](/path/to/repo/notes.md) with: "This repository is a small demo for the StateEngine quickstart."
+         By: main
+         At: 2026-11-05T02:06:10.715018Z
+         Role: user
+         Text: Create a file called notes.md with one sentence describing what this repo is for.
+       session.turn — repo
+         By: main
+         At: 2026-11-05T02:06:12.683270Z
+         Role: assistant
+         Text: I’ll check the README and create `notes.md` with a one-sentence description.
+       transcript.event — repo
+         By: main
+         At: 2026-11-05T02:06:18.737384Z
+         Provider event: captured-tool
+       session.turn — repo
+         By: main
+         At: 2026-11-05T02:06:20.726552Z
+         Role: assistant
+         Text: Created [notes.md](/path/to/repo/notes.md) with one sentence describing the repo’s purpose.
+       Use --json for full event details.
 
 6. Resume it: `se resume --preview AGENT` reads the saved context without restarting
    the agent; `se resume AGENT` refuses, because resume is a context read, and hands
@@ -65,9 +110,34 @@ project; the **floor** is the append-only message log between you and your agent
        $ se resume --preview main
        Who am I?
        main in repo — ready (owner preview; nothing acknowledged)
+       Session: ses_...
+
+       What was I doing?
+       No saved working state.
+
+       What's waiting?
+       No unread messages in this snapshot.
+       Pending decisions in this authorized view: 0
+
+       What changed?
+       Recent context; use --since with the returned cursor for later changes.
+       Recent user turn at 2026-11-05T02:06:10.710850Z [ev_...]: Create a file called notes.md with one sentence describing what this repo is for.
+       Recent assistant turn at 2026-11-05T02:06:12.681265Z [ev_...]: I’ll check the README and create `notes.md` with a one-sentence description.
+       Recent assistant turn at 2026-11-05T02:06:20.723701Z [ev_...]: Created [notes.md](/path/to/repo/notes.md) with one sentence describing the repo’s purpose.
+       Context bytes: 3263 of 4096; complete: true
+       Continue: se --home '/home/you/.local/state/stateengine' --project prj_... resume --since ... --preview ag_...
        $ se stop main
-       Stop agent: stopped (complete: true)
-       Resume ready: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
+       Stop complete.
+       Agent main in repo
+       Original process: PID ..., started 2026-11-05T02:06:07.860000Z
+       Exit check complete.
+       The original process exited and its recorded process group is empty. Processes that left that group may remain.
+       Checked: 2026-11-05T02:06:22.245731Z
+       No processes remain in the checked scope.
+       The process list is complete.
+       Saved conversation: up to date.
+       Resume: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
+       Use --json for full stop details.
        $ se resume main
        error[usage-invalid-value]: se resume AGENT: `provider conversation reopen` is not a context read; use launch to reopen the saved conversation
          fix: Reopen this agent's saved conversation with the command below. Run: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
