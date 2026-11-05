@@ -45,6 +45,28 @@ pub fn start_with_origin(
     origin: StartupOrigin,
     bound: &se_host::client::lease::Deadline,
 ) -> std::result::Result<StartedHost, Box<StartupFailure>> {
+    let mut log = super::startup_log::StartupLog::new(home);
+    log.note("Preparing protected state and the runtime executable");
+    let result = start_recorded(home, configuration, machine, origin, bound, &mut log);
+    match result {
+        Ok(started) => {
+            log.note("Runtime ownership committed and ready");
+            Ok(started)
+        }
+        Err(mut failure) => {
+            failure.error = log.refusal(failure.error);
+            Err(failure)
+        }
+    }
+}
+fn start_recorded(
+    home: &Path,
+    configuration: &Path,
+    machine: MachineId,
+    origin: StartupOrigin,
+    bound: &se_host::client::lease::Deadline,
+    log: &mut super::startup_log::StartupLog,
+) -> std::result::Result<StartedHost, Box<StartupFailure>> {
     let setup = (|| -> Result<_> {
         bound.remaining()?;
         if !home.is_absolute() || !configuration.is_absolute() {
@@ -112,15 +134,21 @@ pub fn start_with_origin(
     .map_err(|error| Box::new(StartupFailure { error, child: None }))?;
     let (files, spec, instance, generation) = setup;
     let nonce = spec.startup_nonce;
+    log.note("Waiting for the detached runtime's authenticated native startup handshake");
     let launched = NativeProcessRuntime::spawn_runtime(spec).map_err(|failure| {
         startup_failure(native_error(failure.error), failure.remaining, bound)
     })?;
+    log.note(&format!(
+        "Waiting for runtime owner PID {} to publish endpoint.json",
+        launched.identity.pid.0
+    ));
     let endpoint = match wait_endpoint(&files, &launched.identity, generation, bound) {
         Ok(endpoint) => endpoint,
         Err(error) => {
             return Err(startup_failure(error, Some(launched.child), bound));
         }
     };
+    log.note("Authenticating the published runtime endpoint");
     let proof = (|| -> Result<_> {
         // The exclusive host publishes this protected file-identity hint before
         // its endpoint. Reuse it under the original deadline, just as ordinary
@@ -187,6 +215,7 @@ pub fn start_with_origin(
             return Err(startup_failure(error, Some(launched.child), bound));
         }
     };
+    log.note("Waiting for the runtime ownership commit");
     let ready = NativeProcessRuntime::commit_runtime(launched.child, proof).map_err(|failure| {
         startup_failure(native_error(failure.error), Some(failure.child), bound)
     })?;

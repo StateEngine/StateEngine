@@ -18,6 +18,9 @@ mod interrupt;
 #[path = "host/launch.rs"]
 mod launch;
 #[cfg(any(target_os = "linux", windows))]
+#[path = "host/startup_log.rs"]
+pub(crate) mod startup_log;
+#[cfg(any(target_os = "linux", windows))]
 pub(crate) use child::foreground;
 #[cfg(any(target_os = "linux", windows))]
 pub use launch::{StartedHost, StartupFailure, start, start_with_origin};
