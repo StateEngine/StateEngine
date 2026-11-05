@@ -78,7 +78,7 @@ Long operations have their own targets, measured on StateEngine's share only:
 - **Native custody setup:** identity-read p95 < 1 ms and synchronous runtime-open
   setup ≤ 2 ms. These retained design targets exclude the separately reported
   async readiness/re-adoption wait; native qualification is still required.
-- **Atlas** (standalone only, opt-in and off the milestone path): cold index peak ≤ 64 MB in its own process (§3.2); save-to-searchable
+- **Atlas** (standalone only, enabled by default and off the milestone path): cold index peak ≤ 64 MB in its own process (§3.2); save-to-searchable
   ≤ 200 ms (prototype 67 ms); query p95 ≤ 50 ms (prototype 7–16 ms); zero idle wakeups once settled.
 
 Linux cgroups are wave-4 work; wave 1 uses the uncontained process-group path.
@@ -267,7 +267,7 @@ component that outgrows its line has to fix that or negotiate within the total (
 | SQLite page-cache targets: writer + active/idle host readers × 512 KiB | About 2.6 MB at the two-job default; 8.9 MB at eight jobs | `cache_size=-512`; hosted planning and continuations use readers even though independent CLI reads also access the file directly |
 | SQLite connections, schema, statements | 1.0 MB | Up to 5 foreground connections at the two-job default; additional connection overhead unmeasured |
 | Sessions, mail, listener/MCP, capture + watcher, custody, resume | 7.5 MB | Includes the same single-large-packet resume allowance as 3.1 |
-| Optional Atlas in-host: queries and single-file updates after config opt-in | 2.0 MB | One closed-when-idle connection plus one parser |
+| Optional Atlas in-host: queries and single-file updates when enabled | 2.0 MB | One closed-when-idle connection plus one parser |
 | Allocator slack | 1.0 MB | |
 | **Estimated spend at two jobs** | **20.1 MB** | Eight jobs with idle cache targets increase this estimate to 26.4 MB before additional connection overhead |
 | Estimated reserve at two jobs | 4.9 MB | Eight jobs with idle cache targets exceed this estimate by 1.4 MB before additional overhead; configuration does not relax B4 |
@@ -293,7 +293,7 @@ to those same budgets.
 
 Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 It is built after the journeys and live handover pass and never holds a
-milestone. Explicit config opt-in admits its cold index as
+milestone. After readiness, an enabled standalone host admits its cold index as
 a transient background child; it is not triggered by an ordinary first query.
 The child has a separate cold-window cap and exits after indexing; resident
 queries/incremental updates stay in the allocation above. The runner reports

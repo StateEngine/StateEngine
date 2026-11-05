@@ -67,6 +67,16 @@ fn preparing_unavailable_and_unreadable_are_distinct_from_current_and_disabled()
     )));
     assert_eq!(view.state, "unreadable");
     assert!(view.reason.is_some());
+    let mut opening = summary()?;
+    opening.state = IndexState::Opening;
+    let opening = atlas_view(Ok(Read::Present { value: opening }));
+    assert_eq!(opening.state, "preparing");
+    assert!(
+        opening
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("not available"))
+    );
     let mut disabled = summary()?;
     disabled.state = IndexState::Disabled;
     disabled.coverage.discovery_complete = false;

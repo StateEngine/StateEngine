@@ -54,7 +54,7 @@ def run(args):
         assert not (f.home / 'atlas').exists(), 'status created an Atlas cache'
         passed('disabled direct status is honest and creates no Atlas cache')
         (f.repo / 'good.js').write_text('export function atlas_status_visible(){return 1;}\n')
-        # Above the measured parser-size qualification: a real deferred file,
+        # Above the measured parser-size qualification: a real limited file,
         # rather than an injected status DTO, must remain visible in the summary.
         (f.repo / 'large.js').write_text('export const large = 1;\n' + '// padding\n' * 300)
         config.write_bytes(before)
@@ -71,16 +71,19 @@ def run(args):
             (args.output / 'observed-status.json').write_text(json.dumps(states, indent=2))
             assert atlas['state'] != 'not-built', atlas
             summary = atlas.get('summary')
-            if summary and summary['coverage']['indexed_files'] and summary['coverage']['deferred_files']:
+            if (atlas['state'] == 'partial' and summary and summary['coverage']['indexed_files']
+                    and (summary['coverage']['deferred_files'] + summary['coverage']['stale_files'])):
                 break
             assert time.monotonic() < until, atlas
             time.sleep(.2)
-        assert atlas['state'] in ['partial', 'updating'], atlas
+        assert atlas['state'] == 'partial', atlas
         found_call = f.call('--project', f.project, 'atlas', 'find', 'atlas_status_visible')
         assert found_call.returncode in [0, 2], (found_call.stdout, found_call.stderr)
         found = json.loads(found_call.stdout)
         (args.output / 'find.json').write_text(json.dumps(found, indent=2))
-        assert 'atlas_status_visible' in json.dumps(found), found
+        hits = found['data']['value']['page']['items']
+        assert any(hit['target'].get('Code', {}).get('name') == 'atlas_status_visible'
+                   and hit['target']['Code']['pointer']['path'] == 'good.js' for hit in hits), found
         plain = subprocess.run([str(f.se), '--home', str(f.home), '--project', f.project, 'status'],
                                env=f.env, capture_output=True, timeout=30)
         (args.output / 'plain-status.stdout').write_bytes(plain.stdout)
@@ -94,7 +97,8 @@ def run(args):
         if 'atlas' not in status and 'value' in status:
             status = status['value']
         assert status['atlas']['state'] != 'not-built', status['atlas']
-        assert status['atlas']['summary']['coverage']['deferred_files'] >= 1
+        coverage = status['atlas']['summary']['coverage']
+        assert coverage['deferred_files'] + coverage['stale_files'] >= 1
         passed('session-authenticated MCP status reads the same live Atlas coverage')
     finally:
         f.close()

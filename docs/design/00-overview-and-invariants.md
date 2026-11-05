@@ -139,7 +139,7 @@ flowchart LR
     CORE["se-core: ops, identity, mail, decisions, capture, resume"]
     WR["se-writer thread (batched txns)"]
     PROC["se-proc: jobs / cgroups / kqueue"]
-    ATL["se-atlas worker (standalone, opt-in)"]
+    ATL["se-atlas worker (standalone, enabled by default)"]
   end
   CLI["se CLI / se hook (short-lived)"]
   DB[("state.db (SQLite WAL)")]

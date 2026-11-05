@@ -145,25 +145,32 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     }
     if let Some(summary) = &value.atlas.summary {
         let c = &summary.coverage;
-        writeln!(
-            out,
-            "  Atlas files: {} indexed / {} discovered; {} partial, {} deferred, {} failed, {} stale",
-            c.indexed_files,
-            c.discovered_files,
-            c.partial_files,
-            c.deferred_files,
-            c.failed_files,
-            c.stale_files
-        )?;
-        if !c.discovery_complete {
-            writeln!(out, "  Atlas file discovery is still preparing.")?;
-        }
-        if c.unwatched_directories > 0 || !c.watch_discovery_complete {
+        if value.atlas.state == "preparing" && summary.epoch.is_none() {
             writeln!(
                 out,
-                "  Atlas watching is partial: {} directories unwatched; discovery complete: {}",
-                c.unwatched_directories, c.watch_discovery_complete
+                "  Atlas file counts: awaiting the first published index."
             )?;
+        } else {
+            writeln!(
+                out,
+                "  Atlas files: {} indexed / {} discovered; {} partial, {} deferred, {} failed, {} stale",
+                c.indexed_files,
+                c.discovered_files,
+                c.partial_files,
+                c.deferred_files,
+                c.failed_files,
+                c.stale_files
+            )?;
+            if !c.discovery_complete {
+                writeln!(out, "  Atlas file discovery is still preparing.")?;
+            }
+            if c.unwatched_directories > 0 || !c.watch_discovery_complete {
+                writeln!(
+                    out,
+                    "  Atlas watching is partial: {} directories unwatched; discovery complete: {}",
+                    c.unwatched_directories, c.watch_discovery_complete
+                )?;
+            }
         }
     }
     for pending in &value.pending {

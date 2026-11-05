@@ -64,8 +64,8 @@ earlier-numbered units to finish:
 | 5 | macOS R03/R04 work in the borrowed-Mac compatibility campaign; final R08 | all five journeys on clean Windows/Linux/macOS, both providers, standalone and embedded SE Code |
 
 Atlas implementation follows the journeys and live handover. It may be included
-if ready and qualified, remains off by default, and never holds a milestone or
-release. An Atlas-free build reports NotBuilt rather than advertising tools.
+if ready and qualified, is enabled by default in included builds, and never holds
+a milestone or release. An Atlas-free build reports NotBuilt rather than advertising tools.
 Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 Windows/Linux is an intermediate milestone; macOS qualification precedes alpha
 shipping, while Windows/Linux development does not wait for borrowed hardware.

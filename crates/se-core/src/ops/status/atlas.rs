@@ -48,7 +48,14 @@ pub fn atlas_view(observed: se_types::Result<Read<IndexSummary>>) -> AtlasView {
         IndexState::Disabled => "disabled",
         IndexState::Dormant => "dormant",
         IndexState::Absent => "absent",
-        IndexState::Opening | IndexState::ColdIndexing { .. } => "preparing",
+        IndexState::Opening | IndexState::ColdIndexing { .. } => {
+            view.reason = Some(if summary.epoch.is_none() {
+                "Preparing the first index; file counts are not available until it is published."
+            } else {
+                "Preparing an index; file counts describe the previously published snapshot."
+            }.into());
+            "preparing"
+        }
         IndexState::Updating { .. } => "updating",
         IndexState::Current if partial => "partial",
         IndexState::Current => "current",
