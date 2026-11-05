@@ -29,8 +29,8 @@ const fn agent_target(description: &'static str) -> [FieldRole; 6] {
         ("target_agent_id", IdentityRole::Target, description),
     ]
 }
-const LAUNCH_FIELDS: &[FieldRole] = &agent_target("The seat to launch.");
-const STOP_FIELDS: &[FieldRole] = &agent_target("The seat to stop.");
+const LAUNCH_FIELDS: &[FieldRole] = &agent_target("The agent to launch.");
+const STOP_FIELDS: &[FieldRole] = &agent_target("The agent to stop.");
 pub const MCP_IDENTITY_ARGUMENT_ROLES: &[(&str, &[FieldRole])] = &[
     ("stateengine_status", CALLER_FIELDS),
     ("stateengine_event_read", CALLER_FIELDS),

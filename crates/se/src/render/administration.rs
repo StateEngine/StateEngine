@@ -38,10 +38,10 @@ pub fn agent(value: &AgentReceipt, out: &mut impl Write) -> io::Result<()> {
 pub fn decision(value: &DecisionReceipt, out: &mut impl Write) -> io::Result<()> {
     let action = match value.action {
         DecisionAction::Propose => "proposed",
-        DecisionAction::Ratify => "ratified",
+        DecisionAction::Ratify => "approved",
         DecisionAction::Reject => "rejected",
-        DecisionAction::Retract => "retracted",
-        DecisionAction::Supersede => "superseded",
+        DecisionAction::Retract => "withdrawn",
+        DecisionAction::Supersede => "replaced",
     };
     writeln!(out, "Decision {}: {action}", value.decision.key)?;
     if matches!(value.commit.state, se_types::CommitState::Replayed) {

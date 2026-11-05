@@ -22,6 +22,7 @@ mod release;
 mod remove;
 mod remove_receipt;
 mod requests;
+mod resume_source;
 mod shutdown;
 mod status;
 mod stop;

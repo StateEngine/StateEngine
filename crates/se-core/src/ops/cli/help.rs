@@ -7,7 +7,7 @@
 /// cannot name them.
 pub(super) fn group(name: &str) -> Option<&'static str> {
     Some(match name {
-        "msg" => "Send, inspect and settle messages",
+        "msg" => "Send and read direct or shared project messages",
         "working-state" => "Read or save an agent's working notes",
         "agent" => "Create and inspect saved agents",
         "config" => "Read or change saved agent settings",
@@ -24,9 +24,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
     Some(match name {
         "meta.help" => "Explain a command and its options",
         "meta.schema" => "Show registered operation input and output schemas",
-        "store.import_node" => {
-            "Import supported user history without changing the original Node state"
-        }
+        "store.import_node" => "Import retained history without changing its source files",
         "project.init" => "Register this folder and save your first agent",
         "doctor.inspect" => "Check this installation and name exact supported repairs",
         "project.status" => "Show project, agent and unread-message status",
@@ -34,7 +32,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "history.list" => {
             "Read the public timeline: conversations, mail, decisions, working state and saved identity changes"
         }
-        "message.send" => "Send one direct message or a floor work message",
+        "message.send" => "Send one direct message or a shared project message (the floor)",
         "message.read" => "Read one complete message and mark it read as its recipient",
         "message.ack" => "Mark your received message read without returning its body",
         "message.dismiss" => "Dismiss your received message without marking it read",
@@ -43,16 +41,16 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "session.context" => "Read context for the currently bound agent session",
         "hook.claude" => "Receive a Claude Code lifecycle event on stdin",
         "working_state.get" => "Read or save an agent's working notes",
-        "working_state.set" => "Replace a working-state note behind a revision guard",
+        "working_state.set" => "Save working notes only if their revision still matches",
         "runtime.up" => "Start this data home's background runtime",
         "runtime.down" => "Stop this data home's runtime",
         "installation.uninstall" => "Remove this installation while preserving retained data",
         "agent.create" => "Create a saved agent identity without launching a process",
         "continuity.resume" => {
-            "Restore your saved context and recent turns; this read acknowledges nothing"
+            "Read the current session's saved context; owners use --preview AGENT"
         }
         "agent.list" => "List the saved agents in this project",
-        "agent.launch" => "Start or resume a saved agent in a window; --detach runs headless",
+        "agent.launch" => "Start or resume a saved agent; --detach runs without opening a window",
         "agent.stop" => "Stop a selected agent's running session",
         "project.remove" => "Unregister projects while preserving repository files and history",
         "agent.show" => "Show one saved agent's identity and saved settings",

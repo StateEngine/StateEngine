@@ -53,6 +53,8 @@ impl LaunchCoordinator {
                 "the original FULL reservation already exists; reconcile that lifecycle before another native effect",
             ));
         }
+        self.check_resume_source(&plan, &work.admission, deadline)
+            .await?;
         let provider = match plan.profile.provider {
             se_store::Provider::Codex => se_types::Provider::Codex,
             _ => se_types::Provider::Claude,

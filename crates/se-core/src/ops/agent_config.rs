@@ -28,16 +28,26 @@ impl Field {
         }
     }
     pub(crate) fn parse(key: &str) -> Result<(&str, Self)> {
+        // This field is a setting name, never its possibly sensitive value.
+        let invalid_key = |expected: &str| {
+            let mut error = SeError::new(se_types::Detail::UsageInvalidValue(
+                se_types::details::UsageInvalidValue {
+                    argument: "agent configuration key".into(),
+                    got: key.chars().flat_map(char::escape_debug).collect(),
+                    expected: expected.into(),
+                },
+            ));
+            error.body = error.body.with_remedy(se_types::Remedy {
+                text: "Use an agent setting such as agent.main.model; se config get --help lists the supported forms. Permission profiles are edited in config.toml.".into(),
+                command: None,
+            });
+            error
+        };
         let (selector, field) = key
             .strip_prefix("agent.")
             .and_then(|key| key.rsplit_once('.'))
             .filter(|(selector, _)| !selector.is_empty())
-            .ok_or_else(|| {
-                SeError::invalid(
-                    "agent configuration key",
-                    "agent.<AGENT>.model, .profile or .can-create",
-                )
-            })?;
+            .ok_or_else(|| invalid_key("agent.<AGENT>.model, .profile or .can-create"))?;
         Ok((
             selector,
             match field {
@@ -45,10 +55,7 @@ impl Field {
                 "profile" => Self::Profile,
                 "can-create" => Self::CanCreate,
                 _ => {
-                    return Err(SeError::invalid(
-                        "agent configuration key",
-                        "model, profile or can-create",
-                    ));
+                    return Err(invalid_key("agent.<AGENT>.model, .profile or .can-create"));
                 }
             },
         ))

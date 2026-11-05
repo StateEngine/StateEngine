@@ -33,19 +33,21 @@ shortened. Your agent’s wording and timestamps will differ.
        Repository files written: 0
        Agent main uses Codex
        Permission profile default: workspace-write, approval never, network false, bypass false
-       To enable network for this profile: se config set profiles.default.network true
+       To enable network, set network = true under [profiles.default] in this state home's config.toml, then relaunch the agent.
          registered the home owner
          registered the project
          registered the project owner
          created the initial saved agent
          persisted the initial listener port
-       Launch your first agent: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
+       From the project folder /path/to/repo:
+       Launch your first agent: se --home /home/you/.local/state/stateengine launch main --detach
 
    `State home` above is the Linux default; macOS: `~/Library/Application Support/StateEngine`,
    Windows: `%LOCALAPPDATA%\StateEngine`. The profile line says what the agent may do; init
-   prints the exact `se config set` command (run it in your own terminal) to change it.
+   explains how to change the named profile in that state home's `config.toml`.
+   The `se config` command changes saved agent settings; it does not edit permission profiles.
 
-3. Launch the agent headless with a one-line task:
+3. Launch the agent without opening a window, with a one-line task:
 
        $ se launch main --task "Create a file called notes.md with one sentence describing what this repo is for." --detach
        Agent main: running (Codex, headless)
@@ -53,7 +55,7 @@ shortened. Your agent’s wording and timestamps will differ.
        Containment: uncontained
        Containment reason: The OS has not delegated a containment scope to this user.
        Permission profile default: workspace-write, approval never, network false, bypass false
-       To enable network for this profile: se config set profiles.default.network true
+       To enable network, set network = true under [profiles.default] in this state home's config.toml, then relaunch the agent.
        Conversation: ...
        Resume: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
        Read replies: se --home /home/you/.local/state/stateengine --project prj_... history --agent ag_... --kind session.turn
@@ -68,12 +70,12 @@ shortened. Your agent’s wording and timestamps will differ.
        Runtime: running
        Host: runs as a session process and stops when this login session ends
          PID ... (started 2026-11-05T02:06:07.140000Z)
-         main: running — unread 0
+         Agent main: running — unread messages 0
            Containment reason: The OS has not delegated a containment scope to this user.
-           Resume: The captured conversation prefix is verified; stop or reconcile the existing scope before resuming its saved conversation.
+           Resume: Ready to reopen the saved conversation.
        Owner unread messages: 0
-       Pending decisions: unknown
-       Capture: unknown; code index: not-built
+       Proposed decisions: not counted
+       Conversation recording: not checked; code index: not built
        Inspect your saved agent: se --home /home/you/.local/state/stateengine --project prj_... agent show ag_...
 
 5. Read what it did: a plain task launch reports in its conversation and in your folder, not by floor mail:
@@ -81,21 +83,25 @@ shortened. Your agent’s wording and timestamps will differ.
        $ se msg list
        Unread messages: 0
        $ se history --agent main
-       session.turn — repo
+       Conversation message — repo
+         Event: ev_...
          By: main
          At: 2026-11-05T02:06:10.715018Z
          Role: user
          Text: Create a file called notes.md with one sentence describing what this repo is for.
-       session.turn — repo
+       Conversation message — repo
+         Event: ev_...
          By: main
          At: 2026-11-05T02:06:12.683270Z
          Role: assistant
          Text: I’ll check the README and create `notes.md` with a one-sentence description.
-       transcript.event — repo
+       Tool action — repo
+         Event: ev_...
          By: main
          At: 2026-11-05T02:06:18.737384Z
-         Provider event: captured-tool
-       session.turn — repo
+         ran: ...
+       Conversation message — repo
+         Event: ev_...
          By: main
          At: 2026-11-05T02:06:20.726552Z
          Role: assistant
@@ -107,7 +113,7 @@ shortened. Your agent’s wording and timestamps will differ.
    back the exact launch command that reopens the saved conversation; `se stop AGENT`
    ends a running session; `se launch AGENT --detach` restarts the same conversation.
 
-   Launching over an existing managed lifecycle refuses and lists its scoped jobs
+   Launching over an existing managed session refuses and lists its scoped jobs
    (PID and command), without stopping anything. Wait for the jobs to finish, run
    long jobs in a separate terminal outside the agent's scope, or explicitly use
    `se launch AGENT --detach --override-live`. The override stops the old agent
@@ -178,9 +184,16 @@ Dependency direction: se-types <- se-store <- se-core <- se-host <- se; se-proc 
 se-atlas depends on se-types and se-store. Authors write no tests; reviewers add black-box tests;
 the five journey scripts are the acceptance judge. Line counts are estimates, never caps.
 
-Before upgrading, run `se down` for each running data home (use the same `--home`
-as its host), then install the new release and run `se up`. An existing Windows
-host keeps the pipe name chosen by its original executable until restarted.
+To upgrade, first run `se --home HOME down` for every running data home. In your
+own terminal, run the old installation's `se --home INSTALL_HOME uninstall` and
+wait for it to finish successfully; this keeps history, conversations, identity,
+credentials, configuration and repository files. Then install the new archive and
+run `se --home HOME up` for each home. Reinstalling over an existing executable
+refuses safely, even after down; uninstall is required before installing again.
+On Windows, run the old release archive's `uninstall.ps1` instead of direct
+`se uninstall` and wait for its final successful completion before installing the
+new release. Use each home's original path throughout; an old Windows host keeps
+the pipe name chosen by its executable until restarted.
 
 To import existing Node user history, first preserve a source copy containing its
 `.stateengine/projects.jsonl`, named project history, and saved profiles. Initialize

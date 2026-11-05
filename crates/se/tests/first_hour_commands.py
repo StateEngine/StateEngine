@@ -137,6 +137,35 @@ def run(args):
         command = text.split('Read replies: ', 1)[1].splitlines()[0]
         execute({'argv': shlex.split(command), 'command': command}, 'plain-read-replies')
         check('resume AGENT refuses read-only with a runnable reopen command; plain launch prints its reply reader')
+
+        assert f.ok('--project', f.project, 'stop', f.agent)['complete']
+        before = f.ok('--project', f.project, 'agent', 'show', f.agent)['agent']['value']
+        transcript, = Path(f.env['HOME']).glob('.claude/projects/*/' + launch['conversation_id'] + '.jsonl')
+        rotated = transcript.with_suffix('.jsonl.rotated')
+        transcript.rename(rotated)
+        recovery = None
+        for machine in [False, True]:
+            result = subprocess.run([str(f.se), '--home', str(f.home), '--project', f.project,
+                                     *(['--json'] if machine else []), 'launch', f.agent, '--detach'],
+                                    env=f.env, capture_output=True, timeout=45)
+            (args.output / ('rotated-' + str(machine) + '.stdout')).write_bytes(result.stdout)
+            (args.output / ('rotated-' + str(machine) + '.stderr')).write_bytes(result.stderr)
+            assert result.returncode == 3, (result.stdout, result.stderr)
+            assert str(transcript).encode() in result.stderr and b'--new' in result.stderr
+            assert not transcript.exists() and rotated.exists(), 'refusal started the permissive provider'
+            current = f.ok('--project', f.project, 'agent', 'show', f.agent)['agent']['value']
+            assert current['session']['session_id'] == before['session']['session_id']
+            if machine:
+                error = json.loads(result.stdout)
+                assert error['code'] == 'resume-reference-unverifiable'
+                recovery = {'argv': error['remedy']['command']['argv'],
+                            'command': result.stderr.decode().split('Run: ', 1)[1].strip()}
+        execute(recovery, 'rotated-new-recovery')
+        retain_births()
+        current = f.ok('--project', f.project, 'agent', 'show', f.agent)['agent']['value']
+        assert current['conversation']['id'] != launch['conversation_id']
+        assert b'FIRST_HOUR_REPLY' in execute(replies, 'retained-old-reply').stdout
+        check('rotated transcript refuses before preparation in both modes; exact --new recovery retains earlier replies')
     finally:
         f.close()
         with (f.home / 'runtime.lock').open('rb') as lease:

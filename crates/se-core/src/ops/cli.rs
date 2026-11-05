@@ -220,7 +220,7 @@ pub fn cli_command() -> Command {
         )
         .arg(
             value("key")
-                .help("Request identity for a mutation: reuse it to repeat the same mutation, and use a new key for a different intent")
+                .help("Request key: reuse it to repeat the same change; use a new key for a different change")
                 .global(true),
         );
     for meta in CATALOGUE {
@@ -313,7 +313,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("adopt").hide(true)),
         "doctor.repair" => c.arg(value("fix").help("Apply only this currently diagnosed CHECK-ID after printing its plan")),
         "store.import_node" => c
-            .arg(value("from_node").long("from-node").required(true).help("Path to the Node StateEngine home to import from"))
+            .arg(value("from_node").long("from-node").required(true).help("Copy of an earlier StateEngine data directory to import"))
             .arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner"))
             .arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),
         "project.status" => c.arg(toggle("all").help("Also summarize every registered project, with its owner-mail counts")),
@@ -407,7 +407,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile or agent.<AGENT>.can-create; example: se config get agent.main.model"))
             .arg(toggle("origin").help("Report where the value comes from")),
         "config.set" => {
-            c.arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile or agent.<AGENT>.can-create"))
+            c.arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile or agent.<AGENT>.can-create. Edit permission profiles directly in your state home's config.toml."))
                 .arg(positional("setting_value", 2, true).help("Model string or null for the default, an existing named permission profile, or true/false for can-create"))
         }
         "agent.create" => c

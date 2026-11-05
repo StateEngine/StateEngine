@@ -9,6 +9,7 @@ mod native;
 pub(crate) mod output;
 mod plan;
 pub use plan::prepare_agent_observation;
+pub(crate) use plan::resume_source;
 
 pub struct AgentObservationPlan {
     project: ProjectId,

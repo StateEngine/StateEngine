@@ -65,12 +65,18 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         for agent in agents.items() {
             writeln!(
                 out,
-                "  {}: {} — unread {}",
+                "  Agent {}: {} — unread messages {}",
                 agent.name,
-                agent.session.state,
+                if agent.session.state == "never-launched" {
+                    "not started yet"
+                } else {
+                    &agent.session.state
+                },
                 count(agent.unread)
             )?;
-            super::transcript::render(&agent.session.transcript, out)?;
+            if agent.session.state != "never-launched" {
+                super::transcript::render(&agent.session.transcript, out)?;
+            }
             if let Some(reason) = &agent.session.containment_cause {
                 writeln!(
                     out,
@@ -120,16 +126,57 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             count(value.inbox.owner_unread)
         )?;
     }
-    writeln!(out, "Pending decisions: {}", count(value.decisions.pending))?;
     writeln!(
         out,
-        "Capture: {}; code index: {}",
-        value.capture.state, value.atlas.state
+        "Proposed decisions: {}",
+        value
+            .decisions
+            .pending
+            .map_or("not counted".into(), |value| value.to_string())
+    )?;
+    writeln!(
+        out,
+        "Conversation recording: {}; code index: {}",
+        if value.capture.state == "unknown" {
+            "not checked"
+        } else {
+            &value.capture.state
+        },
+        if value.atlas.state == "not-built" {
+            "not built"
+        } else {
+            &value.atlas.state
+        }
     )?;
     for pending in &value.pending {
-        writeln!(out, "Pending {}: {}", pending.what, pending.detail)?;
+        if pending.what == "runtime observation"
+            && pending
+                .detail
+                .starts_with("No runtime connection file was found.")
+        {
+            writeln!(
+                out,
+                "Background runtime: no connection file found. Running agents have not been checked; use se doctor for this home."
+            )?;
+        } else {
+            writeln!(out, "Pending {}: {}", pending.what, pending.detail)?;
+        }
     }
-    next_step(&value.next, out)
+    if let Read::Present { value: project } = &value.project
+        && let Some(agent) = value.agents.as_ref().and_then(|page| page.items().first())
+        && agent.session.state == "never-launched"
+        && value.next.argv.iter().any(|word| word == "launch")
+    {
+        first_launch(
+            &value.setup.home,
+            &project.root,
+            &agent.name,
+            &value.next,
+            out,
+        )
+    } else {
+        next_step(&value.next, out)
+    }
 }
 
 pub fn messages(value: &MessagePage, out: &mut impl Write) -> io::Result<()> {
@@ -190,25 +237,44 @@ pub fn schema(value: &SchemaCatalogue, out: &mut impl Write) -> io::Result<()> {
     )
 }
 
-pub fn next_step(value: &NextStep, out: &mut impl Write) -> io::Result<()> {
-    writeln!(out, "{}: {}", value.text, value.command)
+pub(super) fn first_launch(
+    home: &str,
+    root: &str,
+    agent: &str,
+    next: &NextStep,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let command = se_core::ops::AgentCommand::from_argv(vec![
+        "se".into(),
+        "--home".into(),
+        home.into(),
+        "launch".into(),
+        agent.into(),
+        "--detach".into(),
+    ]);
+    let Some(command) = command else {
+        return next_step(next, out);
+    };
+    let mut text = next.text.clone();
+    let command = if let Some(instruction) = text.strip_prefix("In cmd.exe, ") {
+        match command.for_cmd() {
+            Some(command) => command,
+            None => {
+                // The friendly name can require a different shell than the
+                // original ID-based command; change its instruction too.
+                text = format!("Open PowerShell, then {instruction}");
+                command
+            }
+        }
+    } else {
+        command
+    };
+    writeln!(out, "From the project folder {root}:")?;
+    writeln!(out, "{text}: {}", command.command)
 }
 
-pub(super) fn repo_line(git: &GitView, out: &mut impl Write) -> io::Result<()> {
-    let Some(commits) = git.commits else {
-        return Ok(());
-    };
-    let mut line = format!(
-        "Existing repo: {commits} commit{}",
-        if commits == 1 { "" } else { "s" }
-    );
-    if let Some(branch) = &git.branch {
-        line.push_str(&format!(" on {branch}"));
-    }
-    if git.uncommitted == Some(true) {
-        line.push_str("; uncommitted changes left untouched");
-    }
-    writeln!(out, "{line}.")
+pub fn next_step(value: &NextStep, out: &mut impl Write) -> io::Result<()> {
+    writeln!(out, "{}: {}", value.text, value.command)
 }
 
 fn count(value: Option<u64>) -> String {
@@ -233,4 +299,64 @@ fn omissions<T>(page: &Page<T>, out: &mut impl Write) -> io::Result<()> {
         writeln!(out, "Continue with --cursor {cursor}")?;
     }
     Ok(())
+}
+
+pub(super) fn repo_line(git: &GitView, out: &mut impl Write) -> io::Result<()> {
+    let Some(commits) = git.commits else {
+        return Ok(());
+    };
+    let mut line = format!(
+        "Existing repo: {commits} commit{}",
+        if commits == 1 { "" } else { "s" }
+    );
+    if let Some(branch) = &git.branch {
+        line.push_str(&format!(" on {branch}"));
+    }
+    if git.uncommitted == Some(true) {
+        line.push_str("; uncommitted changes left untouched");
+    }
+    writeln!(out, "{line}.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_launch_names_powershell_when_a_friendly_name_cannot_use_cmd() -> io::Result<()> {
+        for agent in ["Build!", "Build%TEMP%", "Build\"quoted"] {
+            let next = NextStep {
+                text: "In cmd.exe, launch your first agent".into(),
+                command: "se --home C:\\state launch ag_saved --detach".into(),
+                argv: vec![],
+            };
+            let mut output = Vec::new();
+            first_launch("C:\\state", "C:\\repo", agent, &next, &mut output)?;
+            let output = String::from_utf8(output).map_err(io::Error::other)?;
+            assert!(output.contains("Open PowerShell, then launch your first agent:"));
+            assert!(!output.contains("In cmd.exe,"));
+            assert!(output.contains(agent));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn first_launch_keeps_cmd_when_every_friendly_argument_is_representable() -> io::Result<()> {
+        let next = NextStep {
+            text: "In cmd.exe, launch your first agent".into(),
+            command: String::new(),
+            argv: vec![],
+        };
+        let mut output = Vec::new();
+        first_launch(
+            "C:\\state home",
+            "C:\\repo",
+            "Build agent",
+            &next,
+            &mut output,
+        )?;
+        let output = String::from_utf8(output).map_err(io::Error::other)?;
+        assert!(output.contains("In cmd.exe, launch your first agent: se --home \"C:\\state home\" launch \"Build agent\" --detach"));
+        Ok(())
+    }
 }

@@ -65,7 +65,11 @@ fn describe(
         } else {
             CheckState::Failed
         },
-        format!("{}: {:?}", path.display(), pin.snapshot().protection),
+        format!(
+            "{}: {}",
+            path.display(),
+            protection(&pin.snapshot().protection)
+        ),
         at,
     );
     value.expected = Some(
@@ -112,7 +116,7 @@ fn describe(
             Some("Owner access is missing; automatic tightening cannot add permissions".into());
         value.fix = Some(CheckFix {
             text: format!(
-                "As OS owner {}, restore mode {mode} on this exact object, then rerun se doctor for this home. Manual command argv: {argv:?}. Tighten-only repair cannot restore missing owner access.",
+                "As OS owner {}, restore mode {mode} on this exact object, then rerun se doctor for this home. Tighten-only repair cannot restore missing owner access.",
                 pin.snapshot().owner
             ),
             command: None,
@@ -126,6 +130,20 @@ fn describe(
             argv: Some(vec!["se".into(), "doctor".into(), "--fix".into(), id.into(), "--home".into(), if kind == PermissionKind::Directory { path } else { path.parent().unwrap_or(path) }.display().to_string()])});
     }
     Ok(Target { pin, check: value })
+}
+fn protection(value: &se_proc::PermissionProtection) -> String {
+    match value {
+        se_proc::PermissionProtection::UnixMode { mode, group } => {
+            format!("Unix mode {mode:04o}, group {group}")
+        }
+        #[cfg(target_os = "macos")]
+        se_proc::PermissionProtection::MacOsAcl { mode, group, .. } => {
+            format!("Unix mode {mode:04o}, group {group}, with a macOS access-control list")
+        }
+        se_proc::PermissionProtection::WindowsDacl { .. } => {
+            "Windows access-control list checked".into()
+        }
+    }
 }
 const REGULAR: [(&str, &str, &str, bool); 2] = [
     (
