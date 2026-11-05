@@ -409,77 +409,82 @@ fn public_tool_history_and_exact_events_show_actions_and_keep_unknowns_honest() 
     Ok(())
 }
 
+/// Bug: 7734bbdc H8-01 — fresh-agent status and show explain resume and keep the usable launch in plain output.
 #[test]
-fn status_has_one_short_resume_line_while_json_retains_failure_detail() -> Check {
+fn plain_status_and_show_explain_the_actual_resume_state() -> Check {
     let f = Fixture::new()?;
-    let home = f.home.join("status-home");
-    let repo = f.home.join("status-repo");
-    std::fs::create_dir(&repo)?;
-    let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
-    command
-        .env_clear()
-        .env("HOME", &f.home)
-        .env("USERPROFILE", &f.home)
-        .env("PATH", std::env::var_os("PATH").ok_or("PATH")?);
-    #[cfg(windows)]
-    if let Some(root) = std::env::var_os("SystemRoot") {
-        command.env("SystemRoot", root);
+    for provider in ["claude", "codex"] {
+        let home = f.home.join(format!("plain-resume-{provider}-home"));
+        let repo = f.home.join(format!("plain-resume-{provider}-repo"));
+        std::fs::create_dir(&repo)?;
+        let call = |args: &[&str]| -> Result<std::process::Output, Box<dyn std::error::Error>> {
+            let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
+            command
+                .arg("--home")
+                .arg(&home)
+                .args(args)
+                .current_dir(&repo)
+                .env_clear()
+                .env("HOME", &f.home)
+                .env("USERPROFILE", &f.home)
+                .env("PATH", std::env::var_os("PATH").ok_or("PATH")?);
+            #[cfg(windows)]
+            if let Some(root) = std::env::var_os("SystemRoot") {
+                command.env("SystemRoot", root);
+            }
+            let output = command.output()?;
+            assert!(
+                output.status.success(),
+                "{args:?}: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(output)
+        };
+        let initialized = call(&["--json", "init", "--provider", provider])?;
+        let init: Value = serde_json::from_slice(&initialized.stdout)?;
+        let project = init["project"]["id"].as_str().ok_or("project")?;
+        let agent = init["agent"]["id"].as_str().ok_or("agent")?;
+        for surface in [vec!["status"], vec!["agent", "show", agent]] {
+            let mut args = vec!["--project", project, "--json"];
+            args.extend(surface.iter().copied());
+            let before: Value = serde_json::from_slice(&call(&args)?.stdout)?;
+            let row = if surface[0] == "status" {
+                &before["agents"]["items"][0]
+            } else {
+                &before["agent"]["value"]
+            };
+            let resume = &row["resume"];
+            assert_eq!(resume["mode"], "new");
+            let reason = resume["reason"].as_str().ok_or("fresh resume reason")?;
+            let launch = resume["command"].as_str().ok_or("fresh launch command")?;
+            let mut words = vec!["--project", project];
+            words.extend(surface.iter().copied());
+            let plain = String::from_utf8(call(&words)?.stdout)?;
+            let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(
+                normalize(&plain).contains(&normalize(reason)),
+                "plain {surface:?} hides the actual resume reason {reason:?}: {plain}"
+            );
+            assert!(
+                plain.contains(launch),
+                "plain {surface:?} hides the scoped next step {launch:?}: {plain}"
+            );
+            assert!(
+                !plain.contains("--json"),
+                "normal {surface:?} sends the user to JSON: {plain}"
+            );
+            let after: Value = serde_json::from_slice(&call(&args)?.stdout)?;
+            let after_resume = if surface[0] == "status" {
+                &after["agents"]["items"][0]["resume"]
+            } else {
+                &after["agent"]["value"]["resume"]
+            };
+            assert_eq!(
+                resume, after_resume,
+                "presentation changed resume semantics"
+            );
+        }
     }
-    let initialized = command
-        .args([
-            "--home",
-            home.to_str().ok_or("home")?,
-            "--json",
-            "init",
-            "--repo",
-            repo.to_str().ok_or("repo")?,
-            "--provider",
-            "codex",
-        ])
-        .output()?;
-    assert!(
-        initialized.status.success(),
-        "{}",
-        String::from_utf8_lossy(&initialized.stderr)
-    );
-    let init: Value = serde_json::from_slice(&initialized.stdout)?;
-    let response = Command::new(env!("CARGO_BIN_EXE_se"))
-        .env_clear()
-        .env("HOME", &f.home)
-        .args([
-            "--home",
-            home.to_str().ok_or("home")?,
-            "--project",
-            init["project"]["id"].as_str().ok_or("project")?,
-            "--json",
-            "status",
-        ])
-        .output()?;
-    assert!(
-        response.status.success(),
-        "{}",
-        String::from_utf8_lossy(&response.stderr)
-    );
-    let mut value: Value = serde_json::from_slice(&response.stdout)?;
-    let reason = "usage-invalid-value: Capture failed (UsageInvalidValue): deeply nested source failure\nsecond diagnostic line";
-    value["agents"]["items"][0]["resume"]["reason"] = json!(reason);
-    value["agents"]["items"][0]["resume"]["mode"] = json!("resume");
-    value["agents"]["items"][0]["resume"]["ready"] = json!(false);
-    let status: se_core::ops::StatusOutput = serde_json::from_value(value)?;
-    let output: se_core::ops::AnyOutput = status.into();
-    let mut plain = Vec::new();
-    render::output(&output, false, false, &mut plain)?;
-    let plain = String::from_utf8(plain)?;
-    let lines: Vec<_> = plain
-        .lines()
-        .filter(|line| line.contains("Resume:"))
-        .collect();
-    assert_eq!(lines.len(), 1);
-    assert!(lines[0].len() < 90 && lines[0].contains("se status --json"));
-    assert!(!plain.contains("usage-invalid-value") && !plain.contains("second diagnostic"));
-    let mut machine = Vec::new();
-    render::output(&output, true, false, &mut machine)?;
-    let json: Value = serde_json::from_slice(&machine)?;
-    assert_eq!(json["agents"]["items"][0]["resume"]["reason"], reason);
     Ok(())
 }
