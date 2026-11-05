@@ -359,4 +359,3 @@ fn decode(text: &str) -> Result<Vec<u8>> {
         })
         .collect()
 }
-
