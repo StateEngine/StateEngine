@@ -217,12 +217,14 @@ impl ColdJob {
                 scope: scope.clone(),
                 epoch: self.request.epoch.clone(),
             },
-            ConnectionRole::CandidateReader,
+            ConnectionRole::CandidateWriter,
             &profile,
-            sql_deadline(),
+            // Full integrity traverses the captured graph after exact reap.
+            // It belongs to the remaining job clock, not a query allowance.
+            self.deadline,
         )?
         .ok_or_else(|| failure("staged candidate disappeared"))?;
-        let actual = metadata(&candidate, &self.request)?;
+        let actual = metadata(&candidate, &self.request, self.deadline)?;
         if actual != summary {
             return Err(failure(
                 "child summary differs from independently reopened candidate",
@@ -254,19 +256,19 @@ impl ColdJob {
                     scope: scope.clone(),
                     epoch: self.request.epoch.clone(),
                 },
-                ConnectionRole::CandidateReader,
+                ConnectionRole::CandidateWriter,
                 &profile,
-                sql_deadline().min(self.deadline),
+                self.deadline,
             )?
             .ok_or_else(|| failure("staged candidate disappeared after history"))?;
-            if metadata(&candidate, &self.request)? != summary {
+            if metadata(&candidate, &self.request, self.deadline)? != summary {
                 return Err(failure("history candidate differs before publication"));
             }
             candidate
         } else {
             candidate
         };
-        pointer::publish(&cache, &candidate, self.expected.as_deref(), sql_deadline())?;
+        pointer::publish(&cache, &candidate, self.expected.as_deref(), self.deadline)?;
         drop(candidate);
         drop(cache);
         let readback = NativeAtlasCache::open(&self.request.home.to_local()?, scope.clone())?
@@ -276,10 +278,12 @@ impl ColdJob {
             &scope,
             ConnectionRole::ExternalReader,
             &profile,
-            sql_deadline(),
+            self.deadline,
         )?
         .ok_or_else(|| failure("published epoch missing on independent readback"))?;
-        if reopened.epoch_retired || metadata(&reopened.connection, &self.request)? != summary {
+        if reopened.epoch_retired
+            || metadata(&reopened.connection, &self.request, self.deadline)? != summary
+        {
             return Err(failure(
                 "published cold epoch differs on independent readback",
             ));
@@ -299,8 +303,12 @@ impl ColdJob {
         }
     }
 }
-fn metadata(db: &CacheConnection<'_>, request: &protocol::Request) -> AtlasResult<IndexSummary> {
-    db.read(sql_deadline(),|sql| {
+fn metadata(
+    db: &CacheConnection<'_>,
+    request: &protocol::Request,
+    deadline: Instant,
+) -> AtlasResult<IndexSummary> {
+    db.read(deadline,|sql| {
         let (extractor,ignore,generation,coverage,state):(String,Vec<u8>,i64,String,String)=
             sql.prepare("SELECT extractor_version,ignore_digest,published_generation,coverage_json,state_json FROM meta WHERE singleton=1")?
             .query_row([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).map_err(failure)?;

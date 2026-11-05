@@ -47,7 +47,7 @@ impl Plan {
             },
             ConnectionRole::HostWriter,
             &profile,
-            sql_deadline().min(deadline),
+            deadline,
         )?
         .ok_or_else(|| failure("history candidate disappeared"))?;
         match feed {

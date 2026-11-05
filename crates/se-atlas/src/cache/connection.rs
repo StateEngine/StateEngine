@@ -38,16 +38,20 @@ pub enum ConnectionRole {
     /// on every open; a maintenance quantum never repeats the whole-page scan.
     MaintenanceWriter,
     ExternalReader,
-    /// Post-reap validation shares the host's single reader slot and 64 KiB
-    /// page cache, while performing integrity checks outside the query path.
+    /// Explicit read-only integrity validation shares the foreground reader
+    /// slot, for example when close discovers an unrecognized epoch.
     CandidateReader,
+    /// Post-reap ownership of an unpublished epoch consumes the maintenance
+    /// writer allowance. Its whole-graph check leaves the foreground reader
+    /// available for the previously published epoch; no third handle is added.
+    CandidateWriter,
     ColdWriter,
 }
 impl ConnectionRole {
     fn writable(self) -> bool {
         matches!(
             self,
-            Self::HostWriter | Self::MaintenanceWriter | Self::ColdWriter
+            Self::HostWriter | Self::MaintenanceWriter | Self::CandidateWriter | Self::ColdWriter
         )
     }
 }
@@ -95,7 +99,9 @@ impl Slot {
             ConnectionRole::HostReader
             | ConnectionRole::QueryReader
             | ConnectionRole::CandidateReader => READER_SLOT,
-            ConnectionRole::HostWriter | ConnectionRole::MaintenanceWriter => WRITER_SLOT,
+            ConnectionRole::HostWriter
+            | ConnectionRole::MaintenanceWriter
+            | ConnectionRole::CandidateWriter => WRITER_SLOT,
             _ => 0,
         };
         if bit == READER_SLOT {

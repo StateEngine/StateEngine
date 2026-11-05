@@ -188,7 +188,9 @@ impl State {
             if let Err(error) = self.controller.runtime_mut().prepare_registered(
                 &registration,
                 &policy,
-                Instant::now() + Duration::from_secs(5),
+                // Activation checks the whole retained graph in owned
+                // background work, just as post-reap cold adoption does.
+                Instant::now() + Duration::from_secs(900),
             ) {
                 self.controller.suspend(&registration.root, error)?;
                 self.roots.push(Root {
