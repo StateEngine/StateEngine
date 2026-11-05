@@ -31,7 +31,7 @@ pub(super) fn get(
         }
         let pending: u32 = sql.prepare("SELECT count(*) FROM active_batch")?
             .query_row([], |r| r.get(0)).map_err(sql_error)?;
-        let failure = if coverage.failed_files > 0 {
+        let failure = if coverage.failed_files > 0 || coverage.stale_files > 0 {
             match counts {
                 Some(counts) => counts.first_failure().cloned(),
                 None => match serde_json::from_str(&prior).map_err(sql_error)? {

@@ -73,9 +73,14 @@ impl CoverageScan {
                                 self.first_failure = Some(error);
                             }
                         }
-                        FileCoverage::Stale { reason, .. } => {
+                        FileCoverage::Stale {
+                            reason, diagnostic, ..
+                        } => {
                             self.stale += 1;
                             self.reason(reason);
+                            if self.first_failure.is_none() {
+                                self.first_failure = diagnostic;
+                            }
                         }
                     }
                     self.after = row.get(0).map_err(cache_error)?;

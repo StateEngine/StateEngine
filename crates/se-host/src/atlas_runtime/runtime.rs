@@ -155,7 +155,7 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             summary.generation=Some(Generation(generation.try_into().map_err(atlas_cold::failure)?));
             summary.coverage=serde_json::from_str(&coverage).map_err(atlas_cold::failure)?;
             let state: IndexState = serde_json::from_str(&state).map_err(atlas_cold::failure)?;
-            if summary.coverage.failed_files > 0 && matches!(state, IndexState::Partial { .. }) {
+            if (summary.coverage.failed_files > 0 || summary.coverage.stale_files > 0) && matches!(state, IndexState::Partial { .. }) {
                 summary.state = state;
             } else if complete {
                 summary.state=if let Some(reason) = se_atlas::history::limitation(sql)? {
