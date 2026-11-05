@@ -72,7 +72,7 @@ pub struct AtlasOwnerPort {
     pub records: Arc<RecordFeedFence>,
 }
 impl AtlasOwnerPort {
-    #[cfg(feature = "secode")]
+    #[cfg(feature = "listener")]
     pub(crate) fn is_installed(&self) -> bool {
         self.reader.get().is_some()
     }

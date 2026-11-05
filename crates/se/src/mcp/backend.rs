@@ -160,6 +160,27 @@ impl se_host::McpBackend for Backend {
     async fn check_session(&mut self, capability: Arc<Secret>) -> Result<()> {
         Backend::check_session(self, &capability)
     }
+    async fn atlas_available(&mut self, capability: Arc<Secret>) -> Result<bool> {
+        let status = Backend::call(
+            self,
+            &capability,
+            AnyOp::ProjectStatus(ProjectStatus::default()),
+        )?;
+        match status
+            .pointer("/atlas/state")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some("unavailable" | "not-built") => Ok(false),
+            Some(
+                "unknown" | "preparing" | "unreadable" | "disabled" | "dormant" | "absent"
+                | "updating" | "current" | "partial" | "suspended" | "draining" | "closed",
+            ) => Ok(true),
+            _ => Err(scope::unreadable(
+                "MCP Atlas discovery",
+                "authenticated status did not supply recognized controller availability; preserve the home and check se status",
+            )),
+        }
+    }
     async fn call(
         &mut self,
         capability: Arc<Secret>,

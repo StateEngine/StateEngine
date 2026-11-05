@@ -33,6 +33,18 @@ pub struct McpPrincipal {
 pub trait McpBackend {
     fn check_session(&mut self, capability: Arc<Secret>)
     -> impl Future<Output = Result<()>> + Send;
+    /// Authenticate discovery and report this host's installed controller.
+    /// Backends without an Atlas installation advertise only core tools.
+    fn atlas_available(
+        &mut self,
+        capability: Arc<Secret>,
+    ) -> impl Future<Output = Result<bool>> + Send {
+        let checked = self.check_session(capability);
+        async move {
+            checked.await?;
+            Ok(false)
+        }
+    }
     /// Execute one core-decoded operation as the capability's bound session and
     /// return its schema-tagged output value.
     fn call(
@@ -146,9 +158,9 @@ pub async fn dispatch(
     };
     let response = if method == "tools/list" {
         match backend
-            .check_session(Arc::clone(&capability))
+            .atlas_available(Arc::clone(&capability))
             .await
-            .and_then(|()| tools())
+            .and_then(tools)
         {
             Ok(result) => success(id, result),
             Err(error) => rpc_error(id, SESSION_REQUIRED, &error.to_string()),
@@ -180,9 +192,15 @@ fn initialize(params: &Value) -> Value {
 /// It advertises input schemas only: MCP makes outputSchema optional, the
 /// output schemas are ~97% of the catalogue's bytes, and they remain public
 /// through `se schema`. Results still carry the schema-tagged structuredContent.
-fn tools() -> Result<Value> {
+fn tools(atlas_available: bool) -> Result<Value> {
     let tools: Vec<Value> = se_core::ops::mcp_tools()?
         .into_iter()
+        .filter(|tool| {
+            atlas_available || !se_core::ops::CATALOGUE.iter().any(|meta| {
+                meta.feature == se_core::registry::Feature::Atlas
+                    && matches!(meta.mcp, se_core::registry::McpExposure::Tool { name, .. } if name == tool.name)
+            })
+        })
         .map(|tool| {
             json!({
                 "name": tool.name,
