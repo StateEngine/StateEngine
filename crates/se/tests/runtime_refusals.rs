@@ -511,7 +511,12 @@ fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
             "refused init changed the repository"
         );
     }
-    host.stop()?;
+    // Exercise the documented recovery through the real CLI. The fixture's
+    // direct IPC stop has a five-second budget and must cold-prove this much
+    // larger test executable; it is not the owner's ordinary `se down` path.
+    let stopped = checked(command(&image, home, true).arg("down").output()?)?;
+    assert_eq!(stopped["complete"], true);
+    assert!(!host.live()?, "public down retained the exact live host");
     let retried = checked(
         command(&image, home, true)
             .arg("init")
