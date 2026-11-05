@@ -36,11 +36,12 @@ impl LaunchCoordinator {
     pub fn subscribe_activity(&self) -> watch::Receiver<u32> {
         self.activity.subscribe()
     }
-    pub async fn launch(
+    pub(super) async fn launch_prepared(
         self: &Arc<Self>,
         plan: LaunchPlan,
         admission: Admission,
         deadline: &Deadline,
+        takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
     ) -> Result<LaunchResult> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(se_core::scope::unreadable(
@@ -108,7 +109,8 @@ impl LaunchCoordinator {
                 }
                 let target = (plan.project.id.clone(), plan.agent.id.clone());
                 let lifecycle = plan.lifecycle.clone();
-                let work = Work::new(plan, admission);
+                let mut work = Work::new(plan, admission);
+                work.takeover = takeover;
                 let wake = work.wake.clone();
                 let job = Arc::new(Job {
                     intent,

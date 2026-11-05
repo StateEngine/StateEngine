@@ -323,7 +323,8 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("provider").help("Override the saved provider for this launch: claude or codex"))
             .arg(value("model").help("Override the saved model for this launch"))
             .arg(value("task").help("Task text handed to the agent for this launch"))
-            .arg(toggle("detach").help("Run headless instead of in a window")),
+            .arg(toggle("detach").help("Run headless instead of in a window"))
+            .arg(toggle("override_live").long("override-live").help("Stop the existing managed agent and its scoped jobs before resuming; default refuses a live lifecycle and lists its jobs")),
         "agent.stop" => c
             .arg(positional("agent", 1, false).conflicts_with("all").help("Saved agent name or ID to stop"))
             .arg(toggle("all").conflicts_with("release").help("Stop every running agent in this project"))

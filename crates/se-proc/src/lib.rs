@@ -40,6 +40,14 @@ pub use uninstall::{
     UninstallReady,
 };
 mod ownership;
+#[cfg(any(target_os = "linux", windows))]
+mod process_command;
+#[cfg(any(target_os = "linux", windows))]
+pub use process_command::read_process_command;
+#[cfg(target_os = "linux")]
+mod process_descendants;
+#[cfg(target_os = "linux")]
+pub use process_descendants::read_process_descendants;
 mod source_root;
 mod state_files;
 pub use source_root::{
