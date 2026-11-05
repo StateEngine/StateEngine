@@ -153,7 +153,7 @@ esac
 rustup component add rust-docs
 cargo fetch --locked --target "$MAC_TARGET"
 mac_run native-build python3 scripts/release/build.py \
-  --target "$MAC_TARGET" --out "$MAC_LOGS/native-build"
+  --target "$MAC_TARGET" --offline --out "$MAC_LOGS/native-build"
 mac_run native-archive python3 scripts/release/assemble.py \
   --build "$MAC_LOGS/native-build" --out "$MAC_LOGS/archive"
 ```

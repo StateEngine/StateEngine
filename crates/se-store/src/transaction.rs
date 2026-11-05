@@ -1,7 +1,10 @@
 use crate::{apply, codec, connection, error::*, identity::*, *};
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 mod first_binding;
 mod idempotency;
 mod input;
@@ -14,6 +17,7 @@ use receipt::{door, receipt_members, stamp};
 use recovery::Uncertain;
 pub(crate) struct Engine {
     pub db: Connection,
+    pub path: PathBuf,
     pub identity: LeaseIdentity,
     pub poisoned: bool,
     pub pending: Vec<Uncertain>,
@@ -186,9 +190,13 @@ impl Engine {
                 .is_err_and(|e| e.code == StoreErrorCode::DiskFull)
             {
                 self.rollback_confirmed()?;
-                return Err(fail(
-                    StoreErrorCode::DiskFull,
-                    "disk full before COMMIT; the entire group was rolled back",
+                return Err(context(
+                    fail(
+                        StoreErrorCode::DiskFull,
+                        "disk full before COMMIT; the entire group was rolled back",
+                    ),
+                    &self.path,
+                    StoreIoStage::Commit,
                 ));
             }
             if result.is_err() {
