@@ -56,6 +56,11 @@ fn init_policy_matches_its_first_launch_for_both_providers_and_explicit_approval
                     .env_clear()
                     .env("HOME", &f.home)
                     .env("USERPROFILE", &f.home);
+                // Winsock needs the system directory even in an isolated test home.
+                #[cfg(windows)]
+                if let Some(system_root) = std::env::var_os("SystemRoot") {
+                    command.env("SystemRoot", system_root);
+                }
                 if json {
                     command.arg("--json");
                 }
