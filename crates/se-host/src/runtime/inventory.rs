@@ -4,7 +4,9 @@ use se_proc::{
     CheckpointKind, CheckpointPrincipal, CheckpointSource, LifecycleState, ProcessRecord,
     RootPublication,
 };
-use se_store::{Actor, OwnerGuardInventory, ProcessState, RecordedIdentity, RootIdentityState};
+use se_store::{
+    Actor, ContainmentFact, OwnerGuardInventory, ProcessState, RecordedIdentity, RootIdentityState,
+};
 use se_types::{Result, StartIdentity};
 
 pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<ProcessRecord>> {
@@ -46,7 +48,7 @@ pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<Pro
         if let Some(owner) = pending_owner {
             let observed = se_proc::read_process(owner.machine.clone(), owner.pid)
                 .map_err(|error| unreadable(&format!("{error:?}")))?;
-            if matches!(observed, se_proc::ProcessRead::Present(value)
+            if matches!(&observed, se_proc::ProcessRead::Present(value)
                 if value.identity == *owner
                     && matches!(value.state, se_proc::NativeState::Running | se_proc::NativeState::Stopped))
             {
@@ -59,6 +61,32 @@ pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<Pro
                 ))
                 .with_retry(se_types::Retry::After(std::time::Duration::from_secs(1)))
                 .into());
+            }
+            let owner_gone = match &observed {
+                se_proc::ProcessRead::Absent { .. } => true,
+                se_proc::ProcessRead::ExitedRecord { .. } => true,
+                se_proc::ProcessRead::Present(value) => {
+                    value.identity != *owner
+                        || matches!(
+                            value.state,
+                            se_proc::NativeState::Exited | se_proc::NativeState::ExitedAwaitingReap
+                        )
+                }
+            };
+            if owner_gone
+                && matches!(checkpoint.checkpoint, CheckpointKind::Reservation(_))
+                && entry.state == ProcessState::Reserved
+                && matches!(identity.instance, RecordedIdentity::Absent { .. })
+                && matches!(identity.containment, ContainmentFact::NotLaunched)
+            {
+                // C1 precedes child publication. Once its exact owner is gone,
+                // this reservation contributes no root to caller ancestry.
+                // Keep the protected checkpoint intact: startup must still
+                // reconcile native custody and commit its own exit witness.
+                // A different native birth or executable is not the original
+                // owner. This grants no signal rights over that successor;
+                // scope/root custody and unreadable observations still refuse.
+                continue;
             }
         }
         let (record, terminal_cleanup) = match checkpoint

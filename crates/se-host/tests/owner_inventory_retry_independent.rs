@@ -85,17 +85,24 @@ fn exact_live_original_owner_only_gets_a_bounded_retry() -> Check {
     assert_eq!(error.body.retry(), &Retry::After(Duration::from_secs(1)));
     Ok(())
 }
+/// Protects: a reused owner PID is not the original live host and cannot deadlock C1 recovery.
 #[test]
-fn replaced_owner_identity_never_gets_live_host_retry() -> Check {
+fn replaced_owner_birth_admits_c1_without_signalling_the_new_process() -> Check {
     let mut stale = owner()?;
     let StartIdentity::Linux { start_ticks } = &mut stale.start else {
         return Err("native Linux owner required".into());
     };
-    *start_ticks += 1;
+    *start_ticks = start_ticks
+        .checked_sub(1)
+        .ok_or("earlier native birth required")?;
     let (_f, inventory) = inventory(stale)?;
-    let error = refusal(&inventory)?;
-    assert_eq!(error.body.code(), Code::SourceUnreadable);
-    assert_eq!(error.body.retry(), &Retry::Never);
+    let custody = inventory.processes[0].identity.custody.record.clone();
+    assert!(se_host::decode_owner_inventory(&inventory)?.is_empty());
+    assert_eq!(inventory.processes[0].identity.custody.record, custody);
+    assert!(matches!(
+        read_process(owner()?.machine, ProcessId(std::process::id())).map_err(native)?,
+        ProcessRead::Present(_)
+    ));
     Ok(())
 }
 struct ChildOwner {
@@ -158,15 +165,25 @@ impl Drop for ChildOwner {
         }
     }
 }
+/// Bug: 927f3cfc — a dead host's C1 reservation blocked every supported recovery command.
 #[test]
-fn dead_original_owner_retains_its_refusal_without_retry_advice() -> Check {
+fn dead_original_owner_admits_without_consuming_its_protected_custody() -> Check {
     let mut child = ChildOwner::new()?;
     let identity = child.identity.clone();
     child.finish()?;
-    let (_f, inventory) = inventory(identity)?;
-    let error = refusal(&inventory)?;
-    assert_eq!(error.body.code(), Code::SourceUnreadable);
-    assert_eq!(error.body.retry(), &Retry::Never);
+    let (_f, mut inventory) = inventory(identity)?;
+    let custody = inventory.processes[0].identity.custody.record.clone();
+    for _ in 0..2 {
+        assert!(se_host::decode_owner_inventory(&inventory)?.is_empty());
+        assert_eq!(inventory.processes[0].identity.custody.record, custody);
+        assert_eq!(inventory.processes[0].state, ProcessState::Reserved);
+    }
+    // Omission is legal only for an unpublished, unlaunched C1 reservation.
+    inventory.processes[0].state = ProcessState::Running;
+    assert_eq!(refusal(&inventory)?.body.code(), Code::SourceUnreadable);
+    inventory.processes[0].state = ProcessState::Reserved;
+    inventory.processes[0].identity.root_identity = RootIdentityState::Identified;
+    assert_eq!(refusal(&inventory)?.body.code(), Code::SourceUnreadable);
     Ok(())
 }
 #[test]
@@ -201,14 +218,14 @@ fn corrupt_and_mismatched_custody_never_become_retryable_or_empty() -> Check {
     Ok(())
 }
 
-/// A live PID with a different recorded executable remains stale custody.
+/// Protects: a changed owner executable proves the old C1 owner gone, without touching its successor.
 #[test]
-fn changed_owner_image_never_gets_live_host_retry() -> Check {
+fn changed_owner_image_admits_c1_without_consuming_custody() -> Check {
     let mut stale = owner()?;
     stale.image = std::path::PathBuf::from("/usr/bin/false");
     let (_f, inventory) = inventory(stale)?;
-    let error = refusal(&inventory)?;
-    assert_eq!(error.body.code(), Code::SourceUnreadable);
-    assert_eq!(error.body.retry(), &Retry::Never);
+    let custody = inventory.processes[0].identity.custody.record.clone();
+    assert!(se_host::decode_owner_inventory(&inventory)?.is_empty());
+    assert_eq!(inventory.processes[0].identity.custody.record, custody);
     Ok(())
 }
