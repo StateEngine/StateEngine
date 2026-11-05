@@ -242,7 +242,14 @@ def run(options):
             assert 'endpoint identity journal is absent' in worker['resume']['reason']
             assert not journal.exists() and held.read_bytes() == original_journal
             assert birth(launched['process']['pid'])['state'] != 'Z'
-            check('missing original endpoint journal names the affected agent and legal stop without inferring custody or signalling the provider')
+            # This refusal must leave the original work undisturbed. Let its
+            # bounded tool finish before exercising public shutdown in the
+            # deliberately uncontained Linux scope.
+            until = time.monotonic()+35
+            while not (f.repo/'crash-finish').exists() and time.monotonic() < until:
+                time.sleep(.1)
+            assert (f.repo/'crash-finish').read_text() == 'finished'
+            check('missing endpoint journal names the agent and legal stop; original work finishes without inferred custody or provider signalling')
             held.rename(journal)
             return
         until = time.monotonic()+(20 if options.expect_red else 55)
@@ -282,7 +289,7 @@ def run(options):
         check('launch refuses a second provider while the original live session remains controlled')
         read = f.rpc('stateengine_resume', {})
         assert not read.get('isError'), read
-        bound = f.ok('--project', f.project, 'resume', recipient=True)
+        bound = f.ok('--project', f.project, 'resume', '--budget', '65536', recipient=True)
         assert bound['principal']['session_id'] == f.session and not bound['principal']['preview'], bound
         check('authenticated MCP and bound CLI resume remain usable on the recovered session')
     finally:
