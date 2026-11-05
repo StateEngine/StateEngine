@@ -36,15 +36,15 @@ pub(super) fn plans(query: &FindQuery, mode: SearchMode) -> AtlasResult<Vec<Plan
         let equality = if smart {
             "n.text=?1"
         } else {
-            "lower(n.text)=?1"
+            "s.name IN (SELECT id FROM names WHERE lower(text)=?1)"
         };
         add(Kind::Symbol, 1, equality, text)?;
         if !exact {
             if mode != SearchMode::Phrase {
                 let prefix = if smart {
-                    "instr(n.text,?1)=1"
+                    "s.name IN (SELECT id FROM names WHERE instr(text,?1)=1)"
                 } else {
-                    "instr(lower(n.text),lower(?1))=1"
+                    "s.name IN (SELECT id FROM names WHERE instr(lower(text),lower(?1))=1)"
                 };
                 add(Kind::Symbol, 2, prefix, text)?;
             }
@@ -63,7 +63,12 @@ pub(super) fn plans(query: &FindQuery, mode: SearchMode) -> AtlasResult<Vec<Plan
                 )?;
             }
             if mode == SearchMode::Literal {
-                add(Kind::Symbol, 4, &literal("n.text"), text)?;
+                add(
+                    Kind::Symbol,
+                    4,
+                    &format!("s.name IN (SELECT id FROM names WHERE {})", literal("text")),
+                    text,
+                )?;
             }
             if mode != SearchMode::Literal {
                 add(
