@@ -36,6 +36,8 @@ class MemoryMonitor:
         self.thread.start()
 
     def sample(self):
+        stage = self.stage
+        sampled_at = time.monotonic()
         native = {}
         for directory in Path('/proc').iterdir():
             if not directory.name.isdigit():
@@ -81,7 +83,7 @@ class MemoryMonitor:
                                           'outside': after})
                 else:
                     errors.append({'pid': pid, 'birth': row['birth'], 'reason': str(error)})
-        self.samples.append({'at_monotonic': time.monotonic(), 'stage': self.stage,
+        self.samples.append({'at_monotonic': sampled_at, 'stage': stage,
                              'processes': records, 'errors': errors})
 
     def run(self):
