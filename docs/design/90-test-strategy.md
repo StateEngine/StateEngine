@@ -211,7 +211,7 @@ The full transfer/crash matrix remains wave 4 work; the earlier round-trip slice
 ## 4. Property tests
 
 Eight `proptest` suites over the store's public API. Each runs 256 cases per PR and 10,000 nightly on
-the Linux workstation. Failing seeds are committed as `proptest-regressions` files (data, not tests).
+a dedicated Linux test machine. Failing seeds are committed as `proptest-regressions` files (data, not tests).
 
 | # | Name | Invariant |
 | --- | --- | --- |

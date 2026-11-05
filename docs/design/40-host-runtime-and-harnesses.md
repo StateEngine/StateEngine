@@ -313,7 +313,7 @@ current-thread executor. Constructor stores Handle without I/O/spawn. Tokio is
 optional behind `runtime`; client-only builds have no Tokio dependency. The
 library dependency uses a caret range, not an exact Tokio pin. SE Code's
 shipping Rust server is `secode-server` in `crates/secode-product` at dev
-`58e8a145f` (`E:\rust-secode`); its lock resolves Tokio 1.53.3 and bundled
+`58e8a145f` (SE Code source repository); its lock resolves Tokio 1.53.3 and bundled
 rusqlite 0.40.1 / libsqlite3-sys 0.38.1. Composition must resolve one compatible
 Tokio and one SQLite links=sqlite3 dependency. No library changes process umask
 or installs a global tracing subscriber; owner-only file creation/readback is

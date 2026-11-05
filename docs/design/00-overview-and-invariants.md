@@ -467,7 +467,7 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 | Rebuild the product in Rust; plan before building | Ledger `rust-redesign-planned-before-rebuild-2026-10-30` |
 | Done = five journeys on three OSes | Jimmy 2026-10-29 (`jimmy-2026-10-29-done-is-five-journeys`) |
 | Product separated from factory; authors write no tests (reviewers add black-box and 6–8 property tests) | Jimmy 2026-10-29; plan |
-| Own repo at `E:\stateengine\rust-se`; journeys in a separate repo | Jimmy 2026-10-30 (plan) |
+| Dedicated Rust product repository; journeys in a separate repository | Jimmy 2026-10-30 (plan) |
 | Project found from the folder you are in; any existing repo can be adopted (supersedes KERNEL's "never inferred from cwd" for owner CLI; never creates) | Jimmy 2026-10-30 (plan); OPS.md |
 | `se launch` resumes the conversation for Claude and Codex; `--new` starts fresh | Jimmy 2026-10-30 (plan) |
 | Alpha keeps everything users need, including import, windowed launch, handover; only Postgres multiplayer waits | Jimmy 2026-10-30 (plan) |
