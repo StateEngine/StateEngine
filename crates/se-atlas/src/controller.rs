@@ -80,6 +80,13 @@ impl<R: Runtime> Controller<R> {
     pub fn runtime_mut(&mut self) -> &mut R {
         &mut self.runtime
     }
+    /// Keep a live slot while a finite quantum still owns unfinished source IO.
+    pub fn work_pending(&self, root: &RootId) -> bool {
+        self.in_flight
+            .as_ref()
+            .is_some_and(|work| &work.root == root)
+            || self.scheduler.pending(root)
+    }
     /// Lookup only: never registers or activates a root on a query path.
     pub fn registered_root(
         &self,
@@ -123,7 +130,9 @@ impl<R: Runtime> Controller<R> {
                         | IndexState::Updating { .. }
                         | IndexState::VerificationNeeded { .. }
                 ));
-        if !retain_failure {
+        let native_progress = matches!((&summary.state, &root.summary.state),
+            (IndexState::ColdIndexing { job: observed, .. }, IndexState::ColdIndexing { job: published, .. }) if observed == published);
+        if !retain_failure && !native_progress {
             summary.state = root.summary.state.clone();
         }
         Ok(summary)
@@ -191,7 +200,7 @@ impl<R: Runtime> AtlasController for Controller<R> {
                 .roots
                 .iter()
                 .position(|r| matches!(r.summary.state, IndexState::Closed))
-                .ok_or_else(|| capacity("Atlas resident root registrations", 1, 0))?;
+                .ok_or_else(|| capacity("Atlas live resource slots", 1, 0))?;
             self.roots.remove(closed);
         }
         let summary = IndexSummary {

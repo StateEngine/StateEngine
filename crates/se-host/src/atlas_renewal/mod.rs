@@ -175,7 +175,7 @@ impl NativeRenewal {
                 self.roots
                     .iter()
                     .position(|r| r.native.is_none())
-                    .ok_or_else(|| limit("active renewal roots", 3, 2))?
+                    .ok_or_else(|| limit("live renewal watch slots", 3, 2))?
             };
             let previous: Coverage = connection.read(deadline, |sql| {
                 let json: String = sql
@@ -315,15 +315,18 @@ impl NativeRenewal {
             let observed_unix_ms = i64::try_from(observed_unix_ms).map_err(sql_error)?;
             connection.write(WAL, deadline, |sql| {
                 batch::publish(sql, observed_unix_ms, true)?;
-                let json: String = sql
-                    .prepare("SELECT coverage_json FROM meta WHERE singleton=1")?
-                    .query_row([], |r| r.get(0))
+                let (json, prior): (String, String) = sql
+                    .prepare("SELECT coverage_json,state_json FROM meta WHERE singleton=1")?
+                    .query_row([], |r| Ok((r.get(0)?, r.get(1)?)))
                     .map_err(sql_error)?;
                 let mut coverage: Coverage = serde_json::from_str(&json).map_err(sql_error)?;
                 coverage.watched_directories = 0;
                 coverage.watch_discovery_complete = false;
-                let state = IndexState::VerificationNeeded {
-                    reason: CoverageReason::StaleSnapshot,
+                let state = match serde_json::from_str(&prior).map_err(sql_error)? {
+                    state @ IndexState::Partial { .. } => state,
+                    _ => IndexState::VerificationNeeded {
+                        reason: CoverageReason::StaleSnapshot,
+                    },
                 };
                 sql.prepare("UPDATE meta SET coverage_json=?1,state_json=?2 WHERE singleton=1")?
                     .execute((

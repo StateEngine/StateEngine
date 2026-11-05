@@ -29,6 +29,10 @@ pub type AtlasObservedReadCallback<'a> = dyn FnMut(
 /// Object-safe owner-loop handoff. The callback runs synchronously while the
 /// selected controller lends its one scoped reader; nothing escapes the call.
 pub trait AtlasReadPort: Send + Sync {
+    /// Current project roots from the caller's authoritative read snapshot.
+    fn observe_project(&self, _project: &ProjectId, _roots: &[se_store::Root]) -> Result<()> {
+        Ok(())
+    }
     /// Signal an admitted query's project without doing native work here.
     fn request_interest(&self, _project: &ProjectId) -> Result<()> {
         Ok(())
@@ -77,6 +81,16 @@ pub struct AtlasOwnerPort {
     pub records: Arc<RecordFeedFence>,
 }
 impl AtlasOwnerPort {
+    pub(crate) fn observe_project(
+        &self,
+        project: &ProjectId,
+        roots: &[se_store::Root],
+    ) -> Result<()> {
+        if let Some(reader) = self.reader.get() {
+            reader.observe_project(project, roots)?;
+        }
+        Ok(())
+    }
     #[cfg(feature = "listener")]
     pub(crate) fn is_installed(&self) -> bool {
         self.reader.get().is_some()

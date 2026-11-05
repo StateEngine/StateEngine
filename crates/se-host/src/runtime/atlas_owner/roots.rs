@@ -6,17 +6,16 @@ use std::{io::Read, num::NonZeroU32};
 #[derive(Default)]
 pub(super) struct Scan {
     after: Option<se_types::Cursor>,
-    candidates: Vec<(u8, RootRegistration)>,
-    seen: u64,
 }
 impl Scan {
-    /// Page the authoritative owner catalogue without retaining it. The two most
-    /// recent interested projects get admission; remaining roots stay on disk.
+    /// Stream the authoritative catalogue into disk metadata. No project count
+    /// becomes an in-memory registration or a native watch admission limit.
     pub(super) fn page(
         &mut self,
         context: &ExecutionContext,
         owner: &HumanId,
         home: &std::path::Path,
+        work: &ProjectWork,
     ) -> Result<bool> {
         let admitted = admission(context, owner, Scope::Registry);
         let phase = executor::checked_pooled_phase(&context.reads, context.generation)?;
@@ -44,69 +43,57 @@ impl Scan {
                 "a continuation for an incomplete page",
             ));
         }
-        let interests = context.atlas.records.interests()?;
         for record in page.into_items() {
-            let (project, roots) = match record.current.body {
+            match record.current.body {
                 EventBody::ProjectRegistered { project, roots, .. }
-                | EventBody::ProjectUpdated { project, roots, .. } => (project, roots),
+                | EventBody::ProjectUpdated { project, roots, .. } => {
+                    work.register(&project, registrations(&project, &roots, home)?)?;
+                }
                 _ => {
                     return Err(SeError::invalid(
                         "Atlas catalogue",
                         "a committed active project head",
                     ));
                 }
-            };
-            let priority = interests
-                .iter()
-                .position(|p| p == &project)
-                .map_or(0, |index| index as u8 + 1);
-            for root in roots {
-                self.seen = self
-                    .seen
-                    .checked_add(1)
-                    .ok_or_else(|| SeError::invalid("Atlas roots", "bounded catalogue count"))?;
-                if self.seen > 100_000 {
-                    return Err(SeError::invalid(
-                        "Atlas roots",
-                        "at most 100,000 registered roots per finite catalogue reconciliation",
-                    ));
-                }
-                let mut digest = Sha256::new();
-                digest.update(b"StateEngine Atlas root v1\0");
-                digest.update(project.as_str().as_bytes());
-                digest.update(&root.canonical_key);
-                let hash = digest.finalize();
-                let mut entropy = [0; 10];
-                entropy.copy_from_slice(&hash[..10]);
-                let id = RootId::from_parts(1, entropy)?;
-                let source = root.path.to_local()?;
-                if !source.is_absolute() {
-                    return Err(SeError::invalid(
-                        "Atlas root",
-                        "an absolute committed native root",
-                    ));
-                }
-                let registration = RootRegistration {
-                    project: project.clone(),
-                    root: id.clone(),
-                    canonical_source_root: source,
-                    cache: CacheLocation {
-                        directory: home.join(project.as_str()).join(id.as_str()),
-                    },
-                    git_metadata: None,
-                };
-                self.candidates.push((priority, registration));
-                self.candidates.sort_by_key(|(priority, _)| *priority);
-                if self.candidates.len() > 2 {
-                    self.candidates.remove(0);
-                }
             }
         }
         Ok(complete)
     }
-    pub(super) fn finish(self) -> Vec<RootRegistration> {
-        self.candidates.into_iter().map(|(_, root)| root).collect()
-    }
+}
+pub(super) fn registrations(
+    project: &ProjectId,
+    roots: &[se_store::Root],
+    home: &std::path::Path,
+) -> Result<Vec<RootRegistration>> {
+    roots
+        .iter()
+        .map(|root| {
+            let mut digest = Sha256::new();
+            digest.update(b"StateEngine Atlas root v1\0");
+            digest.update(project.as_str().as_bytes());
+            digest.update(&root.canonical_key);
+            let hash = digest.finalize();
+            let mut entropy = [0; 10];
+            entropy.copy_from_slice(&hash[..10]);
+            let id = RootId::from_parts(1, entropy)?;
+            let source = root.path.to_local()?;
+            if !source.is_absolute() {
+                return Err(SeError::invalid(
+                    "Atlas root",
+                    "an absolute committed native root",
+                ));
+            }
+            Ok(RootRegistration {
+                project: project.clone(),
+                root: id.clone(),
+                canonical_source_root: source,
+                cache: CacheLocation {
+                    directory: home.join(project.as_str()).join(id.as_str()),
+                },
+                git_metadata: None,
+            })
+        })
+        .collect()
 }
 pub(super) fn policy(enabled: bool) -> AtlasPolicy {
     AtlasPolicy {

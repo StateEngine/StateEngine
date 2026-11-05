@@ -30,6 +30,10 @@ pub struct RecordFeedFence {
     state: Mutex<State>,
     #[cfg(feature = "runtime")]
     changed: tokio::sync::Notify,
+    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    work: std::sync::OnceLock<Arc<super::project_work::ProjectWork>>,
+    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    registry_dirty: std::sync::atomic::AtomicBool,
 }
 /// Capture before opening the authoritative query/feed snapshot. A token from
 /// an older snapshot cannot certify a newer feed after a concurrent core write.
@@ -61,8 +65,34 @@ impl RecordFeedFence {
         let guard = self.before_write()?;
         if let se_store::Scope::Project(project) = scope {
             self.interest(project)?;
+            #[cfg(all(feature = "runtime", target_os = "linux"))]
+            if let Some(work) = self.work.get()
+                && let Err(error) = work.request(project)
+            {
+                // An optional derived cache must not block an authoritative
+                // write. Retain the failure and reconcile registrations later.
+                eprintln!("Code index activity could not be queued: {error}");
+                self.registry_dirty
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+        }
+        #[cfg(all(feature = "runtime", target_os = "linux"))]
+        if matches!(scope, se_store::Scope::Registry) {
+            self.registry_dirty
+                .store(true, std::sync::atomic::Ordering::Release);
         }
         Ok(guard)
+    }
+    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    pub(crate) fn install_work(&self, work: Arc<super::project_work::ProjectWork>) -> Result<()> {
+        self.work
+            .set(work)
+            .map_err(|_| SeError::invalid("Atlas project work", "one owner installation"))
+    }
+    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    pub(crate) fn take_registry_dirty(&self) -> bool {
+        self.registry_dirty
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
     }
     /// Bounded owner interest is not an authoritative write or freshness fence.
     /// Repeated reads of the most recent project do not restart maintenance.
@@ -83,10 +113,6 @@ impl RecordFeedFence {
     pub(crate) fn wake_owner(&self) {
         #[cfg(feature = "runtime")]
         self.changed.notify_one();
-    }
-    #[cfg(all(feature = "runtime", target_os = "linux"))]
-    pub(crate) fn interested(&self, project: &se_types::ProjectId) -> Result<bool> {
-        Ok(self.lock()?.interests.contains(project))
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>> {

@@ -150,22 +150,7 @@ pub(crate) fn owner_read<R: Snapshot>(
             "one admitted registered project",
         ));
     };
-    let registered = se_core::scope::require_present(
-        read.project(project.clone())
-            .map_err(|e| se_core::store_error::store_error(&e))?,
-        "Atlas project",
-        "Select an existing registered project before querying Atlas.",
-    )?;
-    if !matches!(
-        registered.current.body,
-        se_store::EventBody::ProjectRegistered { .. } | se_store::EventBody::ProjectUpdated { .. }
-    ) {
-        return Err(SeError::invalid(
-            "Atlas project",
-            "an active registered project",
-        ));
-    }
-    owner.request_interest(project)?;
+    request_project(owner, read, project)?;
     let summary = owner.summary(project, request.options().root.as_ref())?;
     if &summary.project != project
         || request
@@ -187,11 +172,12 @@ pub(crate) fn owner_read<R: Snapshot>(
             | IndexState::Opening
             | IndexState::ColdIndexing { .. }
             | IndexState::Suspended { .. }
+            | IndexState::Partial { .. }
     ) || summary.epoch.is_none()
     {
         return Ok(unavailable(request, summary));
     }
-    with_owner_reader(
+    with_prepared_owner_reader(
         owner,
         ticket,
         request.options().root.as_ref(),
@@ -202,8 +188,58 @@ pub(crate) fn owner_read<R: Snapshot>(
     )
 }
 
+/// Read/continuity hooks use the same current authoritative registration as
+/// explicit CLI/MCP queries. Status deliberately never calls this handoff.
+pub(crate) fn request_project<R: Snapshot>(
+    owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
+    read: &mut R,
+    project: &se_types::ProjectId,
+) -> AtlasResult<()> {
+    let registered = se_core::scope::require_present(
+        read.project(project.clone())
+            .map_err(|e| se_core::store_error::store_error(&e))?,
+        "Atlas project",
+        "Select an existing registered project before querying Atlas.",
+    )?;
+    let roots = match registered.current.body {
+        se_store::EventBody::ProjectRegistered { roots, .. }
+        | se_store::EventBody::ProjectUpdated { roots, .. } => roots,
+        _ => {
+            return Err(SeError::invalid(
+                "Atlas project",
+                "an active registered project",
+            ));
+        }
+    };
+    owner.observe_project(project, &roots)?;
+    owner.request_interest(project)?;
+    Ok(())
+}
+
 /// One admitted snapshot and borrowed controller reader for private adapters too.
 pub(crate) fn with_owner_reader<R: Snapshot, T>(
+    owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
+    ticket: Option<crate::atlas_runtime::record_fence::RecordFeedTicket>,
+    root: Option<&RootId>,
+    read: &mut R,
+    admission: &Admission,
+    now_unix_ms: i64,
+    query: impl FnOnce(
+        &QueryReader<'_>,
+        &se_atlas::source::RegisteredSource<crate::atlas_source::NativeAtlasSource>,
+    ) -> AtlasResult<T>,
+) -> AtlasResult<T> {
+    let Scope::Project(project) = &admission.scope else {
+        return Err(SeError::invalid(
+            "Atlas query scope",
+            "one admitted registered project",
+        ));
+    };
+    request_project(owner, read, project)?;
+    with_prepared_owner_reader(owner, ticket, root, read, admission, now_unix_ms, query)
+}
+
+fn with_prepared_owner_reader<R: Snapshot, T>(
     owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
     ticket: Option<crate::atlas_runtime::record_fence::RecordFeedTicket>,
     root: Option<&RootId>,
@@ -284,7 +320,7 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
                         "The registered Atlas index has no published snapshot"
                     }
                     IndexState::Opening | IndexState::ColdIndexing { .. } => {
-                        "Atlas indexing is starting; retry this query in 1 second, or use se status to watch progress"
+                        "Atlas indexing is queued or starting; retry this query in 1 second, or use se status to watch progress"
                     }
                     IndexState::Suspended { .. } => {
                         "The registered Atlas index is suspended; inspect its retained status error"

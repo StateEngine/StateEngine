@@ -22,7 +22,6 @@ pub struct NativeAtlasCache {
     writer: Option<File>,
     reserved: RefCell<Option<(CacheEpoch, se_proc::NativeFileRevision)>>,
     growth: Cell<u64>,
-    other_roots_bytes: u64,
 }
 impl NativeAtlasCache {
     /// No creation, permissions repair, writer lock or schema action on reads.
@@ -45,7 +44,6 @@ impl NativeAtlasCache {
             writer: None,
             reserved: RefCell::new(None),
             growth: Cell::new(0),
-            other_roots_bytes: 0,
         }))
     }
     /// Explicit after-ready activation only. All writers across this Atlas home,
@@ -93,7 +91,6 @@ impl NativeAtlasCache {
         project_files.prepare_directory(&path).map_err(fail)?;
         let root = NativeStateFiles::open(&path).map_err(fail)?;
         root.prepare_directory(&path.join("epochs")).map_err(fail)?;
-        let (total, root_bytes) = inventory::measure(&home, root.root())?;
         let cache = Self {
             home,
             root,
@@ -101,7 +98,6 @@ impl NativeAtlasCache {
             writer: Some(writer),
             reserved: RefCell::new(None),
             growth: Cell::new(0),
-            other_roots_bytes: total - root_bytes,
         };
         if let Some(epoch) = candidate {
             cache.claim_reservation(epoch)?;
@@ -373,19 +369,12 @@ impl CacheFiles for NativeAtlasCache {
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>> {
         self.require_writer()?;
         let root = inventory::root(&self.root)?;
-        let total = self
-            .other_roots_bytes
-            .checked_add(root)
-            .ok_or_else(|| fail("Atlas home usage overflow"))?;
         let reserved = self.growth.get();
         let maximum = self.scope.registration.cache.directory.as_path();
         if maximum != self.root.root() {
             return Err(fail("cache registration differs from held root"));
         }
-        for (resource, used, cap) in [
-            ("Atlas root disk", root, 512_000_000u64),
-            ("Atlas home disk", total, 2_000_000_000),
-        ] {
+        for (resource, used, cap) in [("Atlas root disk", root, 512_000_000u64)] {
             if used
                 .checked_add(reserved)
                 .and_then(|n| n.checked_add(bytes))

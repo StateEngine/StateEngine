@@ -24,6 +24,7 @@ pub(crate) fn source(
             "the verified project agent and active session",
         ));
     };
+    crate::atlas_queries::request_project(owner, read, project)?;
     let index = owner.summary(project, None)?;
     if &index.project != project {
         return Err(SeError::invalid(

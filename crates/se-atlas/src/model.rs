@@ -20,7 +20,7 @@ pub const QUEUE_BYTES: u32 = 50_000;
 pub const ADAPTER_BYTES: u32 = 200_000;
 pub const ALLOCATOR_SLACK_BYTES: u32 = 146_918;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CacheLocation {
     pub directory: PathBuf,
 }
@@ -32,14 +32,14 @@ pub struct CachePointer {
     pub root: RootId,
     pub epoch: CacheEpoch,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GitMetadataRegistration {
     pub physical_git_directory: PathBuf,
     pub physical_common_directory: PathBuf,
     pub git_directory_identity: [u8; 32],
     pub common_directory_identity: [u8; 32],
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RootRegistration {
     pub project: ProjectId,
     pub root: RootId,

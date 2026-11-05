@@ -1,4 +1,4 @@
-//! One bounded event queue shared by the two admitted roots. All wakes derive
+//! One bounded event queue shared by the live resource slots. All wakes derive
 //! from source events, explicit activation or unfinished work; no idle timer.
 use crate::{
     errors::{AtlasResult, capacity},
@@ -45,6 +45,17 @@ pub struct Scheduler {
     turn: usize,
 }
 impl Scheduler {
+    pub(crate) fn pending(&self, id: &RootId) -> bool {
+        self.roots
+            .iter()
+            .find(|root| &root.id == id)
+            .is_some_and(|root| {
+                !root.suspended
+                    && (root.processing
+                        || root.reconcile.is_some()
+                        || self.queue.iter().any(|queued| &queued.root == id))
+            })
+    }
     pub(crate) fn serial(&self, id: &RootId) -> AtlasResult<u64> {
         self.roots
             .iter()
@@ -59,7 +70,7 @@ impl Scheduler {
             return Ok(());
         }
         if self.roots.len() >= 2 {
-            return Err(capacity("Atlas active roots", 1, 0));
+            return Err(capacity("Atlas live work slots", 1, 0));
         }
         self.roots.push(Root {
             id,

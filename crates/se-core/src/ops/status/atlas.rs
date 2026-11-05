@@ -48,12 +48,16 @@ pub fn atlas_view(observed: se_types::Result<Read<IndexSummary>>) -> AtlasView {
         IndexState::Disabled => "disabled",
         IndexState::Dormant => "dormant",
         IndexState::Absent => "absent",
-        IndexState::Opening | IndexState::ColdIndexing { .. } => {
+        IndexState::Opening => {
             view.reason = Some(if summary.epoch.is_none() {
-                "Atlas indexing is starting; file counts are not available until publication. Retry the query in 1 second, or use status to watch progress."
+                "Atlas indexing is queued or starting; file counts are not available until publication. Retry the query in 1 second, or use status to watch progress."
             } else {
                 "Preparing an index; file counts describe the previously published snapshot."
             }.into());
+            "preparing"
+        }
+        IndexState::ColdIndexing { discovered_files, .. } => {
+            view.reason = Some(format!("Indexing: {discovered_files} files discovered so far. Retained file counts describe the previous published snapshot; retry the query in 1 second."));
             "preparing"
         }
         IndexState::Updating { .. } => "updating",
@@ -63,7 +67,12 @@ pub fn atlas_view(observed: se_types::Result<Read<IndexSummary>>) -> AtlasView {
             view.reason = Some(error.message());
             "partial"
         }
-        IndexState::VerificationNeeded { .. } => "partial",
+        IndexState::VerificationNeeded { reason } => {
+            if *reason == se_types::code::CoverageReason::StaleSnapshot {
+                view.reason = Some("This saved index needs catch-up against current Git metadata and files. An Atlas query schedules that work; retained answers remain labelled partial.".into());
+            }
+            "partial"
+        },
         IndexState::Suspended { reason } => {
             view.reason = Some(reason.message());
             "suspended"

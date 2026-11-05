@@ -65,13 +65,22 @@ an absent cache after readiness. Status observes its published metadata only:
 preparing, partial, updating, current, disabled and unreadable remain distinct.
 It reports partial/deferred/failed/stale file counts and watch limitations; JSON
 retains the full index summary. A stopped runtime reports unknown index state,
-not absence; start it to observe the current controller. Only two interested
-project roots are admitted at once. A registered project's Atlas query records
-interest and wakes the background owner to replace the least recently used root;
-disk caches are retained. Until publication, the query and status say indexing
-is starting and suggest retrying in one second, with status available to watch
-progress. This backoff is not an index completion-time promise.
-A plain status read observes admission without requesting it.
+not absence; start it to observe the current controller. Jimmy's 2026-11-05 ruling
+places **no limit on registered or indexed projects**. Each canonical worktree keeps
+its project-scoped disk index. Idle projects retain disk data only; the host's
+small live pool contains native watches and unfinished work, never the catalogue
+of everything that may be queried. An Atlas query records durable interest in
+that project and can traverse its retained index without a live-watch slot.
+
+The owner services a disk-backed, coalesced FIFO one project/worktree at a time;
+only pending requests are scanned, separately from the persistent catalogue. Idle
+project metadata is not reopened when selecting another project's work. Only one
+cold child and one writer own the home at a time. A new query cannot
+cancel another project's in-flight cold job. Until an initial epoch is published,
+answers explicitly say indexing is starting or queued and suggest a one-second
+retry; status reports observed cold discovery progress. Retained epochs remain
+readable as partial answers while catch-up is pending. Retry is not a completion
+promise. A plain status read observes metadata without scheduling work.
 
 `se atlas` and `se atlas --help` list the five existing read commands above.
 Queries never enable Atlas, open a substitute cache or start a daemon; they only
@@ -375,9 +384,11 @@ All cache growth is bounded by actual work, with no maintenance daemon/timer:
   accumulation through repeated saves. observed_commits caps at 256 observations;
   older commit baselines become BaselineUnavailable explicitly.
 - Per-root disk ceiling: 512,000,000 bytes including DB, WAL, staging and retired
-  epochs; host total Atlas home ceiling 2,000,000,000 bytes. Reserve space for status
-  before writing; stop admission with a visible budget failure before exceeding
-  the ceiling. Max_files=100,000; traversal and database results are streamed.
+  epochs. There is no project-count or whole-home index ceiling: adding an idle
+  project's disk index cannot exhaust another project's admission. Growth checks
+  inventory only the affected root; filesystem space/IO failures and the retained
+  per-root ceiling remain explicit failures. Reserve space for status before
+  writing. Max_files=100,000; traversal and database results are streamed.
   Cold extraction <=65,536 rows/file AND <=8,000,000 emitted bytes; qualified host
   profiles impose smaller limits inside their parser arena. JSON coverage has
   fixed reason tags/counters, never a path list proportional to repository size.
@@ -418,7 +429,11 @@ exhaustive; reasons, progress, coverage and diagnostic accompany the six values.
 register validates supplied scope/policy without source traversal. activate queues
 an admitted host effect. enqueue coalesces hints without blocking. work_quantum
 runs Discover->Read->Parse->Resolve->Diff->Commit->Prune->Checkpoint within allowance;
-only complete file transactions commit. next_work is Park without actual work,
+only complete file transactions commit. The native owner lends at most 500 ms
+per source-work turn so the qualified 200 ms parse plus source verification,
+resolution and atomic SQL commit can finish without endless 100 ms restarts.
+This is a finite background allowance, not a relaxed parse deadline or a
+save-to-searchable latency qualification. next_work is Park without actual work,
 Ready with work, or AfterEventDebounce for an event-armed one-shot. reader is scoped;
 status is cached metadata. captured_edit accepts exact registered path, before/after
 content hashes and trusted evidence ID: None on one side is witnessed absence,
@@ -464,8 +479,14 @@ hash-map/path allocation or separate parser connection hides behind watch count.
 Windows uses its two 65,536-byte root buffers instead of the Linux map/event arena;
 platform-specific layouts must independently qualify within the SAME share.
 
-At most TWO active roots share these limits; excess roots remain partial, supplied
-by harness events/session-triggered reconcile. Status also reports per-root
+The native pool currently retains watches for at most two recently used roots;
+this is a limit on **live resources**, never on registered or indexed projects.
+Recycling closes the old native handles and retains its disk index. Roots without
+live watches reconcile registered Git metadata and stream file identity/content
+checks on their next query or agent activity, under the same revision-trust rules
+as restart. Their answers carry VerificationNeeded/StaleSnapshot until catch-up
+finishes; a retained Current claim never survives watch loss. Watch exhaustion
+and per-root disk exhaustion remain visible. Status also reports per-root
 **watch_activation_attempts and watch_limited_activations**, process-lifetime scope
 and watch_stats_started timestamp (unknown if the clock is unavailable), so chronic watch exhaustion is observable rather than permanently
 "updating" without explanation. Native qualification reports those counts plus
@@ -836,7 +857,7 @@ allocation is exactly **13,000,000 bytes** across ALL roots, not per connection/
 | SQLite + query | 603,082 | two 65,536-byte caches, two <=16,384-byte statement allowances, 98,304-byte query arena; measured native whole-SQL peak plus arena must also fit; retained writer profile 93,702 bytes (81,480 plus 15%) |
 | Source/parser/extraction | 12,000,000 | one measured admission profile, including retained anonymous allocator pages |
 | Coalesced work queue | 50,000 | <=64 hints and 32,000 active bytes; retained capacity/root bookkeeping fits the remainder; overflow becomes sticky reconcile |
-| Native watches/root/ignore metadata | 200,000 | <=2 active roots, path map cap and bounded policy |
+| Native watches/root/ignore metadata | 200,000 | <=2 live watch roots, path map cap and bounded policy; idle catalogue and queued project records stay on disk |
 | Remaining allocator/accounting slack | 146,918 | not an extra pool or a new parser |
 
 Jimmy authorized the larger standalone host budget on 2026-11-05. Linux/glibc

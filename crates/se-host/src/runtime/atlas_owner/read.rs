@@ -2,24 +2,15 @@
 //! Foreground reads open the published WAL epoch without taking its work lock.
 use super::*;
 use crate::{atlas_cache::NativeAtlasCache, atlas_source::NativeAtlasSource};
-use se_atlas::cache::{connection::ConnectionRole, pointer};
+use se_atlas::cache::{CacheFiles, connection::ConnectionRole, pointer};
 
+#[derive(Default)]
 pub(super) struct Catalogue {
     roots: Vec<Root>,
-    preparing: bool,
 }
 impl Catalogue {
     pub(super) fn clear(&mut self) {
         self.roots.clear();
-        self.preparing = false;
-    }
-}
-impl Default for Catalogue {
-    fn default() -> Self {
-        Self {
-            roots: Vec::new(),
-            preparing: true,
-        }
     }
 }
 #[derive(Clone)]
@@ -44,69 +35,142 @@ impl Service {
                     reason: CoverageReason::StaleSnapshot,
                 };
             }
+            if !working {
+                self.work.publish(&root.registration, summary.clone())?;
+            }
             roots.push(Root {
                 registration: root.registration.clone(),
                 summary,
             });
         }
-        *self.readers.lock().map_err(|_| poisoned())? = Catalogue {
-            roots,
-            preparing: state.scan.is_some(),
-        };
+        *self.readers.lock().map_err(|_| poisoned())? = Catalogue { roots };
         Ok(())
     }
     fn reader_root(&self, project: &ProjectId, selected: Option<&RootId>) -> Result<Root> {
-        let roots = self.readers.lock().map_err(|_| poisoned())?;
-        let mut matching = roots.roots.iter().filter(|root| {
-            &root.registration.project == project
-                && selected.is_none_or(|id| id == &root.registration.root)
-        });
-        let root = match matching.next() {
-            Some(root) => root,
-            None if self.enabled
-                && !roots
-                    .roots
-                    .iter()
-                    .any(|root| &root.registration.project == project)
-                && self.interests.interested(project)? =>
-            {
-                return Err(SeError::new(se_types::Detail::AtlasIndexStarting(
-                    se_types::details::AtlasIndexStarting {
-                        project: project.clone(),
-                    },
-                )));
-            }
-            None => {
-                return Err(SeError::invalid(
-                    "Atlas query root",
-                    "a registered root of this project; use se status to inspect Atlas availability",
-                ));
-            }
-        };
-        if matching.next().is_some() {
+        let mut roots = self
+            .work
+            .roots(project)?
+            .into_iter()
+            .filter(|root| selected.is_none_or(|id| id == &root.registration.root));
+        let root = roots.next().ok_or_else(|| {
+            SeError::invalid(
+                "Atlas query root",
+                "a current registered worktree of this project",
+            )
+        })?;
+        if roots.next().is_some() {
             return Err(SeError::invalid(
                 "Atlas query root",
-                "an explicit root when the admitted project has several worktrees",
+                "an explicit root when the project has several worktrees",
             ));
         }
-        Ok(root.clone())
+        if root.registration.cache.directory
+            != self
+                .home
+                .join(project.as_str())
+                .join(root.registration.root.as_str())
+        {
+            return Err(SeError::invalid(
+                "Atlas reader cache",
+                "the fixed project/root directory",
+            ));
+        }
+        if let Some(live) = self
+            .readers
+            .lock()
+            .map_err(|_| poisoned())?
+            .roots
+            .iter()
+            .find(|live| {
+                live.registration.root == root.registration.root
+                    && live.registration.canonical_source_root
+                        == root.registration.canonical_source_root
+            })
+        {
+            return Ok(live.clone());
+        }
+        let registration = root.registration;
+        let mut summary = root.summary.unwrap_or_else(|| IndexSummary {
+            project: project.clone(),
+            root: registration.root.clone(),
+            memory: Some(self.memory.clone()),
+            epoch: None,
+            generation: None,
+            state: IndexState::Opening,
+            coverage: crate::atlas_cold::empty_coverage(),
+        });
+        if !self.enabled {
+            summary.state = IndexState::Disabled;
+        } else {
+            let source = NativeAtlasSource::open(registration.clone(), CaseMode::Sensitive)?;
+            let pointer = NativeAtlasCache::open(&self.home, source.scope.clone())?
+                .map(|cache| cache.read_pointer())
+                .transpose()?
+                .flatten()
+                .map(|bytes| pointer::decode(&bytes, &source.scope))
+                .transpose()?;
+            let epoch = pointer
+                .filter(|pointer| pointer.schema == se_atlas::cache::schema::SCHEMA_VERSION)
+                .map(|pointer| pointer.epoch);
+            if summary.epoch != epoch {
+                summary.generation = None;
+                summary.coverage = crate::atlas_cold::empty_coverage();
+                summary.state = IndexState::Opening;
+            }
+            summary.epoch = epoch;
+            if !matches!(
+                summary.state,
+                IndexState::Partial { .. }
+                    | IndexState::Suspended { .. }
+                    | IndexState::Unreadable { .. }
+            ) {
+                summary.state = if summary.epoch.is_some() {
+                    IndexState::VerificationNeeded {
+                        reason: CoverageReason::StaleSnapshot,
+                    }
+                } else {
+                    IndexState::Opening
+                };
+            }
+            summary.coverage.watched_directories = 0;
+            summary.coverage.watch_discovery_complete = false;
+            if !summary
+                .coverage
+                .reasons
+                .contains(&CoverageReason::StaleSnapshot)
+            {
+                summary.coverage.reasons.push(CoverageReason::StaleSnapshot);
+            }
+        }
+        summary.memory = Some(self.memory.clone());
+        Ok(Root {
+            registration,
+            summary,
+        })
     }
 }
 impl AtlasReadPort for Service {
+    fn observe_project(&self, project: &ProjectId, roots: &[se_store::Root]) -> Result<()> {
+        self.work
+            .register(project, roots::registrations(project, roots, &self.home)?)
+    }
     fn request_interest(&self, project: &ProjectId) -> Result<()> {
         if self.enabled {
-            let retry = {
+            let needs_catch_up = {
                 let roots = self.readers.lock().map_err(|_| poisoned())?;
-                !roots.preparing
-                    && !roots
-                        .roots
-                        .iter()
-                        .any(|root| &root.registration.project == project)
+                !roots.roots.iter().any(|root| {
+                    &root.registration.project == project
+                        && !matches!(
+                            root.summary.state,
+                            IndexState::Suspended { .. } | IndexState::Unreadable { .. }
+                        )
+                })
             };
+            if needs_catch_up {
+                self.work.request(project)?;
+            }
             self.interests.interest(project)?;
-            if retry {
-                // A previous finite close/activation may have refused. Another
-                // explicit query can retry; status alone never wakes the owner.
+            if needs_catch_up {
                 self.interests.wake_owner();
             }
         }
@@ -117,22 +181,9 @@ impl AtlasReadPort for Service {
         project: &ProjectId,
         selected: Option<&RootId>,
     ) -> Result<se_types::Read<IndexSummary>> {
-        let roots = self.readers.lock().map_err(|_| poisoned())?;
-        if !roots.roots.iter().any(|root| {
-            &root.registration.project == project
-                && selected.is_none_or(|id| id == &root.registration.root)
-        }) {
-            return Ok(
-                if self.enabled && (roots.preparing || self.interests.interested(project)?) {
-                    se_types::Read::Unknown {
-                    what: "Atlas indexing is starting; retry the query in 1 second, or use status to watch progress.".into(),
-                }
-                } else {
-                    se_types::Read::Absent { checked: "This project has no admitted Atlas root; only two interested project roots can be active in this host.".into() }
-                },
-            );
+        if self.work.roots(project)?.is_empty() {
+            return Ok(se_types::Read::Unknown { what: "Atlas has not observed this project's registration yet; a query starts indexing and status shows progress.".into() });
         }
-        drop(roots);
         self.summary(project, selected)
             .map(|value| se_types::Read::Present { value })
     }

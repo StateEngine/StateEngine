@@ -17,6 +17,8 @@ use std::{
 };
 mod close;
 mod connections;
+#[cfg(all(feature = "runtime", target_os = "linux"))]
+pub(crate) mod project_work;
 pub mod read_port;
 pub mod record_fence;
 mod runtime;
@@ -90,7 +92,9 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             return Ok(());
         }
         if self.roots.len() >= 2 {
-            return Err(atlas_cold::failure("two native Atlas roots already active"));
+            return Err(atlas_cold::failure(
+                "native live resource slots are occupied; recycle an idle slot",
+            ));
         }
         if registration.cache.directory
             != self
@@ -176,40 +180,52 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         let Some(request) = self.pending.take() else {
             return Ok(None);
         };
-        let root = self.root(&request.root.root)?;
-        let mut entropy = [0; 10];
-        se_proc::fill_entropy(&mut entropy).map_err(atlas_cold::failure)?;
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(atlas_cold::failure)?
-            .as_millis();
-        let epoch =
-            CacheEpoch::from_parts(millis.try_into().map_err(atlas_cold::failure)?, entropy)?;
-        let frame = protocol::Request {
-            history_unavailable: None,
-            job: request.job,
-            project: request.root.project,
-            root: request.root.root,
-            source_root: se_types::NativePath::from_local(request.root.canonical_source_root)?,
-            home: se_types::NativePath::from_local(self.home.clone())?,
-            physical_root: root.source.scope.physical_root,
-            expected_epoch: request.expected_epoch,
-            epoch,
-            max_files: request.policy.max_files,
-            ignore_digest: request.policy.ignore.digest,
-            global_patterns: request.policy.ignore.global_patterns,
-            generated_prefixes: request.policy.ignore.generated_prefixes,
-        };
-        let job = frame.job;
-        let child = if let Some(metadata) = request.root.git_metadata {
-            atlas_cold::job::ColdJob::spawn_with_history(
-                &self.image,
-                frame,
-                metadata,
-                self.profile.as_ref(),
-            )?
-        } else {
-            atlas_cold::job::ColdJob::spawn(&self.image, frame)?
+        let job = request.job;
+        let spawned: AtlasResult<_> = (|| {
+            let root = self.root(&request.root.root)?;
+            let mut entropy = [0; 10];
+            se_proc::fill_entropy(&mut entropy).map_err(atlas_cold::failure)?;
+            let millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(atlas_cold::failure)?
+                .as_millis();
+            let epoch =
+                CacheEpoch::from_parts(millis.try_into().map_err(atlas_cold::failure)?, entropy)?;
+            let frame = protocol::Request {
+                history_unavailable: None,
+                job: request.job,
+                project: request.root.project,
+                root: request.root.root,
+                source_root: se_types::NativePath::from_local(request.root.canonical_source_root)?,
+                home: se_types::NativePath::from_local(self.home.clone())?,
+                physical_root: root.source.scope.physical_root,
+                expected_epoch: request.expected_epoch,
+                epoch,
+                max_files: request.policy.max_files,
+                ignore_digest: request.policy.ignore.digest,
+                global_patterns: request.policy.ignore.global_patterns,
+                generated_prefixes: request.policy.ignore.generated_prefixes,
+            };
+            let child = if let Some(metadata) = request.root.git_metadata {
+                atlas_cold::job::ColdJob::spawn_with_history(
+                    &self.image,
+                    frame,
+                    metadata,
+                    self.profile.as_ref(),
+                )?
+            } else {
+                atlas_cold::job::ColdJob::spawn(&self.image, frame)?
+            };
+            Ok(child)
+        })();
+        let child = match spawned {
+            Ok(child) => child,
+            Err(error) => {
+                return Ok(Some(WorkerEvent::Exited {
+                    job,
+                    outcome: WorkerExit::Failed { error: error.body },
+                }));
+            }
         };
         self.child = Some(child);
         Ok(Some(WorkerEvent::Started { job }))
@@ -227,7 +243,19 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             None => child.poll(),
         };
         match result {
-            Ok(None) => Ok(None),
+            Ok(None) => {
+                if let Some(root) = self
+                    .roots
+                    .iter_mut()
+                    .find(|root| root.summary.root == child.request.root)
+                {
+                    root.summary.state = IndexState::ColdIndexing {
+                        job,
+                        discovered_files: child.discovered_files(),
+                    };
+                }
+                Ok(None)
+            }
             Ok(Some(summary)) => {
                 let root = self
                     .roots

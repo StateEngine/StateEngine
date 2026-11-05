@@ -21,8 +21,6 @@ impl NativeAtlasCache {
             return Ok(None);
         }
         cache.writer = Some(Self::writer_lease(&cache.home)?);
-        let (total, root_bytes) = inventory::measure(&cache.home, cache.root.root())?;
-        cache.other_roots_bytes = total - root_bytes;
         cache.recover_reservation()?;
         Ok(Some(cache))
     }

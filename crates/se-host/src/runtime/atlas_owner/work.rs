@@ -7,9 +7,11 @@ impl State {
         wake: Wake,
     ) -> Result<Plan> {
         let mut again = false;
+        if self.scan.is_none() && context.atlas.records.take_registry_dirty() {
+            self.scan = Some(roots::Scan::default());
+        }
         match wake {
             Wake::Core => {
-                self.scan = Some(roots::Scan::default());
                 for root in &mut self.roots {
                     root.feed_pending = true;
                     root.feed_stalled = false;
@@ -27,15 +29,11 @@ impl State {
             Wake::Child | Wake::Scheduled => (),
         }
         if let Some(scan) = &mut self.scan {
-            match scan.page(context, owner, &self.home) {
+            match scan.page(context, owner, &self.home, &self.work) {
                 Ok(false) => again = true,
                 Ok(true) => {
-                    let selected = self
-                        .scan
-                        .take()
-                        .ok_or_else(|| SeError::invalid("Atlas catalogue", "a completed scan"))?
-                        .finish();
-                    self.rebind(selected)?;
+                    self.scan = None;
+                    again = true;
                 }
                 Err(error) => {
                     self.scan = None;
@@ -43,10 +41,16 @@ impl State {
                 }
             }
         }
+        if self.scan.is_none() {
+            again |= self.advance_project(context, owner)?;
+        }
         // The same controller supplies both event and quantum paths; checkout
         // locks discovered by the driver reach the scheduler before publication.
         if self.controller.runtime().child_pid().is_none()
-            && let Err(error) = drive_quantum(&mut self.controller, Duration::from_millis(100))
+            // A qualified parse may use 200 ms. Its source checks, resolution
+            // and atomic SQL commit need a finite margin in the same turn;
+            // repeatedly restarting them at 100 ms could never finish a file.
+            && let Err(error) = drive_quantum(&mut self.controller, Duration::from_millis(500))
         {
             eprintln!("Code index source work paused: {error}");
         }
@@ -121,11 +125,185 @@ impl State {
                 }
             }
         }
+        // Finishing a queued project/root advances the disk FIFO without a
+        // timer. A cold worker keeps its live slot until exact exit and adoption.
+        let advance = self.finish_root()?;
         Ok(Plan {
-            ready: again || ready,
+            ready: again || ready || advance,
             delay,
             fds,
         })
+    }
+    fn advance_project(&mut self, context: &ExecutionContext, owner: &HumanId) -> Result<bool> {
+        if self.active_project.is_none() {
+            if self.queue_scan.is_none() {
+                self.queue_scan = self.work.scan()?;
+            }
+            if let Some(scan) = &mut self.queue_scan {
+                match scan.page()? {
+                    None => return Ok(true),
+                    Some(ticket) => {
+                        self.queue_scan = None;
+                        self.active_project = ticket.map(|ticket| ActiveProject {
+                            ticket,
+                            after: None,
+                            root: None,
+                        });
+                    }
+                }
+            }
+        }
+        let Some(active) = &self.active_project else {
+            return Ok(false);
+        };
+        if active.root.is_some() {
+            return Ok(false);
+        }
+        // Reauthorize each queued project against the current core snapshot;
+        // a derived catalogue cannot resurrect a removed registration.
+        let admitted = admission(
+            context,
+            owner,
+            Scope::Project(active.ticket.project.clone()),
+        );
+        let phase = executor::checked_pooled_phase(&context.reads, context.generation)?;
+        let mut snapshot = phase
+            .into_snapshot(se_core::admission::read_scope(&admitted))
+            .map_err(|error| store_error(&error))?;
+        let read = snapshot
+            .project(active.ticket.project.clone())
+            .map_err(|error| store_error(&error));
+        let read = executor::close_read(read, snapshot.close())?;
+        let registrations = match read {
+            se_types::Read::Present { value } => match value.current.body {
+                se_store::EventBody::ProjectRegistered { project, roots, .. }
+                | se_store::EventBody::ProjectUpdated { project, roots, .. } => {
+                    roots::registrations(&project, &roots, &self.home)?
+                }
+                _ => Vec::new(),
+            },
+            se_types::Read::Absent { .. } => Vec::new(),
+            se_types::Read::Unreadable { reason, .. }
+            | se_types::Read::Unknown { what: reason } => {
+                return Err(se_core::scope::unreadable("queued Atlas project", &reason));
+            }
+        };
+        self.work
+            .register(&active.ticket.project, registrations.clone())?;
+        let next = registrations
+            .into_iter()
+            .filter(|root| {
+                active
+                    .after
+                    .as_ref()
+                    .is_none_or(|after| root.root.as_str() > after.as_str())
+            })
+            .min_by(|a, b| a.root.as_str().cmp(b.root.as_str()));
+        if let Some(next) = next {
+            let id = next.root.clone();
+            if self.roots.iter().any(|root| root.registration.root == id)
+                && matches!(
+                    self.controller.summary(&id)?.state,
+                    IndexState::Suspended { .. } | IndexState::Unreadable { .. }
+                )
+            {
+                if !matches!(
+                    self.controller.close(
+                        id.clone(),
+                        CloseReason::ProjectRemoved,
+                        Duration::from_millis(200)
+                    )?,
+                    CloseResult::Closed
+                ) {
+                    return Err(SeError::invalid(
+                        "Atlas retry",
+                        "close native resources before retrying the saved index",
+                    ));
+                }
+                self.roots.retain(|root| root.registration.root != id);
+            }
+            // Vec order is recent use. Recycle only the oldest live resource,
+            // never the active cold job, and retain its disk index and summary.
+            let mut selected: Vec<_> = self
+                .roots
+                .iter()
+                .filter(|root| root.registration.root != id)
+                .map(|root| root.registration.clone())
+                .collect();
+            let interests = context.atlas.records.interests()?;
+            selected.sort_by_key(|root| {
+                interests
+                    .iter()
+                    .position(|project| project == &root.project)
+            });
+            if selected.len() >= 2 {
+                selected.remove(0);
+            }
+            selected.push(next);
+            self.rebind(selected)?;
+            if !matches!(
+                self.controller.summary(&id)?.state,
+                IndexState::Suspended { .. } | IndexState::Unreadable { .. }
+            ) {
+                self.controller
+                    .activate(id.clone(), ReconcileReason::HostRestart)?;
+                if let Some(root) = self
+                    .roots
+                    .iter_mut()
+                    .find(|root| root.registration.root == id)
+                {
+                    root.feed_pending = true;
+                    root.feed_stalled = false;
+                }
+            }
+            if let Some(active) = &mut self.active_project {
+                active.root = Some(id);
+            }
+            Ok(true)
+        } else {
+            let active = self
+                .active_project
+                .take()
+                .ok_or_else(|| SeError::invalid("Atlas queue", "the selected project"))?;
+            self.work.complete(&active.ticket)?;
+            Ok(true)
+        }
+    }
+    fn finish_root(&mut self) -> Result<bool> {
+        let Some(active) = &self.active_project else {
+            return Ok(false);
+        };
+        let Some(id) = &active.root else {
+            return Ok(false);
+        };
+        if self.controller.runtime().child_pid().is_some() {
+            return Ok(false);
+        }
+        if self.controller.work_pending(id) {
+            return Ok(false);
+        }
+        let summary = self.controller.summary(id)?;
+        if matches!(
+            summary.state,
+            IndexState::Dormant
+                | IndexState::Opening
+                | IndexState::Updating { .. }
+                | IndexState::ColdIndexing { .. }
+        ) {
+            return Ok(false);
+        }
+        if self.enabled
+            && summary.epoch.is_some()
+            && self.roots.iter().any(|root| {
+                &root.registration.root == id && root.feed_pending && !root.feed_stalled
+            })
+        {
+            return Ok(false);
+        }
+        if let Some(active) = &mut self.active_project {
+            active.after = active.root.take();
+        }
+        Ok(true)
     }
     fn rebind(&mut self, selected: Vec<RootRegistration>) -> Result<()> {
         let old: Vec<_> = self

@@ -79,6 +79,9 @@ impl ColdJob {
     pub fn pid(&self) -> u32 {
         self.worker.pid()
     }
+    pub(crate) fn discovered_files(&self) -> u64 {
+        self.discovered
+    }
     pub fn wait_ready(&mut self, deadline: Instant) -> AtlasResult<bool> {
         self.worker
             .wait_ready(deadline)

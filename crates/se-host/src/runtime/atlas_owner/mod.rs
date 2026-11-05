@@ -7,6 +7,7 @@ mod roots;
 mod work;
 use super::{ExecutionContext, HostedRuntime, executor};
 use crate::atlas_renewal::{NativeRenewal, drive_events, drive_quantum};
+use crate::atlas_runtime::project_work::{ProjectWork, Ticket};
 use crate::atlas_runtime::{NativeController, NativeRuntime, read_port::*};
 use se_atlas::{cache::connection::SqlProfile, lifecycle::*, model::*, parse::ParserProfile};
 use se_core::store_error::store_error;
@@ -37,6 +38,8 @@ pub(super) struct Service {
     memory: MemoryBudget,
     enabled: bool,
     interests: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
+    work: Arc<ProjectWork>,
+    home: PathBuf,
 }
 struct State {
     controller: NativeController<NativeRenewal>,
@@ -45,6 +48,14 @@ struct State {
     scan: Option<roots::Scan>,
     enabled: bool,
     child_deadline: Option<(u32, Instant)>,
+    work: Arc<ProjectWork>,
+    queue_scan: Option<crate::atlas_runtime::project_work::Scan>,
+    active_project: Option<ActiveProject>,
+}
+struct ActiveProject {
+    ticket: Ticket,
+    after: Option<RootId>,
+    root: Option<RootId>,
 }
 struct Root {
     registration: RootRegistration,
@@ -93,6 +104,12 @@ impl HostedRuntime {
             .enabled;
         let qualification = qualification.with_native_sql()?;
         let home = self.state_directory.join("atlas");
+        let work = Arc::new(ProjectWork::new(
+            self.state_directory.join("atlas-projects"),
+        ));
+        if enabled {
+            self.execution.atlas.records.install_work(work.clone())?;
+        }
         let memory = qualification.memory();
         let profile = qualification.sql.clone();
         let controller = NativeController::new(NativeRuntime::new(
@@ -104,11 +121,14 @@ impl HostedRuntime {
         let service = Arc::new(Service {
             state: Mutex::new(State {
                 controller,
-                home,
+                home: home.clone(),
                 roots: Vec::new(),
                 scan: Some(roots::Scan::default()),
                 enabled,
                 child_deadline: None,
+                work: work.clone(),
+                queue_scan: None,
+                active_project: None,
             }),
             readers: Mutex::new(read::Catalogue::default()),
             profile,
@@ -116,6 +136,8 @@ impl HostedRuntime {
             memory,
             enabled,
             interests: self.execution.atlas.records.clone(),
+            work,
+            home,
         });
         self.install_atlas_read_port(service.clone())?;
         self.atlas_owner = Some(service);
