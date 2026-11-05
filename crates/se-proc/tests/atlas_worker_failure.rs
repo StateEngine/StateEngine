@@ -1,5 +1,7 @@
 //! Native failures exercise the production worker, with this dedicated test
 //! executable as its private entry. No provider, shell or engine session runs.
+//! Bug: virtual image headroom was conflated with the resident ceiling.
+//! Protects: 96 MB virtual admission still cancels and reaps a child above 64 MB resident.
 #[cfg(target_os = "linux")]
 mod linux {
     use se_proc::atlas_worker::{AtlasWorker, ENTRY, MEMORY_BYTES, WorkerChannel};
@@ -131,6 +133,29 @@ mod linux {
                 // SAFETY: read only priority of this exact current process.
                 let priority = unsafe { libc::syscall(libc::SYS_ioprio_get, 1, 0) };
                 channel.send(&serde_json::to_vec(&(limits, denied, error, priority))?)?;
+            }
+            "resident" => {
+                // SAFETY: this dedicated child owns the anonymous mapping and
+                // touches only offsets inside it. The parent must cancel it.
+                let bytes = 72_000_000;
+                let mapping = unsafe {
+                    libc::mmap(
+                        std::ptr::null_mut(),
+                        bytes,
+                        libc::PROT_READ | libc::PROT_WRITE,
+                        libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                        -1,
+                        0,
+                    )
+                };
+                if mapping == libc::MAP_FAILED {
+                    return Err(io::Error::last_os_error().into());
+                }
+                for offset in (0..bytes).step_by(4096) {
+                    // SAFETY: each offset is within this child-owned mapping.
+                    unsafe { mapping.cast::<u8>().add(offset).write_volatile(1) };
+                }
+                channel.send(b"resident")?;
             }
             "sleep" => {
                 channel.send(b"ready")?;
@@ -270,16 +295,33 @@ mod linux {
             let mut worker = spawn("limits", until())?;
             let (limits, denied, error, priority): (Vec<(u64, u64)>, bool, Option<i32>, i64) =
                 serde_json::from_slice(&receive(&mut worker)?)?;
-            assert!(denied, "allocation above 64 MB succeeded");
-            assert_eq!(
-                limits,
-                vec![(MEMORY_BYTES, MEMORY_BYTES), (900, 900), (64, 64)]
-            );
+            assert!(denied, "allocation above 96 MB virtual ceiling succeeded");
+            assert_eq!(limits, vec![(96_000_000, 96_000_000), (900, 900), (64, 64)]);
             assert_eq!(error, Some(libc::ENOMEM));
             assert_eq!(priority >> 13, 3);
             reap(&mut worker)?;
         }
-        println!("PASS 64 MB breach, CPU/descriptors and idle I/O limits");
+        println!("PASS 96 MB virtual ceiling, CPU/descriptors and idle I/O limits");
+        {
+            assert_eq!(MEMORY_BYTES, 64_000_000);
+            let mut worker = spawn("resident", until())?;
+            assert_eq!(receive(&mut worker)?, b"resident");
+            let error = worker
+                .observe_memory()
+                .err()
+                .ok_or("resident ceiling did not cancel the child")?;
+            assert!(
+                error.to_string().contains("Atlas child exceeded 64 MB"),
+                "{error}"
+            );
+            assert!(worker.peak_observed_bytes() > 64_000_000);
+            assert!(
+                worker.try_reap()?.is_some(),
+                "resident breach did not reap its exact child"
+            );
+            assert!(!Path::new(&format!("/proc/{}", worker.pid())).exists());
+        }
+        println!("PASS unchanged 64 MB resident ceiling cancels and reaps its exact child");
         {
             let mut worker = spawn("sleep", Instant::now() + Duration::from_millis(200))?;
             assert_eq!(receive(&mut worker)?, b"ready");
@@ -331,7 +373,7 @@ mod linux {
             );
         }
         println!("PASS full stderr pipe cannot stall completion or grow owner capture");
-        println!("7 passed; 0 failed");
+        println!("8 passed; 0 failed");
         Ok(())
     }
 }
