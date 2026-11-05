@@ -288,9 +288,6 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                 omitted.unit = Some("UTF-8 bytes".into());
                 value.command = Some(omitted.command.clone());
                 value.argv = Some(omitted.argv.clone());
-                if input.byte_budget <= DEFAULT_BYTES {
-                    omitted.argv.clear();
-                }
                 result.omissions.push(omitted);
                 value.complete = false;
                 continue;

@@ -21,6 +21,18 @@ fn run(f: &Fixture, args: &[String]) -> Result<std::process::Output, Box<dyn std
 fn commands(value: &Value, out: &mut Vec<(Vec<String>, String)>) -> Check {
     match value {
         Value::Object(map) => {
+            if map
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(|v| v.starts_with("se "))
+            {
+                assert!(
+                    map.get("argv")
+                        .and_then(Value::as_array)
+                        .is_some_and(|v| !v.is_empty()),
+                    "printed recovery command lost its runnable argv: {value}"
+                );
+            }
             if let Some(Value::Array(words)) = map.get("argv")
                 && !words.is_empty()
             {

@@ -92,7 +92,10 @@ fn mcp_since_keeps_new_capture_before_older_context() -> Check {
         )) else {
             return Err("missing MCP response".into());
         };
-        assert_ne!(response["result"]["isError"], true, "{response}");
+        assert_ne!(
+            response["result"]["isError"], true,
+            "short_state={short_state}, trailing_user={trailing_user}, long_answer={long_answer}; {response}; CLI={cli:?}"
+        );
         let bytes = serde_json::to_vec(&response)?.len() + 1;
         assert!(bytes <= 4096, "MCP exceeded its complete wire budget");
         let packet: Value = serde_json::from_str(
@@ -101,6 +104,7 @@ fn mcp_since_keeps_new_capture_before_older_context() -> Check {
                 .ok_or("text")?,
         )?;
         assert_eq!(packet["budget"]["used_bytes"], bytes);
+        assert_recovery_argv(&packet)?;
         assert_eq!(packet["principal"]["agent"]["id"], backend.0.f.a.as_str());
         assert_eq!(packet["since"], baseline.cursor.as_str());
         assert!(
@@ -163,6 +167,34 @@ fn mcp_since_keeps_new_capture_before_older_context() -> Check {
             "resume wrote or acknowledged mail"
         );
         backend.0.finish()?;
+    }
+    Ok(())
+}
+
+fn assert_recovery_argv(value: &Value) -> Check {
+    match value {
+        Value::Object(fields) => {
+            if let Some(command) = fields.get("command").and_then(Value::as_str)
+                && !command.is_empty()
+            {
+                let argv = serde_json::from_value::<Vec<String>>(fields["argv"].clone())?;
+                let rendered =
+                    se_core::ops::AgentCommand::from_argv(argv).ok_or("invalid recovery argv")?;
+                assert_eq!(
+                    command, rendered.command,
+                    "wire recovery command and argv diverged"
+                );
+            }
+            for child in fields.values() {
+                assert_recovery_argv(child)?;
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                assert_recovery_argv(child)?;
+            }
+        }
+        _ => (),
     }
     Ok(())
 }
