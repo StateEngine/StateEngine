@@ -30,6 +30,7 @@ pub struct ResourceSample {
 #[serde(rename_all = "kebab-case")]
 pub enum HostDetachment {
     WindowsBreakaway,
+    WindowsBroker,
     UserManagerUnit,
     SessionOnly,
 }

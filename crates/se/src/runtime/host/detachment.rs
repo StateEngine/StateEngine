@@ -65,6 +65,10 @@ pub(super) fn publish(
     bound: &Deadline,
 ) -> Result<DetachmentObservation> {
     let observation = match ready.detachment {
+        se_proc::RuntimeDetachment::WindowsBroker => DetachmentObservation {
+            detachment: HostDetachment::WindowsBroker,
+            inherited_cgroup: None,
+        },
         se_proc::RuntimeDetachment::WindowsBreakaway => DetachmentObservation {
             detachment: HostDetachment::WindowsBreakaway,
             inherited_cgroup: None,

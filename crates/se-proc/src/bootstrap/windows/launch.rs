@@ -24,24 +24,86 @@ pub(in crate::bootstrap) fn spawn(
     let (authorization, authorize) = pipe()?;
     let (diagnostic_reader, diagnostic_writer) = pipe()?;
     let diagnostics = diagnostics::Capture::start(diagnostic_reader, spec.deadline)?;
-    // SAFETY: constant native current-process pseudo handle; output is uniquely owned on success.
-    let parent = duplicate(unsafe { GetCurrentProcess() }, true)?;
-    let auth = duplicate(authorization.as_raw_handle(), true)?;
-    frame.handles = [
-        parent.as_raw_handle() as usize as u64,
-        auth.as_raw_handle() as usize as u64,
+    // The original caller remains the authorizing parent, even when a verified
+    // native parent supplies job escape. Its private handle and nonce are never
+    // replaced with the broker's authority.
+    // SAFETY: constant current-process pseudo handle is only borrowed for duplication.
+    let sources = [
+        unsafe { GetCurrentProcess() },
+        authorization.as_raw_handle(),
+        plan_read.as_raw_handle(),
+        ready.as_raw_handle(),
+        diagnostic_writer.as_raw_handle(),
     ];
+    let (attempt, detachment, broker_context) = match create(spec, &mut frame, &sources, None) {
+        Ok(attempt) => (attempt, RuntimeDetachment::WindowsBreakaway, None),
+        Err(error) if error.code == ProcErrorCode::BreakawayDenied => {
+            let broker = broker::Broker::find(&spec.machine, spec.deadline)?;
+            frame.broker = Some(broker.identity.clone());
+            (
+                create(spec, &mut frame, &sources, Some(&broker))?,
+                RuntimeDetachment::WindowsBroker,
+                Some(broker.context.clone()),
+            )
+        }
+        Err(error) => return Err(error),
+    };
+    let Attempt {
+        process,
+        pid,
+        bytes,
+        error: clear_error,
+    } = attempt;
+    Ok(Created {
+        native: Child {
+            process: Some(process),
+            pid,
+            image,
+            broker_context,
+        },
+        events,
+        authorization: authorize,
+        detachment,
+        plan: plan_write,
+        encoded: bytes,
+        error: clear_error,
+        diagnostics,
+    })
+}
+
+struct Attempt {
+    process: OwnedHandle,
+    pid: ProcessId,
+    bytes: Vec<u8>,
+    error: Option<ProcError>,
+}
+fn create(
+    spec: &RuntimeLaunchSpec,
+    frame: &mut Frame,
+    sources: &[HANDLE; 5],
+    broker: Option<&broker::Broker>,
+) -> ProcResult<Attempt> {
+    let local = if broker.is_none() {
+        sources
+            .iter()
+            .map(|raw| duplicate(*raw, true))
+            .collect::<ProcResult<Vec<_>>>()?
+    } else {
+        Vec::new()
+    };
+    let mut remote = broker.map(|broker| broker.duplicate(sources)).transpose()?;
+    let inherited: Vec<_> = match &remote {
+        Some(remote) => remote.values.clone(),
+        None => local.iter().map(|h| h.as_raw_handle()).collect(),
+    };
+    frame.handles = [inherited[0] as usize as u64, inherited[1] as usize as u64];
     let bytes = serde_json::to_vec(&frame).map_err(|e| input("runtime frame", &e.to_string()))?;
     if bytes.len() > MAX_FRAME {
         return Err(capacity("runtime frame bytes", MAX_FRAME as u64));
     }
-    let input = duplicate(plan_read.as_raw_handle(), true)?;
-    let output = duplicate(ready.as_raw_handle(), true)?;
-    let error_stream = duplicate(diagnostic_writer.as_raw_handle(), true)?;
-    let handles = [&parent, &auth, &input, &output, &error_stream];
-    let inherited: Vec<_> = handles.iter().map(|h| h.as_raw_handle()).collect();
+    let native_parent = [broker.map_or(ptr::null_mut(), |broker| broker.handle())];
     let mut attributes = crate::windows_native::attributes::Attributes::new(
-        1,
+        if broker.is_some() { 2 } else { 1 },
         "size runtime process attributes",
         "initialize runtime process attributes",
     )
@@ -53,13 +115,22 @@ pub(in crate::bootstrap) fn spawn(
             "set runtime handle inheritance",
         )
         .map_err(|e| fail(e.operation, e.source))?;
+    if broker.is_some() {
+        attributes
+            .set(
+                PROC_THREAD_ATTRIBUTE_PARENT_PROCESS as usize,
+                &native_parent,
+                "set detached runtime broker",
+            )
+            .map_err(|e| fail(e.operation, e.source))?;
+    }
     // SAFETY: startup and process outputs are native POD; used fields are initialized below.
     let mut startup: STARTUPINFOEXW = unsafe { zeroed() };
     startup.StartupInfo.cb = size_of::<STARTUPINFOEXW>() as u32;
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = input.as_raw_handle();
-    startup.StartupInfo.hStdOutput = output.as_raw_handle();
-    startup.StartupInfo.hStdError = error_stream.as_raw_handle();
+    startup.StartupInfo.hStdInput = inherited[2];
+    startup.StartupInfo.hStdOutput = inherited[3];
+    startup.StartupInfo.hStdError = inherited[4];
     startup.lpAttributeList = attributes.pointer();
     let mut line: Vec<_> = format!("se {ENTRY}")
         .encode_utf16()
@@ -95,8 +166,11 @@ pub(in crate::bootstrap) fn spawn(
             ptr::null(),
             ptr::null(),
             1,
-            CREATE_BREAKAWAY_FROM_JOB
-                | CREATE_NO_WINDOW
+            (if broker.is_none() {
+                CREATE_BREAKAWAY_FROM_JOB
+            } else {
+                0
+            }) | CREATE_NO_WINDOW
                 | CREATE_UNICODE_ENVIRONMENT
                 | EXTENDED_STARTUPINFO_PRESENT,
             environment.as_ptr().cast(),
@@ -109,10 +183,15 @@ pub(in crate::bootstrap) fn spawn(
     // Handles are about to close in the parent, regardless of native outcome.
     // Clearing their flags first also covers an independent later child spawn.
     let mut clear_error = None;
-    for borrowed in handles {
+    for borrowed in &local {
         if let Err(cause) = clear(borrowed.as_raw_handle()) {
             clear_error.get_or_insert(cause);
         }
+    }
+    if let Some(remote) = &mut remote
+        && let Err(error) = remote.close()
+    {
+        clear_error.get_or_insert(error);
     }
     if created == 0 {
         return Err(native(
@@ -130,19 +209,11 @@ pub(in crate::bootstrap) fn spawn(
     let process = unsafe { OwnedHandle::from_raw_handle(info.hProcess) };
     // SAFETY: distinct valid thread reference returned by the same successful native call.
     let _thread = unsafe { OwnedHandle::from_raw_handle(info.hThread) };
-    Ok(Created {
-        native: Child {
-            process: Some(process),
-            pid: ProcessId(info.dwProcessId),
-            image,
-        },
-        events,
-        authorization: authorize,
-        detachment: RuntimeDetachment::WindowsBreakaway,
-        plan: plan_write,
-        encoded: bytes,
+    Ok(Attempt {
+        process,
+        pid: ProcessId(info.dwProcessId),
+        bytes,
         error: clear_error,
-        diagnostics,
     })
 }
 
@@ -174,9 +245,18 @@ pub(in crate::bootstrap) fn receive() -> ProcResult<(Frame, File, File, File, In
         .map_err(|e| fail(e.operation, e.source))?
         .get(&std::process::id())
         .copied();
-    if actual_parent != Some(frame.parent.pid.0) {
+    let native_parent = frame.broker.as_ref().unwrap_or(&frame.parent);
+    if actual_parent != Some(native_parent.pid.0) {
         return Err(input_error());
     }
+    if frame.broker.is_some() {
+        match crate::read_process(native_parent.machine.clone(), native_parent.pid)? {
+            ProcessRead::Present(live) if live.identity == *native_parent => (),
+            _ => return Err(input_error()),
+        }
+    }
+    // SAFETY: immutable current-process pseudo handle for the native membership query.
+    broker::outside_job(unsafe { GetCurrentProcess() })?;
     let expected_sid = crate::windows_native::process_sid(parent.as_raw_handle())
         .map_err(|e| fail(e.operation, e.source))?;
     // SAFETY: immutable current-process pseudo handle for native token observation.

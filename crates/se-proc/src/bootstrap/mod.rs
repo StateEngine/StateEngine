@@ -38,6 +38,8 @@ struct Frame {
     arguments: Vec<Argument>,
     #[cfg(windows)]
     handles: [u64; 2],
+    #[cfg(windows)]
+    broker: Option<ProcessIdentity>,
 }
 /// Native self observation with the host's protected, persisted machine ID.
 /// Machine identity is never invented from hostname, hardware or a new UUID.
@@ -320,6 +322,8 @@ impl NativeProcessApi for NativeProcessRuntime {
                     .collect(),
                 #[cfg(windows)]
                 handles: [0; 2],
+                #[cfg(windows)]
+                broker: None,
             })
         };
         let frame = before().map_err(|error| {
