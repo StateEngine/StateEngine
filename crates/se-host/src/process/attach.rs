@@ -56,6 +56,7 @@ impl LaunchCoordinator {
                             checked: "transcript pin is published after session activation".into(),
                         },
                     },
+                    &mut work.binding,
                     call(self.store.generation, deadline)?,
                 )
                 .await?

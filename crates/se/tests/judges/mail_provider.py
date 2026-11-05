@@ -15,8 +15,28 @@ def main():
     (cwd / "provider-argv.txt").write_text("\n".join(arguments))
     flag = "--resume" if "--resume" in arguments else "--session-id"
     conversation = arguments[arguments.index(flag) + 1]
-    slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in str(cwd))
+    # Claude's JS convention counts UTF-16 units, including surrogate pairs.
+    encoded = str(cwd).encode("utf-16-le")
+    units = [int.from_bytes(encoded[i:i + 2], "little") for i in range(0, len(encoded), 2)]
+    slug = "".join(chr(u) if 48 <= u <= 57 or 65 <= u <= 90 or 97 <= u <= 122 else "-" for u in units)
+    if len(slug) > 200:
+        value = 0
+        for unit in units:
+            value = (31 * value + unit) & 0xffffffff
+        value = abs(value if value < 0x80000000 else value - 0x100000000)
+        suffix = ""
+        while True:
+            suffix = "0123456789abcdefghijklmnopqrstuvwxyz"[value % 36] + suffix
+            value //= 36
+            if not value:
+                break
+        slug = slug[:200] + "-" + suffix
     transcript = Path(os.environ["HOME"]) / ".claude/projects" / slug / (conversation + ".jsonl")
+    if (cwd / "startup-stderr-burst").exists():
+        # A full diagnostic pipe must not prevent the provider reaching init.
+        sys.stderr.buffer.write(b"startup diagnostic\n" * 8192)
+        sys.stderr.buffer.flush()
+        (cwd / "startup-stderr-finished").write_text("drained")
     assert sys.stdin.readline(), "host did not deliver its initial task"
     print(json.dumps({"type": "system", "subtype": "init", "session_id": conversation}), flush=True)
     # Stock Claude echoes init before it creates the native transcript (FH09).

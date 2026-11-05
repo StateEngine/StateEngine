@@ -4,23 +4,23 @@
 //! drained for the provider's lifetime so a full pipe can never stall a turn.
 //! Capture arrives through the pinned hook path; this harness reads nothing
 //! a hook claims.
-use super::claude::{self, ClaudeLaunch, Readiness};
+use super::claude::{self, ClaudeLaunch};
 mod attended;
 mod completion;
 mod io;
 mod mail;
+mod startup;
 use crate::{
     BindingWitness, CallContext, ConfigPlan, Harness, HarnessAttach, HarnessBinding, HarnessKind,
     HarnessRequest, HostFuture, LaunchOutcome, ProbeRequest, ProviderInterrupt, ProviderInvocation,
-    ProviderIoPlatform, ProviderStream, ProviderTransport, ProviderVersion, StreamRead,
+    ProviderIoPlatform, ProviderStream, ProviderTransport, ProviderVersion,
 };
-use io::{drain, parse_version, poisoned, version_output, within, write_frame};
+use io::{drain, parse_version, poisoned, version_output};
 use se_types::{NativePath, ProviderSessionId, Read, Result, SeError};
 use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Instant,
 };
 
 /// The mods-capable floor section 40 §9.3 names; exact features are the
@@ -168,6 +168,7 @@ impl Harness for ClaudeHarness {
     fn attach<'a>(
         &'a self,
         request: HarnessAttach,
+        retained: &'a mut Option<HarnessBinding>,
         cx: CallContext,
     ) -> HostFuture<'a, LaunchOutcome> {
         Box::pin(async move {
@@ -197,76 +198,16 @@ impl Harness for ClaudeHarness {
                 completion: completion::Completion::default(),
                 drains: Mutex::new(Vec::new()),
             });
-            // Deliver the task, then require Claude's own echo of the exact
-            // selected conversation; prepared argv is not readiness.
-            write_frame(&binding, &request.request.initial_input, &cx).await?;
-            let deadline = Instant::now() + cx.timeout;
-            let mut pending = Vec::new();
-            loop {
-                let remaining = deadline
-                    .checked_duration_since(Instant::now())
-                    .filter(|left| !left.is_zero())
-                    .ok_or_else(|| {
-                        SeError::invalid(
-                            "Claude readiness",
-                            "an init echo within the launch timeout",
-                        )
-                    })?;
-                let read = binding
-                    .io
-                    .read(
-                        &binding.transport,
-                        ProviderStream::Output,
-                        READ_CHUNK,
-                        within(&cx, remaining),
-                    )
-                    .await?;
-                let bytes = match read {
-                    StreamRead::Bytes(bytes) => bytes,
-                    StreamRead::Eof => {
-                        return Err(SeError::invalid(
-                            "Claude readiness",
-                            "an init echo before the provider closed its output",
-                        ));
-                    }
-                    StreamRead::Failed { error, .. } => return Err(SeError::from(error)),
-                };
-                pending.extend_from_slice(&bytes);
-                let mut ready = false;
-                while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
-                    let line: Vec<u8> = pending.drain(..=end).collect();
-                    if line.len() > completion::MAX_LINE {
-                        return Err(SeError::too_large(
-                            "Claude readiness frame",
-                            completion::MAX_LINE,
-                            line.len(),
-                        ));
-                    }
-                    binding.completion.inspect(&line, &conversation);
-                    match claude::readiness(&line, &conversation) {
-                        Readiness::Ready => ready = true,
-                        Readiness::NotYet => (),
-                        Readiness::Mismatch { echoed } => {
-                            return Err(SeError::invalid(
-                                "Claude conversation",
-                                &format!(
-                                    "the selected conversation; the provider started {echoed}"
-                                ),
-                            ));
-                        }
-                    }
-                }
-                if pending.len() > completion::MAX_LINE {
-                    return Err(SeError::too_large(
-                        "Claude readiness frame",
-                        completion::MAX_LINE,
-                        pending.len(),
-                    ));
-                }
-                if ready {
-                    break;
-                }
-            }
+            // Startup may leave pending Windows reads. Give the coordinator
+            // custody before the first I/O so its normal failed-launch cleanup
+            // can cancel/drain/release the exact port, including on a panic.
+            *retained = Some(HarnessBinding {
+                claude: Some(Arc::clone(&binding)),
+                codex: None,
+                _private: (),
+            });
+            let mut pending =
+                startup::initialize(&binding, &request.request.initial_input, &cx).await?;
             let readers = [ProviderStream::Output, ProviderStream::Error].map(|stream| {
                 let initial = if stream == ProviderStream::Output {
                     std::mem::take(&mut pending)
