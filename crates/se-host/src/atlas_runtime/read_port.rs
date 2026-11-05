@@ -1,5 +1,6 @@
 //! One owner-installed read port. No root activation, SQL connection, worker or
-//! authoritative snapshot is created by this handoff.
+//! authoritative snapshot is created by this handoff. Explicit queries may
+//! notify the existing background owner of project interest.
 use super::{NativeController, RenewalDriver, record_fence::*};
 use crate::atlas_source::NativeAtlasSource;
 use se_atlas::{
@@ -28,6 +29,10 @@ pub type AtlasObservedReadCallback<'a> = dyn FnMut(
 /// Object-safe owner-loop handoff. The callback runs synchronously while the
 /// selected controller lends its one scoped reader; nothing escapes the call.
 pub trait AtlasReadPort: Send + Sync {
+    /// Signal an admitted query's project without doing native work here.
+    fn request_interest(&self, _project: &ProjectId) -> Result<()> {
+        Ok(())
+    }
     fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary>;
     /// Status observes publication only; no cache opens or work is scheduled.
     fn status(
@@ -87,6 +92,12 @@ impl AtlasOwnerPort {
                 checked: "No Atlas controller is installed in this host.".into(),
             }),
         }
+    }
+    pub(crate) fn request_interest(&self, project: &ProjectId) -> Result<()> {
+        if let Some(reader) = self.reader.get() {
+            reader.request_interest(project)?;
+        }
+        Ok(())
     }
     pub fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary> {
         self.reader.get().ok_or_else(|| se_core::scope::unreadable("Atlas owner read port", "the owner has not installed its controller; no registered root summary is available"))?.summary(project, root)

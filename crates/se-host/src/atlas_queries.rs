@@ -1,5 +1,6 @@
 //! Borrow the controller's scoped cache and core's authoritative read together.
-//! This adapter cannot activate a root, open another connection or schedule work.
+//! Explicit reads signal project interest to the existing background owner;
+//! this adapter cannot activate a root or open another connection.
 use crate::atlas_records::AtlasRecordReader;
 use se_atlas::{
     errors::AtlasResult,
@@ -149,6 +150,22 @@ pub(crate) fn owner_read<R: Snapshot>(
             "one admitted registered project",
         ));
     };
+    let registered = se_core::scope::require_present(
+        read.project(project.clone())
+            .map_err(|e| se_core::store_error::store_error(&e))?,
+        "Atlas project",
+        "Select an existing registered project before querying Atlas.",
+    )?;
+    if !matches!(
+        registered.current.body,
+        se_store::EventBody::ProjectRegistered { .. } | se_store::EventBody::ProjectUpdated { .. }
+    ) {
+        return Err(SeError::invalid(
+            "Atlas project",
+            "an active registered project",
+        ));
+    }
+    owner.request_interest(project)?;
     let summary = owner.summary(project, request.options().root.as_ref())?;
     if &summary.project != project
         || request
@@ -267,7 +284,7 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
                         "The registered Atlas index has no published snapshot"
                     }
                     IndexState::Opening | IndexState::ColdIndexing { .. } => {
-                        "The registered Atlas index is preparing its first snapshot"
+                        "Atlas indexing is starting; retry this query when se status shows a published index"
                     }
                     IndexState::Suspended { .. } => {
                         "The registered Atlas index is suspended; inspect its retained status error"

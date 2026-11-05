@@ -60,14 +60,33 @@ impl RecordFeedFence {
     ) -> Result<RecordFeedWrite> {
         let guard = self.before_write()?;
         if let se_store::Scope::Project(project) = scope {
-            let mut state = self.lock()?;
-            state.interests.retain(|p| p != project);
-            if state.interests.len() == 2 {
-                state.interests.remove(0);
-            }
-            state.interests.push(project.clone());
+            self.interest(project)?;
         }
         Ok(guard)
+    }
+    /// Bounded owner interest is not an authoritative write or freshness fence.
+    /// Repeated reads of the most recent project do not restart maintenance.
+    pub(crate) fn interest(&self, project: &se_types::ProjectId) -> Result<()> {
+        let mut state = self.lock()?;
+        if state.interests.last() == Some(project) {
+            return Ok(());
+        }
+        state.interests.retain(|p| p != project);
+        if state.interests.len() == 2 {
+            state.interests.remove(0);
+        }
+        state.interests.push(project.clone());
+        drop(state);
+        self.wake_owner();
+        Ok(())
+    }
+    pub(crate) fn wake_owner(&self) {
+        #[cfg(feature = "runtime")]
+        self.changed.notify_one();
+    }
+    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    pub(crate) fn interested(&self, project: &se_types::ProjectId) -> Result<bool> {
+        Ok(self.lock()?.interests.contains(project))
     }
 
     fn lock(&self) -> Result<std::sync::MutexGuard<'_, State>> {

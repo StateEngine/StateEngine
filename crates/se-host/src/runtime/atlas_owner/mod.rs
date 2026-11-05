@@ -35,6 +35,8 @@ pub(super) struct Service {
     profile: Option<SqlProfile>,
     owner: HumanId,
     memory: MemoryBudget,
+    enabled: bool,
+    interests: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
 }
 struct State {
     controller: NativeController<NativeRenewal>,
@@ -112,6 +114,8 @@ impl HostedRuntime {
             profile,
             owner: self.owner.clone(),
             memory,
+            enabled,
+            interests: self.execution.atlas.records.clone(),
         });
         self.install_atlas_read_port(service.clone())?;
         self.atlas_owner = Some(service);

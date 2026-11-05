@@ -61,12 +61,28 @@ impl Service {
             &root.registration.project == project
                 && selected.is_none_or(|id| id == &root.registration.root)
         });
-        let root = matching.next().ok_or_else(|| {
-            SeError::invalid(
-                "Atlas query root",
-                "a registered root of the admitted project; registration may still be opening",
-            )
-        })?;
+        let root = match matching.next() {
+            Some(root) => root,
+            None if self.enabled
+                && !roots
+                    .roots
+                    .iter()
+                    .any(|root| &root.registration.project == project)
+                && self.interests.interested(project)? =>
+            {
+                return Err(SeError::new(se_types::Detail::AtlasIndexStarting(
+                    se_types::details::AtlasIndexStarting {
+                        project: project.clone(),
+                    },
+                )));
+            }
+            None => {
+                return Err(SeError::invalid(
+                    "Atlas query root",
+                    "a registered root of this project; use se status to inspect Atlas availability",
+                ));
+            }
+        };
         if matching.next().is_some() {
             return Err(SeError::invalid(
                 "Atlas query root",
@@ -77,6 +93,25 @@ impl Service {
     }
 }
 impl AtlasReadPort for Service {
+    fn request_interest(&self, project: &ProjectId) -> Result<()> {
+        if self.enabled {
+            let retry = {
+                let roots = self.readers.lock().map_err(|_| poisoned())?;
+                !roots.preparing
+                    && !roots
+                        .roots
+                        .iter()
+                        .any(|root| &root.registration.project == project)
+            };
+            self.interests.interest(project)?;
+            if retry {
+                // A previous finite close/activation may have refused. Another
+                // explicit query can retry; status alone never wakes the owner.
+                self.interests.wake_owner();
+            }
+        }
+        Ok(())
+    }
     fn status(
         &self,
         project: &ProjectId,
@@ -87,13 +122,15 @@ impl AtlasReadPort for Service {
             &root.registration.project == project
                 && selected.is_none_or(|id| id == &root.registration.root)
         }) {
-            return Ok(if roots.preparing {
-                se_types::Read::Unknown {
-                    what: "Atlas is preparing the registered project roots.".into(),
+            return Ok(
+                if self.enabled && (roots.preparing || self.interests.interested(project)?) {
+                    se_types::Read::Unknown {
+                    what: "Atlas indexing is starting; retry the query when status shows a published index.".into(),
                 }
-            } else {
-                se_types::Read::Absent { checked: "This project has no admitted Atlas root; only two interested project roots can be active in this host.".into() }
-            });
+                } else {
+                    se_types::Read::Absent { checked: "This project has no admitted Atlas root; only two interested project roots can be active in this host.".into() }
+                },
+            );
         }
         drop(roots);
         self.summary(project, selected)

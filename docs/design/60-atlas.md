@@ -66,11 +66,16 @@ preparing, partial, updating, current, disabled and unreadable remain distinct.
 It reports partial/deferred/failed/stale file counts and watch limitations; JSON
 retains the full index summary. A stopped runtime reports unknown index state,
 not absence; start it to observe the current controller. Only two interested
-project roots are admitted at once; an unadmitted project is explicitly unavailable.
+project roots are admitted at once. A registered project's Atlas query records
+interest and wakes the background owner to replace the least recently used root;
+disk caches are retained. Until publication, the query and status say indexing
+is starting and ask the caller to retry once status shows a published index.
+A plain status read observes admission without requesting it.
 
 `se atlas` and `se atlas --help` list the five existing read commands above.
-Queries and status never enable Atlas, open a substitute cache, schedule work,
-or start a daemon as an indexing side effect. Disable it by setting
+Queries never enable Atlas, open a substitute cache or start a daemon; they only
+signal interest to an installed, enabled background owner. Status does not
+request admission or schedule work. Disable it by setting
 `enabled = false` in the same file and restarting; the cache is retained.
 
 ## 2. Identity, physical paths and source revisions
