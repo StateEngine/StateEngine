@@ -355,15 +355,22 @@ impl State {
             return Ok(false);
         }
         let summary = self.controller.summary(id)?;
-        if matches!(
-            summary.state,
-            IndexState::Dormant
-                | IndexState::Opening
-                | IndexState::Updating { .. }
-                | IndexState::ColdIndexing { .. }
-        ) {
+        let unfinished = match summary.state {
+            IndexState::Dormant | IndexState::Opening | IndexState::ColdIndexing { .. } => true,
+            IndexState::Updating {
+                pending_files,
+                discovery_complete,
+                ..
+            } => pending_files != 0 || !discovery_complete,
+            _ => false,
+        };
+        if unfinished {
             return Ok(false);
         }
+        // A settled source pass need not hold the project FIFO behind the
+        // ten-second change-batch publication clock. The scheduler retains
+        // that publication while hot; eviction flushes it during native close.
+        // Reads still expose Updating until actual publication, never Current.
         if self.enabled
             && summary.epoch.is_some()
             && self.roots.iter().any(|root| {
