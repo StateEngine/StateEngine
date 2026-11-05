@@ -115,7 +115,11 @@ fn moved_project_is_diagnosed_and_reattached_with_the_recorded_git_identity() ->
         ])
     );
     let output = command(home, &moved, false, Some("Mover"))
-        .args(["project", "move", moved.to_str().ok_or("moved root is not UTF-8")?])
+        .args([
+            "project",
+            "move",
+            moved.to_str().ok_or("moved root is not UTF-8")?,
+        ])
         .output()?;
     assert!(
         output.status.success(),

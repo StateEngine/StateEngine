@@ -576,9 +576,13 @@ fn resume_selector_skips_revoked_preparation_that_never_activated() -> Check {
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let control = present(reader.snapshot(f.self_scope(&f.a))?.control_target(child)?)?;
     let latest = present(control.latest_session)?;
-    assert!(matches!(&latest.current.body, EventBody::SessionRevoked { session, .. } if session == &second));
+    assert!(
+        matches!(&latest.current.body, EventBody::SessionRevoked { session, .. } if session == &second)
+    );
     let resume = present(control.resume_session)?;
-    assert!(matches!(&resume.current.body, EventBody::SessionEnded { session, .. } if session == &first));
+    assert!(
+        matches!(&resume.current.body, EventBody::SessionEnded { session, .. } if session == &first)
+    );
     drop(reader);
     drop(wait(writer.drain(Duration::from_secs(2)))??);
     Ok(())
