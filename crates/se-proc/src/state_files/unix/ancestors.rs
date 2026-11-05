@@ -96,6 +96,19 @@ fn private_group(gid: libc::gid_t, path: &Path) -> Result<bool> {
     }
 }
 pub(super) fn validate(file: &File, path: &Path) -> Result<()> {
+    // Other agents can create siblings while NSS proves a private group. A
+    // changed directory epoch requires a complete fresh proof, never reuse of
+    // the old permissions/account result. Persistent drift still refuses.
+    let mut result = validate_once(file, path);
+    for _ in 0..2 {
+        if !matches!(&result, Err(error) if error.code == StateFileErrorCode::SourceChanged) {
+            break;
+        }
+        result = validate_once(file, path);
+    }
+    result
+}
+fn validate_once(file: &File, path: &Path) -> Result<()> {
     let meta = file
         .metadata()
         .map_err(|e| io_error("inspect existing ancestor", path, e))?;
