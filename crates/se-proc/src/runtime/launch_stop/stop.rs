@@ -74,7 +74,7 @@ impl NativeProcessRuntime {
                     #[cfg(target_os = "linux")]
                     Some(native) if graceful => native.terminate(prepared.deadline),
                     Some(native) => native.stop(prepared.deadline),
-                    None if !s.launched => Ok(()),
+                    None if !s.launched => Ok(StopDispatch::NotNeeded),
                     None => Err(input("stop", "native child custody is unresolved")),
                 }
             };
