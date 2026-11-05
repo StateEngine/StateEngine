@@ -51,6 +51,8 @@ struct State {
     work: Arc<ProjectWork>,
     queue_scan: Option<crate::atlas_runtime::project_work::Scan>,
     active_project: Option<ActiveProject>,
+    registry_dirty: bool,
+    reconcile_all: bool,
 }
 struct ActiveProject {
     ticket: Ticket,
@@ -107,9 +109,6 @@ impl HostedRuntime {
         let work = Arc::new(ProjectWork::new(
             self.state_directory.join("atlas-projects"),
         ));
-        if enabled {
-            self.execution.atlas.records.install_work(work.clone())?;
-        }
         let memory = qualification.memory();
         let profile = qualification.sql.clone();
         let controller = NativeController::new(NativeRuntime::new(
@@ -129,6 +128,8 @@ impl HostedRuntime {
                 work: work.clone(),
                 queue_scan: None,
                 active_project: None,
+                registry_dirty: false,
+                reconcile_all: false,
             }),
             readers: Mutex::new(read::Catalogue::default()),
             profile,

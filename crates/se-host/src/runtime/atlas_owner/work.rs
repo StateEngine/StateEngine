@@ -7,8 +7,19 @@ impl State {
         wake: Wake,
     ) -> Result<Plan> {
         let mut again = false;
-        if self.scan.is_none() && context.atlas.records.take_registry_dirty() {
-            self.scan = Some(roots::Scan::default());
+        if let Some(activity) = context.atlas.records.take_activity()? {
+            if self.enabled {
+                for project in activity.projects {
+                    self.work.request(&project)?;
+                }
+                self.reconcile_all |= activity.overflow;
+            }
+            self.registry_dirty |= activity.registry_changed;
+        }
+        if self.scan.is_none() && (self.registry_dirty || self.reconcile_all) {
+            self.scan = Some(roots::Scan::new(self.reconcile_all));
+            self.registry_dirty = false;
+            self.reconcile_all = false;
         }
         match wake {
             Wake::Core => {
@@ -41,9 +52,7 @@ impl State {
                 }
             }
         }
-        if self.scan.is_none() {
-            again |= self.advance_project(context, owner)?;
-        }
+        again |= self.advance_project(context, owner)?;
         // The same controller supplies both event and quantum paths; checkout
         // locks discovered by the driver reach the scheduler before publication.
         if self.controller.runtime().child_pid().is_none()

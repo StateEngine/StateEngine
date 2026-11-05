@@ -6,8 +6,15 @@ use std::{io::Read, num::NonZeroU32};
 #[derive(Default)]
 pub(super) struct Scan {
     after: Option<se_types::Cursor>,
+    reconcile_all: bool,
 }
 impl Scan {
+    pub(super) fn new(reconcile_all: bool) -> Self {
+        Self {
+            after: None,
+            reconcile_all,
+        }
+    }
     /// Stream the authoritative catalogue into disk metadata. No project count
     /// becomes an in-memory registration or a native watch admission limit.
     pub(super) fn page(
@@ -47,7 +54,11 @@ impl Scan {
             match record.current.body {
                 EventBody::ProjectRegistered { project, roots, .. }
                 | EventBody::ProjectUpdated { project, roots, .. } => {
-                    work.register(&project, registrations(&project, &roots, home)?)?;
+                    let changed =
+                        work.register(&project, registrations(&project, &roots, home)?)?;
+                    if self.reconcile_all && !changed {
+                        work.request(&project)?;
+                    }
                 }
                 _ => {
                     return Err(SeError::invalid(

@@ -74,7 +74,12 @@ that project and can traverse its retained index without a live-watch slot.
 
 The owner services a disk-backed, coalesced FIFO one project/worktree at a time;
 only pending requests are scanned, separately from the persistent catalogue. Idle
-project metadata is not reopened when selecting another project's work. Only one
+project metadata is not reopened when selecting another project's work. Authoritative writes set only bounded in-memory activity hints; the background
+owner transfers settled hints to the disk FIFO. At most 64 distinct activity hints
+are retained; overflow requests a paged reconciliation of registered projects,
+never a project-count refusal or silently dropped activity. After a host restart,
+unwatched cached indexes remain verification-needed until queried or worked on.
+Only one
 cold child and one writer own the home at a time. A new query cannot
 cancel another project's in-flight cold job. Until an initial epoch is published,
 answers explicitly say indexing is starting or queued and suggest a one-second

@@ -8,6 +8,18 @@ struct State {
     pending: u32,
     current: Vec<(RecordFeedScope, u64)>,
     interests: Vec<se_types::ProjectId>,
+    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    activity: Vec<se_types::ProjectId>,
+    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    activity_overflow: bool,
+    #[cfg(all(feature = "runtime", target_os = "linux"))]
+    registry_dirty: bool,
+}
+#[cfg(all(feature = "runtime", target_os = "linux"))]
+pub(crate) struct Activity {
+    pub projects: Vec<se_types::ProjectId>,
+    pub overflow: bool,
+    pub registry_changed: bool,
 }
 /// Each worktree and each replacement epoch owns a different rebuildable feed.
 #[derive(Clone, PartialEq, Eq)]
@@ -30,10 +42,6 @@ pub struct RecordFeedFence {
     state: Mutex<State>,
     #[cfg(feature = "runtime")]
     changed: tokio::sync::Notify,
-    #[cfg(all(feature = "runtime", target_os = "linux"))]
-    work: std::sync::OnceLock<Arc<super::project_work::ProjectWork>>,
-    #[cfg(all(feature = "runtime", target_os = "linux"))]
-    registry_dirty: std::sync::atomic::AtomicBool,
 }
 /// Capture before opening the authoritative query/feed snapshot. A token from
 /// an older snapshot cannot certify a newer feed after a concurrent core write.
@@ -66,33 +74,37 @@ impl RecordFeedFence {
         if let se_store::Scope::Project(project) = scope {
             self.interest(project)?;
             #[cfg(all(feature = "runtime", target_os = "linux"))]
-            if let Some(work) = self.work.get()
-                && let Err(error) = work.request(project)
             {
-                // An optional derived cache must not block an authoritative
-                // write. Retain the failure and reconcile registrations later.
-                eprintln!("Code index activity could not be queued: {error}");
-                self.registry_dirty
-                    .store(true, std::sync::atomic::Ordering::Release);
+                let mut state = self.lock()?;
+                if !state.activity.contains(project) {
+                    if state.activity.len() < 64 {
+                        state.activity.push(project.clone());
+                    } else {
+                        state.activity_overflow = true;
+                    }
+                }
             }
         }
         #[cfg(all(feature = "runtime", target_os = "linux"))]
         if matches!(scope, se_store::Scope::Registry) {
-            self.registry_dirty
-                .store(true, std::sync::atomic::Ordering::Release);
+            self.lock()?.registry_dirty = true;
         }
         Ok(guard)
     }
+    /// Drain only settled authoritative activity. The source owner performs
+    /// all cache/queue IO in its background work; core writers only set bounded
+    /// hints. Overflow requests a paged catalogue pass instead of dropping work.
     #[cfg(all(feature = "runtime", target_os = "linux"))]
-    pub(crate) fn install_work(&self, work: Arc<super::project_work::ProjectWork>) -> Result<()> {
-        self.work
-            .set(work)
-            .map_err(|_| SeError::invalid("Atlas project work", "one owner installation"))
-    }
-    #[cfg(all(feature = "runtime", target_os = "linux"))]
-    pub(crate) fn take_registry_dirty(&self) -> bool {
-        self.registry_dirty
-            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    pub(crate) fn take_activity(&self) -> Result<Option<Activity>> {
+        let mut state = self.lock()?;
+        if state.pending != 0 {
+            return Ok(None);
+        }
+        Ok(Some(Activity {
+            projects: std::mem::take(&mut state.activity),
+            overflow: std::mem::take(&mut state.activity_overflow),
+            registry_changed: std::mem::take(&mut state.registry_dirty),
+        }))
     }
     /// Bounded owner interest is not an authoritative write or freshness fence.
     /// Repeated reads of the most recent project do not restart maintenance.
