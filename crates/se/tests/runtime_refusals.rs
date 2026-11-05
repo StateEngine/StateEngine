@@ -106,18 +106,26 @@ fn pre_init_command_names_setup_and_resolved_home() -> Check {
     }
     Ok(())
 }
-/// Protects: uninstall refuses an actual live host even when the protected process inventory is empty; it preserves the installation and retained history and names se down.
+/// Protects: uninstall itself verifies shutdown of an actual live host with empty process inventory, then removes installation bytes while retaining user work, history and credentials.
 #[cfg(any(target_os = "linux", windows))]
 #[test]
-fn uninstall_refuses_the_actual_live_host_before_effects() -> Check {
+fn uninstall_verifies_live_host_shutdown_before_removing_files() -> Check {
     let _serial = RUNTIME
         .lock()
         .map_err(|_| "runtime fixture mutex poisoned")?;
     se_proc::initialize_file_creation_owner()?;
+    for json in [true, false] {
+        uninstall_live_host(json)?;
+    }
+    Ok(())
+}
+#[cfg(any(target_os = "linux", windows))]
+fn uninstall_live_host(json: bool) -> Check {
     let f = Fixture::new()?;
     let home = &f.options.state_directory;
     let repo = f.home.join("repository");
     std::fs::create_dir(&repo)?;
+    std::fs::write(repo.join("user-work.txt"), b"retained user work")?;
     let host_image = f.home.join(if cfg!(windows) {
         "host-se.exe"
     } else {
@@ -125,7 +133,7 @@ fn uninstall_refuses_the_actual_live_host_before_effects() -> Check {
     });
     std::fs::copy(env!("CARGO_BIN_EXE_se"), &host_image)?;
     let binary = host_image.as_path();
-    checked(
+    let initialized = checked(
         command(binary, home, true)
             .arg("init")
             .arg("--repo")
@@ -160,8 +168,7 @@ fn uninstall_refuses_the_actual_live_host_before_effects() -> Check {
     drop(stage.file);
     let record = home.join("standalone-install.json");
     files.publish_no_replace(&stage.path, &record)?;
-    // Keep the host's real executable available for graceful cleanup even if
-    // the faulty uninstall deletes the separate, byte-identical installed copy.
+    // Keep an independent CLI image for outside history readback and error cleanup.
     let host = RunningHost::start(binary, home)?;
     assert!(host.live()?);
     let store = match se_store::SqliteFactory::open_reader(&f.options)? {
@@ -177,67 +184,93 @@ fn uninstall_refuses_the_actual_live_host_before_effects() -> Check {
         !inventory.has_process_records,
         "test must exercise the real empty-inventory gap"
     );
-    let retained_head = store.info()?.head;
+    let store_id = store.info()?.id;
     drop(store);
-    for json in [true, false] {
-        let output = terminal_uninstall(&installed, home, json)?;
-        let printed = format!(
-            "{}{}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(host.live()?, "uninstall displaced the exact live host");
+    let retained = ["machine.json", "credential", "config.toml"]
+        .map(|name| std::fs::read(home.join(name)))
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    let project = initialized["profile"]["project"]
+        .as_str()
+        .ok_or("initialized project missing")?;
+    let history = || {
+        checked(
+            command(binary, home, true)
+                .args(["--project", project, "history", "--limit", "100"])
+                .output()?,
+        )
+    };
+    let before = history()?;
+    let before_items = before["items"].as_array().ok_or("history items missing")?;
+    assert!(!before_items.is_empty(), "fixture must retain real history");
+    let output = terminal_uninstall(&installed, home, json)?;
+    let printed = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "uninstall failed: {printed}");
+    assert!(
+        !host.live()?,
+        "successful uninstall left the exact host live"
+    );
+    assert!(
+        !home.join("endpoint.json").try_exists()?,
+        "stale endpoint after uninstall"
+    );
+    assert!(
+        !installed.try_exists()?,
+        "uninstall kept its installed image"
+    );
+    assert!(
+        !record.try_exists()?,
+        "uninstall kept its installation record"
+    );
+    // Windows stdout remains attached to the real human console. Linux's PTY
+    // combines both streams, so inspect its terminal JSON without claiming a
+    // separate machine-readable stdout witness.
+    #[cfg(target_os = "linux")]
+    if json {
+        let outcome: serde_json::Value = printed
+            .lines()
+            .rev()
+            .find_map(|line| serde_json::from_str(line).ok())
+            .ok_or_else(|| format!("missing actual uninstall JSON: {printed}"))?;
+        assert_eq!(outcome["complete"], true, "uninstall incomplete: {outcome}");
+    }
+    for (name, bytes) in ["machine.json", "credential", "config.toml"]
+        .into_iter()
+        .zip(retained)
+    {
         assert_eq!(
-            output.status.code(),
-            Some(1),
-            "wrong live-host refusal: {printed}"
-        );
-        assert!(
-            printed.contains("error[state-conflict]"),
-            "lost runtime custody diagnosis: {printed}"
-        );
-        assert!(
-            printed.contains("se down")
-                || (printed.contains("se --home") && printed.contains(" down")),
-            "live-host refusal omitted graceful down alternative: {printed}"
-        );
-        // On Windows stdout stays attached to the real console for native
-        // human admission; stderr independently retains the typed diagnosis.
-        #[cfg(target_os = "linux")]
-        if json {
-            let outcome: serde_json::Value = printed
-                .lines()
-                .rev()
-                .find_map(|line| serde_json::from_str(line).ok())
-                .ok_or_else(|| format!("missing actual uninstall JSON: {printed}"))?;
-            assert_eq!(outcome["code"], "state-conflict");
-        }
-        assert!(
-            installed.try_exists()?,
-            "uninstall removed its image with a live host"
-        );
-        assert_eq!(
-            std::fs::read(&installed)?,
-            std::fs::read(binary)?,
-            "uninstall changed its image with a live host"
-        );
-        assert_eq!(
-            std::fs::read(&record)?,
-            manifest,
-            "uninstall changed its installation record while the host stayed live"
-        );
-        let outside = present(se_store::SqliteFactory::open_reader(&f.options)?)?;
-        assert_eq!(
-            outside.info()?.head,
-            retained_head,
-            "refused uninstall changed retained history"
+            std::fs::read(home.join(name))?,
+            bytes,
+            "uninstall changed retained {name}"
         );
     }
-    host.stop()?;
-    assert!(
-        home.join("state.db").try_exists()?,
-        "uninstall removed retained user history"
+    assert_eq!(
+        std::fs::read(repo.join("user-work.txt"))?,
+        b"retained user work"
     );
+    let after = history()?;
+    let after_items = after["items"]
+        .as_array()
+        .ok_or("retained history items missing")?;
+    // Verified shutdown may append events; every pre-existing public event must
+    // still read back unchanged through the independent CLI after removal.
+    for event in before_items {
+        assert!(
+            after_items.contains(event),
+            "uninstall changed prior history: {event}"
+        );
+    }
+    let outside = present(se_store::SqliteFactory::open_reader(&f.options)?)?;
+    assert_eq!(
+        outside.info()?.id,
+        store_id,
+        "uninstall replaced retained store"
+    );
+    drop(outside);
     Ok(())
 }
 
