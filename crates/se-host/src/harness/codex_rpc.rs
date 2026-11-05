@@ -326,6 +326,7 @@ impl Harness for CodexHarness {
     fn attach<'a>(
         &'a self,
         request: HarnessAttach,
+        _retained: &'a mut Option<HarnessBinding>,
         cx: CallContext,
     ) -> HostFuture<'a, LaunchOutcome> {
         Box::pin(async move {

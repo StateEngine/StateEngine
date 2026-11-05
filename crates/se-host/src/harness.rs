@@ -158,7 +158,7 @@ pub struct HarnessAttach {
     pub transport: ProviderTransport,
     pub transcript: Read<crate::TranscriptPin>,
 }
-/// What a harness retains for one running provider after a proven attach.
+/// Provider streams retained through startup as well as a proven attach.
 pub struct HarnessBinding {
     #[cfg(feature = "listener")]
     pub(crate) claude: Option<std::sync::Arc<claude_harness::Binding>>,
@@ -202,9 +202,12 @@ pub trait Harness: Send + Sync {
         request: &'a HarnessRequest,
         cx: CallContext,
     ) -> HostFuture<'a, ProviderInvocation>;
+    /// Partial stream custody published through `retained` survives an attach
+    /// failure or panic and is closed by the coordinator's normal cleanup.
     fn attach<'a>(
         &'a self,
         request: HarnessAttach,
+        retained: &'a mut Option<HarnessBinding>,
         cx: CallContext,
     ) -> HostFuture<'a, LaunchOutcome>;
     fn graceful_stop<'a>(

@@ -187,6 +187,8 @@ fn main(){
  let args:Vec<String>=std::env::args().collect();
  if args.get(1).map(String::as_str)==Some("--version"){println!("2.1.287 (Claude Code)");return;}
  let mut input=String::new();std::io::stdin().lock().read_line(&mut input).unwrap();
+ std::io::stderr().write_all(&vec![b'x';128*1024]).unwrap();
+ std::io::stderr().flush().unwrap();
  println!("{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"{}\"}}",args[1]);
  std::io::stdout().flush().unwrap();
  loop{std::thread::park_timeout(std::time::Duration::from_secs(60));}
@@ -381,6 +383,7 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
             .await
             .step("probe actual ClaudeHarness")?;
         phase("attach actual ClaudeHarness");
+        let mut retained = None;
         let outcome = harness
             .attach(
                 HarnessAttach {
@@ -392,10 +395,12 @@ fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Ch
                         checked: "protocol fixture has no transcript".into(),
                     },
                 },
+                &mut retained,
                 context()?,
             )
             .await
             .step("attach actual ClaudeHarness")?;
+        assert!(retained.is_some(), "startup streams have no cleanup owner");
         phase("observe both idle drain tickets");
         let until = Instant::now() + Duration::from_secs(5);
         let pending = loop {

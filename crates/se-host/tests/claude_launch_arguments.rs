@@ -5,6 +5,31 @@ use se_proc::{
 use se_types::{Body, IdempotencyKey, NativePath, ProviderSessionId, Read, Secret};
 
 #[test]
+fn transcript_directory_matches_native_claude_long_slug_vectors()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::path::Path;
+    let conversation = ProviderSessionId::new("01234567-89ab-4cde-8f01-23456789abcd")?;
+    // Values independently read from Claude 2.1.318's native slug convention.
+    let cases = [
+        (format!("/r/{}", "a".repeat(197)), format!("-r-{}", "a".repeat(197))),
+        (format!("/r/{}", "a".repeat(198)), format!("-r-{}-7yt9zg", "a".repeat(197))),
+        (format!("C:\\work\\{}😀", "long_".repeat(50)), "C--work-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-long-lo-oqe50p".into()),
+        (format!("/tmp/{}", "😀".repeat(98)), format!("-tmp{}-24ezzn", "-".repeat(196))),
+    ];
+    for (cwd, slug) in cases {
+        let path = claude::transcript_path(Path::new("config"), Path::new(&cwd), &conversation);
+        assert_eq!(
+            path,
+            Path::new("config")
+                .join("projects")
+                .join(slug)
+                .join(format!("{conversation}.jsonl"))
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn window_task_cannot_supply_claude_options_on_new_or_resumed_launches()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = std::env::current_dir()?;

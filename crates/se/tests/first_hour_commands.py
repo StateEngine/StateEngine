@@ -88,7 +88,10 @@ def run(args):
         return result
 
     try:
+        (f.repo / 'startup-stderr-burst').touch()
         launch = f.ok('--project', f.project, 'launch', f.agent, '--detach', '--task', 'Answer my task')
+        assert (f.repo / 'startup-stderr-finished').read_text() == 'drained'
+        check('pre-init stderr pressure drains before readiness without blocking the initial task')
         f.session = launch['session_id']
         retain_births()
         replies = launch['replies']

@@ -197,19 +197,41 @@ pub fn readiness(line: &[u8], conversation: &ProviderSessionId) -> Readiness {
 }
 
 /// Where Claude writes this conversation's transcript: under its config home,
-/// in a directory named from the working directory with every character other
-/// than ASCII alphanumerics replaced by '-'. The capture pin still verifies
-/// the file itself; this only names where to look.
+/// in a directory named by its native project-slug convention. Long slugs use
+/// the first 200 UTF-16 units and a base-36 signed string hash of the full cwd.
+/// The capture pin still verifies the file itself; this only names where to look.
 pub fn transcript_path(
     config_home: &Path,
     cwd: &Path,
     conversation: &ProviderSessionId,
 ) -> PathBuf {
-    let slug: String = cwd
-        .to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+    let cwd = cwd.to_string_lossy();
+    let mut slug: String = cwd
+        .encode_utf16()
+        .map(|unit| match unit {
+            48..=57 | 65..=90 | 97..=122 => char::from(unit as u8),
+            _ => '-',
+        })
         .collect();
+    if slug.len() > 200 {
+        let hash = cwd.encode_utf16().fold(0_i32, |hash, unit| {
+            hash.wrapping_mul(31).wrapping_add(i32::from(unit))
+        });
+        let mut value = hash.unsigned_abs();
+        let mut suffix = Vec::new();
+        loop {
+            suffix.push(char::from(
+                b"0123456789abcdefghijklmnopqrstuvwxyz"[(value % 36) as usize],
+            ));
+            value /= 36;
+            if value == 0 {
+                break;
+            }
+        }
+        slug.truncate(200);
+        slug.push('-');
+        slug.extend(suffix.into_iter().rev());
+    }
     config_home
         .join("projects")
         .join(slug)
