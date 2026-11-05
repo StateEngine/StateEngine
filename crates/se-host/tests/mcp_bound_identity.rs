@@ -70,8 +70,8 @@ fn all_tools_check_each_identity_alias_against_the_authenticated_principal() -> 
                         require(!tool["inputSchema"]["required"].as_array().is_some_and(|fields| fields.contains(&json!(field))), "caller assertion became required")?;
                     }
                     let description = match tool["name"].as_str() {
-                        Some("stateengine_agent_launch") => Some("The seat to launch."),
-                        Some("stateengine_agent_stop") => Some("The seat to stop."),
+                        Some("stateengine_agent_launch") => Some("The agent to launch."),
+                        Some("stateengine_agent_stop") => Some("The agent to stop."),
                         _ => None,
                     };
                     if let Some(description) = description {

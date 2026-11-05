@@ -671,8 +671,9 @@ fn assert_plain_status_labels(home: &Path) -> Check {
         String::from_utf8_lossy(&status.stderr)
     );
     assert!(
-        text.lines()
-            .any(|line| line.contains("Alpha") && line.contains("unread 1")),
+        text.lines().any(|line| {
+            line.trim_start().starts_with("Agent Alpha: ") && line.ends_with(" — unread messages 1")
+        }),
         "the agent's unread mail is missing from the plain project status:\n{text}"
     );
     assert!(
