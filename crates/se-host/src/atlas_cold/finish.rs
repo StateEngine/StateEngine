@@ -54,21 +54,29 @@ pub(super) fn finish(
     let mut scan = se_atlas::coverage::CoverageScan::default();
     while !scan.step(db, sql_deadline().min(job_deadline))? {}
     scan.apply(&mut coverage)?;
+    if !coverage.discovery_complete && !coverage.reasons.contains(&CoverageReason::TimeLimit) {
+        coverage.reasons.push(CoverageReason::TimeLimit);
+    }
     // Discovery completion is not Current: the parent's dirty serial fence
     // and renewal replay still have to run after adoption.
     let state = IndexState::VerificationNeeded {
-        reason: CoverageReason::StaleSnapshot,
+        reason: if coverage.discovery_complete {
+            CoverageReason::StaleSnapshot
+        } else {
+            CoverageReason::TimeLimit
+        },
     };
     let generation = db.write(131072, sql_deadline().min(job_deadline), |sql| {
         let generation: i64 = sql
             .prepare("SELECT index_generation FROM meta WHERE singleton=1")?
             .query_row([], |r| r.get(0))
             .map_err(failure)?;
-        sql.prepare("UPDATE meta SET coverage_json=?1,state_json=?2,discovery_complete=1,published_generation=index_generation WHERE singleton=1")?
-            .execute([
+        sql.prepare("UPDATE meta SET coverage_json=?1,state_json=?2,discovery_complete=?3,published_generation=index_generation WHERE singleton=1")?
+            .execute((
                 serde_json::to_string(&coverage).map_err(failure)?,
                 serde_json::to_string(&state).map_err(failure)?,
-            ])
+                coverage.discovery_complete,
+            ))
             .map_err(failure)?;
         Ok(Generation(generation.try_into().map_err(failure)?))
     })?;

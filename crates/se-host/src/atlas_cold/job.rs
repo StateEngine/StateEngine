@@ -153,10 +153,22 @@ impl ColdJob {
                         || summary.project != self.request.project
                         || summary.root != self.request.root
                         || summary.epoch.as_ref() != Some(&self.request.epoch)
-                        || !summary.coverage.discovery_complete
+                        || (!summary.coverage.discovery_complete
+                            && (!summary
+                                .coverage
+                                .reasons
+                                .contains(&CoverageReason::TimeLimit)
+                                || !matches!(
+                                    &summary.state,
+                                    IndexState::VerificationNeeded {
+                                        reason: CoverageReason::TimeLimit
+                                    }
+                                )))
                     {
                         self.cancel()?;
-                        return Err(failure("cold completion does not match job/root/epoch"));
+                        return Err(failure(
+                            "cold completion does not match job/root/epoch or explicit partial discovery",
+                        ));
                     }
                     self.completion = Some(*summary);
                     self.worker.acknowledge_completion().map_err(failure)?;

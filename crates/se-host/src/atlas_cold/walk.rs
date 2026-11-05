@@ -17,7 +17,7 @@ pub(super) fn files(
     request: &protocol::Request,
     deadline: Instant,
     mut visit: impl FnMut(Entry) -> AtlasResult<()>,
-) -> AtlasResult<()> {
+) -> AtlasResult<bool> {
     visit(Entry::Directory(None))?;
     let root = source.scope.registration.canonical_source_root.clone();
     let mut global = GitignoreBuilder::new(&root);
@@ -36,7 +36,9 @@ pub(super) fn files(
     let mut directories = 1u32;
     while !stack.is_empty() {
         if Instant::now() >= deadline {
-            return Err(failure("cold discovery deadline elapsed"));
+            // The caller publishes only the verified prefix and retains
+            // discovery-incomplete/TimeLimit until ordinary reconciliation.
+            return Ok(false);
         }
         let last = stack.len() - 1;
         let Some(entry) = stack[last].cursor.next_entry()? else {
@@ -97,7 +99,7 @@ pub(super) fn files(
             visit(Entry::File(path))?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 fn rules(
     source: &RegisteredSource<NativeAtlasSource>,
