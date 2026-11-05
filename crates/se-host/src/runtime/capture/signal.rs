@@ -46,19 +46,14 @@ impl Capturing<'_> {
             }
             Err(error) => error,
         };
-        let receipt = self
-            .retain_failure(admission, failure.body.clone())
-            .await
-            .map_err(|cause| {
-                se_core::scope::unreadable(
-                    "capture failure recording",
-                    &format!(
-                        "capture failed: {}; recording capture.failed also failed: {}",
-                        failure, cause
-                    ),
-                )
-                .with_cause(cause)
-            })?;
+        let receipt = match self.retain_failure(admission, failure.body.clone()).await {
+            Ok(receipt) => receipt,
+            // The diagnostic cannot replace the capture outcome, especially
+            // its confirmed events and natural keys after a partial commit.
+            // Keep the recording error as the secondary cause, without
+            // claiming a capture.failed receipt that was not confirmed.
+            Err(cause) => return Err(failure.with_cause(cause)),
+        };
         let mut output = empty_capture(kind);
         output.output = se_core::ops::HookResult {
             stdout: String::new(),
