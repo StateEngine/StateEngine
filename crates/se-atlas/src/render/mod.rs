@@ -1,10 +1,12 @@
 //! Compact text is budgeted as UTF-8 and escapes source/record terminal controls.
 mod pages;
+mod pointer;
 use crate::{
     errors::{AtlasResult, capacity},
     model::*,
 };
 pub use pages::{changes, impact, outline, refs};
+use pointer::{location, pointer};
 use se_types::{Read, code::*};
 pub fn escape(text: &str) -> String {
     let mut output = String::new();
@@ -97,11 +99,8 @@ pub fn search(
 pub fn hit_line(hit: &SearchHit) -> String {
     let target = match &hit.target {
         HitTarget::Code(code) => format!(
-            "{}{} {}",
-            escape(code.pointer.path.as_str()),
-            code.pointer
-                .span
-                .map_or(String::new(), |s| format!(":{}", s.start.line)),
+            "{} {}",
+            location(&code.pointer.path, code.pointer.span),
             escape(&code.name)
         ),
         HitTarget::Record(record) => format!(
@@ -160,7 +159,7 @@ pub fn resume(code: &ResumeCode) -> AtlasResult<String> {
             } => {
                 output.push_str(&format!(
                     "\n{} {:?} ×{}",
-                    escape(pointer.path.as_str()),
+                    self::pointer(pointer),
                     kinds,
                     changes
                 ));

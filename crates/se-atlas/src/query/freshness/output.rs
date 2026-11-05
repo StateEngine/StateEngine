@@ -44,7 +44,7 @@ impl Verified for SearchHit {
             let verified_body = self.body.as_ref().is_some_and(|body| matches!(
                 &body.origin, BodyOrigin::LiveSource { content_hash: Some(hash), matches_index: Some(true), .. }
                     if Some(*hash) == code.pointer.content_hash));
-            if !verified_body {
+            if !verified_body || code.pointer.span.is_none() {
                 verifier.pointer(&mut code.pointer)?;
             }
         }

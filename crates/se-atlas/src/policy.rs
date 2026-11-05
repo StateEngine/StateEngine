@@ -12,8 +12,8 @@ pub fn validate(policy: &AtlasPolicy) -> AtlasResult<()> {
         || policy.change_retention_days == 0
         || policy.change_retention_days > 30
         || policy.max_cache_bytes > 512_000_000
-        || policy.total_reserved_bytes > 2_000_000
-        || policy.parse.reserved_bytes > 1_000_000
+        || policy.total_reserved_bytes > ANONYMOUS_BYTES
+        || policy.parse.reserved_bytes > PARSER_BYTES
         || policy.parse.max_source_bytes > 524_288
         || policy.parse.max_rows > 65_536
         || policy.parse.max_work > Duration::from_millis(200)
@@ -21,7 +21,7 @@ pub fn validate(policy: &AtlasPolicy) -> AtlasResult<()> {
     {
         return Err(se_types::SeError::invalid(
             "Atlas policy",
-            "the finite source, parser, retention, cache and 2 MB steady-state ceilings",
+            "the finite source, parser, retention, cache and measured steady-state ceilings",
         ));
     }
     let bytes: usize = policy

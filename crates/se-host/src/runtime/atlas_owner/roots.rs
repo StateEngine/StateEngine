@@ -115,12 +115,12 @@ pub(super) fn policy(enabled: bool) -> AtlasPolicy {
         max_change_rows: 50_000,
         change_retention_days: 30,
         max_cache_bytes: 512_000_000,
-        total_reserved_bytes: 2_000_000,
+        total_reserved_bytes: ANONYMOUS_BYTES,
         parse: ParseBudget {
             max_source_bytes: 524288,
             max_rows: 65536,
             max_work: Duration::from_millis(200),
-            reserved_bytes: 1_000_000,
+            reserved_bytes: PARSER_BYTES,
         },
         ignore: IgnorePolicy {
             global_patterns: vec!["target/".into(), "node_modules/".into()],

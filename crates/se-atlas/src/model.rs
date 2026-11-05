@@ -13,9 +13,9 @@ pub use se_types::code::{
 pub use se_types::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::{path::PathBuf, time::Duration};
 
-pub const ANONYMOUS_BYTES: u32 = 2_000_000;
+pub const ANONYMOUS_BYTES: u32 = 13_000_000;
 pub const SQL_QUERY_BYTES: u32 = 603_082;
-pub const PARSER_BYTES: u32 = 1_000_000;
+pub const PARSER_BYTES: u32 = 12_000_000;
 pub const QUEUE_BYTES: u32 = 50_000;
 pub const ADAPTER_BYTES: u32 = 200_000;
 pub const ALLOCATOR_SLACK_BYTES: u32 = 146_918;

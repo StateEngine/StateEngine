@@ -5,7 +5,7 @@ use se_atlas::parse::ParserPlacement;
 impl NativeAtlasQualification {
     /// Ordinary installation uses the independently measured Linux components.
     /// Explicit SQL/parser selections retain their bounds; unknown targets
-    /// still carry None. Larger source files remain honestly unqualified.
+    /// still carry None. Source beyond the measured 64 KiB stays deferred.
     pub(super) fn with_native_sql(mut self) -> Result<Self> {
         #[cfg(all(target_env = "gnu", target_arch = "x86_64"))]
         if self.sql.is_none() {
@@ -33,10 +33,10 @@ impl NativeAtlasQualification {
             ParserProfile::from_qualified_measurement(
                 language,
                 ParserPlacement::Incremental,
-                1024,
-                512,
-                678_298,
-                256_000,
+                65_536,
+                8_192,
+                8_000_000,
+                3_000_000,
             )?
             .with_shared_grammar_pages(4_759_552, 5_473_485)
         })

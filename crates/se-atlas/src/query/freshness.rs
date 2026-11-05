@@ -51,7 +51,7 @@ impl Verifier<'_, '_> {
         }
         Ok(reason)
     }
-    fn observe(&self, pointer: &CodePointer) -> AtlasResult<Option<CoverageReason>> {
+    fn observe(&self, pointer: &mut CodePointer) -> AtlasResult<Option<CoverageReason>> {
         let (Some(source), Some(expected)) = (self.reader.source, pointer.content_hash) else {
             return Ok(Some(CoverageReason::StaleSnapshot));
         };
@@ -69,6 +69,8 @@ impl Verifier<'_, '_> {
         let mut hash = blake3::Hasher::new();
         let mut scratch = [0; 16_384];
         let mut bytes = 0u64;
+        let mut line = 1;
+        let mut column = 0;
         loop {
             if Instant::now() >= self.end {
                 return Ok(Some(CoverageReason::TimeLimit));
@@ -84,6 +86,16 @@ impl Verifier<'_, '_> {
                 return Ok(Some(CoverageReason::ChangedDuringRead));
             }
             hash.update(&scratch[..count]);
+            if pointer.span.is_none() {
+                for byte in &scratch[..count] {
+                    if *byte == b'\n' {
+                        line += 1;
+                        column = 0;
+                    } else {
+                        column += 1;
+                    }
+                }
+            }
         }
         if bytes != before.size || file.identity()? != before || !file.validate_path()? {
             return Ok(Some(CoverageReason::ChangedDuringRead));
@@ -93,6 +105,22 @@ impl Verifier<'_, '_> {
         }
         if Instant::now() >= self.end {
             return Ok(Some(CoverageReason::TimeLimit));
+        }
+        // A file pointer gains an extent only for the revision just verified.
+        // Symbol/reference spans continue to describe their indexed revision.
+        if pointer.span.is_none() {
+            pointer.span = Some(Span {
+                start: Position {
+                    line: 1,
+                    byte_column: 0,
+                },
+                end: Position {
+                    line,
+                    byte_column: column,
+                },
+                start_byte: 0,
+                end_byte: bytes,
+            });
         }
         Ok(None)
     }

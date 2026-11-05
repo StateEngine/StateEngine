@@ -27,7 +27,7 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | B1 | Memory added inside SE Code | ≤ 30,000,000 bytes | A/B against a baseline SE Code server | `embedded A/B` |
 | B2 | Delay StateEngine adds to SE Code | In-window first bind: one combined check, p95 ≤ 100 ms including the first bound session; late path: two checks, each p95 ≤ 100 ms | Late check 1: added startup at server start; late check 2: from late first-session open (bind request) through the first visible assistant response to the user's first message, including activation and any fallback-owner-COMMIT race, against the paired unbound run; each has its own n and over-count, never derived from a summed percentile | `embedded A/B`, actual first-request consumer |
 | B3 | Persistent processes added | 0 while embedded with no live agent; exactly 1 standalone or detached handback daemon; 0 persistent helpers per agent | Outside inventory by exact pid + birth; include the daemon after SE Code exits | `standalone persistent processes`, `persistent processes after 1/2 seat(s)` |
-| B4 | Standalone memory | ≤ 25,000,000 bytes with one live session, after one real agent task | Sum over every attributed StateEngine process | `standalone RSS one session` |
+| B4 | Standalone memory | ≤ 64,000,000 bytes with one live session, after one real agent task | Sum over every attributed StateEngine process | `standalone RSS one session` |
 | B5 | Idle CPU | < 0.1% of one core (< 60 ms CPU per 60 s) | All StateEngine processes, 60 s with no product queries | `idle no session`, `idle one session` |
 | B6 | Idle wakeups | ≤ 1/s with no session; ≤ 2/s with one | Same | Same |
 | B7 | CLI reads | p95 strictly < 20 ms, 30 runs each of `--version`, `status`, `agent list`, `msg inbox`, `msg list`, `decision list` | Spawn to process exit | `CLI --version`, `CLI contextual read verbs` |
@@ -259,19 +259,20 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Estimated reserve at two jobs | 12.4 MB | About 6.1 MB at eight jobs with idle cache targets, before additional overhead; Atlas is off in embedded |
 | **Hard total budget** | **30.0 MB** | Unchanged |
 
-### 3.2 Standalone memory (B4: 25 MB)
+### 3.2 Standalone memory (B4: 64 MB)
 | Component | Allocation | Baseline / basis |
 | --- | ---: | --- |
-| `se` code pages and system libraries | 5.0 MB | Prototype owners 2.7–3.8 MB in total; Rust MCP server 5 MB |
+| `se` code pages and system libraries, excluding Atlas grammars | 30.0 MB | Provisional allocation: the native public-consumer host showed 29.2 MB file-backed immediately after up, with preceding SSD noise 0.47 MB/s at 0.44% busy and NVMe 40.66 MB/s at 24.00%; attribution and quiet joined qualification remain outstanding |
 | tokio `current_thread`, blocking pool (two threads by default; explicit caps 2–8), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
 | SQLite page-cache targets: writer + active/idle host readers × 512 KiB | About 2.6 MB at the two-job default; 8.9 MB at eight jobs | `cache_size=-512`; hosted planning and continuations use readers even though independent CLI reads also access the file directly |
 | SQLite connections, schema, statements | 1.0 MB | Up to 5 foreground connections at the two-job default; additional connection overhead unmeasured |
 | Sessions, mail, listener/MCP, capture + watcher, custody, resume | 7.5 MB | Includes the same single-large-packet resume allowance as 3.1 |
-| Optional Atlas in-host: queries and single-file updates when enabled | 2.0 MB | One closed-when-idle connection plus one parser |
+| Optional Atlas anonymous: queries and single-file updates when enabled | 13.0 MB | One closed-when-idle connection plus one parser; measured Linux ordinary-file profiles in 60 §9 |
+| Shared Atlas grammar/parser file pages | 5.5 MB | One 5,473,485-byte reservation across all roots/grammars; separately reported from anonymous memory |
 | Allocator slack | 1.0 MB | |
-| **Estimated spend at two jobs** | **20.1 MB** | Eight jobs with idle cache targets increase this estimate to 26.4 MB before additional connection overhead |
-| Estimated reserve at two jobs | 4.9 MB | Eight jobs with idle cache targets exceed this estimate by 1.4 MB before additional overhead; configuration does not relax B4 |
-| **Hard total budget** | **25.0 MB** | Unchanged |
+| **Estimated spend at two jobs** | **61.6 MB** | Eight jobs with idle cache targets increase this estimate to 67.9 MB before additional connection overhead |
+| Estimated reserve at two jobs | 2.4 MB | Eight jobs exceed the estimate by 3.9 MB before additional connection overhead; configuration does not relax B4 |
+| **Hard total budget** | **64.0 MB** | Larger standalone host budget authorized by Jimmy 2026-11-05; quiet joined qualification remains outstanding |
 
 The shipped finite-work default is two jobs for standalone and embedded hosts;
 more cores do not raise it. An explicit `runtime.blocking_jobs` in 2–8 is capped

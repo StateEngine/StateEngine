@@ -1,20 +1,6 @@
 //! Compact graph/history pages retain coverage and continuation labels.
 use super::*;
 use se_types::Page;
-fn pointer(value: &CodePointer) -> String {
-    format!(
-        "{}{}{}",
-        escape(value.path.as_str()),
-        value
-            .span
-            .map_or(String::new(), |s| format!(":{}", s.start.line)),
-        match value.freshness {
-            SnapshotFreshness::Current => "",
-            SnapshotFreshness::Stale => " [stale]",
-            SnapshotFreshness::Unknown => " [unverified revision]",
-        }
-    )
-}
 fn record(value: &RecordHit) -> String {
     format!(
         "{:?} {} \"{}\"",
@@ -229,9 +215,8 @@ pub fn outline(answer: &Answer<Read<Outline>>, max: usize) -> AtlasResult<String
     ));
     for symbol in &value.symbols {
         output.push_str(&format!(
-            "{}:{} {:?} {}\n",
-            escape(value.file.path.as_str()),
-            symbol.span.start.line,
+            "{} {:?} {}\n",
+            location(&value.file.path, Some(symbol.span)),
             symbol.kind,
             escape(&symbol.name)
         ));

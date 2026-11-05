@@ -472,10 +472,10 @@ Network/synced roots without reliable identity/events degrade with no polling fa
 ### 4.1 Cold child and atomic epoch discovery
 
 80's approved cold-full-index window has a **64,000,000-byte child peak cap** and
-is reported separately; **B4's 25,000,000-byte steady-state measurement is outside
+is reported separately; **B4's 64,000,000-byte steady-state measurement is outside
 that window**. No aggregate_ceiling_bytes exists: it falsely implied another cold
 aggregate limit. Host allocation still targets its steady share; defer cold work
-for machine pressure, never merely because parent+child exceeds 25 MB. Only first
+for machine pressure, never merely because parent+child exceeds 64 MB. Only first
 index/extractor rebuild/owned repair uses this transient path. Ordinary incremental
 updates always stay in-host inside B4; relabelling an edit as rebuild grants no exemption.
 
@@ -527,7 +527,7 @@ path/text eligibility. Token density alone doesn't prove generated code.
 The former universal 16 KiB/100 ms host cap was unmeasured and is withdrawn. Host
 admission requires a measured per-grammar/platform profile fitting source, tree,
 extraction and retained anonymous allocator high-water mark inside its
-1,000,000-byte parser share and the overall 2,000,000-byte anonymous Atlas share.
+12,000,000-byte parser share and the overall 13,000,000-byte anonymous Atlas share.
 Shared file-backed grammar code/data pages have a separate measured reservation
 printed on profiles and status; they are not charged once per root or language. Profile
 limits cannot exceed 512 KiB/200 ms; they may lower source/row/work limits, stated
@@ -570,6 +570,15 @@ reservation, not just row counts. Names are stored in full only up to 1024 UTF-8
 excluded from exact semantics with Partial/ByteLimit coverage and a file pointer,
 never a falsely exact truncated key. Containers/doc strings have the same explicit
 byte accounting; terminal rendering escapes controls.
+
+Compact code pointers print their line range and byte count, rather than source
+bodies. JSON already carries symbol/reference/text spans with end-exclusive byte
+offsets. Whole-file pointers gain an extent during live whole-file hash verification,
+using the same fixed scratch buffer and request deadline; only a matching revision
+gets that extent. Historical or unavailable extents remain explicitly unavailable,
+not zero, and stale symbol spans retain their stale label. Outline symbols and
+resume file changes use the same compact target format. Explicit full-body reads
+retain their existing bounded opt-in behavior.
 
 Every method returns **AtlasResult<Answer<Read<T>>>**, including Page<T> inside
 Read for list operations. IndexSummary and snapshot/epoch flags survive Absent,
@@ -814,31 +823,61 @@ can become current again merely by an old completion/offer arriving.
 ## 9. Budgets, measurements and five journeys
 
 All budget MB are decimal bytes; KiB is labelled explicitly. Proposed in-host Atlas
-allocation is exactly **2,000,000 bytes** across ALL roots, not per connection/root:
+allocation is exactly **13,000,000 bytes** across ALL roots, not per connection/root:
 
 | Allocation | Bytes | Bound |
 | --- | ---: | --- |
 | SQLite + query | 603,082 | two 65,536-byte caches, two <=16,384-byte statement allowances, 98,304-byte query arena; measured native whole-SQL peak plus arena must also fit; retained writer profile 93,702 bytes (81,480 plus 15%) |
-| Source/parser/extraction | 1,000,000 | one measured admission profile, including retained anonymous allocator pages |
+| Source/parser/extraction | 12,000,000 | one measured admission profile, including retained anonymous allocator pages |
 | Coalesced work queue | 50,000 | <=64 hints and 32,000 active bytes; retained capacity/root bookkeeping fits the remainder; overflow becomes sticky reconcile |
 | Native watches/root/ignore metadata | 200,000 | <=2 active roots, path map cap and bounded policy |
 | Remaining allocator/accounting slack | 146,918 | not an extra pool or a new parser |
 
-The provisional Linux/glibc component qualification covers only 1,024-byte source,
-512 rows and 200 ms for JavaScript/JSX/TypeScript/TSX/Rust/Python: source plus
-parser/extraction reserves 935,322 bytes. Shared parser/grammar file pages were
-4,759,552 bytes observed, reserved at 5,473,485 bytes including 15 percent margin.
-They are shared and evictable, separately bounded from anonymous memory. Other
-platforms and the joined owner/watch/query peak remain unqualified; component
-profiles do not arm the production default. The SQL share gained 100,000 bytes
-from the queue, reducing retained work hints instead of enlarging the total.
+Jimmy authorized the larger standalone host budget on 2026-11-05. Linux/glibc
+component profiles now admit 65,536 source bytes and 8,192 extracted rows, still
+within 200 ms: each reserves 8,000,000 parser/retained bytes and 3,000,000 extraction
+bytes, plus source capacity, or 11,065,536 bytes at its source cap. This fits the
+12 MB parser share; other shares are unchanged. All six grammars share one parser.
 
-These are proposed reservations, NOT measurements. A profile that exceeds one
-share must reduce admission or stay deferred; unused other-core memory and 80's
-3.5 MB reserve are not silently borrowed. No per-root parser/tree/cache pool. Source,
-SQL response data and output serialization ownership must avoid overlapping copies
-beyond these reservations; native adapters include their buffers and kernel charges
-in the external measurement. Global root registration bounds also count here.
+The ordinary-file measurement uses 102 tracked Rust/Python/JavaScript/TypeScript/TSX
+files plus 30 explicitly synthetic density cases, including JSX. Both source orders
+indexed 132/132 cases in the initial cold-only diagnostic. Anonymous growth reached
+6,574,080 bytes across diagnostic/default runs (7,560,192 with 15 percent margin).
+A separate native heap trace observed 5,459,397 requested bytes; preceding SSD noise
+was 3.52 MB/s at 15.38 percent busy, NVMe 90.71 MB/s at 65.16 percent busy. These
+are observed component peaks, not a universal bound or joined-host qualification.
+The production default profiles separately indexed 132/132 in each order with
+their actual 64 KiB/8,192-row/3 MB extraction limits. Their preceding root-SSD
+noise was 1.01/1.05 MB/s at 0.70/0.66 percent busy, versus NVMe 62.50/30.25 MB/s
+at 62.06/33.92 percent busy. These runs qualify observed component admission, not
+a quiet latency or joined-memory result; cold-only diagnostics alone do not.
+Shared parser/grammar file pages retain the prior larger reservation: 4,759,552 bytes
+observed, 5,473,485 reserved including 15 percent margin, once per process.
+
+Measurements run on pinned CPU 28 with source and outputs on the less busy root
+SSD. Disk noise accompanies every run: the forward/reverse baseline samples showed
+4.21/1.60 MB/s and 2.12/1.10 percent busy there, versus 46.89/79.71 MB/s and
+40.64/55.66 percent on NVMe. This is not a quiet qualification; the final check awaits
+the next restart. Other platforms and joined owner/watch/query memory remain
+unqualified. The separately measured Linux components are the installation default;
+status explicitly reports joined_qualified=false.
+
+Two default native CLI/MCP consumers observed a 14,716-byte Rust file become
+current in 192/218 ms, including polling and outside hashing; one exceeds the
+200 ms save target, so neither is a latency qualification. Both verified the new
+whole-file hash outside the host and returned its 443-line file
+extent and 49-byte declaration span without source bodies. Host RSS samples reached
+43,552,768 bytes, with 6,320,128 anonymous bytes; this uses a Claude protocol fixture,
+not a real-agent B4 qualification. Preceding SSD noise was 0.47/1.34 MB/s at 0.44/0.96
+percent busy, versus NVMe 40.66/69.40 MB/s at 24.00/50.62 percent busy. The former 5 MB code-page
+estimate understates these native mappings; section 80 now reserves 30 MB provisionally
+for non-grammar code/libraries and 64 MB for the standalone total. Quiet joined and
+real-agent qualification still remain outstanding.
+
+These are finite reservations, not measurements of the whole owner. Admission over
+one share stays deferred; no per-root parser/tree/cache pool and no silent borrowing
+from other shares. Source, SQL response data, output serialization, native adapter
+buffers, kernel charges and root metadata count in the joined external measurement.
 
 The single budget table in section 80 defines whole-host B1-B9, including the
 standalone steady-state ceiling (B4) and reserve. Cold child **<=64,000,000 peak**

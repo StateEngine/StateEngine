@@ -234,3 +234,6 @@ the file selected by `SE_CONFIG`), set `enabled = true` in `[atlas]`, then run
 `se down` and `se up` with the same `--home` you normally use. `se config set`
 changes saved agent settings only. Run `se atlas` for find, references, impact,
 changes and outline commands; `se status` reports preparation and partial coverage.
+Answers are compact pointers: a line range and byte count show how much source a
+target contains before you read it. JSON retains the full span and byte offsets.
+Unverified or unavailable extents say `size unavailable`; stale revisions stay labelled.
