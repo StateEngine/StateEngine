@@ -8,7 +8,7 @@ pub(super) fn limited_resolution(
     job_deadline: Instant,
 ) -> AtlasResult<()> {
     loop {
-        let next = db.write(2_000_000, sql_deadline().min(job_deadline), |sql| {
+        let next = db.write(2_000_000, job_deadline, |sql| {
             let mut statement =
                 sql.prepare("SELECT id,coverage_json FROM files WHERE id>?1 ORDER BY id LIMIT 64")?;
             let mut rows = statement.query([after]).map_err(failure)?;
@@ -42,7 +42,7 @@ pub(super) fn limited_resolution(
         if !db.checkpoint(job_deadline)? {
             return Err(failure("partial cold epoch checkpoint remains busy"));
         }
-        db.release_cold_memory(sql_deadline().min(job_deadline))?;
+        db.release_cold_memory(job_deadline)?;
     }
 }
 
@@ -52,7 +52,7 @@ pub(super) fn finish(
     job_deadline: Instant,
 ) -> AtlasResult<IndexSummary> {
     let mut scan = se_atlas::coverage::CoverageScan::default();
-    while !scan.step(db, sql_deadline().min(job_deadline))? {}
+    while !scan.step(db, job_deadline)? {}
     scan.apply(&mut coverage)?;
     if !coverage.discovery_complete && !coverage.reasons.contains(&CoverageReason::TimeLimit) {
         coverage.reasons.push(CoverageReason::TimeLimit);
@@ -66,7 +66,7 @@ pub(super) fn finish(
             CoverageReason::TimeLimit
         },
     };
-    let generation = db.write(131072, sql_deadline().min(job_deadline), |sql| {
+    let generation = db.write(131072, job_deadline, |sql| {
         let generation: i64 = sql
             .prepare("SELECT index_generation FROM meta WHERE singleton=1")?
             .query_row([], |r| r.get(0))

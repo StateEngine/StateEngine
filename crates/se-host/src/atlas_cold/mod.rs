@@ -126,7 +126,10 @@ pub(crate) fn run_child(
         phase: protocol::Phase::Startup,
     })?;
     let deadline = Instant::now() + Duration::from_secs(899);
-    let work_deadline = deadline - Duration::from_secs(60);
+    // Coverage and publication scale with the captured prefix too. Reserve a
+    // third of the existing job clock for finishing rather than spending it
+    // all on discovery and losing every captured answer at the parent bound.
+    let work_deadline = deadline - Duration::from_secs(300);
     let source = request.source()?;
     let scope = source.scope.clone();
     let cache = NativeAtlasCache::create(&request.home.to_local()?, scope.clone())?;
@@ -163,7 +166,7 @@ pub(crate) fn run_child(
         &seed,
         ConnectionRole::ColdWriter,
         &SqlProfile::contained_cold(),
-        sql_deadline(),
+        deadline,
     )?;
     let mut parser = SemanticParser::contained_cold(scope)?;
     parser.set_resource_guard(parser_memory_guard);
@@ -228,7 +231,7 @@ pub(crate) fn run_child(
     loop {
         // Preserve captured files even when discovery is incomplete. Cross-file
         // resolution improves those rows, rather than discarding all of them.
-        // Keep the last minute of the existing job budget for coverage,
+        // Keep the reserved part of the existing job budget for coverage,
         // checkpoint and exact-reap publication; skipped files stay partial.
         if !discovery_complete || Instant::now() >= work_deadline {
             finish::limited_resolution(&db, after, deadline)?;
