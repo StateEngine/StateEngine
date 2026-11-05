@@ -127,11 +127,11 @@ pub fn pending_status(home: &Path, output: &mut se_core::ops::StatusOutput) {
     let Some(agents) = &output.agents else {
         return;
     };
-    for agent in agents
-        .items()
-        .iter()
-        .filter(|a| a.provider == se_types::Provider::Claude && a.session.state == "running")
-    {
+    for agent in agents.items().iter().filter(|a| {
+        a.provider == se_types::Provider::Claude
+            && a.session.state == "running"
+            && a.session.surface.as_deref() == Some("window")
+    }) {
         let path = root(home)
             .join("data")
             .join(format!("{}-{}-status.json", project.id, agent.id));
