@@ -82,6 +82,9 @@ pub enum Target {
     /// One native call may change several paths. Never silently trim this set.
     Paths(Vec<ObservedPath>),
     Query(String),
+    /// Verbatim native shell text, or a lossless shell-quoted native argv.
+    /// This describes execution only; never derive changed paths from it.
+    Command(String),
     Unknown(UnknownReason),
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -205,7 +208,7 @@ impl Observation {
                     }
                 }
             }
-            Target::Query(query) => text(query, 1024)?,
+            Target::Query(query) | Target::Command(query) => text(query, 1024)?,
             Target::Unknown(_) => (),
         }
         let bytes =

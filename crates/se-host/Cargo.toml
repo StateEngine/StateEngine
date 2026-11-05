@@ -21,6 +21,7 @@ se-proc = { path = "../se-proc" }
 se-atlas = { path = "../se-atlas" }
 serde_json.workspace = true
 serde.workspace = true
+shlex = "2.0.1"
 hmac = "0.12.1"
 sha2.workspace = true
 uuid.workspace = true

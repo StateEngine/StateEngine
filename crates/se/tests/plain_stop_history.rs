@@ -264,3 +264,220 @@ fn public_history_page_and_exact_event_show_chat_text_without_payload_envelope()
     drop(lease);
     Ok(())
 }
+
+#[test]
+fn public_tool_history_and_exact_events_show_actions_and_keep_unknowns_honest() -> Check {
+    use se_core::ops::transcript::{Position, Record, tool::*};
+    let f = Fixture::new()?;
+    let (mut store, lease) = f.direct()?;
+    let session = capture::session()?;
+    let source = capture::record()?;
+    capture::active(&f, &mut store, &lease, &session, source)?;
+    std::fs::write(
+        f.home.join("transcript.jsonl"),
+        b"ten bytes!ten bytes!ten bytes!ten bytes!",
+    )?;
+    for (n, name, target, phase, outcome) in [
+        (
+            0,
+            "Edit",
+            Target::Paths(vec![ObservedPath {
+                spelling: "src/main.rs".into(),
+                cwd: None,
+                content_revision: None,
+            }]),
+            Phase::Completed,
+            Outcome::Succeeded,
+        ),
+        (
+            1,
+            "Bash",
+            Target::Unknown(UnknownReason::NoNativeTarget),
+            Phase::Completed,
+            Outcome::Succeeded,
+        ),
+        (
+            2,
+            "Write",
+            Target::Paths(vec![ObservedPath {
+                spelling: "failed.txt".into(),
+                cwd: None,
+                content_revision: None,
+            }]),
+            Phase::Completed,
+            Outcome::Failed,
+        ),
+        (
+            3,
+            "Edit",
+            Target::Paths(vec![ObservedPath {
+                spelling: "requested.txt".into(),
+                cwd: None,
+                content_revision: None,
+            }]),
+            Phase::Called,
+            Outcome::Unknown(UnknownReason::Pending),
+        ),
+    ] {
+        let mut batch = capture::capture(
+            &f,
+            &session,
+            source,
+            b"first",
+            n * 10,
+            n + 1,
+            &format!("{}tool-history-{n}", TRANSCRIPT_EVENT_PREFIX),
+        )?;
+        let position = Position {
+            offset: n * 10,
+            length: 10,
+        };
+        let mut record = Record::new("captured-tool", None);
+        record.position = position.clone();
+        record.captured_tool = Some(Observation {
+            schema: SCHEMA.into(),
+            session: session.clone(),
+            agent: f.a.clone(),
+            provider: Provider::Claude,
+            source,
+            position,
+            native: NativeIdentity::ClaudeCall {
+                tool_use_id: format!("native-{n}"),
+            },
+            phase,
+            tool: ToolName::Known(name.into()),
+            target,
+            outcome,
+        });
+        for event in &mut batch.events {
+            event.header.door = Door::Hook;
+            if let EventBody::SessionTurn { role, text, .. } = &mut event.body {
+                *role = Role::System;
+                *text = InputText::Inline(record.body()?.as_str().into());
+            }
+        }
+        store.append(batch, &*lease)?;
+    }
+    let args = [
+        "--agent",
+        f.a.as_str(),
+        "--kind",
+        "transcript.event",
+        "--limit",
+        "100",
+    ];
+    let machine = history(&f, true, &args)?;
+    assert!(
+        machine.status.success(),
+        "{}",
+        String::from_utf8_lossy(&machine.stderr)
+    );
+    let full: Value = serde_json::from_slice(&machine.stdout)?;
+    assert_eq!(full["items"].as_array().ok_or("history rows")?.len(), 4);
+    let page = history(&f, false, &args)?;
+    assert!(page.status.success());
+    let page = String::from_utf8(page.stdout)?;
+    for expected in [
+        "Tool action",
+        "edited: src/main.rs",
+        "ran: Bash (arguments not captured)",
+        "edit: failed.txt",
+        "Result: failed",
+        "edit: requested.txt",
+        "requested; completion not captured",
+    ] {
+        assert!(page.contains(expected), "missing {expected}: {page}");
+    }
+    assert!(!page.contains("edited: failed.txt") && !page.contains("edited: requested.txt"));
+    assert!(!page.contains("Provider event: captured-tool"));
+    for item in full["items"].as_array().ok_or("history rows")? {
+        let exact = history(
+            &f,
+            false,
+            &["--event", item["event_id"].as_str().ok_or("event ID")?],
+        )?;
+        assert!(exact.status.success());
+        let text = String::from_utf8(exact.stdout)?;
+        assert!(text.contains("Tool action") && !text.contains("Provider event: captured-tool"));
+        assert!(
+            item.pointer("/payload/metadata/captured_tool/native")
+                .is_some()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn status_has_one_short_resume_line_while_json_retains_failure_detail() -> Check {
+    let f = Fixture::new()?;
+    let home = f.home.join("status-home");
+    let repo = f.home.join("status-repo");
+    std::fs::create_dir(&repo)?;
+    let mut command = Command::new(env!("CARGO_BIN_EXE_se"));
+    command
+        .env_clear()
+        .env("HOME", &f.home)
+        .env("USERPROFILE", &f.home)
+        .env("PATH", std::env::var_os("PATH").ok_or("PATH")?);
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        command.env("SystemRoot", root);
+    }
+    let initialized = command
+        .args([
+            "--home",
+            home.to_str().ok_or("home")?,
+            "--json",
+            "init",
+            "--repo",
+            repo.to_str().ok_or("repo")?,
+            "--provider",
+            "codex",
+        ])
+        .output()?;
+    assert!(
+        initialized.status.success(),
+        "{}",
+        String::from_utf8_lossy(&initialized.stderr)
+    );
+    let init: Value = serde_json::from_slice(&initialized.stdout)?;
+    let response = Command::new(env!("CARGO_BIN_EXE_se"))
+        .env_clear()
+        .env("HOME", &f.home)
+        .args([
+            "--home",
+            home.to_str().ok_or("home")?,
+            "--project",
+            init["project"]["id"].as_str().ok_or("project")?,
+            "--json",
+            "status",
+        ])
+        .output()?;
+    assert!(
+        response.status.success(),
+        "{}",
+        String::from_utf8_lossy(&response.stderr)
+    );
+    let mut value: Value = serde_json::from_slice(&response.stdout)?;
+    let reason = "usage-invalid-value: Capture failed (UsageInvalidValue): deeply nested source failure\nsecond diagnostic line";
+    value["agents"]["items"][0]["resume"]["reason"] = json!(reason);
+    value["agents"]["items"][0]["resume"]["mode"] = json!("resume");
+    value["agents"]["items"][0]["resume"]["ready"] = json!(false);
+    let status: se_core::ops::StatusOutput = serde_json::from_value(value)?;
+    let output: se_core::ops::AnyOutput = status.into();
+    let mut plain = Vec::new();
+    render::output(&output, false, false, &mut plain)?;
+    let plain = String::from_utf8(plain)?;
+    let lines: Vec<_> = plain
+        .lines()
+        .filter(|line| line.contains("Resume:"))
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert!(lines[0].len() < 90 && lines[0].contains("se status --json"));
+    assert!(!plain.contains("usage-invalid-value") && !plain.contains("second diagnostic"));
+    let mut machine = Vec::new();
+    render::output(&output, true, false, &mut machine)?;
+    let json: Value = serde_json::from_slice(&machine)?;
+    assert_eq!(json["agents"]["items"][0]["resume"]["reason"], reason);
+    Ok(())
+}

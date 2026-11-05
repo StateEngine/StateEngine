@@ -89,7 +89,11 @@ impl Tracker {
             };
             if phase == Phase::Called {
                 fact.tool = tool(block.get("name"));
-                fact.target = super::targets::arguments(block.get("input"), value.get("cwd"));
+                fact.target = if matches!(&fact.tool, ToolName::Known(name) if name == "Bash") {
+                    super::targets::command(block.pointer("/input/command"))
+                } else {
+                    super::targets::arguments(block.get("input"), value.get("cwd"))
+                };
                 if let Some(id) = id {
                     let fingerprint: [u8; 32] =
                         Sha256::digest(serde_json::to_vec(block).map_err(json_error)?).into();

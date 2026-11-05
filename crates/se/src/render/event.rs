@@ -1,6 +1,8 @@
 use se_core::ops::{EventOutput, HistoryEvent};
 use se_types::Read;
 use std::io::{self, Write};
+#[path = "event/tool.rs"]
+mod tool;
 pub(super) fn output(value: &EventOutput, out: &mut impl Write) -> io::Result<()> {
     match value {
         EventOutput::Present(value) | EventOutput::Other(Read::Present { value }) => {
@@ -19,9 +21,27 @@ pub(super) fn output(value: &EventOutput, out: &mut impl Write) -> io::Result<()
     }
 }
 fn present(value: &HistoryEvent, out: &mut impl Write) -> io::Result<()> {
-    writeln!(out, "{} — {}", value.kind, value.project.name)?;
+    let captured_tool = value.kind == "transcript.event"
+        && value
+            .payload
+            .pointer("/metadata/kind")
+            .and_then(serde_json::Value::as_str)
+            == Some("captured-tool");
+    writeln!(
+        out,
+        "{} — {}",
+        if captured_tool {
+            "Tool action"
+        } else {
+            &value.kind
+        },
+        value.project.name
+    )?;
     writeln!(out, "  By: {}", value.actor.name)?;
     writeln!(out, "  At: {}", value.recorded_at)?;
+    if captured_tool {
+        return tool::render(value.payload.pointer("/metadata/captured_tool"), out);
+    }
     // Select the useful facts from the public projection. Never recursively
     // dump its storage/provenance envelope into a person's conversation view.
     for (label, path) in summary_fields(&value.kind) {

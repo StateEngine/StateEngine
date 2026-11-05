@@ -710,6 +710,7 @@ dependencies = [
  "serde_ignored",
  "serde_json",
  "sha2",
+ "shlex",
  "tokio",
  "tokio-tungstenite",
  "toml",

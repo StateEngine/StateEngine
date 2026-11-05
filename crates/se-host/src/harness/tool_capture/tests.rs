@@ -70,7 +70,7 @@ fn claude_joins_only_actual_ids_and_keeps_missing_or_conflicting_facts_unknown()
     shell["message"]["content"][0]["input"] = json!({"command":"echo data > forged.rs"});
     assert!(matches!(
         tracker.observe(&shell)?[0].target,
-        Target::Unknown(UnknownReason::NoNativeTarget)
+        Target::Command(ref text) if text == "echo data > forged.rs"
     ));
     Ok(())
 }

@@ -33,13 +33,29 @@ pub(crate) fn notification(
             "the bound Codex conversation",
         ));
     }
-    item(&params["item"], params.get("turnId"))
+    let mut fact = item(&params["item"], params.get("turnId"))?;
+    if let Some(fact) = &mut fact
+        && matches!(&fact.tool, ToolName::Known(name) if name == "CommandExecution")
+        && matches!(&fact.target, Target::Command(text) if text.contains("[REDACTED_SECRET]"))
+    {
+        // Codex's RPC presentation can redact native command arguments. It
+        // cannot attest to those bytes; keep the pinned rollout authoritative.
+        fact.target = Target::Unknown(UnknownReason::UnsupportedShape);
+    }
+    Ok(fact)
 }
 fn item(value: &Value, turn: Option<&Value>) -> Result<Option<Fact>> {
     let kind = value.get("type").and_then(Value::as_str);
     if !matches!(
         kind,
-        Some("FileChange" | "fileChange" | "McpToolCall" | "mcpToolCall")
+        Some(
+            "FileChange"
+                | "fileChange"
+                | "McpToolCall"
+                | "mcpToolCall"
+                | "CommandExecution"
+                | "commandExecution"
+        )
     ) {
         return Ok(None);
     }
@@ -72,7 +88,7 @@ fn item(value: &Value, turn: Option<&Value>) -> Result<Option<Fact>> {
     } else {
         key
     };
-    let outcome = match value.get("status").and_then(Value::as_str) {
+    let mut outcome = match value.get("status").and_then(Value::as_str) {
         Some("completed" | "Completed") if value.get("error").is_some_and(|e| !e.is_null()) => {
             Outcome::Unknown(UnknownReason::ConflictingEvidence)
         }
@@ -82,7 +98,21 @@ fn item(value: &Value, turn: Option<&Value>) -> Result<Option<Fact>> {
         Some("inProgress" | "InProgress") => Outcome::Unknown(UnknownReason::Pending),
         _ => Outcome::Unknown(UnknownReason::NoNativeOutcome),
     };
-    let (tool, target) = if matches!(kind, Some("FileChange" | "fileChange")) {
+    let (tool, target) = if matches!(kind, Some("CommandExecution" | "commandExecution")) {
+        if matches!(outcome, Outcome::Succeeded)
+            && value
+                .get("exit_code")
+                .or_else(|| value.get("exitCode"))
+                .and_then(Value::as_i64)
+                .is_some_and(|code| code != 0)
+        {
+            outcome = Outcome::Failed;
+        }
+        (
+            ToolName::Known("CommandExecution".into()),
+            super::targets::command(value.get("command")),
+        )
+    } else if matches!(kind, Some("FileChange" | "fileChange")) {
         (ToolName::Known("FileChange".into()), changed_paths(value))
     } else {
         (
