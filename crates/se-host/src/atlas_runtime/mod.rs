@@ -15,6 +15,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
+mod close;
 mod connections;
 pub mod read_port;
 pub mod record_fence;
@@ -320,8 +321,9 @@ pub trait RenewalDriver {
         policy: &AtlasPolicy,
         deadline: Instant,
     ) -> AtlasResult<Vec<SourceHint>>;
-    /// Drop native subscriptions before the runtime closes/removes cache files.
-    /// Absent/disabled/unqualified roots have no connection to lend.
+    /// Idempotently release native custody even without a cache connection.
+    /// A supplied connection may also persist derived watch metadata; neither
+    /// form may start native work. Actual custody failures must be returned.
     fn close(
         &mut self,
         root: &RootId,
