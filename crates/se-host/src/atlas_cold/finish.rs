@@ -59,12 +59,18 @@ pub(super) fn finish(
     }
     // Discovery completion is not Current: the parent's dirty serial fence
     // and renewal replay still have to run after adoption.
-    let state = IndexState::VerificationNeeded {
-        reason: if coverage.discovery_complete {
-            CoverageReason::StaleSnapshot
-        } else {
-            CoverageReason::TimeLimit
-        },
+    let state = if let Some(error) = scan.first_failure() {
+        IndexState::Partial {
+            error: error.clone(),
+        }
+    } else {
+        IndexState::VerificationNeeded {
+            reason: if coverage.discovery_complete {
+                CoverageReason::StaleSnapshot
+            } else {
+                CoverageReason::TimeLimit
+            },
+        }
     };
     let generation = db.write(131072, job_deadline, |sql| {
         let generation: i64 = sql

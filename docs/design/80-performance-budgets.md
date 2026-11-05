@@ -301,6 +301,16 @@ queries/incremental updates stay in the allocation above. The runner reports
 that window separately and measures B4 outside it. The prototype's large-file
 peak makes the per-file admission/deadline mandatory, not already qualified.
 
+The cold child's resident ceiling remains 64,000,000 bytes. On Linux its
+virtual-address limit is separately 96,000,000 bytes: the Rust54 release maps
+about 50.9 MB of ELF segments, and ordinary JavaScript needed about 64.03 MB
+including the unchanged 8 MB cancellation/SQL margin. The larger address
+envelope leaves about 32 MB above that admission requirement for image growth;
+it does not raise the resident ceiling. Windows committed-memory and macOS
+footprint limits remain unchanged. Per-file failures remain visible in the
+published partial status even if later maintenance cannot acquire its writer
+lease; successful reparsing clears the diagnostic.
+
 ### Shared input limits and packet sizing
 
 CLI, MCP and linked calls consume one closed input DTO per operation. Lists

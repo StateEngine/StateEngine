@@ -8,9 +8,9 @@ pub(super) fn get(
 ) -> AtlasResult<IndexSummary> {
     let complete = counts.is_some();
     connection.write(65536, deadline, |sql| {
-        let (generation, json): (i64, String) = sql
-            .prepare("SELECT index_generation,coverage_json FROM meta WHERE singleton=1")?
-            .query_row([], |r| Ok((r.get(0)?, r.get(1)?)))
+        let (generation, json, prior): (i64, String, String) = sql
+            .prepare("SELECT index_generation,coverage_json,state_json FROM meta WHERE singleton=1")?
+            .query_row([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .map_err(sql_error)?;
         let mut coverage: Coverage = serde_json::from_str(&json).map_err(sql_error)?;
         if let Some(counts) = counts {
@@ -31,7 +31,18 @@ pub(super) fn get(
         }
         let pending: u32 = sql.prepare("SELECT count(*) FROM active_batch")?
             .query_row([], |r| r.get(0)).map_err(sql_error)?;
-        let state = if complete && (root.unwatched > 0 || !coverage.watch_discovery_complete) {
+        let failure = if coverage.failed_files > 0 {
+            match counts {
+                Some(counts) => counts.first_failure().cloned(),
+                None => match serde_json::from_str(&prior).map_err(sql_error)? {
+                    IndexState::Partial { error } => Some(error),
+                    _ => None,
+                },
+            }
+        } else { None };
+        let state = if let Some(error) = failure {
+            IndexState::Partial { error }
+        } else if complete && (root.unwatched > 0 || !coverage.watch_discovery_complete) {
             IndexState::VerificationNeeded { reason: CoverageReason::PartialWatch }
         } else if !complete || pending > 0 {
             IndexState::Updating { pending_files: if complete { 0 } else { 1 },

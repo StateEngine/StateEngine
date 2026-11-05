@@ -150,11 +150,14 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
                 .map_err(atlas_cold::failure)?.as_millis().try_into().map_err(atlas_cold::failure)?;
             se_atlas::update::batch::publish(sql,now,false)?;
-            let (generation,complete,coverage):(i64,bool,String)=sql.prepare("SELECT published_generation,discovery_complete,coverage_json FROM meta WHERE singleton=1")?
-                .query_row([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).map_err(atlas_cold::failure)?;
+            let (generation,complete,coverage,state):(i64,bool,String,String)=sql.prepare("SELECT published_generation,discovery_complete,coverage_json,state_json FROM meta WHERE singleton=1")?
+                .query_row([],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(atlas_cold::failure)?;
             summary.generation=Some(Generation(generation.try_into().map_err(atlas_cold::failure)?));
             summary.coverage=serde_json::from_str(&coverage).map_err(atlas_cold::failure)?;
-            if complete {
+            let state: IndexState = serde_json::from_str(&state).map_err(atlas_cold::failure)?;
+            if summary.coverage.failed_files > 0 && matches!(state, IndexState::Partial { .. }) {
+                summary.state = state;
+            } else if complete {
                 summary.state=if let Some(reason) = se_atlas::history::limitation(sql)? {
                     IndexState::VerificationNeeded {reason}
                 } else if summary.coverage.unwatched_directories==0 && summary.coverage.watch_discovery_complete {

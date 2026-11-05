@@ -110,9 +110,21 @@ impl<R: Runtime> Controller<R> {
             .runtime
             .observed_summary(id)?
             .unwrap_or_else(|| root.summary.clone());
-        // Scheduler invalidation, explicit disable and close outrank a retained
-        // runtime observation. Epoch/generation/coverage remain observed facts.
-        summary.state = root.summary.state.clone();
+        // Retain a published failure across later work/lock state changes.
+        // Explicit lifecycle transitions still outrank that observation.
+        let retain_failure = matches!(
+            (&summary.state, &root.summary.state),
+            (
+                IndexState::Partial { .. },
+                IndexState::Current
+                    | IndexState::Updating { .. }
+                    | IndexState::VerificationNeeded { .. }
+                    | IndexState::Suspended { .. }
+            )
+        );
+        if !retain_failure {
+            summary.state = root.summary.state.clone();
+        }
         Ok(summary)
     }
     pub fn git_lock(&mut self, root: &RootId, held: bool) -> AtlasResult<()> {

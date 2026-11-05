@@ -280,6 +280,10 @@ pub enum IndexState {
         discovery_complete: bool,
     },
     Current,
+    /// A published, readable index retains a concrete per-file failure.
+    Partial {
+        error: ErrorBody,
+    },
     VerificationNeeded {
         reason: CoverageReason,
     },

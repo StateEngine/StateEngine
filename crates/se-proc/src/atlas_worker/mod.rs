@@ -12,6 +12,11 @@ mod stderr;
 pub const ENTRY: &str = "--stateengine-private-atlas-cold";
 pub const FRAME_BYTES: usize = 65536;
 pub const MEMORY_BYTES: u64 = 64_000_000;
+// The release image maps about 51 MB before its parser/SQL allocations. Keep
+// growth headroom above the observed 64.03 MB admission requirement, including
+// its unchanged 8 MB margin; resident memory remains capped separately at 64 MB.
+#[cfg(target_os = "linux")]
+pub const ADDRESS_SPACE_BYTES: u64 = 96_000_000;
 #[cfg(target_os = "linux")]
 mod allocator;
 #[cfg(target_os = "linux")]

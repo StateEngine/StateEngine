@@ -17,6 +17,7 @@ pub struct CoverageScan {
     partial: u64,
     deferred: u64,
     failed: u64,
+    first_failure: Option<se_types::ErrorBody>,
     stale: u64,
     resolved: u64,
     name_only: u64,
@@ -66,7 +67,12 @@ impl CoverageScan {
                             self.deferred += 1;
                             self.reason(reason);
                         }
-                        FileCoverage::Failed { .. } => self.failed += 1,
+                        FileCoverage::Failed { error } => {
+                            self.failed += 1;
+                            if self.first_failure.is_none() {
+                                self.first_failure = Some(error);
+                            }
+                        }
                         FileCoverage::Stale { reason, .. } => {
                             self.stale += 1;
                             self.reason(reason);
@@ -121,6 +127,12 @@ impl CoverageScan {
         coverage.name_only_references = self.name_only;
         coverage.reasons.clone_from(&self.reasons);
         Ok(())
+    }
+
+    /// One observed failure in stable file order; later maintenance refusals
+    /// must not hide why the published coverage is incomplete.
+    pub fn first_failure(&self) -> Option<&se_types::ErrorBody> {
+        self.first_failure.as_ref()
     }
 
     fn reason(&mut self, reason: CoverageReason) {

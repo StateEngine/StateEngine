@@ -205,6 +205,7 @@ pub fn resume(code: &ResumeCode) -> AtlasResult<String> {
 fn state(index: &IndexSummary) -> String {
     let label = match &index.state {
         IndexState::Current => "current",
+        IndexState::Partial { .. } => "partial",
         IndexState::Disabled => "disabled",
         IndexState::NotBuilt => "not built",
         IndexState::Dormant => "dormant",
@@ -246,7 +247,7 @@ fn state(index: &IndexSummary) -> String {
             "unqualified"
         }
     );
-    if let IndexState::Suspended { reason } = &index.state {
+    if let IndexState::Suspended { reason } | IndexState::Partial { error: reason } = &index.state {
         output.push_str(&format!("reason: {}\n", escape(&reason.message())));
     }
     for reason in &index.coverage.reasons {

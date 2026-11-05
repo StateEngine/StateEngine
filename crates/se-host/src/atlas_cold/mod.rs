@@ -71,14 +71,18 @@ fn parser_memory_guard() -> AtlasResult<()> {
     #[cfg(any(windows, target_os = "macos"))]
     let reusable = 0;
     let requested = used.saturating_sub(reusable).saturating_add(8_000_000);
-    if requested > se_proc::atlas_worker::MEMORY_BYTES {
+    #[cfg(target_os = "linux")]
+    let ceiling = se_proc::atlas_worker::ADDRESS_SPACE_BYTES;
+    #[cfg(any(windows, target_os = "macos"))]
+    let ceiling = se_proc::atlas_worker::MEMORY_BYTES;
+    if requested > ceiling {
         return Err(SeError::new(se_types::Detail::AtlasResourceBudget(
             se_types::details::AtlasResourceBudget {
                 resource: format!(
                     "Atlas cold {measurement}, including 8 MB cancellation/SQL margin and {reusable} reusable arena bytes (credit capped at 2 MB)"
                 ),
                 requested,
-                available: se_proc::atlas_worker::MEMORY_BYTES,
+                available: ceiling,
             },
         )));
     }

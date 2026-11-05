@@ -59,6 +59,10 @@ pub fn atlas_view(observed: se_types::Result<Read<IndexSummary>>) -> AtlasView {
         IndexState::Updating { .. } => "updating",
         IndexState::Current if partial => "partial",
         IndexState::Current => "current",
+        IndexState::Partial { error } => {
+            view.reason = Some(error.message());
+            "partial"
+        }
         IndexState::VerificationNeeded { .. } => "partial",
         IndexState::Suspended { reason } => {
             view.reason = Some(reason.message());

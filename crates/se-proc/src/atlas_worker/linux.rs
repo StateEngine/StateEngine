@@ -115,8 +115,8 @@ impl AtlasWorker {
                     return Err(io::Error::last_os_error());
                 }
                 let cap = libc::rlimit {
-                    rlim_cur: MEMORY_BYTES,
-                    rlim_max: MEMORY_BYTES,
+                    rlim_cur: super::ADDRESS_SPACE_BYTES,
+                    rlim_max: super::ADDRESS_SPACE_BYTES,
                 };
                 let cpu = libc::rlimit {
                     rlim_cur: 900,
