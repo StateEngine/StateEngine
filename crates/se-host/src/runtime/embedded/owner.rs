@@ -10,7 +10,7 @@ use std::{path::PathBuf, time::Duration};
 use tokio::{runtime::Handle, sync::oneshot};
 
 /// The standalone child's finite shutdown join budget.
-const SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
+pub(super) const SHUTDOWN_BUDGET: Duration = Duration::from_secs(30);
 
 /// References independent of the owner's polled future. A panic cannot drop
 /// the lease or collector; only an actual successful owner join clears them.
@@ -56,6 +56,9 @@ pub(super) fn owner_thread(
     let fence = inputs.router_fence.clone();
     let changed = inputs.changed.clone();
     let generation_owner = inputs.owner.clone();
+    let finished_owner = inputs.owner.clone();
+    let completion_runtime = inputs.runtime.clone();
+    let (completed, completion) = oneshot::channel();
     let spawned = std::thread::Builder::new()
         .name("stateengine-embedded-host".into())
         .spawn(move || {
@@ -79,7 +82,18 @@ pub(super) fn owner_thread(
                     std::thread::park();
                 }
             }
+            let _ = completed.send(());
         });
+    // External `se down` has no public API caller to join the completed owner.
+    // Wait for its one completion event, then use the same actual-join barrier
+    // as drain/close. No idle polling or additional waiting native thread.
+    completion_runtime.spawn(async move {
+        if completion.await.is_ok()
+            && let Some(owner) = finished_owner.upgrade()
+        {
+            owner.join_completed_owner().await;
+        }
+    });
     if spawned.is_err() {
         // Both receivers then report a closed channel: activation fails by name.
     }

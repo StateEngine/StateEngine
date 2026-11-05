@@ -7,7 +7,7 @@ mod linux {
         fs,
         io::{Read, Write},
         os::{
-            fd::AsFd,
+            fd::{AsFd, AsRawFd, FromRawFd, OwnedFd},
             unix::{
                 fs::PermissionsExt,
                 net::{UnixListener, UnixStream},
@@ -32,8 +32,47 @@ mod linux {
         }
         Ok(pins)
     }
-    fn one_new_pin(before: &BTreeSet<u32>, pid: u32) -> Result<u32, Box<dyn Error>> {
+    // Query the connected socket itself: an older kernel may lack the
+    // option, but permissions/resource errors must still fail this test.
+    fn socket_supports_peer_pin(stream: &UnixStream) -> Result<bool, Box<dyn Error>> {
+        let mut raw: libc::c_int = -1;
+        let mut length = std::mem::size_of_val(&raw) as libc::socklen_t;
+        // SAFETY: connected borrowed socket and exact, writable descriptor output.
+        if unsafe {
+            libc::getsockopt(
+                stream.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_PEERPIDFD,
+                (&mut raw as *mut libc::c_int).cast(),
+                &mut length,
+            )
+        } != 0
+        {
+            let error = std::io::Error::last_os_error();
+            return if error.raw_os_error() == Some(libc::ENOPROTOOPT) {
+                Ok(false)
+            } else {
+                Err(error.into())
+            };
+        }
+        if raw < 0 {
+            return Err("invalid socket peer descriptor".into());
+        }
+        // SAFETY: successful SO_PEERPIDFD transfers one new owned descriptor.
+        let _probe = unsafe { OwnedFd::from_raw_fd(raw) };
+        assert_eq!(length as usize, std::mem::size_of_val(&raw));
+        Ok(true)
+    }
+    fn one_new_pin(
+        before: &BTreeSet<u32>,
+        pid: u32,
+        supported: bool,
+    ) -> Result<Option<u32>, Box<dyn Error>> {
         let after = pidfds()?;
+        if !supported {
+            assert_eq!(&after, before, "older-kernel proof leaked a pidfd");
+            return Ok(None);
+        }
         let added: Vec<_> = after.difference(before).copied().collect();
         if added.len() != 1 {
             return Err(format!("expected one real socket-origin pidfd, found {added:?}").into());
@@ -53,22 +92,23 @@ mod linux {
         if u32::from_str_radix(flags.trim(), 8)? & 0o2000000 == 0 {
             return Err("pidfd is not close-on-exec".into());
         }
-        Ok(fd)
+        Ok(Some(fd))
     }
     /// Protects: G6 — the client-side proof retains the actual server's kernel process object.
     #[test]
-    #[ignore = "cross-process helper invoked only by socket_peer_pin_survives_peer_exit_and_closes_on_drop"]
+    #[ignore = "cross-process helper invoked only by socket_peer_proof_survives_peer_exit_and_closes_on_drop"]
     fn pin_client() -> Check {
         let path = std::env::var_os("SE_REVIEW_PIN_SOCKET").ok_or("owned socket absent")?;
         let pid: u32 = std::env::var("SE_REVIEW_PIN_SERVER")?.parse()?;
         let mut stream = UnixStream::connect(path)?;
         stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        let supported = socket_supports_peer_pin(&stream)?;
         let before = pidfds()?;
         let peer = observe_ipc_peer(stream.as_fd(), IpcPeerSide::Server)?;
         if peer.pid() != pid {
             return Err("connection did not prove its actual parent server".into());
         }
-        one_new_pin(&before, pid)?;
+        one_new_pin(&before, pid, supported)?;
         stream.write_all(b"P")?;
         stream.read_exact(&mut [0])?;
         drop(peer);
@@ -77,10 +117,10 @@ mod linux {
         }
         Ok(())
     }
-    /// Protects: G6 — both native peer proofs hold real close-on-exec pidfds until their own drop.
+    /// Protects: G6 — socket-origin pins survive exit and close on drop; older
+    /// kernels still verify both peer identities without claiming a retained pin.
     #[test]
-    #[ignore = "requires native Linux SO_PEERPIDFD (6.5+); run explicitly, older-kernel fallback is a separate bound"]
-    fn socket_peer_pin_survives_peer_exit_and_closes_on_drop() -> Check {
+    fn socket_peer_proof_survives_peer_exit_and_closes_on_drop() -> Check {
         let root = std::env::temp_dir().join(format!("5d-ipc-pin-{}", std::process::id()));
         fs::create_dir(&root)?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
@@ -112,12 +152,13 @@ mod linux {
             };
             stream.set_read_timeout(Some(Duration::from_secs(15)))?;
             stream.read_exact(&mut [0])?;
+            let supported = socket_supports_peer_pin(&stream)?;
             let before = pidfds()?;
             let peer = observe_ipc_peer(stream.as_fd(), IpcPeerSide::Client)?;
             if peer.pid() != child_pid {
                 return Err("server proof changed the real client PID".into());
             }
-            let fd = one_new_pin(&before, child_pid)?;
+            let fd = one_new_pin(&before, child_pid, supported)?;
             stream.write_all(b"X")?;
             Ok((peer, before, fd))
         })();
@@ -140,12 +181,14 @@ mod linux {
             )
             .into());
         }
-        let info = fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))?;
-        if !info
-            .lines()
-            .any(|line| line.split_whitespace().collect::<Vec<_>>() == ["Pid:", "-1"])
-        {
-            return Err("retained peer pin did not observe exact child exit".into());
+        if let Some(fd) = fd {
+            let info = fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))?;
+            if !info
+                .lines()
+                .any(|line| line.split_whitespace().collect::<Vec<_>>() == ["Pid:", "-1"])
+            {
+                return Err("retained peer pin did not observe exact child exit".into());
+            }
         }
         drop(peer);
         if pidfds()? != before {

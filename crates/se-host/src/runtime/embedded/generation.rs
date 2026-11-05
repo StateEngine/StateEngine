@@ -274,7 +274,25 @@ impl Generation {
     async fn join_owner(&self, options: &api::CallOptions) -> api::Result<()> {
         let (deadline, _cancel) =
             support::call_deadline(&self.runtime, options).map_err(|e| api_error(&e))?;
-        let mut state = pool::within(&deadline, self.owner_join.lock())
+        self.join_owner_before(&deadline).await
+    }
+    pub(super) async fn join_completed_owner(&self) {
+        if self.quarantined.load(Ordering::Acquire) {
+            return;
+        }
+        let result = match support::deadline(owner::SHUTDOWN_BUDGET) {
+            Ok(deadline) => self.join_owner_before(&deadline).await,
+            Err(error) => Err(api_error(&error)),
+        };
+        if result.is_err() {
+            self.poison_now(true);
+        }
+    }
+    async fn join_owner_before(
+        &self,
+        deadline: &crate::client::lease::Deadline,
+    ) -> api::Result<()> {
+        let mut state = pool::within(deadline, self.owner_join.lock())
             .await
             .map_err(|e| api_error(&e))?;
         if matches!(*state, OwnerJoin::Thread(_)) {
@@ -285,7 +303,7 @@ impl Generation {
             *state = OwnerJoin::Joining(self.runtime.spawn_blocking(move || join.join()));
         }
         if let OwnerJoin::Joining(join) = &mut *state {
-            let result = pool::within(&deadline, join)
+            let result = pool::within(deadline, join)
                 .await
                 .map_err(|e| api_error(&e))?;
             if !matches!(result, Ok(Ok(()))) {
@@ -296,6 +314,12 @@ impl Generation {
                 ));
             }
             *state = OwnerJoin::Joined;
+            if self.quarantined.load(Ordering::Acquire) {
+                return Err(refused(
+                    "embedded owner join",
+                    "controlled application restart; quarantined resources remain retained",
+                ));
+            }
             self.resources
                 .lock()
                 .map_err(|_| unavailable("retained owner resources"))?
