@@ -12,7 +12,7 @@ mod grammar;
 use fixture::*;
 use se_core::{config_policy::*, ops::AnyOp};
 use serde_json::Value;
-use std::{fs, process::Command};
+use std::{fs, io::Write, process::Command};
 
 #[test]
 fn init_policy_matches_its_first_launch_for_both_providers_and_explicit_approvals() -> Check {
@@ -30,10 +30,14 @@ fn init_policy_matches_its_first_launch_for_both_providers_and_explicit_approval
                 .get_mut("default")
                 .ok_or("default profile")?
                 .approval = approval;
-            fs::write(
-                f.options.state_directory.join("config.toml"),
-                toml::to_string(&config)?,
-            )?;
+            let files = se_proc::NativeStateFiles::open(&f.options.state_directory)?;
+            let mut staged = files.create_staging(&f.options.state_directory)?;
+            staged
+                .file
+                .write_all(toml::to_string(&config)?.as_bytes())?;
+            drop(staged.file);
+            files
+                .publish_no_replace(&staged.path, &f.options.state_directory.join("config.toml"))?;
             let repo = f.home.join("repo");
             fs::create_dir(&repo)?;
             let provider_name = match provider {
