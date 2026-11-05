@@ -98,7 +98,7 @@ fn setup(f: &Fixture) -> Check {
             "-c",
             "user.name=History Fixture",
             "-c",
-            "user.email=fixture@example.invalid",
+            "user.email=atlas-fixture.invalid",
             "commit",
             "-m",
             "automatic_git_seed",

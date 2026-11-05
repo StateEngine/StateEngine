@@ -125,7 +125,7 @@ fn real_commit_reads_ignore_repository_config_and_refuse_alternate_object_roots(
             "-c",
             "user.name=Fixture",
             "-c",
-            "user.email=fixture@example.invalid",
+            "user.email=atlas-fixture.invalid",
             "commit-tree",
             &tree,
             "-m",

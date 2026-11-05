@@ -146,7 +146,7 @@ def run(args):
             subprocess.run(['git', 'init', '-q', str(repo)], env=env, check=True)
             subprocess.run(['git', '-C', str(repo), 'add', '--', 'ordinary.py'], env=env, check=True)
             subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Atlas judge', '-c',
-                            'user.email=atlas-judge@example.invalid', 'commit', '-q', '-F', '-',
+                            'user.email=atlas-fixture.invalid', 'commit', '-q', '-F', '-',
                             '--', 'ordinary.py'], input=b'Create ordinary searchable code.\n',
                            env=env, check=True)
             init = ok('init', '--repo', str(repo), '--name', label, '--provider', 'codex')

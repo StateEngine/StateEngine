@@ -35,8 +35,8 @@ mod native {
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_AUTHOR_NAME", "Fixture Human")
             .env("GIT_COMMITTER_NAME", "Fixture Human")
-            .env("GIT_AUTHOR_EMAIL", "fixture@example.invalid")
-            .env("GIT_COMMITTER_EMAIL", "fixture@example.invalid")
+            .env("GIT_AUTHOR_EMAIL", "atlas-fixture.invalid")
+            .env("GIT_COMMITTER_EMAIL", "atlas-fixture.invalid")
             .output()?;
         if !output.status.success() {
             return Err(format!(
