@@ -270,6 +270,24 @@ pub(super) struct Directory {
     resolved_root: PathBuf,
 }
 impl Directory {
+    pub fn available_bytes(&self, path: &Path) -> Result<u64> {
+        let root = wide(&self.resolved_root)?;
+        let mut available = 0;
+        // SAFETY: the NUL-terminated retained directory name and writable u64
+        // remain live; root identity is checked on both sides by the caller.
+        if unsafe {
+            GetDiskFreeSpaceExW(
+                root.as_ptr(),
+                &mut available,
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(last("measure available volume space", path));
+        }
+        Ok(available)
+    }
     pub fn open(path: &Path) -> Result<Self> {
         let file = walk(path, false, None)?;
         let identity = metadata(&file, path, true, true)?;

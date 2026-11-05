@@ -247,3 +247,98 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
     foreign.close()?;
     Ok(())
 }
+
+/// Protects: empty persisted endpoint bytes are an unreadable runtime fault in
+/// both renderers; a live lease never supplies permission to retain the file.
+#[test]
+fn empty_live_endpoint_is_diagnosed_and_send_keeps_the_same_cause() -> Check {
+    se_proc::initialize_file_creation_owner()?;
+    let f = Fixture::new()?;
+    let home = &f.options.state_directory;
+    let image = f.home.join("empty-endpoint-se");
+    fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
+    let repository = f.home.join("repository");
+    fs::create_dir(&repository)?;
+    let initialized = checked(
+        command(&image, home, true)
+            .arg("init")
+            .arg("--repo")
+            .arg(&repository)
+            .arg("--agent")
+            .arg("Worker")
+            .arg("--provider")
+            .arg("claude")
+            .output()?,
+    )?;
+    let agent = initialized["agent"]["id"]
+        .as_str()
+        .ok_or("init omitted agent")?;
+    let project = initialized["project"]["id"]
+        .as_str()
+        .ok_or("init omitted project")?;
+    let host = runtime_host::RunningHost::start(&image, home)?;
+    let endpoint = home.join("endpoint.json");
+    let before = fs::metadata(&endpoint)?;
+    fs::write(&endpoint, [])?;
+    // RunningHost retains authenticated routing for exact graceful cleanup,
+    // without restoring the corrupt record or trusting its existence.
+    for json in [true, false] {
+        let diagnosis = command(&image, home, json).arg("doctor").output()?;
+        assert!(!diagnosis.status.success());
+        let printed = format!(
+            "{}{}",
+            String::from_utf8_lossy(&diagnosis.stdout),
+            String::from_utf8_lossy(&diagnosis.stderr)
+        );
+        assert!(
+            printed.contains("empty") && printed.contains("zero bytes"),
+            "{printed}"
+        );
+        assert!(!printed.contains("live routing is preserved"), "{printed}");
+        if json {
+            let value: serde_json::Value = serde_json::from_slice(&diagnosis.stdout)?;
+            let row = value["checks"]
+                .as_array()
+                .ok_or("checks omitted")?
+                .iter()
+                .find(|row| row["id"] == "runtime.endpoint")
+                .ok_or("endpoint check omitted")?;
+            assert_eq!(row["state"], "failed");
+            assert_eq!(row["code"], "source-unreadable");
+            assert_eq!(row["repairable"], false);
+        }
+        let send = command(&image, home, json)
+            .arg("--project")
+            .arg(project)
+            .args([
+                "msg",
+                "send",
+                agent,
+                "empty endpoint fault",
+                "--key",
+                "empty-endpoint-fault",
+            ])
+            .output()?;
+        assert!(!send.status.success());
+        assert_ne!(
+            send.status.code(),
+            Some(64),
+            "runtime state was presented as caller misuse"
+        );
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&send.stdout),
+            String::from_utf8_lossy(&send.stderr)
+        );
+        assert!(
+            text.contains("empty") && text.contains("runtime.endpoint"),
+            "{text}"
+        );
+        assert_eq!(fs::read(&endpoint)?, Vec::<u8>::new());
+        let after = fs::metadata(&endpoint)?;
+        assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+        assert!(host.live()?);
+    }
+    host.stop()?;
+    Ok(())
+}

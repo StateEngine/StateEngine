@@ -6,7 +6,7 @@ use se_core::{
     ops::{AnyOp, AnyOutput, doctor::*},
     scope,
 };
-use se_types::{Result, SeError};
+use se_types::Result;
 use sha2::{Digest, Sha256};
 use std::{fs::TryLockError, io::Read};
 mod configuration;
@@ -46,13 +46,6 @@ fn raw_endpoint(files: &Files) -> Result<Option<Vec<u8>>> {
         .map_err(|error| {
             scope::unreadable("doctor endpoint", &error.to_string()).with_cause(error)
         })?;
-    if bytes.len() > se_host::client::wire::MAX_ENDPOINT_BYTES {
-        return Err(SeError::too_large(
-            "doctor endpoint",
-            se_host::client::wire::MAX_ENDPOINT_BYTES,
-            bytes.len(),
-        ));
-    }
     Ok(Some(bytes))
 }
 fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
@@ -158,6 +151,19 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
         .into(),
         &at,
     );
+    if let Some(bytes) = &endpoint
+        && let Err(error) = super::endpoint_diagnostic::decode(&cx.home, bytes)
+    {
+        endpoint_check.state = CheckState::Failed;
+        endpoint_check.code = Some(error.code().as_str().into());
+        endpoint_check.observed = Some(error.body.message());
+        endpoint_check.reason = Some("The protected endpoint cannot be decoded; its existence does not prove usable live routing".into());
+        endpoint_check.fix = Some(CheckFix {
+            text: super::endpoint_diagnostic::repair(&cx.home),
+            command: None,
+            argv: None,
+        });
+    }
     if endpoint.is_some() && free == Some(true) {
         endpoint_check.expected =
             Some("Endpoint absent when no cooperating host holds the runtime lease".into());

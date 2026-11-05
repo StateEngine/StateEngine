@@ -76,6 +76,50 @@ fn describe(
         }
         .into(),
     );
+    let owner_access = match pin.snapshot().protection {
+        se_proc::PermissionProtection::UnixMode { mode, .. } => {
+            let required = if kind == PermissionKind::Directory {
+                0o700
+            } else {
+                0o600
+            };
+            mode & required == required
+        }
+        #[cfg(target_os = "macos")]
+        se_proc::PermissionProtection::MacOsAcl { mode, .. } => {
+            let required = if kind == PermissionKind::Directory {
+                0o700
+            } else {
+                0o600
+            };
+            mode & required == required
+        }
+        _ => true,
+    };
+    if !protected && !owner_access {
+        let mode = if kind == PermissionKind::Directory {
+            "0700"
+        } else {
+            "0600"
+        };
+        let argv = vec![
+            "chmod".to_owned(),
+            mode.to_owned(),
+            "--".to_owned(),
+            path.display().to_string(),
+        ];
+        value.reason =
+            Some("Owner access is missing; automatic tightening cannot add permissions".into());
+        value.fix = Some(CheckFix {
+            text: format!(
+                "As OS owner {}, restore mode {mode} on this exact object, then rerun se doctor for this home. Manual command argv: {argv:?}. Tighten-only repair cannot restore missing owner access.",
+                pin.snapshot().owner
+            ),
+            command: None,
+            argv: Some(argv),
+        });
+        return Ok(Target { pin, check: value });
+    }
     value.repairable = !protected;
     if !protected {
         value.fix = Some(CheckFix {text: "Tighten only this pinned object; preserve its owner, contents and descendants, then independently reopen its name".into(), command: None,
@@ -164,6 +208,18 @@ fn tighten(
     json_output: bool,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
 ) -> Result<(RepairPlan, RepairFact, RepairFact, bool)> {
+    if current.check.state == CheckState::Failed && !current.check.repairable {
+        return Err(refused(
+            id,
+            current
+                .check
+                .fix
+                .as_ref()
+                .map_or("No supported automatic repair is available", |fix| {
+                    fix.text.as_str()
+                }),
+        ));
+    }
     let before = current.pin.snapshot().clone();
     let path = current.pin.path().to_owned();
     let protection = match &before.protection {

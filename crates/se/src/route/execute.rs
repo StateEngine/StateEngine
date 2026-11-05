@@ -77,11 +77,8 @@ pub fn endpoint(files: &Files) -> Result<Read<se_host::EndpointRecord>> {
             file.take(max as u64 + 1)
                 .read_to_end(&mut bytes)
                 .map_err(|e| scope::unreadable("protected runtime endpoint", &e.to_string()))?;
-            if bytes.len() > max {
-                return Err(SeError::too_large("endpoint", max, bytes.len()));
-            }
             Ok(Read::Present {
-                value: se_host::client::endpoint::decode_endpoint(&bytes)?,
+                value: super::endpoint_diagnostic::decode(files.0.root(), &bytes)?,
             })
         }
         Read::Absent { checked } => Ok(Read::Absent { checked }),

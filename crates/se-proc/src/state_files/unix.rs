@@ -222,6 +222,30 @@ pub(super) fn create_directories(path: &Path) -> Result<()> {
         .map_err(|e| io_error("sync private directory", path, e))
 }
 impl Directory {
+    pub fn available_bytes(&self, path: &Path) -> Result<u64> {
+        let mut value = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        // SAFETY: the retained directory owns this descriptor; value provides
+        // writable storage for the native result and escapes only on success.
+        if unsafe { libc::fstatvfs(self.file.as_raw_fd(), value.as_mut_ptr()) } != 0 {
+            return Err(io_error(
+                "measure available volume space",
+                path,
+                io::Error::last_os_error(),
+            ));
+        }
+        // SAFETY: successful fstatvfs initialized the entire result above.
+        let value = unsafe { value.assume_init() };
+        let block = if value.f_frsize == 0 {
+            value.f_bsize
+        } else {
+            value.f_frsize
+        };
+        if block == 0 {
+            return Err(unsafe_path("native volume block size is zero", path));
+        }
+        u64::try_from(u128::from(value.f_bavail) * u128::from(block))
+            .map_err(|_| unsafe_path("native available space exceeds u64", path))
+    }
     pub fn open(path: &Path) -> Result<Self> {
         let file = walk(path, false)?;
         let meta = metadata(&file, path, true)?;

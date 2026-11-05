@@ -98,7 +98,7 @@ codes! {
     RuntimeStartFailed => ("runtime-start-failed", Unavailable) { reason: String, log: String } => "the runtime didn't start: {reason}", "see {log}; → `se doctor`";
     SessionNotActive => ("session-not-active", Unavailable) { subject: String } => "Session {subject} is not active yet", "Retry after the session activates";
     StoreBusy => ("store-busy", Unavailable) { waited_ms: u64, reason: String, next_step: String, replay: Option<Box<WriteRetryIdentity>> } => "Store unavailable after {waited_ms} ms: {reason}", "{next_step}; retry the same request identity";
-    StoreDiskFull => ("store-disk-full", Unavailable) { path: String, free_bytes: Option<u64> } => "not enough disk space at {path}", "free space and retry";
+    StoreDiskFull => ("store-disk-full", Unavailable) { path: String, free_bytes: Option<u64> } => "not enough disk space at {path}", "Free space on the named volume, then retry the same command with its original --key or idempotency_key. Replaying that same key is safe; preserve the store and WAL/SHM files.";
     StoreMigrationRequired => ("store-migration-required", Unavailable) { from: u64, to: u64 } => "Store {from} needs supported additive migration to {to}", "Start `se up`: the sole owning host verifies a pre-migration backup and migrates automatically; an old running host requires `se down` first";
     Internal => ("internal", Internal) { report_id: String, location: String } => "StateEngine hit a bug ({report_id})", "Use `se doctor --bundle` and send it";
     Cancelled => ("cancelled", Cancelled) { op: String } => "`{op}` was interrupted", "rerun; writes are all-or-nothing";

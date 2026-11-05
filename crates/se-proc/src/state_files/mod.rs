@@ -119,6 +119,14 @@ impl NativeStateFiles {
     pub fn root(&self) -> &Path {
         &self.root
     }
+    /// Space available to this OS user on the retained state-root volume.
+    /// Failure is unmeasured, never zero; both sides revalidate root custody.
+    pub fn available_bytes(&self) -> Result<u64> {
+        self.directory.check_name(&self.root)?;
+        let available = self.directory.available_bytes(&self.root)?;
+        self.directory.check_name(&self.root)?;
+        Ok(available)
+    }
     pub fn create_staging(&self, directory: &Path) -> Result<ProtectedStateStaging> {
         self.check(directory)?;
         for _ in 0..8 {
