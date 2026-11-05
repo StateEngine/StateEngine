@@ -178,6 +178,18 @@ fn probe_output(
         .map_err(|e| se_core::scope::unreadable(subject, &e.to_string()))
 }
 
+pub(super) fn parse_version(text: &str) -> Option<(u16, u16, u16)> {
+    let mut parts = text.split('.').map(|part| part.parse::<u16>().ok());
+    Some((parts.next()??, parts.next()??, parts.next()??))
+}
+
+pub(super) fn poisoned() -> SeError {
+    SeError::invalid(
+        "Claude harness",
+        "an unpoisoned probe cache; restart the host",
+    )
+}
+
 #[cfg(test)]
 mod auth_tests {
     use super::authentication_status;
@@ -186,9 +198,11 @@ mod auth_tests {
     #[test]
     fn signed_out_is_a_refusal_with_the_provider_login_command() {
         for code in [0, 1] {
-            let error =
+            let Err(error) =
                 authentication_status(br#"{"loggedIn":false,"authMethod":"none"}"#, Some(code))
-                    .expect_err("signed out");
+            else {
+                panic!("signed-out status was accepted");
+            };
             assert_eq!(error.body.code().class(), Class::Refused);
             let Detail::LaunchFailed(detail) = error.body.detail() else {
                 panic!("not a launch refusal");
@@ -219,20 +233,10 @@ mod auth_tests {
             (&br#"{"loggedIn":false}"#[..], Some(2)),
             (&br#"{"loggedIn":false}"#[..], None),
         ] {
-            let error = authentication_status(bytes, code).expect_err("unreadable status");
+            let Err(error) = authentication_status(bytes, code) else {
+                panic!("unreadable status was accepted");
+            };
             assert_eq!(error.body.code().class(), Class::Unreadable);
         }
     }
-}
-
-pub(super) fn parse_version(text: &str) -> Option<(u16, u16, u16)> {
-    let mut parts = text.split('.').map(|part| part.parse::<u16>().ok());
-    Some((parts.next()??, parts.next()??, parts.next()??))
-}
-
-pub(super) fn poisoned() -> SeError {
-    SeError::invalid(
-        "Claude harness",
-        "an unpoisoned probe cache; restart the host",
-    )
 }
