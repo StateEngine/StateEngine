@@ -1,4 +1,4 @@
-use se_core::ops::doctor::{CheckState, Diagnosis, RepairOutput};
+use se_core::ops::doctor::{CheckState, Diagnosis, RepairOutput, RepairPlan};
 use std::io::{self, Write};
 pub fn diagnosis(value: &Diagnosis, out: &mut impl Write) -> io::Result<()> {
     for check in &value.checks {
@@ -45,11 +45,25 @@ pub fn repair(value: &RepairOutput, out: &mut impl Write) -> io::Result<()> {
         if value.complete { "ok" } else { "incomplete" }
     )?;
     for effect in &value.applied {
+        if matches!(value.plan, RepairPlan::TightenPermissions(_)) {
+            writeln!(out, "{}: {}.", effect.subject, effect.outcome)?;
+        } else {
+            writeln!(
+                out,
+                "{}: {} ({})",
+                effect.subject, effect.outcome, effect.detail
+            )?;
+        }
+    }
+    for readback in &value.readbacks {
         writeln!(
             out,
-            "{}: {} ({})",
-            effect.subject, effect.outcome, effect.detail
+            "Checked {}: {}. {}",
+            readback.subject, readback.outcome, readback.detail
         )?;
+    }
+    if matches!(value.plan, RepairPlan::TightenPermissions(_)) {
+        writeln!(out, "Use --json for full native permission details.")?;
     }
     for skipped in &value.skipped {
         writeln!(out, "{}: {}.", skipped.subject, skipped.outcome)?;
