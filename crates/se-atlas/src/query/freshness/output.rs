@@ -53,11 +53,8 @@ impl Verified for SearchHit {
 }
 impl Verified for ReferenceHit {
     fn verify(mut self, verifier: &mut Verifier<'_, '_>) -> AtlasResult<Self> {
-        if let ReferenceHit::Code(reference) = &mut self
-            && verifier.pointer(&mut reference.site)?.is_some()
-        {
-            reference.accuracy = Accuracy::NameOnly;
-            reference.resolved_target = None;
+        if let ReferenceHit::Code(reference) = &mut self {
+            verifier.pointer(&mut reference.site)?;
         }
         Ok(self)
     }
@@ -66,14 +63,10 @@ impl Verified for Dependent {
     fn verify(mut self, verifier: &mut Verifier<'_, '_>) -> AtlasResult<Self> {
         verifier.pointer(&mut self.pointer)?;
         for hop in &mut self.hops {
-            if verifier.pointer(&mut hop.site)?.is_some() {
-                hop.accuracy = Accuracy::NameOnly;
-            }
+            verifier.pointer(&mut hop.site)?;
         }
         for hop in &mut self.file_hops {
-            if verifier.pointer(&mut hop.site)?.is_some() {
-                hop.accuracy = Accuracy::NameOnly;
-            }
+            verifier.pointer(&mut hop.site)?;
         }
         Ok(self)
     }
@@ -112,11 +105,8 @@ impl Verified for Outline {
 }
 impl Verified for CodeChange {
     fn verify(mut self, verifier: &mut Verifier<'_, '_>) -> AtlasResult<Self> {
-        if let CodeChange::Edit(edit) = &mut self
-            && let Some(reason) = verifier.pointer(&mut edit.pointer)?
-        {
-            edit.dependents.complete = false;
-            edit.dependents.reason = Some(reason);
+        if let CodeChange::Edit(edit) = &mut self {
+            verifier.pointer(&mut edit.pointer)?;
         }
         Ok(self)
     }
