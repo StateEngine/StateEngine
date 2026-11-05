@@ -39,14 +39,25 @@ pub(super) fn endpoint(
     let mut abort_requested = false;
     loop {
         if let Err(error) = bound.remaining() {
-            return Err(retain(
-                SeError::new(se_types::Detail::RuntimeStartPending(
-                    se_types::details::RuntimeStartPending {
-                        waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
-                    },
-                ))
-                .with_cause(error),
-                failure,
+            let pending = SeError::new(se_types::Detail::RuntimeStartPending(
+                se_types::details::RuntimeStartPending {
+                    waited_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                },
+            ))
+            .with_cause(error);
+            if let Some(failed) = failure {
+                // Its public refusal already names the failed native phase and
+                // startup log. Retaining it only as an internal cause hides both.
+                let original = SeError {
+                    body: failed.error.body.clone(),
+                    cause: None,
+                };
+                return Err(retain(original, Some(failed)));
+            }
+            return Err(crate::runtime::host::startup_log::pending(
+                &cx.home,
+                pending,
+                "the current runtime.lock holder to publish endpoint.json or release its lease; this request has not started a runtime child",
             ));
         }
         let route = match se_host::route_endpoint(&cx.home, expected) {
