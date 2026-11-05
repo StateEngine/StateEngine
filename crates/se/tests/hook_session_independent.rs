@@ -64,15 +64,19 @@ fn check_case(case: &str) -> Check {
     );
     let root = f.home.join("repository");
     std::fs::create_dir(&root)?;
-    let image = f.home.join(if cfg!(windows) {
-        "hook-review-se.exe"
-    } else {
-        "hook-review-se"
-    });
     let source = std::env::var_os("SE_HOOK_REVIEW_SE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_se").into());
-    std::fs::copy(source, &image)?;
+    // Windows runtime pinning requires one link; Cargo hard-links its binary.
+    #[cfg(windows)]
+    let image = {
+        let image = f.home.join("hook-review-se.exe");
+        std::fs::copy(source, &image)?;
+        image
+    };
+    // Unix forks can inherit a writable copied inode even after close/rename.
+    #[cfg(not(windows))]
+    let image = source;
     let initialized = checked(
         &image,
         &f,
