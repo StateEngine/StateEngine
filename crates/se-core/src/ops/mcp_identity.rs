@@ -68,6 +68,9 @@ pub(super) fn describe(tool: &str, schema: &mut serde_json::Value) -> Result<()>
                     property["description"] = serde_json::json!(description);
                 }
             } else {
+                if !["agent_id", "project_id"].contains(field) && !properties.contains_key(*field) {
+                    continue;
+                }
                 properties.insert(
                     (*field).into(),
                     serde_json::json!({

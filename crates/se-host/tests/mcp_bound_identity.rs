@@ -63,7 +63,7 @@ fn all_tools_check_each_identity_alias_against_the_authenticated_principal() -> 
             let result: Check = async {
                 let listed = rpc(port, "bound-principal", "tools/list", json!({})).await?;
                 for tool in listed["result"]["tools"].as_array().ok_or("tool list absent")? {
-                    for field in ["agent_id", "agentId", "project_id", "projectId", "project"] {
+                    for field in ["agent_id", "project_id"] {
                         require(tool["inputSchema"]["properties"][field] == json!({
                             "type": "string", "description": "Caller assertion; optional; must match the bound identity"
                         }), format!("missing caller metadata {} {field}: {tool}", tool["name"]))?;
