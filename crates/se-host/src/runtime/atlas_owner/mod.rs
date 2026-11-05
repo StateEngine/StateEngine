@@ -137,7 +137,7 @@ impl Service {
             let deadline = deadline(Duration::from_secs(5))?;
             let work = context
                 .blocking
-                .run(crate::BlockingClass::Background, &deadline, move || {
+                .run_background_owned(&deadline, move || {
                     let mut state = service.state.lock().map_err(|_| busy())?;
                     service.publish_readers(&state, true)?;
                     let result = state.work(&job, &service.owner, wake);
