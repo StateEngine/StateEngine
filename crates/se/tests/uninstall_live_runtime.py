@@ -132,8 +132,14 @@ class Fixture:
 
     def closed(self, label):
         assert not (self.state / 'endpoint.json').exists(), 'endpoint live'
-        now = [birth(p['pid']) for p in self.pins]
-        assert all((b is None or b['start'] != p['start'] or b['state'] == 'Z' for p, b in zip(self.pins, now))), now
+        until = time.monotonic() + 10
+        while True:
+            now = [birth(p['pid']) for p in self.pins]
+            closed = all(b is None or b['start'] != p['start'] or b['state'] == 'Z' for p, b in zip(self.pins, now))
+            if closed or time.monotonic() >= until:
+                break
+            time.sleep(.1)
+        assert closed, [(pin['pid'], row['state']) for pin, row in zip(self.pins, now) if row is not None]
         with (self.state / 'runtime.lock').open('r+b') as f:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
             fcntl.flock(f, fcntl.LOCK_UN)
@@ -216,6 +222,7 @@ def main(options):
             conversation = status['agents']['items'][0]['conversation']['id']
             f.ok('retained-mail', ['--project', project, 'msg', 'send', agent, 'Retain this message across automatic shutdown and uninstall.'])
             protected = {name: sha(f.state / name) for name in ['config.toml', 'credential', 'machine.json']}
+            protected_login = {path: sha(path) for path in code.iterdir() if path.is_file() and path.name in ['auth.json', 'config.toml']}
             user_file = (f.repo / 'existing.txt').read_bytes()
             before = f.db('before')
             if case == 'idle-json':
@@ -260,10 +267,11 @@ def main(options):
                 assert all((row in after['tables'][table] for row in before['tables'][table])), table
             assert all((sha(f.state / name) == digest for name, digest in protected.items()))
             assert (f.repo / 'existing.txt').read_bytes() == user_file and (f.repo / 'sum.txt').read_text() == '5\n'
+            assert all(sha(path) == digest for path, digest in protected_login.items())
             check(case + ': committed history/mail/payload bytes, identity, configuration, credentials and user work survive')
             installed = f.install(options.bundle, 'reinstall')
             assert installed.returncode == 0, (installed.stdout, installed.stderr)
-            f.ok('reinit', ['init', '--repo', f.repo, '--provider', 'codex'], terminal=True)
+            f.ok('reinit', ['init', '--repo', f.repo, '--agent', 'Builder', '--provider', 'codex'], terminal=True)
             after_status = f.ok('returned-status', ['status'])
             assert after_status['project']['value']['id'] == project
             assert len(after_status['agents']['items']) == 1 and after_status['agents']['items'][0]['id'] == agent
