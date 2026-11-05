@@ -50,7 +50,7 @@ pub fn atlas_view(observed: se_types::Result<Read<IndexSummary>>) -> AtlasView {
         IndexState::Absent => "absent",
         IndexState::Opening | IndexState::ColdIndexing { .. } => {
             view.reason = Some(if summary.epoch.is_none() {
-                "Atlas indexing is starting; file counts are not available until publication. Retry the query when status shows a published index."
+                "Atlas indexing is starting; file counts are not available until publication. Retry the query in 1 second, or use status to watch progress."
             } else {
                 "Preparing an index; file counts describe the previously published snapshot."
             }.into());

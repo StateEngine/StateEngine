@@ -80,7 +80,7 @@ codes! {
     LaunchInFlight => ("launch-in-flight", Conflict) { agent: AgentId, launch_id: LaunchId } => "{agent} is already being launched", "retry";
     RevisionConflict => ("revision-conflict", Conflict) { entity: String, expected: String, current: String } => "{entity} changed (you had revision {expected}, now {current})", "reread: → `se working-state` / `se decision show ID`";
     StateConflict => ("state-conflict", Conflict) { subject: String, reason: String, next_step: String } => "State conflict {subject}: {reason}", "{next_step}";
-    AtlasIndexStarting => ("atlas-index-starting", Incomplete) { project: ProjectId } => "Atlas indexing is starting for {project}", "Retry this Atlas query when `se --project {project} status` shows a published index; existing disk caches are retained";
+    AtlasIndexStarting => ("atlas-index-starting", Incomplete) { project: ProjectId } => "Atlas indexing is starting for {project}", "Retry this Atlas query in 1 second; use `se --project {project} status` to watch progress. Existing disk caches are retained";
     AtlasIndexing => ("atlas-indexing", Incomplete) { indexed: u64, total: u64 } => "index is {indexed}/{total} files; results may be partial", "retry later";
     AtlasParseFailed => ("atlas-parse-failed", Incomplete) { path: String, language: String, reason: String } => "Atlas couldn't parse {path} ({language}): {reason}", "Results for this file use bounded text search. Run `se doctor` and include this diagnostic when reporting the problem.";
     CursorExpired => ("cursor-expired", Incomplete) { oldest_available: Cursor } => "the cursor is older than retained history", "remove or replace the invalid `--cursor` (list pagination) or `--since` (history position)";

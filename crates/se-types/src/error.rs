@@ -286,7 +286,8 @@ pub struct ErrorBody {
 impl ErrorBody {
     pub fn new(detail: Detail) -> Self {
         let retry = match &detail {
-            Detail::SessionNotActive(_) | Detail::AtlasIndexStarting(_) => Retry::AfterReread,
+            Detail::SessionNotActive(_) => Retry::AfterReread,
+            Detail::AtlasIndexStarting(_) => Retry::After(Duration::from_secs(1)),
             _ => Retry::Never,
         };
         Self {

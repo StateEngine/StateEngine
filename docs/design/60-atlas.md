@@ -69,7 +69,8 @@ not absence; start it to observe the current controller. Only two interested
 project roots are admitted at once. A registered project's Atlas query records
 interest and wakes the background owner to replace the least recently used root;
 disk caches are retained. Until publication, the query and status say indexing
-is starting and ask the caller to retry once status shows a published index.
+is starting and suggest retrying in one second, with status available to watch
+progress. This backoff is not an index completion-time promise.
 A plain status read observes admission without requesting it.
 
 `se atlas` and `se atlas --help` list the five existing read commands above.

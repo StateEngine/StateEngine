@@ -125,7 +125,7 @@ impl AtlasReadPort for Service {
             return Ok(
                 if self.enabled && (roots.preparing || self.interests.interested(project)?) {
                     se_types::Read::Unknown {
-                    what: "Atlas indexing is starting; retry the query when status shows a published index.".into(),
+                    what: "Atlas indexing is starting; retry the query in 1 second, or use status to watch progress.".into(),
                 }
                 } else {
                     se_types::Read::Absent { checked: "This project has no admitted Atlas root; only two interested project roots can be active in this host.".into() }

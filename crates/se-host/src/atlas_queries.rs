@@ -284,7 +284,7 @@ fn unavailable(request: &se_core::ops::AtlasRead, index: IndexSummary) -> se_cor
                         "The registered Atlas index has no published snapshot"
                     }
                     IndexState::Opening | IndexState::ColdIndexing { .. } => {
-                        "Atlas indexing is starting; retry this query when se status shows a published index"
+                        "Atlas indexing is starting; retry this query in 1 second, or use se status to watch progress"
                     }
                     IndexState::Suspended { .. } => {
                         "The registered Atlas index is suspended; inspect its retained status error"
