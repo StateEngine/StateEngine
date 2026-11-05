@@ -260,11 +260,11 @@ impl Harness for ClaudeHarness {
                     SeError::invalid("Claude launch", "a provider probe before attach")
                 })?;
             let conversation = claude::conversation(&request.request)?;
-            let transcript = claude::transcript_path(
+            let transcript = claude::transcript_location(
                 &claude::config_home(&claude::provider_environment())?,
-                &request.request.cwd.to_local()?,
+                &request.request,
                 &conversation,
-            );
+            )?;
             let binding = Arc::new(Binding {
                 bell_session: request.request.identity.session.clone(),
                 attended: false,

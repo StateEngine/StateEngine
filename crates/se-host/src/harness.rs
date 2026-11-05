@@ -61,6 +61,10 @@ pub struct HarnessRequest {
     pub policy: se_proc::LaunchPolicy,
     pub mode: se_proc::LaunchMode,
     pub resume: Read<ProviderSessionId>,
+    /// Every registered project root moved away from, newest move first. A
+    /// resumed provider transcript stays under the slug of the root where it
+    /// was written, so the transcript watch probes these before cwd.
+    pub transcript_roots: Vec<NativePath>,
     pub initial_input: Body,
     /// The `sec1.` pin capability hooks resolve through `SE_SESSION`.
     pub launch_credential: Secret,

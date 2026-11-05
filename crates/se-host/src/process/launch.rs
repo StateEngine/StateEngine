@@ -147,6 +147,7 @@ impl LaunchCoordinator {
             policy: policy.clone(),
             mode,
             resume: plan.conversation.clone(),
+            transcript_roots: plan.control.moved_from_roots.clone(),
             initial_input: Body::new(plan.input.task.clone().unwrap_or_else(|| {
                 "Read your StateEngine context and continue your assigned work.".into()
             }))?,

@@ -4,7 +4,7 @@ use crate::{commit::Cx, dispatch::Kernel, ops::inputs::Validate, scope};
 use se_store::{
     Actor, AtomicBatch, EventBody, Expected, PrincipalKind, ProjectionRecord, Root, Scope, Snapshot,
 };
-use se_types::{IdempotencyKey, ProjectId, Result, SeError};
+use se_types::{IdempotencyKey, NativePath, ProjectId, Result, SeError};
 
 pub fn owner<R: Snapshot>(
     kernel: &Kernel,
@@ -229,6 +229,61 @@ pub fn move_committed<R: Snapshot>(
         head: head.clone(),
         branch: branch.clone(),
     })
+}
+/// Re-read a committed move from its retained receipt. An idempotent retry
+/// arrives after the move already applied, so the registered roots include
+/// the target itself and the physical preflight would refuse the retry as a
+/// copy. The committed body supplies the recorded from/to; the same scope,
+/// actor, project and target as the original call must hold, and a key the
+/// store retained for another intent is refused here, before any write.
+pub fn move_replay<R: Snapshot>(
+    project: &ProjectId,
+    key: &IdempotencyKey,
+    expected_target: &NativePath,
+    receipt: se_store::CommitReceipt,
+    cx: &mut Cx<'_, R>,
+) -> Result<super::MoveOutput> {
+    super::receipt::receipt_key(&receipt, key, "project move receipt")?;
+    let event = super::receipt::committed_event(cx.read, &receipt)?;
+    if event.header.scope != cx.admission.scope || event.header.actor != cx.admission.actor {
+        return Err(scope::unreadable(
+            "project move receipt",
+            "committed scope/actor differs",
+        ));
+    }
+    let EventBody::ProjectMoved {
+        project: moved,
+        from,
+        to,
+        ..
+    } = &event.body
+    else {
+        return Err(scope::unreadable(
+            "project move receipt",
+            "primary event is not a project move",
+        ));
+    };
+    if moved != project {
+        return Err(scope::unreadable(
+            "project move receipt",
+            "the request key is retained for a different project",
+        ));
+    }
+    if &to.path != expected_target {
+        return Err(scope::unreadable(
+            "project move receipt",
+            "the request key is retained for a different move target",
+        ));
+    }
+    let then = ProjectMoveThen {
+        request: key.clone(),
+        from: from
+            .iter()
+            .map(|root| root.path.to_local().map(|path| path.display().to_string()))
+            .collect::<Result<Vec<_>>>()?,
+        to: to.path.to_local().map(|path| path.display().to_string())?,
+    };
+    move_committed(then, receipt, cx)
 }
 pub fn saved_profile(
     configuration: &crate::config_policy::ConfigFile,

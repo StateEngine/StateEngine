@@ -17,7 +17,7 @@ use se_store::{
     DirectStore, EventBody, LeaseIdentity, LeaseMode, ReadStore, Snapshot, SqliteFactory,
     SqliteReader, StoreFactory, StoreOptions,
 };
-use se_types::{EventId, NativePath, Result, SeError, details};
+use se_types::{EventId, NativePath, Read, Result, SeError, details};
 use std::{path::PathBuf, time::Duration};
 
 pub(super) fn execute(
@@ -63,7 +63,45 @@ pub(super) fn execute(
             ));
         }
     };
+    let replayed = preflight
+        .operation_receipt(
+            caller.admission.actor.clone(),
+            input.idempotency_key.clone(),
+        )
+        .map_err(|e| store_error(&e))?;
     preflight.close().map_err(|e| store_error(&e))?;
+    match replayed {
+        Read::Present { value: receipt } => {
+            // The key is retained by an earlier committed call. Return that
+            // call's output: the folder already holds the moved repository,
+            // so the physical preflight applies to first use only.
+            let target = resolve_target(cx, &input.root)?;
+            let to_path = NativePath::from_local(target)
+                .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?;
+            let mut readback = reader
+                .snapshot(read_scope(&caller.admission))
+                .map_err(|e| store_error(&e))?;
+            let output: MoveOutput = project::move_replay(
+                &project_id,
+                &input.idempotency_key,
+                &to_path,
+                receipt,
+                &mut Cx {
+                    read: &mut readback,
+                    admission: &caller.admission,
+                },
+            )?;
+            readback.close().map_err(|e| store_error(&e))?;
+            return Ok(AnyOutput::from(output));
+        }
+        Read::Absent { .. } => {}
+        Read::Unreadable { reason, .. } => {
+            return Err(scope::unreadable("operation receipt", &reason));
+        }
+        Read::Unknown { what } => {
+            return Err(scope::unreadable("operation receipt", &what));
+        }
+    }
     let target = resolve_target(cx, &input.root)?;
     if git_identity::is_bare(&target)? {
         return Err(refusal(
@@ -82,8 +120,21 @@ pub(super) fn execute(
             .path
             .to_local()
             .map_err(|e| scope::unreadable("registered root", &e.to_string()))?;
-        if path.exists() {
-            present.push(path);
+        // Absent and unreadable are different facts: a permission error is
+        // not proof the repository left, so it refuses instead of copying.
+        match std::fs::metadata(&path) {
+            Ok(_) => present.push(path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(refusal(
+                    "registered root",
+                    &format!(
+                        "the original folder at {} is unreadable ({error})",
+                        path.display()
+                    ),
+                    "Restore read access to the original folder, verify the repository left it, then retry the move; an unreadable folder is not proof that it is gone.",
+                ));
+            }
         }
     }
     if let Some(path) = present.first() {
