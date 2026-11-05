@@ -225,8 +225,13 @@ pub(crate) fn run_child(
     // avoids retaining a source inventory or reparsing once per graph edge.
     let mut after = 0i64;
     loop {
-        if Instant::now() >= deadline {
-            return Err(failure("cold resolution deadline elapsed"));
+        // Discovery already captured every file. Cross-file resolution is an
+        // improvement to those rows, not a reason to discard all of them.
+        // Keep the last minute of the existing job budget for coverage,
+        // checkpoint and exact-reap publication; skipped files stay partial.
+        if Instant::now() + Duration::from_secs(60) >= deadline {
+            finish::limited_resolution(&db, after, deadline)?;
+            break;
         }
         let next = db.read(sql_deadline(), |sql| {
             let mut statement =

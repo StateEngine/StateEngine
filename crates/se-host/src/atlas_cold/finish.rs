@@ -1,4 +1,51 @@
 use super::*;
+
+/// Persist the limitation on each remaining parsed file so later coverage
+/// scans cannot erase it. Failed/deferred/stale observations keep their cause.
+pub(super) fn limited_resolution(
+    db: &CacheConnection<'_>,
+    mut after: i64,
+    job_deadline: Instant,
+) -> AtlasResult<()> {
+    loop {
+        let next = db.write(2_000_000, sql_deadline().min(job_deadline), |sql| {
+            let mut statement =
+                sql.prepare("SELECT id,coverage_json FROM files WHERE id>?1 ORDER BY id LIMIT 64")?;
+            let mut rows = statement.query([after]).map_err(failure)?;
+            let mut last = None;
+            while let Some(row) = rows.next().map_err(failure)? {
+                let id: i64 = row.get(0).map_err(failure)?;
+                let value: FileCoverage =
+                    serde_json::from_str(&row.get::<_, String>(1).map_err(failure)?)
+                        .map_err(failure)?;
+                last = Some(id);
+                let mut reasons = match value {
+                    FileCoverage::Indexed => Vec::new(),
+                    FileCoverage::Partial { reasons } => reasons,
+                    _ => continue,
+                };
+                if !reasons.contains(&CoverageReason::TimeLimit) {
+                    reasons.push(CoverageReason::TimeLimit);
+                }
+                sql.prepare("UPDATE files SET coverage_json=?1 WHERE id=?2")?
+                    .execute((
+                        serde_json::to_string(&FileCoverage::Partial { reasons })
+                            .map_err(failure)?,
+                        id,
+                    ))
+                    .map_err(failure)?;
+            }
+            Ok(last)
+        })?;
+        let Some(last) = next else { return Ok(()) };
+        after = last;
+        if !db.checkpoint(job_deadline)? {
+            return Err(failure("partial cold epoch checkpoint remains busy"));
+        }
+        db.release_cold_memory(sql_deadline().min(job_deadline))?;
+    }
+}
+
 pub(super) fn finish(
     db: &CacheConnection<'_>,
     mut coverage: Coverage,
