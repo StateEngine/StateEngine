@@ -64,19 +64,12 @@ fn check_case(case: &str) -> Check {
     );
     let root = f.home.join("repository");
     std::fs::create_dir(&root)?;
-    let image = f.home.join(if cfg!(windows) {
-        "hook-review-se.exe"
-    } else {
-        "hook-review-se"
-    });
-    let source = std::env::var_os("SE_HOOK_REVIEW_SE")
+    // Run the immutable Cargo/reviewer executable directly. Copying an image
+    // here races concurrent forks: another child may inherit its writable file
+    // descriptor, so even closing and renaming the copy can leave ETXTBSY.
+    let image = std::env::var_os("SE_HOOK_REVIEW_SE")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_se").into());
-    // Publish only after the writable copy handle has closed. Parallel cases
-    // may start child processes while this executable is being prepared.
-    let staged_image = image.with_extension("pending");
-    std::fs::copy(source, &staged_image)?;
-    std::fs::rename(staged_image, &image)?;
     let initialized = checked(
         &image,
         &f,
