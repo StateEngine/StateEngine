@@ -240,16 +240,16 @@ fn capture_evidence<S: Snapshot>(
     if let Some(evidence) = replay {
         let EventBody::SessionTurn {
             agent,
-            provider: se_store::Provider::Codex,
+            provider: backend @ (se_store::Provider::Claude | se_store::Provider::Codex),
             vendor_ref,
             text: StoredText::Present(_),
             ..
         } = &turn.body
         else {
-            return Err(invalid("a retained Codex conversation item"));
+            return Err(invalid("a retained Claude or Codex conversation item"));
         };
         let original = scope::require_present(
-            read.native_turn(session.clone(), se_store::Provider::Codex, vendor_ref)
+            read.native_turn(session.clone(), *backend, vendor_ref)
                 .map_err(|e| store_error(&e))?,
             "resumed native item",
             scope::COMMITTED_READ_RECOVERY,
