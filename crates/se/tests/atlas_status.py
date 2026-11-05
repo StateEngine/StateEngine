@@ -54,9 +54,9 @@ def run(args):
         assert not (f.home / 'atlas').exists(), 'status created an Atlas cache'
         passed('disabled direct status is honest and creates no Atlas cache')
         (f.repo / 'good.js').write_text('export function atlas_status_visible(){return 1;}\n')
-        # Above the measured parser-size qualification: a real limited file,
-        # rather than an injected status DTO, must remain visible in the summary.
-        (f.repo / 'large.js').write_text('export const large = 1;\n' + '// padding\n' * 300)
+        # Exceed the supported 512 KiB source bound on both cold and
+        # incremental paths so partial coverage does not depend on their timing.
+        (f.repo / 'large.js').write_text('export const large = 1;\n' + '// padding\n' * 50000)
         config.write_bytes(before)
         started = f.ok('up')
         host_pid = started['process']['pid']
