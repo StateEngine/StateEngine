@@ -209,12 +209,39 @@ fn uninstall_live_host(json: bool) -> Check {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    #[cfg(target_os = "linux")]
     assert!(
         output.status.success(),
         "uninstall failed (json={json}, status={}, code={:?}): {printed}",
         output.status,
         output.status.code()
     );
+    #[cfg(windows)]
+    {
+        assert_eq!(
+            output.status.code(),
+            Some(75),
+            "direct Windows uninstall lost its deferred handoff: {printed}"
+        );
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            diagnostic.contains("Finishing uninstall after this process exits (exit 75)")
+                && diagnostic.contains("Completion is pending")
+                && diagnostic.contains("uninstall.ps1"),
+            "deferred exit lost its meaning or final-verdict alternative: {printed}"
+        );
+        // The installed parent must exit before Windows can remove its image.
+        // Exit 75 only delegates: independently wait for every reported effect,
+        // including the helper's own teardown, without performing cleanup here.
+        let cleanup = se_proc::UninstallHelperCleanup::decode(&std::fs::read(
+            home.join("uninstall-helper-cleanup.json"),
+        )?)?;
+        let mut paths = vec![installed.as_path(), record.as_path(), cleanup.path()];
+        if let Some(directory) = cleanup.directory_path() {
+            paths.push(directory);
+        }
+        wait_for_absence(&paths, std::time::Duration::from_secs(45))?;
+    }
     assert!(
         !host.live()?,
         "successful uninstall left the exact host live"
@@ -277,6 +304,55 @@ fn uninstall_live_host(json: bool) -> Check {
     );
     drop(outside);
     Ok(())
+}
+
+#[cfg(any(target_os = "linux", windows))]
+fn wait_for_absence(paths: &[&Path], timeout: std::time::Duration) -> Check {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let mut remaining = Vec::new();
+        for path in paths {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => remaining.push(format!("{} (present)", path.display())),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => {
+                    remaining.push(format!("{} (unreadable: {error})", path.display()));
+                }
+            }
+        }
+        if remaining.is_empty() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!(
+                "uninstall completion not witnessed; remaining observations: {remaining:?}"
+            )
+            .into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Protects: a deferred exit cannot qualify completion while a reported helper
+/// remains, even when the installed image and ownership record are absent.
+#[cfg(any(target_os = "linux", windows))]
+#[test]
+fn completion_wait_requires_every_reported_artifact_absent() -> Check {
+    se_proc::initialize_file_creation_owner()?;
+    let f = Fixture::new()?;
+    let image = f.home.join("absent-image");
+    let record = f.home.join("absent-record");
+    let helper = f.home.join("still-present-helper");
+    std::fs::write(&helper, b"preserve until teardown")?;
+    let paths = [image.as_path(), record.as_path(), helper.as_path()];
+    let failure = match wait_for_absence(&paths, std::time::Duration::ZERO) {
+        Err(error) => error,
+        Ok(()) => return Err("remaining helper must refuse completion".into()),
+    };
+    assert!(failure.to_string().contains("still-present-helper"));
+    assert_eq!(std::fs::read(&helper)?, b"preserve until teardown");
+    std::fs::remove_file(&helper)?;
+    wait_for_absence(&paths, std::time::Duration::ZERO)
 }
 
 #[cfg(target_os = "linux")]
