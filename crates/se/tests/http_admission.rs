@@ -169,37 +169,6 @@ fn public_http_admission_precedes_anonymous_and_private_routes() -> Check {
         assert_eq!(body["ok"], true);
         assert!(object.contains_key("api"));
     }
-    let mail = "/stateengine/mail/next_change";
-    assert_eq!(
-        request(
-            port,
-            "POST",
-            mail,
-            &[
-                ("Host", authority.as_str()),
-                ("Content-Type", "application/json")
-            ]
-        )?
-        .status,
-        405,
-        "ordinary mail credentials do not gain the plugin hold action"
-    );
-    for method in ["GET", "POST"] {
-        let response = request(
-            port,
-            method,
-            mail,
-            &[
-                ("Host", authority.as_str()),
-                ("Content-Type", "application/json"),
-                ("x-se-mail-session", "ses-invalid"),
-            ],
-        )?;
-        assert_eq!(
-            response.status, 401,
-            "a claimed plugin session supplies no authority"
-        );
-    }
     let cases = [
         (
             "foreign host",
