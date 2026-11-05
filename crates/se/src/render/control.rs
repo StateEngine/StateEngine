@@ -18,6 +18,25 @@ pub fn launch(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
         value.process.pid, value.process.started_at
     )?;
     writeln!(out, "Containment: {}", value.containment)?;
+    if let Some(takeover) = &value.takeover {
+        writeln!(
+            out,
+            "Previous session stopped: {} ({})",
+            takeover.previous_session, takeover.scope
+        )?;
+        writeln!(out, "Jobs stopped: {}", takeover.jobs_stopped.len())?;
+        for job in &takeover.jobs_stopped {
+            writeln!(out, "  PID {}: {}", job.pid, job.command)?;
+        }
+        for job in &takeover.jobs_remaining {
+            writeln!(
+                out,
+                "Job still live outside stopped scope: PID {}: {}",
+                job.pid, job.command
+            )?;
+        }
+        writeln!(out, "Stop witness: {}", takeover.witness)?;
+    }
     if let Some(reason) = &value.containment_cause {
         writeln!(
             out,

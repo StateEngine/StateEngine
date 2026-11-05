@@ -313,6 +313,7 @@ impl LaunchCoordinator {
         )
         .map(|command| command.with_detach(plan.input.detach));
         Ok(LaunchResult {
+            takeover: work.takeover.clone(),
             idempotency_key: plan.input.idempotency_key.clone(),
             event_id: receipt.primary_event,
             launch_id: se_proc::session_launch_id(&plan.session)

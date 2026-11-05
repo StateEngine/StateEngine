@@ -107,6 +107,20 @@ shortened. Your agent’s wording and timestamps will differ.
    back the exact launch command that reopens the saved conversation; `se stop AGENT`
    ends a running session; `se launch AGENT --detach` restarts the same conversation.
 
+   Launching over an existing managed lifecycle refuses and lists its scoped jobs
+   (PID and command), without stopping anything. Wait for the jobs to finish, run
+   long jobs in a separate terminal outside the agent's scope, or explicitly use
+   `se launch AGENT --detach --override-live`. The override stops the old agent
+   and its scope, saves its conversation, then resumes it and reports the jobs
+   stopped with an outside exit witness. An unreadable inventory refuses even
+   with the override. Linux observes the tracked process group and current
+   descendants, including `setsid` children. The receipt distinguishes observed
+   exits from jobs still alive outside the stopped group. Already reparented
+   escaped jobs cannot be attributed and are not claimed absent.
+   Windows observes job-object members and reports executable paths (without
+   arguments); explicit breakaway is outside the job. macOS managed launch and
+   takeover remain unsupported and refuse; no empty-job claim is made there.
+
        $ se resume --preview main
        Who am I?
        main in repo — ready (owner preview; nothing acknowledged)

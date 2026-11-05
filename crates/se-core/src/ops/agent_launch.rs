@@ -22,6 +22,9 @@ pub struct AgentLaunch {
     pub task: Option<String>,
     #[serde(default = "headless")]
     pub detach: bool,
+    /// Explicit consent to stop the existing managed lifecycle and its jobs.
+    #[serde(default, skip_serializing_if = "no_override")]
+    pub override_live: bool,
     pub idempotency_key: IdempotencyKey,
     /// Only the core's decoded CLI selection layer supplies these values.
     #[serde(skip)]
@@ -33,6 +36,9 @@ pub struct AgentLaunch {
 }
 fn headless() -> bool {
     true
+}
+fn no_override(value: &bool) -> bool {
+    !value
 }
 impl Validate for AgentLaunch {
     fn validate(&self) -> Result<()> {
@@ -87,4 +93,25 @@ pub struct LaunchResult {
     pub containment_cause: Option<String>,
     pub resume: ResumeCommand,
     pub replies: Option<super::AgentCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub takeover: Option<TakeoverReport>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TakeoverReport {
+    pub previous_session: SessionId,
+    pub scope: String,
+    /// Jobs observed before stop and separately observed no longer executing
+    /// afterward. Later spawns are not individually listed by this receipt.
+    pub jobs_stopped: Vec<TakeoverJob>,
+    /// Observed descendants still live outside the stopped native scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs_remaining: Vec<TakeoverJob>,
+    pub witness: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct TakeoverJob {
+    pub pid: u32,
+    pub command: String,
 }

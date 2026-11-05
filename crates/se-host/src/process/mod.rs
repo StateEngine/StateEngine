@@ -27,6 +27,7 @@ mod status;
 mod stop;
 mod store;
 mod supervisor;
+mod takeover;
 mod tasks;
 mod window;
 #[cfg(target_os = "linux")]

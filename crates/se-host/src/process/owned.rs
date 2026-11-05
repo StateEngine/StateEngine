@@ -35,6 +35,7 @@ impl LifecycleMetadata {
     }
 }
 pub(super) struct Work {
+    pub takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
     pub plan: Option<Arc<LaunchPlan>>,
     pub recover_provider: bool,
     pub meta: LifecycleMetadata,
@@ -87,6 +88,7 @@ impl Work {
         cleanup_admission.actor = se_store::Actor::Human(meta.owner.clone());
         cleanup_admission.session = None;
         Self {
+            takeover: None,
             cleanup_admission,
             meta,
             plan: None,

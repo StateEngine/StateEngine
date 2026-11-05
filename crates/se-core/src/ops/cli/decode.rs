@@ -266,6 +266,7 @@ pub fn from_matches_with_key(
                 model: text(m, "model"),
                 task: text(m, "task"),
                 detach: flag(m, "detach"),
+                override_live: flag(m, "override_live"),
                 idempotency_key: key()?,
                 owner_agent: text(m, "agent"),
                 owner_provider: common.selections.launch_provider,
