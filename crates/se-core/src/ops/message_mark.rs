@@ -18,6 +18,8 @@ fn default_budget() -> u32 {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct MessageRead {
+    /// Message ID from a send receipt or list item; msg_id is also accepted.
+    #[serde(rename = "message_id", alias = "msg_id")]
     pub msg_id: MessageId,
     #[serde(default = "default_budget")]
     pub budget: u32,
@@ -38,6 +40,8 @@ macro_rules! mark_input {
         #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
         #[serde(deny_unknown_fields)]
         pub struct $name {
+            /// Message ID from a send receipt or list item; msg_id is also accepted.
+            #[serde(rename = "message_id", alias = "msg_id")]
             pub msg_id: MessageId,
         }
         impl Validate for $name {

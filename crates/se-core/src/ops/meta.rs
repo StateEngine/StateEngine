@@ -256,8 +256,23 @@ pub fn decode_operation(
 }
 fn decode_registered(
     meta: &crate::registry::OpMeta,
-    arguments: serde_json::Value,
+    mut arguments: serde_json::Value,
 ) -> Result<AnyOp> {
+    // Accept the existing mail spelling before the generated closed-schema check.
+    if matches!(
+        meta.name,
+        "message.read" | "message.ack" | "message.dismiss"
+    ) && let Some(object) = arguments.as_object_mut()
+        && let Some(id) = object.remove("msg_id")
+    {
+        if object.contains_key("message_id") {
+            return Err(SeError::invalid(
+                "message ID",
+                "supply message_id or msg_id once, not both",
+            ));
+        }
+        object.insert("message_id".into(), id);
+    }
     if meta.name == "continuity.resume" {
         super::continuity::validate_resume_since(&arguments)?;
     }
