@@ -17,6 +17,7 @@ use se_types::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+mod replay;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
@@ -67,6 +68,8 @@ pub enum CaptureResult {
 /// Supplied only by the host's authenticated, pinned-source reader. It has no
 /// Deserialize implementation and cannot be created from hook payload JSON.
 pub struct CaptureRequest {
+    /// Trusted coordinator only, after outside native exit/empty-scope proof.
+    pub recovery_owner: Option<se_types::HumanId>,
     pub source: RecordId,
     pub expected: Revision,
     pub conversation: ProviderSessionId,
@@ -104,7 +107,7 @@ pub struct CaptureThen {
 /// The host releases this snapshot before awaiting the canonical writer. A
 /// continuation subsequently opens a fresh snapshot through Kernel::committed.
 pub fn plan<R: Snapshot>(
-    input: CaptureRequest,
+    mut input: CaptureRequest,
     facts: CaptureFacts,
     cx: &mut Cx<'_, R>,
 ) -> Result<OpStep<super::AnyOutput, Then>> {
@@ -149,6 +152,7 @@ pub fn plan<R: Snapshot>(
                 "the native metadata identity",
             ));
         }
+        replay::canonicalize_tool(&mut input, cx)?;
     }
     if input.metadata.len() > 32 {
         return Err(SeError::invalid(
@@ -217,12 +221,8 @@ pub fn plan<R: Snapshot>(
         "capture session",
         "Restore access to the original active session binding before repeating capture with the same session/provider/turn identities; preserve the saved cursor.",
     )?;
-    if !matches!(bound.current.body, EventBody::SessionActivated { .. }) {
-        return Err(scope::unreadable(
-            "capture session",
-            "session is not active; no capture or cursor advancement planned",
-        ));
-    }
+    let (commit_admission, capture_door) =
+        replay::admission(input.recovery_owner.as_ref(), &bound, cx)?;
     let prepared = bound.original.as_ref().map(|v| &v.body).ok_or_else(|| {
         scope::unreadable("capture session", "original session binding is missing")
     })?;
@@ -294,7 +294,7 @@ pub fn plan<R: Snapshot>(
         actor: Actor::Agent(agent.clone()),
         session: Some(session.clone()),
         origin: cx.read.info().id,
-        door: Door::Hook,
+        door: capture_door,
         occurred_at_us: facts.occurred_at_us,
         cause: None,
         supersedes: None,
@@ -362,7 +362,7 @@ pub fn plan<R: Snapshot>(
     Ok(OpStep::Commit {
         batch: AtomicBatch {
             expected_incarnation: cx.read.info().incarnation,
-            admission: cx.admission.clone(),
+            admission: commit_admission,
             request: None,
             events,
             import_checkpoint: None,

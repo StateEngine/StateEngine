@@ -131,7 +131,6 @@ fn prepare<S: Snapshot>(
         &session,
         &row.id,
         row.conversation.id.as_deref(),
-        row.session.recorded_state.as_deref() == Some("activated"),
         read,
     )
     .unwrap_or_else(|error| unreadable("committed conversation capture", error));
@@ -154,7 +153,6 @@ fn capture_evidence<S: Snapshot>(
     session: &se_types::SessionId,
     agent: &se_types::AgentId,
     conversation: Option<&str>,
-    active: bool,
     read: &mut S,
 ) -> Result<Read<SourceEvidence>> {
     let source_id = process_commit::session_credential_id(session, "capture-source")?;
@@ -178,9 +176,9 @@ fn capture_evidence<S: Snapshot>(
             what: "No capture consent and source are bound to this session".into(),
         });
     }
-    // A terminal session was published only after final capture succeeded.
-    // While active, preserve errors newer than the last committed progress.
-    if active {
+    // Native exit and session retirement do not erase a failed final capture.
+    // Keep its diagnostic until repaired-source capture advances the cursor.
+    {
         let failures = read
             .history(
                 se_store::HistoryQuery {
@@ -212,7 +210,7 @@ fn capture_evidence<S: Snapshot>(
                     code,
                     ..
                 } if *source == source_id && found == session => Ok(unreadable(
-                    "live transcript capture",
+                    "transcript capture",
                     format!(
                         "Capture failed since the last committed turn ({code:?}): {cause}. The saved cursor is preserved; retry capture or stop to reconcile."
                     ),
@@ -325,7 +323,6 @@ pub(crate) fn resume_source<S: Snapshot>(
         session,
         &plan.agent.id,
         conversation,
-        matches!(latest.current.body, EventBody::SessionActivated { .. }),
         read,
     )? {
         Read::Present { value } => Ok(value.path),

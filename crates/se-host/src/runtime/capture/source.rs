@@ -42,7 +42,7 @@ pub fn next(
         ));
     }
     source.pin.validate_path(&claimed).map_err(native_error)?;
-    let cursor = cursor(context, admission, source)?;
+    let cursor = cursor(context, admission, source, final_capture)?;
     verify_prefix(source, cursor.evidence.as_ref(), deadline)?;
     if matches!(hook.kind, crate::ClaudeHookKind::SessionStart) {
         return Ok(None);
@@ -98,6 +98,7 @@ fn cursor(
     context: &ExecutionContext,
     admission: &se_store::Admission,
     source: &BoundTranscript,
+    allow_ended: bool,
 ) -> Result<Cursor> {
     // Generation and the cursor belong to one fresh read pin. Close it before
     // checking the committed prefix or scanning any new transcript bytes.
@@ -112,7 +113,9 @@ fn cursor(
             "capture session",
             "Restore access to the original active session binding before repeating capture with the same session/provider/turn identities; preserve the saved cursor.",
         )?;
-        if !matches!(session.current.body, EventBody::SessionActivated { .. }) {
+        if !matches!(session.current.body, EventBody::SessionActivated { .. })
+            && !(allow_ended && matches!(session.current.body, EventBody::SessionEnded { .. }))
+        {
             return Err(scope::unreadable(
                 "capture session",
                 "the admitted session is not active",
@@ -311,7 +314,7 @@ pub(super) fn validate(
         session: Some(source.binding.identity.session.clone()),
         generation: context.generation.get(),
     };
-    let current = cursor(context, &admission, source)?;
+    let current = cursor(context, &admission, source, true)?;
     if current.provider == se_store::Provider::Codex {
         crate::codex_capture::validate_header(&mut source.pin, &source.binding.conversation)?;
     }

@@ -177,6 +177,9 @@ impl LaunchCoordinator {
                     continue;
                 }
             };
+            if let Err(error) = self.restore_capture_status(&mut work, deadline).await {
+                work.capture_failure = Some(error.body);
+            }
             if let Err(error) = self.restore_cleanup(&mut work, deadline).await {
                 work.cleanup_failure = Some(error.body);
             }

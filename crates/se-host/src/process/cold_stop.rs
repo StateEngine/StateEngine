@@ -73,6 +73,7 @@ impl LaunchCoordinator {
                 .send_modify(|count| *count = count.saturating_sub(1));
             return Ok(Some(job));
         }
+        self.restore_capture_status(&mut work, deadline).await?;
         let source = super::recovery::recovery_source(checkpoint, &row)?;
         let native = self.native.clone();
         let generation = self.options.epoch.generation;

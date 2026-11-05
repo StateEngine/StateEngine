@@ -13,7 +13,9 @@
 //! Called and Completed are separate facts joined only by actual native identity
 //! within one bound session/source. Missing or conflicting joins stay unknown.
 //! Count adoption once per native call, never per path or replayed capture batch.
-//! Deduplicate by session, source, provider, native identity, phase and source range;
+//! Codex conversation replays keep the original execution event after matching
+//! native facts; each capture source retains its own verified progress/range.
+//! Claude joins remain bound to session, source, native identity and phase;
 //! unknown identities cannot support a claimed native-call count. Native result
 //! ranges need not repeat intent targets: consumers may join known targets by ID.
 //! Parse explicit native paths/queries only; never infer edits from shell text.

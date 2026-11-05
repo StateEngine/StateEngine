@@ -56,6 +56,7 @@ pub(super) fn next(
                 )?;
                 return Ok(Some(TrustedCapture {
                     request: CaptureRequest {
+                        recovery_owner: None,
                         source: source.source,
                         expected: revision,
                         conversation: source.binding.conversation.clone(),

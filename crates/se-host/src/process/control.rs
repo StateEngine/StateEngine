@@ -179,7 +179,15 @@ impl LaunchCoordinator {
                 if !job.settled.swap(true,Ordering::AcqRel){self.activity.send_modify(|count|*count=count.saturating_sub(1));}
                 return Ok(());
             }
-            if work.released{fill_stopped(&mut row,&work,true)?;return Ok(());}
+            if work.released {
+                if let Err(error) = self.flush_capture(&mut work, deadline).await
+                    && work.capture_failure.is_none()
+                {
+                    return Err(error);
+                }
+                fill_stopped(&mut row,&work,true)?;
+                return Ok(());
+            }
             work.stop_key=Some(key.clone());
             work.admission=admission;
             let witness=self.stop_native(&mut work,deadline).await?;
@@ -355,16 +363,14 @@ pub(super) fn fill_stopped(
     };
     if let Some(failure) = &work.capture_failure {
         row.result = "capture-incomplete".into();
-        row.resume.state = "new-required".into();
+        row.resume.state = "capture-incomplete".into();
         row.resume.reason = Some(format!(
-            "Native exit is witnessed; capture failed: {}. The original transcript and failure record are retained. Use the supplied fresh-conversation launch command.",
+            "Native exit is witnessed; capture failed: {}. Restore the original transcript and retry stop to capture its pending records, then resume the saved conversation; --new remains available for a fresh conversation.",
             failure.message()
         ));
         row.resume.conversation_id = None;
-        if !row.resume.argv.is_empty() && !row.resume.argv.iter().any(|a| a == "--new") {
-            row.resume.argv.push("--new".into());
-            row.resume.command.push_str(" --new");
-        }
+        row.resume.argv.clear();
+        row.resume.command.clear();
         return Ok(());
     }
     row.resume.model = work.meta.model.clone();

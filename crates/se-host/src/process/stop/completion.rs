@@ -114,6 +114,11 @@ impl LaunchCoordinator {
         if !work.session_retired {
             self.retire_session(work, "native scope exit witnessed", deadline)
                 .await?;
+        } else if work.capture_failure.is_some()
+            && let Err(error) = self.flush_capture(work, deadline).await
+            && work.capture_failure.is_none()
+        {
+            return Err(error);
         }
         self.retire_files(work, deadline).await?;
         if !work.native_already_reconciled {

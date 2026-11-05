@@ -83,7 +83,6 @@ impl Fact {
 pub(crate) fn committed(
     fact: &Fact,
     event: se_store::StoredEvent,
-    session: &SessionId,
     agent: &se_types::AgentId,
 ) -> Result<bool> {
     let se_store::EventBody::SessionTurn {
@@ -110,12 +109,8 @@ pub(crate) fn committed(
             "the retained native observation",
         )
     })?;
-    tool.validate_binding(session, agent, Provider::Codex, tool.source, &evidence)?;
-    if &found != session
-        || &owner != agent
-        || vendor_ref != fact.vendor(session)
-        || !fact.matches(&tool)?
-    {
+    tool.validate_binding(&found, agent, Provider::Codex, tool.source, &evidence)?;
+    if &owner != agent || vendor_ref != fact.vendor(&found) || !fact.matches(&tool)? {
         return Err(SeError::invalid(
             "Codex tool acknowledgement",
             "unchanged canonical native facts; preserve the notification",

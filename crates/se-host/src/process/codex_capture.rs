@@ -63,7 +63,7 @@ impl LaunchCoordinator {
                 match cx.read.native_turn(session.clone(), se_store::Provider::Codex, &vendor).map_err(|cause| se_core::store_error::store_error(&cause))? {
                     Read::Absent { .. } => Ok(false),
                     Read::Present { value } if tool.is_some()=>crate::harness::tool_capture::committed(
-                        tool.as_ref().ok_or_else(||error("Codex tool acknowledgement","the actual native item"))?,value,&session,&agent),
+                        tool.as_ref().ok_or_else(||error("Codex tool acknowledgement","the actual native item"))?,value,&agent),
                     Read::Present { value } => match value.body {
                         EventBody::SessionTurn {provider: se_store::Provider::Codex, vendor_ref, role, text: StoredText::Present(text), ..}
                             if record.as_ref().is_some_and(|record|vendor_ref == record.vendor && role == record.role && text == record.text.as_str()) => Ok(true),

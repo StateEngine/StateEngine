@@ -225,6 +225,7 @@ impl HostedRouter {
             sources: &self.sources,
             fenced: &self.fenced,
             final_capture: false,
+            recovery_owner: None,
         }
     }
 }
@@ -284,6 +285,7 @@ struct Capturing<'a> {
     sources: &'a TranscriptBindings,
     fenced: &'a std::sync::atomic::AtomicBool,
     final_capture: bool,
+    recovery_owner: Option<se_types::HumanId>,
 }
 impl Capturing<'_> {
     fn check_open(&self) -> Result<()> {
@@ -342,9 +344,10 @@ impl Capturing<'_> {
                 host_phases.merge(se_core::ops::HostPhaseTimings {
                     capture_read: Some(capture_read), ..Default::default()
                 });
-                let Some((capture, replayed)) = next else {
+                let Some((mut capture, replayed)) = next else {
                     return Ok(last.unwrap_or_else(|| empty_capture(hook.kind)));
                 };
+                capture.request.recovery_owner = self.recovery_owner.clone();
                 if commits.len() >= 128 {
                     return Err(SeError::invalid("capture batch", "at most 128 commits per signal; repeat the same hook to continue from the committed cursor"));
                 }
@@ -478,7 +481,7 @@ impl CaptureHandle {
         transcript: se_types::NativePath,
         deadline: &Deadline,
     ) -> Result<ExecutedCall> {
-        self.catch_up_inner(admission, conversation, transcript, deadline, false)
+        self.catch_up_inner(admission, conversation, transcript, deadline, None)
             .await
     }
     /// Used only after native exit and empty-scope proof: a partial final line
@@ -488,9 +491,10 @@ impl CaptureHandle {
         admission: se_store::Admission,
         conversation: se_types::ProviderSessionId,
         transcript: se_types::NativePath,
+        owner: se_types::HumanId,
         deadline: &Deadline,
     ) -> Result<ExecutedCall> {
-        self.catch_up_inner(admission, conversation, transcript, deadline, true)
+        self.catch_up_inner(admission, conversation, transcript, deadline, Some(owner))
             .await
     }
     async fn catch_up_inner(
@@ -499,13 +503,14 @@ impl CaptureHandle {
         conversation: se_types::ProviderSessionId,
         transcript: se_types::NativePath,
         deadline: &Deadline,
-        final_capture: bool,
+        recovery_owner: Option<se_types::HumanId>,
     ) -> Result<ExecutedCall> {
         let capturing = Capturing {
             execution: &self.execution,
             sources: &self.sources,
             fenced: &self.fenced,
-            final_capture,
+            final_capture: recovery_owner.is_some(),
+            recovery_owner,
         };
         let terminal = se_core::admission::HumanTerminal::Refused {
             reason: "a coordinator capture is not an owner terminal".into(),

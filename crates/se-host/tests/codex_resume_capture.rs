@@ -77,7 +77,10 @@ fn record(n: u64, backend: Provider) -> serde_json::Value {
         json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":"native-thread","turn_id":format!("turn-{n}"),"item":{"type":"AgentMessage","id":format!("item-{n}"),"content":[{"type":"Text","text":format!("same native text {n}")}]}}})
     }
 }
-fn rollout(path: &std::path::Path, prefix: bool, backend: Provider) -> Check {
+fn tool_record(n: u64) -> serde_json::Value {
+    json!({"type":"event_msg","payload":{"type":"item_completed","thread_id":"native-thread","turn_id":format!("turn-{n}"),"item":{"type":"CommandExecution","id":format!("command-{n}"),"command":format!("printf command-{n}"),"status":"completed","exit_code":0}}})
+}
+fn rollout(path: &std::path::Path, prefix: bool, backend: Provider, tools: bool) -> Check {
     let mut file = std::fs::File::create(path)?;
     if backend == Provider::Codex {
         writeln!(
@@ -102,6 +105,9 @@ fn rollout(path: &std::path::Path, prefix: bool, backend: Provider) -> Check {
         }
     }
     for n in 0..6 {
+        if tools {
+            writeln!(file, "{}", tool_record(n))?;
+        }
         writeln!(file, "{}", record(n, backend))?;
     }
     file.sync_all()?;
@@ -110,13 +116,17 @@ fn rollout(path: &std::path::Path, prefix: bool, backend: Provider) -> Check {
 
 #[test]
 fn resumed_rollout_keeps_original_events_and_verifies_its_own_source_ranges() -> Check {
-    resume_capture(Provider::Codex)
+    resume_capture(Provider::Codex, false)
 }
 #[test]
 fn resumed_claude_uuids_keep_original_events_and_verify_new_source_ranges() -> Check {
-    resume_capture(Provider::Claude)
+    resume_capture(Provider::Claude, false)
 }
-fn resume_capture(backend: Provider) -> Check {
+#[test]
+fn resumed_codex_tools_keep_one_execution_and_each_sources_verified_cursor() -> Check {
+    resume_capture(Provider::Codex, true)
+}
+fn resume_capture(backend: Provider, tools: bool) -> Check {
     let initialized = initialize_host_process()?;
     let f = Fixture::new()?;
     seed(&f)?;
@@ -129,8 +139,8 @@ fn resume_capture(backend: Provider) -> Check {
     let conversation = ProviderSessionId::new("native-thread")?;
     let original_path = f.home.join("first.jsonl");
     let resumed_path = f.home.join("resumed.jsonl");
-    rollout(&original_path, false, backend)?;
-    rollout(&resumed_path, true, backend)?;
+    rollout(&original_path, false, backend, tools)?;
+    rollout(&resumed_path, true, backend, tools)?;
     let first_pin = se_proc::NativeSourcePin::open(&original_path)?.ok_or("first pin absent")?;
     let second_pin = se_proc::NativeSourcePin::open(&resumed_path)?.ok_or("second pin absent")?;
     let (mut direct, lease) = direct(&f)?;
@@ -211,7 +221,8 @@ fn resume_capture(backend: Provider) -> Check {
                     .turns(f.a.clone(), budget(100, 100_000, None)?)?
                     .items()
                     .to_vec();
-                require(before.len() == 6, "original capture differs")?;
+                let per_turn = if tools { 2 } else { 1 };
+                require(before.len() == 6 * per_turn, "original capture differs")?;
                 snapshot.close()?;
                 let mut changes = vec![EventBody::SessionEnded {
                     session: first.clone(),
@@ -277,7 +288,7 @@ fn resume_capture(backend: Provider) -> Check {
                 let mut snapshot = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let retained = snapshot.turns(f.a.clone(), budget(100, 100_000, None)?)?;
                 require(
-                    retained.items().len() == 6,
+                    retained.items().len() == 6 * per_turn,
                     "B31-04: resumed rollout duplicated native history",
                 )?;
                 for (old, new) in before.iter().zip(retained.items()) {
@@ -326,6 +337,9 @@ fn resume_capture(backend: Provider) -> Check {
                 std::fs::rename(saved, &resumed_path)?;
                 let mut file = OpenOptions::new().append(true).open(&resumed_path)?;
                 for n in 6..9 {
+                    if tools {
+                        writeln!(file, "{}", tool_record(n))?;
+                    }
                     writeln!(file, "{}", record(n, backend))?;
                 }
                 file.sync_all()?;
@@ -343,7 +357,7 @@ fn resume_capture(backend: Provider) -> Check {
                 let mut snapshot = execution.reader.snapshot(f.self_scope(&f.a))?;
                 let turns = snapshot.turns(f.a.clone(), budget(100, 100_000, None)?)?;
                 require(
-                    turns.items().len() == 9,
+                    turns.items().len() == 9 * per_turn,
                     "new native items were lost or replay grew history",
                 )?;
                 snapshot.close()?;

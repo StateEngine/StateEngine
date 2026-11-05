@@ -3,9 +3,10 @@
 use super::{owned::Work, *};
 use crate::client::lease::Deadline;
 use se_types::{Read, Result};
+mod recovery;
 impl LaunchCoordinator {
     pub(super) async fn flush_capture(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
-        if work.capture_flushed || !work.meta.capture || !work.active {
+        if work.capture_flushed || !work.meta.capture || !work.activated {
             return Ok(());
         }
         self.capture_progress(work, deadline).await?;
@@ -69,7 +70,7 @@ impl LaunchCoordinator {
         deadline: &Deadline,
         capture: &crate::runtime::CaptureHandle,
     ) -> Result<()> {
-        if work.capture_flushed || !work.meta.capture || !work.active {
+        if work.capture_flushed || !work.meta.capture || !work.activated {
             return Ok(());
         }
         if work.transcript.is_none() {
@@ -112,6 +113,7 @@ impl LaunchCoordinator {
                     admission,
                     transcript.conversation,
                     transcript.path,
+                    work.meta.owner.clone(),
                     deadline,
                 )
                 .await?

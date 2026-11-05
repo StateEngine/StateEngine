@@ -13,14 +13,18 @@ pub(crate) fn find(
     let project = crate::connection::project_id(c, scope, false)?;
     let storage_scope = scope_key(c, scope, false)?;
     let id = key(c, "session", session.as_str(), &storage_scope, false)?;
-    let exact = |id: &[u8], agent: Option<&[u8]>, chat_only: bool| -> StoreResult<Option<i64>> {
+    let exact = |id: &[u8],
+                 agent: Option<&[u8]>,
+                 vendor: &str,
+                 chat_only: bool|
+     -> StoreResult<Option<i64>> {
         c.query_row(
             "SELECT event_seq FROM turn_data WHERE project_id=? AND session_id=? AND provider=? AND vendor_ref=? AND (? IS NULL OR agent_id=?) AND (?=0 OR role IN ('user','assistant'))",
             rusqlite::params![project, id, provider(backend), vendor, agent, agent, chat_only],
             |row| row.get(0),
         ).optional().map_err(sql)
     };
-    if let Some(seq) = exact(&id, None, false)? {
+    if let Some(seq) = exact(&id, None, vendor, false)? {
         return Ok(Some(seq));
     }
     if !matches!(backend, Provider::Claude | Provider::Codex) {
@@ -71,7 +75,22 @@ pub(crate) fn find(
         let id = key(c, "session", &candidate, &storage_scope, false)?;
         // Claude metadata embeds its engine-session/source binding. Reuse its
         // native chat UUIDs while preserving the existing Codex item contract.
-        if let Some(seq) = exact(&id, Some(&head.agent), backend == Provider::Claude)? {
+        let tool_vendor = (backend == Provider::Codex)
+            .then(|| vendor.strip_prefix(&format!("{}tool/", crate::TRANSCRIPT_EVENT_PREFIX)))
+            .flatten()
+            .and_then(|key| key.rsplit_once('/'))
+            .filter(|(session, hash)| {
+                session.parse::<SessionId>().is_ok()
+                    && hash.len() == 64
+                    && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+            .map(|(_, hash)| format!("{}tool/{candidate}/{hash}", crate::TRANSCRIPT_EVENT_PREFIX));
+        if let Some(seq) = exact(
+            &id,
+            Some(&head.agent),
+            tool_vendor.as_deref().unwrap_or(vendor),
+            backend == Provider::Claude,
+        )? {
             first = Some(first.map_or(seq, |old: i64| old.min(seq)));
         }
     }

@@ -536,7 +536,7 @@ impl LaunchCoordinator {
         }
         let reason = match &work.capture_failure {
             Some(error) => format!(
-                "{reason}; capture incomplete ({}); native transcript and the durable capture failure are retained; launch this agent with --new for a fresh conversation",
+                "{reason}; capture incomplete ({}); restore the original transcript and retry stop to reconcile its retained cursor before resuming",
                 error.code().as_str()
             ),
             None => reason.to_owned(),
