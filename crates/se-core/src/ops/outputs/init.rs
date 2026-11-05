@@ -10,6 +10,8 @@ pub struct ProjectView {
     pub name: String,
     pub root: String,
     pub registered_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitView>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct OwnerView {
@@ -20,6 +22,10 @@ pub struct OwnerView {
 pub struct GitView {
     pub head: Option<String>,
     pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commits: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uncommitted: Option<bool>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct RepositoryView {

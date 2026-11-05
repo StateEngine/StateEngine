@@ -29,7 +29,12 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         writeln!(out, "Setup: {reason}")?;
     }
     match &value.project {
-        Read::Present { value } => writeln!(out, "Project: {} ({})", value.name, value.root)?,
+        Read::Present { value } => {
+            writeln!(out, "Project: {} ({})", value.name, value.root)?;
+            if let Some(git) = &value.git {
+                repo_line(git, out)?;
+            }
+        }
         Read::Absent { .. } => writeln!(out, "No project selected.")?,
         Read::Unreadable { source, reason, .. } => {
             writeln!(out, "Project unreadable: {source}: {reason}")?
@@ -180,6 +185,23 @@ pub fn schema(value: &SchemaCatalogue, out: &mut impl Write) -> io::Result<()> {
 
 pub fn next_step(value: &NextStep, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "{}: {}", value.text, value.command)
+}
+
+pub(super) fn repo_line(git: &GitView, out: &mut impl Write) -> io::Result<()> {
+    let Some(commits) = git.commits else {
+        return Ok(());
+    };
+    let mut line = format!(
+        "Existing repo: {commits} commit{}",
+        if commits == 1 { "" } else { "s" }
+    );
+    if let Some(branch) = &git.branch {
+        line.push_str(&format!(" on {branch}"));
+    }
+    if git.uncommitted == Some(true) {
+        line.push_str("; uncommitted changes left untouched");
+    }
+    writeln!(out, "{line}.")
 }
 
 fn count(value: Option<u64>) -> String {

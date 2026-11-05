@@ -147,6 +147,7 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
                     .unwrap_or(&record.current)
                     .recorded_at_us,
             )?,
+            git: None,
         },
     };
     let unread = cx

@@ -220,6 +220,7 @@ pub(super) fn finish(
                     .unwrap_or(&metadata.current)
                     .recorded_at_us,
             )?,
+            git: None,
         },
         repo: RepositoryView {
             root: repository.path.display().to_string(),
