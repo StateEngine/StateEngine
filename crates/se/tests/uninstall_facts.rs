@@ -2,6 +2,8 @@
     dead_code,
     reason = "The actual human renderer shares other CLI renderers."
 )]
+#[path = "../src/render/labels.rs"]
+mod labels;
 #[path = "../src/render/read.rs"]
 mod read;
 #[path = "../src/render/write.rs"]
