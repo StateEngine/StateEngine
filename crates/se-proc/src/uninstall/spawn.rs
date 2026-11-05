@@ -7,10 +7,7 @@ use std::{
     },
     ptr,
 };
-use windows_sys::Win32::{
-    Foundation::HANDLE,
-    System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE},
-};
+use windows_sys::Win32::Foundation::HANDLE;
 
 pub(super) fn start(
     path: &Path,
@@ -53,7 +50,17 @@ fn command_inner(
     flags: u32,
     environment: Option<&[u16]>,
 ) -> Result<OwnedHandle> {
-    let mut streams = Vec::new();
+    // Both the helper and its last-close carrier can outlive the CLI. Their
+    // output must not retain a redirected caller file or pipe after CLI exit.
+    // Readiness and authorization still use the explicit private channels.
+    let sink = File::options()
+        .write(true)
+        .open(r"\\.\NUL")
+        .map_err(|cause| error("open private uninstall output sink", cause))?;
+    let streams = [
+        native::duplicate_same(sink.as_raw_handle(), true)?,
+        native::duplicate_same(sink.as_raw_handle(), true)?,
+    ];
     let mut handles: Vec<HANDLE> = Vec::new();
     let mut attributes = crate::windows_native::attributes::Attributes::new(
         1,
@@ -61,13 +68,6 @@ fn command_inner(
         "initialize uninstall process attributes",
     )
     .map_err(|e| error(e.operation, e.source))?;
-    for which in [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
-        // SAFETY: standard-handle selector is a native constant; no pointers are dereferenced.
-        let raw = unsafe { GetStdHandle(which) };
-        // Human-only admission requires a real console. Preserve these exact
-        // output handles so the helper can report the final measured result.
-        streams.push(native::duplicate_same(raw, true)?);
-    }
     handles.extend_from_slice(inherited);
     handles.push(stdin.as_raw_handle());
     handles.extend(streams.iter().map(AsRawHandle::as_raw_handle));

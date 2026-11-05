@@ -301,14 +301,13 @@ fn uninstall_refusal(unproved: bool) -> Check {
     );
     assert_eq!(cli::json(&output)?["code"], "state-conflict");
     assert!(
-        printed.contains("unresolved process custody")
-            && printed.contains(c.identity.record.as_str())
-            && printed.contains(c.f.project.as_str()),
-        "refusal must identify exact unresolved custody: {printed}"
+        printed.contains("uninstall runtime shutdown")
+            && printed.contains("Unresolved owned process or session cleanup"),
+        "refusal must name unverified shutdown custody: {printed}"
     );
     assert!(
-        printed.contains("se down") || printed.contains("se stop"),
-        "missing legal cleanup remedy: {printed}"
+        printed.contains("Run se up to reconcile") && printed.contains("then se down"),
+        "missing cold-runtime reconciliation remedy: {printed}"
     );
     assert_eq!(std::fs::read(&c.image)?, image);
     assert_eq!(
@@ -319,7 +318,7 @@ fn uninstall_refusal(unproved: bool) -> Check {
     c.verify_retained(head)?;
     c.done()
 }
-/// Protects: public uninstall preserves a live agent and all installation bytes.
+/// Protects: without a live engine to verify shutdown, public uninstall preserves live custody and all installation bytes.
 #[test]
 fn uninstall_refuses_live_custody_before_removing_files() -> Check {
     uninstall_refusal(false)
@@ -459,7 +458,7 @@ fn observation(contradiction: bool) -> Check {
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(cli::json(&output)?["code"], "state-conflict");
         assert!(
-            cli::printed(&output).contains("cleanup is unfinished"),
+            cli::printed(&output).contains("Run se up to reconcile"),
             "pending exit lost its uninstall diagnosis: {}",
             cli::printed(&output)
         );

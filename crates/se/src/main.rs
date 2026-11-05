@@ -217,18 +217,19 @@ pub fn run(
             if let Ok(AnyOutput::Uninstall(value)) = &result {
                 render::uninstall_deferred(&value.value, &mut stdout)?;
             }
-            writeln!(
-                stdout,
-                "Finishing uninstall; the installed process exits 75 while its removal is pending."
-            )?;
-            if !receiver {
-                writeln!(
-                    stdout,
-                    "For a final exit status, start with the matching archive's uninstall.ps1. This handoff has already started: use PowerShell Get-Item -LiteralPath on each printed image, record and helper path to check absence; access errors remain unresolved."
-                )?;
-            }
             stdout.flush()?;
         }
+        writeln!(
+            stderr,
+            "Finishing uninstall after this process exits (exit 75). Completion is pending."
+        )?;
+        if !receiver {
+            writeln!(
+                stderr,
+                "For a final exit status, start with the matching archive's uninstall.ps1. This handoff has already started: use PowerShell Get-Item -LiteralPath on each printed image, record and helper path to check absence; access errors remain unresolved."
+            )?;
+        }
+        stderr.flush()?;
         // The installed image must exit before its helper can remove it. This
         // code means delegation, not success; uninstall.ps1 returns the verdict.
         return Ok(runtime::uninstall_completion::DEFERRED_EXIT);

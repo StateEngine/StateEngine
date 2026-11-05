@@ -19,6 +19,8 @@ use effects::*;
 use image::remove_image;
 #[path = "uninstall/recovery.rs"]
 mod recovery;
+#[path = "uninstall/shutdown.rs"]
+mod shutdown;
 use path::reconcile_paths;
 use recovery::recover;
 
@@ -30,7 +32,7 @@ pub(super) fn execute(
     // Store absence and a complete inventory with no unresolved custody are
     // distinct observations. Retained exit history is never live custody;
     // endpoint absence never supplies an empty-process proof.
-    let observe = || -> Result<_> {
+    let observe = |require_closed: bool| -> Result<_> {
         Ok(match route::setup::inspect(&cx.home, clock())? {
             route::setup::Setup::Absent(_) => (
                 route::owner::observe(&[])?,
@@ -40,7 +42,7 @@ pub(super) fn execute(
                 let files = route::files::Files::open(&cx.home)
                     .map_err(|e| se_core::store_error::store_error(&e))?;
                 let inventory = route::owner::inventory(&reader, &files)?;
-                if let Some(first) = inventory.processes.first() {
+                if require_closed && let Some(first) = inventory.processes.first() {
                     return Err(SeError::new(Detail::StateConflict(details::StateConflict {
                     subject: "uninstall unresolved process custody".into(),
                     reason: format!("The complete home-wide inventory contains {} unresolved custody records; process {} in project {} {}. Retained completed exit history does not block uninstall.",
@@ -64,7 +66,7 @@ pub(super) fn execute(
             }
         })
     };
-    let (owner, _) = observe()?;
+    let (owner, _) = observe(false)?;
     owner.authorize(
         "installation.uninstall",
         owner.os_owner(),
@@ -86,27 +88,6 @@ pub(super) fn execute(
         }
         Err(error) => return Err(unreadable(&record_path, error)),
     }
-    let _runtime_lease = route::files::setup_lock(&files)
-        .map_err(|e| se_core::store_error::store_error(&e))?
-        .ok_or_else(|| SeError::new(Detail::StateConflict(details::StateConflict {
-            subject: "uninstall runtime custody".into(),
-            reason: "setup, another writer or the runtime holds this home's exclusive lease".into(),
-            next_step: "Wait for setup/removal or run se down with this same --home, then retry uninstall; no installation effects were attempted".into(),
-        })))?;
-    let (owner, store_observation) = observe()?;
-    owner.authorize(
-        "installation.uninstall",
-        owner.os_owner(),
-        cx.session.is_some(),
-        true,
-    )?;
-    #[cfg(windows)]
-    super::helper_cleanup::retry(
-        &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
-        installation_claim
-            .as_ref()
-            .ok_or_else(|| invalid("native installation claim missing"))?,
-    )?;
     let mut record = OwnedFile::open(&record_path)
         .map_err(native_error)?
         .ok_or_else(|| invalid("the owned installation record is absent"))?;
@@ -161,11 +142,36 @@ pub(super) fn execute(
         .find(|file| file.path == image)
         .ok_or_else(|| invalid("running image disappeared from the plan"))?;
 
+    // The account claim and exact installation record stay held across ordinary
+    // down. Do not take the home writer lease until down has released it.
+    let stops = shutdown::execute(cx, key, diagnostic)?;
+    let _runtime_lease = route::files::setup_lock(&files)
+        .map_err(|e| se_core::store_error::store_error(&e))?
+        .ok_or_else(|| SeError::new(Detail::StateConflict(details::StateConflict {
+            subject: "uninstall runtime custody".into(),
+            reason: "setup, another writer or the runtime holds this home's exclusive lease".into(),
+            next_step: "Wait for setup/removal or retry se uninstall after the named writer finishes; no installation effects were attempted".into(),
+        })))?;
+    let (owner, store_observation) = observe(true)?;
+    owner.authorize(
+        "installation.uninstall",
+        plan.owner(),
+        cx.session.is_some(),
+        true,
+    )?;
+
+    #[cfg(windows)]
+    super::helper_cleanup::retry(
+        &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
+        installation_claim
+            .as_ref()
+            .ok_or_else(|| invalid("native installation claim missing"))?,
+    )?;
     let mut effects = UninstallEffects {
         install_files: Vec::new(),
         directories: Vec::new(),
         integrations: Vec::new(),
-        stops: Vec::new(),
+        stops,
         revocations: Vec::new(),
         path: PathEffect {
             scope: if cfg!(windows) {
@@ -191,7 +197,7 @@ pub(super) fn execute(
     effects.recovery = scan(plan, parents);
     // Diagnostics flush before recovery restoration, PATH edits or file removal.
     let mut diagnosis = format!(
-        "Uninstall: {store_observation}. Agents ended: 0; credentials revoked: 0; events lost: 0. User repositories, retained history/configuration and provider login are preserved.\n",
+        "Uninstall: {store_observation}. Runtime shutdown verified; events and retained credentials are preserved. User repositories, retained history/configuration and provider login are preserved.\n",
     );
     for file in plan.files() {
         diagnosis.push_str(&format!(
