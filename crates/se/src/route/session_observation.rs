@@ -87,6 +87,7 @@ pub(super) fn finish(prepared: Prepared, home: &std::path::Path) -> Result<AnyOu
                 enrich_page(page, &mut apply)?;
             }
             se_core::ops::status::pending_mail(&mut value.value);
+            se_host::claude::bell::pending_status(home, &mut value.value);
         }
         AnyOutput::AgentList(value) => enrich_page(&mut value.value.page, &mut apply)?,
         AnyOutput::AgentShow(value) => {

@@ -37,6 +37,8 @@ pub struct ClaudeHarness {
     state_home: PathBuf,
     mcp_port: u16,
     probed: Mutex<Option<ProviderVersion>>,
+    bells: Option<Arc<crate::http::mail::bell::Bells>>,
+    plugins: Mutex<std::collections::BTreeMap<se_types::SessionId, PathBuf>>,
 }
 impl ClaudeHarness {
     /// `se_executable` is the trusted installed se the hooks call; `mcp_port`
@@ -53,7 +55,13 @@ impl ClaudeHarness {
             state_home,
             mcp_port,
             probed: Mutex::new(None),
+            bells: None,
+            plugins: Mutex::default(),
         }
+    }
+    pub(crate) fn with_bells(mut self, bells: Arc<crate::http::mail::bell::Bells>) -> Self {
+        self.bells = Some(bells);
+        self
     }
     /// The protected per-launch directory 5p's session pin also lives in.
     pub fn launch_directory(&self, request: &HarnessRequest) -> Result<PathBuf> {
@@ -82,6 +90,7 @@ impl ClaudeHarness {
 
 /// Retained for the provider's lifetime: host stream ends and the drain.
 pub(crate) struct Binding {
+    bell_session: se_types::SessionId,
     pub(crate) attended: bool,
     io: Arc<dyn ProviderIoPlatform>,
     transport: ProviderTransport,
@@ -136,12 +145,45 @@ impl Harness for ClaudeHarness {
     fn configuration<'a>(
         &'a self,
         request: &'a HarnessRequest,
-        _cx: CallContext,
+        cx: CallContext,
     ) -> HostFuture<'a, ConfigPlan> {
         Box::pin(async move {
             let directory = self.launch_directory(request)?;
             let conversation = claude::conversation(request)?;
-            claude::configuration(&self.plan(request, &directory, &conversation))
+            let plan = self.plan(request, &directory, &conversation);
+            let mut configuration = claude::configuration(&plan)?;
+            if request.mode == se_proc::LaunchMode::Window
+                && let Some(bells) = &self.bells
+            {
+                match claude::bell::configuration(&plan, bells) {
+                    Ok((plugin, file)) => {
+                        let command = request.executable.to_local()?;
+                        let checked = plugin.clone();
+                        let environment = claude::provider_environment();
+                        let valid = tokio::task::spawn_blocking(move || {
+                            io::plugin(&command, &checked, &environment, cx.timeout)
+                        })
+                        .await;
+                        if matches!(valid, Ok(Ok(()))) {
+                            self.plugins
+                                .lock()
+                                .map_err(|_| poisoned())?
+                                .insert(request.identity.session.clone(), plugin);
+                            configuration.ephemeral_files.push(file);
+                        } else {
+                            bells.retire(&request.identity.session)?;
+                            configuration.ephemeral_files.push(claude::bell::unavailable(&directory, "The installed Claude Code refused the bundled mail mod; ask the agent to read its StateEngine inbox.")?);
+                        }
+                    }
+                    Err(_) => {
+                        bells.retire(&request.identity.session)?;
+                        // A refused plugin never widens permissions or prevents
+                        // an otherwise supported attended console from opening.
+                        configuration.ephemeral_files.push(claude::bell::unavailable(&directory, "The bundled attended mail plugin could not be installed safely; ask the agent to read its StateEngine inbox.")?);
+                    }
+                }
+            }
+            Ok(configuration)
         })
     }
     fn invocation<'a>(
@@ -162,7 +204,25 @@ impl Harness for ClaudeHarness {
             .map_err(|e| {
                 se_core::scope::unreadable("Claude authentication status", &e.to_string())
             })??;
-            claude::invocation(&self.plan(request, &directory, &conversation), environment)
+            let mut invocation =
+                claude::invocation(&self.plan(request, &directory, &conversation), environment)?;
+            if let Some(plugin) = self
+                .plugins
+                .lock()
+                .map_err(|_| poisoned())?
+                .get(&request.identity.session)
+            {
+                let at = invocation
+                    .arguments
+                    .iter()
+                    .position(|a| a == "--")
+                    .unwrap_or(invocation.arguments.len());
+                invocation.arguments.splice(
+                    at..at,
+                    ["--plugin-dir".into(), plugin.as_os_str().to_owned()],
+                );
+            }
+            Ok(invocation)
         })
     }
     fn attach<'a>(
@@ -190,6 +250,7 @@ impl Harness for ClaudeHarness {
                 &conversation,
             );
             let binding = Arc::new(Binding {
+                bell_session: request.request.identity.session.clone(),
                 attended: false,
                 io: Arc::clone(&self.io),
                 transport: request.transport,
@@ -266,6 +327,13 @@ impl Harness for ClaudeHarness {
         Box::pin(async move {
             let binding = claude_binding(binding)?;
             if binding.attended {
+                if let Some(bells) = &self.bells {
+                    bells.retire(&binding.bell_session)?;
+                }
+                self.plugins
+                    .lock()
+                    .map_err(|_| poisoned())?
+                    .remove(&binding.bell_session);
                 return Ok(());
             }
             // A reader holds its stream across a pending read, so stop every

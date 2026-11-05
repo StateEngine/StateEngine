@@ -11,8 +11,10 @@ use std::{
     time::Duration,
 };
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
+pub(crate) mod bell;
 
 pub(crate) struct Waits {
+    pub(crate) bells: Arc<bell::Bells>,
     maximum: usize,
     sessions: Mutex<BTreeMap<(ProjectId, SessionId), Arc<Signal>>>,
     // Cancelled predecessors may still be encoding/closing their connection.
@@ -41,6 +43,7 @@ struct Wait {
 impl Waits {
     pub(crate) fn new(maximum: usize) -> Arc<Self> {
         Arc::new(Self {
+            bells: bell::Bells::new(maximum),
             maximum,
             sessions: Mutex::new(BTreeMap::new()),
             retained: Arc::new(Semaphore::new(maximum.saturating_mul(2))),
@@ -154,9 +157,21 @@ impl Waits {
         }
         Ok(())
     }
+    pub(crate) fn interrupt(&self, session: &SessionId) -> Result<()> {
+        for ((_, found), signal) in self.sessions.lock().map_err(|_| poisoned())?.iter() {
+            if found == session {
+                signal.cancelled.store(true, Ordering::Release);
+                signal.changed.notify_one();
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn revoked(&self, changes: &crate::runtime::mail::Revocations) -> Result<()> {
         if changes.sessions.is_empty() && changes.credentials.is_empty() {
             return Ok(());
+        }
+        for (_, session) in &changes.sessions {
+            self.bells.revoke(session)?;
         }
         for ((project, session), signal) in self.sessions.lock().map_err(|_| poisoned())?.iter() {
             if changes
@@ -167,6 +182,7 @@ impl Waits {
                     project == &signal.recipient.project && *found == signal.credential
                 })
             {
+                self.bells.revoke(session)?;
                 signal.changed.notify_one();
             }
         }
@@ -220,6 +236,12 @@ impl HostedRouter {
         let deadline = &bounded;
         let until = tokio::time::Instant::from_std(deadline.at() - Duration::from_secs(1));
         let first = self.mail_page(Arc::clone(&secret), deadline).await?;
+        if self.execution.mail_waits.bells.held(&first.session)? {
+            return Err(SeError::invalid(
+                "Claude mail hold",
+                "explicit /stateengine-mail-resume; new mail or reconnect never clears a human hold",
+            ));
+        }
         // Subscribe before the deciding read so a committed change cannot fall
         // between the snapshot and installing the event waiter.
         let wait =
@@ -235,6 +257,12 @@ impl HostedRouter {
                 ));
             }
             let page = self.mail_page(Arc::clone(&secret), deadline).await?;
+            if self.execution.mail_waits.bells.held(&page.session)? {
+                return Err(SeError::invalid(
+                    "Claude mail hold",
+                    "explicit /stateengine-mail-resume",
+                ));
+            }
             if !page.ids.is_empty() && after.as_deref() != Some(page.cursor.as_str()) {
                 return Ok(page);
             }

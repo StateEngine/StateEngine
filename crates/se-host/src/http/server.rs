@@ -185,6 +185,9 @@ async fn respond(
             Err(_) => status_only(StatusCode::INTERNAL_SERVER_ERROR),
         },
         Route::Mail => {
+            if request.headers().contains_key("x-se-mail-session") {
+                return super::mail::bell::respond(router, request, active).await;
+            }
             let secret = match admission::bearer(request.headers()) {
                 Ok(Some(secret)) => Arc::new(secret),
                 _ => {

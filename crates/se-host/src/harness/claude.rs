@@ -15,6 +15,7 @@ use std::{
     ffi::OsString,
     path::{Path, PathBuf},
 };
+pub mod bell;
 
 /// The MCP server name Claude prefixes onto tool names (mcp__stateengine__*).
 pub const MCP_SERVER: &str = "stateengine";

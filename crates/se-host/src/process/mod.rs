@@ -183,12 +183,15 @@ impl LaunchCoordinator {
                 max_buffer_bytes: 4 * 1024 * 1024,
             },
         ));
-        let harness = Arc::new(ClaudeHarness::new(
-            io.clone(),
-            options.helper_executable.to_local()?,
-            options.home.clone(),
-            options.http_port,
-        ));
+        let harness = Arc::new(
+            ClaudeHarness::new(
+                io.clone(),
+                options.helper_executable.to_local()?,
+                options.home.clone(),
+                options.http_port,
+            )
+            .with_bells(context.mail_waits.bells.clone()),
+        );
         #[cfg(unix)]
         let socket_root = host_runtime
             .socket_paths
