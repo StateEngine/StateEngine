@@ -24,9 +24,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
     Some(match name {
         "meta.help" => "Explain a command and its options",
         "meta.schema" => "Show registered operation input and output schemas",
-        "store.import_node" => {
-            "Import supported user history without changing the original Node state"
-        }
+        "store.import_node" => "Import retained history without changing its source files",
         "project.init" => "Register this folder and save your first agent",
         "doctor.inspect" => "Check this installation and name exact supported repairs",
         "project.status" => "Show project, agent and unread-message status",

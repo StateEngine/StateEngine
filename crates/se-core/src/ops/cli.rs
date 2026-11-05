@@ -313,7 +313,7 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(toggle("adopt").hide(true)),
         "doctor.repair" => c.arg(value("fix").help("Apply only this currently diagnosed CHECK-ID after printing its plan")),
         "store.import_node" => c
-            .arg(value("from_node").long("from-node").required(true).help("Path to the Node StateEngine home to import from"))
+            .arg(value("from_node").long("from-node").required(true).help("Copy of an earlier StateEngine data directory to import"))
             .arg(value("source_owner").long("source-owner").help("Source human ID explicitly adopted as the importing owner"))
             .arg(value("map_human").long("map-human").action(ArgAction::Append).help("Historical human ID=existing target human ID; repeat for each explicit correspondence")),
         "project.status" => c.arg(toggle("all").help("Also summarize every registered project, with its owner-mail counts")),

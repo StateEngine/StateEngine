@@ -65,12 +65,18 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         for agent in agents.items() {
             writeln!(
                 out,
-                "  {}: {} — unread {}",
+                "  Agent {}: {} — unread messages {}",
                 agent.name,
-                agent.session.state,
+                if agent.session.state == "never-launched" {
+                    "not started yet"
+                } else {
+                    &agent.session.state
+                },
                 count(agent.unread)
             )?;
-            super::transcript::render(&agent.session.transcript, out)?;
+            if agent.session.state != "never-launched" {
+                super::transcript::render(&agent.session.transcript, out)?;
+            }
             if let Some(reason) = &agent.session.containment_cause {
                 writeln!(
                     out,
@@ -120,16 +126,57 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             count(value.inbox.owner_unread)
         )?;
     }
-    writeln!(out, "Pending decisions: {}", count(value.decisions.pending))?;
+    writeln!(
+        out,
+        "Proposed decisions: {}",
+        value
+            .decisions
+            .pending
+            .map_or("not counted".into(), |value| value.to_string())
+    )?;
     writeln!(
         out,
         "Conversation recording: {}; code index: {}",
-        value.capture.state, value.atlas.state
+        if value.capture.state == "unknown" {
+            "not checked"
+        } else {
+            &value.capture.state
+        },
+        if value.atlas.state == "not-built" {
+            "not built"
+        } else {
+            &value.atlas.state
+        }
     )?;
     for pending in &value.pending {
-        writeln!(out, "Pending {}: {}", pending.what, pending.detail)?;
+        if pending.what == "runtime observation"
+            && pending
+                .detail
+                .starts_with("No runtime connection file was found.")
+        {
+            writeln!(
+                out,
+                "Background runtime: no connection file found. Running agents have not been checked; use se doctor for this home."
+            )?;
+        } else {
+            writeln!(out, "Pending {}: {}", pending.what, pending.detail)?;
+        }
     }
-    next_step(&value.next, out)
+    if let Read::Present { value: project } = &value.project
+        && let Some(agent) = value.agents.as_ref().and_then(|page| page.items().first())
+        && agent.session.state == "never-launched"
+        && value.next.argv.iter().any(|word| word == "launch")
+    {
+        first_launch(
+            &value.setup.home,
+            &project.root,
+            &agent.name,
+            &value.next,
+            out,
+        )
+    } else {
+        next_step(&value.next, out)
+    }
 }
 
 pub fn messages(value: &MessagePage, out: &mut impl Write) -> io::Result<()> {
@@ -188,6 +235,33 @@ pub fn schema(value: &SchemaCatalogue, out: &mut impl Write) -> io::Result<()> {
         out,
         "Use --json for the complete input, output and error schemas."
     )
+}
+
+pub(super) fn first_launch(
+    home: &str,
+    root: &str,
+    agent: &str,
+    next: &NextStep,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let command = se_core::ops::AgentCommand::from_argv(vec![
+        "se".into(),
+        "--home".into(),
+        home.into(),
+        "launch".into(),
+        agent.into(),
+        "--detach".into(),
+    ]);
+    let Some(command) = command else {
+        return next_step(next, out);
+    };
+    let command = if next.text.starts_with("In cmd.exe,") {
+        command.for_cmd().unwrap_or(command)
+    } else {
+        command
+    };
+    writeln!(out, "From the project folder {root}:")?;
+    writeln!(out, "{}: {}", next.text, command.command)
 }
 
 pub fn next_step(value: &NextStep, out: &mut impl Write) -> io::Result<()> {

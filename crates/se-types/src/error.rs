@@ -185,6 +185,15 @@ impl HumanValue for ImportFamilyIssue {
     }
 }
 fn render(template: &str, detail: &Detail, cx: Option<&RenderCx<'_>>) -> String {
+    // Some validations report an unmet requirement, not a supplied value.
+    // Keep secret-bearing values redacted without inventing a redacted input.
+    if template.contains("{got}")
+        && let Detail::UsageInvalidValue(value) = detail
+        && matches!(value.got.as_str(), "[redacted]" | "<redacted>")
+    {
+        return format!("{}: {}", value.argument, value.expected);
+    }
+
     let fields = detail.fields();
     let mut output = String::new();
     let mut rest = template;

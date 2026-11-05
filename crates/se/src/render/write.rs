@@ -1,6 +1,6 @@
 use super::{
     labels,
-    read::{next_step, notification, repo_line},
+    read::{notification, repo_line},
 };
 use se_core::{config_policy::ResolvedProfile, ops::outputs::*};
 use std::io::{self, Write};
@@ -46,7 +46,13 @@ pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
     if let Some(hint) = &value.import_hint {
         writeln!(out, "{hint}")?;
     }
-    next_step(&value.next, out)?;
+    super::read::first_launch(
+        &value.home,
+        &value.project.root,
+        &value.agent.name,
+        &value.next,
+        out,
+    )?;
     Ok(())
 }
 

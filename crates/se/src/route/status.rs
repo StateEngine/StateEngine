@@ -273,7 +273,7 @@ pub fn observe_snapshot<S: Snapshot>(
         Ok(Read::Absent { checked }) => output.pending.push(PendingFact {
             what: "runtime observation".into(),
             since: None,
-            detail: format!("{checked}; endpoint absence does not prove process or agent absence"),
+            detail: format!("No runtime connection file was found. Running agents have not been checked; use se doctor for this home. Details: {checked}"),
         }),
         Ok(_) => {
             return Err(scope::unreadable(

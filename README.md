@@ -39,7 +39,8 @@ shortened. Your agent’s wording and timestamps will differ.
          registered the project owner
          created the initial saved agent
          persisted the initial listener port
-       Launch your first agent: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
+       From the project folder /path/to/repo:
+       Launch your first agent: se --home /home/you/.local/state/stateengine launch main --detach
 
    `State home` above is the Linux default; macOS: `~/Library/Application Support/StateEngine`,
    Windows: `%LOCALAPPDATA%\StateEngine`. The profile line says what the agent may do; init
@@ -69,12 +70,12 @@ shortened. Your agent’s wording and timestamps will differ.
        Runtime: running
        Host: runs as a session process and stops when this login session ends
          PID ... (started 2026-11-05T02:06:07.140000Z)
-         main: running — unread 0
+         Agent main: running — unread messages 0
            Containment reason: The OS has not delegated a containment scope to this user.
            Resume: Ready to reopen the saved conversation.
        Owner unread messages: 0
-       Pending decisions: unknown
-       Conversation recording: unknown; code index: not-built
+       Proposed decisions: not counted
+       Conversation recording: not checked; code index: not built
        Inspect your saved agent: se --home /home/you/.local/state/stateengine --project prj_... agent show ag_...
 
 5. Read what it did: a plain task launch reports in its conversation and in your folder, not by floor mail:
@@ -183,9 +184,16 @@ Dependency direction: se-types <- se-store <- se-core <- se-host <- se; se-proc 
 se-atlas depends on se-types and se-store. Authors write no tests; reviewers add black-box tests;
 the five journey scripts are the acceptance judge. Line counts are estimates, never caps.
 
-Before upgrading, run `se down` for each running data home (use the same `--home`
-as its host), then install the new release and run `se up`. An existing Windows
-host keeps the pipe name chosen by its original executable until restarted.
+To upgrade, first run `se --home HOME down` for every running data home. In your
+own terminal, run the old installation's `se --home INSTALL_HOME uninstall` and
+wait for it to finish successfully; this keeps history, conversations, identity,
+credentials, configuration and repository files. Then install the new archive and
+run `se --home HOME up` for each home. Reinstalling over an existing executable
+refuses safely, even after down; uninstall is required before installing again.
+On Windows, run the old release archive's `uninstall.ps1` instead of direct
+`se uninstall` and wait for its final successful completion before installing the
+new release. Use each home's original path throughout; an old Windows host keeps
+the pipe name chosen by its executable until restarted.
 
 To import existing Node user history, first preserve a source copy containing its
 `.stateengine/projects.jsonl`, named project history, and saved profiles. Initialize

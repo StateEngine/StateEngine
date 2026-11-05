@@ -126,8 +126,15 @@ fn prepare<S: Snapshot>(
         }
         other => missing(other),
     };
-    let capture = capture_evidence(project, &session, row, read)
-        .unwrap_or_else(|error| unreadable("committed conversation capture", error));
+    let capture = capture_evidence(
+        project,
+        &session,
+        &row.id,
+        row.conversation.id.as_deref(),
+        row.session.recorded_state.as_deref() == Some("activated"),
+        read,
+    )
+    .unwrap_or_else(|error| unreadable("committed conversation capture", error));
     Ok(AgentObservationPlan {
         project: project.clone(),
         command_home: None,
@@ -145,7 +152,9 @@ fn prepare<S: Snapshot>(
 fn capture_evidence<S: Snapshot>(
     project: &ProjectId,
     session: &se_types::SessionId,
-    row: &AgentRow,
+    agent: &se_types::AgentId,
+    conversation: Option<&str>,
+    active: bool,
     read: &mut S,
 ) -> Result<Read<SourceEvidence>> {
     let source_id = process_commit::session_credential_id(session, "capture-source")?;
@@ -163,7 +172,7 @@ fn capture_evidence<S: Snapshot>(
         ));
     }
     if !matches!(&first.body,EventBody::CaptureSource {session:found,consent:Consent::Capture,native_ref,..}
-        if found==session && row.conversation.id.as_ref()==Some(native_ref))
+        if found==session && conversation==Some(native_ref.as_str()))
     {
         return Ok(Read::Unknown {
             what: "No capture consent and source are bound to this session".into(),
@@ -171,7 +180,7 @@ fn capture_evidence<S: Snapshot>(
     }
     // A terminal session was published only after final capture succeeded.
     // While active, preserve errors newer than the last committed progress.
-    if row.session.recorded_state.as_deref() == Some("activated") {
+    if active {
         let failures = read
             .history(
                 se_store::HistoryQuery {
@@ -239,7 +248,7 @@ fn capture_evidence<S: Snapshot>(
     };
     if let Some(evidence) = replay {
         let EventBody::SessionTurn {
-            agent,
+            agent: selected_agent,
             provider: backend @ (se_store::Provider::Claude | se_store::Provider::Codex),
             vendor_ref,
             text: StoredText::Present(_),
@@ -254,7 +263,7 @@ fn capture_evidence<S: Snapshot>(
             "resumed native item",
             scope::COMMITTED_READ_RECOVERY,
         )?;
-        if *agent == row.id
+        if selected_agent == agent
             && original.header.event == turn.header.event
             && &evidence.incarnation == incarnation
             && evidence.offset == from
@@ -277,7 +286,7 @@ fn capture_evidence<S: Snapshot>(
             text: StoredText::Present(_),
             ..
         } if &found == session
-            && principal == row.id
+            && &principal == agent
             && &evidence.incarnation == incarnation
             && evidence.offset == from
             && evidence.offset.checked_add(evidence.length) == Some(to)
@@ -288,5 +297,38 @@ fn capture_evidence<S: Snapshot>(
         _ => Err(invalid(
             "the current capture cursor and its exact original source evidence",
         )),
+    }
+}
+
+/// Copy the same trusted file evidence used by status before a native reopen.
+/// Historical imports and event-only capture do not assert a local file path.
+pub(crate) fn resume_source<S: Snapshot>(
+    plan: &se_core::ops::agent_launch::LaunchPlan,
+    read: &mut S,
+) -> Result<Option<se_types::NativePath>> {
+    let Read::Present { value: latest } = &plan.control.latest_session else {
+        return Ok(None);
+    };
+    let first = latest.original.as_deref().unwrap_or(&latest.current);
+    if first.header.door == se_store::Door::Import {
+        return Ok(None);
+    }
+    let EventBody::SessionPrepared { session, .. } = &first.body else {
+        return Err(invalid("the original saved session preparation"));
+    };
+    let conversation = match &plan.conversation {
+        Read::Present { value } => Some(value.as_str()),
+        _ => return Ok(None),
+    };
+    match capture_evidence(
+        &plan.project.id,
+        session,
+        &plan.agent.id,
+        conversation,
+        matches!(latest.current.body, EventBody::SessionActivated { .. }),
+        read,
+    )? {
+        Read::Present { value } => Ok(value.path),
+        _ => Ok(None),
     }
 }
