@@ -9,10 +9,13 @@ use se_types::{Read, Result};
 use std::{path::Path, time::Duration};
 #[path = "setup/recovery.rs"]
 mod recovery;
+#[path = "setup/space.rs"]
+mod space;
 pub(super) use recovery::quarantine;
 
 /// CLI presentation adds literal home-bound commands without changing the cause.
 pub fn with_recovery_remedy(mut error: se_types::SeError, home: &Path) -> se_types::SeError {
+    error = space::diagnose(error, home);
     if error.code() == se_types::Code::StoreCorrupt
         && let Ok(text) = recovery::corrupt_remedy(home)
     {

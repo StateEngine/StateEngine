@@ -200,6 +200,11 @@ class DoctorPermissions(unittest.TestCase):
             completed, _ = self.call('missing-owner-write', ['doctor', '--fix', 'store.permissions'], terminal=True)
             self.assertNotEqual(completed.returncode, 0)
             self.assertEqual(stat.S_IMODE(self.db.stat().st_mode), 0o400)
+            _, diagnosis = self.call('missing-owner-write-diagnosis', ['doctor'])
+            check, = [row for row in diagnosis['checks'] if row['id'] == 'store.permissions']
+            self.assertFalse(check['repairable'])
+            self.assertEqual(check['fix']['argv'], ['chmod', '0600', '--', str(self.db)])
+            self.assertIn('owner', check['fix']['text'])
             self.unchanged()
         finally:
             self.db.chmod(0o600)
