@@ -4,10 +4,47 @@ use se_host::*;
 use se_store::*;
 use se_types::{NativePath, ProviderSessionId, SessionId, Sha256};
 use serde_json::json;
+use std::time::{Duration, Instant};
 use std::{fs::OpenOptions, io::Write};
 #[path = "support/wave2_host_fixture.rs"]
 mod support;
 use support::*;
+
+fn observed_conversation(
+    f: &Fixture,
+    mut read: impl Snapshot,
+) -> Result<se_core::ops::AgentRow, Box<dyn std::error::Error>> {
+    let admission = f.owner_project();
+    let mut row = present(
+        se_core::ops::agent_status::show(
+            se_core::ops::AgentShow {
+                target_agent_id: Some(f.a.clone()),
+            },
+            &mut se_core::commit::Cx {
+                read: &mut read,
+                admission: &admission,
+            },
+        )?
+        .agent,
+    )?;
+    let plan = prepare_agent_observation(&f.project, &row, &mut read)?;
+    read.close()?;
+    observe_agent(plan, Instant::now() + Duration::from_secs(2))?.apply(&mut row)?;
+    Ok(row)
+}
+
+fn unavailable(row: &se_core::ops::AgentRow, reason: &str) {
+    assert_eq!(row.conversation.state, "unverifiable");
+    assert!(!row.resume.ready && row.resume.command.is_none() && row.resume.argv.is_none());
+    assert!(
+        row.resume
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains(reason)),
+        "{:?}",
+        row.resume.reason
+    );
+}
 
 fn setup(
     f: &Fixture,
@@ -97,6 +134,24 @@ fn resume_capture(backend: Provider) -> Check {
     let first_pin = se_proc::NativeSourcePin::open(&original_path)?.ok_or("first pin absent")?;
     let second_pin = se_proc::NativeSourcePin::open(&resumed_path)?.ok_or("second pin absent")?;
     let (mut direct, lease) = direct(&f)?;
+    direct.append(
+        f.batch(
+            f.owner_project(),
+            Some(fixture::request("saved-profile")?),
+            vec![EventBody::ProfileSaved {
+                agent: f.a.clone(),
+                profile: Profile {
+                    provider: backend,
+                    model: None,
+                    permission: PermissionProfile::WorkspaceWrite,
+                    named_profile: "default".into(),
+                    effort: None,
+                },
+                expected: Expected::Absent,
+            }],
+        )?,
+        &*lease,
+    )?;
     direct.append(
         f.batch(
             f.owner_project(),
@@ -234,6 +289,41 @@ fn resume_capture(backend: Provider) -> Check {
                     )?;
                 }
                 snapshot.close()?;
+                // Status must use this new source range to verify the retained
+                // native event, even though the event belongs to the old session.
+                let snapshot = execution.reader.snapshot(f.scoped(Visibility::Owner))?;
+                let row = observed_conversation(&f, snapshot)?;
+                assert_eq!(row.conversation.state, "saved", "{:?}", row.resume.reason);
+
+                // Keep the inode and length; only the committed bytes differ.
+                let original = std::fs::read(&resumed_path)?;
+                let mut changed = original.clone();
+                let last = changed
+                    .iter_mut()
+                    .rev()
+                    .find(|b| **b == b't')
+                    .ok_or("text byte")?;
+                *last = b'x';
+                std::fs::write(&resumed_path, changed)?;
+                let snapshot = execution.reader.snapshot(f.scoped(Visibility::Owner))?;
+                let row = observed_conversation(&f, snapshot)?;
+                unavailable(&row, "unchanged bytes");
+                std::fs::write(&resumed_path, &original)?;
+
+                // A missing or replaced file cannot borrow the retained event's
+                // old evidence, even when the replacement bytes are identical.
+                let saved = resumed_path.with_extension("saved");
+                std::fs::rename(&resumed_path, &saved)?;
+                let snapshot = execution.reader.snapshot(f.scoped(Visibility::Owner))?;
+                unavailable(&observed_conversation(&f, snapshot)?, "file is absent");
+                std::fs::write(&resumed_path, &original)?;
+                let snapshot = execution.reader.snapshot(f.scoped(Visibility::Owner))?;
+                unavailable(
+                    &observed_conversation(&f, snapshot)?,
+                    "original captured file incarnation",
+                );
+                std::fs::remove_file(&resumed_path)?;
+                std::fs::rename(saved, &resumed_path)?;
                 let mut file = OpenOptions::new().append(true).open(&resumed_path)?;
                 for n in 6..9 {
                     writeln!(file, "{}", record(n, backend))?;
