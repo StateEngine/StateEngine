@@ -25,8 +25,9 @@ impl Plan {
         let expected = *Sha256::parse_hex(&self.record_sha256)?.as_bytes();
         let record_path = installation.state_home().join("standalone-install.json");
         let native = |error: se_proc::StateFileError| {
-            se_core::scope::unreadable("private uninstall record", &error.to_string())
-                .with_cause(error)
+            crate::installation_error::map(error, |error| {
+                se_core::scope::unreadable("private uninstall record", &error.to_string())
+            })
         };
         let claim = se_proc::NativeInstallationClaim::acquire().map_err(native)?;
         let mut record = OwnedFile::open(&record_path)

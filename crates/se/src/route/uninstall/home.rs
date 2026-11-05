@@ -20,10 +20,12 @@ pub(super) fn execute(
     };
     let files = route::files::Files::open(&cx.home).map_err(|e| store_error(&e))?;
     let _claim = se_proc::NativeInstallationClaim::acquire().map_err(|e| {
-        scope::unreadable(
-            "initialized-home cleanup installation exclusion",
-            &e.to_string(),
-        )
+        crate::installation_error::map(e, |e| {
+            scope::unreadable(
+                "initialized-home cleanup installation exclusion",
+                &e.to_string(),
+            )
+        })
     })?;
     match files
         .readback(&cx.home.join("standalone-install.json"))

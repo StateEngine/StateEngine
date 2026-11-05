@@ -3,6 +3,7 @@ mod compat;
 mod config;
 mod grammar;
 mod hook;
+mod installation_error;
 mod installer;
 mod ipc;
 mod mcp;

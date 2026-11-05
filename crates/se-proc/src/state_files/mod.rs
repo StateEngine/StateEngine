@@ -46,6 +46,21 @@ pub struct StateFileError {
     pub path: PathBuf,
     pub source: Option<io::Error>,
 }
+impl StateFileError {
+    /// A measured nonblocking native lock refusal, distinct from access failure.
+    pub fn is_contended(&self) -> bool {
+        self.source.as_ref().is_some_and(|error| {
+            if error.kind() == io::ErrorKind::WouldBlock {
+                return true;
+            }
+            #[cfg(windows)]
+            if error.raw_os_error() == Some(33) {
+                return true;
+            } // ERROR_LOCK_VIOLATION
+            false
+        })
+    }
+}
 crate::native_error::native_error!(StateFileError, |error, out| {
     write!(out, "{} at {}: {:?}", error.operation, error.path.display(), error.code)?;
     if let Some(source) = &error.source {

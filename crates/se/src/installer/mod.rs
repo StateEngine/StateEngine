@@ -150,15 +150,17 @@ pub fn run(args: &[OsString]) -> Result<i32> {
     result
 }
 fn native(error: se_proc::StateFileError) -> SeError {
-    SeError::new(se_types::Detail::StateConflict(
-        se_types::details::StateConflict {
-            subject: "native installation preparation".into(),
-            reason: error.to_string(),
-            next_step: "Preserve the reported paths and retry after install or uninstall finishes"
-                .into(),
-        },
-    ))
-    .with_cause(error)
+    crate::installation_error::map(error, |error| {
+        SeError::new(se_types::Detail::StateConflict(
+            se_types::details::StateConflict {
+                subject: "native installation preparation".into(),
+                reason: error.to_string(),
+                next_step:
+                    "Preserve the reported paths and retry after install or uninstall finishes"
+                        .into(),
+            },
+        ))
+    })
 }
 fn cleanup(creation: &mut se_proc::NativeDirectoryCreation) {
     for entry in creation.rollback() {

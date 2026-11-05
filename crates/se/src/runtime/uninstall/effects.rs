@@ -1,6 +1,8 @@
 use super::*;
 pub(super) fn native_error(error: StateFileError) -> SeError {
-    se_core::scope::unreadable("native installation custody", &error.to_string()).with_cause(error)
+    crate::installation_error::map(error, |error| {
+        se_core::scope::unreadable("native installation custody", &error.to_string())
+    })
 }
 pub(super) fn clock() -> String {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
