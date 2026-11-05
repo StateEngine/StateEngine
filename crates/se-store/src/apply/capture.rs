@@ -231,6 +231,7 @@ fn bound_session(
     scope: &[u8],
     session: &SessionId,
     h: &EventHeader,
+    initial_source: bool,
 ) -> StoreResult<(Vec<u8>, crate::codec::session::SessionHead)> {
     let id = key(c, "session", session.as_str(), scope, false)?;
     let head = codec::session::head(c, p, &id)?;
@@ -238,10 +239,17 @@ fn bound_session(
     if let Actor::Agent(actor) = &h.actor
         && (*actor != agent || h.session.as_ref() != Some(session))
     {
-        return Err(fail(
-            StoreErrorCode::ScopeMismatch,
-            "capture actor differs from the bound session agent",
-        ));
+        if initial_source && *actor != agent {
+            // Launch C3 registers its first source under the creator's
+            // admission. Recheck direct-child control in this write; this
+            // never authorizes turns, progress, or source replacement.
+            crate::creator::require(c, p, scope, actor, &head.agent)?;
+        } else {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "capture actor differs from the bound session agent",
+            ));
+        }
     }
     if !matches!(head.state.as_str(), "active" | "prepared")
         && !(h.door == Door::Import && head.state == "ended")
@@ -275,7 +283,7 @@ pub(super) fn apply(
             text,
             evidence,
         } => {
-            let (session, head) = bound_session(c, &p, &scope, &session, h)?;
+            let (session, head) = bound_session(c, &p, &scope, &session, h, false)?;
             let a = key(c, "agent", agent.as_str(), &scope, false)?;
             if !(head.state == "active" || h.door == Door::Import && head.state == "ended")
                 || head.consent != "capture"
@@ -330,7 +338,7 @@ pub(super) fn apply(
             incarnation,
             ..
         } => {
-            let (session, head) = bound_session(c, &p, &scope, &session, h)?;
+            let (session, head) = bound_session(c, &p, &scope, &session, h, rev == 1)?;
             if head.consent != consent(capture)
                 || native_ref.is_empty()
                 || native_ref.len() > 32768
@@ -389,7 +397,7 @@ pub(super) fn apply(
             cause,
             ..
         } => {
-            bound_session(c, &p, &scope, &session, h)?;
+            bound_session(c, &p, &scope, &session, h, false)?;
             let valid:bool=c.query_row("SELECT EXISTS(SELECT 1 FROM capture_sources WHERE project_id=? AND source_id=? AND session_id=?)",rusqlite::params![p,source.as_bytes().as_slice(),key(c,"session",session.as_str(),&scope,false)?],|r|r.get(0)).map_err(sql)?;
             if !valid
                 || from_offset > to_offset
@@ -409,7 +417,7 @@ pub(super) fn apply(
             reason,
             ..
         } => {
-            bound_session(c, &p, &scope, &session, h)?;
+            bound_session(c, &p, &scope, &session, h, false)?;
             if to_offset < from_offset || to_offset > i64::MAX as u64 || reason.len() > 16384 {
                 return Err(invalid("capture suppression range/reason bounds"));
             }

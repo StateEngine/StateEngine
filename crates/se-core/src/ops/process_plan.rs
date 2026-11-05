@@ -174,7 +174,15 @@ pub fn launch<R: Snapshot>(
             .map(|_| unreachable!());
         }
     };
-    let conversation = if input.fresh {
+    let conversation = if replayed {
+        // The host reuses the retained outcome or refuses an unavailable retry.
+        // Selecting a new conversation here also reads a child's private capture
+        // source for Codex, which its creator is not entitled to inspect.
+        Read::Unknown {
+            what: "a launch retry reuses its original outcome; no new conversation was selected"
+                .into(),
+        }
+    } else if input.fresh {
         Read::Absent {
             checked: "an explicitly new provider conversation was requested".into(),
         }

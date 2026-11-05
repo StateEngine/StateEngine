@@ -14,6 +14,7 @@ mod control;
 mod cursor;
 mod decision;
 mod decision_heads;
+mod grant;
 mod history;
 mod import;
 mod mail;
@@ -258,11 +259,12 @@ impl Snapshot for SqliteSnapshot {
             },
             false,
         )?;
-        self.head(
+        self.head_with(
             "grants",
             "scope_key=? AND principal_id=? AND grant_key=?",
             &[&scope, &a, &codec::encode(&grant)?],
             None,
+            &|seq| self.grant_event(seq, &principal, &grant),
         )
     }
     fn working_state(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>> {

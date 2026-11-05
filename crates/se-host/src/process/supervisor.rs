@@ -54,7 +54,7 @@ impl LaunchCoordinator {
             admission.scope, admission.actor, plan.input.idempotency_key
         );
         let intent = Sha256::digest(
-            serde_json::to_vec(&serde_json::json!({"input":plan.input,"agent":plan.agent.id}))
+            serde_json::to_vec(&plan.input.intent(&plan.agent.id)?)
                 .map_err(|e| error("launch intent", e))?,
         )
         .into();

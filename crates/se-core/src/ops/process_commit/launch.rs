@@ -114,9 +114,7 @@ pub fn reserve<R: Snapshot>(
             expected: Expected::Absent,
         });
     }
-    let mut intent = serde_json::to_value(&plan.input)
-        .map_err(|e| scope::unreadable("launch intent", &e.to_string()))?;
-    intent["selected_agent"] = serde_json::json!(plan.agent.id);
+    let intent = plan.input.intent(&plan.agent.id)?;
     batch(
         kernel,
         "agent.launch",

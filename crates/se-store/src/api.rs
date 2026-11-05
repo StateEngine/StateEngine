@@ -465,6 +465,8 @@ pub trait Snapshot {
     fn principals(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn principal(&mut self, id: Actor) -> StoreResult<Read<ProjectionRecord>>;
     fn profile(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
+    /// Current permission projection. SelfOnly may read its own AgentCanCreate
+    /// grant for authorization; this does not admit the event to ordinary reads.
     fn grant(&mut self, principal: Actor, key: GrantKey) -> StoreResult<Read<ProjectionRecord>>;
     fn session(&mut self, id: SessionId) -> StoreResult<Read<ProjectionRecord>>;
     fn sessions(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
