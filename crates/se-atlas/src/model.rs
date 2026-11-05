@@ -19,6 +19,9 @@ pub const PARSER_BYTES: u32 = 12_000_000;
 pub const QUEUE_BYTES: u32 = 50_000;
 pub const ADAPTER_BYTES: u32 = 200_000;
 pub const ALLOCATOR_SLACK_BYTES: u32 = 146_918;
+/// One finite source turn includes a separately bounded 200 ms parse, live
+/// source verification, resolution and its atomic cache transaction.
+pub const MAX_WORK_QUANTUM: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CacheLocation {

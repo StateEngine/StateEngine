@@ -282,8 +282,8 @@ impl<R: Runtime> AtlasController for Controller<R> {
         Ok(receipt)
     }
     fn work_quantum(&mut self, allowance: Duration) -> AtlasResult<Option<WorkReport>> {
-        if allowance.is_zero() || allowance > Duration::from_millis(200) {
-            return Err(se_types::SeError::invalid("Atlas quantum", "1 ns..200 ms"));
+        if allowance.is_zero() || allowance > MAX_WORK_QUANTUM {
+            return Err(se_types::SeError::invalid("Atlas quantum", "1 ns..500 ms"));
         }
         let now = Instant::now();
         let deadline = now + allowance;

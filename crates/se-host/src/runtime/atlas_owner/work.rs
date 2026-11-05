@@ -50,7 +50,7 @@ impl State {
             // A qualified parse may use 200 ms. Its source checks, resolution
             // and atomic SQL commit need a finite margin in the same turn;
             // repeatedly restarting them at 100 ms could never finish a file.
-            && let Err(error) = drive_quantum(&mut self.controller, Duration::from_millis(500))
+            && let Err(error) = drive_quantum(&mut self.controller, MAX_WORK_QUANTUM)
         {
             eprintln!("Code index source work paused: {error}");
         }
