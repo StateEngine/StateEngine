@@ -194,7 +194,7 @@ fn capture_and_read(provider: Provider) -> Check {
             "fresh known arguments became legacy unknown",
         )?;
     }
-    let (mut reader, lease) = direct(&f)?;
+    let (reader, lease) = direct(&f)?;
     let mut snapshot = reader.snapshot(f.self_scope(&f.a))?;
     let turns = snapshot.turns(f.a.clone(), budget(10, 100_000, None)?)?;
     for event in turns.items() {
