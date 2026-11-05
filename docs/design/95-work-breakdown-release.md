@@ -21,7 +21,7 @@ section 10 exact statically linked API boundary is an integration dependency;
 JSON families keep their own schema versions, without N-1 encoders or schema-freeze
 tooling for this first release.
 
-SE Code's current integration target is the Rust SE Code server in `E:\rust-secode`,
+SE Code's current integration target is its Rust server in the SE Code repository,
 branch `dev`, source `58e8a145f`: `secode-server` is the binary in
 `crates/secode-product`, `secode.exe` is `crates/secode-cli` (including
 `installation/`), and `secode-tui-r` is `crates/secode-tui-r`. The frozen TypeScript

@@ -49,7 +49,7 @@ se-store, plus SE Code's side. `forget` stays in alpha (Jimmy), about 600 lines.
 | E7 Linux containment | what ssh, Docker and WSL2 hosts actually get | **PASS**, 20/20 native cases. Desktop, real SSH, rootless Podman and WSL2 (Ubuntu 26.04 with systemd) are contained where a user manager exists. SSH needs the short helper inside a fresh per-launch scope over D-Bus (30 §5.2). Scopes ship in wave 4 (Jimmy 2026-10-31); waves 1–3 use the process-group path on Linux, as macOS does. Docker without systemd, ordinary or privileged, is honestly uncontained with cause no-user-manager. A systemd-enabled container is not tested |
 | E8 Cold hook start | host-start versus direct write on Windows with Defender | **PASS, settled**: 100 pairs with Defender on; host-start p95 82.5 ms, direct p95 88.1 ms. A hook with no host starts the host privately and never writes directly (40 §9.3). Routing is settled; production hook latency is measured in wave 2 |
 | Lost-ACK slice | one message after a dropped reply, through CLI, IPC, MCP and the linked API | Pending |
-| E9 SE Code real server | the integration target is SE Code's Rust server, not the frozen TypeScript one | **DONE** (SE Code): `E:\rust-secode` branch dev, `crates/secode-product`, caret pins, axum `=0.8.9` |
+| E9 SE Code real server | the integration target is SE Code's Rust server, not the frozen TypeScript one | **DONE** (SE Code): Rust source repository, branch dev, `crates/secode-product`, caret pins, axum `=0.8.9` |
 | Runner | the journey runner judges Rust from a Rust-only map, launched outside agent trees | **PASS**: the pinned judge rejects a zero-exit native stub, launched outside the agent tree, on Linux and on Windows (2026-10-31) |
 
 ## Build order

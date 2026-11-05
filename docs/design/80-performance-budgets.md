@@ -11,7 +11,7 @@ with real Claude and Codex on Windows, Linux and the borrowed-Mac campaign,
 including standalone and embedded SE Code. Mac implementation does not delay
 the earlier build, but native Mac qualification precedes alpha shipment.
 
-The embedding target is the Rust `secode-server` in `E:\rust-secode`,
+The embedding target is the Rust `secode-server` in the SE Code repository,
 `crates/secode-product`, branch dev at `58e8a145f`; the CLI/install owner is
 `crates/secode-cli`, and the TUI is `crates/secode-tui-r`. S3 linked a private
 copy of that server; its existing measurements are not an unrelated TypeScript

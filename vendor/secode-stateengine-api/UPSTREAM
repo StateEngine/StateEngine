@@ -1,4 +1,4 @@
-Permissive SE Code API source: windows:E:/rust-secode commit baec40152bf71557a151a2c1989d4ba3c575995a.
+Permissive SE Code API source: SE Code repository, commit baec40152bf71557a151a2c1989d4ba3c575995a.
 Upstream crate: crates/secode-stateengine-api; licensed MIT OR Apache-2.0.
 Cargo.toml alone makes workspace-inherited edition and lints explicit.
 The source files below match the upstream Git objects byte for byte (SHA-256):
