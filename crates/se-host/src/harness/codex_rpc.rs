@@ -2,11 +2,13 @@
 //! interruption. The coordinator alone publishes activation and native exit.
 mod attach;
 mod channel;
+mod connection;
 #[cfg(target_os = "linux")]
 mod console;
 mod location;
 mod mail;
 mod probe;
+mod recovery;
 mod rpc;
 pub use rpc::RequestFailure;
 mod state;
@@ -48,7 +50,7 @@ pub struct CodexHarness {
 /// actual completed item/turn notifications. No synthesized provider input.
 pub struct Binding {
     io: Arc<dyn ProviderIoPlatform>,
-    port: Arc<ProviderTransport>,
+    port: Option<Arc<ProviderTransport>>,
     sender: tokio::sync::Mutex<channel::Sender>,
     state: Mutex<state::State>,
     pub(crate) completion: state::Completion,
@@ -387,10 +389,13 @@ async fn close(binding: &Binding, cx: &CallContext) -> Result<()> {
         }
     }
     *binding.sender.lock().await = channel::Sender::Closed;
-    binding
-        .io
-        .close(&binding.port, context(cx.generation, cx.timeout))
-        .await
+    if let Some(port) = &binding.port {
+        binding
+            .io
+            .close(port, context(cx.generation, cx.timeout))
+            .await?;
+    }
+    Ok(())
 }
 pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Binding> {
     binding

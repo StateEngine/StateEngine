@@ -1,6 +1,7 @@
 //! Reconcile the protected inventory once, before listener readiness. A bad
 //! observation fences its own agent; it never grants a new launch or signal.
 mod metadata;
+mod provider;
 use super::{
     owned::{LifecycleMetadata, Work},
     supervisor::Job,
@@ -261,6 +262,13 @@ impl LaunchCoordinator {
                             )
                         })
                         .await?;
+                    work.recover_provider = failure.is_none()
+                        && work.active
+                        && !work.session_retired
+                        && !matches!(
+                            retained.state,
+                            ProcessState::StopRequested | ProcessState::StopUnproved
+                        );
                     let job = self.retain_recovered(work)?;
                     if failure.is_none() {
                         let coordinator = self.clone();
@@ -379,7 +387,12 @@ impl LaunchCoordinator {
         let key = format!("recovered/{}", work.meta.lifecycle);
         let wake = work.wake.clone();
         let job = Arc::new(Job {
-            fault: std::sync::Mutex::new(None),
+            fault: std::sync::Mutex::new(work.recover_provider.then(|| {
+                format!(
+                    "Restoring {:?} provider control for agent {} ({}) in its original session {}",
+                    work.meta.provider, work.meta.agent.name, work.meta.agent.id, work.meta.session
+                )
+            })),
             intent: [0; 32],
             target: (work.meta.project.id.clone(), work.meta.agent.id.clone()),
             lifecycle: work.meta.lifecycle.clone(),

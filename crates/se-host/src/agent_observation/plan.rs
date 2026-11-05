@@ -28,6 +28,7 @@ pub fn prepare_agent_observation<S: Snapshot>(
                 row,
                 process: unreadable("agent session preparation", &error),
                 capture: unreadable("agent session preparation", &error),
+                control_failure: None,
             })
         }
     }
@@ -49,6 +50,7 @@ fn prepare<S: Snapshot>(
             capture: Read::Absent {
                 checked: "no launched conversation to verify".into(),
             },
+            control_failure: None,
         });
     };
     let head = scope::require_present(
@@ -93,8 +95,17 @@ fn prepare<S: Snapshot>(
             other => missing(other),
         },
     };
+    let mut control_failure = None;
     let process = match process {
         Read::Present { value } => {
+            let failure = match &value.current.body {
+                EventBody::ProcessTransition {
+                    to: se_store::ProcessState::StopUnproved | se_store::ProcessState::Lost,
+                    outcome,
+                    ..
+                } => Some(outcome.clone()),
+                _ => None,
+            };
             let identity = match value.current.body {
                 EventBody::ProcessRegistered { identity, .. }
                 | EventBody::ProcessTransition { identity, .. } => *identity,
@@ -109,6 +120,7 @@ fn prepare<S: Snapshot>(
                     "a process projection belonging to this exact agent session",
                 ));
             } else {
+                control_failure = failure;
                 Read::Present { value: identity }
             }
         }
@@ -127,6 +139,7 @@ fn prepare<S: Snapshot>(
         row: row.clone(),
         process,
         capture,
+        control_failure,
     })
 }
 fn capture_evidence<S: Snapshot>(

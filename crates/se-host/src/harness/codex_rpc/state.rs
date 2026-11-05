@@ -21,6 +21,7 @@ pub struct IgnoredNotifications {
 #[derive(Default)]
 pub(super) struct State {
     pub capture: bool,
+    pub restoring: bool,
     pub ignored: IgnoredNotifications,
     pub sequence: wire::Requests,
     pub pending: BTreeMap<i64, oneshot::Sender<Reply>>,
@@ -131,6 +132,81 @@ impl Binding {
     }
 }
 impl State {
+    fn retain(&mut self, event: Value) -> Result<()> {
+        let size = encoded_size(&event)?;
+        if self.canonical.len() >= 128
+            || size > (2 * wire::MAX_LINE_BYTES).saturating_sub(self.canonical_bytes)
+        {
+            return Err(se_core::scope::unreadable(
+                "Codex capture queue",
+                "canonical notification capacity reached; preserve the trusted rollout and committed cursor for catch-up",
+            ));
+        }
+        self.canonical_bytes += size;
+        self.canonical.push_back(event);
+        Ok(())
+    }
+    #[cfg(any(unix, test))]
+    pub(super) fn restore(&mut self, response: &Value) -> Result<()> {
+        let invalid = || {
+            SeError::invalid(
+                "Codex recovery snapshot",
+                "the exact original thread with a bounded, consistent current turn",
+            )
+        };
+        if !self.restoring
+            || self.conversation.as_ref().map(|id| id.as_str())
+                != response.pointer("/thread/id").and_then(Value::as_str)
+        {
+            return Err(invalid());
+        }
+        let turns = response
+            .pointer("/thread/turns")
+            .and_then(Value::as_array)
+            .ok_or_else(invalid)?;
+        let mut active = None;
+        let mut completed = VecDeque::new();
+        for turn in turns {
+            let id = turn
+                .get("id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty() && id.len() <= 512 && !id.chars().any(char::is_control))
+                .ok_or_else(invalid)?;
+            match turn.get("status").and_then(Value::as_str) {
+                Some("inProgress") if active.is_none() => active = Some(id.to_owned()),
+                Some("completed" | "failed" | "interrupted") => {
+                    if completed.len() == 64 {
+                        completed.pop_front();
+                    }
+                    completed.push_back(id.to_owned());
+                }
+                _ => return Err(invalid()),
+            }
+        }
+        match response
+            .pointer("/thread/status/type")
+            .and_then(Value::as_str)
+        {
+            Some("active") if active.is_some() => (),
+            Some("idle") if active.is_none() => (),
+            _ => return Err(invalid()),
+        }
+        self.active_turn = active;
+        self.completed = completed;
+        self.restoring = false;
+        let pending = std::mem::take(&mut self.canonical);
+        self.canonical_bytes = 0;
+        for event in pending {
+            let method = event
+                .get("method")
+                .and_then(Value::as_str)
+                .ok_or_else(invalid)?
+                .to_owned();
+            let params = event.get("params").cloned().ok_or_else(invalid)?;
+            self.observe(method, params)?;
+        }
+        Ok(())
+    }
     fn observe(&mut self, method: String, params: Value) -> Result<bool> {
         if !matches!(
             method.as_str(),
@@ -153,6 +229,10 @@ impl State {
                 return Ok(false);
             }
             Some(_) => (),
+        }
+        if state.restoring {
+            state.retain(json!({"method":method,"params":params}))?;
+            return Ok(false);
         }
         if method.starts_with("turn/") {
             let id = params
@@ -220,18 +300,7 @@ impl State {
             }
         }
         if state.capture && method != "turn/started" {
-            let event = serde_json::json!({"method":method,"params":params});
-            let size = encoded_size(&event)?;
-            if state.canonical.len() >= 128
-                || size > (2 * wire::MAX_LINE_BYTES).saturating_sub(state.canonical_bytes)
-            {
-                return Err(se_core::scope::unreadable(
-                    "Codex capture queue",
-                    "canonical notification capacity reached; preserve the trusted rollout and committed cursor for catch-up",
-                ));
-            }
-            state.canonical_bytes += size;
-            state.canonical.push_back(event);
+            state.retain(json!({"method":method,"params":params}))?;
         }
         Ok(true)
     }
@@ -252,6 +321,48 @@ mod tests {
             active_turn: Some("main-turn".into()),
             ..Default::default()
         })
+    }
+    #[test]
+    fn restart_snapshot_replays_a_completion_received_during_resume() -> Result<()> {
+        let mut state = state(true)?;
+        state.restoring = true;
+        state.active_turn = None;
+        state.observe(
+            "item/completed".into(),
+            json!({"threadId":"main-thread","turnId":"main-turn","item":{"id":"reply"}}),
+        )?;
+        state.observe(
+            "turn/completed".into(),
+            json!({"threadId":"main-thread","turn":{"id":"main-turn","status":"completed"}}),
+        )?;
+        state.restore(&json!({"thread":{"id":"main-thread","status":{"type":"active"},"turns":[{"id":"main-turn","status":"inProgress"}]}}))?;
+        assert_eq!(state.active_turn, None);
+        assert_eq!(state.canonical.len(), 2);
+        assert!(!state.restoring);
+        Ok(())
+    }
+    #[test]
+    fn restart_snapshot_keeps_a_later_turn_and_refuses_unknown_activity() -> Result<()> {
+        let mut state = state(false)?;
+        state.restoring = true;
+        state.observe(
+            "turn/started".into(),
+            json!({"threadId":"main-thread","turn":{"id":"next-turn"}}),
+        )?;
+        state
+            .restore(&json!({"thread":{"id":"main-thread","status":{"type":"idle"},"turns":[]}}))?;
+        assert_eq!(state.active_turn.as_deref(), Some("next-turn"));
+        assert!(state.canonical.is_empty());
+        state.restoring = true;
+        for response in [
+            json!({"thread":{"id":"another-thread","status":{"type":"idle"},"turns":[]}}),
+            json!({"thread":{"id":"main-thread","status":{"type":"active"},"turns":[]}}),
+            json!({"thread":{"id":"main-thread","status":{"type":"active"},"turns":[{"id":"a","status":"inProgress"},{"id":"b","status":"inProgress"}]}}),
+        ] {
+            assert!(state.restore(&response).is_err());
+            assert!(state.restoring);
+        }
+        Ok(())
     }
     #[test]
     fn disabled_capture_does_not_accumulate_items_or_terminal_turns() -> Result<()> {

@@ -29,11 +29,11 @@ impl LaunchCoordinator {
                 .fault
                 .lock()
                 .map_err(|_| error("session task status", "fault diagnostic is poisoned"))?;
-            if let Some(reason) = *fault {
+            if let Some(reason) = fault.as_ref() {
                 status.value.pending.push(se_core::ops::PendingFact {
                     what: format!("session task {}", job.lifecycle),
                     since: None,
-                    detail: reason.into(),
+                    detail: reason.clone(),
                 });
             }
         }
@@ -61,7 +61,7 @@ impl LaunchCoordinator {
                     "session monitor recovering original keys and cursors"
                 } else {
                     "session monitor exhausted three restarts in 60 seconds; explicit reconciliation required"
-                });
+                }.into());
             }
             let failure = error(
                 "session monitor",

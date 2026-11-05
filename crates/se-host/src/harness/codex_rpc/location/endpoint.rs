@@ -120,6 +120,17 @@ fn publish(path: &Path, endpoint: &Endpoint) -> Result<()> {
     Ok(())
 }
 pub(super) fn prepare(socket: &Path, record: &Path, session: &se_types::SessionId) -> Result<()> {
+    validate(socket, record, session, true)
+}
+pub(super) fn recover(socket: &Path, record: &Path, session: &se_types::SessionId) -> Result<()> {
+    validate(socket, record, session, false)
+}
+fn validate(
+    socket: &Path,
+    record: &Path,
+    session: &se_types::SessionId,
+    publish_new: bool,
+) -> Result<()> {
     let value = read_record(record)?;
     if &value.session != session {
         return Err(failure("launch record names a different session"));
@@ -147,8 +158,12 @@ pub(super) fn prepare(socket: &Path, record: &Path, session: &se_types::SessionI
         if pinned != endpoint {
             return Err(failure("endpoint incarnation differs from its journal"));
         }
-    } else {
+    } else if publish_new {
         publish(&path, &endpoint)?;
+    } else {
+        return Err(failure(
+            "the original endpoint identity journal is absent; no new custody was inferred",
+        ));
     }
     // Read back the path identities after journal publication, before input.
     check(socket, &value, &endpoint)?;

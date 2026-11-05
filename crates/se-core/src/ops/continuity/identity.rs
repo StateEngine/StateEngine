@@ -1,6 +1,6 @@
 use super::types::*;
 use crate::{commit::Cx, scope, store_error::store_error};
-use se_store::{Actor, EventBody, Snapshot};
+use se_store::{Actor, EventBody, Snapshot, WriterModeValue};
 use se_types::{AgentId, Read, Result, SeError};
 
 pub(super) struct Identity {
@@ -137,12 +137,14 @@ pub(super) fn resolve<R: Snapshot>(
             }
             if let Some(id) = &session
                 && (id != prepared
-                    || *generation != cx.admission.generation
+                    || (*generation != cx.admission.generation
+                        && !(*generation < cx.admission.generation
+                            && reconciled(&saved, &agent, id, cx)?))
                     || !matches!(&saved.current.body, EventBody::SessionActivated {session: active, ..} if active==id))
             {
                 return Err(SeError::invalid(
                     "continuity session",
-                    "the exact active session and current admitted generation; ended, prepared, revoked and superseded bindings cannot resume context",
+                    "the exact active session in its launch generation or with current-host native reconciliation; ended, prepared, revoked, superseded and unproved bindings cannot resume context",
                 ));
             }
             let reference = match super::super::session_reference::read(cx.read, &saved)? {
@@ -180,6 +182,44 @@ pub(super) fn resolve<R: Snapshot>(
         model: profile.and_then(|profile| profile.model),
         conversation,
     })
+}
+
+fn reconciled<R: Snapshot>(
+    session: &se_store::ProjectionRecord,
+    agent: &AgentId,
+    id: &se_types::SessionId,
+    cx: &mut Cx<'_, R>,
+) -> Result<bool> {
+    let EventBody::SessionActivated {
+        process: Some(process),
+        ..
+    } = &session.current.body
+    else {
+        return Ok(false);
+    };
+    let process = match cx
+        .read
+        .process(process.clone())
+        .map_err(|e| store_error(&e))?
+    {
+        Read::Present { value } => value,
+        Read::Absent { .. } => return Ok(false),
+        other => scope::require_present(
+            other,
+            "continuity recovered process",
+            "Restore its original current-host reconciliation before resuming context.",
+        )?,
+    };
+    Ok(process.current.header.scope == session.current.header.scope
+        && process.current.writer.kind()
+            == (se_store::WriterKind::Host {
+                generation: cx.admission.generation,
+            })
+        && process.current.durability == se_store::CommitDurability::Full
+        && matches!(&process.current.body,
+            EventBody::ProcessTransition { identity, to: se_store::ProcessState::Running, .. }
+                if identity.session.as_ref() == Some(id)
+                    && identity.principal == Actor::Agent(agent.clone())))
 }
 
 struct OwnerResumeChoices<'a>(&'a se_types::ProjectId);

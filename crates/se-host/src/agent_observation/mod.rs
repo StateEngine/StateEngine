@@ -17,6 +17,7 @@ pub struct AgentObservationPlan {
     row: AgentRow,
     process: Read<ProcessIdentityRecord>,
     capture: Read<SourceEvidence>,
+    control_failure: Option<String>,
 }
 impl AgentObservationPlan {
     /// Presentation context only; native observation authority is unchanged.
@@ -63,6 +64,41 @@ pub fn observe_agent(
     })();
     if let Err(error) = observed {
         degrade(&mut plan.row, &error);
+    }
+    if let Some(reason) = plan.control_failure {
+        plan.row.session.state = "recovery-pending".into();
+        plan.row.resume.ready = false;
+        plan.row.resume.mode = "reconcile".into();
+        let stop = match &plan.command_home {
+            Some(home) => {
+                se_core::ops::AgentCommand::stop_in_home(&plan.row.id, home, &plan.project)
+            }
+            None => Some(se_core::ops::AgentCommand::stop(
+                &plan.row.id,
+                None,
+                Some(&plan.project),
+            )),
+        };
+        let remedy = stop.map_or_else(
+            || se_core::ops::AgentCommand::HOME_UNAVAILABLE.into(),
+            |stop| {
+                format!(
+                    "Run `{}` to reconcile exact native ownership before resuming.",
+                    stop.command
+                )
+            },
+        );
+        plan.row.resume.reason = Some(format!(
+            "Agent {} ({}) session {}: {reason}. Preserve the original provider and session; restore its protected custody/session records. {remedy}",
+            plan.row.name,
+            plan.row.id,
+            plan.identity
+                .as_ref()
+                .map(|id| id.session.as_str())
+                .unwrap_or("unknown"),
+        ));
+        plan.row.resume.command = None;
+        plan.row.resume.argv = None;
     }
     if plan.row.resume.argv.is_some() {
         let command = match &plan.command_home {
