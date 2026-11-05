@@ -21,7 +21,10 @@ impl Source {
         let n = NEXT.fetch_add(1, Ordering::Relaxed);
         let directory =
             std::env::temp_dir().join(format!("se-registry-{}-{n}", std::process::id()));
+        #[cfg(unix)]
         let mut builder = std::fs::DirBuilder::new();
+        #[cfg(not(unix))]
+        let builder = std::fs::DirBuilder::new();
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
@@ -69,13 +72,13 @@ impl Drop for Source {
                 self.path.display()
             );
         }
-        if let Some(directory) = self.path.parent() {
-            if let Err(error) = std::fs::remove_dir(directory) {
-                eprintln!(
-                    "registry directory cleanup failed at {}: {error}",
-                    directory.display()
-                );
-            }
+        if let Some(directory) = self.path.parent()
+            && let Err(error) = std::fs::remove_dir(directory)
+        {
+            eprintln!(
+                "registry directory cleanup failed at {}: {error}",
+                directory.display()
+            );
         }
     }
 }
