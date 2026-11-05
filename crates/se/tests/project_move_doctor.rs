@@ -96,19 +96,17 @@ fn moved_project_is_diagnosed_and_reattached_with_the_recorded_git_identity() ->
         "project.root.Mover",
     )?;
     assert_eq!(failed["state"], "failed");
-    assert!(
-        failed["observed"]
-            .as_str()
-            .unwrap()
-            .contains(original.to_str().unwrap()),
-        "{failed}"
-    );
+    let observed = failed["observed"]
+        .as_str()
+        .ok_or("failed check has no observed text")?;
+    let original_text = original.to_str().ok_or("original root is not UTF-8")?;
+    assert!(observed.contains(original_text), "{failed}");
     assert_eq!(
         failed["fix"]["argv"],
         serde_json::json!([
             "se",
             "--home",
-            home.to_str().unwrap(),
+            home.to_str().ok_or("state home is not UTF-8")?,
             "--project",
             "Mover",
             "project",
@@ -117,7 +115,7 @@ fn moved_project_is_diagnosed_and_reattached_with_the_recorded_git_identity() ->
         ])
     );
     let output = command(home, &moved, false, Some("Mover"))
-        .args(["project", "move", moved.to_str().unwrap()])
+        .args(["project", "move", moved.to_str().ok_or("moved root is not UTF-8")?])
         .output()?;
     assert!(
         output.status.success(),
