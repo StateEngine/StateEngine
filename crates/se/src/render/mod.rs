@@ -56,6 +56,9 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             (HumanKind::Schema, AnyOutput::MetaSchema(value)) => read::schema(&value.value, out)?,
             (HumanKind::Import, AnyOutput::ImportNode(value)) => import::output(&value.value, out)?,
             (HumanKind::Init, AnyOutput::ProjectInit(value)) => write::init(&value.value, out)?,
+            (HumanKind::ProjectMove, AnyOutput::ProjectMove(value)) => {
+                write::move_output(&value.value, out)?
+            }
             (HumanKind::Diagnosis, AnyOutput::DoctorInspect(value)) => {
                 doctor::diagnosis(&value.value, out)?
             }

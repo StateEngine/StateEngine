@@ -9,6 +9,9 @@ pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         }
         | EventBody::ProjectUpdated {
             project, expected, ..
+        }
+        | EventBody::ProjectMoved {
+            project, expected, ..
         } => (project, *expected),
         _ => return Err(invalid("project metadata revision dispatch")),
     };
@@ -142,6 +145,97 @@ pub(super) fn apply(
     }
     c.execute("DELETE FROM roots WHERE project_id=?", [&p])
         .map_err(sql)?;
+    codec::aux(c, seq, facts)
+}
+
+/// A moved-root revision: the CLI door verified the target's recorded git
+/// identity (matching project, recorded HEAD ancestry) and owner admission
+/// before proposing it; the store re-enforces the door, scope, owner and
+/// live-custody rules so no other surface can rebind a project's root.
+pub(super) fn move_root(
+    c: &Connection,
+    h: &EventHeader,
+    body: EventBody<InputText>,
+    seq: i64,
+    rev: u64,
+    facts: Value,
+) -> StoreResult<()> {
+    let EventBody::ProjectMoved {
+        project,
+        name,
+        from,
+        to,
+        head,
+        branch,
+        ..
+    } = body
+    else {
+        return Err(invalid("project move dispatch"));
+    };
+    if name.is_empty() || name.len() > 128 {
+        return Err(invalid(
+            "project move must keep the bounded registered name",
+        ));
+    }
+    if h.scope != Scope::Project(project.clone()) || h.door != Door::Cli {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "project moves require the owner CLI admitted in the project's scope",
+        ));
+    }
+    let p = key(c, "project", project.as_str(), &[0], false)?;
+    if !is_owner(c, h, &p)? {
+        return Err(fail(
+            StoreErrorCode::ScopeMismatch,
+            "only the current project owner moves a root",
+        ));
+    }
+    for (query, remedy) in LIVE {
+        if c.query_row(query, [&p], |r| r.get::<_, bool>(0))
+            .map_err(sql)?
+        {
+            return Err(fail(StoreErrorCode::InvalidTransition, remedy));
+        }
+    }
+    if from.is_empty() || from.len() > 64 {
+        return Err(invalid("project move needs the bounded previous roots"));
+    }
+    if from.iter().any(|root| root.path == to.path) {
+        return Err(invalid(
+            "project move target must differ from the previous roots",
+        ));
+    }
+    if head.as_deref().is_some_and(|value| {
+        !matches!(value.len(), 40 | 64) || !value.bytes().all(|b| b.is_ascii_hexdigit())
+    }) {
+        return Err(invalid("project move git identity bounds"));
+    }
+    if branch
+        .as_deref()
+        .is_some_and(|value| value.is_empty() || value.len() > 256)
+    {
+        return Err(invalid("project move git identity bounds"));
+    }
+    let changed = c
+        .execute(
+            "UPDATE projects SET revision=?,last_seq=? WHERE project_id=? AND revision=? AND state='active' AND name=?",
+            crate::sql_value::sql_params![rev, seq, p, rev - 1, name.as_str()],
+        )
+        .map_err(sql)?;
+    if changed != 1 {
+        return Err(fail(
+            StoreErrorCode::InvalidTransition,
+            "project move requires the current active registration and name",
+        ));
+    }
+    c.execute("DELETE FROM roots WHERE project_id=?", [&p])
+        .map_err(sql)?;
+    let encoded = symbol(c, codec::encode(&to.path)?.as_bytes())?;
+    c.execute(
+        "INSERT INTO roots(project_id,canonical_key,encoded_path,last_seq) VALUES(?,?,?,?)",
+        crate::sql_value::sql_params![p, to.canonical_key, encoded, seq],
+    )
+    .map_err(sql)?;
     codec::aux(c, seq, facts)
 }
 

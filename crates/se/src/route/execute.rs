@@ -244,6 +244,9 @@ pub fn dispatch(
     {
         return Ok(absent);
     }
+    if let AnyOp::ProjectMove(input) = &op {
+        return super::project_move::execute(cx, &reader, &caller, input.clone());
+    }
     if let AnyOp::RuntimeDown(input) = op {
         return super::runtime_control::down(cx, &files, &reader, input);
     }

@@ -8,6 +8,8 @@ mod schema;
 pub use schema::*;
 mod init;
 pub use init::*;
+mod project_move;
+pub use project_move::*;
 mod files;
 pub use files::*;
 mod agent;

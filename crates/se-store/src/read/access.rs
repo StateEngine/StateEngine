@@ -148,6 +148,7 @@ impl SqliteSnapshot {
         let project = match &event.body {
             EventBody::ProjectRegistered { project, .. }
             | EventBody::ProjectUpdated { project, .. }
+            | EventBody::ProjectMoved { project, .. }
             | EventBody::ProjectRemoved { project, .. } => project,
             _ => {
                 return Err(fail(

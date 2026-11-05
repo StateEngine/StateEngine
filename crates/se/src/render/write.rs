@@ -112,6 +112,26 @@ pub fn working_state(value: &WorkingStateReceipt, out: &mut impl Write) -> io::R
     writeln!(out, "Request key: {}", value.idempotency_key)
 }
 
+pub fn move_output(value: &MoveOutput, out: &mut impl Write) -> io::Result<()> {
+    writeln!(
+        out,
+        "Project {} moved from {} to {}",
+        value.project.name,
+        value.from.join(", "),
+        value.to
+    )?;
+    match (&value.head, &value.branch) {
+        (Some(head), Some(branch)) => writeln!(out, "Git identity: HEAD {head} on {branch}")?,
+        (Some(head), None) => writeln!(out, "Git identity: HEAD {head}")?,
+        _ => {}
+    }
+    writeln!(
+        out,
+        "Event: {}; request key: {}",
+        value.commit.event_id, value.commit.idempotency_key
+    )
+}
+
 pub fn runtime_start(value: &RuntimeStart, out: &mut impl Write) -> io::Result<()> {
     writeln!(
         out,

@@ -45,6 +45,9 @@ pub(super) fn page<R: ReadStore>(
                 roots,
                 ..
             } => (project, name, roots),
+            EventBody::ProjectMoved {
+                project, name, to, ..
+            } => (project, name, vec![to.clone()]),
             _ => {
                 return Err(scope::unreadable(
                     "registered project",

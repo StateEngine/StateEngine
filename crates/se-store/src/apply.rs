@@ -511,6 +511,7 @@ pub(crate) fn apply(
         | EffectSettled { .. }
         | IntegrationRecorded { .. }) => effect::apply(c, header, b, seq, revision, facts, lease)?,
         b @ ProjectUpdated { .. } => project::update(c, header, b, seq, revision, facts)?,
+        b @ ProjectMoved { .. } => project::move_root(c, header, b, seq, revision, facts)?,
         b @ ProjectRemoved { .. } => project::apply(c, header, b, seq, revision, facts)?,
         b @ (CursorRecorded { .. } | CursorAcknowledged { .. }) => {
             cursor::apply(c, header, b, seq, revision, facts)?

@@ -536,6 +536,14 @@ impl Kernel {
                 ));
             }
             AnyOp::ProjectInit(input) => OpStep::Custody(CustodyPlan::Initialize(input)),
+            // The owner CLI route performs the native git identity proof and
+            // commits the roots revision directly; the kernel never plans it.
+            AnyOp::ProjectMove(_) => {
+                return Err(SeError::invalid(
+                    "project move adapter",
+                    "the owner CLI with the native git identity observation",
+                ));
+            }
             AnyOp::ImportNode(input) => OpStep::Custody(CustodyPlan::ImportNode(input)),
             AnyOp::ProjectStatus(input) => OpStep::Custody(CustodyPlan::ObserveStatus(input)),
             AnyOp::RuntimeUp(input) => OpStep::Custody(CustodyPlan::RuntimeUp(input)),
@@ -561,6 +569,9 @@ impl Kernel {
         let output: Result<crate::ops::AnyOutput> = match then {
             Then::AgentConfig(then) => {
                 Ok(crate::ops::agent_config_receipt::committed(then, receipt, cx)?.into())
+            }
+            Then::ProjectMove(then) => {
+                Ok(crate::ops::project::move_committed(then, receipt, cx)?.into())
             }
             Then::AgentCreate(then) => Ok(crate::ops::agent::committed(then, receipt, cx)?.into()),
             Then::Decision(then) => Ok(crate::ops::decision::committed(then, receipt, cx)?.into()),

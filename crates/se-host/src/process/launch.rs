@@ -298,7 +298,7 @@ impl LaunchCoordinator {
             .run_owned(deadline, move || {
                 native
                     .prepare_launch(reservation, spec)
-                    .map_err(|e| error("native scope preparation", e))
+                    .map_err(super::prepare_error)
             })
             .await?;
         let owner = Arc::new(prepared.process);

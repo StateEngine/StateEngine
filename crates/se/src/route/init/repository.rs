@@ -86,6 +86,21 @@ pub(super) fn observe(cx: &Bootstrap, input: &ProjectInit) -> Result<Repository>
         .transpose()
         .map_err(|e| scope::unreadable("repository contents", &e.to_string()))?
         .is_some();
+    if super::super::git_identity::is_bare(&path)? {
+        return Err(SeError::new(se_types::Detail::RepoInvalid(
+            se_types::details::RepoInvalid {
+                subject: if input.repo.is_some() {
+                    "--repo".into()
+                } else {
+                    "current directory".into()
+                },
+                reason: "a bare Git repository has no working tree for an agent to work in".into(),
+                next_step:
+                    "clone it (git clone DIR work) and run se init in the clone's working tree"
+                        .into(),
+            },
+        )));
+    }
     let git = super::super::git_state::observe(&path)?;
     Ok(Repository {
         path,
