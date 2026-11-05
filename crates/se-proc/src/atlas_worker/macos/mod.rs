@@ -278,25 +278,42 @@ impl AtlasWorker {
         Ok(())
     }
     pub fn cancel(&mut self) -> io::Result<()> {
-        if !self.reaped && self.child.try_wait()?.is_none() {
-            self.child.kill()?;
-            let mut ready = libc::pollfd {
-                fd: self.exit.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: retained exact child's kqueue and finite termination grace.
-            if unsafe { libc::poll(&mut ready, 1, 200) } < 0 {
-                return Err(io::Error::last_os_error());
-            }
+        self.cancel_until(Instant::now() + Duration::from_millis(200))
+    }
+    /// Keep exact custody until reap or the caller's existing shutdown deadline.
+    pub fn cancel_until(&mut self, deadline: Instant) -> io::Result<()> {
+        if !self.reaped {
+            // An unreaped Child pins this kernel child against PID reuse.
             if self.child.try_wait()?.is_none() {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "Atlas termination pending; retain exact child custody",
-                ));
+                self.child.kill()?;
+                loop {
+                    if self.child.try_wait()?.is_some() {
+                        break;
+                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "Atlas termination pending; retain exact child custody",
+                        ));
+                    }
+                    let mut event = libc::pollfd {
+                        fd: self.exit.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    let millis = remaining.as_millis().max(1).min(i32::MAX as u128) as i32;
+                    // SAFETY: one retained child's kqueue and a finite remaining budget.
+                    if unsafe { libc::poll(&mut event, 1, millis) } < 0 {
+                        let error = io::Error::last_os_error();
+                        if error.kind() != io::ErrorKind::Interrupted {
+                            return Err(error);
+                        }
+                    }
+                }
             }
+            self.reaped = true;
         }
-        self.reaped = true;
         Ok(())
     }
 }

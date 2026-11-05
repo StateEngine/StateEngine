@@ -62,17 +62,20 @@ struct Plan {
     fds: Vec<(OwnedFd, Wake)>,
 }
 impl HostedRuntime {
-    /// Shared standalone/embedded installation, before listen. The service
+    /// Standalone installation, before listen. The service
     /// begins only in serve, after readiness has been published.
     pub fn install_native_atlas(
         &mut self,
         image: PathBuf,
         qualification: NativeAtlasQualification,
     ) -> Result<()> {
-        if self.phase != crate::HostPhase::Prepared || self.atlas_owner.is_some() {
+        if self.kind != crate::HostKind::Standalone
+            || self.phase != crate::HostPhase::Prepared
+            || self.atlas_owner.is_some()
+        {
             return Err(SeError::invalid(
                 "Atlas owner",
-                "one installation before listener publication",
+                "one standalone installation before listener publication; embedded hosts do not run Atlas",
             ));
         }
         let enabled = self

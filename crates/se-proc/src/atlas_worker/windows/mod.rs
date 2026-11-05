@@ -308,20 +308,33 @@ impl AtlasWorker {
         Ok(())
     }
     pub fn cancel(&mut self) -> io::Result<()> {
+        self.cancel_until(Instant::now() + Duration::from_millis(200))
+    }
+    /// Keep exact custody until reap or the caller's existing shutdown deadline.
+    pub fn cancel_until(&mut self, deadline: Instant) -> io::Result<()> {
         if self.try_reap()?.is_none() {
             // SAFETY: this unique job contains only the atomically assigned cold child.
             if unsafe { TerminateJobObject(self.job.as_raw_handle(), 137) } == 0 {
                 return Err(last("TerminateJobObject(Atlas child cancellation)"));
             }
-            // SAFETY: retained exact process and finite termination grace.
-            if unsafe { WaitForSingleObject(self.process.as_raw_handle(), 200) } == WAIT_FAILED {
-                return Err(last("WaitForSingleObject(Atlas child cancellation)"));
-            }
-            if self.try_reap()?.is_none() {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "Atlas termination pending; retain exact child custody",
-                ));
+            loop {
+                if self.try_reap()?.is_some() {
+                    break;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "Atlas termination pending; retain exact child custody",
+                    ));
+                }
+                let millis = remaining.as_millis().max(1).min(u128::from(u32::MAX - 1)) as u32;
+                // SAFETY: retained exact process and a finite remaining budget.
+                if unsafe { WaitForSingleObject(self.process.as_raw_handle(), millis) }
+                    == WAIT_FAILED
+                {
+                    return Err(last("WaitForSingleObject(Atlas child cancellation)"));
+                }
             }
         }
         Ok(())

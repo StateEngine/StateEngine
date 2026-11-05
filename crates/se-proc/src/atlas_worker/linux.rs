@@ -288,26 +288,38 @@ impl AtlasWorker {
         Ok(status)
     }
     pub fn cancel(&mut self) -> io::Result<()> {
+        self.cancel_until(Instant::now() + Duration::from_millis(200))
+    }
+    /// Keep exact custody until reap or the caller's existing shutdown deadline.
+    pub fn cancel_until(&mut self, deadline: Instant) -> io::Result<()> {
         if !self.reaped {
-            // The unreaped std Child owns this exact kernel child. Its PID
-            // cannot be recycled until wait, even if it has already exited.
+            // An unreaped Child pins this kernel child against PID reuse.
             if self.child.try_wait()?.is_none() {
                 self.child.kill()?;
-                let mut event = libc::pollfd {
-                    fd: self.exit.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                };
-                // SAFETY: one retained pidfd, exact output and finite grace.
-                let ready = unsafe { libc::poll(&mut event, 1, 200) };
-                if ready < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if self.child.try_wait()?.is_none() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        "Atlas termination pending; retain exact child custody",
-                    ));
+                loop {
+                    if self.child.try_wait()?.is_some() {
+                        break;
+                    }
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::WouldBlock,
+                            "Atlas termination pending; retain exact child custody",
+                        ));
+                    }
+                    let mut event = libc::pollfd {
+                        fd: self.exit.as_raw_fd(),
+                        events: libc::POLLIN,
+                        revents: 0,
+                    };
+                    let millis = remaining.as_millis().max(1).min(i32::MAX as u128) as i32;
+                    // SAFETY: one retained pidfd and a finite remaining budget.
+                    if unsafe { libc::poll(&mut event, 1, millis) } < 0 {
+                        let error = io::Error::last_os_error();
+                        if error.kind() != io::ErrorKind::Interrupted {
+                            return Err(error);
+                        }
+                    }
                 }
             }
             self.reaped = true;

@@ -91,6 +91,10 @@ impl ColdJob {
     pub fn cancel(&mut self) -> AtlasResult<()> {
         self.worker.cancel().map_err(failure)
     }
+    /// Shutdown lends its remaining host budget to exact native cancellation.
+    pub fn cancel_until(&mut self, deadline: Instant) -> AtlasResult<()> {
+        self.worker.cancel_until(deadline).map_err(failure)
+    }
     fn native_failure(&mut self, reason: impl std::fmt::Display) -> SeError {
         let stderr = self.stderr_report();
         SeError::new(se_types::Detail::AtlasUnreadable(

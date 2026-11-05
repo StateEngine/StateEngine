@@ -24,6 +24,7 @@ impl EmbeddedHost {
     ) -> Result<api::Page<api::ToolDefinition>> {
         self.bindings.verify(session)?;
         let (router, deadline, _cancel) = self.ready(&options).await?;
+        let available = router.execution.atlas.is_installed();
         if session.generation != options.generation
             || !(1..=100).contains(&page.limit)
             || !(1..=65536).contains(&page.max_bytes)
@@ -59,7 +60,7 @@ impl EmbeddedHost {
         );
         store::read(&router, scope, &deadline, move |read| {
             binding::check(read, &checked, revision)?;
-            catalogue(page, epoch, &fingerprint)
+            catalogue(page, epoch, &fingerprint, available)
         })
         .await
     }
@@ -147,10 +148,13 @@ fn catalogue(
     page: api::PageRequest,
     epoch: api::HostEpoch,
     fingerprint: &str,
+    available: bool,
 ) -> Result<api::Page<api::ToolDefinition>> {
     let metas: Vec<_> = ops::CATALOGUE
         .iter()
-        .filter(|m| m.feature == Feature::Atlas && matches!(m.mcp, McpExposure::Tool { .. }))
+        .filter(|m| {
+            available && m.feature == Feature::Atlas && matches!(m.mcp, McpExposure::Tool { .. })
+        })
         .collect();
     let offset = if let Some(cursor) = &page.after {
         let parts: Vec<_> = cursor.0.split('.').collect();

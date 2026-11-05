@@ -202,7 +202,7 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
             {
                 if let Some(child) = &mut self.child {
-                    child.cancel()?;
+                    child.cancel_until(deadline)?;
                 }
                 self.child.take();
                 self.child_failure = None;
