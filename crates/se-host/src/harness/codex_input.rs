@@ -302,6 +302,13 @@ pub fn invocation(
         let name = name.to_string_lossy().to_ascii_uppercase();
         name != "SE_SESSION" && !name.starts_with("STATEENGINE_") && !name.starts_with("SECODE_")
     });
+    // Match Claude's hook/stdio route: this is the newly issued public handle,
+    // never the secret pin or an inherited session's authority. External MCP
+    // services resolve it through the same protected native credential store.
+    environment.push((
+        "SE_SESSION".into(),
+        launch.request.identity.session.as_str().into(),
+    ));
     Ok(ProviderInvocation {
         executable: launch.request.executable.clone(),
         arguments,

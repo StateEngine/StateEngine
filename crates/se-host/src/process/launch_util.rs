@@ -76,7 +76,11 @@ pub(super) fn stabilize_alias(
     invocation.arguments = arguments;
     Ok(invocation)
 }
-pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_proc::LaunchPolicy> {
+pub(super) fn policy(
+    plan: &LaunchPlan,
+    home: &std::path::Path,
+    configuration: &se_core::config_policy::ConfigFile,
+) -> Result<se_proc::LaunchPolicy> {
     let scratch = home.join("launch").join(
         se_proc::session_launch_id(&plan.session)
             .map_err(|e| error("launch scratch", e))?
@@ -90,7 +94,13 @@ pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_pro
             }
             se_core::config_policy::EffectiveSandbox::WorkspaceWrite => {
                 se_proc::WritePolicy::Workspace {
-                    roots: vec![plan.cwd.to_local()?],
+                    roots: super::git_workspace::roots(
+                        plan.cwd.to_local()?,
+                        configuration
+                            .profiles
+                            .get(&plan.profile.named_profile)
+                            .is_some_and(|profile| profile.git_write),
+                    )?,
                     scratch,
                 }
             }
@@ -108,6 +118,28 @@ pub(super) fn policy(plan: &LaunchPlan, home: &std::path::Path) -> Result<se_pro
         hardening: se_proc::OptionalHardening::Off,
     })
 }
+
+// Every provider and launch surface uses the same native scratch grant. Inherit
+// the owner's temp location only when its named profile explicitly bypasses it.
+pub(super) fn route_temporary_files(
+    environment: &mut se_proc::Environment,
+    policy: &se_proc::LaunchPolicy,
+) {
+    let scratch = match &policy.writes {
+        se_proc::WritePolicy::ReadOnly { scratch }
+        | se_proc::WritePolicy::Workspace { scratch, .. } => scratch,
+        se_proc::WritePolicy::NamedUnrestricted { .. } => return,
+    };
+    environment.entries.retain(|(key, _)| {
+        !["TMPDIR", "TMP", "TEMP"].contains(&key.to_string_lossy().to_ascii_uppercase().as_str())
+    });
+    for key in ["TMPDIR", "TMP", "TEMP"] {
+        environment
+            .entries
+            .push((key.into(), scratch.as_os_str().to_owned()));
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
     let found = find_command(command)?.ok_or_else(|| {
@@ -229,4 +261,66 @@ pub(super) fn view(
         exe: root.image.to_string_lossy().into_owned(),
         machine_id: root.machine.to_string(),
     })
+}
+
+#[cfg(test)]
+mod temporary_environment_tests {
+    use super::*;
+    use se_proc::{Environment, LaunchPolicy, NetworkPolicy, OptionalHardening, WritePolicy};
+
+    #[test]
+    fn every_sandboxed_surface_replaces_all_temp_spellings_and_keeps_named_bypass() {
+        let scratch = PathBuf::from("launch-scratch");
+        for writes in [
+            WritePolicy::ReadOnly {
+                scratch: scratch.clone(),
+            },
+            WritePolicy::Workspace {
+                roots: vec![PathBuf::from("project")],
+                scratch: scratch.clone(),
+            },
+            WritePolicy::NamedUnrestricted {
+                profile: "operator-bypass".into(),
+            },
+        ] {
+            let bypass = matches!(writes, WritePolicy::NamedUnrestricted { .. });
+            let mut environment = Environment {
+                entries: vec![
+                    ("TMPDIR".into(), "outside-one".into()),
+                    ("Temp".into(), "outside-two".into()),
+                    ("tmp".into(), "outside-three".into()),
+                    ("PATH".into(), "provider-path".into()),
+                ],
+            };
+            let before = environment.entries.clone();
+            route_temporary_files(
+                &mut environment,
+                &LaunchPolicy {
+                    containment: se_proc::ContainmentRequirement::BestAvailable,
+                    writes,
+                    network: NetworkPolicy::Offline,
+                    hardening: OptionalHardening::Off,
+                },
+            );
+            if bypass {
+                assert_eq!(environment.entries, before);
+            } else {
+                assert_eq!(environment.entries.len(), 4);
+                for key in ["TMPDIR", "TMP", "TEMP"] {
+                    assert!(
+                        environment
+                            .entries
+                            .iter()
+                            .any(|(name, value)| name == key && value == scratch.as_os_str())
+                    );
+                }
+                assert!(
+                    environment
+                        .entries
+                        .iter()
+                        .any(|(key, value)| key == "PATH" && value == "provider-path")
+                );
+            }
+        }
+    }
 }

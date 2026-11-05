@@ -125,6 +125,10 @@ pub struct Profile {
     pub approval: Option<Approval>,
     #[serde(default)]
     pub bypass: bool,
+    /// Explicit permission for a dedicated workspace's Git metadata. Omitted
+    /// from default serialization so existing resolved-profile wires stay put.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub git_write: bool,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -246,6 +250,16 @@ impl ConfigFile {
                     "bypass requires an explicitly selected named profile",
                 ));
             }
+            if profile.git_write
+                && (name == "default"
+                    || profile.sandbox != Sandbox::WorkspaceWrite
+                    || profile.bypass)
+            {
+                return Err(invalid(
+                    "profiles.git_write",
+                    "Git writes require an explicitly selected named workspace-write profile without bypass",
+                ));
+            }
         }
         for (name, provider) in [
             ("claude", &self.providers.claude),
@@ -361,13 +375,60 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
         ["default_project"] | ["launch", "provider" | "terminal"] | ["atlas", "enabled"] => (false, false),
         ["runtime", "listen_port" | "blocking_jobs"] | ["capture", "enabled"] => (true, false),
         ["providers", "claude" | "codex", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
-        ["profiles", name, "sandbox" | "network" | "approval" | "bypass"] if !name.is_empty() => (true, false),
+        ["profiles", name, "sandbox" | "network" | "approval" | "bypass" | "git_write"] if !name.is_empty() => (true, false),
         _ => return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField { op: "config".into(), field: key.into(), next_step: "Use se help config for available commands; saved agent fields are model, profile and can-create.".into() }))),
     };
     Ok(ConfigKeyMeta {
         human_only,
         agent_record,
     })
+}
+
+#[cfg(test)]
+mod git_profile_tests {
+    use super::*;
+
+    #[test]
+    fn git_permission_is_named_owner_only_and_does_not_extend_launch_receipts() -> Result<()> {
+        let mut config = ConfigFile::default();
+        config.profiles.insert(
+            "git-workspace".into(),
+            Profile {
+                git_write: true,
+                ..Default::default()
+            },
+        );
+        config.validate()?;
+        assert!(key_metadata("profiles.git-workspace.git_write")?.human_only);
+        let selected = config.resolve_profile("git-workspace", Provider::Codex, true)?;
+        assert_eq!(selected.sandbox, EffectiveSandbox::WorkspaceWrite);
+        let wire = serde_json::to_value(selected)
+            .map_err(|cause| invalid("test profile", &cause.to_string()))?;
+        assert!(wire.get("git_write").is_none());
+        assert!(!config.profiles["default"].git_write);
+        Ok(())
+    }
+
+    #[test]
+    fn default_read_only_and_bypass_profiles_cannot_silently_gain_git_permission() {
+        for (name, sandbox, bypass) in [
+            ("default", Sandbox::WorkspaceWrite, false),
+            ("readonly", Sandbox::ReadOnly, false),
+            ("unrestricted", Sandbox::WorkspaceWrite, true),
+        ] {
+            let mut config = ConfigFile::default();
+            config.profiles.insert(
+                name.into(),
+                Profile {
+                    sandbox,
+                    bypass,
+                    git_write: true,
+                    ..Default::default()
+                },
+            );
+            assert!(config.validate().is_err());
+        }
+    }
 }
 
 #[cfg(test)]

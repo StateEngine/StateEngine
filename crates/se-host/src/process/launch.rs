@@ -130,7 +130,15 @@ impl LaunchCoordinator {
         let bearer = token("sels-")?;
         let session_hash = Sha256::digest(pin.expose()).into();
         let http_hash = Sha256::digest(bearer.expose()).into();
-        let policy = policy(&plan, &self.options.home)?;
+        let policy = {
+            let selected = plan.clone();
+            let home = self.options.home.clone();
+            let configuration = self.options.configuration.clone();
+            self.store
+                .pool
+                .run_owned(deadline, move || policy(&selected, &home, &configuration))
+                .await?
+        };
         let request = HarnessRequest {
             identity,
             executable: NativePath::from_local(executable)?,
@@ -152,6 +160,7 @@ impl LaunchCoordinator {
         let mut invocation = harness
             .invocation(&request, call(self.store.generation, deadline)?)
             .await?;
+        super::launch_util::route_temporary_files(&mut invocation.environment, &policy);
         #[cfg(unix)]
         {
             invocation = self
