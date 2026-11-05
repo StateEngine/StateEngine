@@ -38,6 +38,9 @@ def run(options):
                     else:
                         assert result['event_id'] == original_event and result['marker'] == 'already'
                     checks.append(action + '/' + door + '/' + spelling)
+            cli = f.mail(action, sent['message_id'], recipient=True)
+            assert cli['event_id'] == original_event and cli['marker'] == 'already'
+            checks.append(action + '/cli')
             print('PASS', action, 'both spellings, both doors, stable recipient receipt', flush=True)
         for door in ('stdio', 'http'):
             for spelling in ('message_id', 'msg_id'):
