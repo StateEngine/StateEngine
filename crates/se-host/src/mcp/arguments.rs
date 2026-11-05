@@ -10,13 +10,13 @@ pub(super) async fn bound(
 ) -> Result<Value> {
     if !mcp_identity::CALLER_FIELDS
         .iter()
-        .any(|(field, _)| arguments.get(field).is_some())
+        .any(|(field, _, _)| arguments.get(field).is_some())
     {
         return Ok(arguments);
     }
     let fields = mcp_identity::fields(tool)?;
     let principal = backend.bound_principal(capability).await?;
-    for &(field, role) in fields {
+    for &(field, role, _) in fields {
         let Some(requested) = arguments.get(field) else {
             continue;
         };
@@ -38,7 +38,7 @@ pub(super) async fn bound(
         }
     }
     if let Some(object) = arguments.as_object_mut() {
-        for &(field, role) in fields {
+        for &(field, role, _) in fields {
             if role != IdentityRole::Target {
                 object.remove(field);
             }
