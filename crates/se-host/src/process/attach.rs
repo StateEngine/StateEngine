@@ -117,6 +117,58 @@ impl LaunchCoordinator {
                 })
                 .await?;
             let mut history_diagnostic = None;
+            // Claude's init echo precedes transcript creation on a fresh
+            // conversation. Wait only for absence, under the original launch
+            // clock; an unreadable/replaced source must still refuse normally.
+            if pin.is_none()
+                && provider == se_store::Provider::Claude
+                && matches!(plan.conversation, Read::Absent { .. })
+            {
+                // Leave the rest of the launch clock for first-use proofs and
+                // witnessed cleanup if the provider never publishes the file.
+                let readiness = deadline.stage(std::time::Duration::from_secs(10))?;
+                while pin.is_none() {
+                    let remaining =
+                        readiness
+                            .remaining()
+                            .map_err(|failure| match failure.body.detail() {
+                                se_types::Detail::DeadlineExceeded(expired) => {
+                                    se_types::SeError::new(se_types::Detail::DeadlineExceeded(
+                                        se_types::details::DeadlineExceeded {
+                                            op: "Claude transcript creation after its init echo"
+                                                .into(),
+                                            deadline_ms: expired.deadline_ms,
+                                        },
+                                    ))
+                                }
+                                _ => failure,
+                            })?;
+                    let native = self.native.clone();
+                    let owner = owner.clone();
+                    let path = path.clone();
+                    pin = self
+                        .store
+                        .pool
+                        .run_owned(&readiness, move || {
+                            let observed = native
+                                .observe(&owner)
+                                .map_err(|e| error("Claude transcript process witness", e))?;
+                            if !matches!(observed.root, se_proc::ProcessObservation::Live(_)) {
+                                return Err(error(
+                                    "Claude transcript readiness",
+                                    "provider exited before creating its transcript",
+                                ));
+                            }
+                            se_proc::NativeSourcePin::open(&path)
+                                .map_err(|e| error("provider transcript pin", e))
+                        })
+                        .await?;
+                    if pin.is_none() {
+                        tokio::time::sleep(remaining.min(std::time::Duration::from_millis(25)))
+                            .await;
+                    }
+                }
+            }
             if pin.is_none()
                 && provider == se_store::Provider::Codex
                 && matches!(plan.conversation, Read::Absent { .. })

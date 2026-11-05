@@ -6,6 +6,7 @@ import subprocess
 import sys
 import queue
 import threading
+import time
 import uuid
 import re
 import traceback
@@ -20,13 +21,16 @@ def main():
     conversation = arguments[arguments.index(flag) + 1]
     slug = "".join(c if c.isascii() and c.isalnum() else "-" for c in str(cwd))
     transcript = Path(os.environ["HOME"]) / ".claude/projects" / slug / (conversation + ".jsonl")
+    initial = sys.stdin.readline()
+    assert initial, "host did not deliver its initial task"
+    print(json.dumps({"type": "system", "subtype": "init", "session_id": conversation}), flush=True)
+    # Stock Claude echoes init before it creates the native transcript (FH09).
+    # Keep the gap observable so eager source pinning fails this real CLI judge.
+    time.sleep(0.25)
     transcript.parent.mkdir(parents=True, exist_ok=True)
     transcript.write_text(json.dumps({"type": "user", "sessionId": conversation,
                           "uuid": "native-judge-task", "message": {"role": "user",
                           "content": "Fresh launch judge"}}) + "\n")
-    initial = sys.stdin.readline()
-    assert initial, "host did not deliver its initial task"
-    print(json.dumps({"type": "system", "subtype": "init", "session_id": conversation}), flush=True)
     request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
     # Both issued transports must verify possession before production C3. Their
     # secrets stay in the owner-only files and are never copied into judge logs.
