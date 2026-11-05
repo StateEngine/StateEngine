@@ -14,6 +14,20 @@ pub(super) fn recovery(value: &mut ResumeOutput) -> Result<bool> {
             changed = true;
         }
     }
+    if let se_types::Read::Present { value: state } = &mut value.working_state
+        && state.command.is_some()
+        && state.argv.take().is_some()
+    {
+        changed = true;
+    }
+    for turn in &mut value.recent_turns {
+        // The exact executable command remains; its argv repeats the same
+        // home, project and event identity for every captured turn.
+        if !turn.argv.is_empty() {
+            turn.argv.clear();
+            changed = true;
+        }
+    }
     for required in &mut value.required_reads {
         if required.why.len() > 64 {
             required.why = "Unread; read this message in full.".into();

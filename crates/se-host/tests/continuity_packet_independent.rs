@@ -17,6 +17,7 @@ struct Harness {
     lease: Arc<Lease>,
     a: SessionId,
     b: SessionId,
+    source: RecordId,
 }
 impl Harness {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
@@ -101,6 +102,7 @@ impl Harness {
             lease,
             a,
             b,
+            source,
         })
     }
     fn scope(&self, agent: &AgentId, session: Option<SessionId>) -> ReadScope {
@@ -495,3 +497,6 @@ fn unrelated_private_head_cannot_block_bound_continuity() -> Check {
     );
     h.finish()
 }
+
+#[path = "support/continuity_delta.rs"]
+mod delta;

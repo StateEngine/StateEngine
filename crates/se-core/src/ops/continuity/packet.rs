@@ -148,11 +148,9 @@ fn add_omission(
     command: crate::ops::AgentCommand,
     tool: &str,
 ) {
-    if let Some(old) = result
-        .omissions
-        .iter_mut()
-        .find(|v| v.section == section && v.reason == "packet byte budget")
-    {
+    if let Some(old) = result.omissions.iter_mut().find(|v| {
+        v.section == section && matches!(v.reason.as_str(), "packet byte budget" | "byte budget")
+    }) {
         old.count = old.count.zip(count).and_then(|(a, b)| a.checked_add(b));
     } else {
         result.omissions.push(read::omission(
@@ -187,44 +185,20 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             }
             continue;
         }
-        if !result.recent_turns.is_empty() {
-            let omitted = result.recent_turns.remove(0);
-            add_omission(
-                result,
-                "recent_turns",
-                Some(1),
-                crate::ops::AgentCommand {
-                    command: omitted.command,
-                    argv: omitted.argv,
-                },
-                "stateengine_event_read",
-            );
-            let mut fields = data.window.fields().cloned().ok_or_else(|| {
-                scope::unreadable("context window", "complete source accounting is missing")
-            })?;
-            // Preserve actual store-read byte accounting; model input has its
-            // own exact UTF-8 byte_size after this packet selection.
-            fields.returned = result.recent_turns.len() as u64;
-            fields.omitted_before = match fields.omitted_before {
-                WindowOmission::None => WindowOmission::Known {
-                    count: std::num::NonZeroU64::MIN,
-                    reason: OmissionReason::Budget,
-                },
-                WindowOmission::Known { count, .. } => WindowOmission::Known {
-                    count: count.checked_add(1).ok_or_else(|| {
-                        SeError::invalid("continuity omissions", "nonoverflowing count")
-                    })?,
-                    reason: OmissionReason::Budget,
-                },
-                WindowOmission::Unknown { .. } => WindowOmission::Unknown {
-                    reason: OmissionReason::Budget,
-                },
-            };
-            data.window = Window::new(fields)?;
+        // A since cursor asks what changed: spend recovery duplication and
+        // older saved context before discarding those newly captured turns.
+        if input.since.is_some() && super::compact::recovery(result)? {
+            continue;
+        }
+        if input.since.is_none() && trim_turn(result, data, input, needed)? {
             continue;
         }
         if result.decisions.governing.pop().is_some() {
-            let command = read::resume_command(identity, input.governing_cursor.as_ref())?;
+            let command = read::resume_command(
+                identity,
+                input.governing_cursor.as_ref(),
+                input.since.as_ref(),
+            )?;
             add_omission(
                 result,
                 "governing_decisions",
@@ -263,19 +237,25 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
             continue;
         }
         if input.byte_budget <= DEFAULT_BYTES
-            && result
-                .omissions
-                .iter()
-                .any(|item| item.section == "working_state")
+            && (input.since.is_some()
+                || result
+                    .omissions
+                    .iter()
+                    .any(|item| item.section == "working_state"))
             && super::compact::expanded(
                 result,
-                read::resume_command(identity, input.governing_cursor.as_ref())?,
+                read::resume_command(
+                    identity,
+                    input.governing_cursor.as_ref(),
+                    input.since.as_ref(),
+                )?,
             )?
         {
             continue;
         }
         if let Read::Present { value } = &mut result.working_state
             && !value.value.text.is_empty()
+            && (input.since.is_none() || value.value.text.len() > 256 || !value.complete)
         {
             if value.value.text.len() <= 256
                 && value.command.is_some()
@@ -333,12 +313,106 @@ fn fit<R: Snapshot, F: Fn(&ResumeOutput, &Gathered) -> Result<usize>>(
                 continue;
             }
         }
+        if input.since.is_some() && trim_turn(result, data, input, needed)? {
+            continue;
+        }
         return Err(read::budget_refusal(identity, input, needed)?);
     }
     Err(scope::unreadable(
         "continuity budget",
         "finite packet reduction did not converge",
     ))
+}
+fn trim_turn(
+    result: &mut ResumeOutput,
+    data: &mut Gathered,
+    input: &Resume,
+    needed: usize,
+) -> Result<bool> {
+    if !result.recent_turns.is_empty() {
+        let protected = input.since.as_ref().and_then(|_| {
+            result
+                .recent_turns
+                .iter()
+                .rposition(|turn| turn.role == "assistant")
+        });
+        let index = if protected == Some(0) {
+            result.recent_turns.len() - 1
+        } else {
+            0
+        };
+        if protected == Some(0) && result.recent_turns.len() == 1 {
+            let turn = &mut result.recent_turns[0];
+            let limit = turn
+                .preview
+                .len()
+                .saturating_sub(needed - input.byte_budget as usize + 8)
+                .max(128);
+            if limit >= turn.preview.len() {
+                return Ok(false);
+            }
+            turn.preview = read::clip(&turn.preview, limit).into();
+            turn.complete = false;
+            let command = crate::ops::AgentCommand {
+                command: turn.command.clone(),
+                argv: turn.argv.clone(),
+            };
+            if !result
+                .omissions
+                .iter()
+                .any(|item| item.section == "recent_turn_content")
+            {
+                add_omission(
+                    result,
+                    "recent_turn_content",
+                    Some(1),
+                    command,
+                    "stateengine_event_read",
+                );
+            }
+            return Ok(true);
+        }
+        let omitted = result.recent_turns.remove(index);
+        add_omission(
+            result,
+            "recent_turns",
+            Some(1),
+            crate::ops::AgentCommand {
+                command: omitted.command,
+                argv: omitted.argv,
+            },
+            "stateengine_event_read",
+        );
+        let mut fields = data.window.fields().cloned().ok_or_else(|| {
+            scope::unreadable("context window", "complete source accounting is missing")
+        })?;
+        // Preserve actual store-read byte accounting; model input has its
+        // own exact UTF-8 byte_size after this packet selection.
+        fields.returned = result.recent_turns.len() as u64;
+        let omission = if index == 0 {
+            &mut fields.omitted_before
+        } else {
+            &mut fields.omitted_after
+        };
+        *omission = match omission.clone() {
+            WindowOmission::None => WindowOmission::Known {
+                count: std::num::NonZeroU64::MIN,
+                reason: OmissionReason::Budget,
+            },
+            WindowOmission::Known { count, .. } => WindowOmission::Known {
+                count: count.checked_add(1).ok_or_else(|| {
+                    SeError::invalid("continuity omissions", "nonoverflowing count")
+                })?,
+                reason: OmissionReason::Budget,
+            },
+            WindowOmission::Unknown { .. } => WindowOmission::Unknown {
+                reason: OmissionReason::Budget,
+            },
+        };
+        data.window = Window::new(fields)?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 fn model_input(value: &ResumeOutput) -> Result<String> {
     let state = serde_json::json!({"principal":value.principal,"working_state":value.working_state,"unread":value.unread,"required_reads":value.required_reads,"decisions":value.decisions,"recent_turns":value.recent_turns,"omissions":value.omissions,"attention":value.attention,"complete":value.complete,"resume_status":value.resume_status,"cursor":value.cursor});

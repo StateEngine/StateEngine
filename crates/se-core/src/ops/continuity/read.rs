@@ -160,14 +160,18 @@ pub(super) fn gather<R: Snapshot>(
     let mut governing_budget = budget(u32::from(limit))?;
     governing_budget.page.after = input.governing_cursor.clone();
     let mut governing_next = None;
-    let governing_command = resume_command(identity, input.governing_cursor.as_ref())?;
+    let governing_command = resume_command(
+        identity,
+        input.governing_cursor.as_ref(),
+        input.since.as_ref(),
+    )?;
     let governing = match cx.read.governing_decisions(governing_budget) {
         Ok(page) => {
             governing_next = page.next().cloned();
             window_omission(
                 "governing_decisions",
                 page.window(),
-                &resume_command(identity, governing_next.as_ref())?,
+                &resume_command(identity, governing_next.as_ref(), input.since.as_ref())?,
                 "stateengine_resume",
                 &mut omissions,
             );
@@ -391,10 +395,14 @@ pub(super) fn mail_command(identity: &Identity) -> Result<AgentCommand> {
 pub(super) fn resume_command(
     identity: &Identity,
     governing: Option<&se_types::Cursor>,
+    since: Option<&se_types::Cursor>,
 ) -> Result<AgentCommand> {
     let mut words = vec!["resume".into(), "--budget".into(), "1048576".into()];
     if identity.principal.preview {
         words.extend(["--preview".into(), identity.principal.agent.id.to_string()]);
+    }
+    if let Some(cursor) = since {
+        words.extend(["--since".into(), cursor.to_string()]);
     }
     if let Some(cursor) = governing {
         words.extend(["--governing-cursor".into(), cursor.to_string()]);
