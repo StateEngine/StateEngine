@@ -1,6 +1,7 @@
 //! Protected cache files shared by hosted and hostless readers. Only activation
 //! creates directories or acquires the permanent kernel-owned writer lock.
 mod inventory;
+mod reopen;
 mod reservation;
 use se_atlas::{cache::*, errors::AtlasResult, model::CacheEpoch, scope::Scope};
 use se_proc::{NativeStateFiles, OwnedFile, observe_file_revision};
@@ -50,6 +51,9 @@ impl NativeAtlasCache {
     /// Explicit after-ready activation only. All writers across this Atlas home,
     /// including cold children, share the same kernel lock and disk inventory.
     pub fn create(home: &Path, scope: Scope) -> AtlasResult<Self> {
+        if let Some(cache) = Self::reopen(home, scope.clone())? {
+            return Ok(cache);
+        }
         Self::create_inner(home, scope, None)
     }
     /// Host calls only after independently reaping its exact cold child. Claim
@@ -79,21 +83,7 @@ impl NativeAtlasCache {
                 Err(e) => return Err(fail(e)),
             }
         }
-        let writer = home
-            .readback(&lock)
-            .map_err(fail)?
-            .ok_or_else(|| fail("writer lock absent"))?;
-        writer.try_lock().map_err(|e| match e {
-            std::fs::TryLockError::WouldBlock => busy("Atlas home writer lease", 1, 0),
-            std::fs::TryLockError::Error(e) => fail(e),
-        })?;
-        let named = home
-            .readback(&lock)
-            .map_err(fail)?
-            .ok_or_else(|| fail("writer lock replaced"))?;
-        if !same(&writer, &named)? {
-            return Err(fail("writer lock identity changed"));
-        }
+        let writer = Self::writer_lease(&home)?;
         let path = cache_path(&home, &scope)?;
         let project = path
             .parent()
