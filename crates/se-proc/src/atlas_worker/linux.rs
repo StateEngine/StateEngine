@@ -1,5 +1,7 @@
 use super::lease::Lease;
 use super::*;
+#[path = "parent.rs"]
+mod parent;
 use std::{
     fs::File,
     os::{
@@ -19,6 +21,7 @@ pub struct AtlasWorker {
     birth_ticks: u64,
     exit: File,
     diagnostics: super::diagnostics::Diagnostics,
+    _parent: parent::Parent,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -141,7 +144,7 @@ impl AtlasWorker {
                 Ok(())
             });
         }
-        let child = command.spawn()?;
+        let (child, parent) = parent::Parent::spawn(command)?;
         // SAFETY: immutable exact child PID; pidfd pins this kernel instance.
         let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, child.id(), 0u32) } as i32;
         if raw < 0 {
@@ -167,6 +170,7 @@ impl AtlasWorker {
             birth_ticks: 0,
             exit,
             diagnostics,
+            _parent: parent,
         };
         worker.birth_ticks = birth(worker.child.id())?;
         write_frame(&mut worker.channel, &encoded)?;
