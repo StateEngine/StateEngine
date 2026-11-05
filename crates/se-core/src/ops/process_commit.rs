@@ -271,8 +271,13 @@ pub fn reconcile<R: Snapshot>(
             "running, proved exited or explicitly unproved",
         ));
     }
-    let key: IdempotencyKey =
-        format!("reconcile-{}-{}", cx.admission.generation, identity.record).parse()?;
+    // Native custody can be proved before provider reconnect fails. Each
+    // distinct result is its own retryable barrier in this host generation.
+    let key: IdempotencyKey = format!(
+        "reconcile-{}-{}-{target:?}",
+        cx.admission.generation, identity.record
+    )
+    .parse()?;
     let mut bodies = Vec::new();
     let mut expected = previous.revision;
     let mut observation = previous.current.header.event;

@@ -3,6 +3,22 @@
 use super::*;
 
 impl CaptureHandle {
+    /// Startup custody is installed before listener publication. A recovered
+    /// monitor must wait for that publication before capture or provider RPC.
+    pub(crate) async fn wait_until_open(&self, deadline: &Deadline) -> Result<()> {
+        while self.fenced.load(std::sync::atomic::Ordering::Acquire) {
+            if self.lease.upgrade().is_none() {
+                return Err(se_core::scope::unreadable(
+                    "provider recovery readiness",
+                    "the original host lease was released before readiness",
+                ));
+            }
+            let remaining = deadline.remaining()?;
+            tokio::time::sleep(remaining.min(std::time::Duration::from_millis(25))).await;
+        }
+        deadline.remaining()?;
+        Ok(())
+    }
     pub fn binding(&self, identity: crate::SessionIdentity) -> Result<Read<crate::TranscriptPin>> {
         let source = {
             let pins = try_guard(&self.sources.pins)?;

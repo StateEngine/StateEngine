@@ -28,7 +28,7 @@ pub(super) struct Job {
     pub mail_pending: AtomicBool,
     pub wake: Arc<events::Wake>,
     pub task: Mutex<Option<tokio::task::JoinHandle<()>>>,
-    pub fault: Mutex<Option<&'static str>>,
+    pub fault: Mutex<Option<String>>,
 }
 impl LaunchCoordinator {
     /// Includes prepared launches and unresolved cleanup, not just providers
@@ -160,7 +160,7 @@ impl LaunchCoordinator {
                 }, false).await;
                 if completed.is_err() {
                     let failure = error("session supervisor", "panicked; original lifecycle custody remains retained for explicit stop or reconciliation");
-                    if let Ok(mut fault) = owned.fault.lock() { *fault = Some("session supervisor panicked; explicit reconciliation required"); }
+                    if let Ok(mut fault) = owned.fault.lock() { *fault = Some("session supervisor panicked; explicit reconciliation required".into()); }
                     owned.ready.send_replace(Some(Err(failure.body)));
                 }
             });

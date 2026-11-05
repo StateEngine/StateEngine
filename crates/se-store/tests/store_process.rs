@@ -139,7 +139,44 @@ fn typed_process_registration_and_stop_transitions_roundtrip() -> Check {
     Ok(())
 }
 
-/// Protects: 20 process producer — stale revision, wrong source state, terminal revival and native/principal drift never advance the process head.
+/// Protects: successor custody reconciliation reaches FULL durability before
+/// an adapter can restore provider control or admit the recovered session.
+#[test]
+fn successor_reconciliation_is_full_before_provider_control_resumes() -> Check {
+    let f = Fixture::new()?;
+    let (host, lease) = host(&f)?;
+    let writer = host.start_writer(options(256)?, lease.clone())?;
+    let client = writer.client();
+    let mut i = identity(&f, false)?;
+    let first = wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request("recovery-durability-reserve")?),
+        vec![registration(&i, ProcessState::Reserved)],
+    )?)?)??;
+    i.root_identity = RootIdentityState::Unpublished;
+    for (rev, from, to) in [
+        (1, ProcessState::Reserved, ProcessState::Starting),
+        (2, ProcessState::Starting, ProcessState::Lost),
+        (3, ProcessState::Lost, ProcessState::StopUnproved),
+    ] {
+        let receipt = wait(client.submit(f.batch(
+            f.owner_project(),
+            Some(request(&format!("recovery-durability-{rev}"))?),
+            vec![transition(&i, rev, from, to, first.primary_event.clone())?],
+        )?)?)??;
+        if from == ProcessState::Lost {
+            assert_eq!(receipt.durability, CommitDurability::Full);
+            assert_eq!(
+                head(&f, i.record.clone())?.current.durability,
+                CommitDurability::Full
+            );
+        }
+    }
+    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    Ok(())
+}
+
+/// Protects: stale revision, wrong source state, terminal revival and native/principal drift never advance the process head.
 #[test]
 fn process_transition_cas_identity_and_atomic_rollback() -> Check {
     let f = Fixture::new()?;

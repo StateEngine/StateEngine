@@ -19,12 +19,18 @@ impl CodexHarness {
                 SeError::invalid("Codex attach", "an actual successful executable probe")
             })?;
         let socket = self.socket(request)?;
-        let port = Arc::new(transport);
-        let (sender, receiver) =
-            channel::open(self.io.clone(), port.clone(), socket.as_deref(), &cx).await?;
+        let binding = self
+            .connect(
+                transport,
+                socket.as_deref(),
+                request.mode == se_proc::LaunchMode::Window,
+                None,
+                &cx,
+            )
+            .await?;
         if let Some(socket) = &socket {
             let socket = socket.clone();
-            let runtime_record = self
+            let record = self
                 .directory(&request.identity.session)?
                 .join("codex-runtime.json");
             let session = request.identity.session.clone();
@@ -32,7 +38,7 @@ impl CodexHarness {
                 .stage(until.saturating_duration_since(std::time::Instant::now()))?;
             self.pool
                 .run_owned(&deadline, move || {
-                    Self::validate_socket(&socket, &runtime_record, &session)
+                    Self::validate_socket(&socket, &record, &session)
                 })
                 .await?;
         }
@@ -40,39 +46,6 @@ impl CodexHarness {
             cx.generation,
             until.saturating_duration_since(std::time::Instant::now()),
         );
-        let binding = Arc::new(Binding {
-            io: self.io.clone(),
-            port: port.clone(),
-            sender: tokio::sync::Mutex::new(sender),
-            state: Mutex::new(state::State {
-                capture: self.configuration.capture.enabled,
-                ..Default::default()
-            }),
-            completion: Default::default(),
-            rollout: Mutex::new(None),
-            initial: tokio::sync::Mutex::new(None),
-            input: tokio::sync::Mutex::new(()),
-            tasks: Mutex::new(vec![]),
-            attended: request.mode == se_proc::LaunchMode::Window,
-        });
-        let mut tasks = vec![
-            tokio::spawn(rpc::read(Arc::downgrade(&binding), receiver, cx.generation)),
-            tokio::spawn(channel::drain(
-                self.io.clone(),
-                port.clone(),
-                ProviderStream::Error,
-                cx.generation,
-            )),
-        ];
-        if socket.is_some() {
-            tasks.push(tokio::spawn(channel::drain(
-                self.io.clone(),
-                port,
-                ProviderStream::Output,
-                cx.generation,
-            )));
-        }
-        *binding.tasks.lock().map_err(|_| poisoned())? = tasks;
         let handshake = tokio::time::timeout(cx.timeout, async {
             binding
                 .request("initialize", input::initialize(), &cx)

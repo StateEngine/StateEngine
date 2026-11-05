@@ -32,6 +32,11 @@ impl LaunchCoordinator {
                         return;
                     }
                 };
+                if state.recover_provider
+                    && !self.recover_control(&mut state, &job, &deadline).await
+                {
+                    return;
+                }
                 if let Some(binding) = state
                     .binding
                     .as_ref()

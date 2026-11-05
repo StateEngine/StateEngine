@@ -84,6 +84,10 @@ fn direct_and_stock_alias_are_pinned_and_retired_without_removing_vendor_parent(
     for alias in [false, true] {
         let f = Fixture::new(alias)?;
         prepare(&f.socket, &f.record, &f.value.session)?;
+        assert_eq!(
+            CodexHarness::retained_socket(&f.record, &f.value.session)?,
+            f.socket
+        );
         prepare(&f.socket, &f.record, &f.value.session)?;
         retire(&f.socket, &f.record, &f.value)?;
         assert!(metadata(&f.socket)?.is_none());
@@ -97,6 +101,22 @@ fn direct_and_stock_alias_are_pinned_and_retired_without_removing_vendor_parent(
         f.cleanup()?;
     }
     Ok(())
+}
+#[test]
+fn recovery_requires_the_original_session_and_endpoint_journal() -> Check {
+    let f = Fixture::new(false)?;
+    assert!(CodexHarness::retained_socket(&f.record, &f.value.session).is_err());
+    assert!(metadata(&sidecar(&f.record))?.is_none());
+    prepare(&f.socket, &f.record, &f.value.session)?;
+    let other = se_types::SessionId::from_parts(1_700_000_000_000, [2; 10])?;
+    assert!(CodexHarness::retained_socket(&f.record, &other).is_err());
+    let held = f.root.join("original-endpoint");
+    std::fs::rename(sidecar(&f.record), &held)?;
+    assert!(CodexHarness::retained_socket(&f.record, &f.value.session).is_err());
+    assert!(metadata(&sidecar(&f.record))?.is_none());
+    std::fs::rename(held, sidecar(&f.record))?;
+    retire(&f.socket, &f.record, &f.value)?;
+    f.cleanup()
 }
 #[test]
 fn substituted_socket_or_non_stock_alias_refuses_without_removing_the_leaf() -> Check {

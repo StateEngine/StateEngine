@@ -70,17 +70,19 @@ impl LaunchCoordinator {
                     .original
                     .as_deref()
                     .unwrap_or(&session_head.current);
-                let (conversation, capture, provider) = match &prepared.body {
+                let (conversation, capture, provider, attended) = match &prepared.body {
                     EventBody::SessionPrepared {
                         session: found,
                         agent: principal,
                         consent,
                         provider,
+                        surface,
                         ..
                     } if found == &session && principal == &agent => (
                         se_core::ops::session_reference::read(cx.read, &session_head)?,
                         *consent == se_store::Consent::Capture,
                         *provider,
+                        *surface == Some(se_store::SessionSurface::Window),
                     ),
                     _ => {
                         return Err(error(
@@ -124,6 +126,7 @@ impl LaunchCoordinator {
                         model,
                         capture,
                         provider,
+                        attended,
                     },
                     active,
                     retired,

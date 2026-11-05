@@ -15,6 +15,7 @@ pub(super) struct LifecycleMetadata {
     pub model: Option<String>,
     pub provider: se_store::Provider,
     pub capture: bool,
+    pub attended: bool,
 }
 impl LifecycleMetadata {
     pub fn from_launch(plan: &LaunchPlan) -> Self {
@@ -29,11 +30,13 @@ impl LifecycleMetadata {
             model: plan.profile.model.clone(),
             provider: plan.profile.provider,
             capture: plan.capture,
+            attended: !plan.input.detach,
         }
     }
 }
 pub(super) struct Work {
     pub plan: Option<Arc<LaunchPlan>>,
+    pub recover_provider: bool,
     pub meta: LifecycleMetadata,
     pub admission: Admission,
     pub cleanup_admission: Admission,
@@ -87,6 +90,7 @@ impl Work {
             cleanup_admission,
             meta,
             plan: None,
+            recover_provider: false,
             admission,
             process: None,
             record: None,

@@ -71,6 +71,30 @@ impl CodexHarness {
             Ok(None)
         }
     }
+    /// Recovery reads the original protected address, never a newly selected path.
+    #[cfg(unix)]
+    pub(super) fn retained_socket(record: &Path, session: &se_types::SessionId) -> Result<PathBuf> {
+        let mut file = se_proc::OwnedFile::open(record)
+            .map_err(native_error)?
+            .ok_or_else(|| {
+                se_core::scope::unreadable(
+                    "Codex recovery",
+                    "original private rendezvous record is absent",
+                )
+            })?;
+        let value: Record = serde_json::from_slice(&file.read(8192).map_err(native_error)?)
+            .map_err(|e| se_core::scope::unreadable("Codex recovery record", &e.to_string()))?;
+        drop(file);
+        if &value.session != session {
+            return Err(SeError::invalid(
+                "Codex recovery",
+                "the exact recorded session",
+            ));
+        }
+        let socket = value.socket.to_local()?;
+        endpoint::recover(&socket, record, session)?;
+        Ok(socket)
+    }
     pub(crate) async fn prepare_socket(
         &self,
         request: &HarnessRequest,

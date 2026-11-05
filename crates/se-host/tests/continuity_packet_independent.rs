@@ -380,6 +380,12 @@ fn preview_and_since_do_not_cross_their_authority_or_target() -> Check {
             .is_err(),
         "foreign session received context"
     );
+    let mut successor = h.scope(&h.f.a, Some(h.a.clone()));
+    successor.admission.generation += 1;
+    assert!(
+        h.resume(successor, resume_request(32768, None))?.is_err(),
+        "a new generation received context without current-host native reconciliation"
+    );
     let b = h.context(&h.f.b, Some(h.b.clone()), request(32768))??;
     assert!(!b.assembled_model_input.contains("private A state"));
     assert!(!b.assembled_model_input.contains("unread A packet marker"));
