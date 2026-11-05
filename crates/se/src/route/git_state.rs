@@ -1,12 +1,23 @@
 //! Bounded read-only observation of an existing Git repository: the branch,
 //! the commit count reachable from HEAD and whether uncommitted changes are
-//! present. The commands and environment match the init repository reader.
+//! present. Every Git invocation runs under one shared environment that
+//! disables repository-supplied fsmonitor helpers and keeps output bounded,
+//! so the observer can never execute repository configuration or buffer an
+//! unbounded working tree.
 use se_core::{ops::GitView, scope};
 use se_types::{Result, SeError};
 use std::{
+    io::{self, Read},
     path::Path,
-    process::{Command, Output},
+    process::{Command, Output, Stdio},
+    sync::mpsc,
+    thread,
+    time::Duration,
 };
+
+const STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(10);
+const STDERR_RETAIN: usize = 4096;
+const STDERR_TAIL: usize = 160;
 
 pub fn observe(root: &Path) -> Result<Option<GitView>> {
     if !root.is_dir() {
@@ -83,16 +94,7 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
         ));
     };
     let uncommitted = match &head {
-        Some(_) => {
-            let status = run(root, &["status", "--porcelain"])?;
-            if !status.status.success() {
-                return Err(scope::unreadable(
-                    "Git working tree",
-                    "working tree status could not be read; preserve the repository and restore access",
-                ));
-            }
-            Some(!status.stdout.is_empty())
-        }
+        Some(_) => dirty(root)?,
         None => None,
     };
     Ok(Some(GitView {
@@ -107,18 +109,99 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
         uncommitted,
     }))
 }
+
+/// Observe only whether the working tree has uncommitted changes, streaming
+/// `git status --porcelain` instead of buffering it. Dirty is settled by the
+/// first output byte; clean requires the command to finish empty; a run that
+/// outgrows the bounded observation is reported as unknown, and its child is
+/// killed and reaped, so a large dirty repository never fails the adoption.
+fn dirty(root: &Path) -> Result<Option<bool>> {
+    let mut command = Command::new("git");
+    configured(root, &mut command)
+        .args(["status", "--porcelain"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|e| scope::unreadable("Git repository observation", &e.to_string()))?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        scope::unreadable("Git working tree", "status output pipe was not attached")
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        scope::unreadable("Git working tree", "status error pipe was not attached")
+    })?;
+    let (sender, receiver) = mpsc::channel();
+    thread::spawn(move || {
+        let mut stdout = io::BufReader::new(stdout);
+        let seen = io::copy(&mut stdout, &mut io::sink()).unwrap_or(0);
+        let mut error = io::BufReader::new(stderr);
+        let mut retained: Vec<u8> = Vec::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            match error.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    for &byte in &buffer[..read] {
+                        if retained.len() < STDERR_RETAIN {
+                            retained.push(byte);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = sender.send((seen, retained));
+    });
+    let outcome = match receiver.recv_timeout(STATUS_OBSERVATION_DEADLINE) {
+        Ok((seen, stderr_tail)) => {
+            let status = child
+                .wait()
+                .map_err(|e| scope::unreadable("Git working tree", &e.to_string()))?;
+            if seen > 0 {
+                Some(true)
+            } else if status.success() {
+                Some(false)
+            } else {
+                return Err(scope::unreadable(
+                    "Git working tree",
+                    &failure_detail(&stderr_tail),
+                ));
+            }
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            None
+        }
+    };
+    Ok(outcome)
+}
+
 fn run(root: &Path, args: &[&str]) -> Result<Output> {
-    Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+    let mut command = Command::new("git");
+    configured(root, &mut command).args(args);
+    command
         .output()
         .map_err(|e| scope::unreadable("Git repository observation", &e.to_string()))
 }
+
+/// One Git environment for every observation call: the target root, no lock
+/// maintenance, no repository-supplied fsmonitor helper, and no repository
+/// identity inherited from the caller's environment.
+fn configured<'a>(root: &Path, command: &'a mut Command) -> &'a mut Command {
+    command
+        .arg("-C")
+        .arg(root)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_0", "false")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+}
+
 fn text(output: &Output) -> Result<String> {
     if output.stdout.len() > 4096 {
         return Err(SeError::too_large(
@@ -130,4 +213,17 @@ fn text(output: &Output) -> Result<String> {
     std::str::from_utf8(&output.stdout)
         .map(|s| s.trim_end_matches(['\r', '\n']).to_owned())
         .map_err(|_| scope::unreadable("Git metadata", "Git returned non-UTF-8 metadata"))
+}
+
+fn failure_detail(bytes: &[u8]) -> String {
+    let base = "working tree status could not be read; preserve the repository and restore access";
+    let trimmed = String::from_utf8_lossy(bytes).trim().to_owned();
+    if trimmed.is_empty() {
+        return base.to_owned();
+    }
+    let mut end = trimmed.len().min(STDERR_TAIL);
+    while !trimmed.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{base}: {}", &trimmed[..end])
 }

@@ -124,7 +124,19 @@ pub fn observe_snapshot<S: Snapshot>(
                 None
             } else {
                 match super::git_state::observe(std::path::Path::new(&root)) {
-                    Ok(observed) => observed,
+                    Ok(observed) => {
+                        if let Some(view) = &observed
+                            && view.head.is_some()
+                            && view.uncommitted.is_none()
+                        {
+                            output.pending.push(PendingFact {
+                                what: "repository state".into(),
+                                since: None,
+                                detail: "Uncommitted state is unknown: the working-tree scan outgrew its bounded observation; the branch and commit count are still reported.".into(),
+                            });
+                        }
+                        observed
+                    }
                     Err(error) => {
                         output.pending.push(PendingFact {
                             what: "repository state".into(),
