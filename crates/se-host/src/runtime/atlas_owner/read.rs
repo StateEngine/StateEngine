@@ -151,15 +151,21 @@ impl Service {
 }
 impl AtlasReadPort for Service {
     fn observe_project(&self, project: &ProjectId, roots: &[se_store::Root]) -> Result<()> {
-        self.work
-            .register(project, roots::registrations(project, roots, &self.home)?)
+        let changed = self
+            .work
+            .register(project, roots::registrations(project, roots, &self.home)?)?;
+        if changed && self.enabled {
+            self.interests.wake_owner();
+        }
+        Ok(())
     }
-    fn request_interest(&self, project: &ProjectId) -> Result<()> {
+    fn request_interest(&self, project: &ProjectId, selected: Option<&RootId>) -> Result<()> {
         if self.enabled {
             let needs_catch_up = {
                 let roots = self.readers.lock().map_err(|_| poisoned())?;
                 !roots.roots.iter().any(|root| {
                     &root.registration.project == project
+                        && selected.is_none_or(|id| id == &root.registration.root)
                         && !matches!(
                             root.summary.state,
                             IndexState::Suspended { .. } | IndexState::Unreadable { .. }

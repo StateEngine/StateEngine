@@ -34,7 +34,7 @@ pub trait AtlasReadPort: Send + Sync {
         Ok(())
     }
     /// Signal an admitted query's project without doing native work here.
-    fn request_interest(&self, _project: &ProjectId) -> Result<()> {
+    fn request_interest(&self, _project: &ProjectId, _root: Option<&RootId>) -> Result<()> {
         Ok(())
     }
     fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary>;
@@ -107,9 +107,13 @@ impl AtlasOwnerPort {
             }),
         }
     }
-    pub(crate) fn request_interest(&self, project: &ProjectId) -> Result<()> {
+    pub(crate) fn request_interest(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+    ) -> Result<()> {
         if let Some(reader) = self.reader.get() {
-            reader.request_interest(project)?;
+            reader.request_interest(project, root)?;
         }
         Ok(())
     }

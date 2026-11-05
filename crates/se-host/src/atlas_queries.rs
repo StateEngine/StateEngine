@@ -150,7 +150,7 @@ pub(crate) fn owner_read<R: Snapshot>(
             "one admitted registered project",
         ));
     };
-    request_project(owner, read, project)?;
+    request_project(owner, read, project, request.options().root.as_ref())?;
     let summary = owner.summary(project, request.options().root.as_ref())?;
     if &summary.project != project
         || request
@@ -194,6 +194,7 @@ pub(crate) fn request_project<R: Snapshot>(
     owner: &crate::atlas_runtime::read_port::AtlasOwnerPort,
     read: &mut R,
     project: &se_types::ProjectId,
+    root: Option<&RootId>,
 ) -> AtlasResult<()> {
     let registered = se_core::scope::require_present(
         read.project(project.clone())
@@ -212,7 +213,7 @@ pub(crate) fn request_project<R: Snapshot>(
         }
     };
     owner.observe_project(project, &roots)?;
-    owner.request_interest(project)?;
+    owner.request_interest(project, root)?;
     Ok(())
 }
 
@@ -235,7 +236,7 @@ pub(crate) fn with_owner_reader<R: Snapshot, T>(
             "one admitted registered project",
         ));
     };
-    request_project(owner, read, project)?;
+    request_project(owner, read, project, root)?;
     with_prepared_owner_reader(owner, ticket, root, read, admission, now_unix_ms, query)
 }
 

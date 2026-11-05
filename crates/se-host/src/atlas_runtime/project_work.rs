@@ -84,7 +84,11 @@ impl ProjectWork {
             &bytes,
         )
     }
-    pub(crate) fn register(&self, project: &ProjectId, roots: Vec<RootRegistration>) -> Result<()> {
+    pub(crate) fn register(
+        &self,
+        project: &ProjectId,
+        roots: Vec<RootRegistration>,
+    ) -> Result<bool> {
         let mut changed = false;
         self.update(project, |entry| {
             changed = entry.roots.len() != roots.len()
@@ -112,7 +116,7 @@ impl ProjectWork {
         if changed {
             self.request(project)?;
         }
-        Ok(())
+        Ok(changed)
     }
     pub(crate) fn roots(&self, project: &ProjectId) -> Result<Vec<PublishedRoot>> {
         Ok(self
