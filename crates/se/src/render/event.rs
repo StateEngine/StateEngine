@@ -29,8 +29,12 @@ fn present(value: &HistoryEvent, out: &mut impl Write) -> io::Result<()> {
             match field {
                 serde_json::Value::String(text) => {
                     let text = match (value.kind.as_str(), *path) {
-                        ("profile.saved", "/profile/permission") => permission_label(text),
-                        ("profile.saved", "/profile/provider") => provider_label(text),
+                        ("profile.saved", "/profile/permission") => {
+                            super::labels::stored_permission(text)
+                        }
+                        ("profile.saved", "/profile/provider") => {
+                            super::labels::stored_provider(text)
+                        }
                         _ => text,
                     };
                     fact(label, text, out)?;
@@ -42,23 +46,6 @@ fn present(value: &HistoryEvent, out: &mut impl Write) -> io::Result<()> {
         }
     }
     Ok(())
-}
-
-fn permission_label(permission: &str) -> &str {
-    match permission {
-        "ReadOnly" => "read-only",
-        "WorkspaceWrite" => "workspace-write",
-        "NamedFullBypass" => "bypass",
-        other => other,
-    }
-}
-
-fn provider_label(provider: &str) -> &str {
-    match provider {
-        "Claude" => "Claude Code",
-        "SeCode" => "SE Code",
-        other => other,
-    }
 }
 
 fn fact(label: &str, text: &str, out: &mut impl Write) -> io::Result<()> {

@@ -9,7 +9,9 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         writeln!(out, "StateEngine {} — no project here yet.", value.version)?;
         writeln!(
             out,
-            "  An agent (Claude Code or Codex) works in a project: a folder StateEngine tracks."
+            "  An agent ({} or {}) works in a project: a folder StateEngine tracks.",
+            super::labels::provider(se_types::Provider::Claude),
+            super::labels::provider(se_types::Provider::Codex)
         )?;
         writeln!(
             out,

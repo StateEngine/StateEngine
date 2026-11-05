@@ -9,7 +9,7 @@ pub fn launch(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
         "Agent {}: {} ({}, {})",
         value.agent.name,
         value.state,
-        write::provider(value.provider),
+        super::labels::provider(value.provider),
         value.surface
     )?;
     writeln!(

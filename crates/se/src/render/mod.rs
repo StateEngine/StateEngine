@@ -6,6 +6,7 @@ mod doctor;
 pub mod error;
 mod event;
 mod import;
+mod labels;
 mod read;
 mod stop;
 mod transcript;

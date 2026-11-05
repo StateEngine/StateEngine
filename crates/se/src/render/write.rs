@@ -1,8 +1,8 @@
-use super::read::{next_step, notification};
-use se_core::{
-    config_policy::{Approval, EffectiveSandbox, Provider, ResolvedProfile},
-    ops::outputs::*,
+use super::{
+    labels,
+    read::{next_step, notification},
 };
+use se_core::{config_policy::ResolvedProfile, ops::outputs::*};
 use std::io::{self, Write};
 
 pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
@@ -21,7 +21,7 @@ pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
         out,
         "Agent {} uses {}",
         value.agent.name,
-        provider(value.agent.provider)
+        labels::provider(value.agent.provider)
     )?;
     profile(&value.agent.permission_profile, out)?;
     for integration in &value.integrations {
@@ -48,20 +48,14 @@ pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
 }
 
 pub(super) fn profile(value: &ResolvedProfile, out: &mut impl Write) -> io::Result<()> {
-    let sandbox = match value.sandbox {
-        EffectiveSandbox::ReadOnly => "read-only",
-        EffectiveSandbox::WorkspaceWrite => "workspace-write",
-        EffectiveSandbox::Bypass => "bypass",
-    };
-    let approval = match value.approval {
-        Approval::OnRequest => "on-request",
-        Approval::Untrusted => "untrusted",
-        Approval::Never => "never",
-    };
+    let sandbox = labels::permission(value.sandbox);
+    let approval = labels::approval(value.approval);
     writeln!(
         out,
         "Permission profile {}: {sandbox}, approval {approval}, network {}, bypass {}",
-        value.name, value.network, value.bypass
+        value.name,
+        labels::network(value.network),
+        value.bypass
     )?;
     if !value.network {
         writeln!(
@@ -73,19 +67,12 @@ pub(super) fn profile(value: &ResolvedProfile, out: &mut impl Write) -> io::Resu
     Ok(())
 }
 
-pub(super) fn provider(value: Provider) -> &'static str {
-    match value {
-        Provider::Claude => "Claude Code",
-        Provider::Codex => "Codex",
-    }
-}
-
 pub fn launch(value: &LaunchOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(
         out,
         "{} launched with {} (PID {})",
         value.agent.name,
-        provider(value.provider),
+        labels::provider(value.provider),
         value.process.pid
     )?;
     profile(&value.permission_profile, out)?;

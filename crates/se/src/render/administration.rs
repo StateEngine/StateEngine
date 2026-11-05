@@ -18,10 +18,7 @@ pub fn agent(value: &AgentReceipt, out: &mut impl Write) -> io::Result<()> {
     if let Some(previous) = &value.previous_name {
         writeln!(out, "Previous name: {previous}")?;
     }
-    let provider = match value.agent.provider {
-        se_types::Provider::Claude => "Claude Code",
-        se_types::Provider::Codex => "Codex",
-    };
+    let provider = super::labels::provider(value.agent.provider);
     writeln!(
         out,
         "Provider: {provider}; permission profile: {}",
@@ -182,10 +179,7 @@ pub(super) fn agents(
             "{} ({}) — {}; saved profile {}",
             agent.name,
             agent.id,
-            match agent.provider {
-                se_types::Provider::Claude => "Claude Code",
-                se_types::Provider::Codex => "Codex",
-            },
+            super::labels::provider(agent.provider),
             agent.profile
         )?;
         writeln!(out, "  Session: {}", agent.session.state)?;
