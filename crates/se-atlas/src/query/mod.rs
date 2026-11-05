@@ -106,6 +106,7 @@ pub struct QueryReader<'a> {
     pub(crate) source: Option<&'a dyn LiveSource>,
     pub(crate) now_unix_ms: Option<i64>,
     pub(crate) record_feed_current: bool,
+    source_state: Option<IndexState>,
 }
 impl<'a> QueryReader<'a> {
     pub fn new(cache: &'a CacheConnection<'a>, context: ReaderContext<'a>) -> Self {
@@ -130,7 +131,14 @@ impl<'a> QueryReader<'a> {
             source,
             now_unix_ms,
             record_feed_current,
+            source_state: None,
         }
+    }
+    /// The owner's work catalogue may be newer than the committed cache
+    /// snapshot. Pending source work prevents a complete negative answer.
+    pub fn with_source_state(mut self, state: IndexState) -> Self {
+        self.source_state = Some(state);
+        self
     }
     pub fn summary(&self) -> AtlasResult<IndexSummary> {
         self.cache
@@ -156,6 +164,20 @@ impl<'a> QueryReader<'a> {
             state: json(&get::<String>(row, 4)?)?,
         };
         let record_body_limited = get::<bool>(row, 5)?;
+        if let Some(state) = &self.source_state
+            && !matches!(state, IndexState::Current)
+        {
+            if matches!(index.state, IndexState::Current) {
+                index.state = state.clone();
+            }
+            if !index
+                .coverage
+                .reasons
+                .contains(&CoverageReason::StaleSnapshot)
+            {
+                index.coverage.reasons.push(CoverageReason::StaleSnapshot);
+            }
+        }
         for (limited, reason) in [
             (
                 self.hostless || self.epoch_retired,

@@ -84,14 +84,9 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             .find(|r| r.summary.root == registration.root)
             .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
         let cache = NativeAtlasCache::create(&self.home, root.source.scope.clone())?;
-        let current = pointer::open_current(
-            &cache,
-            &root.source.scope,
-            ConnectionRole::HostWriter,
-            profile,
-            deadline,
-        )?
-        .ok_or_else(|| atlas_cold::failure("renewal index disappeared"))?;
+        let current = super::connections::writer(&cache, root, profile, deadline)?
+            .ok_or_else(|| atlas_cold::failure("renewal index disappeared"))?;
+        root.checked_epoch = Some(current.connection.identity().epoch.clone());
         if root.serial_domain.is_none() {
             let base = current.connection.read(deadline, |sql| {
                 let value: i64 = sql
@@ -241,12 +236,30 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
         } else {
             None
         };
-        let current =
-            if let (Some(cache), Some(profile), Some(scope)) = (&cache, &self.profile, &scope) {
-                pointer::open_current(cache, scope, ConnectionRole::HostWriter, profile, deadline)?
-            } else {
-                None
-            };
+        let current = if let (Some(cache), Some(profile), Some(scope)) =
+            (&cache, &self.profile, &scope)
+        {
+            // Explicit close may follow an unannounced pointer change.
+            // Validate that epoch independently before closing its durable
+            // watch state; renewal must still refuse the old serial domain.
+            let checked = pointer::open_current(
+                cache,
+                scope,
+                ConnectionRole::CandidateReader,
+                profile,
+                deadline,
+            )?;
+            let epoch = checked
+                .as_ref()
+                .map(|current| current.connection.identity().epoch.clone());
+            drop(checked);
+            epoch
+                .map(|epoch| pointer::open_checked_writer(cache, scope, profile, &epoch, deadline))
+                .transpose()?
+                .flatten()
+        } else {
+            None
+        };
         self.driver
             .close(id, current.as_ref().map(|c| &c.connection), deadline)?;
         self.roots.retain(|r| &r.summary.root != id);

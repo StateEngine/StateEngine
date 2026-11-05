@@ -164,7 +164,12 @@ pub(crate) fn owner_read<R: Snapshot>(
     }
     if !matches!(
         summary.state,
-        IndexState::Current | IndexState::Updating { .. } | IndexState::VerificationNeeded { .. }
+        IndexState::Current
+            | IndexState::Updating { .. }
+            | IndexState::VerificationNeeded { .. }
+            | IndexState::Opening
+            | IndexState::ColdIndexing { .. }
+            | IndexState::Suspended { .. }
     ) || summary.epoch.is_none()
     {
         return Ok(unavailable(request, summary));
@@ -203,10 +208,9 @@ pub(crate) fn with_owner_reader<R: Snapshot, T>(
         Actor::Agent(id) => AtlasPrincipal::Agent(id.clone()),
         Actor::Human(id) => AtlasPrincipal::Human(id.clone()),
     };
-    let memory = owner.summary(project, root)?.memory;
     let mut query = Some(query);
     let mut output = None;
-    owner.with_reader(project, root, ticket, &mut |cache, source, current| {
+    owner.with_observed_reader(project, root, ticket, &mut |cache, source, observed| {
         if &cache.identity().scope.registration.project != project
             || root.is_some_and(|root| root != &cache.identity().scope.registration.root)
         {
@@ -222,16 +226,17 @@ pub(crate) fn with_owner_reader<R: Snapshot, T>(
         let reader = QueryReader::new(
             cache,
             ReaderContext {
-                memory: memory.clone(),
+                memory: observed.summary.memory,
                 viewer: viewer.clone(),
                 records: &records,
                 source: Some(source),
                 hostless: false,
-                epoch_retired: false,
+                epoch_retired: observed.epoch_retired,
                 now_unix_ms: Some(now_unix_ms),
-                record_feed_current: current,
+                record_feed_current: observed.record_feed_current,
             },
-        );
+        )
+        .with_source_state(observed.summary.state);
         output = Some(query(&reader, source)?);
         Ok(())
     })?;

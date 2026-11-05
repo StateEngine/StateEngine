@@ -13,6 +13,18 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 pub type AtlasReadCallback<'a> =
     dyn FnMut(&CacheConnection<'_>, &RegisteredSource<NativeAtlasSource>, bool) -> Result<()> + 'a;
+pub struct AtlasReadObservation {
+    pub summary: IndexSummary,
+    pub epoch_retired: bool,
+    /// Filled by AtlasOwnerPort against the authoritative query snapshot.
+    pub record_feed_current: bool,
+}
+pub type AtlasObservedReadCallback<'a> = dyn FnMut(
+        &CacheConnection<'_>,
+        &RegisteredSource<NativeAtlasSource>,
+        AtlasReadObservation,
+    ) -> Result<()>
+    + 'a;
 /// Object-safe owner-loop handoff. The callback runs synchronously while the
 /// selected controller lends its one scoped reader; nothing escapes the call.
 pub trait AtlasReadPort: Send + Sync {
@@ -23,6 +35,27 @@ pub trait AtlasReadPort: Send + Sync {
         root: Option<&RootId>,
         read: &mut AtlasReadCallback<'_>,
     ) -> Result<()>;
+    /// Borrowing controllers observe before lending their reader, avoiding
+    /// recursive owner locking. The native service observes after admission.
+    fn with_observed_reader(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+        read: &mut AtlasObservedReadCallback<'_>,
+    ) -> Result<()> {
+        let summary = self.summary(project, root)?;
+        self.with_reader(project, root, &mut |cache, source, epoch_retired| {
+            read(
+                cache,
+                source,
+                AtlasReadObservation {
+                    summary: summary.clone(),
+                    epoch_retired,
+                    record_feed_current: false,
+                },
+            )
+        })
+    }
 }
 #[derive(Default)]
 pub struct AtlasOwnerPort {
@@ -50,14 +83,23 @@ impl AtlasOwnerPort {
         ticket: Option<RecordFeedTicket>,
         read: &mut AtlasReadCallback<'_>,
     ) -> Result<()> {
+        self.with_observed_reader(project, root, ticket, &mut |cache, source, observed| {
+            read(cache, source, observed.record_feed_current)
+        })
+    }
+    pub(crate) fn with_observed_reader(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+        ticket: Option<RecordFeedTicket>,
+        read: &mut AtlasObservedReadCallback<'_>,
+    ) -> Result<()> {
         let reader = self.reader.get().ok_or_else(|| se_core::scope::unreadable("Atlas owner read port", "the owner has not installed its controller; queries cannot open a substitute cache"))?;
-        reader.with_reader(project, root, &mut |cache, source, _| {
-            read(
-                cache,
-                source,
-                self.records
-                    .is_current(&RecordFeedScope::from(cache.identity()), ticket)?,
-            )
+        reader.with_observed_reader(project, root, &mut |cache, source, mut observed| {
+            observed.record_feed_current = self
+                .records
+                .is_current(&RecordFeedScope::from(cache.identity()), ticket)?;
+            read(cache, source, observed)
         })
     }
 }

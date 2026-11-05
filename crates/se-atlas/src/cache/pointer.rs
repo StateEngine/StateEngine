@@ -31,10 +31,43 @@ pub fn open_current<'a>(
     profile: &SqlProfile,
     deadline: Instant,
 ) -> AtlasResult<Option<DiscoveredEpoch<'a>>> {
+    open_epoch(files, scope, role, profile, None, deadline)
+}
+/// Reopen only the exact epoch whose integrity the native owner already checked.
+/// A changed pointer requires fresh owner validation, never an unchecked write.
+pub fn open_checked_writer<'a>(
+    files: &'a dyn CacheFiles,
+    scope: &Scope,
+    profile: &SqlProfile,
+    checked_epoch: &CacheEpoch,
+    deadline: Instant,
+) -> AtlasResult<Option<DiscoveredEpoch<'a>>> {
+    open_epoch(
+        files,
+        scope,
+        ConnectionRole::MaintenanceWriter,
+        profile,
+        Some(checked_epoch),
+        deadline,
+    )
+}
+fn open_epoch<'a>(
+    files: &'a dyn CacheFiles,
+    scope: &Scope,
+    role: ConnectionRole,
+    profile: &SqlProfile,
+    checked_epoch: Option<&CacheEpoch>,
+    deadline: Instant,
+) -> AtlasResult<Option<DiscoveredEpoch<'a>>> {
     let Some(bytes) = files.read_pointer()? else {
         return Ok(None);
     };
     let pointer = decode(&bytes, scope)?;
+    if checked_epoch.is_some_and(|epoch| epoch != &pointer.epoch) {
+        return Err(cache_error(
+            "cache epoch changed; owner must validate the new epoch before maintenance",
+        ));
+    }
     let identity = CacheIdentity {
         scope: scope.clone(),
         epoch: pointer.epoch,
@@ -51,7 +84,9 @@ pub fn open_current<'a>(
     if retired
         && matches!(
             role,
-            ConnectionRole::HostWriter | ConnectionRole::ColdWriter
+            ConnectionRole::HostWriter
+                | ConnectionRole::MaintenanceWriter
+                | ConnectionRole::ColdWriter
         )
     {
         return Err(cache_error(

@@ -29,6 +29,7 @@ struct Root {
     waiting_on_child: bool,
     needs_rebuild: bool,
     serial_domain: Option<(CacheEpoch, u64)>,
+    checked_epoch: Option<CacheEpoch>,
 }
 pub struct NativeRuntime<D> {
     home: PathBuf,
@@ -140,6 +141,7 @@ impl<D: RenewalDriver> NativeRuntime<D> {
             waiting_on_child: false,
             needs_rebuild,
             serial_domain: None,
+            checked_epoch: None,
         });
         Ok(())
     }
@@ -239,6 +241,9 @@ impl<D: RenewalDriver> NativeRuntime<D> {
                     .epoch
                     .clone()
                     .ok_or_else(|| atlas_cold::failure("completed native epoch absent"))?;
+                // ColdJob independently reopens, integrity-checks and reads
+                // back the exact candidate after reaping its child.
+                root.checked_epoch = Some(epoch.clone());
                 self.child.take();
                 Ok(Some(WorkerEvent::Exited {
                     job,

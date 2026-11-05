@@ -1,6 +1,7 @@
 //! One after-ready Atlas driver on the supplied runtime and maintenance gate.
 //! No IO starts during installation, and no SQL handle crosses an await.
 mod qualification;
+mod read;
 mod records;
 mod roots;
 mod work;
@@ -21,8 +22,8 @@ use std::{
 };
 use tokio::{io::unix::AsyncFd, sync::watch};
 
-/// Only independent native measurements may fill these admissions. None keeps
-/// the contained cold path available and names unqualified steady SQL honestly.
+/// Independent native measurements supply these admissions. Installation fills
+/// the measured Linux SQL default; incremental parser profiles remain opt-in.
 #[derive(Default, Debug)]
 pub struct NativeAtlasQualification {
     pub sql: Option<SqlProfile>,
@@ -30,6 +31,8 @@ pub struct NativeAtlasQualification {
 }
 pub(super) struct Service {
     state: Mutex<State>,
+    readers: Mutex<Vec<read::Root>>,
+    profile: Option<SqlProfile>,
     owner: HumanId,
     memory: MemoryBudget,
 }
@@ -83,8 +86,10 @@ impl HostedRuntime {
             })?
             .atlas
             .enabled;
+        let qualification = qualification.with_native_sql()?;
         let home = self.state_directory.join("atlas");
         let memory = qualification.memory();
+        let profile = qualification.sql.clone();
         let controller = NativeController::new(NativeRuntime::new(
             home.clone(),
             image,
@@ -100,6 +105,8 @@ impl HostedRuntime {
                 enabled,
                 child_deadline: None,
             }),
+            readers: Mutex::new(Vec::new()),
+            profile,
             owner: self.owner.clone(),
             memory,
         });
@@ -108,31 +115,10 @@ impl HostedRuntime {
         Ok(())
     }
 }
-impl AtlasReadPort for Service {
-    fn summary(&self, project: &ProjectId, selected: Option<&RootId>) -> Result<IndexSummary> {
-        let state = self.state.try_lock().map_err(|_| busy())?;
-        let root = state.controller.registered_root(project, selected)?;
-        let mut summary = state.controller.summary(&root)?;
-        summary.memory = Some(self.memory.clone());
-        Ok(summary)
-    }
-    fn with_reader(
-        &self,
-        project: &ProjectId,
-        selected: Option<&RootId>,
-        read: &mut AtlasReadCallback<'_>,
-    ) -> Result<()> {
-        let state = self.state.try_lock().map_err(|_| busy())?;
-        let root = state.controller.registered_root(project, selected)?;
-        state
-            .controller
-            .with_reader(root, |cache, source| read(cache, source, false))
-    }
-}
 fn busy() -> SeError {
     se_core::scope::unreadable(
         "Atlas owner",
-        "a finite maintenance quantum is active or its lock is poisoned; retry after it completes",
+        "the maintenance owner lock is poisoned; preserve the cache and restart the host",
     )
 }
 impl Service {
@@ -153,7 +139,10 @@ impl Service {
                 .blocking
                 .run(crate::BlockingClass::Background, &deadline, move || {
                     let mut state = service.state.lock().map_err(|_| busy())?;
-                    state.work(&job, &service.owner, wake)
+                    service.publish_readers(&state, true)?;
+                    let result = state.work(&job, &service.owner, wake);
+                    service.publish_readers(&state, false)?;
+                    result
                 })
                 .await;
             let plan = match work {
@@ -215,6 +204,7 @@ impl Service {
     ) -> Result<()> {
         let close_bound = bound.clone();
         context.blocking.run_owned(bound,move || {
+            self.readers.lock().map_err(|_| read::poisoned())?.clear();
             let mut state=self.state.lock().map_err(|_|busy())?;
             let roots:Vec<_>=state.roots.iter().map(|r|r.registration.root.clone()).collect();
             for root in roots {

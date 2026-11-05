@@ -210,7 +210,13 @@ pub(crate) fn run_child(
             path: Some(path.clone()),
             phase: protocol::Phase::Checkpoint,
         })?;
-        db.checkpoint(sql_deadline())?;
+        // This private, exclusively owned epoch has no foreground readers.
+        // A disk checkpoint uses the existing whole-job wall allowance, not
+        // the short SQL query allowance; fsync can finish after that allowance
+        // without SQLite's VM progress handler being able to interrupt it.
+        if !db.checkpoint(deadline)? {
+            return Err(failure("unpublished cold epoch checkpoint remains busy"));
+        }
         db.release_cold_memory(sql_deadline())?;
         se_proc::atlas_worker::release_allocator_pages();
         Ok(())
@@ -264,7 +270,9 @@ pub(crate) fn run_child(
             path: Some(RelativePath::new(&path)?),
             phase: protocol::Phase::Checkpoint,
         })?;
-        db.checkpoint(sql_deadline())?;
+        if !db.checkpoint(deadline)? {
+            return Err(failure("unpublished cold epoch checkpoint remains busy"));
+        }
         db.release_cold_memory(sql_deadline())?;
         se_proc::atlas_worker::release_allocator_pages();
     }

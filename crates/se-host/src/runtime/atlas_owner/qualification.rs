@@ -3,6 +3,15 @@ use super::*;
 #[cfg(all(target_env = "gnu", target_arch = "x86_64"))]
 use se_atlas::parse::ParserPlacement;
 impl NativeAtlasQualification {
+    /// The independently measured Linux SQL share is usable without opting in
+    /// to incremental parser profiles. Unknown platforms still carry None.
+    pub(super) fn with_native_sql(mut self) -> Result<Self> {
+        #[cfg(all(target_env = "gnu", target_arch = "x86_64"))]
+        if self.sql.is_none() {
+            self.sql = Some(SqlProfile::from_qualified_overhead(93_702)?);
+        }
+        Ok(self)
+    }
     /// The measured six-grammar Linux/glibc profile is deliberately opt-in.
     /// This does not qualify the joined owner/watch/query peak or other targets.
     #[cfg(all(target_env = "gnu", target_arch = "x86_64"))]

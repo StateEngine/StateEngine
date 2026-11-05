@@ -71,11 +71,11 @@ pub(crate) fn source(
         }
     };
     let mut output = None;
-    owner.with_reader(
+    owner.with_observed_reader(
         project,
         Some(&index.root),
         ticket,
-        &mut |cache, source, current| {
+        &mut |cache, source, observed| {
             if output.is_some() || cache.identity().epoch != *epoch {
                 return Err(SeError::invalid(
                     "Atlas continuity epoch",
@@ -86,16 +86,17 @@ pub(crate) fn source(
             let query = QueryReader::new(
                 cache,
                 ReaderContext {
-                    memory: index.memory.clone(),
+                    memory: observed.summary.memory,
                     viewer: AtlasPrincipal::Agent(viewer.clone()),
                     records: &records,
                     source: Some(source),
                     hostless: false,
-                    epoch_retired: false,
+                    epoch_retired: observed.epoch_retired,
                     now_unix_ms: Some(now),
-                    record_feed_current: current,
+                    record_feed_current: observed.record_feed_current,
                 },
-            );
+            )
+            .with_source_state(observed.summary.state);
             output = Some(query.resume_code(&ResumeRequest {
                 viewer: viewer.clone(),
                 saved_cursor: saved_cursor.clone(),

@@ -5,24 +5,38 @@ use rusqlite::{Connection, OpenFlags, Statement, StatementStatus, limits::Limit}
 use std::{
     cell::Cell,
     ops::Deref,
-    sync::atomic::{AtomicU8, Ordering},
+    sync::{
+        Condvar, Mutex,
+        atomic::{AtomicU8, Ordering},
+    },
     time::{Duration, Instant},
 };
+#[path = "query_arena.rs"]
+mod query_arena;
 #[path = "statement.rs"]
 mod statement;
 pub use statement::{BudgetStatement, SqlView};
 pub type NativeSqlConnection = rusqlite::Connection;
 static SLOTS: AtomicU8 = AtomicU8::new(0);
+static READER_WAIT: Mutex<()> = Mutex::new(());
+static READER_READY: Condvar = Condvar::new();
 const READER_SLOT: u8 = 1;
 const WRITER_SLOT: u8 = 2;
-const QUERY_ARENA_SLOT: u8 = 4;
 const PAGE_BYTES: u64 = 4096;
 const WAL_STOP: u64 = 8_000_000;
 const STATEMENT_BYTES: usize = 16_384;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConnectionRole {
     HostReader,
+    /// A synchronous foreground query queues before opening SQLite and before
+    /// creating its short execution deadline. It owns the shared result arena
+    /// through connection close, including WAL startup and teardown.
+    QueryReader,
     HostWriter,
+    /// The native owner already integrity-checked this exact epoch at activation
+    /// or post-reap adoption. Scope, schema and native identity still validate
+    /// on every open; a maintenance quantum never repeats the whole-page scan.
+    MaintenanceWriter,
     ExternalReader,
     /// Post-reap validation shares the host's single reader slot and 64 KiB
     /// page cache, while performing integrity checks outside the query path.
@@ -31,7 +45,10 @@ pub enum ConnectionRole {
 }
 impl ConnectionRole {
     fn writable(self) -> bool {
-        matches!(self, Self::HostWriter | Self::ColdWriter)
+        matches!(
+            self,
+            Self::HostWriter | Self::MaintenanceWriter | Self::ColdWriter
+        )
     }
 }
 /// Measured upper bound from native SQL/allocator qualification, not an estimate
@@ -39,7 +56,7 @@ impl ConnectionRole {
 /// the profile. Two page caches, statement allowances and one query arena reserve
 /// 262144 bytes; measured connection/SQLite overhead shares the 600 KB SQL
 /// reservation. The extra 100 KB comes from the coalesced queue, not the total.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct SqlProfile {
     overhead: u32,
     cold_only: bool,
@@ -73,12 +90,31 @@ impl SqlProfile {
 }
 struct Slot(u8);
 impl Slot {
-    fn take(role: ConnectionRole) -> AtlasResult<Self> {
+    fn take(role: ConnectionRole, deadline: Instant) -> AtlasResult<Self> {
         let bit = match role {
-            ConnectionRole::HostReader | ConnectionRole::CandidateReader => READER_SLOT,
-            ConnectionRole::HostWriter => WRITER_SLOT,
+            ConnectionRole::HostReader
+            | ConnectionRole::QueryReader
+            | ConnectionRole::CandidateReader => READER_SLOT,
+            ConnectionRole::HostWriter | ConnectionRole::MaintenanceWriter => WRITER_SLOT,
             _ => 0,
         };
+        if bit == READER_SLOT {
+            let mut guard = READER_WAIT
+                .lock()
+                .map_err(|_| cache_error("Atlas reader slot lock poisoned"))?;
+            while SLOTS.load(Ordering::Acquire) & bit != 0 {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(timeout(0));
+                }
+                guard = READER_READY
+                    .wait_timeout(guard, remaining)
+                    .map_err(|_| cache_error("Atlas reader slot wait poisoned"))?
+                    .0;
+            }
+            SLOTS.fetch_or(bit, Ordering::AcqRel);
+            return Ok(Self(bit));
+        }
         if bit != 0 && SLOTS.fetch_or(bit, Ordering::AcqRel) & bit != 0 {
             return Err(capacity("Atlas global SQL reader/writer slot", 1, 0));
         }
@@ -87,7 +123,15 @@ impl Slot {
 }
 impl Drop for Slot {
     fn drop(&mut self) {
+        let _guard = (self.0 == READER_SLOT).then(|| {
+            READER_WAIT
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        });
         SLOTS.fetch_and(!self.0, Ordering::Release);
+        if self.0 == READER_SLOT {
+            READER_READY.notify_all();
+        }
     }
 }
 pub struct CacheConnection<'a> {
@@ -96,6 +140,7 @@ pub struct CacheConnection<'a> {
     pin: DatabasePin,
     identity: CacheIdentity,
     role: ConnectionRole,
+    arena: Option<query_arena::Reservation>,
     _slot: Slot,
 }
 impl<'a> CacheConnection<'a> {
@@ -109,14 +154,28 @@ impl<'a> CacheConnection<'a> {
         let Some(pin) = files.pin_database(&id.epoch)? else {
             return Ok(None);
         };
-        let slot = Slot::take(role)?;
+        let slot = Slot::take(role, deadline)?;
+        // The native work/query adapters close their handles before returning.
+        // Include open and close in the same arena: WAL startup/checkpoint locks
+        // can otherwise race even when SQL transactions are serialized.
+        let arena = if matches!(
+            role,
+            ConnectionRole::QueryReader | ConnectionRole::MaintenanceWriter
+        ) {
+            Some(query_arena::Reservation::acquire(
+                role == ConnectionRole::QueryReader,
+                deadline,
+            )?)
+        } else {
+            None
+        };
         files.validate_database(&pin)?;
         let db = open(&pin, role, deadline)?;
         files.configure_connection(&db)?;
         configure_limits(&db, role, profile)?;
         finite(&db, deadline, |_| {
             schema::validate(&db, &id)?;
-            if role.writable() {
+            if role.writable() && role != ConnectionRole::MaintenanceWriter {
                 schema::validate_integrity(&db)?;
             }
             Ok(())
@@ -132,6 +191,7 @@ impl<'a> CacheConnection<'a> {
             pin,
             identity: id,
             role,
+            arena,
             _slot: slot,
         }))
     }
@@ -147,7 +207,7 @@ impl<'a> CacheConnection<'a> {
         if !role.writable() {
             return Err(cache_error("readers cannot create epochs"));
         }
-        let slot = Slot::take(role)?;
+        let slot = Slot::take(role, deadline)?;
         let _growth = files.reserve_growth(1_000_000)?;
         let pin = files.reserve_database(&seed.identity.epoch)?;
         let initialized = (|| {
@@ -193,6 +253,7 @@ impl<'a> CacheConnection<'a> {
             pin,
             identity: seed.identity.clone(),
             role,
+            arena: None,
             _slot: slot,
         })
     }
@@ -235,14 +296,21 @@ impl<'a> CacheConnection<'a> {
         deadline: Instant,
         work: impl FnOnce(&SqlView<'_>) -> AtlasResult<T>,
     ) -> AtlasResult<T> {
-        let _arena = if matches!(
-            self.role,
-            ConnectionRole::HostReader | ConnectionRole::HostWriter
-        ) {
-            if SLOTS.fetch_or(QUERY_ARENA_SLOT, Ordering::AcqRel) & QUERY_ARENA_SLOT != 0 {
-                return Err(capacity("Atlas shared SQL/query arena", 1, 0));
-            }
-            Some(Slot(QUERY_ARENA_SLOT))
+        let _arena = if self.arena.is_none()
+            && matches!(
+                self.role,
+                ConnectionRole::HostReader
+                    | ConnectionRole::QueryReader
+                    | ConnectionRole::HostWriter
+                    | ConnectionRole::MaintenanceWriter
+            ) {
+            Some(query_arena::Reservation::acquire(
+                matches!(
+                    self.role,
+                    ConnectionRole::HostReader | ConnectionRole::QueryReader
+                ),
+                deadline,
+            )?)
         } else {
             None
         };
@@ -376,7 +444,10 @@ fn configure_limits(
     if profile.cold_only
         && matches!(
             role,
-            ConnectionRole::HostReader | ConnectionRole::HostWriter
+            ConnectionRole::HostReader
+                | ConnectionRole::QueryReader
+                | ConnectionRole::HostWriter
+                | ConnectionRole::MaintenanceWriter
         )
     {
         return Err(cache_error(

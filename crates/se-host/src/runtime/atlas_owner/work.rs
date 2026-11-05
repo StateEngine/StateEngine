@@ -173,9 +173,23 @@ impl State {
             if let Ok(value) = &metadata {
                 registration.git_metadata = value.clone();
             }
+            let policy = roots::policy(self.enabled);
             self.controller
-                .register(registration.clone(), roots::policy(self.enabled))?;
+                .register(registration.clone(), policy.clone())?;
             if let Err(error) = metadata {
+                self.controller.suspend(&registration.root, error)?;
+                self.roots.push(Root {
+                    registration,
+                    feed_pending: true,
+                    feed_stalled: true,
+                });
+                continue;
+            }
+            if let Err(error) = self.controller.runtime_mut().prepare_registered(
+                &registration,
+                &policy,
+                Instant::now() + Duration::from_secs(5),
+            ) {
                 self.controller.suspend(&registration.root, error)?;
                 self.roots.push(Root {
                     registration,
