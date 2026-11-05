@@ -140,6 +140,7 @@ pub(super) fn route_temporary_files(
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
     let found = find_command(command)?.ok_or_else(|| {
         se_core::scope::unreadable(
@@ -323,4 +324,3 @@ mod temporary_environment_tests {
         }
     }
 }
-#[cfg(target_os = "linux")]
