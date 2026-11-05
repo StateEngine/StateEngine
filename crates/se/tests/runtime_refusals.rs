@@ -209,7 +209,12 @@ fn uninstall_live_host(json: bool) -> Check {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.status.success(), "uninstall failed: {printed}");
+    assert!(
+        output.status.success(),
+        "uninstall failed (json={json}, status={}, code={:?}): {printed}",
+        output.status,
+        output.status.code()
+    );
     assert!(
         !host.live()?,
         "successful uninstall left the exact host live"
