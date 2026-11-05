@@ -166,6 +166,8 @@ impl AtlasReadPort for Service {
                 !roots.roots.iter().any(|root| {
                     &root.registration.project == project
                         && selected.is_none_or(|id| id == &root.registration.root)
+                        && root.summary.coverage.watch_discovery_complete
+                        && root.summary.coverage.unwatched_directories == 0
                         && !matches!(
                             root.summary.state,
                             IndexState::Suspended { .. } | IndexState::Unreadable { .. }

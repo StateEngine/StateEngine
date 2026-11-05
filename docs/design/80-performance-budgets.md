@@ -272,7 +272,7 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Allocator slack | 1.0 MB | |
 | **Estimated spend at two jobs** | **61.6 MB** | Eight jobs with idle cache targets increase this estimate to 67.9 MB before additional connection overhead |
 | Estimated reserve at two jobs | 2.4 MB | Eight jobs exceed the estimate by 3.9 MB before additional connection overhead; configuration does not relax B4 |
-| **Hard total budget** | **64.0 MB** | Larger standalone host budget authorized by Jimmy 2026-11-05; quiet joined qualification remains outstanding |
+| **Hard total budget** | **64.0 MB** | Larger standalone host budget adopted 2026-11-05; quiet joined qualification remains outstanding |
 
 The shipped finite-work default is two jobs for standalone and embedded hosts;
 more cores do not raise it. An explicit `runtime.blocking_jobs` in 2–8 is capped

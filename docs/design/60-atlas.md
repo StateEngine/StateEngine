@@ -65,8 +65,7 @@ an absent cache after readiness. Status observes its published metadata only:
 preparing, partial, updating, current, disabled and unreadable remain distinct.
 It reports partial/deferred/failed/stale file counts and watch limitations; JSON
 retains the full index summary. A stopped runtime reports unknown index state,
-not absence; start it to observe the current controller. Jimmy's 2026-11-05 ruling
-places **no limit on registered or indexed projects**. Each canonical worktree keeps
+not absence; start it to observe the current controller. There is **no limit on registered or indexed projects**. Each canonical worktree keeps
 its project-scoped disk index. Idle projects retain disk data only; the host's
 small live pool contains native watches and unfinished work, never the catalogue
 of everything that may be queried. An Atlas query records durable interest in
@@ -865,7 +864,7 @@ allocation is exactly **13,000,000 bytes** across ALL roots, not per connection/
 | Native watches/root/ignore metadata | 200,000 | <=2 live watch roots, path map cap and bounded policy; idle catalogue and queued project records stay on disk |
 | Remaining allocator/accounting slack | 146,918 | not an extra pool or a new parser |
 
-Jimmy authorized the larger standalone host budget on 2026-11-05. Linux/glibc
+The larger standalone host budget was adopted on 2026-11-05. Linux/glibc
 component profiles now admit 65,536 source bytes and 8,192 extracted rows, still
 within 200 ms: each reserves 8,000,000 parser/retained bytes and 3,000,000 extraction
 bytes, plus source capacity, or 11,065,536 bytes at its source cap. This fits the
