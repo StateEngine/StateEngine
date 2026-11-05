@@ -9,6 +9,7 @@ mod control;
 mod dispatch;
 mod events;
 mod files;
+mod git_workspace;
 mod integration;
 mod launch;
 mod launch_util;

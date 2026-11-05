@@ -778,6 +778,9 @@ network = false                   # command network access; opt in with true
 
 # [profiles.NAME]                 # user-defined; the ONLY place bypass can appear
 # bypass = true                   # full permission/sandbox bypass, chosen by name
+# [profiles.git-workspace]        # explicit dedicated-clone authoring permission
+# sandbox = "workspace-write"
+# git_write = true                # also permit this workspace's physical .git
 
 [atlas]
 enabled = false                   # opt-in in this file; no project settings layer
@@ -789,7 +792,12 @@ resume; provider adapters consume the resolved policy without replacing its
 values. Omitted sandbox/network keys default to workspace-write/false. Omitted
 approval defaults to never for headless Codex and on-request for attended Codex
 and Claude; an explicit profile approval value takes precedence. A read-only
-profile stays read-only. Supported approval values are on-request, untrusted
+profile stays read-only. `git_write = true` is allowed only in a separately named
+workspace-write profile without bypass. It grants the existing provider sandbox
+write access to this workspace's physical `.git` directory; linked metadata,
+Git worktrees and shared common directories refuse and require a dedicated clone.
+It does not enable network access or authorize paths outside the workspace.
+Supported approval values are on-request, untrusted
 and never, subject to the installed provider's capability checks. For Codex,
 never denies escalation and is legal without bypass; any provider setting
 that disables permissions or sandboxing requires the saved named bypass opt-in.
