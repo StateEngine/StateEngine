@@ -177,6 +177,7 @@ pub fn observe_snapshot<S: Snapshot>(
                     admission,
                 },
             )?);
+            status::pending_mail(&mut output);
             match &admission.actor {
                 Actor::Human(_) => output.inbox.owner_unread = Some(unread),
                 Actor::Agent(agent) => {

@@ -66,6 +66,13 @@ def run(f):
     other = f.ok("--project", f.project, "agent", "add", "Absent", "--provider", "claude", "--model", "claude-sonnet-5-5")
     absent = f.mail("send", other["agent"]["id"], "Absent pending witness", "--kind", "task")
     assert absent["delivery"]["state"] == "pending", absent
+    # Direct status must not report no pending work while an unlaunched agent
+    # has durable unread mail. Status is an observation, never a recipient read.
+    status = f.ok("--project", f.project, "status")
+    other_id = other["agent"]["id"]
+    pending = next(row for row in status["pending"] if other_id in row["detail"])
+    assert pending["what"] == "unread agent mail" and "1 unread message" in pending["detail"], pending
+    assert "Launch this agent" in pending["detail"] and "StateEngine inbox" in pending["detail"], pending
     owner = absent["from"]["id"]
     os.mkfifo(f.repo / "busy-gate", 0o600)
     f.launch()
@@ -75,6 +82,8 @@ def run(f):
     assert len(inputs(f)) == 1
     first, token, body, key = send(f, owner)
     reply(f, first, token)
+    status = f.ok("--project", f.project, "status")
+    assert not any(f.agent in row["detail"] for row in status["pending"]), status["pending"]
     wait(lambda: (loaded(f.repo / "provider-idle.json") or {}).get("sequence") == 2)
     replay = f.ok("--key", key, "--project", f.project, "msg", "send", f.agent, body, "--kind", "task")
     assert replay["event_id"] == first["event_id"] and replay["message_id"] == first["message_id"], replay
@@ -87,6 +96,12 @@ def run(f):
     queued, queued_token, _, _ = send(f, owner)
     try:
         assert queued["delivery"]["state"] == "pending", queued
+        status = f.rpc("stateengine_status", {})
+        assert not status.get("isError", False), status
+        status = status["structuredContent"]
+        waiting = next(row for row in status["pending"] if f.agent in row["detail"])
+        assert waiting["what"] == "unread agent mail" and "StateEngine inbox" in waiting["detail"], waiting
+        assert not any(other_id in row["detail"] for row in status["pending"]), status["pending"]
         time.sleep(0.5)
         assert len(inputs(f)) == before, "busy provider received mail before its turn boundary"
     finally:
@@ -105,6 +120,13 @@ def run(f):
     assert pending["delivery"]["state"] == "pending", pending
     assert f.mail("read", absent["message_id"])["message"]["delivery"]["state"] == "pending"
     assert f.mail("read", pending["message_id"])["message"]["delivery"]["state"] == "pending"
+    # The running host/MCP status implementation has the same pending-mail
+    # contract as the direct reader, including the same-conversation remedy.
+    status = f.ok("--project", f.project, "status")
+    waiting = next(row for row in status["pending"] if f.agent in row["detail"])
+    assert waiting["what"] == "unread agent mail" and "1 unread message" in waiting["detail"], waiting
+    assert "same conversation" in waiting["detail"] and "StateEngine inbox" in waiting["detail"], waiting
+    assert f.mail("read", pending["message_id"])["message"]["disposition"]["state"] == "unread"
     print("ok 3 - absent and stopped recipients remain honestly pending", flush=True)
 
 
