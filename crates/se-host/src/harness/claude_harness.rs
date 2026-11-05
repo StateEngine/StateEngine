@@ -147,15 +147,22 @@ impl Harness for ClaudeHarness {
     fn invocation<'a>(
         &'a self,
         request: &'a HarnessRequest,
-        _cx: CallContext,
+        cx: CallContext,
     ) -> HostFuture<'a, ProviderInvocation> {
         Box::pin(async move {
             let directory = self.launch_directory(request)?;
             let conversation = claude::conversation(request)?;
-            claude::invocation(
-                &self.plan(request, &directory, &conversation),
-                claude::provider_environment(),
-            )
+            let environment = claude::provider_environment();
+            let command = request.executable.to_local()?;
+            let auth_environment = environment.clone();
+            tokio::task::spawn_blocking(move || {
+                io::authentication(&command, &auth_environment, cx.timeout)
+            })
+            .await
+            .map_err(|e| {
+                se_core::scope::unreadable("Claude authentication status", &e.to_string())
+            })??;
+            claude::invocation(&self.plan(request, &directory, &conversation), environment)
         })
     }
     fn attach<'a>(

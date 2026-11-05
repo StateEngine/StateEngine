@@ -3,7 +3,9 @@ use super::{Binding, READ_CHUNK, claude};
 use crate::{CallContext, ProviderStream, StreamRead};
 use se_types::{Body, Result, SeError};
 use std::{
+    ffi::OsString,
     path::Path,
+    process::Output,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -79,8 +81,72 @@ pub(super) fn within(cx: &CallContext, remaining: Duration) -> CallContext {
 }
 
 pub(super) fn version_output(command: &Path, timeout: Duration) -> Result<String> {
-    let mut child = std::process::Command::new(command)
-        .arg("--version")
+    let output = probe_output(
+        command,
+        &["--version"],
+        None,
+        timeout,
+        "Claude version probe",
+    )?;
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+pub(super) fn authentication(
+    command: &Path,
+    environment: &[(OsString, OsString)],
+    timeout: Duration,
+) -> Result<()> {
+    let output = probe_output(
+        command,
+        &["auth", "status", "--json"],
+        Some(environment),
+        timeout,
+        "Claude authentication status",
+    )?;
+    authentication_status(&output.stdout, output.status.code())
+}
+
+fn authentication_status(bytes: &[u8], code: Option<i32>) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct Status {
+        #[serde(rename = "loggedIn")]
+        logged_in: bool,
+    }
+    let status: Status = serde_json::from_slice(bytes).map_err(|_| {
+        se_core::scope::unreadable(
+            "Claude authentication status",
+            "claude auth status --json did not return a readable loggedIn flag",
+        )
+    })?;
+    match (status.logged_in, code) {
+        (true, Some(0)) => Ok(()),
+        (false, Some(0 | 1)) => Err(SeError::new(se_types::Detail::LaunchFailed(
+            se_types::details::LaunchFailed {
+                subject: "Claude Code".into(),
+                reason: "you are signed out".into(),
+                next_step: "Sign in to Claude Code with: claude auth login".into(),
+            },
+        ))),
+        _ => Err(se_core::scope::unreadable(
+            "Claude authentication status",
+            "claude auth status --json did not finish with a supported authentication result",
+        )),
+    }
+}
+
+fn probe_output(
+    command: &Path,
+    arguments: &[&str],
+    environment: Option<&[(OsString, OsString)]>,
+    timeout: Duration,
+    subject: &str,
+) -> Result<Output> {
+    let mut process = std::process::Command::new(command);
+    if let Some(environment) = environment {
+        process.env_clear().envs(environment.iter().cloned());
+    }
+    let mut child = process
+        .args(arguments)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -98,22 +164,18 @@ pub(super) fn version_output(command: &Path, timeout: Duration) -> Result<String
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(SeError::invalid(
-                    "Claude version probe",
+                    subject,
                     "an answer within the probe timeout",
                 ));
             }
             Err(e) => {
-                return Err(se_core::scope::unreadable(
-                    "Claude version probe",
-                    &e.to_string(),
-                ));
+                return Err(se_core::scope::unreadable(subject, &e.to_string()));
             }
         }
     }
-    let output = child
+    child
         .wait_with_output()
-        .map_err(|e| se_core::scope::unreadable("Claude version probe", &e.to_string()))?;
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        .map_err(|e| se_core::scope::unreadable(subject, &e.to_string()))
 }
 
 pub(super) fn parse_version(text: &str) -> Option<(u16, u16, u16)> {
@@ -126,4 +188,55 @@ pub(super) fn poisoned() -> SeError {
         "Claude harness",
         "an unpoisoned probe cache; restart the host",
     )
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::authentication_status;
+    use se_types::{Class, Detail};
+
+    #[test]
+    fn signed_out_is_a_refusal_with_the_provider_login_command() {
+        for code in [0, 1] {
+            let Err(error) =
+                authentication_status(br#"{"loggedIn":false,"authMethod":"none"}"#, Some(code))
+            else {
+                panic!("signed-out status was accepted");
+            };
+            assert_eq!(error.body.code().class(), Class::Refused);
+            let Detail::LaunchFailed(detail) = error.body.detail() else {
+                panic!("not a launch refusal");
+            };
+            assert_eq!(
+                detail.next_step,
+                "Sign in to Claude Code with: claude auth login"
+            );
+            assert_eq!(error.body.code().class().exit_code(), 1);
+        }
+    }
+
+    #[test]
+    fn signed_in_accounts_and_api_keys_are_accepted() {
+        for method in ["claude.ai", "api_key"] {
+            let text = format!(r#"{{"loggedIn":true,"authMethod":"{method}"}}"#);
+            assert!(authentication_status(text.as_bytes(), Some(0)).is_ok());
+        }
+    }
+
+    #[test]
+    fn unreadable_or_unsuccessful_status_is_never_assumed_signed_out() {
+        for (bytes, code) in [
+            (&b"not JSON"[..], Some(1)),
+            (&br#"{}"#[..], Some(0)),
+            (&br#"{"loggedIn":"false"}"#[..], Some(1)),
+            (&br#"{"loggedIn":true}"#[..], Some(1)),
+            (&br#"{"loggedIn":false}"#[..], Some(2)),
+            (&br#"{"loggedIn":false}"#[..], None),
+        ] {
+            let Err(error) = authentication_status(bytes, code) else {
+                panic!("unreadable status was accepted");
+            };
+            assert_eq!(error.body.code().class(), Class::Unreadable);
+        }
+    }
 }

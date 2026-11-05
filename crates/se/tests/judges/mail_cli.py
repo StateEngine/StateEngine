@@ -50,6 +50,7 @@ class Fixture:
         source = self.root / "provider.rs"
         source.write_text('''fn main(){let a:Vec<String>=std::env::args().collect();
 if a.get(1).map(String::as_str)==Some("--version"){println!("2.1.287 (Claude Code)");return;}
+if a.get(1).map(String::as_str)==Some("auth") {println!(r#"{{"loggedIn":true}}"#);return;}
 let s=std::process::Command::new(PYTHON).args([HELPER,SE,HOME]).args(&a[1..]).status().unwrap();
 std::process::exit(s.code().unwrap_or(1));}'''.replace("PYTHON", json.dumps(sys.executable))
             .replace("HELPER,SE,HOME", ",".join(json.dumps(str(p)) for p in [helper, self.se, self.home])))
