@@ -44,6 +44,7 @@ pub(crate) fn observe(
                 *page = enrich_page(page, &mut observations)?;
             }
             se_core::ops::status::pending_mail(&mut value.value);
+            crate::harness::claude::bell::pending_status(home, &mut value.value);
         }
         AnyOutput::AgentList(value) => {
             value.value.page = enrich_page(&value.value.page, &mut observations)?;

@@ -101,6 +101,7 @@ impl ClaudeHarness {
             .await;
         }
         let binding = Arc::new(Binding {
+            bell_session: request.request.identity.session.clone(),
             io: self.io.clone(),
             transport: request.transport,
             conversation: conversation.clone(),

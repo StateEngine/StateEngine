@@ -60,6 +60,9 @@ pub(crate) fn admit<B>(request: &Request<B>, port: u16) -> Result<Route, Refusal
     let method = request.method();
     match route {
         Route::Mcp | Route::Proof if method == Method::POST => json_media(headers)?,
+        Route::Mail if method == Method::POST && headers.contains_key("x-se-mail-session") => {
+            json_media(headers)?
+        }
         Route::Livez | Route::Mail if method == Method::GET => {
             // An exact zero declares no body; `framing` has already refused
             // duplicate, unreadable or oversized lengths.

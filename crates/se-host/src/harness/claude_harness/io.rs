@@ -106,6 +106,32 @@ pub(super) fn authentication(
     authentication_status(&output.stdout, output.status.code())
 }
 
+pub(super) fn plugin(
+    command: &Path,
+    plugin: &Path,
+    environment: &[(OsString, OsString)],
+    timeout: Duration,
+) -> Result<()> {
+    let path = plugin.to_str().ok_or_else(|| {
+        SeError::invalid("Claude plugin path", "a provider-supported Unicode path")
+    })?;
+    let output = probe_output(
+        command,
+        &["plugin", "validate", path],
+        Some(environment),
+        timeout,
+        "Claude mail plugin validation",
+    )?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(SeError::invalid(
+            "Claude mail plugin",
+            "installed provider support for the bundled mod",
+        ))
+    }
+}
+
 fn authentication_status(bytes: &[u8], code: Option<i32>) -> Result<()> {
     #[derive(serde::Deserialize)]
     struct Status {

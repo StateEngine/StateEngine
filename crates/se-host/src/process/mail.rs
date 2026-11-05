@@ -84,6 +84,17 @@ impl LaunchCoordinator {
             .binding
             .as_ref()
             .is_some_and(|binding| binding.codex.is_some());
+        if !codex
+            && work
+                .binding
+                .as_ref()
+                .and_then(|b| b.claude.as_ref())
+                .is_some_and(|b| b.attended)
+        {
+            // The attended mod consumes the same durable unread view. Never
+            // fabricate a console write or record its notification as a read.
+            return Ok(());
+        }
         if (!codex && !work.mail.idle) || work.mail.flight.is_some() {
             return Ok(());
         }
