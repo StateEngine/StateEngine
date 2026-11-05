@@ -120,8 +120,8 @@ fn authentication_status(bytes: &[u8], code: Option<i32>) -> Result<()> {
     })?;
     match (status.logged_in, code) {
         (true, Some(0)) => Ok(()),
-        (false, Some(0 | 1)) => Err(SeError::new(se_types::Detail::SetupRequired(
-            se_types::details::SetupRequired {
+        (false, Some(0 | 1)) => Err(SeError::new(se_types::Detail::LaunchFailed(
+            se_types::details::LaunchFailed {
                 subject: "Claude Code".into(),
                 reason: "you are signed out".into(),
                 next_step: "Sign in to Claude Code with: claude auth login".into(),
@@ -190,8 +190,8 @@ mod auth_tests {
                 authentication_status(br#"{"loggedIn":false,"authMethod":"none"}"#, Some(code))
                     .expect_err("signed out");
             assert_eq!(error.body.code().class(), Class::Refused);
-            let Detail::SetupRequired(detail) = error.body.detail() else {
-                panic!("not a setup refusal");
+            let Detail::LaunchFailed(detail) = error.body.detail() else {
+                panic!("not a launch refusal");
             };
             assert_eq!(
                 detail.next_step,
