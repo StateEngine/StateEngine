@@ -18,6 +18,29 @@ fn record(value: &RecordHit) -> String {
         escape(&value.line)
     )
 }
+fn coverage(value: &FileCoverage) -> String {
+    match value {
+        FileCoverage::Indexed => "indexed".into(),
+        FileCoverage::Partial { reasons } => format!("partial: {reasons:?}"),
+        FileCoverage::Deferred { reason } => format!("deferred: {reason:?}"),
+        FileCoverage::Failed { error } => format!("failed: {}", escape(&error.message())),
+        FileCoverage::Stale {
+            reason,
+            last_good_generation,
+            diagnostic,
+            ..
+        } => {
+            let mut text = format!(
+                "stale: {reason:?}; last good generation {}",
+                last_good_generation.0
+            );
+            if let Some(error) = diagnostic {
+                text.push_str(&format!("; {}", escape(&error.message())));
+            }
+            text
+        }
+    }
+}
 fn unavailable<T>(value: &Read<T>) -> Option<String> {
     match value {
         Read::Present { .. } => None,
@@ -195,9 +218,9 @@ pub fn outline(answer: &Answer<Read<Outline>>, max: usize) -> AtlasResult<String
         unreachable!()
     };
     output.push_str(&format!(
-        "{} · {:?}\n",
+        "{} · {}\n",
         pointer(&value.file),
-        value.coverage
+        coverage(&value.coverage)
     ));
     for symbol in &value.symbols {
         output.push_str(&format!(
