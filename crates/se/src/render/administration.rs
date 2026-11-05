@@ -152,12 +152,7 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
             if let Some(unread) = value.unread {
                 writeln!(out, "Unread messages: {unread}")?;
             }
-            if let Some(reason) = &value.resume.reason {
-                writeln!(out, "Resume: {reason}")?;
-            }
-            if let Some(command) = &value.resume.command {
-                writeln!(out, "Launch: {command}")?;
-            }
+            super::read::resume_advice(&value.resume, "", out)?;
         }
         se_types::Read::Absent { checked } => writeln!(out, "Agent absent: {checked}")?,
         se_types::Read::Unreadable { source, reason, .. } => {

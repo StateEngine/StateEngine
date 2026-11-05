@@ -84,16 +84,7 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                     se_core::ops::containment_cause_description(reason)
                 )?;
             }
-            if agent.resume.reason.is_some() {
-                let summary = if agent.resume.ready {
-                    "Ready to reopen the saved conversation."
-                } else if agent.resume.mode == "new" {
-                    "Start a new conversation."
-                } else {
-                    "Unavailable; use se status --json for details."
-                };
-                writeln!(out, "    Resume: {summary}")?;
-            }
+            resume_advice(&agent.resume, "    ", out)?;
         }
         omissions(agents, out)?;
     }
@@ -176,6 +167,31 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
         )
     } else {
         next_step(&value.next, out)
+    }
+}
+
+pub(super) fn resume_advice(
+    value: &se_core::ops::ResumeCommand,
+    indent: &str,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let reason = value.reason.as_deref().unwrap_or(if value.ready {
+        "Ready to reopen the saved conversation."
+    } else {
+        "Resume readiness has not been established."
+    });
+    writeln!(out, "{indent}Resume: {reason}")?;
+    if let Some(command) = &value.command {
+        writeln!(out, "{indent}Next: {command}")
+    } else {
+        let next = match value.mode.as_str() {
+            "running" => {
+                "Continue in the current agent, or stop it before reopening its conversation."
+            }
+            "reconcile" => "Complete the recovery step above before reopening this conversation.",
+            _ => "Resolve the issue above, then check this agent again before resuming.",
+        };
+        writeln!(out, "{indent}Next: {next}")
     }
 }
 
