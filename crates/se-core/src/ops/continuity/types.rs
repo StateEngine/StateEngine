@@ -157,6 +157,28 @@ pub struct ResumeOutput {
     pub attention: Vec<String>,
     pub cursor: Cursor,
 }
+impl ResumeOutput {
+    pub fn exit_code(&self) -> u8 {
+        // Owner inspection can fit a healthy history to its packet budget.
+        // Keep complete=false and the recovery commands; actual agent resumes
+        // and missing/unreadable sources still require their existing reads.
+        let preview_turn_budget_only = self.principal.preview
+            && self.unread.window().complete()
+            && !self.omissions.is_empty()
+            && self.omissions.iter().all(|item| {
+                item.section == "recent_turns"
+                    && item.reason == "packet byte budget"
+                    && item.count.is_some_and(|count| count > 0)
+            });
+        if self.resume_status == "integrity_blocked"
+            || (!self.complete && !preview_turn_budget_only)
+        {
+            2
+        } else {
+            0
+        }
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ContextDisplayIdentity {
     pub agent_id: AgentId,

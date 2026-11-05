@@ -91,8 +91,10 @@ pub fn saved_profile(
     configuration: &crate::config_policy::ConfigFile,
     row: &super::AgentRow,
 ) -> Result<crate::config_policy::ResolvedProfile> {
+    // Setup's first-launch command uses --detach. Resolve that same mode,
+    // including Codex's sandboxed, escalation-denying headless default.
     configuration
-        .resolve_profile(&row.profile, row.provider, false)
+        .resolve_profile(&row.profile, row.provider, true)
         .map_err(|error| scope::unreadable("initial agent saved profile", &error.to_string()))
 }
 

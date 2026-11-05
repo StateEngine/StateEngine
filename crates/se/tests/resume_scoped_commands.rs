@@ -52,6 +52,138 @@ fn commands(value: &Value, out: &mut Vec<(Vec<String>, String)>) -> Check {
     Ok(())
 }
 #[test]
+fn preview_succeeds_when_only_turns_are_omitted_for_packet_budget() -> Check {
+    let f = Fixture::new()?;
+    let (mut store, lease) = f.direct()?;
+    let session = capture::session()?;
+    let source = capture::record()?;
+    capture::active(&f, &mut store, &lease, &session, source)?;
+    store.append(
+        f.batch(
+            f.owner_project(),
+            Some(request("preview-budget-profile")?),
+            vec![EventBody::ProfileSaved {
+                agent: f.a.clone(),
+                profile: Profile {
+                    provider: Provider::Claude,
+                    model: None,
+                    permission: PermissionProfile::WorkspaceWrite,
+                    named_profile: "default".into(),
+                    effort: None,
+                },
+                expected: Expected::Absent,
+            }],
+        )?,
+        &*lease,
+    )?;
+    for n in 0..6 {
+        let mut captured = capture::capture(
+            &f,
+            &session,
+            source,
+            b"first",
+            n * 10,
+            n + 1,
+            &format!("preview budget turn {n}: {}", "context ".repeat(60)),
+        )?;
+        for event in &mut captured.events {
+            event.header.door = Door::Hook;
+        }
+        store.append(captured, &*lease)?;
+    }
+    store.append(
+        f.send(
+            Actor::Agent(f.b.clone()),
+            Actor::Agent(f.a.clone()),
+            message()?,
+            "A fully visible unread message remains unacknowledged.",
+            "preview-visible-unread",
+        )?,
+        &*lease,
+    )?;
+    let head = store.info()?.head;
+    // The same budget omission still blocks an actual bound agent resume.
+    let mut scope = f.self_scope(&f.a);
+    scope.admission.session = Some(session);
+    let admission = scope.admission.clone();
+    let mut read = store.snapshot(scope)?;
+    let bound = se_core::ops::continuity::resume(
+        se_core::ops::continuity::Resume {
+            limit: 20,
+            governing_cursor: None,
+            since: None,
+            byte_budget: 4096,
+            preview_agent: None,
+        },
+        se_types::UnixMicros::new(1_800_000_000_000_000)?,
+        &mut se_core::commit::Cx {
+            read: &mut read,
+            admission: &admission,
+        },
+    )?;
+    assert!(!bound.complete && !bound.omissions.is_empty());
+    assert_eq!(se_core::ops::AnyOutput::from(bound).exit_code(), 2);
+    read.close()?;
+    store.close()?;
+    drop(lease);
+    let args = [
+        "--home",
+        f.options.state_directory.to_str().ok_or("home")?,
+        "--project",
+        f.project.as_str(),
+        "resume",
+        "--preview",
+        f.a.as_str(),
+    ];
+    for mode in ["--json", "--no-color", "--quiet"] {
+        let mut words = args.map(str::to_owned).to_vec();
+        words.push(mode.into());
+        let output = run(&f, &words)?;
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{mode}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if mode == "--json" {
+            let value: Value = serde_json::from_slice(&output.stdout)?;
+            assert_eq!(value["complete"], false);
+            assert_eq!(value["resume_status"], "needs_read");
+            assert_eq!(value["required_reads"].as_array().ok_or("reads")?.len(), 1);
+            let omissions = value["omissions"].as_array().ok_or("omissions")?;
+            assert!(!omissions.is_empty());
+            assert!(
+                omissions
+                    .iter()
+                    .all(|item| item["section"] == "recent_turns"
+                        && item["reason"] == "packet byte budget")
+            );
+            assert!(serde_json::to_vec(&value)?.len() <= 4096);
+        } else if mode == "--no-color" {
+            let text = String::from_utf8(output.stdout)?;
+            assert!(text.contains("Omitted recent_turns") && text.contains("packet byte budget"));
+            assert!(text.contains("complete: false"));
+        }
+    }
+    // A source-page limit is distinct from intentionally fitting the packet.
+    let mut limited = args.map(str::to_owned).to_vec();
+    limited.extend(["--limit", "1", "--budget", "32768", "--json"].map(str::to_owned));
+    let output = run(&f, &limited)?;
+    assert_eq!(output.status.code(), Some(2));
+    let value: Value = serde_json::from_slice(&output.stdout)?;
+    assert!(
+        value["omissions"]
+            .as_array()
+            .ok_or("limit omissions")?
+            .iter()
+            .any(|item| item["reason"] != "packet byte budget")
+    );
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    assert_eq!(reader.info()?.head, head, "preview wrote state");
+    Ok(())
+}
+#[test]
 fn every_resume_recovery_argv_reaches_the_selected_home_without_writing() -> Check {
     let mut f = Fixture::new()?;
     let renamed = f.home.with_extension("selected home ' 日本語");
