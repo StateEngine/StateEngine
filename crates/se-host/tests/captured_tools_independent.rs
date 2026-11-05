@@ -47,7 +47,7 @@ fn capture_case(provider: Provider) -> Check {
                 json!({"type":"session_meta","payload":{"id":conversation.as_str()}}),
                 row(
                     json!({"type":"FileChange","id":"actual-file-item","status":"Completed",
-                "changes":[{"path":"a.rs","diff":"INTENDED_CONTENT"}]}),
+                "changes":{"a.rs":{"type":"add","content":"INTENDED_CONTENT"}}}),
                 ),
                 row(
                     json!({"type":"McpToolCall","id":"actual-mcp-item","call_id":"actual-call",
