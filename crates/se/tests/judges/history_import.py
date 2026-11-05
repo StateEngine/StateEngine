@@ -394,6 +394,7 @@ def imported_agent_launches_fresh(f):
     provider.write_text('''
 fn main(){let a:Vec<String>=std::env::args().collect();
 if a.get(1).map(String::as_str)==Some("--version"){println!("2.1.287 (Claude Code)");return;}
+if a.get(1).map(String::as_str)==Some("auth") {println!(r#"{{"loggedIn":true}}"#);return;}
 let result=std::process::Command::new(PYTHON).args([HELPER,SE,HOME]).args(&a[1..]).status().unwrap();
 std::process::exit(result.code().unwrap_or(1));}
 '''.replace("PYTHON", json.dumps(sys.executable)).replace("HELPER", json.dumps(str(helper)))

@@ -222,6 +222,7 @@ def run_case(args, kernel, root, selected, progress):
 #[link(name="kernel32")] unsafe extern "system" { fn FreeConsole()->i32; }
 fn main(){let a:Vec<String>=std::env::args().collect();
 if a.get(1).map(String::as_str)==Some("--version"){println!("2.1.287 (Claude Code)");return;}
+if a.get(1).map(String::as_str)==Some("auth") {println!(r#"{{"loggedIn":true}}"#);return;}
 unsafe{FreeConsole();}
 let s=std::process::Command::new(PYTHON).creation_flags(0x08000000)
 .args([HELPER,SE,HOME]).args(&a[1..]).status().unwrap();
