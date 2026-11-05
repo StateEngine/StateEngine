@@ -136,6 +136,13 @@ pub fn hit_line(hit: &SearchHit) -> String {
     if hit.reason.related {
         reason.push_str(" · related");
     }
+    if let HitTarget::Code(code) = &hit.target {
+        match code.pointer.freshness {
+            SnapshotFreshness::Current => (),
+            SnapshotFreshness::Stale => reason.push_str(" · stale"),
+            SnapshotFreshness::Unknown => reason.push_str(" · unverified revision"),
+        }
+    }
     format!("{target} · {reason}")
 }
 pub fn resume(code: &ResumeCode) -> AtlasResult<String> {
@@ -242,6 +249,18 @@ fn state(index: &IndexSummary) -> String {
     );
     if let IndexState::Suspended { reason } = &index.state {
         output.push_str(&format!("reason: {}\n", escape(&reason.message())));
+    }
+    for reason in &index.coverage.reasons {
+        let detail = match reason {
+            CoverageReason::StaleSnapshot => {
+                "cached declarations lack verified matching live bytes"
+            }
+            CoverageReason::ChangedDuringRead => "source bytes changed during the read",
+            CoverageReason::TimeLimit => "source work reached its time limit",
+            CoverageReason::SourceBytesLimit => "source exceeds the admitted byte limit",
+            _ => continue,
+        };
+        output.push_str(&format!("source: {detail} ({reason:?})\n"));
     }
     output
 }

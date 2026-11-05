@@ -5,6 +5,7 @@ mod candidates;
 pub mod changes;
 pub mod cursor;
 pub mod find;
+mod freshness;
 pub mod hooks;
 pub mod impact;
 mod impact_edges;

@@ -28,7 +28,7 @@ impl QueryReader<'_> {
             query.include_name_only,
             &self.viewer,
         ))?;
-        self.cache.read(end, |sql| {
+        let answer = self.cache.read(end, |sql| {
             let snapshot = self.snapshot(sql)?;
             let previous = query
                 .next
@@ -272,7 +272,8 @@ impl QueryReader<'_> {
                 snapshot.answer(Read::Present { value: output }, advanced),
                 query.budget,
             )
-        })
+        })?;
+        super::freshness::finish(self, answer, query.budget, end)
     }
 }
 fn validate_key(key: &Key) -> AtlasResult<()> {

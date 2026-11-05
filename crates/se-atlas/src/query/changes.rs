@@ -5,7 +5,7 @@ impl QueryReader<'_> {
         let end = deadline(query.budget)?;
         let digest = cursor::digest(&("changes", &query.since, &query.scope, &self.viewer))?;
         query.scope.validate()?;
-        self.cache.read(end, |sql| {
+        let answer = self.cache.read(end, |sql| {
             let snapshot = self.snapshot(sql)?;
             let baseline = baseline(self, sql, &snapshot, &query.since)?;
             let previous = query.next.as_ref().map(PositionCursor::decode).transpose()?;
@@ -48,7 +48,8 @@ impl QueryReader<'_> {
             let page = page(&snapshot, items, query.budget, next, !snapshot.negative_complete() || advanced || incomplete,
                 bytes, query.next.as_ref())?;
             check_output(snapshot.answer(Read::Present { value: page }, advanced), query.budget)
-        })
+        })?;
+        super::freshness::finish(self, answer, query.budget, end)
     }
 }
 pub(super) fn change(row: &rusqlite::Row<'_>, author: AuthorHint) -> AtlasResult<CodeChange> {

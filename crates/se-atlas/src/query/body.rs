@@ -133,7 +133,10 @@ pub(super) fn source(
     )
     .map(Some)
 }
-fn source_error(path: &RelativePath, error: impl std::fmt::Display) -> se_types::SeError {
+pub(super) fn source_error(
+    path: &RelativePath,
+    error: impl std::fmt::Display,
+) -> se_types::SeError {
     se_types::SeError::new(se_types::Detail::AtlasSourceUnreadable(
         se_types::details::AtlasSourceUnreadable {
             path: path.as_str().into(),

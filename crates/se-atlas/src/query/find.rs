@@ -51,7 +51,7 @@ impl QueryReader<'_> {
             query.full,
             &self.viewer,
         ))?;
-        self.cache.read(end, |sql| {
+        let answer = self.cache.read(end, |sql| {
             let snapshot = self.snapshot(sql)?;
             let previous = query
                 .next
@@ -258,7 +258,8 @@ impl QueryReader<'_> {
                     ..query.budget
                 },
             )
-        })
+        })?;
+        super::freshness::finish(self, answer, query.budget, end)
     }
 }
 pub(super) fn materialize(

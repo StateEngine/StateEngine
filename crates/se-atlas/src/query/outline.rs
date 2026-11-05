@@ -4,7 +4,7 @@ impl QueryReader<'_> {
     pub fn outline(&self, query: &OutlineQuery) -> AtlasResult<Answer<Read<Outline>>> {
         let end = deadline(query.budget)?;
         let digest = cursor::digest(&("outline", &query.path, &self.viewer))?;
-        self.cache.read(end, |sql| {
+        let answer = self.cache.read(end, |sql| {
             let snapshot = self.snapshot(sql)?;
             if crate::policy::built_in_denied(&query.path) {return Ok(snapshot.unknown("source path is excluded by the built-in private-file policy"));}
             let previous = query.next.as_ref().map(PositionCursor::decode).transpose()?;
@@ -60,7 +60,8 @@ impl QueryReader<'_> {
                 output.complete = false;
             }
             check_output(snapshot.answer(Read::Present { value: output }, advanced), query.budget)
-        })
+        })?;
+        super::freshness::finish(self, answer, query.budget, end)
     }
 }
 fn validate_key(key: &Key) -> AtlasResult<()> {

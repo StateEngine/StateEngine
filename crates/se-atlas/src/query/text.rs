@@ -31,7 +31,7 @@ impl QueryReader<'_> {
             query.full,
             &self.viewer,
         ))?;
-        self.cache.read(end, |sql| {
+        let answer = self.cache.read(end, |sql| {
             let mut snapshot = self.snapshot(sql)?;
             let previous = query
                 .next
@@ -543,7 +543,8 @@ impl QueryReader<'_> {
                 }
                 more_hits = true;
             }
-        })
+        })?;
+        super::freshness::finish(self, answer, query.budget, end)
     }
 }
 fn at_window_end(started: bool, time: i64, file: &[u8], bound: &TextWindow) -> bool {
