@@ -255,17 +255,69 @@ pub(super) fn first_launch(
     let Some(command) = command else {
         return next_step(next, out);
     };
-    let command = if next.text.starts_with("In cmd.exe,") {
-        command.for_cmd().unwrap_or(command)
+    let mut text = next.text.clone();
+    let command = if let Some(instruction) = text.strip_prefix("In cmd.exe, ") {
+        match command.for_cmd() {
+            Some(command) => command,
+            None => {
+                // The friendly name can require a different shell than the
+                // original ID-based command; change its instruction too.
+                text = format!("Open PowerShell, then {instruction}");
+                command
+            }
+        }
     } else {
         command
     };
     writeln!(out, "From the project folder {root}:")?;
-    writeln!(out, "{}: {}", next.text, command.command)
+    writeln!(out, "{text}: {}", command.command)
 }
 
 pub fn next_step(value: &NextStep, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "{}: {}", value.text, value.command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_launch_names_powershell_when_a_friendly_name_cannot_use_cmd() -> io::Result<()> {
+        for agent in ["Build!", "Build%TEMP%", "Build\"quoted"] {
+            let next = NextStep {
+                text: "In cmd.exe, launch your first agent".into(),
+                command: "se --home C:\\state launch ag_saved --detach".into(),
+                argv: vec![],
+            };
+            let mut output = Vec::new();
+            first_launch("C:\\state", "C:\\repo", agent, &next, &mut output)?;
+            let output = String::from_utf8(output).map_err(io::Error::other)?;
+            assert!(output.contains("Open PowerShell, then launch your first agent:"));
+            assert!(!output.contains("In cmd.exe,"));
+            assert!(output.contains(agent));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn first_launch_keeps_cmd_when_every_friendly_argument_is_representable() -> io::Result<()> {
+        let next = NextStep {
+            text: "In cmd.exe, launch your first agent".into(),
+            command: String::new(),
+            argv: vec![],
+        };
+        let mut output = Vec::new();
+        first_launch(
+            "C:\\state home",
+            "C:\\repo",
+            "Build agent",
+            &next,
+            &mut output,
+        )?;
+        let output = String::from_utf8(output).map_err(io::Error::other)?;
+        assert!(output.contains("In cmd.exe, launch your first agent: se --home \"C:\\state home\" launch \"Build agent\" --detach"));
+        Ok(())
+    }
 }
 
 pub(super) fn repo_line(git: &GitView, out: &mut impl Write) -> io::Result<()> {
