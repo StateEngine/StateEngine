@@ -133,11 +133,8 @@ pub(super) fn observe(
     let mut exited_creator: Option<(ProcessStamp, OwnedHandle)> = None;
     let mut ancestry_bound = AncestryBound::Complete;
     while pid.0 != 0 {
-        if ancestry.len() >= 4096 || ancestry.iter().any(|(p, _)| p.pid == pid) {
-            return Err(refuse(
-                "read native ancestry",
-                "ancestry cycle or capacity exceeded",
-            ));
+        if ancestry.len() >= 4096 {
+            return Err(refuse("read native ancestry", "ancestry capacity exceeded"));
         }
         // Windows retains the numeric creator PID after that process exits.
         // A positively absent/reused creator ends the live chain. Job membership
@@ -200,6 +197,12 @@ pub(super) fn observe(
             && parent > child
         {
             break;
+        }
+        // A creator PID may now name a younger descendant already pinned in
+        // this walk. Its birth ends the chain above; only an older/equal repeated
+        // process identity can be an actual cycle.
+        if ancestry.iter().any(|(p, _)| p.pid == pid) {
+            return Err(refuse("read native ancestry", "ancestry cycle"));
         }
         // SAFETY: retained SYNCHRONIZE process handle; zero timeout observes
         // this exact object's liveness, including an exited retained creator.
