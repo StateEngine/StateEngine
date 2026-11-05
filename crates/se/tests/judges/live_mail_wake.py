@@ -35,6 +35,12 @@ def inputs(f):
         return []
 
 
+def pending_for(status, agent):
+    rows = [row for row in status["pending"] if agent in row["detail"]]
+    assert len(rows) == 1, f"status must report unread mail once for {agent}: {status['pending']}"
+    return rows[0]
+
+
 def send(f, owner, hold=False):
     marker = "wake-" + str(uuid.uuid4())
     # The command/body pattern is the audit's post-launch-wake-send case,
@@ -70,7 +76,7 @@ def run(f):
     # has durable unread mail. Status is an observation, never a recipient read.
     status = f.ok("--project", f.project, "status")
     other_id = other["agent"]["id"]
-    pending = next(row for row in status["pending"] if other_id in row["detail"])
+    pending = pending_for(status, other_id)
     assert pending["what"] == "unread agent mail" and "1 unread message" in pending["detail"], pending
     assert "Launch this agent" in pending["detail"] and "StateEngine inbox" in pending["detail"], pending
     owner = absent["from"]["id"]
@@ -99,7 +105,7 @@ def run(f):
         status = f.rpc("stateengine_status", {})
         assert not status.get("isError", False), status
         status = status["structuredContent"]
-        waiting = next(row for row in status["pending"] if f.agent in row["detail"])
+        waiting = pending_for(status, f.agent)
         assert waiting["what"] == "unread agent mail" and "StateEngine inbox" in waiting["detail"], waiting
         assert not any(other_id in row["detail"] for row in status["pending"]), status["pending"]
         time.sleep(0.5)
@@ -123,7 +129,7 @@ def run(f):
     # The running host/MCP status implementation has the same pending-mail
     # contract as the direct reader, including the same-conversation remedy.
     status = f.ok("--project", f.project, "status")
-    waiting = next(row for row in status["pending"] if f.agent in row["detail"])
+    waiting = pending_for(status, f.agent)
     assert waiting["what"] == "unread agent mail" and "1 unread message" in waiting["detail"], waiting
     assert "same conversation" in waiting["detail"] and "StateEngine inbox" in waiting["detail"], waiting
     assert f.mail("read", pending["message_id"])["message"]["disposition"]["state"] == "unread"
