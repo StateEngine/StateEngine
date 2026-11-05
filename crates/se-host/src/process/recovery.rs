@@ -287,16 +287,20 @@ impl LaunchCoordinator {
                     work.native_already_reconciled = true;
                     work.last_witness = Some((*witness).clone());
                     work.stop_method = Some("native-reconciliation".into());
-                    match self.finish(&mut work, *witness, deadline).await {
-                        Ok(()) => report.exited = report.exited.saturating_add(1),
-                        Err(error) => {
-                            work.cleanup_failure = Some(error.body.clone());
-                            report.unproved.push(format!(
-                                "{lifecycle}: native exit proved; cleanup incomplete: {error}"
-                            ));
-                            self.retain_recovered(work)?;
-                        }
-                    }
+                    // Trusted capture opens at listener publication. Keep the
+                    // exited lifecycle until its monitor can capture the tail;
+                    // startup must not retire it behind the readiness fence.
+                    let job = self.retain_recovered(work)?;
+                    let coordinator = self.clone();
+                    let owned = job.clone();
+                    let task = self.store.pool.handle().spawn(async move {
+                        coordinator.monitor_protected(owned).await;
+                    });
+                    *job.task
+                        .lock()
+                        .map_err(|_| error("recovered exit monitor", "poisoned task slot"))? =
+                        Some(task);
+                    report.exited = report.exited.saturating_add(1);
                 }
                 other => {
                     let reason = match other {

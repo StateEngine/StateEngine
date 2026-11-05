@@ -207,24 +207,7 @@ pub(super) fn restore(
                     "an exact session.json file in the protected binding directory",
                 )
             })?;
-            let bytes = read(lease, &path)?.ok_or_else(|| {
-                se_core::scope::unreadable(
-                    "capture restoration",
-                    "an indexed protected binding disappeared",
-                )
-            })?;
-            let record: Record = serde_json::from_slice(&bytes).map_err(|error| {
-                se_core::scope::unreadable("protected transcript binding", &error.to_string())
-            })?;
-            if &record.session != session {
-                return Err(SeError::invalid(
-                    "transcript binding filename",
-                    "the exact protected session identifier",
-                ));
-            }
-            let mut source = record.open()?;
-            source::validate(context, &mut source, deadline)?;
-            bindings.insert(source, None)
+            restore_session(context, lease, bindings, session, deadline)
         })();
         match result {
             Ok(()) => report.restored += 1,
@@ -238,4 +221,33 @@ pub(super) fn restore(
         }
     }
     Ok(report)
+}
+
+pub(super) fn restore_session(
+    context: &ExecutionContext,
+    lease: &HostLease,
+    bindings: &TranscriptBindings,
+    session: &SessionId,
+    deadline: &Deadline,
+) -> Result<()> {
+    deadline.remaining()?;
+    let path = directory(lease)?.join(format!("{session}.json"));
+    let bytes = read(lease, &path)?.ok_or_else(|| {
+        se_core::scope::unreadable(
+            "capture restoration",
+            "the original protected binding is absent",
+        )
+    })?;
+    let record: Record = serde_json::from_slice(&bytes).map_err(|error| {
+        se_core::scope::unreadable("protected transcript binding", &error.to_string())
+    })?;
+    if &record.session != session {
+        return Err(SeError::invalid(
+            "transcript binding filename",
+            "the exact protected session identifier",
+        ));
+    }
+    let mut source = record.open()?;
+    source::validate(context, &mut source, deadline)?;
+    bindings.insert(source, None)
 }
