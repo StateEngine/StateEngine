@@ -40,6 +40,17 @@ fn headless() -> bool {
 fn no_override(value: &bool) -> bool {
     !value
 }
+impl AgentLaunch {
+    /// Route syntax is not request identity: CLI selectors and MCP IDs bind to
+    /// the same admitted agent. Keep every other caller argument unchanged.
+    pub fn intent(&self, selected: &AgentId) -> Result<serde_json::Value> {
+        let mut value = serde_json::to_value(self)
+            .map_err(|e| crate::scope::unreadable("launch intent", &e.to_string()))?;
+        value["target_agent_id"] = serde_json::json!(selected);
+        value["selected_agent"] = serde_json::json!(selected);
+        Ok(value)
+    }
+}
 impl Validate for AgentLaunch {
     fn validate(&self) -> Result<()> {
         if let Some(value) = &self.model {

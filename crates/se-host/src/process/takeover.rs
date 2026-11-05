@@ -52,7 +52,7 @@ impl LaunchCoordinator {
             admission.scope, admission.actor, plan.input.idempotency_key
         );
         let serialized = serde_json::to_vec(&serde_json::json!({
-            "operation": "launch.takeover", "input": plan.input, "agent": plan.agent.id
+            "operation": "launch.takeover", "launch": plan.input.intent(&plan.agent.id)?
         }))
         .map_err(|e| error("takeover intent", e))?;
         let intent = sha2::Sha256::digest(serialized).into();

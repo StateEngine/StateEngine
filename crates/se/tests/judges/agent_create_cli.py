@@ -52,13 +52,13 @@ def owner_grant(f, active):
     assert value["value"] == {"state": "present", "value": active}, value
 
 
-def create(f, door, name, key):
+def create(f, door, name, key, provider="claude"):
     if door == "cli":
         response = f.call("--project", f.project, "--key", key, "agent", "add",
-                          name, "--provider", "claude", recipient=True)
+                          name, "--provider", provider, recipient=True)
         return response.returncode == 0, json.loads(response.stdout)
     response = f.rpc("stateengine_agent_create", {
-        "name": name, "provider": "claude", "idempotency_key": key})
+        "name": name, "provider": provider, "idempotency_key": key})
     return not response.get("isError", False), response["structuredContent"]
 
 
