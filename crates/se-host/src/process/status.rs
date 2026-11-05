@@ -186,7 +186,6 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
         )?
         .page,
     );
-    se_core::ops::status::pending_mail(output);
     output.next = NextStep {
         text: "Read this agent's saved state.".into(),
         command: "se agent show main".into(),

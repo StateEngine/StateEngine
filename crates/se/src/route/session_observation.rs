@@ -86,6 +86,7 @@ pub(super) fn finish(prepared: Prepared, home: &std::path::Path) -> Result<AnyOu
             if let Some(page) = &mut value.value.agents {
                 enrich_page(page, &mut apply)?;
             }
+            se_core::ops::status::pending_mail(&mut value.value);
         }
         AnyOutput::AgentList(value) => enrich_page(&mut value.value.page, &mut apply)?,
         AnyOutput::AgentShow(value) => {
