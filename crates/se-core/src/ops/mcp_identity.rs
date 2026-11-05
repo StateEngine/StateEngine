@@ -58,19 +58,12 @@ pub(super) fn describe(tool: &str, schema: &mut serde_json::Value) -> Result<()>
     if schema.get("properties").is_none() {
         schema["properties"] = serde_json::json!({});
     }
-    let mut descriptions = Vec::new();
     for (field, role, description) in fields(tool)? {
-        let role = match role {
-            IdentityRole::CallerAgent => "caller-agent",
-            IdentityRole::CallerProject => "caller-project",
-            IdentityRole::Target => "target",
-        };
-        descriptions.push(format!("{field}: {role}"));
         if let Some(properties) = schema
             .get_mut("properties")
             .and_then(serde_json::Value::as_object_mut)
         {
-            if role == "target" {
+            if *role == IdentityRole::Target {
                 if let Some(property) = properties.get_mut(*field) {
                     property["description"] = serde_json::json!(description);
                 }
@@ -83,15 +76,13 @@ pub(super) fn describe(tool: &str, schema: &mut serde_json::Value) -> Result<()>
                 );
             }
         }
-        if role != "target" {
-            if let Some(required) = schema
+        if *role != IdentityRole::Target
+            && let Some(required) = schema
                 .get_mut("required")
                 .and_then(serde_json::Value::as_array_mut)
-            {
-                required.retain(|name| name.as_str() != Some(field));
-            }
+        {
+            required.retain(|name| name.as_str() != Some(field));
         }
     }
-    schema["description"] = serde_json::json!(descriptions.join("; "));
     Ok(())
 }
