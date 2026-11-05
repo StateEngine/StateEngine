@@ -1,6 +1,6 @@
 use super::{
     labels,
-    read::{next_step, notification},
+    read::{next_step, notification, repo_line},
 };
 use se_core::{config_policy::ResolvedProfile, ops::outputs::*};
 use std::io::{self, Write};
@@ -11,6 +11,9 @@ pub fn init(value: &InitOutput, out: &mut impl Write) -> io::Result<()> {
         "Project {} registered at {}",
         value.project.name, value.project.root
     )?;
+    if let Some(git) = value.repo.git.as_ref() {
+        repo_line(git, out)?;
+    }
     writeln!(out, "State home: {}", value.home)?;
     writeln!(
         out,

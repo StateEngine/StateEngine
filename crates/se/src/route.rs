@@ -19,6 +19,8 @@ mod endpoint_diagnostic;
 pub mod execute;
 #[path = "route/files.rs"]
 pub mod files;
+#[path = "route/git_state.rs"]
+mod git_state;
 #[path = "route/hook.rs"]
 mod hook;
 #[path = "route/hosted.rs"]

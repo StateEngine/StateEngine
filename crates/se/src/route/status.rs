@@ -115,15 +115,43 @@ pub fn observe_snapshot<S: Snapshot>(
                 }
             };
             output.scope = "project".into();
+            let root = roots
+                .first()
+                .map(|r| r.path.to_local().map(|p| p.display().to_string()))
+                .transpose()?
+                .unwrap_or_default();
+            let git = if root.is_empty() {
+                None
+            } else {
+                match super::git_state::observe(std::path::Path::new(&root)) {
+                    Ok(observed) => {
+                        if let Some(view) = &observed
+                            && view.head.is_some()
+                            && view.uncommitted.is_none()
+                        {
+                            output.pending.push(PendingFact {
+                                what: "repository state".into(),
+                                since: None,
+                                detail: "Uncommitted state is unknown: the working-tree scan outgrew its bounded observation; the branch and commit count are still reported.".into(),
+                            });
+                        }
+                        observed
+                    }
+                    Err(error) => {
+                        output.pending.push(PendingFact {
+                            what: "repository state".into(),
+                            since: None,
+                            detail: format!("Git state could not be read: {error}"),
+                        });
+                        None
+                    }
+                }
+            };
             output.project = Read::Present {
                 value: ProjectView {
                     id: project.clone(),
                     name: name.clone(),
-                    root: roots
-                        .first()
-                        .map(|r| r.path.to_local().map(|p| p.display().to_string()))
-                        .transpose()?
-                        .unwrap_or_default(),
+                    root,
                     registered_at: receipt::timestamp(
                         record
                             .original
@@ -131,6 +159,7 @@ pub fn observe_snapshot<S: Snapshot>(
                             .unwrap_or(&record.current)
                             .recorded_at_us,
                     )?,
+                    git,
                 },
             };
             let query = MessageQuery {
