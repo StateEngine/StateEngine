@@ -41,6 +41,7 @@ pub trait CacheFiles {
 }
 pub trait GrowthReservation {}
 pub struct DatabasePin {
+    /// Native identity/metadata pin; content reads need not be supported.
     pub file: File,
     pub path: PathBuf,
 }

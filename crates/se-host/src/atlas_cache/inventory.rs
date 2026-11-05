@@ -73,7 +73,7 @@ fn walk(
                 ));
             }
             files
-                .readback(&path)
+                .pin_metadata(&path)
                 .map_err(fail)?
                 .ok_or_else(|| fail("Atlas inventory file disappeared"))?
                 .metadata()

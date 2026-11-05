@@ -245,7 +245,7 @@ impl CacheFiles for NativeAtlasCache {
         let path = self.path(epoch);
         Ok(self
             .root
-            .readback(&path)
+            .pin_metadata(&path)
             .map_err(fail)?
             .map(|file| DatabasePin { file, path }))
     }
@@ -364,7 +364,7 @@ impl CacheFiles for NativeAtlasCache {
         self.validate_database(pin)?;
         let path = pin.path.with_file_name("atlas.db-wal");
         self.root
-            .readback(&path)
+            .pin_metadata(&path)
             .map_err(fail)?
             .map(|f| f.metadata().map(|m| m.len()).map_err(fail))
             .transpose()
