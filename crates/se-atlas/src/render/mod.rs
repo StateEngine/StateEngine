@@ -247,7 +247,7 @@ fn state(index: &IndexSummary) -> String {
             "unqualified"
         }
     );
-    if let IndexState::Suspended { reason } | IndexState::Partial { error: reason } = &index.state {
+    if let IndexState::Suspended { reason } = &index.state {
         output.push_str(&format!("reason: {}\n", escape(&reason.message())));
     }
     for reason in &index.coverage.reasons {
