@@ -311,15 +311,21 @@ impl LaunchCoordinator {
                 },
             });
         }
-        if !inventory.effects.is_empty() {
-            row.remaining.push(obligation(
-                "pending effects",
-                "Pre-existing effect delivery or settlement remains outstanding; registration is preserved.",
-                None,
-            ));
-        }
         if !row.remaining.is_empty() {
             return Ok(());
+        }
+        // Stop/revocation must be proved before retiring notification work.
+        // Releasing ownership alone is not a native-exit witness.
+        if row.processes_may_remain.is_empty() {
+            let abandoned = self
+                .abandon_removal_notifications(&input.idempotency_key, admission.clone(), deadline)
+                .await?;
+            if abandoned != 0 {
+                row.removed.push(RemovedItem {
+                    what: format!("{abandoned} mail notifications abandoned; mail kept, no delivery or read claimed"),
+                    path: None,
+                });
+            }
         }
         // A current snapshot and the store's live-authority checks prevent a
         // concurrent launch or new effect from being hidden by removal.
