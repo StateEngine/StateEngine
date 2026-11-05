@@ -144,6 +144,20 @@ impl Fixture {
         assert_eq!(witness["caller_in_job_after"], true);
         assert_eq!(witness["privilege_removed"], refuse);
         assert_eq!(witness["restricting_sids"], false);
+        assert_eq!(witness["home_readable_after_restriction"], true);
+        if refuse {
+            assert!(matches!(
+                witness["removed_privilege"].as_str(),
+                Some(
+                    "SeShutdownPrivilege"
+                        | "SeTimeZonePrivilege"
+                        | "SeIncreaseWorkingSetPrivilege"
+                        | "SeUndockPrivilege"
+                )
+            ));
+        } else {
+            assert!(witness["removed_privilege"].is_null());
+        }
         Ok(())
     }
     fn result(&self, mode: &str) -> Result<(String, Vec<u8>, String)> {

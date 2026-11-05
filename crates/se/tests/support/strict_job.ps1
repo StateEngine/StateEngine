@@ -45,16 +45,23 @@ public static class StrictJobFixture {
     IntPtr token; Require(OpenProcessToken(GetCurrentProcess(),0x8,out token),"query dedicated fixture token");
     try { return IsTokenRestricted(token); } finally { CloseHandle(token); }
   }
-  public static bool RemoveOwnPrivilege() {
+  public static string RemoveNonFilePrivilege() {
     IntPtr token; Require(OpenProcessToken(GetCurrentProcess(),0x28,out token),"open dedicated fixture token");
     try {
-      Luid id; Require(LookupPrivilegeValueW(null,"SeChangeNotifyPrivilege",out id),"resolve fixture privilege");
-      if (!HasPrivilege(token,id)) throw new Exception("fixture caller did not initially hold SeChangeNotifyPrivilege");
-      Privileges value=new Privileges {Count=1,Id=id,Attributes=4}; // SE_PRIVILEGE_REMOVED
-      Require(AdjustTokenPrivileges(token,false,ref value,0,IntPtr.Zero,IntPtr.Zero),"remove only dedicated fixture caller privilege");
-      Require(Marshal.GetLastWin32Error()==0,"privilege removal fully assigned");
-      if (HasPrivilege(token,id) || IsTokenRestricted(token)) throw new Exception("fixture must remove the privilege while IsTokenRestricted stays FALSE");
-      return true;
+      // Keep traverse checking unchanged: removing SeChangeNotifyPrivilege can
+      // make the protected home unreadable before broker selection is reached.
+      Luid traverse; Require(LookupPrivilegeValueW(null,"SeChangeNotifyPrivilege",out traverse),"resolve traverse privilege");
+      if (!HasPrivilege(token,traverse)) throw new Exception("fixture caller must retain its traverse privilege");
+      foreach (string name in new string[] {"SeShutdownPrivilege", "SeTimeZonePrivilege", "SeIncreaseWorkingSetPrivilege", "SeUndockPrivilege"}) {
+        Luid id; Require(LookupPrivilegeValueW(null,name,out id),"resolve non-filesystem fixture privilege");
+        if (!HasPrivilege(token,id)) continue;
+        Privileges value=new Privileges {Count=1,Id=id,Attributes=4}; // SE_PRIVILEGE_REMOVED
+        Require(AdjustTokenPrivileges(token,false,ref value,0,IntPtr.Zero,IntPtr.Zero),"remove only dedicated fixture caller privilege");
+        Require(Marshal.GetLastWin32Error()==0,"privilege removal fully assigned");
+        if (HasPrivilege(token,id) || !HasPrivilege(token,traverse) || IsTokenRestricted(token)) throw new Exception("fixture must remove only the selected privilege, retain traversal, and keep IsTokenRestricted FALSE");
+        return name;
+      }
+      throw new Exception("fixture has no removable non-filesystem privilege; refusing to remove SeChangeNotifyPrivilege");
     } finally { CloseHandle(token); }
   }
   public static IntPtr Enter() {
@@ -70,11 +77,15 @@ public static class StrictJobFixture {
 }
 '@
 # Adjust only this dedicated fixture shell; the cargo driver and all other processes keep their tokens.
-$removed = $false
-if ($NoEligibleBroker) { $removed = [StrictJobFixture]::RemoveOwnPrivilege() }
+$removedPrivilege = $null
+if ($NoEligibleBroker) { $removedPrivilege = [StrictJobFixture]::RemoveNonFilePrivilege() }
+# Prove the changed caller can still read the actual initialized home before
+# either public CLI mode attempts broker selection.
+$homeProbe = [IO.File]::Open((Join-Path $HomePath 'state.db'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)
+$homeProbe.Dispose()
 $job = [StrictJobFixture]::Enter()
 try {
-  $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job); privilege_removed=$removed; restricting_sids=[StrictJobFixture]::CallerRestricted()}
+  $witness = @{caller_in_job_before=[StrictJobFixture]::CallerInJob($job); privilege_removed=($null -ne $removedPrivilege); removed_privilege=$removedPrivilege; home_readable_after_restriction=$true; restricting_sids=[StrictJobFixture]::CallerRestricted()}
   foreach ($mode in @('json','plain')) {
     $info = New-Object System.Diagnostics.ProcessStartInfo
     $info.FileName = $Se
