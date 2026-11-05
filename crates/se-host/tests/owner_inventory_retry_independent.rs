@@ -165,15 +165,25 @@ impl Drop for ChildOwner {
         }
     }
 }
+/// Bug: 927f3cfc — a dead host's C1 reservation blocked every supported recovery command.
 #[test]
-fn dead_original_owner_retains_its_refusal_without_retry_advice() -> Check {
+fn dead_original_owner_admits_without_consuming_its_protected_custody() -> Check {
     let mut child = ChildOwner::new()?;
     let identity = child.identity.clone();
     child.finish()?;
-    let (_f, inventory) = inventory(identity)?;
-    let error = refusal(&inventory)?;
-    assert_eq!(error.body.code(), Code::SourceUnreadable);
-    assert_eq!(error.body.retry(), &Retry::Never);
+    let (_f, mut inventory) = inventory(identity)?;
+    let custody = inventory.processes[0].identity.custody.record.clone();
+    for _ in 0..2 {
+        assert!(se_host::decode_owner_inventory(&inventory)?.is_empty());
+        assert_eq!(inventory.processes[0].identity.custody.record, custody);
+        assert_eq!(inventory.processes[0].state, ProcessState::Reserved);
+    }
+    // Omission is legal only for an unpublished, unlaunched C1 reservation.
+    inventory.processes[0].state = ProcessState::Running;
+    assert_eq!(refusal(&inventory)?.body.code(), Code::SourceUnreadable);
+    inventory.processes[0].state = ProcessState::Reserved;
+    inventory.processes[0].identity.root_identity = RootIdentityState::Identified;
+    assert_eq!(refusal(&inventory)?.body.code(), Code::SourceUnreadable);
     Ok(())
 }
 #[test]
