@@ -311,6 +311,10 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("model").help("Model for the first agent"))
             .arg(toggle("launch").hide(true))
             .arg(toggle("adopt").hide(true)),
+        "project.move" => c.arg(
+            positional("root", 1, true)
+                .help("The folder the repository now lives in; verified against the git identity recorded at se init"),
+        ),
         "doctor.repair" => c.arg(value("fix").help("Apply only this currently diagnosed CHECK-ID after printing its plan")),
         "store.import_node" => c
             .arg(value("from_node").long("from-node").required(true).help("Copy of an earlier StateEngine data directory to import"))

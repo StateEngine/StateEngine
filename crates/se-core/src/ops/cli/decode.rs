@@ -168,6 +168,10 @@ pub fn from_matches_with_key(
                 adopt: flag(m, "adopt"),
                 idempotency_key: key()?,
             }),
+            "project.move" => AnyOp::ProjectMove(ProjectMove {
+                root: required(m, "root")?,
+                idempotency_key: key()?,
+            }),
             "history.list" => AnyOp::HistoryList(HistoryList {
                 session: text(m, "session")
                     .map(|value| {

@@ -218,14 +218,14 @@ pub(super) fn move_root(
     }
     let changed = c
         .execute(
-            "UPDATE projects SET revision=?,last_seq=? WHERE project_id=? AND revision=? AND state='active' AND name=?",
-            crate::sql_value::sql_params![rev, seq, p, rev - 1, name.as_str()],
+            "UPDATE projects SET revision=?,last_seq=? WHERE project_id=? AND revision=? AND state='active'",
+            crate::sql_value::sql_params![rev, seq, p, rev - 1],
         )
         .map_err(sql)?;
     if changed != 1 {
         return Err(fail(
             StoreErrorCode::InvalidTransition,
-            "project move requires the current active registration and name",
+            "project move requires the current active registration",
         ));
     }
     c.execute("DELETE FROM roots WHERE project_id=?", [&p])

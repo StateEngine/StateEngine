@@ -51,7 +51,12 @@ fn raw_endpoint(files: &Files) -> Result<Option<Vec<u8>>> {
         })?;
     Ok(Some(bytes))
 }
-fn observe<R: se_store::ReadStore>(cx: &Bootstrap, files: &Files, reader: &R, extra: &[DiagnosisCheck]) -> Result<Observed> {
+fn observe<R: se_store::ReadStore>(
+    cx: &Bootstrap,
+    files: &Files,
+    reader: &R,
+    extra: &[DiagnosisCheck],
+) -> Result<Observed> {
     let at = se_core::ops::receipt::timestamp(super::execute::now_us()?)?;
     // These two checks report measurements already required by dispatch:
     // setup::inspect_phase opens NativeStateFiles and validates the store;
@@ -203,18 +208,17 @@ fn observe<R: se_store::ReadStore>(cx: &Bootstrap, files: &Files, reader: &R, ex
 }
 /// Called only after the ordinary setup reader measured store absence. No
 /// endpoint observation or permission-repair failure supplies that fact.
-/// The registered project root must exist on disk. When it is missing the
+/// Every registered project root must exist on disk, because launch and
+/// project selection use the recorded roots. When one is missing the
 /// diagnosis names the remedy: a moved repository re-attaches with
-/// `se project move`, which verifies the recorded git identity.
-fn project_root_check(
+/// `se project move`, which verifies the recorded git identity. Doctor is a
+/// data-home operation, so the check walks every registered project rather
+/// than a selected one.
+fn project_root_checks(
     cx: &Bootstrap,
     admission: &se_store::Admission,
     at: &str,
-) -> Result<Option<DiagnosisCheck>> {
-    let project = match scope::project(admission) {
-        Ok(project) => project,
-        Err(_) => return Ok(None),
-    };
+) -> Result<Vec<DiagnosisCheck>> {
     let options = StoreOptions {
         state_directory: cx.home.clone(),
         busy_timeout: Duration::from_millis(250),
@@ -222,32 +226,65 @@ fn project_root_check(
     let reader = scope::require_present(
         SqliteFactory::open_reader(&options).map_err(|e| store_error(&e))?,
         "doctor store",
-        "Restore access to the initialized store in this same data home, then rerun se doctor.",
+        "Restore access to the initialized store in this data home, then rerun se doctor.",
     )?;
     let mut snapshot = reader
         .snapshot(se_core::admission::read_scope(admission))
         .map_err(|e| store_error(&e))?;
-    let record = scope::require_present(
-        snapshot
-            .project(project.clone())
-            .map_err(|e| store_error(&e))?,
-        "doctor project metadata",
-        "Restore access to the retained project metadata in this data home, then rerun se doctor.",
-    )?;
-    let roots = match &record.current.body {
-        EventBody::ProjectRegistered {
-            project: id, roots, ..
-        } if project == *id => roots.clone(),
-        EventBody::ProjectUpdated {
-            project: id, roots, ..
-        } if project == *id => roots.clone(),
-        EventBody::ProjectMoved {
-            project: id, to, ..
-        } if project == *id => vec![to.clone()],
-        _ => return Ok(None),
-    };
+    let mut checks = Vec::new();
+    let mut after = None;
+    for _ in 0..64 {
+        let page = snapshot
+            .projects(se_store::ReadBudget {
+                page: se_types::PageRequest {
+                    after: after.clone(),
+                    limit: std::num::NonZeroU32::new(100).ok_or_else(|| {
+                        se_types::SeError::invalid("doctor project page", "positive limit")
+                    })?,
+                    max_bytes: std::num::NonZeroU32::new(1024 * 1024).ok_or_else(|| {
+                        se_types::SeError::invalid("doctor project page", "positive bytes")
+                    })?,
+                },
+                deadline: Duration::from_millis(250),
+            })
+            .map_err(|e| store_error(&e))?;
+        for record in page.items() {
+            checks.push(project_root_check_one(cx, record, at)?);
+        }
+        if let Some(next) = page.next() {
+            after = Some(next.clone());
+            continue;
+        }
+        if !page.window().complete() {
+            return Err(scope::unreadable(
+                "doctor project inventory",
+                "finite window is incomplete",
+            ));
+        }
+        break;
+    }
     snapshot.close().map_err(|e| store_error(&e))?;
-    let mut present = Vec::new();
+    Ok(checks)
+}
+/// One registered project's roots, resolved from its current body. A body
+/// that carries no root is a consistency failure, not a silent skip.
+fn project_root_check_one(
+    cx: &Bootstrap,
+    record: &se_store::ProjectionRecord,
+    at: &str,
+) -> Result<DiagnosisCheck> {
+    let (name, roots) = match &record.current.body {
+        EventBody::ProjectRegistered { name, roots, .. } => (name, roots.clone()),
+        EventBody::ProjectUpdated { name, roots, .. } => (name, roots.clone()),
+        EventBody::ProjectMoved { name, to, .. } => (name, vec![to.clone()]),
+        _ => {
+            return Err(scope::unreadable(
+                "doctor project metadata",
+                "project projection carries no root body",
+            ));
+        }
+    };
+    let mut present = 0usize;
     let mut missing = Vec::new();
     for root in &roots {
         let path = root
@@ -255,61 +292,60 @@ fn project_root_check(
             .to_local()
             .map_err(|e| scope::unreadable("registered root", &e.to_string()))?;
         if path.exists() {
-            present.push(path);
+            present += 1;
         } else {
             missing.push(path);
         }
     }
-    let at = at.to_owned();
-    if missing.is_empty() {
-        let check = check(
-            "project.root",
-            "Registered project root",
-            CheckState::Ok,
-            format!(
-                "{} of {} registered roots present on disk",
-                present.len(),
-                roots.len()
-            ),
-            &at,
-        );
-        return Ok(Some(check));
-    }
-    let mut check = check(
-        "project.root",
-        "Registered project root",
-        CheckState::Failed,
+    let state = if missing.is_empty() {
+        CheckState::Ok
+    } else {
+        CheckState::Failed
+    };
+    let observed = if missing.is_empty() {
         format!(
-            "{} of {} registered roots present; missing: {}",
-            present.len(),
+            "{present} of {} registered roots present on disk",
+            roots.len()
+        )
+    } else {
+        format!(
+            "{present} of {} registered roots present; missing: {}",
             roots.len(),
             missing
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ")
-        ),
-        &at,
+        )
+    };
+    let mut check = check(
+        &format!("project.root.{name}"),
+        &format!("Registered project root ({name})"),
+        state,
+        observed,
+        at,
     );
-    check.reason = Some(
-        "Launch and project selection use this root; a moved or renamed repository re-attaches with se project move"
-            .into(),
-    );
-    check.fix = Some(CheckFix {
-        text: "If the repository was moved or renamed, run `se project move <new-folder>` (it verifies the recorded git identity); otherwise restore the folder at the recorded path".into(),
-        command: None,
-        argv: Some(vec![
-            "se".into(),
-            "--home".into(),
-            cx.home.display().to_string(),
-            "--project".into(),
-            project.to_string(),
-            "project".into(),
-            "move".into(),
-            "<new-folder>".into(),
-        ]),
-    });
-    Ok(Some(check))
+    if state == CheckState::Failed {
+        check.reason = Some(
+            "Launch and project selection use this root; a moved or renamed repository re-attaches with se project move"
+                .into(),
+        );
+        check.fix = Some(CheckFix {
+            text: "If the repository was moved or renamed, run `se project move <new-folder>` (it verifies the recorded git identity); otherwise restore the folder at the recorded path".into(),
+            command: None,
+            argv: Some(vec![
+                "se".into(),
+                "--home".into(),
+                cx.home.display().to_string(),
+                "--project".into(),
+                name.clone(),
+                "project".into(),
+                "move".into(),
+                "<new-folder>".into(),
+            ]),
+        });
+    }
+    Ok(check)
 }
 pub(super) fn uninitialized(cx: &Bootstrap, op: &AnyOp) -> Result<AnyOutput> {
     let owner = super::owner::observe(&[])?;
@@ -389,13 +425,11 @@ pub fn execute<R: se_store::ReadStore>(
             &caller.terminal,
         )?;
     }
-    let extra = project_root_check(
+    let extra = project_root_checks(
         cx,
         &caller.admission,
         &se_core::ops::receipt::timestamp(super::execute::now_us()?)?,
-    )?
-    .into_iter()
-    .collect::<Vec<_>>();
+    )?;
     let observed = observe(cx, files, reader, &extra)?;
     let AnyOp::DoctorRepair(input) = op else {
         return Ok(observed.diagnosis.into());

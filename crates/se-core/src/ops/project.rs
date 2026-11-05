@@ -144,10 +144,7 @@ pub fn move_root<R: Snapshot>(
             "a natively admitted human owner",
         ));
     }
-    let original = record
-        .original
-        .as_deref()
-        .ok_or_else(|| SeError::invalid("project move", "the original registration"))?;
+    let original = record.original.as_deref().unwrap_or(&record.current);
     let EventBody::ProjectRegistered { name, .. } = &original.body else {
         return Err(SeError::invalid("project move", "a registered name"));
     };
