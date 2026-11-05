@@ -199,11 +199,17 @@ def run(options):
                 assert reader.unread(session, message)
         check("resume carries addressing and recipient disposition without marking")
 
-        read = reader.good(sender, "stdio", "stateengine_msg_read", {"msg_id": message})
+        read = reader.good(sender, "stdio", "stateengine_msg_read", {"message_id": message})
         assert read["marked_read"] and not reader.unread(sender, message) and reader.unread(recipient, message)
         again = reader.good(sender, "http", "stateengine_msg_read", {"msg_id": message})
         assert again["event_id"] == read["event_id"] and again["marker"] == "already"
-        check("by-ID read marks only its recipient and preserves the replay receipt")
+        for door in ("stdio", "http"):
+            for spelling in ("message_id", "msg_id"):
+                replay = reader.good(sender, door, "stateengine_msg_read", {spelling: message})
+                assert replay["event_id"] == read["event_id"] and replay["marker"] == "already"
+                ack = reader.good(sender, door, "stateengine_msg_ack", {spelling: message})
+                assert ack["message_id"] == message
+        check("both mail ID spellings read and acknowledge the same recipient through both doors")
         for session, was_read in ((sender, True), (recipient, False)):
             listing = f.ok("--project", f.project, "msg", "list", "--to", session["agent"], "--all", "--full")
             row = next(row for row in listing["items"] if row["id"] == message)
@@ -215,14 +221,19 @@ def run(options):
         check("owner inspection preserves selected and unfiltered recipient state")
         for door in ("stdio", "http"):
             for tool in ("stateengine_msg_read", "stateengine_msg_ack", "stateengine_msg_dismiss"):
-                denied = reader.bad(outsider, door, tool, {"msg_id": message})
-                assert payload["body"] not in json.dumps(denied)
+                for spelling in ("message_id", "msg_id"):
+                    denied = reader.bad(outsider, door, tool, {spelling: message})
+                    assert payload["body"] not in json.dumps(denied)
         check("unaddressed sessions cannot read, acknowledge or dismiss through either door")
-        dismissed = reader.good(recipient, "http", "stateengine_msg_dismiss", {"msg_id": message})
+        dismissed = reader.good(recipient, "http", "stateengine_msg_dismiss", {"message_id": message})
         assert dismissed["marker"] == "new" and not reader.unread(recipient, message)
         again = reader.good(recipient, "stdio", "stateengine_msg_dismiss", {"msg_id": message})
         assert again["event_id"] == dismissed["event_id"] and again["marker"] == "already"
-        check("dismiss is independent and naturally idempotent across doors")
+        for door in ("stdio", "http"):
+            for spelling in ("message_id", "msg_id"):
+                replay = reader.good(recipient, door, "stateengine_msg_dismiss", {spelling: message})
+                assert replay["event_id"] == dismissed["event_id"] and replay["marker"] == "already"
+        check("both mail ID spellings dismiss independently and idempotently across doors")
 
         returned = reader.good(sender, "http", "stateengine_msg_send", {
             "to": "floor", "body": "Correct this consumer", "kind": "question",
