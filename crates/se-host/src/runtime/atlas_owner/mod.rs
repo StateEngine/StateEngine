@@ -23,7 +23,7 @@ use std::{
 use tokio::{io::unix::AsyncFd, sync::watch};
 
 /// Independent native measurements supply these admissions. Installation fills
-/// the measured Linux SQL default; incremental parser profiles remain opt-in.
+/// the measured Linux SQL/parser defaults within their qualified source bounds.
 #[derive(Default, Debug)]
 pub struct NativeAtlasQualification {
     pub sql: Option<SqlProfile>,
