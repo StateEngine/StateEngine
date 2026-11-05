@@ -64,12 +64,10 @@ pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<Pro
             }
             let owner_gone = match &observed {
                 se_proc::ProcessRead::Absent { .. } => true,
-                se_proc::ProcessRead::ExitedRecord { boot, start, .. } => {
-                    *boot == owner.boot && *start == owner.start
-                }
+                se_proc::ProcessRead::ExitedRecord { .. } => true,
                 se_proc::ProcessRead::Present(value) => {
-                    value.identity == *owner
-                        && matches!(
+                    value.identity != *owner
+                        || matches!(
                             value.state,
                             se_proc::NativeState::Exited | se_proc::NativeState::ExitedAwaitingReap
                         )
@@ -85,8 +83,9 @@ pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<Pro
                 // this reservation contributes no root to caller ancestry.
                 // Keep the protected checkpoint intact: startup must still
                 // reconcile native custody and commit its own exit witness.
-                // Scope/root checkpoints, stale identities and unreadable
-                // observations cannot use this admission path.
+                // A different native birth or executable is not the original
+                // owner. This grants no signal rights over that successor;
+                // scope/root custody and unreadable observations still refuse.
                 continue;
             }
         }
