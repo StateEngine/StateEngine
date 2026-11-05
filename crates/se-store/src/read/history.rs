@@ -69,16 +69,33 @@ impl SqliteSnapshot {
         ];
         if let Some(agent) = &query.agent {
             let a = self.agent_bytes(agent)?;
-            sql.push_str(" AND (e.actor_id=?
-                OR EXISTS(SELECT 1 FROM turn_data d WHERE d.event_seq=e.seq AND d.project_id=? AND d.agent_id=? AND d.event_seq>? AND d.event_seq<=?)
-                OR EXISTS(SELECT 1 FROM process_data d WHERE d.event_seq=e.seq AND d.principal_id=?))");
+            let project = self.project_bytes()?;
+            let (mail, recipient_index) = if self.info.schema_version >= 3 {
+                ("message_deliveries", "mail_recipient_seq")
+            } else {
+                ("messages", "messages_recipient_seq")
+            };
+            // Seek the agent's indexed streams before applying the caller's
+            // visibility below. A correlated OR would visit every project event
+            // to find even an empty agent history. UNION also deduplicates mail
+            // the agent sent to itself and shared-work deliveries.
+            sql.push_str(&format!(" AND e.seq IN (
+                SELECT seq FROM events INDEXED BY events_actor_seq WHERE project_id=? AND actor_id=? AND seq>? AND seq<=?
+                UNION SELECT sent_seq FROM {mail} INDEXED BY {recipient_index} WHERE project_id=? AND recipient_id=? AND sent_seq>? AND sent_seq<=?
+                UNION SELECT event_seq FROM turn_data INDEXED BY turn_data_agent_seq WHERE project_id=? AND agent_id=? AND event_seq>? AND event_seq<=?
+                UNION SELECT event_seq FROM process_data WHERE principal_id=? AND event_seq>? AND event_seq<=?)"));
+            for _ in 0..3 {
+                params.extend([
+                    Value::Blob(project.clone()),
+                    Value::Blob(a.clone()),
+                    Value::Integer(after as i64),
+                    Value::Integer(h as i64),
+                ]);
+            }
             params.extend([
-                rusqlite::types::Value::Blob(a.clone()),
-                rusqlite::types::Value::Blob(self.project_bytes()?),
-                rusqlite::types::Value::Blob(a.clone()),
-                rusqlite::types::Value::Integer(after as i64),
-                rusqlite::types::Value::Integer(h as i64),
-                rusqlite::types::Value::Blob(a),
+                Value::Blob(a),
+                Value::Integer(after as i64),
+                Value::Integer(h as i64),
             ]);
         }
         if let Some(session) = &query.session {
