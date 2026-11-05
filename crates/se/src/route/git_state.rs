@@ -1,7 +1,8 @@
 //! Bounded read-only observation of an existing Git repository: the branch,
 //! the commit count reachable from HEAD and whether uncommitted changes are
-//! present. Every Git invocation runs under one shared environment that
-//! disables repository-supplied fsmonitor helpers and keeps output bounded,
+//! present. Every Git invocation passes a top-precedence
+//! `core.fsmonitor=false` command parameter, which beats both repository
+//! files and an inherited `GIT_CONFIG_PARAMETERS`, and keeps output bounded,
 //! so the observer can never execute repository configuration or buffer an
 //! unbounded working tree.
 use se_core::{ops::GitView, scope};
@@ -9,10 +10,10 @@ use se_types::{Result, SeError};
 use std::{
     io::{self, Read},
     path::Path,
-    process::{Command, Output, Stdio},
+    process::{Child, Command, ExitStatus, Output, Stdio},
     sync::mpsc,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 const STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(10);
@@ -112,9 +113,11 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
 
 /// Observe only whether the working tree has uncommitted changes, streaming
 /// `git status --porcelain` instead of buffering it. Dirty is settled by the
-/// first output byte; clean requires the command to finish empty; a run that
-/// outgrows the bounded observation is reported as unknown, and its child is
-/// killed and reaped, so a large dirty repository never fails the adoption.
+/// first output byte: the child is then killed and reaped, so a status that
+/// hangs after emitting a dirty line still settles in milliseconds. Clean
+/// requires the command to finish empty; a run that outgrows the bounded
+/// observation is reported as unknown, and a pipe read failure is reported
+/// as unreadable rather than converted to zero.
 fn dirty(root: &Path) -> Result<Option<bool>> {
     let mut command = Command::new("git");
     configured(root, &mut command)
@@ -134,48 +137,117 @@ fn dirty(root: &Path) -> Result<Option<bool>> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         let mut stdout = io::BufReader::new(stdout);
-        let seen = io::copy(&mut stdout, &mut io::sink()).unwrap_or(0);
-        let mut error = io::BufReader::new(stderr);
-        let mut retained: Vec<u8> = Vec::new();
-        let mut buffer = [0u8; 8192];
-        loop {
-            match error.read(&mut buffer) {
-                Ok(0) => break,
-                Ok(read) => {
-                    for &byte in &buffer[..read] {
-                        if retained.len() < STDERR_RETAIN {
-                            retained.push(byte);
+        let mut stderr = io::BufReader::new(stderr);
+        let mut first = [0u8; 8192];
+        let outcome = match stdout.read(&mut first) {
+            Err(error) => Outcome::Unreadable(error.to_string()),
+            Ok(0) => {
+                let mut retained: Vec<u8> = Vec::new();
+                let mut buffer = [0u8; 8192];
+                loop {
+                    match stderr.read(&mut buffer) {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => {
+                            for &byte in &buffer[..read] {
+                                if retained.len() < STDERR_RETAIN {
+                                    retained.push(byte);
+                                }
+                            }
                         }
                     }
                 }
-                Err(_) => break,
+                Outcome::Clean { stderr: retained }
             }
+            Ok(_) => Outcome::Dirty,
+        };
+        let dirty = matches!(outcome, Outcome::Dirty);
+        let _ = sender.send(outcome);
+        if dirty {
+            // The main thread now kills the child; drain both pipes through
+            // a bounded buffer so this thread cannot outlive the observation.
+            drain(&mut stdout);
+            drain(&mut stderr);
         }
-        let _ = sender.send((seen, retained));
     });
+    let started = Instant::now();
     let outcome = match receiver.recv_timeout(STATUS_OBSERVATION_DEADLINE) {
-        Ok((seen, stderr_tail)) => {
-            let status = child
-                .wait()
-                .map_err(|e| scope::unreadable("Git working tree", &e.to_string()))?;
-            if seen > 0 {
-                Some(true)
-            } else if status.success() {
-                Some(false)
-            } else {
-                return Err(scope::unreadable(
-                    "Git working tree",
-                    &failure_detail(&stderr_tail),
-                ));
-            }
-        }
+        Ok(outcome) => outcome,
         Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            None
+            reap(&mut child);
+            return Ok(None);
         }
     };
-    Ok(outcome)
+    match outcome {
+        Outcome::Dirty => {
+            // The first byte already proves dirty; kill and reap the child,
+            // which may still be running, so the fact settles at first byte.
+            reap(&mut child);
+            Ok(Some(true))
+        }
+        Outcome::Clean { stderr } => {
+            let deadline = started + STATUS_OBSERVATION_DEADLINE;
+            match bounded_wait(&mut child, deadline) {
+                Ok(Some(status)) if status.success() => Ok(Some(false)),
+                Ok(Some(_status)) => Err(scope::unreadable(
+                    "Git working tree",
+                    &failure_detail(&stderr),
+                )),
+                Ok(None) => {
+                    reap(&mut child);
+                    Ok(None)
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Outcome::Unreadable(reason) => {
+            reap(&mut child);
+            Err(scope::unreadable("Git working tree", &reason))
+        }
+    }
+}
+
+/// One outcome of the streaming status observation: dirty at the first
+/// output byte, clean with a bounded stderr tail once the pipes close, or
+/// unreadable when the stdout pipe itself fails.
+enum Outcome {
+    Dirty,
+    Clean { stderr: Vec<u8> },
+    Unreadable(String),
+}
+
+/// Kill the child if it is still running and reap it exactly once.
+fn reap(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Poll the child until it exits or the deadline passes; `Ok(None)` reports
+/// the deadline first, leaving the child to be reaped by the caller.
+fn bounded_wait(child: &mut Child, deadline: Instant) -> Result<Option<ExitStatus>> {
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(Some(status)),
+            Ok(None) => {}
+            Err(error) => {
+                return Err(scope::unreadable("Git working tree", &error.to_string()));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Discard everything a pipe still carries, using a bounded buffer.
+fn drain<R: Read>(reader: &mut R) {
+    let mut buffer = [0u8; 8192];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
 }
 
 fn run(root: &Path, args: &[&str]) -> Result<Output> {
@@ -186,17 +258,18 @@ fn run(root: &Path, args: &[&str]) -> Result<Output> {
         .map_err(|e| scope::unreadable("Git repository observation", &e.to_string()))
 }
 
-/// One Git environment for every observation call: the target root, no lock
-/// maintenance, no repository-supplied fsmonitor helper, and no repository
-/// identity inherited from the caller's environment.
+/// One Git configuration for every observation call: the target root, a
+/// top-precedence `core.fsmonitor=false` command parameter that beats both
+/// repository files and an inherited `GIT_CONFIG_PARAMETERS`, no lock
+/// maintenance, and no repository identity inherited from the caller's
+/// environment.
 fn configured<'a>(root: &Path, command: &'a mut Command) -> &'a mut Command {
     command
+        .arg("-c")
+        .arg("core.fsmonitor=false")
         .arg("-C")
         .arg(root)
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_CONFIG_COUNT", "1")
-        .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
-        .env("GIT_CONFIG_VALUE_0", "false")
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
