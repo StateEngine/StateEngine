@@ -80,6 +80,7 @@ impl SqliteSnapshot {
                     | EventBody::SessionTurn { agent, .. } => agent == a,
                     EventBody::CaptureSource { session, .. }
                     | EventBody::CaptureFailed { session, .. }
+                    | EventBody::CaptureVerified { session, .. }
                     | EventBody::CaptureSuppressed { session, .. } => {
                         self.session_visible(session, a)?
                     }

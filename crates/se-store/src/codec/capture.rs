@@ -80,6 +80,11 @@ pub(crate) fn decode(
                     .transpose()?
                     .flatten(),
             },
+            "capture.verified" => EventBody::CaptureVerified {
+                source: field(&v, "source")?,
+                session: field(&v, "session")?,
+                offset: field(&v, "offset")?,
+            },
             "capture.failed" => EventBody::CaptureFailed {
                 source: field(&v, "source")?,
                 session: field(&v, "session")?,

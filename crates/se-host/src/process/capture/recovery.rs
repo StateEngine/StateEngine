@@ -13,43 +13,24 @@ impl LaunchCoordinator {
         let session = work.meta.session.clone();
         let source_id =
             se_core::ops::process_commit::session_credential_id(&session, "capture-source")?;
-        let read_bound = deadline.remaining()?.min(std::time::Duration::from_secs(5));
         let failure = self
             .store
             .read(work.cleanup_admission.clone(), deadline, move |cx| {
-                let source = se_core::scope::require_present(
-                    cx.read
-                        .capture_source(source_id)
-                        .map_err(|cause| se_core::store_error::store_error(&cause))?,
-                    "retained final capture",
-                    "Restore the original capture source and its committed cursor.",
-                )?;
-                let failures = cx
+                let outcome = cx
                     .read
-                    .history(
-                        se_store::HistoryQuery {
-                            agent: None,
-                            session: Some(session.clone()),
-                            kinds: vec![se_store::EventKind::CaptureFailed],
-                            families: Vec::new(),
-                            transcript: se_store::TranscriptFilter::All,
-                            since: Some(source.current.position),
-                        },
-                        se_store::ReadBudget {
-                            page: se_types::PageRequest {
-                                after: None,
-                                limit: std::num::NonZeroU32::new(1).ok_or_else(|| {
-                                    error("capture recovery", "positive diagnostic limit")
-                                })?,
-                                max_bytes: std::num::NonZeroU32::new(32 * 1024).ok_or_else(
-                                    || error("capture recovery", "positive diagnostic byte bound"),
-                                )?,
-                            },
-                            deadline: read_bound,
-                        },
-                    )
+                    .capture_outcome(source_id, None)
                     .map_err(|cause| se_core::store_error::store_error(&cause))?;
-                match failures.items().first().map(|event| &event.body) {
+                let event = match &outcome {
+                    se_types::Read::Present { value } => Some(&value.body),
+                    se_types::Read::Absent { .. } => None,
+                    _ => {
+                        return Err(error(
+                            "retained final capture",
+                            "the latest capture outcome is unavailable",
+                        ));
+                    }
+                };
+                match event {
                     Some(EventBody::CaptureFailed {
                         source,
                         session: found,
@@ -59,6 +40,11 @@ impl LaunchCoordinator {
                     }) if *source == source_id && found == &session => Ok(Some(
                         error("retained final capture", format!("{code:?}: {cause}")).body,
                     )),
+                    Some(EventBody::CaptureVerified {
+                        source,
+                        session: found,
+                        ..
+                    }) if *source == source_id && found == &session => Ok(None),
                     None => Ok(None),
                     _ => Err(error(
                         "retained final capture",

@@ -3,7 +3,7 @@
 //! these barriers, never inside a snapshot.
 mod capture;
 mod launch;
-pub use capture::capture_failure;
+pub use capture::{capture_failure, capture_verified, final_capture_failure};
 pub use launch::{
     Activation, CaptureActivation, CredentialActivation, activate, reserve, transition,
 };

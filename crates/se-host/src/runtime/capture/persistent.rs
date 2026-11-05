@@ -2,7 +2,7 @@
 //! never creates this file or replaces its native path/incarnation.
 use super::*;
 use se_core::store_error::store_error;
-use se_store::RuntimeLease;
+use se_store::{RuntimeLease, Snapshot};
 use std::{
     io::{Read as _, Write as _},
     path::Path,
@@ -160,6 +160,28 @@ pub(super) fn publish(lease: &HostLease, source: &BoundTranscript) -> Result<()>
     })?;
     same(&observed, &bytes)
 }
+pub(super) fn retire(lease: &HostLease, identity: &crate::SessionIdentity) -> Result<()> {
+    let path = directory(lease)?.join(format!("{}.json", identity.session));
+    let Some(bytes) = read(lease, &path)? else {
+        return Ok(());
+    };
+    let record: Record = serde_json::from_slice(&bytes).map_err(|error| {
+        se_core::scope::unreadable("protected transcript binding", &error.to_string())
+    })?;
+    if record.session != identity.session
+        || record.project != identity.project
+        || record.agent != identity.agent
+    {
+        return Err(SeError::invalid(
+            "capture retirement",
+            "the exact protected project, agent and session",
+        ));
+    }
+    lease
+        .files()
+        .remove_owned(&path, sha2::Sha256::digest(&bytes).into())
+        .map_err(|error| store_error(&error))
+}
 fn same(a: &[u8], b: &[u8]) -> Result<()> {
     if a != b {
         return Err(se_core::scope::unreadable(
@@ -200,17 +222,25 @@ pub(super) fn restore(
             .and_then(std::ffi::OsStr::to_str)
             .and_then(|v| v.strip_suffix(".json"))
             .and_then(|v| v.parse().ok());
-        let result = (|| -> Result<()> {
+        let result = (|| -> Result<bool> {
             let session = session.as_ref().ok_or_else(|| {
                 SeError::invalid(
                     "capture recovery metadata",
                     "an exact session.json file in the protected binding directory",
                 )
             })?;
-            restore_session(context, lease, bindings, session, deadline)
+            let record = read_record(lease, session)?;
+            // Ended sessions are reopened only by an explicit final-capture
+            // recovery. Startup must not pin every historical transcript.
+            if !active(context, &record)? {
+                return Ok(false);
+            }
+            restore_record(context, bindings, record, deadline)?;
+            Ok(true)
         })();
         match result {
-            Ok(()) => report.restored += 1,
+            Ok(true) => report.restored += 1,
+            Ok(false) => (),
             Err(error) => {
                 bindings.quarantine(session.clone(), error.body.clone())?;
                 report.unavailable.push(CaptureUnavailable {
@@ -231,6 +261,9 @@ pub(super) fn restore_session(
     deadline: &Deadline,
 ) -> Result<()> {
     deadline.remaining()?;
+    restore_record(context, bindings, read_record(lease, session)?, deadline)
+}
+fn read_record(lease: &HostLease, session: &SessionId) -> Result<Record> {
     let path = directory(lease)?.join(format!("{session}.json"));
     let bytes = read(lease, &path)?.ok_or_else(|| {
         se_core::scope::unreadable(
@@ -247,7 +280,45 @@ pub(super) fn restore_session(
             "the exact protected session identifier",
         ));
     }
+    Ok(record)
+}
+fn restore_record(
+    context: &ExecutionContext,
+    bindings: &TranscriptBindings,
+    record: Record,
+    deadline: &Deadline,
+) -> Result<()> {
     let mut source = record.open()?;
     source::validate(context, &mut source, deadline)?;
     bindings.insert(source, None)
+}
+fn active(context: &ExecutionContext, record: &Record) -> Result<bool> {
+    let admission = se_store::Admission {
+        scope: se_store::Scope::Project(record.project.clone()),
+        actor: se_store::Actor::Agent(record.agent.clone()),
+        session: Some(record.session.clone()),
+        generation: context.generation.get(),
+    };
+    let mut read =
+        super::super::executor::checked_pooled_phase(&context.reads, context.generation)?
+            .into_snapshot(se_core::admission::read_scope(&admission))
+            .map_err(|error| store_error(&error))?;
+    let result = (|| {
+        let session = se_core::scope::require_present(
+            read.session(record.session.clone())
+                .map_err(|error| store_error(&error))?,
+            "capture recovery session",
+            "Restore the exact protected session before reopening its transcript.",
+        )?;
+        match session.current.body {
+            se_store::EventBody::SessionActivated { .. } => Ok(true),
+            se_store::EventBody::SessionEnded { .. }
+            | se_store::EventBody::SessionRevoked { .. } => Ok(false),
+            _ => Err(SeError::invalid(
+                "capture recovery session",
+                "an activated or terminal session",
+            )),
+        }
+    })();
+    super::super::executor::close_read(result, read.close())
 }

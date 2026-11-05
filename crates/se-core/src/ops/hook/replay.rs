@@ -4,7 +4,7 @@ use super::*;
 
 /// A final replay preserves the ended session and uses the existing owner-only
 /// historical write path. Live hooks retain their ordinary agent admission.
-pub(super) fn admission<R: Snapshot>(
+pub(crate) fn admission<R: Snapshot>(
     recovery_owner: Option<&se_types::HumanId>,
     session: &se_store::ProjectionRecord,
     cx: &mut Cx<'_, R>,

@@ -550,6 +550,14 @@ pub trait Snapshot {
     /// Exact decision heads in this snapshot, all or only pending proposals.
     fn decision_count(&mut self, pending_only: bool) -> StoreResult<u64>;
     fn capture_source(&mut self, source: RecordId) -> StoreResult<Read<ProjectionRecord>>;
+    /// Latest failure/EOF verification after this source's current cursor.
+    /// `kind` is None for either outcome, or CaptureFailed/CaptureVerified.
+    /// Uses a reverse session-index seek rather than an oldest-first history page.
+    fn capture_outcome(
+        &mut self,
+        source: RecordId,
+        kind: Option<EventKind>,
+    ) -> StoreResult<Read<StoredEvent>>;
     /// Launch/stop metadata for one agent under self, owner or creator control.
     /// A creator needs its current can-create grant and the target's immutable
     /// direct created_by, both read in this snapshot; other private reads are

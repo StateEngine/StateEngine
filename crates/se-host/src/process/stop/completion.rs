@@ -146,6 +146,7 @@ impl LaunchCoordinator {
         work: &mut Work,
         deadline: &Deadline,
     ) -> Result<()> {
+        self.retire_capture(work, deadline).await?;
         if !work.cleanup_files_known {
             self.restore_cleanup(work, deadline).await?;
         }

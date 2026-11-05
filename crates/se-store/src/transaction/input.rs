@@ -8,6 +8,7 @@ pub(crate) fn natural_kind<T>(body: &EventBody<T>) -> bool {
             | EventBody::CaptureSource { .. }
             | EventBody::CaptureProgress { .. }
             | EventBody::CaptureFailed { .. }
+            | EventBody::CaptureVerified { .. }
             | EventBody::CaptureSuppressed { .. }
             | EventBody::MessageRead { .. }
             | EventBody::MessageDelivered { .. }

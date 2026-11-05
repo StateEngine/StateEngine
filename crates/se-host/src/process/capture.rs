@@ -7,11 +7,49 @@ mod recovery;
 impl LaunchCoordinator {
     pub(super) async fn flush_capture(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
         if work.capture_flushed || !work.meta.capture || !work.activated {
-            return Ok(());
+            return self.retire_capture(work, deadline).await;
         }
         self.capture_progress(work, deadline).await?;
+        let session = work.meta.session.clone();
+        let owner = work.meta.owner.clone();
+        let admission = se_store::Admission {
+            scope: se_store::Scope::Project(work.meta.project.id.clone()),
+            actor: se_store::Actor::Agent(work.meta.agent.id.clone()),
+            session: Some(session.clone()),
+            generation: self.store.generation.get(),
+        };
+        if let Err(error) = self
+            .store
+            .commit(admission, deadline, None, move |kernel, cx| {
+                se_core::ops::process_commit::capture_verified(kernel, session, &owner, cx)
+            })
+            .await
+        {
+            self.report_capture_failure(work, &error).await?;
+            work.capture_failure = Some(error.body.clone());
+            return Err(error);
+        }
         work.capture_flushed = true;
-        Ok(())
+        self.retire_capture(work, deadline).await
+    }
+    pub(super) async fn retire_capture(&self, work: &mut Work, deadline: &Deadline) -> Result<()> {
+        if !work.session_retired {
+            return Ok(());
+        }
+        // Metadata is not a native pin. An incomplete terminal source can be
+        // reopened on an explicit stop retry without retaining file handles.
+        work.transcript = None;
+        self.capture
+            .retire(
+                crate::SessionIdentity {
+                    project: work.meta.project.id.clone(),
+                    agent: work.meta.agent.id.clone(),
+                    session: work.meta.session.clone(),
+                },
+                work.capture_flushed || !work.activated || !work.meta.capture,
+                deadline,
+            )
+            .await
     }
     pub(super) async fn capture_progress(
         &self,
@@ -42,7 +80,7 @@ impl LaunchCoordinator {
         work: &Work,
         failure: &se_types::SeError,
     ) -> Result<()> {
-        if !work.meta.capture || !work.active {
+        if !work.meta.capture || !work.activated {
             return Ok(());
         }
         // The supervisor retains the failed capture after its caller's bound.
@@ -56,9 +94,13 @@ impl LaunchCoordinator {
             generation: self.store.generation.get(),
         };
         let body = failure.body.clone();
+        let owner = work.session_retired.then(|| work.meta.owner.clone());
         self.store
             .commit(admission, &diagnostic, None, move |kernel, cx| {
-                se_core::ops::process_commit::capture_failure(kernel, session, body, cx)
+                match owner {
+                    Some(owner) => se_core::ops::process_commit::final_capture_failure(kernel, session, &owner, body, cx),
+                    None => se_core::ops::process_commit::capture_failure(kernel, session, body, cx),
+                }
             })
             .await
             .map_err(|cause| error("live capture diagnostic", format!("capture failed: {failure}; retaining its public failure also failed: {cause}")).with_cause(cause))?;
@@ -79,7 +121,7 @@ impl LaunchCoordinator {
                 agent: work.meta.agent.id.clone(),
                 session: work.meta.session.clone(),
             };
-            let restored = if work.native_already_reconciled {
+            let restored = if work.native_already_reconciled || work.session_retired {
                 capture.recover_binding(identity, deadline).await?
             } else {
                 capture.binding(identity)?
