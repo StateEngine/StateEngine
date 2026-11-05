@@ -5,10 +5,13 @@ use super::*;
 impl CaptureHandle {
     pub fn binding(&self, identity: crate::SessionIdentity) -> Result<Read<crate::TranscriptPin>> {
         let source = {
-            let pins = try_guard(&self.sources.pins)?;
+            let pins = self.sources.registry()?;
             match pins.active.get(&identity.session) {
                 Some(pin) => Arc::clone(pin),
                 None => {
+                    if pins.publishing.contains(&identity.session) {
+                        return Err(busy());
+                    }
                     if let Some(error) = pins
                         .failed
                         .get(&identity.session)
