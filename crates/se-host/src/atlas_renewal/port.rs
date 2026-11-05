@@ -43,9 +43,27 @@ pub fn drive_events(
         Ok(hints) => hints,
         Err(error) => {
             let driver = controller.runtime_mut().driver_mut();
+            let writer_busy = matches!(error.body.detail(), se_types::Detail::AtlasResourceBudget(detail)
+                if detail.resource == "Atlas home writer lease");
             if let Some(index) = driver.roots.iter().position(|r| &r.id == root) {
-                driver.roots[index].native = None;
-                driver.mappings.retain(|m| m.root != index as u32);
+                if writer_busy {
+                    // SQL mapping could not be borrowed, but the subscription
+                    // is healthy. Consume this finite native wake and retain a
+                    // full reconcile, so a later edit can wake us after unlock.
+                    // Closing here lost that only event source; retaining an
+                    // unread level-triggered wake would spin on the held lease.
+                    if let Some(native) = &driver.roots[index].native {
+                        let mut bytes = [0; 16384];
+                        native
+                            .watch
+                            .read(&mut bytes)
+                            .map_err(|error| source_error("deferred watch read", error))?;
+                    }
+                    driver.roots[index].requires_reconcile = true;
+                } else {
+                    driver.roots[index].native = None;
+                    driver.mappings.retain(|m| m.root != index as u32);
+                }
             }
             if driver.cycle.as_ref().is_some_and(|c| &c.root == root) {
                 driver.cycle = None;

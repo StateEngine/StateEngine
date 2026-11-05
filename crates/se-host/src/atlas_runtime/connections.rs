@@ -32,12 +32,25 @@ impl<D: RenewalDriver> NativeRuntime<D> {
         )?
         .ok_or_else(|| atlas_cold::failure("registered pointer disappeared before validation"))?;
         let epoch = current.connection.identity().epoch.clone();
+        let (generation, coverage, state): (i64, String, String) =
+            current.connection.read(deadline, |sql| {
+                sql.prepare(
+                    "SELECT published_generation,coverage_json,state_json FROM meta WHERE singleton=1",
+                )?
+                .query_row([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(atlas_cold::failure)
+            })?;
         let root = self
             .roots
             .iter_mut()
             .find(|root| root.summary.root == registration.root)
             .ok_or_else(|| atlas_cold::failure("validated native root disappeared"))?;
         root.summary.epoch = Some(epoch.clone());
+        root.summary.generation = Some(Generation(
+            generation.try_into().map_err(atlas_cold::failure)?,
+        ));
+        root.summary.coverage = serde_json::from_str(&coverage).map_err(atlas_cold::failure)?;
+        root.summary.state = serde_json::from_str(&state).map_err(atlas_cold::failure)?;
         root.checked_epoch = Some(epoch);
         Ok(())
     }

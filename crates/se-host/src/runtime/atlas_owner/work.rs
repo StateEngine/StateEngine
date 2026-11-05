@@ -9,6 +9,23 @@ impl State {
         let mut again = false;
         if let Some(activity) = context.atlas.records.take_activity()? {
             if self.enabled {
+                // Revalidate only the bounded live pool on committed activity.
+                // Root removal/replacement can cancel its own native custody;
+                // an unrelated project's query never cancels a cold worker.
+                let mut verify = Vec::new();
+                for root in &self.roots {
+                    let project = &root.registration.project;
+                    if (activity.registry_changed || activity.projects.contains(project))
+                        && !verify.contains(project)
+                    {
+                        verify.push(project.clone());
+                    }
+                }
+                for project in verify {
+                    let registrations = self.registrations(context, owner, &project)?;
+                    self.close_obsolete(&project, &registrations)?;
+                    self.work.register(&project, registrations)?;
+                }
                 for project in activity.projects {
                     self.work.request(&project)?;
                 }
@@ -168,42 +185,15 @@ impl State {
         if active.root.is_some() {
             return Ok(false);
         }
-        // Reauthorize each queued project against the current core snapshot;
-        // a derived catalogue cannot resurrect a removed registration.
-        let admitted = admission(
-            context,
-            owner,
-            Scope::Project(active.ticket.project.clone()),
-        );
-        let phase = executor::checked_pooled_phase(&context.reads, context.generation)?;
-        let mut snapshot = phase
-            .into_snapshot(se_core::admission::read_scope(&admitted))
-            .map_err(|error| store_error(&error))?;
-        let read = snapshot
-            .project(active.ticket.project.clone())
-            .map_err(|error| store_error(&error));
-        let read = executor::close_read(read, snapshot.close())?;
-        let registrations = match read {
-            se_types::Read::Present { value } => match value.current.body {
-                se_store::EventBody::ProjectRegistered { project, roots, .. }
-                | se_store::EventBody::ProjectUpdated { project, roots, .. } => {
-                    roots::registrations(&project, &roots, &self.home)?
-                }
-                _ => Vec::new(),
-            },
-            se_types::Read::Absent { .. } => Vec::new(),
-            se_types::Read::Unreadable { reason, .. }
-            | se_types::Read::Unknown { what: reason } => {
-                return Err(se_core::scope::unreadable("queued Atlas project", &reason));
-            }
-        };
-        self.work
-            .register(&active.ticket.project, registrations.clone())?;
+        let project = active.ticket.project.clone();
+        let after = active.after.clone();
+        let registrations = self.registrations(context, owner, &project)?;
+        self.close_obsolete(&project, &registrations)?;
+        self.work.register(&project, registrations.clone())?;
         let next = registrations
             .into_iter()
             .filter(|root| {
-                active
-                    .after
+                after
                     .as_ref()
                     .is_none_or(|after| root.root.as_str() > after.as_str())
             })
@@ -215,21 +205,9 @@ impl State {
                     self.controller.summary(&id)?.state,
                     IndexState::Suspended { .. } | IndexState::Unreadable { .. }
                 )
+                && !writer_busy(&self.controller.summary(&id)?.state)
             {
-                if !matches!(
-                    self.controller.close(
-                        id.clone(),
-                        CloseReason::ProjectRemoved,
-                        Duration::from_millis(200)
-                    )?,
-                    CloseResult::Closed
-                ) {
-                    return Err(SeError::invalid(
-                        "Atlas retry",
-                        "close native resources before retrying the saved index",
-                    ));
-                }
-                self.roots.retain(|root| root.registration.root != id);
+                self.close_root(id.clone())?;
             }
             // Vec order is recent use. Recycle only the oldest live resource,
             // never the active cold job, and retain its disk index and summary.
@@ -250,10 +228,13 @@ impl State {
             }
             selected.push(next);
             self.rebind(selected)?;
-            if !matches!(
-                self.controller.summary(&id)?.state,
-                IndexState::Suspended { .. } | IndexState::Unreadable { .. }
-            ) {
+            let state = self.controller.summary(&id)?.state;
+            if writer_busy(&state)
+                || !matches!(
+                    state,
+                    IndexState::Suspended { .. } | IndexState::Unreadable { .. }
+                )
+            {
                 self.controller
                     .activate(id.clone(), ReconcileReason::HostRestart)?;
                 if let Some(root) = self
@@ -277,6 +258,88 @@ impl State {
             self.work.complete(&active.ticket)?;
             Ok(true)
         }
+    }
+    fn registrations(
+        &self,
+        context: &ExecutionContext,
+        owner: &HumanId,
+        project: &ProjectId,
+    ) -> Result<Vec<RootRegistration>> {
+        let admitted = admission(context, owner, Scope::Project(project.clone()));
+        let phase = executor::checked_pooled_phase(&context.reads, context.generation)?;
+        let mut snapshot = phase
+            .into_snapshot(se_core::admission::read_scope(&admitted))
+            .map_err(|error| store_error(&error))?;
+        let read = snapshot
+            .project(project.clone())
+            .map_err(|error| store_error(&error));
+        let read = executor::close_read(read, snapshot.close())?;
+        let registrations = match read {
+            se_types::Read::Present { value } => match value.current.body {
+                se_store::EventBody::ProjectRegistered { project, roots, .. }
+                | se_store::EventBody::ProjectUpdated { project, roots, .. } => {
+                    roots::registrations(&project, &roots, &self.home)?
+                }
+                se_store::EventBody::ProjectRemoved { .. } => Vec::new(),
+                _ => {
+                    return Err(SeError::invalid(
+                        "Atlas project registration",
+                        "a registered or removed project head",
+                    ));
+                }
+            },
+            se_types::Read::Absent { .. } => Vec::new(),
+            se_types::Read::Unreadable { reason, .. }
+            | se_types::Read::Unknown { what: reason } => {
+                return Err(se_core::scope::unreadable("queued Atlas project", &reason));
+            }
+        };
+        Ok(registrations)
+    }
+    fn close_obsolete(
+        &mut self,
+        project: &ProjectId,
+        registrations: &[RootRegistration],
+    ) -> Result<()> {
+        let obsolete: Vec<_> = self
+            .roots
+            .iter()
+            .filter(|root| {
+                &root.registration.project == project
+                    && !registrations.iter().any(|new| {
+                        new.root == root.registration.root
+                            && new.canonical_source_root == root.registration.canonical_source_root
+                    })
+            })
+            .map(|root| root.registration.root.clone())
+            .collect();
+        for root in obsolete {
+            self.close_root(root)?;
+        }
+        Ok(())
+    }
+    fn close_root(&mut self, id: RootId) -> Result<()> {
+        if !matches!(
+            self.controller.close(
+                id.clone(),
+                CloseReason::ProjectRemoved,
+                Duration::from_millis(200)
+            )?,
+            CloseResult::Closed
+        ) {
+            return Err(SeError::invalid(
+                "Atlas root replacement",
+                "complete native close before recycling its live resource slot",
+            ));
+        }
+        self.roots.retain(|root| root.registration.root != id);
+        if let Some(active) = &mut self.active_project
+            && active.root.as_ref() == Some(&id)
+        {
+            active.root = None;
+            active.after = None;
+        }
+        Ok(())
     }
     fn finish_root(&mut self) -> Result<bool> {
         let Some(active) = &self.active_project else {
@@ -327,20 +390,7 @@ impl State {
             .map(|old| old.registration.root.clone())
             .collect();
         for id in old {
-            if !matches!(
-                self.controller.close(
-                    id.clone(),
-                    CloseReason::ProjectRemoved,
-                    Duration::from_millis(200)
-                )?,
-                CloseResult::Closed
-            ) {
-                return Err(SeError::invalid(
-                    "Atlas root replacement",
-                    "complete close before reusing an active registration slot",
-                ));
-            }
-            self.roots.retain(|old| old.registration.root != id);
+            self.close_root(id)?;
         }
         for mut registration in selected {
             if self
@@ -403,4 +453,9 @@ impl State {
 fn fd_error(error: std::io::Error) -> SeError {
     se_core::scope::unreadable("Atlas native readiness descriptor", &error.to_string())
         .with_cause(error)
+}
+
+fn writer_busy(state: &IndexState) -> bool {
+    matches!(state, IndexState::Suspended { reason }
+        if matches!(reason.detail(), se_types::Detail::AtlasResourceBudget(detail) if detail.resource == "Atlas home writer lease"))
 }
