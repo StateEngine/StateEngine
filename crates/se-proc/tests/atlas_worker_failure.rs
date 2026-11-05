@@ -135,9 +135,9 @@ mod linux {
                 channel.send(&serde_json::to_vec(&(limits, denied, error, priority))?)?;
             }
             "resident" => {
+                let bytes = 72_000_000;
                 // SAFETY: this dedicated child owns the anonymous mapping and
                 // touches only offsets inside it. The parent must cancel it.
-                let bytes = 72_000_000;
                 let mapping = unsafe {
                     libc::mmap(
                         std::ptr::null_mut(),
