@@ -232,14 +232,18 @@ fn state(index: &IndexSummary) -> String {
             )
         },
     );
-    format!(
+    let mut output = format!(
         "[atlas {label}; anonymous cap {anonymous} B; shared grammar pages {grammar}; joined {}]\n",
         if qualified {
             "qualified"
         } else {
             "unqualified"
         }
-    )
+    );
+    if let IndexState::Suspended { reason } = &index.state {
+        output.push_str(&format!("reason: {}\n", escape(&reason.message())));
+    }
+    output
 }
 
 fn oid(id: &GitObjectId) -> String {
