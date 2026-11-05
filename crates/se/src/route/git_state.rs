@@ -3,8 +3,8 @@
 //! present. Every Git invocation passes a top-precedence
 //! `core.fsmonitor=false` command parameter, which beats both repository
 //! files and an inherited `GIT_CONFIG_PARAMETERS`, and keeps output bounded,
-//! so the observer can never execute repository configuration or buffer an
-//! unbounded working tree.
+//! so the observer can never execute repository configuration, buffer an
+//! unbounded working tree, or block the child on its own pipes.
 use se_core::{ops::GitView, scope};
 use se_types::{Result, SeError};
 use std::{
@@ -17,6 +17,7 @@ use std::{
 };
 
 const STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(10);
+const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const STDERR_RETAIN: usize = 4096;
 const STDERR_TAIL: usize = 160;
 
@@ -112,12 +113,15 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
 }
 
 /// Observe only whether the working tree has uncommitted changes, streaming
-/// `git status --porcelain` instead of buffering it. Dirty is settled by the
-/// first output byte: the child is then killed and reaped, so a status that
-/// hangs after emitting a dirty line still settles in milliseconds. Clean
-/// requires the command to finish empty; a run that outgrows the bounded
-/// observation is reported as unknown, and a pipe read failure is reported
-/// as unreadable rather than converted to zero.
+/// `git status --porcelain` instead of buffering it. stdout and stderr are
+/// drained concurrently, so a child that fills the stderr pipe before
+/// emitting its dirty line cannot block against our undrained pipes. Dirty
+/// is settled by the first stdout byte: the child is then killed and reaped
+/// and both workers are joined, so a status that hangs after that still
+/// settles in milliseconds. Clean requires the command to finish empty; a
+/// run that outgrows the bounded observation is reported as unknown, and a
+/// pipe read failure is preserved and reported as unreadable rather than
+/// converted to zero.
 fn dirty(root: &Path) -> Result<Option<bool>> {
     let mut command = Command::new("git");
     configured(root, &mut command)
@@ -134,85 +138,163 @@ fn dirty(root: &Path) -> Result<Option<bool>> {
     let stderr = child.stderr.take().ok_or_else(|| {
         scope::unreadable("Git working tree", "status error pipe was not attached")
     })?;
-    let (sender, receiver) = mpsc::channel();
-    thread::spawn(move || {
+    let (stdout_tx, stdout_rx) = mpsc::channel();
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    let stdout_worker = thread::spawn(move || {
         let mut stdout = io::BufReader::new(stdout);
-        let mut stderr = io::BufReader::new(stderr);
         let mut first = [0u8; 8192];
-        let outcome = match stdout.read(&mut first) {
-            Err(error) => Outcome::Unreadable(error.to_string()),
+        match stdout.read(&mut first) {
+            Err(error) => {
+                let _ = stdout_tx.send(StdoutOutcome::ReadFailure(error.to_string()));
+            }
             Ok(0) => {
-                let mut retained: Vec<u8> = Vec::new();
-                let mut buffer = [0u8; 8192];
-                loop {
-                    match stderr.read(&mut buffer) {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => {
-                            for &byte in &buffer[..read] {
-                                if retained.len() < STDERR_RETAIN {
-                                    retained.push(byte);
-                                }
-                            }
+                let _ = stdout_tx.send(StdoutOutcome::Empty);
+            }
+            Ok(_) => {
+                // The first byte settles the fact; the main thread now kills
+                // the child, and the reap closes the pipe under this drain.
+                let _ = stdout_tx.send(StdoutOutcome::Dirty);
+                drain(&mut stdout);
+            }
+        }
+    });
+    let stderr_worker = thread::spawn(move || {
+        let mut stderr = io::BufReader::new(stderr);
+        let mut retained: Vec<u8> = Vec::new();
+        let mut buffer = [0u8; 8192];
+        let mut read_failure = None;
+        loop {
+            match stderr.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    for &byte in &buffer[..read] {
+                        if retained.len() < STDERR_RETAIN {
+                            retained.push(byte);
                         }
                     }
                 }
-                Outcome::Clean { stderr: retained }
+                Err(error) => {
+                    read_failure = Some(error.to_string());
+                    break;
+                }
             }
-            Ok(_) => Outcome::Dirty,
-        };
-        let dirty = matches!(outcome, Outcome::Dirty);
-        let _ = sender.send(outcome);
-        if dirty {
-            // The main thread now kills the child; drain both pipes through
-            // a bounded buffer so this thread cannot outlive the observation.
-            drain(&mut stdout);
-            drain(&mut stderr);
         }
+        let _ = stderr_tx.send(StderrOutcome {
+            retained,
+            read_failure,
+        });
     });
-    let started = Instant::now();
-    let outcome = match receiver.recv_timeout(STATUS_OBSERVATION_DEADLINE) {
-        Ok(outcome) => outcome,
-        Err(_) => {
-            reap(&mut child);
-            return Ok(None);
+    let deadline = Instant::now() + STATUS_OBSERVATION_DEADLINE;
+    let mut stdout_done: Option<StdoutOutcome> = None;
+    let mut stderr_done: Option<StderrOutcome> = None;
+    let settled = loop {
+        if stdout_done.is_none()
+            && let Ok(outcome) = stdout_rx.try_recv()
+        {
+            stdout_done = Some(outcome);
         }
+        if stderr_done.is_none()
+            && let Ok(outcome) = stderr_rx.try_recv()
+        {
+            stderr_done = Some(outcome);
+        }
+        let ready = match &stdout_done {
+            Some(StdoutOutcome::Empty) => stderr_done.is_some(),
+            Some(_) => true,
+            None => false,
+        };
+        if ready && let Some(outcome) = stdout_done.take() {
+            break Settled::Done(outcome);
+        }
+        if Instant::now() >= deadline {
+            break Settled::TimedOut;
+        }
+        thread::sleep(POLL_INTERVAL);
     };
-    match outcome {
-        Outcome::Dirty => {
-            // The first byte already proves dirty; kill and reap the child,
-            // which may still be running, so the fact settles at first byte.
+    match settled {
+        Settled::TimedOut => {
             reap(&mut child);
+            let _ = stdout_worker.join();
+            let _ = stderr_worker.join();
+            Ok(None)
+        }
+        Settled::Done(StdoutOutcome::Dirty) => {
+            // The first byte already proves dirty; kill and reap the child,
+            // then witness both workers closing over the dead pipes.
+            reap(&mut child);
+            let _ = stdout_worker.join();
+            let _ = stderr_worker.join();
             Ok(Some(true))
         }
-        Outcome::Clean { stderr } => {
-            let deadline = started + STATUS_OBSERVATION_DEADLINE;
+        Settled::Done(StdoutOutcome::ReadFailure(reason)) => {
+            reap(&mut child);
+            let _ = stdout_worker.join();
+            let _ = stderr_worker.join();
+            let mut read_failures = vec![format!("stdout read failed: {reason}")];
+            if let Some(stderr) = &stderr_done
+                && let Some(failure) = &stderr.read_failure
+            {
+                read_failures.push(format!("stderr read failed: {failure}"));
+            }
+            Err(scope::unreadable(
+                "Git working tree",
+                &failure_detail(&[], &read_failures),
+            ))
+        }
+        Settled::Done(StdoutOutcome::Empty) => {
+            let _ = stdout_worker.join();
+            let stderr = stderr_done.take().unwrap_or(StderrOutcome {
+                retained: Vec::new(),
+                read_failure: None,
+            });
             match bounded_wait(&mut child, deadline) {
-                Ok(Some(status)) if status.success() => Ok(Some(false)),
-                Ok(Some(_status)) => Err(scope::unreadable(
-                    "Git working tree",
-                    &failure_detail(&stderr),
-                )),
+                Ok(Some(status)) if status.success() => {
+                    let _ = stderr_worker.join();
+                    Ok(Some(false))
+                }
+                Ok(Some(_status)) => {
+                    let _ = stderr_worker.join();
+                    let mut read_failures = Vec::new();
+                    if let Some(failure) = &stderr.read_failure {
+                        read_failures.push(format!("stderr read failed: {failure}"));
+                    }
+                    Err(scope::unreadable(
+                        "Git working tree",
+                        &failure_detail(&stderr.retained, &read_failures),
+                    ))
+                }
                 Ok(None) => {
                     reap(&mut child);
+                    let _ = stderr_worker.join();
                     Ok(None)
                 }
                 Err(error) => Err(error),
             }
         }
-        Outcome::Unreadable(reason) => {
-            reap(&mut child);
-            Err(scope::unreadable("Git working tree", &reason))
-        }
     }
 }
 
-/// One outcome of the streaming status observation: dirty at the first
-/// output byte, clean with a bounded stderr tail once the pipes close, or
-/// unreadable when the stdout pipe itself fails.
-enum Outcome {
+/// The bounded observation either settled on a stdout outcome or the
+/// deadline elapsed first.
+enum Settled {
+    Done(StdoutOutcome),
+    TimedOut,
+}
+
+/// The stdout worker's single outcome: dirty at the first output byte,
+/// empty when the pipe closes first, or unreadable when the pipe read
+/// itself fails.
+enum StdoutOutcome {
     Dirty,
-    Clean { stderr: Vec<u8> },
-    Unreadable(String),
+    Empty,
+    ReadFailure(String),
+}
+
+/// The stderr worker's single outcome: a bounded retained tail and the
+/// read failure if the pipe itself failed.
+struct StderrOutcome {
+    retained: Vec<u8>,
+    read_failure: Option<String>,
 }
 
 /// Kill the child if it is still running and reap it exactly once.
@@ -288,15 +370,20 @@ fn text(output: &Output) -> Result<String> {
         .map_err(|_| scope::unreadable("Git metadata", "Git returned non-UTF-8 metadata"))
 }
 
-fn failure_detail(bytes: &[u8]) -> String {
+fn failure_detail(bytes: &[u8], read_failures: &[String]) -> String {
     let base = "working tree status could not be read; preserve the repository and restore access";
+    let mut parts: Vec<&str> = Vec::new();
     let trimmed = String::from_utf8_lossy(bytes).trim().to_owned();
-    if trimmed.is_empty() {
+    if !trimmed.is_empty() {
+        let mut end = trimmed.len().min(STDERR_TAIL);
+        while !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        parts.push(&trimmed[..end]);
+    }
+    parts.extend(read_failures.iter().map(String::as_str));
+    if parts.is_empty() {
         return base.to_owned();
     }
-    let mut end = trimmed.len().min(STDERR_TAIL);
-    while !trimmed.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{base}: {}", &trimmed[..end])
+    format!("{base}: {}", parts.join("; "))
 }
