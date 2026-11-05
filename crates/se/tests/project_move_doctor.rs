@@ -246,6 +246,41 @@ fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
         first_event,
         "the replay must return the committed receipt, not a new event"
     );
+    // Moving the repository on to a third folder under a new key leaves the
+    // first key's target gone; the retained replay must still return the
+    // original receipt without that folder remaining.
+    let again = fixture.home.join("moved on repository");
+    std::fs::rename(&moved, &again)?;
+    let again_str = again.to_str().ok_or("again root is not UTF-8")?;
+    let second_move = command(home, &again, false, Some("Replayer"))
+        .args([
+            "project",
+            "move",
+            again_str,
+            "--key",
+            "5e-fh07-replay-key-3",
+        ])
+        .output()?;
+    assert!(
+        second_move.status.success(),
+        "move on refused: {} {}",
+        String::from_utf8_lossy(&second_move.stdout),
+        String::from_utf8_lossy(&second_move.stderr)
+    );
+    let replay_after = command(home, &again, false, Some("Replayer"))
+        .args(["project", "move", moved_str, "--key", key])
+        .output()?;
+    assert!(
+        replay_after.status.success(),
+        "replay of a retained key must not require its target folder to remain: {} {}",
+        String::from_utf8_lossy(&replay_after.stdout),
+        String::from_utf8_lossy(&replay_after.stderr)
+    );
+    assert_eq!(
+        event_id(&String::from_utf8(replay_after.stdout)?)?,
+        first_event,
+        "the replay must return the committed receipt after the repository moved on"
+    );
     // The same key against a different target is a collision, refused as such.
     let other = fixture.home.join("somewhere else");
     std::fs::create_dir(&other)?;
@@ -269,11 +304,11 @@ fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
         "{collision_rendered}"
     );
     // A different key still refuses the copy: the target folder is present.
-    let copy = command(home, &moved, false, Some("Replayer"))
+    let copy = command(home, &again, false, Some("Replayer"))
         .args([
             "project",
             "move",
-            moved_str,
+            again_str,
             "--key",
             "5e-fh07-replay-key-2",
         ])

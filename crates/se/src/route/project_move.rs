@@ -73,9 +73,23 @@ pub(super) fn execute(
     match replayed {
         Read::Present { value: receipt } => {
             // The key is retained by an earlier committed call. Return that
-            // call's output: the folder already holds the moved repository,
-            // so the physical preflight applies to first use only.
-            let target = resolve_target(cx, &input.root)?;
+            // call's output. The original target may have been moved on since,
+            // so the retry must not require the folder to remain: canonicalize
+            // only while the folder still exists, so equivalent spellings of a
+            // live target still match, and compare a gone target as written.
+            let requested = PathBuf::from(&input.root);
+            let absolute = if requested.is_absolute() {
+                requested
+            } else {
+                cx.cwd.join(requested)
+            };
+            let target = match se_proc::canonicalize_path(&absolute) {
+                Ok(path) => path,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => absolute,
+                Err(e) => {
+                    return Err(scope::unreadable("move target identity", &e.to_string()));
+                }
+            };
             let to_path = NativePath::from_local(target)
                 .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?;
             let mut readback = reader
