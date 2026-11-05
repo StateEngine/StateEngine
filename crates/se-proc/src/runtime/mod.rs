@@ -13,9 +13,9 @@ pub fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRea
     crate::platform::read_process(machine, pid)
 }
 
-/// Read a process within the caller's original bound. Windows may temporarily
-/// deny its image query during teardown; retain that process object and wait
-/// for a conclusive observation rather than treating denial as proof of exit.
+/// Read a process within the caller's original bound. Native image queries can
+/// race teardown; wait for a conclusive observation without inferring exit
+/// from an unreadable executable.
 pub fn read_process_until(
     machine: MachineId,
     pid: ProcessId,
@@ -27,10 +27,7 @@ pub fn read_process_until(
             "original deadline elapsed",
         ));
     }
-    #[cfg(windows)]
-    return crate::platform::read_process_until(machine, pid, deadline);
-    #[cfg(target_os = "linux")]
-    read_process(machine, pid)
+    crate::platform::read_process_until(machine, pid, deadline)
 }
 
 impl NativeProcessRuntime {

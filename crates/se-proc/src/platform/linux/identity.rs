@@ -303,6 +303,37 @@ fn executable_failure(
         cause,
     ))
 }
+pub(crate) fn read_process_until(
+    machine: MachineId,
+    pid: ProcessId,
+    deadline: std::time::Instant,
+) -> ProcResult<ProcessRead> {
+    loop {
+        let mut original = match read_process(machine.clone(), pid) {
+            Ok(observed) => return Ok(observed),
+            Err(error)
+                if error.code == ProcErrorCode::IdentityUnreadable
+                    && error.native.as_ref().is_some_and(|failure| {
+                        failure.api == "read proc executable"
+                            && matches!(failure.code, Some(code) if code == i64::from(libc::ENOENT) || code == i64::from(libc::ESRCH))
+                    }) => error,
+            Err(error) => return Err(error),
+        };
+        // exit_group can remove exe before stat becomes terminal. ENOENT is
+        // only a reason to reread: read_process must still prove absence or a
+        // native exited record, or return the actual live identity. A genuinely
+        // unreadable live task stays unreadable at the caller's original bound.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        if remaining.is_zero() {
+            if let ProcErrorDetail::Input { reason, .. } = original.detail.as_mut() {
+                reason.push_str("; inconclusive process teardown at original observation deadline");
+            }
+            return Err(original);
+        }
+        std::thread::park_timeout(remaining.min(std::time::Duration::from_millis(10)));
+    }
+}
+
 pub(super) fn observe(expected: &ProcessIdentity) -> ProcResult<ProcessObservation> {
     match read_process(expected.machine.clone(), expected.pid)? {
         ProcessRead::Absent {

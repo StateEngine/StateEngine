@@ -7,7 +7,7 @@ use crate::platform::{Progress, empty};
 use crate::runtime::notify::Hub;
 use crate::support::*;
 use crate::*;
-pub(crate) use identity::{read_process, verify_live_identity};
+pub(crate) use identity::{read_process, read_process_until, verify_live_identity};
 use std::{io, os::fd::AsRawFd, sync::Arc};
 
 pub(crate) struct Driver {
