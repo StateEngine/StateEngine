@@ -53,6 +53,11 @@ pub fn fields(tool: &str) -> Result<&'static [FieldRole]> {
         .ok_or_else(|| SeError::invalid("MCP_IDENTITY_ARGUMENT_ROLES", &format!("an explicit caller/target field table for {tool}; no identity semantics are inferred")))
 }
 pub(super) fn describe(tool: &str, schema: &mut serde_json::Value) -> Result<()> {
+    // Empty operation DTOs omit properties entirely; caller assertions still
+    // need ordinary optional properties in their public MCP object schema.
+    if schema.get("properties").is_none() {
+        schema["properties"] = serde_json::json!({});
+    }
     let mut descriptions = Vec::new();
     for (field, role, description) in fields(tool)? {
         let role = match role {
