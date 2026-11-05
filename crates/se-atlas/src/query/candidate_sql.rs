@@ -36,15 +36,15 @@ pub(super) fn plans(query: &FindQuery, mode: SearchMode) -> AtlasResult<Vec<Plan
         let equality = if smart {
             "n.text=?1"
         } else {
-            "s.name IN (SELECT id FROM names WHERE lower(text)=?1)"
+            "lower(n.text)=?1"
         };
         add(Kind::Symbol, 1, equality, text)?;
         if !exact {
             if mode != SearchMode::Phrase {
                 let prefix = if smart {
-                    "s.name IN (SELECT id FROM names WHERE instr(text,?1)=1)"
+                    "instr(n.text,?1)=1"
                 } else {
-                    "s.name IN (SELECT id FROM names WHERE instr(lower(text),lower(?1))=1)"
+                    "instr(lower(n.text),lower(?1))=1"
                 };
                 add(Kind::Symbol, 2, prefix, text)?;
             }
@@ -63,12 +63,7 @@ pub(super) fn plans(query: &FindQuery, mode: SearchMode) -> AtlasResult<Vec<Plan
                 )?;
             }
             if mode == SearchMode::Literal {
-                add(
-                    Kind::Symbol,
-                    4,
-                    &format!("s.name IN (SELECT id FROM names WHERE {})", literal("text")),
-                    text,
-                )?;
+                add(Kind::Symbol, 4, &literal("n.text"), text)?;
             }
             if mode != SearchMode::Literal {
                 add(
@@ -163,14 +158,19 @@ fn plan(kind: Kind, tier: u8, condition: &str, text: &str, query: &FindQuery) ->
     if condition.contains("?2") {
         values.push(Value::Null);
     }
-    let mut from = if kind == Kind::Symbol {
+    let fts = ["symbol_fts", "record_fts", "record_text_fts"]
+        .into_iter()
+        .find(|table| condition.contains(&format!("FROM {table} WHERE")));
+    let mut from = if kind == Kind::Symbol && fts.is_none() {
+        // SQLite otherwise scans declarations and probes names once per row.
+        // Name predicates visit each interned name once, then its indexed
+        // declarations. CROSS JOIN fixes this order without a temporary ID set.
+        "names n CROSS JOIN symbols s ON s.name=n.id".to_owned()
+    } else if kind == Kind::Symbol {
         "symbols s JOIN names n ON n.id=s.name".to_owned()
     } else {
         format!("{table} {alias}")
     };
-    let fts = ["symbol_fts", "record_fts", "record_text_fts"]
-        .into_iter()
-        .find(|table| condition.contains(&format!("FROM {table} WHERE")));
     let (condition, lexical) = if let Some(table) = fts {
         from.push_str(&format!(" JOIN {table} ON {table}.rowid={alias}.id"));
         let prefix = format!("{alias}.id IN (SELECT rowid FROM {table} WHERE ");
