@@ -9,6 +9,34 @@ use se_types::{Named, ProjectId, Result};
 use sha2::{Digest, Sha256};
 
 impl LaunchCoordinator {
+    async fn abandon_removal_notifications(
+        &self,
+        key: &se_types::IdempotencyKey,
+        admission: Admission,
+        deadline: &Deadline,
+    ) -> Result<usize> {
+        let effects = self
+            .store
+            .read(admission.clone(), deadline, remove_commit::pending_effects)
+            .await?;
+        let mut abandoned = 0;
+        for effect in effects
+            .into_iter()
+            .filter(remove_commit::is_mail_notification)
+        {
+            let key = key.clone();
+            self.store
+                .commit(admission.clone(), deadline, None, move |kernel, cx| {
+                    remove_commit::abandon_notification(kernel, &key, effect, cx)
+                })
+                .await?;
+            abandoned += 1;
+        }
+        // The tombstone writer independently refuses any new live authority or
+        // non-notification debt. Abandonment never alters the unread messages,
+        // even if a concurrent launch makes registration removal refuse.
+        Ok(abandoned)
+    }
     pub async fn remove(
         self: &Arc<Self>,
         plan: RemovePlan,

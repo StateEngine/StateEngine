@@ -13,7 +13,6 @@ pub struct RemovalInventory {
     pub root: NativePath,
     pub agents: Vec<ControlAgent>,
     pub integrations: Vec<ProjectionRecord>,
-    pub effects: Vec<ProjectionRecord>,
 }
 pub fn inventory<R: Snapshot>(
     project: Named<ProjectId>,
@@ -61,16 +60,67 @@ pub fn inventory<R: Snapshot>(
     let integrations = pages(cx, |cx, budget| {
         cx.read.integrations(budget).map_err(|e| store_error(&e))
     })?;
-    let effects = pages(cx, |cx, budget| {
-        cx.read.pending_effects(budget).map_err(|e| store_error(&e))
-    })?;
     Ok(RemovalInventory {
         project: head,
         root,
         agents,
         integrations,
-        effects,
     })
+}
+/// Read after stopping: the stop itself may settle an in-flight notice.
+pub fn pending_effects<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<Vec<ProjectionRecord>> {
+    pages(cx, |cx, budget| {
+        cx.read.pending_effects(budget).map_err(|e| store_error(&e))
+    })
+}
+/// Only mail notifications become obsolete when the owner removes a project.
+/// Durable messages and recipient dispositions are independent and untouched.
+pub fn is_mail_notification(record: &ProjectionRecord) -> bool {
+    let original = record.original.as_deref().unwrap_or(&record.current);
+    matches!(
+        &original.body,
+        EventBody::EffectRequested {
+            kind: se_store::EffectKind::Bell,
+            intent: se_store::EffectIntent::MailNotice(_)
+                | se_store::EffectIntent::Mail {
+                    recipient: Actor::Agent(_),
+                    ..
+                },
+            ..
+        }
+    )
+}
+pub fn abandon_notification<R: Snapshot>(
+    kernel: &Kernel,
+    key: &IdempotencyKey,
+    record: ProjectionRecord,
+    cx: &Cx<'_, R>,
+) -> Result<AtomicBatch> {
+    if !is_mail_notification(&record) {
+        return Err(SeError::invalid(
+            "removal notification",
+            "an agent mail notification",
+        ));
+    }
+    let original = record.original.as_deref().unwrap_or(&record.current);
+    let EventBody::EffectRequested { effect, .. } = &original.body else {
+        unreachable!()
+    };
+    process_commit::batch(
+        kernel,
+        "project.remove",
+        process_commit::phase_key(key, &format!("notification/{effect:?}/abandon"))?,
+        serde_json::json!({"effect":effect,"phase":"abandon-notification"}),
+        vec![EventBody::EffectSettled {
+            effect: *effect,
+            expected: Expected::Revision(record.revision),
+            outcome: se_store::EffectOutcome::Abandoned,
+            evidence: vec![],
+            failure: Some("Owner project removal stopped the agents; this notification is abandoned, without claiming delivery or reading its retained mail.".into()),
+            attempts: 0,
+        }],
+        cx,
+    )
 }
 fn pages<R: Snapshot>(
     cx: &mut Cx<'_, R>,
