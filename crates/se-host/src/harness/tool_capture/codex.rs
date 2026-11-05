@@ -102,10 +102,7 @@ fn item(value: &Value, turn: Option<&Value>) -> Result<Option<Fact>> {
 fn changed_paths(value: &Value) -> Target {
     let mut paths = Vec::new();
     match value.get("changes") {
-        Some(Value::Array(changes)) => {
-            if changes.len() > 16 {
-                return Target::Unknown(UnknownReason::OverBudget);
-            }
+        Some(Value::Array(changes)) if changes.len() <= 16 => {
             for change in changes {
                 let Some(path) = change.get("path") else {
                     return Target::Unknown(UnknownReason::UnsupportedShape);
@@ -116,7 +113,32 @@ fn changed_paths(value: &Value) -> Target {
                 }
             }
         }
+        // Native rollout FileChange uses path-keyed PatchChange values; RPC
+        // fileChange instead carries an array of FileUpdateChange objects.
+        Some(Value::Object(changes)) if changes.len() <= 16 => {
+            for (path, change) in changes {
+                if !matches!(
+                    change.get("type").and_then(Value::as_str),
+                    Some("add" | "delete" | "update")
+                ) {
+                    return Target::Unknown(UnknownReason::UnsupportedShape);
+                }
+                paths.push(Value::String(path.clone()));
+                if let Some(moved) = change.get("move_path").filter(|v| !v.is_null()) {
+                    paths.push(moved.clone());
+                }
+            }
+        }
+        Some(Value::Array(_)) | Some(Value::Object(_)) => {
+            return Target::Unknown(UnknownReason::OverBudget);
+        }
         _ => return Target::Unknown(UnknownReason::UnsupportedShape),
     }
-    super::targets::paths(paths.iter().collect(), value.get("cwd"))
+    let mut target = super::targets::paths(paths.iter().collect(), value.get("cwd"));
+    if let Target::Paths(paths) = &mut target {
+        // A path-keyed object has no array order. Compare the complete native
+        // path set in a stable order across both representations.
+        paths.sort_by(|a, b| a.spelling.cmp(&b.spelling));
+    }
+    target
 }

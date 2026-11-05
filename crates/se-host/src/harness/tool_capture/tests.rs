@@ -93,7 +93,7 @@ fn codex_preserves_item_call_namespaces_and_real_multi_path_outcomes() -> Check 
             .iter()
             .map(|p| p.spelling.as_str())
             .collect::<Vec<_>>(),
-        ["old.rs", "new.rs"]
+        ["new.rs", "old.rs"]
     );
     assert!(paths.iter().all(|p| p.content_revision.is_none()));
     let mut rpc_item = item.clone();
@@ -107,7 +107,8 @@ fn codex_preserves_item_call_namespaces_and_real_multi_path_outcomes() -> Check 
         agent: se_types::AgentId::from_parts(1, [2; 10])?,
         project: se_types::ProjectId::from_parts(1, [3; 10])?,
     };
-    let source = <RecordId as se_store::RecordIdentity>::from_parts(1, [4; 10])?;
+    let source = <RecordId as se_store::RecordIdentity>::from_parts(1, [4; 10])
+        .map_err(|error| se_core::store_error::store_error(&error))?;
     let record = fact.record(
         &identity,
         Provider::Codex,
@@ -153,5 +154,134 @@ fn codex_unknowns_are_explicit_and_a_large_target_set_is_never_trimmed() -> Chec
     let mut delta = envelope(&item);
     delta["method"] = json!("item/tool/outputDelta");
     assert!(codex::notification(&delta, &conversation)?.is_none());
+    Ok(())
+}
+
+fn observed(fact: &Fact) -> Result<Observation> {
+    let identity = crate::SessionIdentity {
+        session: SessionId::from_parts(1, [1; 10])?,
+        agent: se_types::AgentId::from_parts(1, [2; 10])?,
+        project: se_types::ProjectId::from_parts(1, [3; 10])?,
+    };
+    let source = <RecordId as se_store::RecordIdentity>::from_parts(1, [4; 10])
+        .map_err(|error| se_core::store_error::store_error(&error))?;
+    fact.record(
+        &identity,
+        Provider::Codex,
+        source,
+        Position {
+            offset: 10,
+            length: 20,
+        },
+    )?
+    .captured_tool
+    .ok_or_else(|| SeError::invalid("test observation", "captured native tool"))
+}
+fn notified(item: Value) -> Result<Fact> {
+    codex::notification(
+        &json!({"method":"item/completed","params":{
+            "threadId":"native","turnId":"turn-actual","item":item
+        }}),
+        &"native".parse()?,
+    )?
+    .ok_or_else(|| SeError::invalid("test notification", "completed native tool"))
+}
+
+#[test]
+fn native_path_keyed_file_change_matches_rpc_array_without_inventing_a_revision() -> Check {
+    // Actual Codex 0.166 rollout shape from the retained README failure;
+    // conversation/item IDs and the path spelling are anonymized.
+    let native: Value =
+        serde_json::from_str(include_str!("fixtures/codex-file-change-path-map.json"))?;
+    let fact =
+        codex::decode(&serde_json::to_vec(&native)?, &"native".parse()?)?.ok_or("native tool")?;
+    let rpc = notified(
+        json!({"type":"fileChange","id":"item-actual","status":"completed",
+        "changes":[{"path":"/work/notes.md","kind":{"type":"add"},"diff":"NOT_A_CONTENT_REVISION"}]}),
+    )?;
+    assert_eq!(fact.key, rpc.key);
+    let captured = observed(&fact)?;
+    assert!(
+        rpc.matches(&captured)?,
+        "same native item disagrees across the actual rollout/RPC representations"
+    );
+    let Target::Paths(paths) = &captured.target else {
+        return Err("known path lost".into());
+    };
+    assert_eq!(paths.len(), 1);
+    assert_eq!(paths[0].spelling, "/work/notes.md");
+    assert!(paths[0].cwd.is_none() && paths[0].content_revision.is_none());
+    assert!(!serde_json::to_string(&captured)?.contains("demonstration"));
+    Ok(())
+}
+
+#[test]
+fn file_change_maps_and_arrays_canonicalize_complete_sets_including_moves() -> Check {
+    let map = json!({"type":"FileChange","id":"item-actual","status":"completed","changes":{
+        "z.rs":{"type":"add","content":"NOT_AN_OBSERVED_REVISION"},
+        "a.rs":{"type":"update","move_path":"b.rs","unified_diff":"NOT_AN_OBSERVED_REVISION"}}});
+    let array = json!({"type":"fileChange","id":"item-actual","status":"completed","changes":[
+        {"path":"z.rs","kind":{"type":"add"}},
+        {"path":"a.rs","kind":{"type":"update","move_path":"b.rs"}}]});
+    let captured = observed(&notified(map)?)?;
+    assert!(notified(array)?.matches(&captured)?);
+    let Target::Paths(paths) = captured.target else {
+        return Err("paths".into());
+    };
+    assert_eq!(
+        paths
+            .iter()
+            .map(|p| p.spelling.as_str())
+            .collect::<Vec<_>>(),
+        ["a.rs", "b.rs", "z.rs"]
+    );
+    assert!(paths.iter().all(|p| p.content_revision.is_none()));
+    let large: serde_json::Map<String, Value> = (0..17)
+        .map(|n| (format!("{n}.rs"), json!({"type":"add"})))
+        .collect();
+    let item =
+        notified(json!({"type":"FileChange","id":"large","status":"completed","changes":large}))?;
+    assert!(matches!(
+        item.target,
+        Target::Unknown(UnknownReason::OverBudget)
+    ));
+    Ok(())
+}
+
+#[test]
+fn unknown_file_targets_remain_explicit_without_rejecting_the_same_completed_item() -> Check {
+    let item = json!({"type":"FileChange","id":"item-actual","status":"completed","changes":{"future":{"new_shape":true}}});
+    let unknown = notified(item)?;
+    assert!(matches!(
+        unknown.target,
+        Target::Unknown(UnknownReason::UnsupportedShape)
+    ));
+    let unknown_record = observed(&unknown)?;
+    let item = json!({"type":"fileChange","id":"item-actual","status":"completed","changes":[{"path":"known.rs"}]});
+    let known = notified(item.clone())?;
+    assert!(
+        known.matches(&unknown_record)?,
+        "unknown metadata made a durable completed item unacknowledgeable"
+    );
+    assert!(unknown.matches(&observed(&known)?)?);
+    assert!(
+        matches!(
+            unknown_record.target,
+            Target::Unknown(UnknownReason::UnsupportedShape)
+        ),
+        "acknowledgement replaced the retained unknown"
+    );
+    let mut different = item.clone();
+    different["id"] = json!("another-item");
+    assert!(!notified(different)?.matches(&unknown_record)?);
+    let mut different = item.clone();
+    different["status"] = json!("failed");
+    assert!(!notified(different)?.matches(&unknown_record)?);
+    let mut different = item;
+    different["changes"][0]["path"] = json!("different.rs");
+    assert!(
+        !notified(different)?.matches(&observed(&known)?)?,
+        "known path conflict accepted"
+    );
     Ok(())
 }

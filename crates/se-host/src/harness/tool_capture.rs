@@ -66,6 +66,14 @@ impl Fact {
         if serde_json::to_vec(&expected).map_err(json_error)?.len() > MAX_BYTES {
             expected.target = Target::Unknown(UnknownReason::OverBudget);
         }
+        // Unknown target metadata does not contradict the same native item.
+        // Keep the committed observation unchanged; identity, phase, tool and
+        // outcome still have to agree, and known target conflicts still refuse.
+        if matches!(expected.target, Target::Unknown(_))
+            || matches!(observation.target, Target::Unknown(_))
+        {
+            expected.target = observation.target.clone();
+        }
         Ok(serde_json::to_value(expected).map_err(json_error)?
             == serde_json::to_value(observation).map_err(json_error)?)
     }

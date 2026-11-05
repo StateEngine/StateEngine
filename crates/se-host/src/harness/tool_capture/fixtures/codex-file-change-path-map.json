@@ -1,0 +1,25 @@
+{
+  "timestamp": "2026-11-05T01:44:13.577Z",
+  "ordinal": 28,
+  "type": "event_msg",
+  "payload": {
+    "type": "item_completed",
+    "thread_id": "native",
+    "turn_id": "turn-actual",
+    "item": {
+      "type": "FileChange",
+      "id": "item-actual",
+      "changes": {
+        "/work/notes.md": {
+          "type": "add",
+          "content": "This repository provides a small demonstration for the StateEngine quickstart.\n"
+        }
+      },
+      "status": "completed",
+      "stdout": "Success. Updated the following files:\nA /work/notes.md\n",
+      "stderr": ""
+    },
+    "started_at_ms": 1793843053430,
+    "completed_at_ms": 1793843053576
+  }
+}
