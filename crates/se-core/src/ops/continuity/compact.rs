@@ -4,15 +4,27 @@ use se_types::{Page, Result};
 
 pub(super) fn recovery(value: &mut ResumeOutput) -> Result<bool> {
     let mut changed = false;
+    let shared = value
+        .omissions
+        .iter()
+        .any(|item| item.section == "recovery_commands");
     for omitted in &mut value.omissions {
+        if shared && omitted.section != "recovery_commands" && !omitted.command.is_empty() {
+            omitted.command.clear();
+            omitted.argv.clear();
+            changed = true;
+        }
         if omitted.reason == "packet byte budget" {
             omitted.reason = "byte budget".into();
             changed = true;
         }
-        if !omitted.argv.is_empty() {
-            omitted.argv.clear();
-            changed = true;
-        }
+    }
+    if shared
+        && let se_types::Read::Present { value: state } = &mut value.working_state
+        && state.command.take().is_some()
+    {
+        state.argv = None;
+        changed = true;
     }
     for required in &mut value.required_reads {
         if required.why.len() > 64 {
@@ -26,23 +38,6 @@ pub(super) fn recovery(value: &mut ResumeOutput) -> Result<bool> {
         "unread message(s) require reading; listing and context construction do not mark them read.",
     ));
     changed |= previous != value.attention.len();
-    if value
-        .unread
-        .items()
-        .iter()
-        .any(|row| row.body.argv.is_some())
-    {
-        let mut rows = value.unread.items().to_vec();
-        for row in &mut rows {
-            row.body.argv = None; // Full command and original body byte count remain.
-        }
-        value.unread = Page::new(
-            rows,
-            value.unread.window().clone(),
-            value.unread.next().cloned(),
-        )?;
-        changed = true;
-    }
     Ok(changed)
 }
 
@@ -61,7 +56,14 @@ pub(super) fn expanded(
         .omissions
         .iter()
         .filter(|item| !item.command.is_empty())
-        .count();
+        .count()
+        + value
+            .recent_turns
+            .iter()
+            .filter(|item| !item.command.is_empty())
+            .count()
+        + usize::from(matches!(&value.working_state,
+            se_types::Read::Present { value: state } if state.command.is_some()));
     if count < 2 {
         return Ok(false);
     }
@@ -71,11 +73,20 @@ pub(super) fn expanded(
         omitted.command.clear();
         omitted.argv.clear();
     }
+    for turn in &mut value.recent_turns {
+        turn.command.clear();
+        turn.argv.clear();
+    }
+    if let se_types::Read::Present { value: state } = &mut value.working_state {
+        state.command = None;
+        state.argv = None;
+    }
     // Long message IDs can make per-message commands dominate the brief.
     // Required IDs remain; the expanded read restores their full commands.
     let mut rows = value.unread.items().to_vec();
     for row in &mut rows {
         count += usize::from(row.body.command.take().is_some());
+        row.body.argv = None;
     }
     value.unread = Page::new(
         rows,
@@ -89,7 +100,6 @@ pub(super) fn expanded(
         command,
         "stateengine_resume",
     );
-    omitted.argv.clear();
     omitted.unit = Some("commands".into());
     value.omissions.push(omitted);
     Ok(true)
