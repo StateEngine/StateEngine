@@ -9,8 +9,10 @@ pub fn output(value: &DecisionOutput, out: &mut impl Write) -> io::Result<()> {
             writeln!(out, "Decision {} ({})", row.key, row.id)?;
             writeln!(
                 out,
-                "State: {:?}; revision {}; governing: {}",
-                row.state, row.revision, row.governing
+                "State: {}; revision {}; applies to this project: {}",
+                state(row.state),
+                row.revision,
+                if row.governing { "yes" } else { "no" }
             )?;
             writeln!(out, "{}", row.statement.text)?;
             if let Some(rationale) = &row.rationale {
@@ -29,8 +31,12 @@ pub fn output(value: &DecisionOutput, out: &mut impl Write) -> io::Result<()> {
                 let actor = &transition.by;
                 writeln!(
                     out,
-                    "{:?} by {} ({}) at {} (event {})",
-                    transition.action, actor.name, actor.id, transition.at, transition.event_id
+                    "{} by {} ({}) at {} (event {})",
+                    action(transition.action),
+                    actor.name,
+                    actor.id,
+                    transition.at,
+                    transition.event_id
                 )?;
                 if let Some(reason) = &transition.reason {
                     writeln!(out, "Reason: {reason}")?;
@@ -52,8 +58,12 @@ pub fn page(value: &se_core::ops::DecisionPage, out: &mut impl Write) -> io::Res
             se_core::ops::DecisionPageRow::Present { row, .. } => {
                 writeln!(
                     out,
-                    "{}  {:?}  {}  {}",
-                    row.key, row.state, row.proposed_by.name, row.statement.text
+                    "{} ({})  {}  {}  {}",
+                    row.key,
+                    row.id,
+                    state(row.state),
+                    row.proposed_by.name,
+                    row.statement.text
                 )?;
                 if let Some(command) = &row.statement.command {
                     writeln!(out, "Full statement: {command}")?;
@@ -88,4 +98,26 @@ pub fn page(value: &se_core::ops::DecisionPage, out: &mut impl Write) -> io::Res
         writeln!(out, " --cursor {}", cursor.as_str())?;
     }
     Ok(())
+}
+
+fn state(value: se_types::DecisionState) -> &'static str {
+    use se_types::DecisionState::*;
+    match value {
+        Pending => "awaiting owner decision",
+        Ratified => "approved",
+        Rejected => "rejected",
+        Retracted => "withdrawn",
+        Superseded => "replaced",
+    }
+}
+
+fn action(value: se_types::DecisionAction) -> &'static str {
+    use se_types::DecisionAction::*;
+    match value {
+        Propose => "Proposed",
+        Ratify => "Approved",
+        Reject => "Rejected",
+        Retract => "Withdrawn",
+        Supersede => "Replaced",
+    }
 }

@@ -123,7 +123,7 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "Pending decisions: {}", count(value.decisions.pending))?;
     writeln!(
         out,
-        "Capture: {}; code index: {}",
+        "Conversation recording: {}; code index: {}",
         value.capture.state, value.atlas.state
     )?;
     for pending in &value.pending {

@@ -63,7 +63,7 @@ pub(super) fn profile(value: &ResolvedProfile, out: &mut impl Write) -> io::Resu
     if !value.network {
         writeln!(
             out,
-            "To enable network for this profile: se config set profiles.{}.network true",
+            "To enable network, set network = true under [profiles.{}] in this state home's config.toml, then relaunch the agent.",
             value.name
         )?;
     }
@@ -168,7 +168,13 @@ fn uninstall_report(
         )?;
         match &cleanup.runtime {
             se_types::Read::Present { value } => runtime_stop(value, out)?,
-            other => writeln!(out, "Runtime closure pending: {other:?}")?,
+            se_types::Read::Absent { checked } => {
+                writeln!(out, "Runtime stop report absent. Checked: {checked}")?
+            }
+            se_types::Read::Unreadable { source, reason, .. } => {
+                writeln!(out, "Runtime stop report unreadable at {source}: {reason}")?
+            }
+            se_types::Read::Unknown { what } => writeln!(out, "Runtime stop not verified: {what}")?,
         }
         for file in &cleanup.runtime_files {
             writeln!(out, "{}: {}", file.path, outcome(file.outcome))?;

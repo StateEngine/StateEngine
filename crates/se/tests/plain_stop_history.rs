@@ -220,6 +220,8 @@ fn public_history_page_and_exact_event_show_chat_text_without_payload_envelope()
             "{plain}"
         );
         assert!(plain.contains("Role: assistant"), "{plain}");
+        assert!(plain.contains("Conversation message"), "{plain}");
+        assert!(plain.contains(&format!("Event: {event}")), "{plain}");
         assert!(plain.contains("By: Alpha"), "{plain}");
         assert!(plain.contains("Use --json"), "{plain}");
         for raw in [

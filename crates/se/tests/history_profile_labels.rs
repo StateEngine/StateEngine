@@ -136,11 +136,11 @@ fn plain_history_uses_onboarding_profile_terms() -> Check {
         .output()?;
     let text = plain(plain_output)?;
     assert!(
-        text.contains("permission: workspace-write"),
+        text.contains("Permissions: workspace-write"),
         "plain history lost the onboarding permission term:\n{text}"
     );
     assert!(
-        text.contains("provider: Claude Code"),
+        text.contains("Provider: Claude Code"),
         "plain history lost the onboarding provider term:\n{text}"
     );
     assert!(
@@ -148,7 +148,7 @@ fn plain_history_uses_onboarding_profile_terms() -> Check {
         "plain history leaked the internal permission enum:\n{text}"
     );
     assert!(
-        !text.lines().any(|line| line.trim() == "provider: Claude"),
+        !text.lines().any(|line| line.trim() == "Provider: Claude"),
         "plain history kept the internal provider enum:\n{text}"
     );
     store.close()?;

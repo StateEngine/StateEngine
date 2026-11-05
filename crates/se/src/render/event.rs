@@ -33,10 +33,11 @@ fn present(value: &HistoryEvent, out: &mut impl Write) -> io::Result<()> {
         if captured_tool {
             "Tool action"
         } else {
-            &value.kind
+            title(&value.kind)
         },
         value.project.name
     )?;
+    writeln!(out, "  Event: {}", value.event_id)?;
     writeln!(out, "  By: {}", value.actor.name)?;
     writeln!(out, "  At: {}", value.recorded_at)?;
     if captured_tool {
@@ -68,6 +69,37 @@ fn present(value: &HistoryEvent, out: &mut impl Write) -> io::Result<()> {
     Ok(())
 }
 
+fn title(kind: &str) -> &str {
+    match kind {
+        "session.turn" => "Conversation message",
+        "message.sent" => "Message sent",
+        "message.work_sent" => "Project message sent",
+        "working_state.set" => "Working notes saved",
+        "principal.registered" => "Identity registered",
+        "principal.renamed" => "Identity renamed",
+        "profile.saved" => "Agent settings saved",
+        "grant.recorded" => "Agent creation permission changed",
+        "decision.proposed" => "Decision proposed",
+        "decision.rejected" => "Decision rejected",
+        "decision.retracted" => "Decision withdrawn",
+        "decision.ratified" => "Decision approved",
+        "decision.superseded" => "Decision replaced",
+        "message.read" => "Message read",
+        "message.dismissed" => "Message dismissed",
+        "message.delivered" => "Message delivered",
+        "message.superseded" => "Message replaced",
+        "transcript.event" => "Provider activity",
+        "capture.suppressed" => "Conversation recording limited",
+        "alias.imported" => "Imported name linked",
+        "legacy.retained" => "Original imported data retained",
+        "import.started" => "Import started",
+        "import.progress" => "Import progress",
+        "import.finished" => "Import finished",
+        "import.unreadable" => "Import source unreadable",
+        other => other,
+    }
+}
+
 fn fact(label: &str, text: &str, out: &mut impl Write) -> io::Result<()> {
     let mut lines = text.split('\n');
     writeln!(out, "  {label}: {}", lines.next().unwrap_or_default())?;
@@ -90,8 +122,8 @@ fn summary_fields(kind: &str) -> &'static [(&'static str, &'static str)] {
         "profile.saved" => &[
             ("Agent", "/agent/name"),
             ("Profile", "/profile/named_profile"),
-            ("provider", "/profile/provider"),
-            ("permission", "/profile/permission"),
+            ("Provider", "/profile/provider"),
+            ("Permissions", "/profile/permission"),
             ("Model", "/profile/model"),
             ("Effort", "/profile/effort"),
         ],

@@ -255,6 +255,34 @@ fn supersede_detail_keeps_both_decision_histories() -> Check {
     assert!(human.status.success());
     let text = String::from_utf8(human.stdout)?;
     assert!(
+        text.contains("State: replaced; revision 3; applies to this project: no"),
+        "{text}"
+    );
+    assert!(text.contains("Approved by Owner"), "{text}");
+    let listed = Command::new(env!("CARGO_BIN_EXE_se"))
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").ok_or("PATH")?)
+        .arg("--home")
+        .arg(&f.options.state_directory)
+        .args([
+            "--project",
+            f.project.as_str(),
+            "decision",
+            "list",
+            "--history",
+        ])
+        .output()?;
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    let listed = String::from_utf8(listed.stdout)?;
+    assert!(
+        listed.contains(prior.as_str()) && listed.contains(replacement.as_str()),
+        "{listed}"
+    );
+    assert!(
         text.contains(&statement),
         "default detail truncated the statement"
     );

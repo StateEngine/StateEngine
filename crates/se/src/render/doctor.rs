@@ -24,11 +24,13 @@ pub fn diagnosis(value: &Diagnosis, out: &mut impl Write) -> io::Result<()> {
         if let Some(fix) = &check.fix {
             writeln!(out, "  fix: {}", fix.text)?;
             if let Some(argv) = &fix.argv {
-                writeln!(
-                    out,
-                    "  argv: {}",
-                    serde_json::to_string(argv).map_err(io::Error::other)?
-                )?;
+                match se_core::ops::AgentCommand::from_argv(argv.clone()) {
+                    Some(command) => writeln!(out, "  Run: {}", command.command)?,
+                    None => writeln!(
+                        out,
+                        "  No single-line shell command can represent this repair; inspect --json for its exact arguments."
+                    )?,
+                }
             }
         }
     }
