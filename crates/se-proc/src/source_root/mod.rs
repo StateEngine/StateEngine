@@ -14,6 +14,41 @@ mod windows;
 use unix as os;
 #[cfg(windows)]
 use windows as os;
+#[cfg(unix)]
+mod unix_entries;
+#[cfg(windows)]
+mod windows_entries;
+#[cfg(unix)]
+use unix_entries as entries;
+#[cfg(windows)]
+use windows_entries as entries;
+#[cfg(target_os = "linux")]
+mod watch_linux;
+#[cfg(target_os = "linux")]
+pub use watch_linux::{
+    NativeSourceWatch, NativeWatchAction, NativeWatchDirectory, NativeWatchEvent,
+    NativeWatchEvents, NativeWatchRegistration,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeSourceKind {
+    File,
+    Directory,
+    Link,
+    Other,
+}
+#[derive(Debug)]
+pub struct NativeSourceEntry {
+    pub name: std::ffi::OsString,
+    pub kind: NativeSourceKind,
+}
+pub struct NativeRootDirectory<'a> {
+    root: &'a NativeSourceRoot,
+    path: String,
+    directory: File,
+    identity: NativeFileRevision,
+    entries: entries::Cursor,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeFileRevision {
@@ -51,6 +86,25 @@ pub struct NativeRootFile<'a> {
     file: File,
 }
 impl NativeSourceRoot {
+    /// Derive an independently retained root through this registered handle.
+    pub(crate) fn subroot(&self, path: &str) -> io::Result<Self> {
+        validate(path)?;
+        let pin = self
+            .open_directory(path)?
+            .ok_or_else(|| changed("source subroot is absent"))?;
+        let root = Self {
+            path: self.path.join(path),
+            directory: pin.directory,
+            identity: pin.identity,
+        };
+        root.check()?;
+        self.check()?;
+        Ok(root)
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn directory_handle(&self) -> &File {
+        &self.directory
+    }
     /// The authorized host supplies the physical root. Ancestors above this
     /// boundary may resolve normally; the root itself and descendants do not.
     pub fn open(physical_root: &Path) -> io::Result<Self> {
@@ -103,6 +157,95 @@ impl NativeSourceRoot {
             return Err(changed("source name changed during open"));
         }
         Ok(Some(pin))
+    }
+    /// Empty denotes this registered root. Every other component is no-follow.
+    /// The cursor streams entries and retains its directory identity; it never
+    /// allocates an unbounded filesystem inventory.
+    pub fn open_directory(&self, path: &str) -> io::Result<Option<NativeRootDirectory<'_>>> {
+        if !path.is_empty() {
+            validate(path)?;
+        }
+        self.check()?;
+        let opened = if path.is_empty() {
+            os::open_root(&self.path)
+        } else {
+            os::open_directory(&self.directory, path)
+        };
+        self.check()?;
+        let directory = match opened {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let identity = os::revision(&directory, true)?;
+        let entries = entries::Cursor::new(&directory)?;
+        let cursor = NativeRootDirectory {
+            root: self,
+            path: path.into(),
+            directory,
+            identity,
+            entries,
+        };
+        if !cursor.validate_name()? {
+            return Err(changed("source directory changed during open"));
+        }
+        Ok(Some(cursor))
+    }
+}
+impl NativeRootDirectory<'_> {
+    /// Read at most 128 entries from the retained stream, validating its name on
+    /// both sides of the batch. An empty batch means observed end of stream.
+    pub fn next_batch(&mut self) -> io::Result<Vec<NativeSourceEntry>> {
+        if !self.validate_name()? {
+            return Err(changed("source directory was replaced before enumeration"));
+        }
+        let mut batch = Vec::new();
+        for _ in 0..128 {
+            let Some(entry) = self.entries.next()? else {
+                break;
+            };
+            batch.push(entry);
+        }
+        if !self.validate_name()? {
+            return Err(changed("source directory was replaced during enumeration"));
+        }
+        Ok(batch)
+    }
+    /// Native revision of this retained directory, including namespace timestamps.
+    pub fn revision(&self) -> io::Result<NativeFileRevision> {
+        if !self.validate_name()? {
+            return Err(changed("source directory name changed"));
+        }
+        os::revision(&self.directory, true)
+    }
+    pub fn validate_name(&self) -> io::Result<bool> {
+        self.root.check()?;
+        let opened = if self.path.is_empty() {
+            os::open_root(&self.root.path)
+        } else {
+            os::open_directory(&self.root.directory, &self.path)
+        };
+        let named = match opened {
+            Ok(f) => f,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        };
+        let same = self.identity.same_object(&os::revision(&named, true)?)
+            && self
+                .identity
+                .same_object(&os::revision(&self.directory, true)?);
+        self.root.check()?;
+        Ok(same)
+    }
+    pub fn next_entry(&mut self) -> io::Result<Option<NativeSourceEntry>> {
+        if !self.validate_name()? {
+            return Err(changed("source directory was replaced before enumeration"));
+        }
+        let entry = self.entries.next()?;
+        if !self.validate_name()? {
+            return Err(changed("source directory was replaced during enumeration"));
+        }
+        Ok(entry)
     }
 }
 impl NativeRootFile<'_> {

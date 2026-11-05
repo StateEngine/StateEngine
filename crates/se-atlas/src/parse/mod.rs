@@ -21,9 +21,68 @@ use std::{
 pub struct SemanticParser {
     scope: Scope,
     profiles: Vec<ParserProfile>,
+    resource_guard: Option<fn() -> AtlasResult<()>>,
 }
 impl SemanticParser {
+    /// The contained adapter can cancel before a native allocator is exhausted.
+    /// This supplements profile/time limits and does not grant an admission.
+    pub fn set_resource_guard(&mut self, guard: fn() -> AtlasResult<()>) {
+        self.resource_guard = Some(guard);
+    }
+    /// Reservations for the separate, natively capped cold process. These are
+    /// not measured incremental profiles and cannot admit work in the host.
+    pub fn contained_cold(scope: Scope) -> AtlasResult<Self> {
+        Self::cold_child(
+            scope,
+            [
+                Language::JavaScript,
+                Language::Jsx,
+                Language::TypeScript,
+                Language::Tsx,
+                Language::Rust,
+                Language::Python,
+            ]
+            .into_iter()
+            .map(|language| ParserProfile {
+                language,
+                placement: ParserPlacement::ColdChild,
+                max_source_bytes: 524288,
+                max_rows: 65536,
+                parser_reservation_bytes: 40_000_000,
+                extraction_bytes: 8_000_000,
+                shared_grammar_pages: None,
+            })
+            .collect(),
+        )
+    }
     pub fn new(scope: Scope, profiles: Vec<ParserProfile>) -> AtlasResult<Self> {
+        Self::with_placement(scope, profiles, ParserPlacement::Incremental)
+    }
+    /// Called by the separately contained cold worker, never by incremental work.
+    pub fn cold_child(scope: Scope, profiles: Vec<ParserProfile>) -> AtlasResult<Self> {
+        Self::with_placement(scope, profiles, ParserPlacement::ColdChild)
+    }
+    fn with_placement(
+        scope: Scope,
+        profiles: Vec<ParserProfile>,
+        placement: ParserPlacement,
+    ) -> AtlasResult<Self> {
+        for p in &profiles {
+            ParserProfile::from_qualified_measurement(
+                p.language,
+                p.placement,
+                p.max_source_bytes,
+                p.max_rows,
+                p.parser_reservation_bytes,
+                p.extraction_bytes,
+            )?;
+            if p.placement != placement {
+                return Err(se_types::SeError::invalid(
+                    "Atlas parser placement",
+                    "a matching measured host/child profile",
+                ));
+            }
+        }
         if profiles.len() > 6
             || profiles
                 .iter()
@@ -35,7 +94,11 @@ impl SemanticParser {
                 "at most one qualified profile per grammar",
             ));
         }
-        Ok(Self { scope, profiles })
+        Ok(Self {
+            scope,
+            profiles,
+            resource_guard: None,
+        })
     }
 }
 impl AtlasParser for SemanticParser {
@@ -80,7 +143,7 @@ impl AtlasParser for SemanticParser {
             return Ok(defer(CoverageReason::SourceBytesLimit));
         }
         let reservation = snapshot.bytes.capacity() as u64
-            + u64::from(profile.measured_parser_bytes)
+            + u64::from(profile.parser_reservation_bytes)
             + u64::from(profile.extraction_bytes);
         if reservation > u64::from(budget.reserved_bytes) {
             return Err(capacity(
@@ -90,12 +153,22 @@ impl AtlasParser for SemanticParser {
             ));
         }
         let _lease = budget::Lease::take()?;
+        if let Some(guard) = self.resource_guard {
+            guard()?;
+        }
         let deadline = Instant::now() + budget.max_work;
         let mut parser = tree_sitter::Parser::new();
         parser
             .set_language(&grammar(language))
             .map_err(|e| failure(&snapshot.path, language, e.to_string()))?;
+        let mut resource_error = None;
         let mut progress = |_: &tree_sitter::ParseState| {
+            if let Some(guard) = self.resource_guard
+                && let Err(error) = guard()
+            {
+                resource_error = Some(error);
+                return ControlFlow::Break(());
+            }
             if Instant::now() >= deadline {
                 ControlFlow::Break(())
             } else {
@@ -107,6 +180,9 @@ impl AtlasParser for SemanticParser {
             None,
             Some(tree_sitter::ParseOptions::new().progress_callback(&mut progress)),
         );
+        if let Some(error) = resource_error {
+            return Err(error);
+        }
         let Some(tree) = tree else {
             return Ok(defer(CoverageReason::ParseWorkLimit));
         };
@@ -155,3 +231,6 @@ fn failure(path: &RelativePath, language: Language, reason: String) -> se_types:
         },
     ))
 }
+
+#[cfg(test)]
+mod tests;

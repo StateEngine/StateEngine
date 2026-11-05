@@ -47,6 +47,11 @@ pub const MCP_IDENTITY_ARGUMENT_ROLES: &[(&str, &[FieldRole])] = &[
     ("stateengine_agent_stop", STOP_FIELDS),
     ("stateengine_decision_list", CALLER_FIELDS),
     ("stateengine_decision_propose", CALLER_FIELDS),
+    ("stateengine_atlas_find", CALLER_FIELDS),
+    ("stateengine_atlas_refs", CALLER_FIELDS),
+    ("stateengine_atlas_impact", CALLER_FIELDS),
+    ("stateengine_atlas_changes", CALLER_FIELDS),
+    ("stateengine_atlas_outline", CALLER_FIELDS),
 ];
 pub fn fields(tool: &str) -> Result<&'static [FieldRole]> {
     MCP_IDENTITY_ARGUMENT_ROLES.iter().find_map(|(name, fields)| (*name == tool).then_some(*fields))

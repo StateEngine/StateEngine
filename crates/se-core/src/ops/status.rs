@@ -77,6 +77,7 @@ pub fn missing(home: String, generated_at: String, checked: String) -> StatusOut
         },
         atlas: AtlasView {
             state: "not-built".into(),
+            history: "unavailable".into(),
         },
         pending: vec![],
         projects: None,

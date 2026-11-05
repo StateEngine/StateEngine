@@ -6,8 +6,8 @@ use std::{
     mem::size_of,
     sync::atomic::{AtomicBool, Ordering},
 };
-/// One parser/tree across all roots. The measured working set includes grammar
-/// pages and retained allocator high-water marks; there is no default profile.
+/// One parser/tree across all roots. Anonymous reservations include retained
+/// allocator pages; shared file-backed grammar pages are reported separately.
 static PARSING: AtomicBool = AtomicBool::new(false);
 pub(super) struct Lease;
 impl Lease {
@@ -35,8 +35,9 @@ pub struct ParserProfile {
     pub placement: ParserPlacement,
     pub max_source_bytes: u32,
     pub max_rows: u32,
-    pub measured_parser_bytes: u32,
+    pub parser_reservation_bytes: u32,
     pub extraction_bytes: u32,
+    pub shared_grammar_pages: Option<GrammarPages>,
 }
 impl ParserProfile {
     /// Native qualification supplies the actual grammar/platform bounds. This
@@ -50,7 +51,7 @@ impl ParserProfile {
         extraction: u32,
     ) -> AtlasResult<Self> {
         let ceiling = match placement {
-            ParserPlacement::Incremental => 1_000_000,
+            ParserPlacement::Incremental => u64::from(PARSER_BYTES),
             ParserPlacement::ColdChild => 60_000_000,
         };
         let total = u64::from(source) + u64::from(parser_bytes) + u64::from(extraction);
@@ -69,9 +70,29 @@ impl ParserProfile {
             placement,
             max_source_bytes: source,
             max_rows: rows,
-            measured_parser_bytes: parser_bytes,
+            parser_reservation_bytes: parser_bytes,
             extraction_bytes: extraction,
+            shared_grammar_pages: None,
         })
+    }
+    pub fn with_shared_grammar_pages(mut self, observed: u32, reserved: u32) -> AtlasResult<Self> {
+        if observed == 0 || reserved < observed {
+            return Err(capacity(
+                "Atlas shared grammar page profile",
+                u64::from(observed),
+                u64::from(reserved),
+            ));
+        }
+        self.shared_grammar_pages = Some(GrammarPages {
+            observed_bytes: observed,
+            reserved_bytes: reserved,
+        });
+        Ok(self)
+    }
+    pub fn anonymous_bytes(&self) -> u64 {
+        u64::from(self.max_source_bytes)
+            + u64::from(self.parser_reservation_bytes)
+            + u64::from(self.extraction_bytes)
     }
 }
 pub(super) struct Arena {
@@ -117,6 +138,10 @@ impl Arena {
     }
     pub fn text(&mut self, text: &str) -> AtlasResult<String> {
         self.charge(text.len())?;
-        Ok(text.to_owned())
+        let mut copy = String::new();
+        copy.try_reserve_exact(text.len())
+            .map_err(|_| capacity("Atlas extraction allocator", text.len() as u64, 0))?;
+        copy.push_str(text);
+        Ok(copy)
     }
 }

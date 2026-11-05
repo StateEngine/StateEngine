@@ -104,13 +104,104 @@ pub enum ReferenceHit {
     Record(RecordHit),
 }
 
+/// A reverse dependency edge from the queried file toward an importing file.
+/// Byte offsets belong to the indexed importer's revision; line coordinates
+/// may be unavailable, so no synthetic source Span is constructed.
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct FileImpactHop {
+    pub from: FileId,
+    pub to: FileId,
+    pub site: CodePointer,
+    pub start_byte: u64,
+    pub end_byte: u64,
+    pub accuracy: Accuracy,
+}
+
+/// Counts describe this bounded live-source scan, not an entire unseen tree.
+#[derive(
+    Clone, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct TextSearchStats {
+    pub scanned_files: u32,
+    pub matching_files: u32,
+    pub binary_files: u32,
+    pub non_utf8_files: u32,
+    pub oversized_files: u32,
+    pub changed_files: u32,
+    pub unavailable_files: u32,
+    pub time_limited_files: u32,
+    pub line_limited_files: u32,
+    pub omitted_matches: u64,
+}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(try_from = "SearchResultsWire")]
 pub struct SearchResults {
     pub mode: SearchMode,
     pub fallback_from: Option<SearchMode>,
     pub page: crate::Page<SearchHit>,
     /// None is unknown; zero is a counted complete candidate range.
     pub truncated_candidates: Option<u64>,
+    pub full: bool,
+    /// Whole bodies omitted to preserve the shared response budget.
+    pub bodies_omitted: u16,
+    pub text: Option<TextSearchStats>,
+}
+impl SearchResults {
+    pub fn validate(&self) -> crate::Result<()> {
+        let body_bytes = self
+            .page
+            .items()
+            .iter()
+            .filter_map(|hit| hit.body.as_ref())
+            .map(|body| body.text.len())
+            .sum::<usize>();
+        if body_bytes > 12 * 1024
+            || (self.full
+                && serde_json::to_vec(self)
+                    .map_err(|e| crate::SeError::invalid("Atlas full response", &e.to_string()))?
+                    .len()
+                    > 12 * 1024)
+        {
+            return Err(crate::SeError::invalid(
+                "Atlas full response",
+                "at most 12 KiB across the response; omit whole bodies with bodies_omitted stated",
+            ));
+        }
+        Ok(())
+    }
+}
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SearchResultsWire {
+    mode: SearchMode,
+    fallback_from: Option<SearchMode>,
+    page: crate::Page<SearchHit>,
+    truncated_candidates: Option<u64>,
+    #[serde(default)]
+    full: bool,
+    #[serde(default)]
+    bodies_omitted: u16,
+    #[serde(default)]
+    text: Option<TextSearchStats>,
+}
+impl TryFrom<SearchResultsWire> for SearchResults {
+    type Error = crate::SeError;
+    fn try_from(value: SearchResultsWire) -> crate::Result<Self> {
+        let result = Self {
+            mode: value.mode,
+            fallback_from: value.fallback_from,
+            page: value.page,
+            truncated_candidates: value.truncated_candidates,
+            full: value.full,
+            bodies_omitted: value.bodies_omitted,
+            text: value.text,
+        };
+        result.validate()?;
+        Ok(result)
+    }
 }
 
 #[derive(
@@ -167,3 +258,7 @@ impl TryFrom<HitBodyWire> for HitBody {
         Self::new(value.origin, value.text, value.complete)
     }
 }
+
+#[path = "cursor.rs"]
+mod cursor;
+pub use cursor::*;

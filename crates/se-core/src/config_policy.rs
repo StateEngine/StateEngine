@@ -130,11 +130,20 @@ pub struct Profile {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub git_write: bool,
 }
-#[derive(Clone, Debug, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
 pub struct AtlasConfig {
-    #[serde(default)]
     pub enabled: bool,
+    /// Opt in until native end-to-end latency has qualified this platform.
+    pub hooks: bool,
+}
+impl Default for AtlasConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hooks: false,
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -372,7 +381,7 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
     }
     let parts: Vec<_> = key.split('.').collect();
     let (human_only, agent_record) = match parts.as_slice() {
-        ["default_project"] | ["launch", "provider" | "terminal"] | ["atlas", "enabled"] => (false, false),
+        ["default_project"] | ["launch", "provider" | "terminal"] | ["atlas", "enabled" | "hooks"] => (false, false),
         ["runtime", "listen_port" | "blocking_jobs"] | ["capture", "enabled"] => (true, false),
         ["providers", "claude" | "codex", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
         ["profiles", name, "sandbox" | "network" | "approval" | "bypass" | "git_write"] if !name.is_empty() => (true, false),
@@ -434,6 +443,17 @@ mod git_profile_tests {
 #[cfg(test)]
 mod runtime_budget_tests {
     use super::*;
+    #[test]
+    fn atlas_is_enabled_unless_explicitly_disabled() -> Result<()> {
+        assert!(ConfigFile::default().atlas.enabled);
+        let omitted: AtlasConfig =
+            serde_json::from_str("{}").map_err(|e| invalid("test Atlas config", &e.to_string()))?;
+        let disabled: AtlasConfig = serde_json::from_str("{\"enabled\":false}")
+            .map_err(|e| invalid("test Atlas config", &e.to_string()))?;
+        assert!(omitted.enabled);
+        assert!(!disabled.enabled);
+        Ok(())
+    }
     #[test]
     fn finite_work_cap_respects_native_cores_and_owner_configuration() -> Result<()> {
         for (cores, requested, expected) in [

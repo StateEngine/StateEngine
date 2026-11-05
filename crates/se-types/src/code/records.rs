@@ -126,6 +126,14 @@ impl FeedRecord {
         if self.title.len() > 160
             || self.body.len() > 65536
             || self.mentions.len() > 256
+            || self
+                .actor
+                .as_ref()
+                .is_some_and(|actor| actor.name.len() > 160)
+            || serde_json::to_vec(&self.mentions)
+                .map_err(|e| SeError::invalid("Atlas mentions", &e.to_string()))?
+                .len()
+                > 32768
             || bad_audience
         {
             return Err(SeError::invalid(
@@ -139,6 +147,12 @@ impl FeedRecord {
 #[derive(Debug)]
 pub enum RecordFeedChange {
     Upsert(FeedRecord),
+    /// A committed ratification changes the weight of that decision's mentions.
+    Ratify {
+        project: ProjectId,
+        key: RecordKey,
+        source_event: EventId,
+    },
     /// Deletion is a committed core fact, never inferred from a failed read.
     Remove {
         project: ProjectId,
@@ -161,6 +175,7 @@ impl RecordFeed {
             return Err(SeError::invalid("Atlas record feed", "at most 64 changes"));
         }
         let mut bytes = 0usize;
+        let mut metadata = 0usize;
         for change in &self.changes {
             match change {
                 RecordFeedChange::Upsert(record) => {
@@ -171,9 +186,24 @@ impl RecordFeed {
                             "one verified project",
                         ));
                     }
-                    bytes += record.body.len() + record.title.len();
+                    bytes += record.body.len();
+                    metadata += record.title.len();
+                    metadata += serde_json::to_vec(&record.mentions)
+                        .map_err(|e| SeError::invalid("Atlas mentions", &e.to_string()))?
+                        .len()
+                        + serde_json::to_vec(&record.actor)
+                            .map_err(|e| SeError::invalid("Atlas actor", &e.to_string()))?
+                            .len()
+                        + serde_json::to_vec(&record.visibility)
+                            .map_err(|e| SeError::invalid("Atlas visibility", &e.to_string()))?
+                            .len()
+                        + record.pointer.key.as_str().len()
+                        + record.pointer.source_event.as_str().len();
                 }
-                RecordFeedChange::Remove { project, .. } if project != &self.project => {
+                RecordFeedChange::Remove { project, .. }
+                | RecordFeedChange::Ratify { project, .. }
+                    if project != &self.project =>
+                {
                     return Err(SeError::invalid(
                         "Atlas record feed",
                         "one verified project",
@@ -182,10 +212,10 @@ impl RecordFeed {
                 _ => (),
             }
         }
-        if bytes > 65536 {
+        if bytes > 65536 || metadata > 32768 {
             return Err(SeError::invalid(
                 "Atlas record feed",
-                "at most 64 KiB of transient text per chunk",
+                "at most 64 KiB transient text and 32 KiB metadata per chunk",
             ));
         }
         Ok(())

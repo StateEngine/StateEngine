@@ -190,7 +190,10 @@ impl LaunchCoordinator {
                 options.home.clone(),
                 options.http_port,
             )
-            .with_bells(context.mail_waits.bells.clone()),
+            .with_bells(context.mail_waits.bells.clone())
+            .with_atlas_hooks(
+                options.configuration.atlas.enabled && options.configuration.atlas.hooks,
+            ),
         );
         #[cfg(unix)]
         let socket_root = host_runtime
@@ -201,14 +204,17 @@ impl LaunchCoordinator {
             .unwrap_or_else(std::env::temp_dir);
         #[cfg(not(unix))]
         let socket_root = options.home.clone();
-        let codex = Arc::new(CodexHarness::new(
-            io.clone(),
-            pool.clone(),
-            options.home.clone(),
-            socket_root,
-            options.http_port,
-            options.configuration.clone(),
-        ));
+        let codex = Arc::new(
+            CodexHarness::new(
+                io.clone(),
+                pool.clone(),
+                options.home.clone(),
+                socket_root,
+                options.http_port,
+                options.configuration.clone(),
+            )
+            .with_atlas_helper(options.helper_executable.to_local()?),
+        );
         Ok(Arc::new(Self {
             kind: host_runtime.kind,
             native,
@@ -216,6 +222,7 @@ impl LaunchCoordinator {
             harness,
             codex,
             store: store::Store {
+                record_feed: context.atlas.records.clone(),
                 reader: context.reader.clone(),
                 writer: context.writer.clone(),
                 pool: context.blocking.clone(),

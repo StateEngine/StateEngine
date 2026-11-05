@@ -152,7 +152,10 @@ pub struct ResumeOutput {
     pub recent_turns: Vec<RecentTurn>,
     #[serde(flatten, default)]
     pub transcript: crate::ops::transcript::View,
-    pub code_changes: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_changes: Option<Vec<se_types::code::ResumeChange>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_status: Option<se_types::code::ResumeCodeStatus>,
     pub omissions: Vec<Omission>,
     pub attention: Vec<String>,
     pub cursor: Cursor,

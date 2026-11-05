@@ -354,6 +354,10 @@ fn complete(outcome: direct::Outcome) -> Result<AnyOutput> {
             se_types::details::Internal {
                 report_id: "unrouted-cli-custody".into(),
                 location: match plan {
+                    se_core::ports::CustodyPlan::AtlasAugment(_) => {
+                        "host Atlas augmentation reader"
+                    }
+                    se_core::ports::CustodyPlan::AtlasRead(_) => "host Atlas reader",
                     se_core::ports::CustodyPlan::ClaudeHook(_) => "hook",
                     se_core::ports::CustodyPlan::Initialize(_) => "init",
                     se_core::ports::CustodyPlan::ImportNode(_) => "host history importer",

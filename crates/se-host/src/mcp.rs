@@ -7,6 +7,7 @@ use se_types::{Result, SeError, Secret};
 use serde_json::{Value, json};
 use std::{future::Future, sync::Arc};
 mod arguments;
+mod atlas;
 mod resume;
 
 /// Protocol revisions spoken here, newest first. An unknown requested
@@ -217,6 +218,9 @@ async fn call(
     };
     let outcome = match se_core::ops::decode_tool(name, arguments) {
         Ok(mut operation) => {
+            if operation.atlas_options().is_some() {
+                return atlas::call(backend, capability, id, operation).await;
+            }
             if let se_core::ops::AnyOp::Resume(input) = operation {
                 return resume::call(backend, capability, id, input).await;
             }

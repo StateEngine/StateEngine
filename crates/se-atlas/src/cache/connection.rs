@@ -4,10 +4,14 @@ use crate::errors::{cache_error, capacity};
 use rusqlite::{Connection, OpenFlags, Statement, StatementStatus, limits::Limit};
 use std::{
     cell::Cell,
-    ops::{Deref, DerefMut},
+    ops::Deref,
     sync::atomic::{AtomicU8, Ordering},
     time::{Duration, Instant},
 };
+#[path = "statement.rs"]
+mod statement;
+pub use statement::{BudgetStatement, SqlView};
+pub type NativeSqlConnection = rusqlite::Connection;
 static SLOTS: AtomicU8 = AtomicU8::new(0);
 const READER_SLOT: u8 = 1;
 const WRITER_SLOT: u8 = 2;
@@ -20,6 +24,9 @@ pub enum ConnectionRole {
     HostReader,
     HostWriter,
     ExternalReader,
+    /// Post-reap validation shares the host's single reader slot and 64 KiB
+    /// page cache, while performing integrity checks outside the query path.
+    CandidateReader,
     ColdWriter,
 }
 impl ConnectionRole {
@@ -30,27 +37,45 @@ impl ConnectionRole {
 /// Measured upper bound from native SQL/allocator qualification, not an estimate
 /// or a request-supplied flag. Until that witness exists the host must not admit
 /// the profile. Two page caches, statement allowances and one query arena reserve
-/// 393216 bytes; connection/SQLite overhead must fit the remaining 106784.
+/// 262144 bytes; measured connection/SQLite overhead shares the 600 KB SQL
+/// reservation. The extra 100 KB comes from the coalesced queue, not the total.
+#[derive(Debug)]
 pub struct SqlProfile {
     overhead: u32,
+    cold_only: bool,
 }
 impl SqlProfile {
     pub fn from_qualified_overhead(bytes: u32) -> AtlasResult<Self> {
-        if bytes == 0 || bytes > 53_392 {
+        let maximum = (crate::model::SQL_QUERY_BYTES - 262_144) / 2;
+        if bytes == 0 || bytes > maximum {
             return Err(capacity(
                 "Atlas SQL connection overhead",
                 u64::from(bytes),
-                53_392,
+                u64::from(maximum),
             ));
         }
-        Ok(Self { overhead: bytes })
+        Ok(Self {
+            overhead: bytes,
+            cold_only: false,
+        })
+    }
+    pub fn qualified_overhead_bytes(&self) -> Option<u32> {
+        (!self.cold_only).then_some(self.overhead)
+    }
+    /// Cold-window reservation, not evidence of the host's 600 KB SQL share.
+    /// External validation may use it only outside the steady host read path.
+    pub fn contained_cold() -> Self {
+        Self {
+            overhead: 0,
+            cold_only: true,
+        }
     }
 }
 struct Slot(u8);
 impl Slot {
     fn take(role: ConnectionRole) -> AtlasResult<Self> {
         let bit = match role {
-            ConnectionRole::HostReader => READER_SLOT,
+            ConnectionRole::HostReader | ConnectionRole::CandidateReader => READER_SLOT,
             ConnectionRole::HostWriter => WRITER_SLOT,
             _ => 0,
         };
@@ -87,6 +112,8 @@ impl<'a> CacheConnection<'a> {
         let slot = Slot::take(role)?;
         files.validate_database(&pin)?;
         let db = open(&pin, role, deadline)?;
+        files.configure_connection(&db)?;
+        configure_limits(&db, role, profile)?;
         finite(&db, deadline, |_| {
             schema::validate(&db, &id)?;
             if role.writable() {
@@ -94,7 +121,10 @@ impl<'a> CacheConnection<'a> {
             }
             Ok(())
         })?;
-        configure(&db, role, profile)?;
+        configure_access(&db, role)?;
+        if role == ConnectionRole::CandidateReader {
+            finite(&db, deadline, |_| schema::validate_integrity(&db))?;
+        }
         files.validate_database(&pin)?;
         Ok(Some(Self {
             db,
@@ -126,6 +156,7 @@ impl<'a> CacheConnection<'a> {
                 return Err(cache_error("new epoch reservation is not empty"));
             }
             let db = open(&pin, role, deadline)?;
+            files.configure_connection(&db)?;
             db.execute_batch("PRAGMA page_size=4096")
                 .map_err(cache_error)?;
             configure(&db, role, profile)?;
@@ -242,6 +273,7 @@ impl<'a> CacheConnection<'a> {
                 count: Cell::new(0),
                 bytes: Cell::new(0),
                 readonly: !write,
+                deadline,
             });
             let changed = self.files.validate_database(&self.pin);
             let expired = Instant::now() >= deadline;
@@ -278,6 +310,20 @@ impl<'a> CacheConnection<'a> {
             Ok(busy == 0)
         })
     }
+    /// Release reusable page buffers between cold files so the native parser
+    /// margin does not become permanently occupied by the previous SQL work.
+    /// No transaction or statement may cross this synchronous boundary.
+    pub fn release_cold_memory(&self, deadline: Instant) -> AtlasResult<()> {
+        if self.role != ConnectionRole::ColdWriter {
+            return Err(cache_error(
+                "cold memory release requires the contained writer",
+            ));
+        }
+        self.files.validate_database(&self.pin)?;
+        finite(&self.db, deadline, |_| {
+            self.db.release_memory().map_err(cache_error)
+        })
+    }
 }
 fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResult<Connection> {
     if Instant::now() >= deadline {
@@ -302,10 +348,43 @@ fn open(pin: &DatabasePin, role: ConnectionRole, deadline: Instant) -> AtlasResu
             .min(Duration::from_millis(25)),
     )
     .map_err(cache_error)?;
+    if role == ConnectionRole::ColdWriter {
+        // This epoch is unpublished and has exactly one contained writer.
+        // Exclusive WAL uses an in-process index, never a mapped -shm file.
+        // Host handles retain normal locking after exact child reap/close.
+        finite(&db, deadline, |_| {
+            let locking: String = db
+                .query_row("PRAGMA locking_mode=EXCLUSIVE", [], |r| r.get(0))
+                .map_err(cache_error)?;
+            if locking != "exclusive" {
+                return Err(cache_error("cold exclusive WAL locking refused"));
+            }
+            Ok(())
+        })?;
+    }
     Ok(db)
 }
 fn configure(db: &Connection, role: ConnectionRole, profile: &SqlProfile) -> AtlasResult<()> {
+    configure_limits(db, role, profile)?;
+    configure_access(db, role)
+}
+fn configure_limits(
+    db: &Connection,
+    role: ConnectionRole,
+    profile: &SqlProfile,
+) -> AtlasResult<()> {
+    if profile.cold_only
+        && matches!(
+            role,
+            ConnectionRole::HostReader | ConnectionRole::HostWriter
+        )
+    {
+        return Err(cache_error(
+            "cold SQL reservations cannot admit steady host connections",
+        ));
+    }
     let _qualified_overhead = profile.overhead;
+    super::path_scope::register(db)?;
     db.set_prepared_statement_cache_capacity(0);
     for (limit, value) in [
         (Limit::SQLITE_LIMIT_LENGTH, 131072),
@@ -315,11 +394,14 @@ fn configure(db: &Connection, role: ConnectionRole, profile: &SqlProfile) -> Atl
     ] {
         db.set_limit(limit, value).map_err(cache_error)?;
     }
-    db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA cache_size=32;").map_err(cache_error)?;
+    db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA temp_store=FILE; PRAGMA mmap_size=0; PRAGMA cache_size=16;").map_err(cache_error)?;
     if role == ConnectionRole::ColdWriter {
         db.execute_batch("PRAGMA cache_size=488")
             .map_err(cache_error)?;
     }
+    Ok(())
+}
+fn configure_access(db: &Connection, role: ConnectionRole) -> AtlasResult<()> {
     if role.writable() {
         let journal: String = db
             .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
@@ -355,12 +437,15 @@ fn finite<T>(
     if Instant::now() >= deadline {
         return Err(timeout(0));
     }
-    let budget_ms = u64::try_from(
-        deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis(),
-    )
-    .unwrap_or(u64::MAX);
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(timeout(0));
+    }
+    let budget_ms = u64::try_from(remaining.as_millis())
+        .unwrap_or(u64::MAX)
+        .saturating_add(u64::from(
+            !remaining.subsec_nanos().is_multiple_of(1_000_000),
+        ));
     db.progress_handler(1000, Some(move || Instant::now() >= deadline))
         .map_err(cache_error)?;
     let result = work(budget_ms);
@@ -379,62 +464,6 @@ fn timeout(budget_ms: u64) -> se_types::SeError {
             deadline_ms: budget_ms,
         },
     ))
-}
-pub struct SqlView<'a> {
-    db: &'a Connection,
-    count: Cell<usize>,
-    bytes: Cell<usize>,
-    readonly: bool,
-}
-impl SqlView<'_> {
-    pub fn prepare(&self, sql: &str) -> AtlasResult<BudgetStatement<'_>> {
-        let stmt = self.db.prepare(sql).map_err(cache_error)?;
-        if self.readonly && !stmt.readonly() {
-            return Err(cache_error(
-                "mutation attempted inside an Atlas read snapshot",
-            ));
-        }
-        let bytes =
-            usize::try_from(stmt.get_status(StatementStatus::MemUsed)).map_err(cache_error)?;
-        if self.count.get() >= 8 || self.bytes.get() + bytes > STATEMENT_BYTES {
-            return Err(capacity(
-                "Atlas SQL statement memory",
-                bytes as u64,
-                STATEMENT_BYTES.saturating_sub(self.bytes.get()) as u64,
-            ));
-        }
-        self.count.set(self.count.get() + 1);
-        self.bytes.set(self.bytes.get() + bytes);
-        Ok(BudgetStatement {
-            stmt,
-            count: &self.count,
-            bytes: &self.bytes,
-            reserved: bytes,
-        })
-    }
-}
-pub struct BudgetStatement<'a> {
-    stmt: Statement<'a>,
-    count: &'a Cell<usize>,
-    bytes: &'a Cell<usize>,
-    reserved: usize,
-}
-impl<'a> Deref for BudgetStatement<'a> {
-    type Target = Statement<'a>;
-    fn deref(&self) -> &Self::Target {
-        &self.stmt
-    }
-}
-impl DerefMut for BudgetStatement<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.stmt
-    }
-}
-impl Drop for BudgetStatement<'_> {
-    fn drop(&mut self) {
-        self.count.set(self.count.get() - 1);
-        self.bytes.set(self.bytes.get() - self.reserved);
-    }
 }
 
 #[cfg(test)]

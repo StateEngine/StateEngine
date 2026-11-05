@@ -8,7 +8,9 @@ pub fn decode(bytes: &[u8], scope: &Scope) -> AtlasResult<CachePointer> {
         return Err(cache_error("current.json exceeds 1024 bytes"));
     }
     let pointer: CachePointer = serde_json::from_slice(bytes).map_err(cache_error)?;
-    if pointer.schema != schema::SCHEMA_VERSION
+    // A legacy pointer supplies only the CAS identity for an owned rebuild.
+    // Opening its database still requires the current schema.
+    if ![3, schema::SCHEMA_VERSION].contains(&pointer.schema)
         || pointer.project != scope.registration.project
         || pointer.root != scope.registration.root
     {

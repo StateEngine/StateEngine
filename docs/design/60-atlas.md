@@ -147,20 +147,26 @@ before acting. This is snapshot evidence, not a filesystem transaction guarantee
 Cache directory is owner-only StateEngine home `atlas/<project-id>/<root-id>/`.
 It contains `current.json` and `epochs/<epoch>/atlas.db` (plus SQLite WAL/SHM).
 Paths derive from validated IDs, never a user destination. Application_id is
-0x41544c53 (ATLS), user_version 1. Only the host creates/upgrades/retires caches;
+0x41544c53 (ATLS), user_version 4. Only the host creates/upgrades/retires caches;
 CLI is read-only. Newer schema preserves bytes and refuses. Foreign application,
 foreign scope, links or corrupt bytes are unreadable, never an absent index.
+Schema-3 pointers remain readable only as owned replacement fences. Their old
+bytes stay in place until a newly built schema-4 epoch passes exact child reap,
+validation and compare/replace; queries refuse the legacy schema in the meantime.
 
 Use WAL, synchronous NORMAL, foreign_keys ON, temp_store FILE, mmap_size 0 and
 4,096-byte pages. At most two in-host connections exist globally: one writer and
 one reader, including hostless requests delegated to the host; no hidden pool.
-Each connection cache is **32 pages =131,072 bytes**, at most eight cached statements
-within a 16,384-byte statement allowance each; query arena 98,304 bytes. Both
-connection objects/SQLite overhead and these reservations must fit the 500,000-byte
+Each connection cache is **16 pages =65,536 bytes**, with no cached statements
+and a 16,384-byte active statement allowance each; query arena 98,304 bytes. Both
+connection objects/SQLite overhead and these reservations must fit the 603,082-byte
 SQL share. Excess statement/overhead allocations fail admission, not borrow an
 unmeasured allowance. Hostless CLI has one RO connection in its own bounded process;
 80's external budget runner accounts for it when present. Cold child cache is
 <=2,000,000 bytes (488 pages =1,998,848 bytes), separate from its parser arena.
+An unpublished cold writer selects exclusive WAL locking before its first WAL
+access. Its index stays in process memory, with no mapped cache data or SHM file;
+normal host locking resumes on new connections after that writer closes.
 WAL admission stops at 8,000,000 bytes; checkpoint target 4,000,000. Reader transactions
 have bounded query deadlines and close at response completion. External readers
 cannot be forcibly expired: if their pins prevent checkpoint, suspend Atlas writes
@@ -169,6 +175,15 @@ with CacheBusy, preserve the old cache and report it. No idle checkpoint/expiry 
 Normative relational layout follows. Checked nonnegative counters and blob/text
 limits in this document also apply where SQL checks are abbreviated. All ordinary
 tables are STRICT. Cached source bodies and transcript text are never stored.
+
+File and symbol `activity.inbound_resolved` counters belong to the graph writer,
+independent of record touches. `last_touch_unix_ms` is nullable: a counter row
+with no public touch has NULL, never a fabricated zero timestamp. A reference
+contributes only while it has a target and its accuracy is not NameOnly. Insertion, invalidation, replacement, re-resolution and
+removal adjust both counters inside the same finite file transaction; rollback
+keeps the graph and its counts together. Ranking reads one counter by stable key,
+without a query-time edge scan. Counts never create a touch; a missing last-touch
+timestamp remains absent, including after a record is removed or restricted.
 
 ```sql
 CREATE TABLE meta (
@@ -405,7 +420,7 @@ never claims stuck filesystem IO disappeared at its deadline.
 
 One global low-priority scheduler, one active parse and one global cold child serve
 all roots. No per-agent process, thread, parser tree or watch duplication. Event
-queue <=150,000 bytes and <=256 path hints shared across roots; overflow is a sticky
+queue <=50,000 bytes and <=64 path hints shared across roots; overflow is a sticky
 root reconcile bit. Discovery/hash scans are streamed and cancellation-aware. Ignore
 policy uses nested .gitignore, registered info/exclude and already-loaded global
 patterns plus <=32 generated prefixes, together <=32,768 bytes (within metadata share).
@@ -510,8 +525,10 @@ path/text eligibility. Token density alone doesn't prove generated code.
 
 The former universal 16 KiB/100 ms host cap was unmeasured and is withdrawn. Host
 admission requires a measured per-grammar/platform profile fitting source, tree,
-extraction, grammar loads and retained allocator high-water mark inside its
-1,000,000-byte parser share and the overall 2,000,000-byte Atlas share. Profile
+extraction and retained anonymous allocator high-water mark inside its
+1,000,000-byte parser share and the overall 2,000,000-byte anonymous Atlas share.
+Shared file-backed grammar code/data pages have a separate measured reservation
+printed on profiles and status; they are not charged once per root or language. Profile
 limits cannot exceed 512 KiB/200 ms; they may lower source/row/work limits, stated
 in coverage. Without a qualified profile, semantics are ParserUnqualified/deferred,
 not a guessed promise of fit. Keep last-good rows visibly stale and offer bounded
@@ -800,11 +817,20 @@ allocation is exactly **2,000,000 bytes** across ALL roots, not per connection/r
 
 | Allocation | Bytes | Bound |
 | --- | ---: | --- |
-| SQLite + query | 500,000 | two 131,072-byte caches, two <=16,384-byte statement allowances, 98,304-byte query arena, remaining 106,784 for connection/SQLite overhead |
-| Source/parser/extraction/grammar | 1,000,000 | one measured admission profile, including retained allocator pages |
-| Coalesced work queue | 150,000 | <=256 hints, overflow becomes sticky reconcile |
+| SQLite + query | 603,082 | two 65,536-byte caches, two <=16,384-byte statement allowances, 98,304-byte query arena; measured native whole-SQL peak plus arena must also fit; retained writer profile 93,702 bytes (81,480 plus 15%) |
+| Source/parser/extraction | 1,000,000 | one measured admission profile, including retained anonymous allocator pages |
+| Coalesced work queue | 50,000 | <=64 hints and 32,000 active bytes; retained capacity/root bookkeeping fits the remainder; overflow becomes sticky reconcile |
 | Native watches/root/ignore metadata | 200,000 | <=2 active roots, path map cap and bounded policy |
-| Remaining allocator/accounting slack | 150,000 | not an extra pool or a new parser |
+| Remaining allocator/accounting slack | 146,918 | not an extra pool or a new parser |
+
+The provisional Linux/glibc component qualification covers only 1,024-byte source,
+512 rows and 200 ms for JavaScript/JSX/TypeScript/TSX/Rust/Python: source plus
+parser/extraction reserves 935,322 bytes. Shared parser/grammar file pages were
+4,759,552 bytes observed, reserved at 5,473,485 bytes including 15 percent margin.
+They are shared and evictable, separately bounded from anonymous memory. Other
+platforms and the joined owner/watch/query peak remain unqualified; component
+profiles do not arm the production default. The SQL share gained 100,000 bytes
+from the queue, reducing retained work hints instead of enlarging the total.
 
 These are proposed reservations, NOT measurements. A profile that exceeds one
 share must reduce admission or stay deferred; unused other-core memory and 80's

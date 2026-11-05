@@ -70,6 +70,7 @@ pub fn from_matches_with_key(
     };
     let op =
         match meta.name {
+            name if name.starts_with("atlas.") => atlas::decode(name, m, common.json)?,
             "continuity.resume" => AnyOp::Resume(Resume {
                 limit: required(m, "limit")?
                     .parse()

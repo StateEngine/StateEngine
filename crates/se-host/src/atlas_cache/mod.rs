@@ -50,6 +50,18 @@ impl NativeAtlasCache {
     /// Explicit after-ready activation only. All writers across this Atlas home,
     /// including cold children, share the same kernel lock and disk inventory.
     pub fn create(home: &Path, scope: Scope) -> AtlasResult<Self> {
+        Self::create_inner(home, scope, None)
+    }
+    /// Host calls only after independently reaping its exact cold child. Claim
+    /// the child's journaled inode instead of crash-reclaiming its candidate.
+    pub fn resume_unpublished(home: &Path, scope: Scope, epoch: &CacheEpoch) -> AtlasResult<Self> {
+        Self::create_inner(home, scope, Some(epoch))
+    }
+    fn create_inner(
+        home: &Path,
+        scope: Scope,
+        candidate: Option<&CacheEpoch>,
+    ) -> AtlasResult<Self> {
         let home = NativeStateFiles::create(home).map_err(fail)?;
         let lock = home.root().join("writer.lock");
         if home.readback(&lock).map_err(fail)?.is_none() {
@@ -101,7 +113,11 @@ impl NativeAtlasCache {
             growth: Cell::new(0),
             other_roots_bytes: total - root_bytes,
         };
-        cache.recover_reservation()?;
+        if let Some(epoch) = candidate {
+            cache.claim_reservation(epoch)?;
+        } else {
+            cache.recover_reservation()?;
+        }
         Ok(cache)
     }
     fn require_writer(&self) -> AtlasResult<()> {
@@ -153,6 +169,12 @@ impl NativeAtlasCache {
     }
 }
 impl CacheFiles for NativeAtlasCache {
+    fn configure_connection(
+        &self,
+        connection: &se_atlas::cache::connection::NativeSqlConnection,
+    ) -> AtlasResult<()> {
+        se_proc::atlas_sql::configure(connection).map_err(|error| fail(error.to_string().as_str()))
+    }
     fn read_pointer(&self) -> AtlasResult<Option<Vec<u8>>> {
         let Some(file) = self.root.readback(&self.pointer()).map_err(fail)? else {
             return Ok(None);
@@ -171,6 +193,31 @@ impl CacheFiles for NativeAtlasCache {
             .ok_or_else(|| fail("candidate epoch absent"))?;
         if self.read_pointer()?.as_deref() != expected {
             return Err(fail("Atlas pointer changed; rediscover"));
+        }
+        // A swap turns the old current into the one retired epoch. An already
+        // retained retirement must drain before another pointer can replace it.
+        if expected.is_none_or(|b| {
+            se_atlas::cache::pointer::decode(b, &self.scope).is_ok_and(|p| p.epoch != pointer.epoch)
+        }) {
+            let epochs = NativeStateFiles::open(&self.root.root().join("epochs")).map_err(fail)?;
+            let mut count = 0u32;
+            for entry in std::fs::read_dir(epochs.root()).map_err(fail)? {
+                let entry = entry.map_err(fail)?;
+                if !entry.file_type().map_err(fail)?.is_dir() {
+                    return Err(fail("unknown epoch entry preserved before publication"));
+                }
+                count += 1;
+            }
+            epochs
+                .readback(&epochs.root().join(".atlas-publication-check"))
+                .map_err(fail)?;
+            if count > 2 {
+                return Err(busy(
+                    "Atlas retired epoch pending cleanup before publication",
+                    1,
+                    0,
+                ));
+            }
         }
         match expected {
             Some(expected) => {

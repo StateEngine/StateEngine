@@ -36,9 +36,11 @@ pub(super) async fn measured(
     let pending = context.pending_writes.clone();
     let runtime = context.blocking.handle();
     let fault = context.ownership_fault.clone();
+    let record_feed = context.atlas.records.clone();
     let (completion, submission) =
         timings::blocking(&context.blocking, Mode::Owned, deadline, move || {
             submit_deadline.remaining()?;
+            let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
             pending.register(&submitted)?;
             match writer.submit(batch) {
                 Ok(completion) => {
@@ -47,6 +49,13 @@ pub(super) async fn measured(
                     // It holds no blocking permit while awaiting the store.
                     Ok(runtime.spawn(async move {
                         let receipt = completion.await;
+                        if receipt.as_ref().is_err_and(|e| {
+                            e.code == se_store::StoreErrorCode::CommitOutcomeUnknown
+                        }) {
+                            record_write.uncertain();
+                        } else {
+                            drop(record_write);
+                        }
                         if let Err(error) = &receipt {
                             fault.observe_writer(error);
                         }

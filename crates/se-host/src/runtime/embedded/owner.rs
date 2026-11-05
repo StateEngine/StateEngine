@@ -274,6 +274,11 @@ async fn take_ownership(
     }
     host.restore_transcripts(&deadline).await?;
     host.configure(config)?;
+    #[cfg(target_os = "linux")]
+    host.install_native_atlas(
+        inputs.helper_executable.clone(),
+        crate::NativeAtlasQualification::default(),
+    )?;
     let linux_delegation = match inputs.linux_delegation {
         api::LinuxDelegation::AutoUserManager => se_proc::LinuxDelegation::AutoUserManager,
         api::LinuxDelegation::CurrentScope => se_proc::LinuxDelegation::CurrentScope,

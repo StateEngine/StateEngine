@@ -1,6 +1,10 @@
 //! The operation list for the executable wave-one surface. Later waves add their
 //! production operations here; no placeholder handlers or phantom tools are exposed.
 pub mod administration;
+pub mod atlas;
+pub mod atlas_hook;
+pub use atlas::*;
+pub use atlas_hook::{AtlasAugment, AtlasHookOutput, AtlasHookTarget};
 pub mod continuity;
 pub use continuity::{Resume, ResumeOutput, SessionContextOutput, SessionContextRequest};
 pub mod agent;
@@ -106,7 +110,7 @@ macro_rules! ops {
         $(impl $input { pub const META: OpMeta = OpMeta {
             name:$name, cli:$cli, mcp:$mcp, auth:Auth::$auth, anonymous:$anonymous,
             human_only:HumanPolicy::$human, effect:Effect::$effect, variants:&[],
-            scope:Scope::$scope, runtime:RuntimeNeed::$runtime, feature:Feature::Core,
+            scope:Scope::$scope, runtime:RuntimeNeed::$runtime, feature:operation_feature($name),
             family:Family { name:$family, major:1 }, human:HumanKind::$render,
             since:API_VERSION, journeys:$journeys,
         }; })+
@@ -120,7 +124,7 @@ macro_rules! ops {
         pub(crate) fn input_schema(name:&str) -> Option<serde_json::Value> {
             match name { $( $name=>Some(schemars::schema_for!($input).to_value()), )+ _=>None }
         }
-        pub(crate) fn schemas(name:&str) -> Option<(serde_json::Value,serde_json::Value)> {
+        pub fn schemas(name:&str) -> Option<(serde_json::Value,serde_json::Value)> {
             match name { $( $name=>{
                 let mut output=schemars::schema_for!(Envelope<$output>).to_value();
                 if let Some(properties)=output.get_mut("properties").and_then(serde_json::Value::as_object_mut) {
@@ -129,6 +133,21 @@ macro_rules! ops {
                 Some((input_schema(name)?,output))
             }, )+ _=>None }
         }
+    }
+}
+const fn operation_feature(name: &str) -> Feature {
+    let bytes = name.as_bytes();
+    if bytes.len() > 6
+        && bytes[0] == b'a'
+        && bytes[1] == b't'
+        && bytes[2] == b'l'
+        && bytes[3] == b'a'
+        && bytes[4] == b's'
+        && bytes[5] == b'.'
+    {
+        Feature::Atlas
+    } else {
+        Feature::Core
     }
 }
 const fn leaf(path: &'static [&'static str]) -> CliExposure {
@@ -149,6 +168,12 @@ const fn tool(name: &'static str, title: &'static str, description: &'static str
     }
 }
 ops! {
+    AtlasAugment => AtlasAugment, AtlasHookOutput, ("atlas.augment",CliExposure::None {reason:"Private native provider augmentation only."},no_mcp("The provider hook uses authenticated native IPC, never a model tool."),Session,false,Never,Read,Project,Host,"se.atlas-hook",Hook,&["J3"]);
+    AtlasFind => AtlasFind, AtlasFindOutput, ("atlas.find",leaf(&["atlas","find"]),tool("stateengine_atlas_find","Atlas find","Where is X, and what was decided about it? Search code and committed project records; for example query=authenticate or query=packet budget."),Either,false,Never,Read,Project,Host,"se.code-hits",CodeHits,&["J3"]);
+    AtlasRefs => AtlasRefs, AtlasRefsOutput, ("atlas.refs",leaf(&["atlas","refs"]),tool("stateengine_atlas_refs","Atlas refs","Who references X? Read resolved and labelled spelling candidates; for example target Symbol Name authenticate, or File src/auth.rs."),Either,false,Never,Read,Project,Host,"se.code-refs",CodeRefs,&["J3"]);
+    AtlasImpact => AtlasImpact, AtlasImpactOutput, ("atlas.impact",leaf(&["atlas","impact"]),tool("stateengine_atlas_impact","Atlas impact","What could this change affect? Follow bounded code and file dependencies with linked records; for example depth=1 callers or depth=2 tests."),Either,false,Never,Read,Project,Host,"se.impact",Impact,&["J3"]);
+    AtlasChanges => AtlasChanges, AtlasChangesOutput, ("atlas.changes",leaf(&["atlas","changes"]),tool("stateengine_atlas_changes","Atlas changes","What changed since this observed baseline? Read code changes and honest attribution; use an Atlas cursor, observed commit, or observation time."),Either,false,Never,Read,Project,Host,"se.code-changes",CodeChanges,&["J3"]);
+    AtlasOutline => AtlasOutline, AtlasOutlineOutput, ("atlas.outline",leaf(&["atlas","outline"]),tool("stateengine_atlas_outline","Atlas outline","What is in this file, and what records mention it? Read declarations with source positions and linked decisions or messages."),Either,false,Never,Read,Project,Host,"se.outline",Outline,&["J3"]);
     MetaVersion => MetaVersion, VersionOutput, ("meta.version",CliExposure::RootFlag { flag:"version" },no_mcp("Installed CLI metadata is not an agent task."),Either,true,Never,Read,None,None,"se.version",Version,&["J1"]);
     MetaHelp => MetaHelp, HelpOutput, ("meta.help",leaf(&["help"]),no_mcp("MCP descriptions derive from the same catalogue."),Either,true,Never,Read,None,None,"se.help",Help,&["J1"]);
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
@@ -264,6 +289,14 @@ impl AnyOutput {
                 || v.value.captured.exit_code(),
                 |failure| failure.class().exit_code(),
             ),
+            Self::AtlasFind(v) => match &v.value.answer.data {
+                se_types::Read::Present { value } => value.page.window().exit_code(false),
+                other => other.exit_code(),
+            },
+            Self::AtlasRefs(v) => atlas::page_exit(&v.value.answer.data),
+            Self::AtlasChanges(v) => atlas::page_exit(&v.value.answer.data),
+            Self::AtlasImpact(v) => atlas::complete_exit(&v.value.answer.data, |v| v.complete),
+            Self::AtlasOutline(v) => atlas::complete_exit(&v.value.answer.data, |v| v.complete),
             Self::DoctorInspect(v) => v.value.exit_code(),
             Self::DoctorRepair(v) if !v.value.complete => 2,
             Self::Uninstall(v) if !v.value.complete => 2,

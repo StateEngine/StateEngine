@@ -32,6 +32,8 @@ enum ConnectionEnd {
     Cancelled,
     Stop(Box<AuthorizedStop>),
     CatchUp(Result<()>),
+    #[cfg(target_os = "linux")]
+    Atlas(Result<()>),
 }
 #[allow(
     clippy::large_enum_variant,
@@ -99,6 +101,15 @@ impl HostedRuntime {
             super::memory::while_serving(idle, self.memory_reclaim.clone()),
         );
         let mut tasks = JoinSet::new();
+        #[cfg(target_os = "linux")]
+        if let Some(service) = self.atlas_owner.clone() {
+            let context = self.execution.clone();
+            let stopped = cancelled.clone();
+            tasks.spawn_on(
+                async move { Ok(ConnectionEnd::Atlas(service.run(context, stopped).await)) },
+                &runtime,
+            );
+        }
         let mut timers = super::live::Timers::new(
             idle,
             activity.clone(),
@@ -210,6 +221,12 @@ impl HostedRuntime {
                     exit.stop = Some(stop);
                     break exit;
                 }
+                #[cfg(target_os = "linux")]
+                Event::Joined(Ok(Ok(ConnectionEnd::Atlas(result)))) => {
+                    if let Err(error) = result {
+                        eprintln!("Code index owner paused: {error}");
+                    }
+                }
                 Event::Joined(Ok(Ok(ConnectionEnd::CatchUp(result)))) => {
                     catch_up_running = false;
                     if let Err(error) = result {
@@ -303,6 +320,10 @@ impl HostedRuntime {
                     }
                 }
                 Ok(Err(error)) => outcome.runtime.failed_connection(error),
+                #[cfg(target_os = "linux")]
+                Ok(Ok(ConnectionEnd::Atlas(Err(error)))) => {
+                    outcome.failure.get_or_insert(error);
+                }
                 Ok(Ok(ConnectionEnd::CatchUp(Err(error)))) => {
                     outcome.runtime.failed_connection(error)
                 }
@@ -316,6 +337,14 @@ impl HostedRuntime {
         }
         outcome.failed_connections = outcome.runtime.connection_failures;
         outcome.last_connection_error = outcome.runtime.last_connection_error.clone();
+        #[cfg(target_os = "linux")]
+        if let (Some(service), Some(bound)) = (
+            outcome.runtime.atlas_owner.clone(),
+            outcome.runtime.shutdown_deadline.as_ref(),
+        ) && let Err(error) = service.close(&outcome.runtime.execution, bound).await
+        {
+            outcome.failure.get_or_insert(error);
+        }
         outcome
     }
     fn failed_connection(&mut self, error: SeError) {

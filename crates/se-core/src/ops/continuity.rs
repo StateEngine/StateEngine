@@ -5,7 +5,7 @@ mod compact;
 mod cursor;
 pub(crate) use cursor::{resume_since, validate_resume_since};
 mod identity;
-mod packet;
+pub(crate) mod packet;
 mod read;
 mod rulings;
 pub mod types;

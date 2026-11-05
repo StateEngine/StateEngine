@@ -39,6 +39,7 @@ pub struct ClaudeHarness {
     probed: Mutex<Option<ProviderVersion>>,
     bells: Option<Arc<crate::http::mail::bell::Bells>>,
     plugins: Mutex<std::collections::BTreeMap<se_types::SessionId, PathBuf>>,
+    atlas_hooks: bool,
 }
 impl ClaudeHarness {
     /// `se_executable` is the trusted installed se the hooks call; `mcp_port`
@@ -57,10 +58,15 @@ impl ClaudeHarness {
             probed: Mutex::new(None),
             bells: None,
             plugins: Mutex::default(),
+            atlas_hooks: false,
         }
     }
     pub(crate) fn with_bells(mut self, bells: Arc<crate::http::mail::bell::Bells>) -> Self {
         self.bells = Some(bells);
+        self
+    }
+    pub fn with_atlas_hooks(mut self, enabled: bool) -> Self {
+        self.atlas_hooks = enabled;
         self
     }
     /// The protected per-launch directory the session pin also lives in.
@@ -151,7 +157,13 @@ impl Harness for ClaudeHarness {
             let directory = self.launch_directory(request)?;
             let conversation = claude::conversation(request)?;
             let plan = self.plan(request, &directory, &conversation);
-            let mut configuration = claude::configuration(&plan)?;
+            let hooks = self
+                .atlas_hooks
+                .then(|| {
+                    crate::atlas_hooks::hook_configuration(&self.se_executable, &self.state_home)
+                })
+                .flatten();
+            let mut configuration = claude::configuration_with_hooks(&plan, hooks)?;
             if request.mode == se_proc::LaunchMode::Window
                 && let Some(bells) = &self.bells
             {

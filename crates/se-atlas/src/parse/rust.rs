@@ -56,6 +56,7 @@ pub(super) fn declaration<'a>(node: Node<'a>, bytes: &[u8]) -> Option<Declaratio
     }
     Some(Declaration {
         name,
+        name_override: None,
         kind,
         body: node
             .child_by_field_name("body")

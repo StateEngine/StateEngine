@@ -21,11 +21,17 @@ pub(super) fn open_root(path: &Path) -> io::Result<File> {
     owned(fd)
 }
 pub(super) fn open_relative(root: &File, path: &str) -> io::Result<File> {
+    open_components(root, path, false)
+}
+pub(super) fn open_directory(root: &File, path: &str) -> io::Result<File> {
+    open_components(root, if path.is_empty() { "." } else { path }, true)
+}
+fn open_components(root: &File, path: &str, last_directory: bool) -> io::Result<File> {
     let mut directory = root.try_clone()?;
     let mut components = path.split('/').peekable();
     while let Some(part) = components.next() {
         let name = CString::new(part).map_err(|_| invalid("NUL in source component"))?;
-        let is_directory = components.peek().is_some();
+        let is_directory = components.peek().is_some() || last_directory;
         let flags = libc::O_RDONLY
             | libc::O_CLOEXEC
             | libc::O_NOFOLLOW

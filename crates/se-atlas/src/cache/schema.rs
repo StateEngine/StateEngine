@@ -3,7 +3,7 @@ use super::*;
 use crate::errors::cache_error;
 use rusqlite::{Connection, params};
 pub const APPLICATION_ID: u32 = 0x41544c53;
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 4;
 pub const SQL: &str = include_str!("schema.sql");
 pub fn initialize(db: &Connection, seed: &CacheSeed) -> AtlasResult<()> {
     let coverage_json = serde_json::to_string(&seed.coverage).map_err(cache_error)?;

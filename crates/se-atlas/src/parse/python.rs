@@ -4,9 +4,30 @@ use tree_sitter::Node;
 pub(super) fn declaration<'a>(node: Node<'a>, bytes: &[u8]) -> Option<Declaration<'a>> {
     use SymbolKind::*;
     let kind = match node.kind() {
-        "function_definition" => Function,
+        "function_definition" => {
+            if node
+                .parent()
+                .and_then(|p| p.parent())
+                .is_some_and(|p| p.kind() == "class_definition")
+            {
+                Method
+            } else {
+                Function
+            }
+        }
         "class_definition" => Class,
-        "assignment" => Variable,
+        "assignment" => {
+            if node
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .is_some_and(|p| p.kind() == "class_definition")
+            {
+                Field
+            } else {
+                Variable
+            }
+        }
         "default_parameter" | "typed_parameter" | "typed_default_parameter" => Parameter,
         "identifier" if node.parent().is_some_and(|n| n.kind() == "parameters") => Parameter,
         _ => return None,
@@ -21,6 +42,7 @@ pub(super) fn declaration<'a>(node: Node<'a>, bytes: &[u8]) -> Option<Declaratio
     }
     Some(Declaration {
         name,
+        name_override: None,
         kind,
         body: node
             .child_by_field_name("body")

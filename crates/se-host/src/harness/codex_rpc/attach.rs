@@ -53,7 +53,7 @@ impl CodexHarness {
             binding.notify("initialized", json!({}), &cx).await?;
             let resolved = self.resolved(request)?;
             let plan = self.plan(request, &resolved, socket.as_deref());
-            let (method, params) = input::thread(&plan)?;
+            let (method, params) = self.thread(&plan)?;
             let response = binding.request(method, params, &cx).await?;
             let conversation = input::verify_thread(&plan, &response)?;
             binding.state.lock().map_err(|_| poisoned())?.conversation = Some(conversation.clone());

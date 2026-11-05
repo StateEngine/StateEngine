@@ -8,6 +8,19 @@ use std::io;
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+/// Native Darwin boot fact for an owner lease. This observes KERN_BOOTTIME;
+/// it does not derive machine identity or grant owner authority.
+#[cfg(target_os = "macos")]
+pub fn observe_boot_id() -> std::result::Result<se_types::BootId, OwnerProbeError> {
+    match macos::boot()? {
+        BootIdentity::MacOs {
+            seconds,
+            microseconds,
+        } => se_types::BootId::new(format!("macos-{seconds}-{microseconds}"))
+            .map_err(|error| native("encode native boot identity", io::Error::other(error))),
+        _ => Err(refuse("read boot identity", "native boot kind differs")),
+    }
+}
 #[cfg(unix)]
 mod unix;
 #[cfg(windows)]

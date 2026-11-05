@@ -8,6 +8,7 @@ type ResumeRow = (
     u64,
 );
 mod access;
+mod atlas_resume;
 mod capture;
 mod continuity;
 mod control;

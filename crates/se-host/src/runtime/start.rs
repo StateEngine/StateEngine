@@ -46,6 +46,8 @@ impl RuntimeLease for HostLease {
     }
 }
 pub struct HostedRuntime {
+    #[cfg(target_os = "linux")]
+    pub(super) atlas_owner: Option<Arc<super::atlas_owner::Service>>,
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     pub(super) memory_reclaim: Option<super::memory::MemoryReclaim>,
     #[cfg(unix)]
@@ -320,6 +322,7 @@ fn prepare(
         .start_writer(options.writer, lease.clone())
         .map_err(|e| store_error(&e))?;
     let execution = ExecutionContext {
+        atlas: Arc::default(),
         mail_waits: crate::http::mail::Waits::new(options.limits.sessions.get() as usize),
         http_proofs: Arc::default(),
         state_directory: options.state_directory.clone(),
@@ -333,6 +336,8 @@ fn prepare(
         ownership_fault: Arc::default(),
     };
     Ok(HostedRuntime {
+        #[cfg(target_os = "linux")]
+        atlas_owner: None,
         #[cfg(unix)]
         socket_paths: Default::default(),
         execution,

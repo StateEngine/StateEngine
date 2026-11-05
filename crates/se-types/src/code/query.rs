@@ -13,8 +13,62 @@ pub struct QueryBudget {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ScopeWire")]
 pub struct SearchScope {
+    /// Exact files or directories, including their descendants at path boundaries.
     pub paths: Vec<RelativePath>,
     pub languages: Vec<Language>,
+}
+impl SearchScope {
+    pub fn validate(&self) -> crate::Result<()> {
+        if self.paths.len() > 32
+            || self.languages.len() > 32
+            || self
+                .paths
+                .iter()
+                .map(|p| p.as_str().len() + 1)
+                .sum::<usize>()
+                > 8192
+        {
+            return Err(crate::SeError::invalid(
+                "Atlas scope",
+                "at most 32 paths/languages and 8192 path bytes",
+            ));
+        }
+        Ok(())
+    }
+    pub fn includes_path(&self, path: &RelativePath) -> bool {
+        self.paths.is_empty()
+            || self.paths.iter().any(|prefix| {
+                path == prefix
+                    || path
+                        .as_str()
+                        .strip_prefix(prefix.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('/'))
+            })
+    }
+    pub fn packed_languages(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for language in &self.languages {
+            let name = match language {
+                Language::JavaScript => "JavaScript",
+                Language::Jsx => "Jsx",
+                Language::TypeScript => "TypeScript",
+                Language::Tsx => "Tsx",
+                Language::Rust => "Rust",
+                Language::Python => "Python",
+            };
+            bytes.extend_from_slice(name.as_bytes());
+            bytes.push(0);
+        }
+        bytes
+    }
+    pub fn packed_paths(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for path in &self.paths {
+            bytes.extend_from_slice(path.as_str().as_bytes());
+            bytes.push(0);
+        }
+        bytes
+    }
 }
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -35,6 +89,7 @@ pub enum SymbolSelector {
 #[derive(
     Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
+#[serde(rename_all = "snake_case")]
 pub enum SearchKind {
     All,
     Code,
@@ -148,15 +203,11 @@ struct ScopeWire {
 impl TryFrom<ScopeWire> for SearchScope {
     type Error = crate::SeError;
     fn try_from(v: ScopeWire) -> crate::Result<Self> {
-        if v.paths.len() > 32 || v.languages.len() > 32 {
-            return Err(crate::SeError::invalid(
-                "Atlas scope",
-                "at most 32 paths/languages",
-            ));
-        }
-        Ok(Self {
+        let scope = Self {
             paths: v.paths,
             languages: v.languages,
-        })
+        };
+        scope.validate()?;
+        Ok(scope)
     }
 }

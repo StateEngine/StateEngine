@@ -4,6 +4,8 @@
 use crate::{AgentId, ErrorBody, EventId, ProjectId};
 pub use crate::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::time::Duration;
+mod resources;
+pub use resources::{GrammarPages, MemoryBudget};
 
 #[derive(
     Clone,
@@ -163,12 +165,15 @@ pub enum CoverageReason {
     UnresolvedImport,
     DynamicDispatch,
     StaleSnapshot,
+    RecordFeedLag,
+    RecordBodyLimit,
     TimeLimit,
     ResultLimit,
     ByteLimit,
     WatchLoss,
     PartialWatch,
     ParserUnqualified,
+    HistoryUnavailable,
     BaselineReset,
     BulkChange,
     RetentionGap,
@@ -251,6 +256,9 @@ pub struct Coverage {
     pub watch_activation_attempts: u64,
     pub watch_limited_activations: u64,
     pub reasons: Vec<CoverageReason>,
+    /// Optional Git enrichment failed; source coverage remains independently usable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_unavailable: Option<ErrorBody>,
 }
 
 #[derive(
@@ -294,6 +302,8 @@ pub struct IndexSummary {
     pub generation: Option<Generation>,
     pub state: IndexState,
     pub coverage: Coverage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryBudget>,
 }
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -352,6 +362,8 @@ pub struct Dependent {
     pub pointer: CodePointer,
     pub symbol: Option<SymbolId>,
     pub hops: Vec<ImpactHop>,
+    #[serde(default)]
+    pub file_hops: Vec<FileImpactHop>,
 }
 #[derive(
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
@@ -489,7 +501,9 @@ pub struct ResumeRequest {
     pub cursor_revision: u64,
     pub recently_edited_symbols: Vec<SymbolId>,
 }
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub enum ResumeCodeState {
     Available,
     Zero,
@@ -535,6 +549,20 @@ pub enum ResumeCursorCommit {
     AlreadyApplied { revision: u64 },
     Stale { actual_revision: u64 },
 }
+/// Model-visible status; private delivery/CAS controls are never serialized here.
+#[derive(
+    Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+pub struct ResumeCodeStatus {
+    pub state: ResumeCodeState,
+    pub complete: bool,
+    /// None means the omitted count is unknown, never zero.
+    pub omitted: Option<u64>,
+    pub unattributed_omitted: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub omitted_since: Option<AtlasCursor>,
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 pub struct ResumeCode {
     pub index: IndexSummary,

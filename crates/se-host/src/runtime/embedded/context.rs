@@ -50,6 +50,8 @@ impl EmbeddedHost {
         let scope = binding::session_scope(session)?;
         let checked = scope.clone();
         let revision = session.binding_revision;
+        let atlas = router.execution.atlas.clone();
+        let ticket = atlas.records.ticket().unwrap_or(None);
         store::read(&router, scope, &deadline, move |read| {
             binding::check(read, &checked, revision)?;
             let agent = se_types::AgentId::from_linked(binding.identity.agent.clone())?;
@@ -124,13 +126,21 @@ impl EmbeddedHost {
                 latest = Some(latest.unwrap_or(0).max(time));
                 rows.push(serde_json::json!({"event":turn.header.event,"role":role,"text":text}));
             }
-            let text = serde_json::to_string(&serde_json::json!({
+            let mut text = serde_json::to_string(&serde_json::json!({
                 "agent":binding.identity.agent.0,"name":name,"role":role,
                 "working_state":working,"recent_turns":rows,
                 "recent_turns_complete":turns.window().complete(),
                 "recent_turns_omitted":turns.window().omitted()
             }))
             .map_err(|e| scope::unreadable("linked continuity encoding", &e.to_string()))?;
+            crate::atlas_continuity::attach_model(
+                &atlas,
+                ticket,
+                read,
+                &checked.admission,
+                &mut text,
+                maximum as u32,
+            )?;
             let complete = text.len() <= maximum;
             // BoundedText describes this complete prompt, while the separate
             // source window and omission summary describe the history excerpt.

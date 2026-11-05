@@ -127,7 +127,7 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(
         out,
-        "Conversation recording: {}; code index: {}",
+        "Conversation recording: {}; code index: {}; history: {}",
         if value.capture.state == "unknown" {
             "not checked"
         } else {
@@ -137,7 +137,8 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             "not built"
         } else {
             &value.atlas.state
-        }
+        },
+        value.atlas.history
     )?;
     for pending in &value.pending {
         if pending.what == "runtime observation"

@@ -13,6 +13,8 @@ use sha2::{Digest, Sha256 as Hasher};
 #[path = "support/wave2_host_fixture.rs"]
 mod support;
 use support::*;
+#[path = "captured_tools_independent/atlas.rs"]
+mod atlas;
 
 #[test]
 fn trusted_tool_facts_survive_capture_readback_and_retry_for_both_providers() -> Check {
@@ -27,9 +29,10 @@ fn capture_case(provider: Provider) -> Check {
     seed(&f)?;
     let session = session::session()?;
     let conversation = ProviderSessionId::new(format!("provider-{}", f.a.as_str()))?;
+    std::fs::write(f.home.join("a.rs"), "fn actual() {}\n")?;
     let rows = match provider {
         Provider::Claude => vec![
-            json!({"type":"assistant","uuid":"native-called","sessionId":conversation.as_str(),"cwd":"/native/work",
+            json!({"type":"assistant","uuid":"native-called","sessionId":conversation.as_str(),"cwd":f.home.to_str().ok_or("fixture root is not Unicode")?,
                 "message":{"role":"assistant","content":[
                     {"type":"tool_use","id":"call-a","name":"Edit","input":{"file_path":"a.rs","new_string":"INTENDED_CONTENT"}},
                     {"type":"tool_use","id":"call-b","name":"Read","input":{"file_path":"b.rs"}}]}}),
@@ -39,6 +42,12 @@ fn capture_case(provider: Provider) -> Check {
                 "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-a","is_error":false,"content":"PRIVATE_OUTPUT"}]}}),
         ],
         Provider::Codex => {
+            let changed_path = f
+                .home
+                .join("a.rs")
+                .to_str()
+                .ok_or("fixture path is not Unicode")?
+                .to_owned();
             let row = |item: Value| {
                 json!({"type":"event_msg","payload":{"type":"item_completed",
                 "thread_id":conversation.as_str(),"turn_id":"native-turn","item":item}})
@@ -47,7 +56,7 @@ fn capture_case(provider: Provider) -> Check {
                 json!({"type":"session_meta","payload":{"id":conversation.as_str()}}),
                 row(
                     json!({"type":"FileChange","id":"actual-file-item","status":"Completed",
-                "changes":{"a.rs":{"type":"add","content":"INTENDED_CONTENT"}}}),
+                "changes":{(changed_path):{"type":"add","content":"INTENDED_CONTENT"}}}),
                 ),
                 row(
                     json!({"type":"McpToolCall","id":"actual-mcp-item","call_id":"actual-call",
@@ -146,7 +155,9 @@ fn capture_case(provider: Provider) -> Check {
                 require(completed == 2, "actual outcomes missing")?;
                 let progress = present(snapshot.capture_source(source)?)?;
                 require(matches!(progress.current.body, EventBody::CaptureProgress {new_offset,..} if new_offset==bytes.len() as u64), "source cursor stopped before retained facts")?;
-                snapshot.close()?; Ok(())
+                snapshot.close()?;
+                atlas::check(&execution, &f)?;
+                Ok(())
             }.await;
             stop.request(); result
         };

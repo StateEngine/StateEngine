@@ -249,13 +249,42 @@ fn finite_host_phases_return_both_slots_before_network_and_commit() -> Check {
             client.join().map_err(|_| "native client panicked")??;
             drop(connection);
 
-            let planned = plan(checked_phase(reader, host.generation())?, call)?;
+            let planned = plan(checked_phase(reader, host.generation())?, call, None)?;
             full_budget(reader, "after plan return with owned plan still alive")?;
             let Step::Commit { batch, then } = planned.step else {
                 return Err("write plan required".into());
             };
             full_budget(reader, "pre-commit, before actual writer submission")?;
-            let receipt = host.execution.writer.submit(batch)?.await?;
+            let feed = &host.execution.atlas.records;
+            let feed_scope = crate::atlas_runtime::record_fence::RecordFeedScope {
+                project: f.project.clone(),
+                root: se_types::code::RootId::from_parts(1, [2; 10])?,
+                epoch: se_types::code::CacheEpoch::from_parts(1, [3; 10])?,
+            };
+            let ticket = feed.ticket()?.ok_or("unexpected pending core write")?;
+            assert!(feed.mark_current(feed_scope.clone(), ticket)?);
+            let identity = crate::runtime::WriteIdentity {
+                operation: "working_state.set",
+                natural_key: None,
+                key: batch.request.as_ref().map(|request| request.key.clone()),
+                natural_events: Vec::new(),
+            };
+            let receipt =
+                crate::runtime::submit::measured(&host.execution, batch, &identity, &bound()?)
+                    .await?
+                    .0;
+            assert!(
+                !feed.is_current(&feed_scope, Some(ticket))?,
+                "the actual hosted write must clear record freshness before a later query snapshot"
+            );
+            assert!(
+                !feed.mark_current(feed_scope, ticket)?,
+                "a feed built from the preceding core snapshot cannot restore freshness"
+            );
+            // The real retained writer observer must leave a coalesced event,
+            // even though no Atlas maintenance waiter existed at submission.
+            tokio::time::timeout(Duration::from_secs(1), feed.changed()).await?;
+            assert_eq!(feed.interests()?, vec![f.project.clone()]);
             let mut read = checked_phase(reader, host.generation())?
                 .into_snapshot(read_scope(&planned.admission))?;
             let result = planned.kernel.committed(

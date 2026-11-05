@@ -4,13 +4,21 @@ pub use se_types::code::{
     Accuracy, Answer, AtlasCursor, AtlasJobId, AtlasPrincipal, AuthorHint, BulkChange, BulkReason,
     ChangeId, ChangeKind, CodeChange, CodeEdit, CodeHit, CodePointer, CommitHit, ContentHash,
     Coverage, CoverageReason, Dependent, DependentCount, FileCoverage, FileId, FindMethod,
-    Generation, HitReason, HitTarget, Impact, ImpactHop, IndexState, IndexSummary, Language,
-    MentionTarget, Outline, OutlineSymbol, Position, QueryBudget, QueryText, RecordHit, RecordKey,
-    RecordKind, RecordPointer, RecordVisibility, Reference, ReferenceHit, ReferenceKind,
-    RelativePath, SearchHit, SnapshotFreshness, Span, SurfaceAtlasState, SymbolId, SymbolKind,
+    Generation, GrammarPages, HitReason, HitTarget, Impact, ImpactHop, IndexState, IndexSummary,
+    Language, MemoryBudget, MentionTarget, Outline, OutlineSymbol, Position, QueryBudget,
+    QueryText, RecordHit, RecordKey, RecordKind, RecordPointer, RecordVisibility, Reference,
+    ReferenceHit, ReferenceKind, RelativePath, SearchHit, SnapshotFreshness, Span,
+    SurfaceAtlasState, SymbolId, SymbolKind,
 };
 pub use se_types::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::{path::PathBuf, time::Duration};
+
+pub const ANONYMOUS_BYTES: u32 = 2_000_000;
+pub const SQL_QUERY_BYTES: u32 = 603_082;
+pub const PARSER_BYTES: u32 = 1_000_000;
+pub const QUEUE_BYTES: u32 = 50_000;
+pub const ADAPTER_BYTES: u32 = 200_000;
+pub const ALLOCATOR_SLACK_BYTES: u32 = 146_918;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CacheLocation {
