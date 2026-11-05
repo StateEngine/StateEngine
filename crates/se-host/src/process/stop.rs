@@ -32,6 +32,12 @@ impl LaunchCoordinator {
                         return;
                     }
                 };
+                if state.native_already_reconciled
+                    && let Err(error) = self.capture.wait_until_open(&deadline).await
+                {
+                    state.cleanup_failure = Some(error.body);
+                    return;
+                }
                 if state.recover_provider
                     && !self.recover_control(&mut state, &job, &deadline).await
                 {
@@ -93,7 +99,14 @@ impl LaunchCoordinator {
                                 self.activity
                                     .send_modify(|count| *count = count.saturating_sub(1));
                             }
-                            Err(error) => state.cleanup_failure = Some(error.body),
+                            Err(error) => {
+                                if state.native_already_reconciled
+                                    && let Ok(mut fault) = job.fault.lock()
+                                {
+                                    *fault = Some(error.to_string());
+                                }
+                                state.cleanup_failure = Some(error.body);
+                            }
                         }
                         return;
                     }
@@ -252,6 +265,13 @@ impl LaunchCoordinator {
         work: &Work,
         deadline: &Deadline,
     ) -> Result<StopObservation> {
+        if work.native_already_reconciled {
+            return work
+                .last_witness
+                .clone()
+                .map(|witness| StopObservation::Complete(Box::new(witness)))
+                .ok_or_else(|| error("recovered exit", "no retained native exit proof"));
+        }
         let owner = work.process.clone().ok_or_else(|| {
             se_core::scope::unreadable("native exit observation", "owned reference is unavailable")
         })?;

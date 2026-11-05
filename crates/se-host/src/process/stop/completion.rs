@@ -11,6 +11,20 @@ impl LaunchCoordinator {
         if !work.session_retired {
             self.revoke_credentials(work, deadline).await?;
         }
+        if work.native_already_reconciled && !work.session_retired {
+            self.flush_capture(work, deadline).await.map_err(|failure| {
+                let repair = se_core::ops::AgentCommand::stop_in_home(
+                    &work.meta.agent.id,
+                    &self.options.home,
+                    &work.meta.project.id,
+                )
+                .map(|command| command.command)
+                .unwrap_or_else(|| se_core::ops::AgentCommand::HOME_UNAVAILABLE.into());
+                error("recovered final capture", format!(
+                    "{failure}; session and original transcript remain pending, not retired. Restore access to the original transcript and protected binding, then retry: {repair}"
+                ))
+            })?;
+        }
         if !work.process_retired {
             let previous = self.head(work, deadline).await?;
             let (retained, from) = match &previous.current.body {

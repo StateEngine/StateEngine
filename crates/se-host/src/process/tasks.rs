@@ -20,7 +20,8 @@ impl LaunchCoordinator {
             .lock()
             .map_err(|_| error("session task status", "retained registry is poisoned"))?;
         for job in jobs.values() {
-            if !matches!(scope, se_store::Scope::Project(project) if *project == job.target.0)
+            if job.settled.load(Ordering::Acquire)
+                || !matches!(scope, se_store::Scope::Project(project) if *project == job.target.0)
                 || matches!(actor, se_store::Actor::Agent(agent) if *agent != job.target.1)
             {
                 continue;

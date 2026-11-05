@@ -73,11 +73,16 @@ impl LaunchCoordinator {
             return Ok(());
         }
         if work.transcript.is_none() {
-            let restored = capture.binding(crate::SessionIdentity {
+            let identity = crate::SessionIdentity {
                 project: work.meta.project.id.clone(),
                 agent: work.meta.agent.id.clone(),
                 session: work.meta.session.clone(),
-            })?;
+            };
+            let restored = if work.native_already_reconciled {
+                capture.recover_binding(identity, deadline).await?
+            } else {
+                capture.binding(identity)?
+            };
             let transcript = se_core::scope::require_present(
                 restored,
                 "final transcript capture",
@@ -99,7 +104,9 @@ impl LaunchCoordinator {
             session: Some(work.meta.session.clone()),
             generation: self.store.generation.get(),
         };
-        let result = if work.process_retired && work.last_witness.is_some() {
+        let result = if (work.process_retired || work.native_already_reconciled)
+            && work.last_witness.is_some()
+        {
             capture
                 .catch_up_final(
                     admission,

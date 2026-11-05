@@ -48,6 +48,13 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
             }
         }
         Err(error) => {
+            if plan.row.session.state == "stopped"
+                && plan.row.session.recorded_state.as_deref() == Some("activated")
+            {
+                plan.control_failure.get_or_insert_with(|| format!(
+                    "Final transcript capture is pending: {error}. Restore the original transcript and protected binding without replacing their native identity"
+                ));
+            }
             plan.row.conversation.state = "unverifiable".into();
             plan.row.resume.ready = false;
             plan.row.resume.reason = Some(error.to_string());

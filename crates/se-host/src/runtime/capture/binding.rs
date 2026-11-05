@@ -3,6 +3,31 @@
 use super::*;
 
 impl CaptureHandle {
+    /// A failed startup restore can be repaired in place before an explicit
+    /// stop retry. Reopen only this session's original protected binding.
+    pub(crate) async fn recover_binding(
+        &self,
+        identity: crate::SessionIdentity,
+        deadline: &Deadline,
+    ) -> Result<Read<crate::TranscriptPin>> {
+        if let Ok(binding @ Read::Present { .. }) = self.binding(identity.clone()) {
+            return Ok(binding);
+        }
+        let lease = self.lease.upgrade().ok_or_else(|| {
+            se_core::scope::unreadable("capture recovery", "the original host lease was released")
+        })?;
+        let context = self.execution.clone();
+        let bindings = self.sources.clone();
+        let session = identity.session.clone();
+        let bound = deadline.clone();
+        self.execution
+            .blocking
+            .run_owned(deadline, move || {
+                persistent::restore_session(&context, &lease, &bindings, &session, &bound)
+            })
+            .await?;
+        self.binding(identity)
+    }
     /// Startup custody is installed before listener publication. A recovered
     /// monitor must wait for that publication before capture or provider RPC.
     pub(crate) async fn wait_until_open(&self, deadline: &Deadline) -> Result<()> {
