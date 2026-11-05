@@ -1,7 +1,10 @@
 use super::{Step, checked_phase, close_read, plan};
 use crate::client::{BlockingIpcClient, ClientOptions, lease::ClientCredential, lease::Deadline};
+pub(crate) use crate::runtime::test_support::fixture;
+use crate::runtime::test_support::session as session_fixture;
 use crate::runtime::*;
 use crate::{AuthorizedConnection, HandshakeInput, RawOperation};
+use fixture::*;
 use se_core::{admission::read_scope, commit::Cx, ops::CliSelections};
 use se_store::*;
 use se_types::{
@@ -15,12 +18,6 @@ use std::{
     sync::Arc,
     time::Duration,
 };
-#[path = "../../../se-store/tests/support/store_fixture.rs"]
-pub(crate) mod fixture;
-use fixture::*;
-#[allow(dead_code, reason = "Only session event constructors are needed here.")]
-#[path = "../../../se-store/tests/support/capture_fixture.rs"]
-mod session_fixture;
 
 fn positive(n: u32) -> Result<NonZeroU32, Box<dyn std::error::Error>> {
     NonZeroU32::new(n).ok_or_else(|| "zero test limit".into())

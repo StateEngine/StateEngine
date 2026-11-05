@@ -258,6 +258,12 @@ impl AnyOp {
 impl AnyOutput {
     pub fn exit_code(&self) -> u8 {
         match self {
+            // Native Claude framing has its own availability exit. Explicit
+            // JSON callers must still observe a failed or unconfirmed capture.
+            Self::HookClaude(v) => v.value.failure.as_ref().map_or_else(
+                || v.value.captured.exit_code(),
+                |failure| failure.class().exit_code(),
+            ),
             Self::DoctorInspect(v) => v.value.exit_code(),
             Self::DoctorRepair(v) if !v.value.complete => 2,
             Self::Uninstall(v) if !v.value.complete => 2,

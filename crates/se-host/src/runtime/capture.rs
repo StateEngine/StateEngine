@@ -11,6 +11,7 @@ use std::{
 mod binding;
 mod claude;
 mod persistent;
+mod signal;
 mod source;
 use sha2::Digest;
 struct BoundTranscript {
@@ -216,7 +217,7 @@ impl HostedRouter {
             ..
         } = call.admitted;
         self.capturing()
-            .capture(admission, terminal, selections, hook, deadline)
+            .signal(admission, terminal, selections, hook, deadline)
             .await
     }
     fn capturing(&self) -> Capturing<'_> {
@@ -226,6 +227,7 @@ impl HostedRouter {
             fenced: &self.fenced,
             final_capture: false,
             recovery_owner: None,
+            retry_busy: true,
         }
     }
 }
@@ -286,6 +288,7 @@ struct Capturing<'a> {
     fenced: &'a std::sync::atomic::AtomicBool,
     final_capture: bool,
     recovery_owner: Option<se_types::HumanId>,
+    retry_busy: bool,
 }
 impl Capturing<'_> {
     fn check_open(&self) -> Result<()> {
@@ -315,7 +318,12 @@ impl Capturing<'_> {
             .session
             .as_ref()
             .ok_or_else(|| SeError::invalid("capture session", "an admitted session"))?;
-        let pin = self.sources.get(session)?;
+        let pin = loop {
+            match self.sources.get(session) {
+                Err(error) if self.wait_if_busy(&error, deadline).await => continue,
+                result => break result?,
+            }
+        };
         let mut host_phases = se_core::ops::HostPhaseTimings::default();
         let mut last = None;
         let mut commits = Vec::new();
@@ -336,11 +344,15 @@ impl Capturing<'_> {
                 let bound = deadline.clone();
                 let replay = last.is_none();
                 let final_capture = self.final_capture;
-                let (next, capture_read) = timings::blocking(&self.execution.blocking, Mode::Finite, deadline, move || {
+                let read = timings::blocking(&self.execution.blocking, Mode::Finite, deadline, move || {
                         let mut pin = try_guard(&source)?;
                         source::next(&context, &admitted, &mut pin, &signal, &bound, replay, final_capture)
                     })
-                    .await?;
+                    .await;
+                let (next, capture_read) = match read {
+                    Err(error) if self.wait_if_busy(&error, deadline).await => continue,
+                    result => result?,
+                };
                 host_phases.merge(se_core::ops::HostPhaseTimings {
                     capture_read: Some(capture_read), ..Default::default()
                 });
@@ -367,6 +379,7 @@ impl Capturing<'_> {
                 ).await;
                 let result = match result {
                     Ok(result) => result,
+                    Err(error) if self.wait_if_busy(&error, deadline).await => continue,
                     Err(error) => {
                         if let se_types::Detail::CommittedResponseUnavailable(known) = error.body.detail() {
                             committed_events.extend(known.committed_events.iter().cloned());
@@ -511,6 +524,7 @@ impl CaptureHandle {
             fenced: &self.fenced,
             final_capture: recovery_owner.is_some(),
             recovery_owner,
+            retry_busy: false,
         };
         let terminal = se_core::admission::HumanTerminal::Refused {
             reason: "a coordinator capture is not an owner terminal".into(),
