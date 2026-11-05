@@ -85,6 +85,15 @@ fn codex_native_argv_and_rpc_command_agree_without_inferred_paths() -> Check {
             .ok_or("altered command skipped")?
             .matches(record.captured_tool.as_ref().ok_or("command metadata")?)?
     );
+    let mut redacted = rpc.clone();
+    redacted["params"]["item"]["command"] = json!("printf [REDACTED_SECRET]");
+    let redacted =
+        codex::notification(&redacted, &conversation)?.ok_or("redacted command skipped")?;
+    assert!(matches!(
+        redacted.target,
+        Target::Unknown(UnknownReason::UnsupportedShape)
+    ));
+    assert!(redacted.matches(record.captured_tool.as_ref().ok_or("command metadata")?)?);
     let mut failed = rpc;
     failed["params"]["item"]["exitCode"] = json!(2);
     assert!(matches!(

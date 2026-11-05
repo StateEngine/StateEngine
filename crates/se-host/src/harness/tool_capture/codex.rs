@@ -33,7 +33,16 @@ pub(crate) fn notification(
             "the bound Codex conversation",
         ));
     }
-    item(&params["item"], params.get("turnId"))
+    let mut fact = item(&params["item"], params.get("turnId"))?;
+    if let Some(fact) = &mut fact
+        && matches!(&fact.tool, ToolName::Known(name) if name == "CommandExecution")
+        && matches!(&fact.target, Target::Command(text) if text.contains("[REDACTED_SECRET]"))
+    {
+        // Codex's RPC presentation can redact native command arguments. It
+        // cannot attest to those bytes; keep the pinned rollout authoritative.
+        fact.target = Target::Unknown(UnknownReason::UnsupportedShape);
+    }
+    Ok(fact)
 }
 fn item(value: &Value, turn: Option<&Value>) -> Result<Option<Fact>> {
     let kind = value.get("type").and_then(Value::as_str);
