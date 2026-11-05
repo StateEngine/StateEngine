@@ -165,6 +165,8 @@ fn state_matches(native: LifecycleState, stored: ProcessState) -> bool {
         (native, stored),
         (LifecycleState::Reserved, ProcessState::Reserved)
             | (LifecycleState::Starting, ProcessState::Starting)
+            // The exact exec checkpoint precedes provider readiness and C3.
+            | (LifecycleState::Running, ProcessState::Starting)
             | (LifecycleState::Running, ProcessState::Running)
             | (LifecycleState::LeaderExited, ProcessState::LeaderExited)
             | (LifecycleState::StopRequested, ProcessState::StopRequested)

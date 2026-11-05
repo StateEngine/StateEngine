@@ -602,3 +602,135 @@ fn console_argv_handoff_preserves_native_custody_and_cannot_repeat() -> Check {
     drop(wait(owner.drain(Duration::from_secs(2)))??);
     Ok(())
 }
+
+/// Exec publication remains Starting until readiness, and cannot replace birth or argv.
+#[test]
+fn exec_checkpoint_precedes_readiness_without_reopening_identity() -> Check {
+    let f = Fixture::new()?;
+    let (host, lease) = host(&f)?;
+    let owner = host.start_writer(options(256)?, lease)?;
+    let client = owner.client();
+    let mut i = identity(&f, false)?;
+    let mut last = wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("exec-{}", serial()))?),
+        vec![registration(&i, ProcessState::Reserved)],
+    )?)?)??
+    .primary_event;
+    for (rev, phase) in [(1, "scope-prepared"), (2, "root-prepared")] {
+        i.root_identity = if rev == 1 {
+            RootIdentityState::Unpublished
+        } else {
+            RootIdentityState::Identified
+        };
+        if rev == 2 {
+            i.instance = RecordedIdentity::Present(epoch()?.owner);
+        }
+        let mut event = transition(
+            &i,
+            rev,
+            if rev == 1 {
+                ProcessState::Reserved
+            } else {
+                ProcessState::Starting
+            },
+            ProcessState::Starting,
+            last,
+        )?;
+        if let EventBody::ProcessTransition { outcome, .. } = &mut event {
+            *outcome = phase.into();
+        }
+        last = wait(client.submit(f.batch(
+            f.owner_project(),
+            Some(request(&format!("exec-{}", serial()))?),
+            vec![event],
+        )?)?)??
+        .primary_event;
+    }
+    let RecordedIdentity::Present(instance) = &i.instance else {
+        return Err("root absent".into());
+    };
+    let mut fields = instance.fields().clone();
+    fields.executable = se_types::NativePath::from_local(std::env::current_exe()?)?;
+    i.instance =
+        RecordedIdentity::Present(se_types::ProcessInstance::from_observation(fields.clone())?);
+    i.custody.record = b"witnessed vendor process checkpoint".to_vec();
+    for mutation in ["phase", "pid", "argv"] {
+        let mut changed = i.clone();
+        let mut drift = fields.clone();
+        if mutation == "pid" {
+            drift.pid = std::num::NonZeroU32::new(drift.pid.get() + 1).ok_or("pid overflow")?;
+        }
+        if mutation == "argv" {
+            drift.argv_sha256 = se_types::Sha256::from_bytes([99; 32]);
+        }
+        changed.instance =
+            RecordedIdentity::Present(se_types::ProcessInstance::from_observation(drift)?);
+        let mut event = transition(
+            &changed,
+            3,
+            ProcessState::Starting,
+            ProcessState::Starting,
+            last.clone(),
+        )?;
+        if let EventBody::ProcessTransition { outcome, .. } = &mut event {
+            *outcome = if mutation == "phase" {
+                "other"
+            } else {
+                "exec-observed"
+            }
+            .into();
+        }
+        assert!(
+            wait(client.submit(f.batch(
+                f.owner_project(),
+                Some(request(&format!("exec-{}", serial()))?),
+                vec![event]
+            )?)?)?
+            .is_err()
+        );
+        assert_eq!(head(&f, i.record.clone())?.revision.value.get(), 3);
+    }
+    let mut event = transition(&i, 3, ProcessState::Starting, ProcessState::Starting, last)?;
+    if let EventBody::ProcessTransition { outcome, .. } = &mut event {
+        *outcome = "exec-observed".into();
+    }
+    last = wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("exec-{}", serial()))?),
+        vec![event],
+    )?)?)??
+    .primary_event;
+    let mut repeat = transition(
+        &i,
+        4,
+        ProcessState::Starting,
+        ProcessState::Starting,
+        last.clone(),
+    )?;
+    if let EventBody::ProcessTransition { outcome, .. } = &mut repeat {
+        *outcome = "exec-observed".into();
+    }
+    assert!(
+        wait(client.submit(f.batch(
+            f.owner_project(),
+            Some(request(&format!("exec-{}", serial()))?),
+            vec![repeat]
+        )?)?)?
+        .is_err()
+    );
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("exec-{}", serial()))?),
+        vec![transition(
+            &i,
+            4,
+            ProcessState::Starting,
+            ProcessState::Running,
+            last,
+        )?],
+    )?)?)??;
+    assert_eq!(head(&f, i.record)?.revision.value.get(), 5);
+    drop(wait(owner.drain(Duration::from_secs(2)))??);
+    Ok(())
+}

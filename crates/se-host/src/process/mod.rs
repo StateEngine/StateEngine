@@ -24,6 +24,7 @@ mod remove_receipt;
 mod requests;
 mod resume_source;
 mod shutdown;
+mod startup_stop;
 mod status;
 mod stop;
 mod store;

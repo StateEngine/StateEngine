@@ -251,6 +251,16 @@ impl HostedRuntime {
             }
         };
         shutdown.send_replace(outcome.runtime.shutdown_deadline.clone());
+        // A launch call can itself be waiting for readiness. Request its
+        // authorized FULL stop before joining that call, while the writer is
+        // still available; otherwise it spends shutdown's storage budget.
+        if let (Some(custody), Some(deadline)) = (
+            outcome.runtime.execution.custody.get().cloned(),
+            outcome.runtime.shutdown_deadline.as_ref(),
+        ) && let Err(error) = custody.begin_shutdown(deadline).await
+        {
+            outcome.failure.get_or_insert(error);
+        }
         while let Some(joined) = tasks.join_next().await {
             match joined {
                 Ok(Ok(ConnectionEnd::Stop(stop))) => {

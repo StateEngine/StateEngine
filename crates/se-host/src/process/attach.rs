@@ -45,8 +45,8 @@ impl LaunchCoordinator {
                     .ok_or_else(|| error("Codex console", "prepared backend binding is absent"))?,
             }
         } else {
-            self.harness_for(plan.profile.provider)?
-                .attach(
+            work.wake
+                .readiness(self.harness_for(plan.profile.provider)?.attach(
                     HarnessAttach {
                         request,
                         process: attach_owner,
@@ -58,7 +58,7 @@ impl LaunchCoordinator {
                     },
                     &mut work.binding,
                     call(self.store.generation, deadline)?,
-                )
+                ))
                 .await?
         };
         if outcome.witness.identity.session != plan.session
@@ -254,6 +254,7 @@ impl LaunchCoordinator {
             let changed = work.wake.event.notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
+            work.wake.require_startup()?;
             let native = self.native.clone();
             let owner = work
                 .process
@@ -294,6 +295,7 @@ impl LaunchCoordinator {
             http_request: first.http_request,
         };
         let committed_plan = plan.clone();
+        work.wake.require_startup()?;
         let capture = work
             .transcript
             .as_ref()

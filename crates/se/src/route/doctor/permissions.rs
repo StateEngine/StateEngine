@@ -176,9 +176,10 @@ pub(super) fn checks(cx: &Bootstrap, at: &str) -> Result<Vec<DiagnosisCheck>> {
 pub(super) fn is_regular(id: &str) -> bool {
     REGULAR.iter().any(|(name, _, _, _)| *name == id)
 }
-pub(super) fn repair(
+pub(super) fn repair<R: se_store::ReadStore>(
     cx: &Bootstrap,
     files: &super::Files,
+    reader: &R,
     caller: &super::Caller,
     id: &str,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
@@ -200,7 +201,7 @@ pub(super) fn repair(
     let at = se_core::ops::receipt::timestamp(crate::route::execute::now_us()?)?;
     let mut current = target(&cx.home.join(leaf), id, title, PermissionKind::File, &at)?;
     let (plan, fact, readback, changed) = tighten(&mut current, id, &at, cx.json, diagnostic)?;
-    let after = super::observe(cx, files)?.diagnosis;
+    let after = super::observe(cx, files, reader)?.diagnosis;
     let complete = after
         .checks
         .iter()

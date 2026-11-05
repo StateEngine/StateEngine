@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{fs::TryLockError, io::Read};
 mod configuration;
 mod installation;
+mod lifecycle;
 pub(super) mod permissions;
 mod plan;
 
@@ -48,7 +49,7 @@ fn raw_endpoint(files: &Files) -> Result<Option<Vec<u8>>> {
         })?;
     Ok(Some(bytes))
 }
-fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
+fn observe<R: se_store::ReadStore>(cx: &Bootstrap, files: &Files, reader: &R) -> Result<Observed> {
     let at = se_core::ops::receipt::timestamp(super::execute::now_us()?)?;
     // These two checks report measurements already required by dispatch:
     // setup::inspect_phase opens NativeStateFiles and validates the store;
@@ -106,6 +107,7 @@ fn observe(cx: &Bootstrap, files: &Files) -> Result<Observed> {
         });
     }
     checks.push(configuration::check(cx, &at)?);
+    checks.extend(lifecycle::checks(cx, files, reader, &at)?);
     let lock = files
         .0
         .readback(&cx.home.join("runtime.lock"))
@@ -259,9 +261,10 @@ fn setup_check(cx: &Bootstrap, at: &str) -> DiagnosisCheck {
     });
     setup
 }
-pub fn execute(
+pub fn execute<R: se_store::ReadStore>(
     cx: &Bootstrap,
     files: &Files,
+    reader: &R,
     caller: &Caller,
     op: AnyOp,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
@@ -274,13 +277,15 @@ pub fn execute(
             &caller.terminal,
         )?;
     }
-    let observed = observe(cx, files)?;
+    let observed = observe(cx, files, reader)?;
     let AnyOp::DoctorRepair(input) = op else {
         return Ok(observed.diagnosis.into());
     };
     input.validate()?;
     if permissions::is_regular(&input.check_id) {
-        return Ok(permissions::repair(cx, files, caller, &input.check_id, diagnostic)?.into());
+        return Ok(
+            permissions::repair(cx, files, reader, caller, &input.check_id, diagnostic)?.into(),
+        );
     }
     if input.check_id.starts_with("installation.path.") {
         return Ok(installation::repair(cx, caller, &input.check_id, diagnostic)?.into());
@@ -336,7 +341,7 @@ pub fn execute(
     })?;
     se_host::retain_endpoint_at(&files.0, &expected, &retained)?;
     drop(lock);
-    let after = observe(cx, files)?.diagnosis;
+    let after = observe(cx, files, reader)?.diagnosis;
     let complete = after
         .checks
         .iter()

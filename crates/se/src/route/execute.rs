@@ -190,7 +190,7 @@ pub fn dispatch(
     }
     if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) {
         snapshot.close().map_err(|e| store_error(&e))?;
-        return super::doctor::execute(cx, &files, &caller, op, diagnostic);
+        return super::doctor::execute(cx, &files, &reader, &caller, op, diagnostic);
     }
     let host_required = matches!(
         op.meta().runtime,

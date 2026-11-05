@@ -94,6 +94,18 @@ impl LaunchCoordinator {
             job.target.1, job.target.0, job.lifecycle
         );
         if !job.settled.load(Ordering::Acquire) {
+            self.interrupt_startup(
+                job,
+                &format!("shutdown-startup-{}", job.lifecycle).parse()?,
+                se_store::Admission {
+                    actor: se_store::Actor::Human(self.human.clone()),
+                    scope: se_store::Scope::Project(job.target.0.clone()),
+                    session: None,
+                    generation: self.store.generation.get(),
+                },
+                deadline,
+            )
+            .await?;
             let result = async {
                 let mut work = tokio::time::timeout_at(
                     tokio::time::Instant::from_std(deadline.at()),

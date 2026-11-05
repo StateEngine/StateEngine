@@ -40,7 +40,7 @@ fn legal(from: ProcessState, to: ProcessState) -> bool {
     )
 }
 /// The one authorized image change: a checkpointed pre-exec root publishing
-/// its verified vendor image (Starting → Running). Machine, boot, PID, native
+/// its verified vendor image. Machine, boot, PID, native
 /// birth and argv digest stay identical; only the executable may differ.
 fn exec_image(
     from: ProcessState,
@@ -50,7 +50,7 @@ fn exec_image(
 ) -> bool {
     let (a, b) = (old.fields(), new.fields());
     from == ProcessState::Starting
-        && to == ProcessState::Running
+        && matches!(to, ProcessState::Starting | ProcessState::Running)
         && a.machine == b.machine
         && a.boot == b.boot
         && a.pid == b.pid
@@ -243,16 +243,27 @@ pub(super) fn apply(
             release::apply(c, h, &p, &old, &identity, rev, lease)?;
         }
         let console = console::argv(c, old_seq, (from, to), &old, &identity, outcome.as_deref())?;
+        let exec = from == ProcessState::Starting
+            && to == ProcessState::Starting
+            && outcome.as_deref() == Some("exec-observed")
+            && matches!(
+                codec::facts(c, old_seq)?
+                    .get("outcome")
+                    .and_then(serde_json::Value::as_str),
+                Some("root-prepared" | "console-prepared")
+            )
+            && matches!((&old.instance, &identity.instance), (RecordedIdentity::Present(a), RecordedIdentity::Present(b)) if exec_image(from, to, a, b));
         if from == ProcessState::Starting
             && to == ProcessState::Starting
             && !(old.root_identity == RootIdentityState::Unpublished
                 && matches!(old.instance, RecordedIdentity::Absent { .. })
                 && identity.root_identity == RootIdentityState::Identified)
             && !console
+            && !exec
         {
             return Err(fail(
                 StoreErrorCode::InvalidTransition,
-                "Starting to Starting requires a pre-exec root publication or one console argv handoff with unchanged native custody",
+                "Starting to Starting requires root publication, one console argv handoff, or the exact witnessed exec checkpoint",
             ));
         }
         if old.principal != identity.principal

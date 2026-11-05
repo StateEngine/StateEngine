@@ -435,6 +435,24 @@ impl LaunchCoordinator {
                 LaunchProgress::Pending => wait(&work.wake, deadline).await?,
             }
         };
+        // Exec custody is an owner-admission fact, not provider readiness.
+        // Publish the exact witnessed image before a handshake can stall;
+        // C3 still owns Running, credentials and capture activation together.
+        let stored = native_record::identity_meta(
+            &work.meta,
+            CheckpointKind::Process(record.clone()),
+            Some((&record.root, record.argv_sha256)),
+            Some(record.guarantee),
+            &self.options.epoch.owner.fields().boot,
+        )?;
+        self.change(
+            work,
+            "exec-observed",
+            stored,
+            (ProcessState::Starting, ProcessState::Starting),
+            deadline,
+        )
+        .await?;
         let root = record.root.clone();
         let bound = deadline.at();
         work.process_view = Some(

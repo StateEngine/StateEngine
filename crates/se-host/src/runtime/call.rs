@@ -77,6 +77,12 @@ pub trait CustodyExecutor: Send + Sync {
         admission: Admission,
         deadline: &'a Deadline,
     ) -> crate::HostFuture<'a, se_core::ops::AnyOutput>;
+    /// Admission is fenced, but accepted calls have not joined yet. Durably
+    /// request interruption of provider readiness without aborting accepted
+    /// allocations, writes or active work. Final custody shutdown remains owed.
+    fn begin_shutdown<'a>(&'a self, _deadline: &'a Deadline) -> crate::HostFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
     /// At host shutdown, after request admission closed and before capture is
     /// fenced and storage drains: fence new launches, stop native lifecycles
     /// with their final capture, and join monitors. An incomplete report keeps

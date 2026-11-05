@@ -69,6 +69,9 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
             })
             .collect()
     }
+    fn begin_shutdown<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, ()> {
+        Box::pin(async move { self.stop_startups(deadline).await })
+    }
     fn shutdown<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, crate::CustodyShutdown> {
         Box::pin(async move {
             let report = LaunchCoordinator::shutdown(self, deadline).await?;

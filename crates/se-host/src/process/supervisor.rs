@@ -49,6 +49,13 @@ impl LaunchCoordinator {
                 "the host is joining its owned processes; reconnect after shutdown completes",
             ));
         }
+        // Readiness leaves six seconds for retained cleanup and two for its
+        // response, rather than spending the caller's whole clock first.
+        let retained_deadline = deadline.retained().stage(
+            deadline
+                .remaining()?
+                .saturating_sub(std::time::Duration::from_secs(8)),
+        )?;
         let key = format!(
             "{:?}/{:?}/{}",
             admission.scope, admission.actor, plan.input.idempotency_key
@@ -131,7 +138,6 @@ impl LaunchCoordinator {
             }
         };
         if new {
-            let retained_deadline = deadline.retained();
             let coordinator = self.clone();
             let owned = job.clone();
             let task = self.store.pool.handle().spawn(async move {
