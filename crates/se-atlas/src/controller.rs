@@ -110,18 +110,19 @@ impl<R: Runtime> Controller<R> {
             .runtime
             .observed_summary(id)?
             .unwrap_or_else(|| root.summary.clone());
-        // Retain a published failure across later work/lock state changes.
-        // Explicit lifecycle transitions still outrank that observation.
-        let retain_failure = matches!(
-            (&summary.state, &root.summary.state),
-            (
-                IndexState::Partial { .. },
-                IndexState::Current
-                    | IndexState::Updating { .. }
-                    | IndexState::VerificationNeeded { .. }
-                    | IndexState::Suspended { .. }
-            )
-        );
+        // Writer contention must not hide a published file failure. Other
+        // suspensions, such as a corrupt cache pointer, still take precedence.
+        let writer_busy = matches!(&root.summary.state, IndexState::Suspended { reason }
+            if matches!(reason.detail(), se_types::Detail::AtlasResourceBudget(d)
+                if d.resource == "Atlas home writer lease"));
+        let retain_failure = matches!(summary.state, IndexState::Partial { .. })
+            && (writer_busy
+                || matches!(
+                    root.summary.state,
+                    IndexState::Current
+                        | IndexState::Updating { .. }
+                        | IndexState::VerificationNeeded { .. }
+                ));
         if !retain_failure {
             summary.state = root.summary.state.clone();
         }
