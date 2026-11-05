@@ -1,4 +1,4 @@
-"""Public CLI/MCP regression for cached pointers after an unparsed source edit.
+"""Bug: ec3e99a6 — cached CLI/MCP pointers claimed Current after an unparsed edit.
 
 Run with --se EXACT_RELEASE_BINARY --output NEW_PRIVATE_DIRECTORY on Linux.
 Uses a native Claude protocol fixture, not a paid provider. An external holder
