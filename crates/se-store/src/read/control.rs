@@ -57,6 +57,16 @@ impl SqliteSnapshot {
             Some("first_seq"),
             &load,
         )?;
+        // The newest session a launch may auto-resume: the same selector as
+        // latest_session except a revoked preparation that never activated
+        // never shadows an older resumable session.
+        let resume_session = self.head_with(
+            "sessions",
+            "project_id=? AND agent_id=? AND first_seq=(SELECT MAX(s2.first_seq) FROM sessions s2 WHERE s2.project_id=? AND s2.agent_id=? AND (s2.state != 'revoked' OR EXISTS (SELECT 1 FROM events e WHERE e.session_id = s2.session_id AND e.kind = 'session.activated')))",
+            &[&p, &a, &p, &a],
+            Some("first_seq"),
+            &load,
+        )?;
         let latest_process = self.head_with(
             "processes INDEXED BY processes_order",
             "project_id=? AND first_seq=(SELECT MAX(d.event_seq) FROM process_data d CROSS JOIN processes h ON h.first_seq=d.event_seq AND h.project_id=? WHERE d.principal_id=?)",
@@ -71,6 +81,7 @@ impl SqliteSnapshot {
                 sessions,
                 processes,
                 latest_session,
+                resume_session,
                 latest_process,
             },
         })

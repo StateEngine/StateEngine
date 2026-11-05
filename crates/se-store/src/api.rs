@@ -411,6 +411,10 @@ pub struct ControlTarget {
     pub processes: Vec<ProjectionRecord>,
     /// Newest session in any state, ended or revoked included.
     pub latest_session: Read<ProjectionRecord>,
+    /// Newest session a launch auto-resume may select. A revoked
+    /// preparation that never activated (the launch failed before first
+    /// use) never shadows an older resumable session.
+    pub resume_session: Read<ProjectionRecord>,
     /// Newest process in any state, exited or ownership-released included.
     pub latest_process: Read<ProjectionRecord>,
 }

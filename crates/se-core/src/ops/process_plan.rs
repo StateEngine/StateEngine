@@ -188,7 +188,7 @@ pub fn launch<R: Snapshot>(
             checked: "an explicitly new provider conversation was requested".into(),
         }
     } else {
-        match &control.latest_session {
+        match &control.resume_session {
             Read::Absent { checked } => Read::Absent {
                 checked: checked.clone(),
             },

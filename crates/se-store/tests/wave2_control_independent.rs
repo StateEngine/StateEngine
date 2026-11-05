@@ -487,3 +487,99 @@ fn control_inventory_is_complete_or_refuses() -> Check {
     drop(wait(writer.drain(Duration::from_secs(2)))??);
     Ok(())
 }
+
+/// Protects: a launch that fails after session preparation revokes that preparation; the revoked
+/// never-activated preparation must not shadow an older activated-then-ended session for auto-resume,
+/// while latest_session keeps reporting the any-state newest for stop/status.
+#[test]
+fn resume_selector_skips_revoked_preparation_that_never_activated() -> Check {
+    let f = Fixture::new()?;
+    let (host, lease) = host(&f)?;
+    let writer = host.start_writer(options(256)?, lease)?;
+    let client = writer.client();
+    let child = agent()?;
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-575-{}",
+            serial()
+        ))?),
+        vec![
+            grant(&f.a, true, Expected::Absent),
+            helper(&f, &child, Some(&f.a)),
+            EventBody::ProfileSaved {
+                agent: child.clone(),
+                profile: Profile {
+                    provider: Provider::Claude,
+                    model: None,
+                    permission: PermissionProfile::WorkspaceWrite,
+                    named_profile: "workspace-write".into(),
+                    effort: None,
+                },
+                expected: Expected::Absent,
+            },
+        ],
+    )?)?)??;
+    let admission = f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone()));
+    let first = capture::session()?;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-594-{}",
+            serial()
+        ))?),
+        vec![capture::prepared(&f, &first, &child)],
+    )?)?)??;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-602-{}",
+            serial()
+        ))?),
+        vec![capture::activated(&first)?],
+    )?)?)??;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-609-{}",
+            serial()
+        ))?),
+        vec![EventBody::SessionEnded {
+            session: first.clone(),
+            expected: revision(2)?,
+            reason: InputText::Inline("finished before the failed relaunch".into()),
+            final_turn: None,
+            final_cursor: None,
+        }],
+    )?)?)??;
+    let second = capture::session()?;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-626-{}",
+            serial()
+        ))?),
+        vec![capture::prepared(&f, &second, &child)],
+    )?)?)??;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-633-{}",
+            serial()
+        ))?),
+        vec![EventBody::SessionRevoked {
+            session: second.clone(),
+            expected: revision(1)?,
+            reason: InputText::Inline("launch failed before first use".into()),
+        }],
+    )?)?)??;
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let control = present(reader.snapshot(f.self_scope(&f.a))?.control_target(child)?)?;
+    let latest = present(control.latest_session)?;
+    assert!(matches!(&latest.current.body, EventBody::SessionRevoked { session, .. } if session == &second));
+    let resume = present(control.resume_session)?;
+    assert!(matches!(&resume.current.body, EventBody::SessionEnded { session, .. } if session == &first));
+    drop(reader);
+    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    Ok(())
+}

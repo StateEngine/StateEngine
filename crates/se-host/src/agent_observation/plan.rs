@@ -301,7 +301,7 @@ pub(crate) fn resume_source<S: Snapshot>(
     plan: &se_core::ops::agent_launch::LaunchPlan,
     read: &mut S,
 ) -> Result<Option<se_types::NativePath>> {
-    let Read::Present { value: latest } = &plan.control.latest_session else {
+    let Read::Present { value: latest } = &plan.control.resume_session else {
         return Ok(None);
     };
     let first = latest.original.as_deref().unwrap_or(&latest.current);
