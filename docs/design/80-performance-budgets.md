@@ -291,7 +291,7 @@ still require measurement. E2 must establish actual pooled-host and post-task
 memory within unchanged B1/B4 limits; larger configured caps remain subject
 to those same budgets.
 
-Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 It is built after the journeys and live handover pass and never holds a
 milestone. Explicit config opt-in admits its cold index as
 a transient background child; it is not triggered by an ordinary first query.

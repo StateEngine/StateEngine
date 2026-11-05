@@ -1,6 +1,8 @@
 //! Status construction for a measured absent store; it creates no identity or runtime.
 use super::outputs::*;
 use se_types::Read;
+mod atlas;
+pub use atlas::atlas_view;
 
 /// Unread recipient mail is pending attention even when its process is live.
 /// Use the measured agent page; status does not infer a wake or mark mail read.
@@ -76,7 +78,9 @@ pub fn missing(home: String, generated_at: String, checked: String) -> StatusOut
             last_turn_at: None,
         },
         atlas: AtlasView {
-            state: "not-built".into(),
+            state: "unknown".into(),
+            reason: None,
+            summary: None,
             history: "unavailable".into(),
         },
         pending: vec![],

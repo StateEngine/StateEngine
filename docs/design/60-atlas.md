@@ -45,32 +45,33 @@ neither rotates credentials nor restores authoritative history.
 
 Atlas is built only after the five core journeys and live handover pass. It may
 ship in alpha if ready, but never holds a milestone or the alpha release.
-Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 An Atlas-free standalone build reports NotBuilt and advertises no Atlas tools.
 Registration is metadata-only, including when a project first binds. The
 activation lifecycle below applies only to a feature-enabled standalone build;
 embedded requests neither write the setting nor schedule work.
 
-`config.set atlas.enabled true` atomically writes and rereads the user
-`config.toml` setting using the shared config operation's request identity.
-There is no project-setting row or Atlas activation event in the authoritative
-store. After a successful effective false->true change, an already-running host
-queues a ConfigEnabled effect after ready for its registered roots, including a
-first cold index when the cache is absent. The shared config receipt distinguishes
-saved readback from host notification; a failed notification reports pending
-application, not an applied activation. If no host is running, config set does
-not start one: its next normal startup reads the saved setting and reconciles
-after ready. If the host exits between config readback and notification, the same
-startup reconciliation recovers activation without a second durable queue.
+Enable Atlas by editing the selected user `config.toml`: add `[atlas]` and
+`enabled = true` (or change the existing table). By default this is the file in
+`se --home`; an explicit `SE_CONFIG` selects a different file. Run `se down` and
+`se up` with that same home to apply the change. `se config get/set` currently
+supports saved `agent.<AGENT>.model`, `.profile` and `.can-create` only; it does
+not edit general file settings or activate a running Atlas controller.
 
-Host restart/first bound session rereads the resolved configuration. Once enabled,
-it schedules HostRestart/FirstSession
-reconciliation after the bind response, including cold indexing when its cache
-is absent. An already-true config set is idempotent and does not rebuild a cache.
-Disabling stops admission and drains owned Atlas work; it preserves the cache for
-later enablement. First bind never waits for Atlas. Queries, status and resume
-never index, write, enable, start a daemon or schedule an after-query action.
-A missing cache remains honestly absent until an explicit host activation event.
+The native owner currently runs on Linux. Other host compositions report an
+unavailable controller rather than pretending that a code index was built.
+After normal startup, an enabled owner reconciles registered roots and builds
+an absent cache after readiness. Status observes its published metadata only:
+preparing, partial, updating, current, disabled and unreadable remain distinct.
+It reports partial/deferred/failed/stale file counts and watch limitations; JSON
+retains the full index summary. A stopped runtime reports unknown index state,
+not absence; start it to observe the current controller. Only two interested
+project roots are admitted at once; an unadmitted project is explicitly unavailable.
+
+`se atlas` and `se atlas --help` list the five existing read commands above.
+Queries and status never enable Atlas, open a substitute cache, schedule work,
+or start a daemon as an indexing side effect. Disable it by setting
+`enabled = false` in the same file and restarting; the cache is retained.
 
 ## 2. Identity, physical paths and source revisions
 
@@ -750,7 +751,7 @@ exhaustively to typed shared detail; no catch returns an empty vector.
 
 | Local cause | Shared catalog mapping | Cause and legal action |
 | --- | --- | --- |
-| FeatureDisabled | FeatureUnavailable | explicitly disabled; config set atlas.enabled true |
+| FeatureDisabled | FeatureUnavailable | explicitly disabled; edit [atlas] enabled in config.toml and restart |
 | EmbeddedUnavailable | FeatureUnavailable | embedded setting returns feature-unavailable; use feature-enabled standalone se |
 | ConfigurationInvalid | UsageInvalidValue | correct the named config.toml policy |
 | RootUnavailable | RepoInvalid | restore registered physical source |

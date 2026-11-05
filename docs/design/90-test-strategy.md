@@ -247,7 +247,7 @@ Before the broad build, run E1-E9 and the lost-ACK slice from the coordinated bu
 Rust runner rejects a stub on Windows/Linux outside agent trees. Begin J1 from an unsigned archive
 with install and uninstall scripts; then qualify Claude J2/J3/J5, both providers' five standalone
 journeys, embedded/live handover in both directions and all crash phases, forget, and signed downloads.
-Atlas stays disabled by default, is built after the journeys and live handover pass, and holds no
+Atlas is enabled by default in the current standalone build, is built after the journeys and live handover pass, and holds no
 milestone. Forget stays before release. Non-fleet import is interrupted, rerun and checked by resuming
 both providers' actual saved conversations. Supported additive migrations run automatically under the
 sole owner after a verified backup; a still-running old host refuses with `se down first`. Do not

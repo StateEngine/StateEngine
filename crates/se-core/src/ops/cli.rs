@@ -469,6 +469,9 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::O
     if path.is_empty() {
         return Ok(&ProjectStatus::META);
     }
+    if path.len() == 1 && path[0] == "atlas" {
+        return Ok(&MetaHelp::META);
+    }
     if path.len() == 1 && matches!(path[0].as_str(), "decision" | "pending") {
         return Ok(&DecisionList::META);
     }

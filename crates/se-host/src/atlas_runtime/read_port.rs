@@ -29,6 +29,15 @@ pub type AtlasObservedReadCallback<'a> = dyn FnMut(
 /// selected controller lends its one scoped reader; nothing escapes the call.
 pub trait AtlasReadPort: Send + Sync {
     fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary>;
+    /// Status observes publication only; no cache opens or work is scheduled.
+    fn status(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+    ) -> Result<se_types::Read<IndexSummary>> {
+        self.summary(project, root)
+            .map(|value| se_types::Read::Present { value })
+    }
     fn with_reader(
         &self,
         project: &ProjectId,
@@ -63,6 +72,18 @@ pub struct AtlasOwnerPort {
     pub records: Arc<RecordFeedFence>,
 }
 impl AtlasOwnerPort {
+    pub fn status(
+        &self,
+        project: &ProjectId,
+        root: Option<&RootId>,
+    ) -> Result<se_types::Read<IndexSummary>> {
+        match self.reader.get() {
+            Some(reader) => reader.status(project, root),
+            None => Ok(se_types::Read::Absent {
+                checked: "No Atlas controller is installed in this host.".into(),
+            }),
+        }
+    }
     pub fn summary(&self, project: &ProjectId, root: Option<&RootId>) -> Result<IndexSummary> {
         self.reader.get().ok_or_else(|| se_core::scope::unreadable("Atlas owner read port", "the owner has not installed its controller; no registered root summary is available"))?.summary(project, root)
     }

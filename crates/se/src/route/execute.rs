@@ -185,7 +185,33 @@ pub fn dispatch(
                     )
                 });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
-        let output = super::session_observation::finish(prepared, &cx.home)?;
+        let mut output = super::session_observation::finish(prepared, &cx.home)?;
+        if let AnyOutput::ProjectStatus(status) = &mut output
+            && status.value.runtime.state == "running"
+            && !cx.selections.status_all
+            && status.value.removal.is_none()
+        {
+            // The direct native/store witness stays authoritative for status.
+            // After closing its read pin, ask the existing authenticated host
+            // for its published Atlas metadata; never bootstrap a host here.
+            let observed = super::hosted::forward(
+                cx,
+                &files,
+                &reader,
+                &caller,
+                AnyOp::ProjectStatus(se_core::ops::ProjectStatus { all: false }),
+                &selections,
+                diagnostic,
+            );
+            status.value.atlas = match observed {
+                Ok(AnyOutput::ProjectStatus(live)) => live.value.atlas,
+                Ok(_) => se_core::ops::status::atlas_view(Err(scope::unreadable(
+                    "Atlas status",
+                    "the host returned a different operation family",
+                ))),
+                Err(error) => se_core::ops::status::atlas_view(Err(error)),
+            };
+        }
         return super::status::finish(cx, &reader, output, &caller.admission);
     }
     if matches!(op, AnyOp::DoctorInspect(_) | AnyOp::DoctorRepair(_)) {

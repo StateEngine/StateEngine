@@ -39,6 +39,23 @@ impl LaunchCoordinator {
             })
             .await?;
         self.task_status(&mut output, &scope, &actor)?;
+        if let AnyOutput::ProjectStatus(status) = &mut output
+            && status.value.removal.is_none()
+        {
+            status.value.atlas = if !self.options.configuration.atlas.enabled {
+                let mut view = se_core::ops::status::atlas_view(Ok(Read::Absent {
+                    checked: "Atlas is disabled in this host configuration.".into(),
+                }));
+                view.state = "disabled".into();
+                view
+            } else if let se_store::Scope::Project(project) = &scope {
+                se_core::ops::status::atlas_view(self.atlas.status(project, None))
+            } else {
+                se_core::ops::status::atlas_view(Ok(Read::Absent {
+                    checked: "Select a registered project to observe its Atlas index.".into(),
+                }))
+            };
+        }
         let owner = self.owner.clone();
         let kind = self.kind;
         let generation = self.store.generation.get();

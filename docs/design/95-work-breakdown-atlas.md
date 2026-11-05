@@ -8,7 +8,7 @@ The contracts are [section 60](60-atlas.md), `docs/OPS.md`, and section 80
 (`80-performance-budgets.md` in the approved design handoff). References below use
 those section numbers. Section 80 defines cold-window accounting; section 60
 supplies the explicit config-enable activation and private child entry.
-Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 
 ## Dependencies and estimate convention
 

@@ -4,6 +4,24 @@ use super::*;
 use crate::{atlas_cache::NativeAtlasCache, atlas_source::NativeAtlasSource};
 use se_atlas::cache::{connection::ConnectionRole, pointer};
 
+pub(super) struct Catalogue {
+    roots: Vec<Root>,
+    preparing: bool,
+}
+impl Catalogue {
+    pub(super) fn clear(&mut self) {
+        self.roots.clear();
+        self.preparing = false;
+    }
+}
+impl Default for Catalogue {
+    fn default() -> Self {
+        Self {
+            roots: Vec::new(),
+            preparing: true,
+        }
+    }
+}
 #[derive(Clone)]
 pub(super) struct Root {
     registration: RootRegistration,
@@ -31,12 +49,15 @@ impl Service {
                 summary,
             });
         }
-        *self.readers.lock().map_err(|_| poisoned())? = roots;
+        *self.readers.lock().map_err(|_| poisoned())? = Catalogue {
+            roots,
+            preparing: state.scan.is_some(),
+        };
         Ok(())
     }
     fn reader_root(&self, project: &ProjectId, selected: Option<&RootId>) -> Result<Root> {
         let roots = self.readers.lock().map_err(|_| poisoned())?;
-        let mut matching = roots.iter().filter(|root| {
+        let mut matching = roots.roots.iter().filter(|root| {
             &root.registration.project == project
                 && selected.is_none_or(|id| id == &root.registration.root)
         });
@@ -56,6 +77,28 @@ impl Service {
     }
 }
 impl AtlasReadPort for Service {
+    fn status(
+        &self,
+        project: &ProjectId,
+        selected: Option<&RootId>,
+    ) -> Result<se_types::Read<IndexSummary>> {
+        let roots = self.readers.lock().map_err(|_| poisoned())?;
+        if !roots.roots.iter().any(|root| {
+            &root.registration.project == project
+                && selected.is_none_or(|id| id == &root.registration.root)
+        }) {
+            return Ok(if roots.preparing {
+                se_types::Read::Unknown {
+                    what: "Atlas is preparing the registered project roots.".into(),
+                }
+            } else {
+                se_types::Read::Absent { checked: "This project has no admitted Atlas root; only two interested project roots can be active in this host.".into() }
+            });
+        }
+        drop(roots);
+        self.summary(project, selected)
+            .map(|value| se_types::Read::Present { value })
+    }
     fn summary(&self, project: &ProjectId, selected: Option<&RootId>) -> Result<IndexSummary> {
         Ok(self.reader_root(project, selected)?.summary)
     }

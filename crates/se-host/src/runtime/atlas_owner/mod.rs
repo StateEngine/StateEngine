@@ -31,7 +31,7 @@ pub struct NativeAtlasQualification {
 }
 pub(super) struct Service {
     state: Mutex<State>,
-    readers: Mutex<Vec<read::Root>>,
+    readers: Mutex<read::Catalogue>,
     profile: Option<SqlProfile>,
     owner: HumanId,
     memory: MemoryBudget,
@@ -105,7 +105,7 @@ impl HostedRuntime {
                 enabled,
                 child_deadline: None,
             }),
-            readers: Mutex::new(Vec::new()),
+            readers: Mutex::new(read::Catalogue::default()),
             profile,
             owner: self.owner.clone(),
             memory,

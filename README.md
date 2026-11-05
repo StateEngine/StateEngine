@@ -75,7 +75,7 @@ shortened. Your agent’s wording and timestamps will differ.
            Resume: Ready to reopen the saved conversation.
        Owner unread messages: 0
        Proposed decisions: not counted
-       Conversation recording: not checked; code index: not built
+       Conversation recording: not checked; code index: unknown
        Inspect your saved agent: se --home /home/you/.local/state/stateengine --project prj_... agent show ag_...
 
 5. Read what it did: a plain task launch reports in its conversation and in your folder, not by floor mail:
@@ -227,3 +227,10 @@ Imported conversations remain ended. Saved Claude and Codex references are retai
 in history only; launching an imported agent starts a fresh conversation. Missing
 or unsupported references are reported explicitly. Provider
 account files, credentials, running processes and factory authority are not imported.
+
+Atlas is the optional code index. The native index owner currently runs on Linux.
+It is enabled by default. If you disabled it, edit the `config.toml` in the data home printed by `se status` (or
+the file selected by `SE_CONFIG`), set `enabled = true` in `[atlas]`, then run
+`se down` and `se up` with the same `--home` you normally use. `se config set`
+changes saved agent settings only. Run `se atlas` for find, references, impact,
+changes and outline commands; `se status` reports preparation and partial coverage.

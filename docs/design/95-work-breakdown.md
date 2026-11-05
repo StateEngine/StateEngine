@@ -24,8 +24,8 @@ se-types has no separate breakdown and keeps its earlier estimate.
 | Host runtime and harnesses | ~8,900 + 200–350 JS | 9,050 + 200–350 JS | 95-host H01–H20 | automatic migration, readback-reconciled file operations, async commit join, version-independent stop |
 | Release and packaging | 920–1,600 | 960–1,600 | 95-release R01–R07 | one `se uninstall` path; early unsigned archives |
 | **Core product (alpha critical path)** | | **49,819–50,459 + 200–350 JS** | | |
-| Atlas (after journeys and handover; operator) | 6,000–9,300 | 6,000–9,300 | 95-atlas A01–A13 (A12 owns the core bridge) | standalone only, disabled by default |
-| macOS backends (Mac campaign) | ~1,350 | 1,350 | 95-se-proc P03-M, P07-M | qualified on the operator's borrowed Mac before alpha ships |
+| Atlas (after journeys and handover; operator) | 6,000–9,300 | 6,000–9,300 | 95-atlas A01–A13 (A12 owns the core bridge) | standalone only, enabled by default |
+| macOS backends (Mac campaign) | ~1,350 | 1,350 | 95-se-proc P03-M, P07-M | qualified on operator's borrowed Mac before alpha ships |
 | **Everything** | 48,420–52,400 | **57,169–61,109 + 200–350 JS** | | |
 
 The first reconciled overview claimed a core of ~38,500–39,700 without per-task sums behind it.
