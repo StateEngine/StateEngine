@@ -277,6 +277,47 @@ pub fn next_step(value: &NextStep, out: &mut impl Write) -> io::Result<()> {
     writeln!(out, "{}: {}", value.text, value.command)
 }
 
+fn count(value: Option<u64>) -> String {
+    value
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "unknown".into())
+}
+
+fn omissions<T>(page: &Page<T>, out: &mut impl Write) -> io::Result<()> {
+    if !page.window().complete() {
+        let omitted = page.window().omitted();
+        let reason = match omitted.reason {
+            Some(OmissionReason::Limit) => "page limit",
+            Some(OmissionReason::Budget) => "byte budget",
+            Some(OmissionReason::Unreadable) => "unreadable source",
+            Some(OmissionReason::SourceIncomplete) => "incomplete source",
+            None => "reason unavailable",
+        };
+        writeln!(out, "Omitted: {} ({reason})", count(omitted.count))?;
+    }
+    if let Some(cursor) = page.next() {
+        writeln!(out, "Continue with --cursor {cursor}")?;
+    }
+    Ok(())
+}
+
+pub(super) fn repo_line(git: &GitView, out: &mut impl Write) -> io::Result<()> {
+    let Some(commits) = git.commits else {
+        return Ok(());
+    };
+    let mut line = format!(
+        "Existing repo: {commits} commit{}",
+        if commits == 1 { "" } else { "s" }
+    );
+    if let Some(branch) = &git.branch {
+        line.push_str(&format!(" on {branch}"));
+    }
+    if git.uncommitted == Some(true) {
+        line.push_str("; uncommitted changes left untouched");
+    }
+    writeln!(out, "{line}.")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,45 +359,4 @@ mod tests {
         assert!(output.contains("In cmd.exe, launch your first agent: se --home \"C:\\state home\" launch \"Build agent\" --detach"));
         Ok(())
     }
-}
-
-pub(super) fn repo_line(git: &GitView, out: &mut impl Write) -> io::Result<()> {
-    let Some(commits) = git.commits else {
-        return Ok(());
-    };
-    let mut line = format!(
-        "Existing repo: {commits} commit{}",
-        if commits == 1 { "" } else { "s" }
-    );
-    if let Some(branch) = &git.branch {
-        line.push_str(&format!(" on {branch}"));
-    }
-    if git.uncommitted == Some(true) {
-        line.push_str("; uncommitted changes left untouched");
-    }
-    writeln!(out, "{line}.")
-}
-
-fn count(value: Option<u64>) -> String {
-    value
-        .map(|count| count.to_string())
-        .unwrap_or_else(|| "unknown".into())
-}
-
-fn omissions<T>(page: &Page<T>, out: &mut impl Write) -> io::Result<()> {
-    if !page.window().complete() {
-        let omitted = page.window().omitted();
-        let reason = match omitted.reason {
-            Some(OmissionReason::Limit) => "page limit",
-            Some(OmissionReason::Budget) => "byte budget",
-            Some(OmissionReason::Unreadable) => "unreadable source",
-            Some(OmissionReason::SourceIncomplete) => "incomplete source",
-            None => "reason unavailable",
-        };
-        writeln!(out, "Omitted: {} ({reason})", count(omitted.count))?;
-    }
-    if let Some(cursor) = page.next() {
-        writeln!(out, "Continue with --cursor {cursor}")?;
-    }
-    Ok(())
 }
