@@ -1,6 +1,6 @@
 """Bug: d88e8492 — registered projects beyond the two live roots cannot use Atlas.
 
-Protects Jimmy's unlimited-project ruling: eight real Git repositories remain
+Protects unlimited-project indexing: eight real Git repositories remain
 queryable, idle disk indexes survive live-resource recycling, and unwatched
 edits never produce silently stale Current pointers. Linux native only.
 Use --codex /absolute/stock/codex for B4's one-session after-task measurement.
