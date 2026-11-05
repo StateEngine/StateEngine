@@ -4,20 +4,19 @@
 //! `core.fsmonitor=false` command parameter, which beats both repository
 //! files and an inherited `GIT_CONFIG_PARAMETERS`, and keeps output bounded,
 //! so the observer can never execute repository configuration, buffer an
-//! unbounded working tree, or block the child on its own pipes.
+//! unbounded working tree, or stretch the observation against a pipe a
+//! retained descriptor keeps open.
 use se_core::{ops::GitView, scope};
 use se_types::{Result, SeError};
 use std::{
-    io::{self, Read},
+    io,
     path::Path,
-    process::{Child, Command, ExitStatus, Output, Stdio},
-    sync::mpsc,
-    thread,
+    process::{Command, ExitStatus, Output, Stdio},
     time::{Duration, Instant},
 };
+use tokio::io::AsyncReadExt;
 
 const STATUS_OBSERVATION_DEADLINE: Duration = Duration::from_secs(10);
-const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const STDERR_RETAIN: usize = 4096;
 const STDERR_TAIL: usize = 160;
 
@@ -114,16 +113,27 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
 
 /// Observe only whether the working tree has uncommitted changes, streaming
 /// `git status --porcelain` instead of buffering it. stdout and stderr are
-/// drained concurrently, so a child that fills the stderr pipe before
-/// emitting its dirty line cannot block against our undrained pipes. Dirty
-/// is settled by the first stdout byte: the child is then killed and reaped
-/// and both workers are joined, so a status that hangs after that still
-/// settles in milliseconds. Clean requires the command to finish empty; a
-/// run that outgrows the bounded observation is reported as unknown, and a
-/// pipe read failure is preserved and reported as unreadable rather than
-/// converted to zero.
+/// read by separate tasks, and every wait in the observation — first byte,
+/// stderr drain, child exit, task closure — is bounded by one deadline, so
+/// neither a child that fills a pipe nor a descendant that retains
+/// inherited descriptors can stretch it. Dirty is settled by the first
+/// stdout byte: the child is then killed and reaped and both reader tasks
+/// are awaited to completion before the fact is returned. Clean requires
+/// the command to finish empty; a run that outgrows the bounded
+/// observation is reported as unknown, and a pipe read failure is preserved
+/// and reported as unreadable rather than converted to zero.
 fn dirty(root: &Path) -> Result<Option<bool>> {
-    let mut command = Command::new("git");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|error| scope::unreadable("Git repository observation", &error.to_string()))?;
+    runtime.block_on(observe_dirty(root))
+}
+
+async fn observe_dirty(root: &Path) -> Result<Option<bool>> {
+    let deadline = tokio::time::Instant::from(Instant::now() + STATUS_OBSERVATION_DEADLINE);
+    let mut command = tokio::process::Command::new("git");
     configured(root, &mut command)
         .args(["status", "--porcelain"])
         .stdin(Stdio::null())
@@ -138,33 +148,128 @@ fn dirty(root: &Path) -> Result<Option<bool>> {
     let stderr = child.stderr.take().ok_or_else(|| {
         scope::unreadable("Git working tree", "status error pipe was not attached")
     })?;
-    let (stdout_tx, stdout_rx) = mpsc::channel();
-    let (stderr_tx, stderr_rx) = mpsc::channel();
-    let stdout_worker = thread::spawn(move || {
-        let mut stdout = io::BufReader::new(stdout);
-        let mut first = [0u8; 8192];
-        match stdout.read(&mut first) {
-            Err(error) => {
-                let _ = stdout_tx.send(StdoutOutcome::ReadFailure(error.to_string()));
-            }
-            Ok(0) => {
-                let _ = stdout_tx.send(StdoutOutcome::Empty);
-            }
-            Ok(_) => {
-                // The first byte settles the fact; the main thread now kills
-                // the child, and the reap closes the pipe under this drain.
-                let _ = stdout_tx.send(StdoutOutcome::Dirty);
-                drain(&mut stdout);
-            }
+    let stdout_task = tokio::spawn(stdout_first_byte(stdout, deadline));
+    let stderr_task = tokio::spawn(stderr_retain(stderr, deadline));
+
+    let outcome = stdout_task.await.map_err(|error| {
+        scope::unreadable(
+            "Git working tree",
+            &format!("status reader failed: {error}"),
+        )
+    })?;
+    match outcome {
+        StdoutOutcome::Dirty => {
+            // The first byte already proves dirty; kill and reap the child,
+            // then witness the stderr reader closing itself.
+            let _ = child.kill().await;
+            let _ = bounded_exit(&mut child, deadline).await;
+            let _ = stderr_task.await;
+            Ok(Some(true))
         }
-    });
-    let stderr_worker = thread::spawn(move || {
-        let mut stderr = io::BufReader::new(stderr);
-        let mut retained: Vec<u8> = Vec::new();
-        let mut buffer = [0u8; 8192];
-        let mut read_failure = None;
-        loop {
-            match stderr.read(&mut buffer) {
+        StdoutOutcome::ReadFailure(reason) => {
+            let _ = child.kill().await;
+            let _ = bounded_exit(&mut child, deadline).await;
+            let stderr = stderr_task.await.unwrap_or(StderrOutcome {
+                retained: Vec::new(),
+                read_failure: None,
+            });
+            let mut read_failures = vec![format!("stdout read failed: {reason}")];
+            if let Some(failure) = &stderr.read_failure {
+                read_failures.push(format!("stderr read failed: {failure}"));
+            }
+            Err(scope::unreadable(
+                "Git working tree",
+                &failure_detail(&[], &read_failures),
+            ))
+        }
+        StdoutOutcome::Empty => match bounded_exit(&mut child, deadline).await {
+            Some(Ok(status)) if status.success() => {
+                let _ = stderr_task.await;
+                Ok(Some(false))
+            }
+            Some(Ok(_status)) => {
+                let stderr = stderr_task.await.unwrap_or(StderrOutcome {
+                    retained: Vec::new(),
+                    read_failure: None,
+                });
+                let mut read_failures = Vec::new();
+                if let Some(failure) = &stderr.read_failure {
+                    read_failures.push(format!("stderr read failed: {failure}"));
+                }
+                Err(scope::unreadable(
+                    "Git working tree",
+                    &failure_detail(&stderr.retained, &read_failures),
+                ))
+            }
+            Some(Err(error)) => {
+                let _ = child.kill().await;
+                let _ = stderr_task.await;
+                Err(scope::unreadable("Git working tree", &error.to_string()))
+            }
+            None => {
+                // The deadline passed before the child exited: the working
+                // tree state is unknown, so kill and reap the child and
+                // witness the reader closing.
+                let _ = child.kill().await;
+                let _ = bounded_exit(&mut child, deadline).await;
+                let _ = stderr_task.await;
+                Ok(None)
+            }
+        },
+        StdoutOutcome::Deadline => {
+            // No byte settled the fact before the deadline.
+            let _ = child.kill().await;
+            let _ = bounded_exit(&mut child, deadline).await;
+            let _ = stderr_task.await;
+            Ok(None)
+        }
+    }
+}
+
+/// The bounded stdout read: dirty at the first output byte, empty when the
+/// pipe closes first, unreadable when the pipe read itself fails, and
+/// deadline when a retained descriptor keeps the pipe open too long.
+enum StdoutOutcome {
+    Dirty,
+    Empty,
+    ReadFailure(String),
+    Deadline,
+}
+
+/// The stderr reader's single outcome: a bounded retained tail and the read
+/// failure if the pipe itself failed.
+struct StderrOutcome {
+    retained: Vec<u8>,
+    read_failure: Option<String>,
+}
+
+async fn stdout_first_byte(
+    mut stdout: tokio::process::ChildStdout,
+    deadline: tokio::time::Instant,
+) -> StdoutOutcome {
+    let mut buffer = [0u8; 8192];
+    tokio::select! {
+        result = stdout.read(&mut buffer) => match result {
+            Ok(0) => StdoutOutcome::Empty,
+            Ok(_) => StdoutOutcome::Dirty,
+            Err(error) => StdoutOutcome::ReadFailure(error.to_string()),
+        },
+        () = tokio::time::sleep_until(deadline) => StdoutOutcome::Deadline,
+    }
+}
+
+/// Drain the stderr pipe until EOF, a read failure, or the observation
+/// deadline, retaining a bounded tail either way.
+async fn stderr_retain(
+    mut stderr: tokio::process::ChildStderr,
+    deadline: tokio::time::Instant,
+) -> StderrOutcome {
+    let mut retained: Vec<u8> = Vec::new();
+    let mut buffer = [0u8; 8192];
+    let mut read_failure: Option<String> = None;
+    loop {
+        tokio::select! {
+            result = stderr.read(&mut buffer) => match result {
                 Ok(0) => break,
                 Ok(read) => {
                     for &byte in &buffer[..read] {
@@ -177,158 +282,25 @@ fn dirty(root: &Path) -> Result<Option<bool>> {
                     read_failure = Some(error.to_string());
                     break;
                 }
-            }
+            },
+            () = tokio::time::sleep_until(deadline) => break,
         }
-        let _ = stderr_tx.send(StderrOutcome {
-            retained,
-            read_failure,
-        });
-    });
-    let deadline = Instant::now() + STATUS_OBSERVATION_DEADLINE;
-    let mut stdout_done: Option<StdoutOutcome> = None;
-    let mut stderr_done: Option<StderrOutcome> = None;
-    let settled = loop {
-        if stdout_done.is_none()
-            && let Ok(outcome) = stdout_rx.try_recv()
-        {
-            stdout_done = Some(outcome);
-        }
-        if stderr_done.is_none()
-            && let Ok(outcome) = stderr_rx.try_recv()
-        {
-            stderr_done = Some(outcome);
-        }
-        let ready = match &stdout_done {
-            Some(StdoutOutcome::Empty) => stderr_done.is_some(),
-            Some(_) => true,
-            None => false,
-        };
-        if ready && let Some(outcome) = stdout_done.take() {
-            break Settled::Done(outcome);
-        }
-        if Instant::now() >= deadline {
-            break Settled::TimedOut;
-        }
-        thread::sleep(POLL_INTERVAL);
-    };
-    match settled {
-        Settled::TimedOut => {
-            reap(&mut child);
-            let _ = stdout_worker.join();
-            let _ = stderr_worker.join();
-            Ok(None)
-        }
-        Settled::Done(StdoutOutcome::Dirty) => {
-            // The first byte already proves dirty; kill and reap the child,
-            // then witness both workers closing over the dead pipes.
-            reap(&mut child);
-            let _ = stdout_worker.join();
-            let _ = stderr_worker.join();
-            Ok(Some(true))
-        }
-        Settled::Done(StdoutOutcome::ReadFailure(reason)) => {
-            reap(&mut child);
-            let _ = stdout_worker.join();
-            let _ = stderr_worker.join();
-            let mut read_failures = vec![format!("stdout read failed: {reason}")];
-            if let Some(stderr) = &stderr_done
-                && let Some(failure) = &stderr.read_failure
-            {
-                read_failures.push(format!("stderr read failed: {failure}"));
-            }
-            Err(scope::unreadable(
-                "Git working tree",
-                &failure_detail(&[], &read_failures),
-            ))
-        }
-        Settled::Done(StdoutOutcome::Empty) => {
-            let _ = stdout_worker.join();
-            let stderr = stderr_done.take().unwrap_or(StderrOutcome {
-                retained: Vec::new(),
-                read_failure: None,
-            });
-            match bounded_wait(&mut child, deadline) {
-                Ok(Some(status)) if status.success() => {
-                    let _ = stderr_worker.join();
-                    Ok(Some(false))
-                }
-                Ok(Some(_status)) => {
-                    let _ = stderr_worker.join();
-                    let mut read_failures = Vec::new();
-                    if let Some(failure) = &stderr.read_failure {
-                        read_failures.push(format!("stderr read failed: {failure}"));
-                    }
-                    Err(scope::unreadable(
-                        "Git working tree",
-                        &failure_detail(&stderr.retained, &read_failures),
-                    ))
-                }
-                Ok(None) => {
-                    reap(&mut child);
-                    let _ = stderr_worker.join();
-                    Ok(None)
-                }
-                Err(error) => Err(error),
-            }
-        }
+    }
+    StderrOutcome {
+        retained,
+        read_failure,
     }
 }
 
-/// The bounded observation either settled on a stdout outcome or the
-/// deadline elapsed first.
-enum Settled {
-    Done(StdoutOutcome),
-    TimedOut,
-}
-
-/// The stdout worker's single outcome: dirty at the first output byte,
-/// empty when the pipe closes first, or unreadable when the pipe read
-/// itself fails.
-enum StdoutOutcome {
-    Dirty,
-    Empty,
-    ReadFailure(String),
-}
-
-/// The stderr worker's single outcome: a bounded retained tail and the
-/// read failure if the pipe itself failed.
-struct StderrOutcome {
-    retained: Vec<u8>,
-    read_failure: Option<String>,
-}
-
-/// Kill the child if it is still running and reap it exactly once.
-fn reap(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// Poll the child until it exits or the deadline passes; `Ok(None)` reports
-/// the deadline first, leaving the child to be reaped by the caller.
-fn bounded_wait(child: &mut Child, deadline: Instant) -> Result<Option<ExitStatus>> {
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(Some(status)),
-            Ok(None) => {}
-            Err(error) => {
-                return Err(scope::unreadable("Git working tree", &error.to_string()));
-            }
-        }
-        if Instant::now() >= deadline {
-            return Ok(None);
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-}
-
-/// Discard everything a pipe still carries, using a bounded buffer.
-fn drain<R: Read>(reader: &mut R) {
-    let mut buffer = [0u8; 8192];
-    loop {
-        match reader.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
-            Ok(_) => {}
-        }
+/// Wait for the child to exit or the deadline to pass; `None` reports the
+/// deadline first, leaving the child for the caller to kill and reap.
+async fn bounded_exit(
+    child: &mut tokio::process::Child,
+    deadline: tokio::time::Instant,
+) -> Option<io::Result<ExitStatus>> {
+    tokio::select! {
+        result = child.wait() => Some(result),
+        () = tokio::time::sleep_until(deadline) => None,
     }
 }
 
@@ -340,21 +312,54 @@ fn run(root: &Path, args: &[&str]) -> Result<Output> {
         .map_err(|e| scope::unreadable("Git repository observation", &e.to_string()))
 }
 
+/// The flags every observation call shares. Both Git command builders —
+/// std for the buffered metadata calls, tokio for the streaming status —
+/// implement exactly this overlap, so one configuration governs both.
+trait GitCommand {
+    fn git_arg<S: AsRef<std::ffi::OsStr> + Clone>(&mut self, value: S) -> &mut Self;
+    fn git_env(&mut self, key: &str, value: &str) -> &mut Self;
+    fn git_env_remove(&mut self, key: &str) -> &mut Self;
+}
+
+impl GitCommand for Command {
+    fn git_arg<S: AsRef<std::ffi::OsStr> + Clone>(&mut self, value: S) -> &mut Self {
+        self.arg(value)
+    }
+    fn git_env(&mut self, key: &str, value: &str) -> &mut Self {
+        self.env(key, value)
+    }
+    fn git_env_remove(&mut self, key: &str) -> &mut Self {
+        self.env_remove(key)
+    }
+}
+
+impl GitCommand for tokio::process::Command {
+    fn git_arg<S: AsRef<std::ffi::OsStr> + Clone>(&mut self, value: S) -> &mut Self {
+        self.arg(value)
+    }
+    fn git_env(&mut self, key: &str, value: &str) -> &mut Self {
+        self.env(key, value)
+    }
+    fn git_env_remove(&mut self, key: &str) -> &mut Self {
+        self.env_remove(key)
+    }
+}
+
 /// One Git configuration for every observation call: the target root, a
 /// top-precedence `core.fsmonitor=false` command parameter that beats both
 /// repository files and an inherited `GIT_CONFIG_PARAMETERS`, no lock
 /// maintenance, and no repository identity inherited from the caller's
 /// environment.
-fn configured<'a>(root: &Path, command: &'a mut Command) -> &'a mut Command {
+fn configured<'a, C: GitCommand>(root: &Path, command: &'a mut C) -> &'a mut C {
     command
-        .arg("-c")
-        .arg("core.fsmonitor=false")
-        .arg("-C")
-        .arg(root)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+        .git_arg("-c")
+        .git_arg("core.fsmonitor=false")
+        .git_arg("-C")
+        .git_arg(root)
+        .git_env("GIT_OPTIONAL_LOCKS", "0")
+        .git_env_remove("GIT_DIR")
+        .git_env_remove("GIT_WORK_TREE")
+        .git_env_remove("GIT_INDEX_FILE")
 }
 
 fn text(output: &Output) -> Result<String> {
