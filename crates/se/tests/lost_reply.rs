@@ -119,6 +119,35 @@ fn client(
     }))
 }
 
+fn retained_client(
+    endpoint: &se_host::EndpointRecord,
+    credential: &Secret,
+    op: se_core::ops::AnyOp,
+) -> Result<
+    std::thread::JoinHandle<se_types::Result<se_core::ops::AnyOutput>>,
+    Box<dyn std::error::Error>,
+> {
+    let endpoint = endpoint.clone();
+    let credential = copy_secret(credential)?;
+    Ok(std::thread::spawn(move || {
+        let options = options_with_timeout(10_000);
+        let mut retained = ipc::SessionForwarder::connect(&endpoint, &credential, &options)?;
+        let lost = retained.forward(&credential, op.clone(), &options);
+        // A post-send loss is not an idle lease: the same retained client must
+        // keep the first write uncertain and refuse to reuse its consumed pipe.
+        let next = retained
+            .forward(&credential, op, &options)
+            .err()
+            .ok_or_else(|| se_types::SeError::invalid("lost reply", "no implicit replay"))?;
+        assert!(
+            next.to_string()
+                .contains("rediscovery after an incomplete exchange"),
+            "an uncertain write triggered reconnection: {next}"
+        );
+        lost
+    }))
+}
+
 #[test]
 fn lost_post_commit_reply_keeps_the_generated_key_and_replay_resolves_one_effect() -> Check {
     se_proc::initialize_file_creation_owner()?;
@@ -161,7 +190,7 @@ fn lost_post_commit_reply_keeps_the_generated_key_and_replay_resolves_one_effect
         let mut listener = runtime.listen(engine.handle().clone(), &bound()?).await?;
         let endpoint = listener.endpoint().clone();
         let router = runtime.router()?;
-        let lost_client = client(&endpoint, &session_key, op.clone(), 10_000)?;
+        let lost_client = retained_client(&endpoint, &session_key, op.clone())?;
         let mut exchange = receive(&mut listener, &router).await?;
         let completed = router.execute_call(exchange.take_call()?, &bound()?).await?;
         let committed = completed.committed.as_ref().ok_or("real host did not commit")?;

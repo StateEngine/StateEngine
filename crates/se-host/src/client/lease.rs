@@ -117,6 +117,20 @@ pub enum ClientCredential {
     Session(se_types::Secret),
     Launch(se_types::Secret),
 }
+impl ClientCredential {
+    fn for_renewal(&self) -> Result<Self> {
+        let secret = match self {
+            Self::Machine(key) | Self::Session(key) | Self::Launch(key) => {
+                se_types::Secret::new(key.expose().to_vec())?
+            }
+        };
+        Ok(match self {
+            Self::Machine(_) => Self::Machine(secret),
+            Self::Session(_) => Self::Session(secret),
+            Self::Launch(_) => Self::Launch(secret),
+        })
+    }
+}
 /// Observable transport progress for keyed callers. A validated error reply is
 /// authoritative too; only a post-send failure without a reply is uncertain.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -131,6 +145,11 @@ pub enum ExchangeProgress {
 pub struct BlockingConnection {
     stream: Option<NativeStream>,
     hello: crate::ServerHello,
+    endpoint: crate::EndpointRecord,
+    credential: ClientCredential,
+    maximum_reply_bytes: std::num::NonZeroU32,
+    last_activity: Instant,
+    renew_needed: bool,
 }
 impl Deadline {
     pub fn native_bound(&self) -> se_proc::native_ipc::IpcIoBound {
@@ -208,8 +227,21 @@ impl crate::client::BlockingIpcClient {
         maximum_reply_bytes: std::num::NonZeroU32,
         options: &ClientOptions,
     ) -> Result<BlockingConnection> {
-        use super::{auth, wire};
         let budget = Deadline::from_options(options)?;
+        Self::connect_before(endpoint, credential, maximum_reply_bytes, options, &budget)
+    }
+    fn connect_before(
+        endpoint: &crate::EndpointRecord,
+        credential: ClientCredential,
+        maximum_reply_bytes: std::num::NonZeroU32,
+        options: &ClientOptions,
+        budget: &Deadline,
+    ) -> Result<BlockingConnection> {
+        use super::{auth, wire};
+        // Start before the handshake: the server cannot begin its idle clock
+        // earlier, even if this process is paused while receiving its reply.
+        let last_activity = Instant::now();
+        budget.remaining()?;
         if matches!(&credential, ClientCredential::Machine(_)) {
             // Cold local file I/O belongs to the caller's original request
             // budget, before a connection holds a server handshake slot. The
@@ -233,13 +265,13 @@ impl crate::client::BlockingIpcClient {
                 },
             )));
         }
-        let authority = match credential {
+        let authority = match &credential {
             ClientCredential::Machine(key) => {
                 let peer = se_proc::native_ipc::observe_ipc_self_bounded(&deadline.native_bound())
                     .map_err(native_error)?;
                 let nonce = auth::fresh_nonce()?;
                 let mac = auth::create_owner_mac(
-                    &key,
+                    key,
                     auth::ProofDomain::Owner,
                     &challenge,
                     &nonce,
@@ -247,8 +279,12 @@ impl crate::client::BlockingIpcClient {
                 )?;
                 crate::PresentedAuthority::OwnerProof { nonce, mac }
             }
-            ClientCredential::Session(token) => crate::PresentedAuthority::Session(token),
-            ClientCredential::Launch(token) => crate::PresentedAuthority::Launch(token),
+            ClientCredential::Session(token) => {
+                crate::PresentedAuthority::Session(se_types::Secret::new(token.expose().to_vec())?)
+            }
+            ClientCredential::Launch(token) => {
+                crate::PresentedAuthority::Launch(se_types::Secret::new(token.expose().to_vec())?)
+            }
         };
         let sent = crate::ClientHello {
             version: se_types::API_VERSION,
@@ -264,6 +300,11 @@ impl crate::client::BlockingIpcClient {
         Ok(BlockingConnection {
             stream: Some(stream),
             hello,
+            endpoint: endpoint.clone(),
+            credential,
+            maximum_reply_bytes,
+            last_activity,
+            renew_needed: false,
         })
     }
     /// This fixed control is usable across operation API versions. It never
@@ -360,6 +401,25 @@ impl BlockingConnection {
         let deadline = Deadline::from_options(options)?;
         // Encode/refuse before taking custody of the connection or writing.
         let frame = wire::encode_call(&call)?;
+        // Renew before the first send, allowing the whole write stage before
+        // the server's idle expiry. Never retry an incomplete exchange: its
+        // operation may already have committed, with or without a reply.
+        if self.renew_needed
+            || (self.stream.is_some()
+                && self.last_activity.elapsed().saturating_add(WRITE_TIMEOUT) >= IDLE_TIMEOUT)
+        {
+            // A failed renewal sent no operation and can be attempted on the
+            // next call. This is distinct from a consumed incomplete exchange.
+            self.renew_needed = true;
+            drop(self.stream.take());
+            *self = crate::client::BlockingIpcClient::connect_before(
+                &self.endpoint,
+                self.credential.for_renewal()?,
+                self.maximum_reply_bytes,
+                options,
+                &deadline,
+            )?;
+        }
         let mut stream = self.stream.take().ok_or_else(|| {
             SeError::invalid(
                 "IPC channel",
@@ -368,6 +428,7 @@ impl BlockingConnection {
         })?;
         let writing = deadline.stage(WRITE_TIMEOUT)?;
         stream.set_bound(writing.native_bound());
+        self.last_activity = Instant::now();
         *progress = ExchangeProgress::SendAttempted;
         wire::write_frame_bounded(&mut stream, &frame, &writing)?;
         stream.set_bound(deadline.native_bound());
