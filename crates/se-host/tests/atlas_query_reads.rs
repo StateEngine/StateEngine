@@ -221,7 +221,7 @@ fn five_native_reads_and_streaming_text_share_one_scoped_snapshot() -> Check {
     let routed = se_host::atlas_queries::execute(&reader, &se_core::ops::AtlasRead::Find(public))?;
     let compact =
         se_host::atlas_queries::compact(&routed, 4096, false)?.ok_or("compact output absent")?;
-    assert!(compact.contains("alpha.rs:1 alpha"));
+    assert!(compact.contains("alpha.rs:1 (13 B) alpha"));
     let result = present(AtlasQueries::find(&reader, &query)?.data)?;
     assert_eq!(result.page.items()[0].reason.match_tier, 1);
     assert!(
