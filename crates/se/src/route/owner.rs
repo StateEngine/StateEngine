@@ -32,7 +32,9 @@ pub struct FileOwner {
     session_present: bool,
 }
 /// Decode the complete protected inventory before observing the caller. Every
-/// unresolved decode/index failure refuses, including a pending reservation.
+/// unresolved decode/index failure refuses. A dead owner's unpublished C1
+/// reservation remains in the store for startup reconciliation, without an
+/// identified root to contribute to caller ancestry.
 pub fn from_inventory(inventory: &OwnerGuardInventory) -> Result<FileOwner> {
     let records = se_host::decode_owner_inventory(inventory)?;
     observe(&records)
