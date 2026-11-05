@@ -69,6 +69,38 @@ fn check_reads(
     Ok(())
 }
 
+fn check_foreign_selector_refused(
+    store: &mut SqliteDirect,
+    scope: ReadScope,
+    agent: &AgentId,
+) -> Check {
+    let mut snapshot = store.snapshot(scope)?;
+    assert_eq!(
+        snapshot
+            .history(selected(agent), budget(1, 65536, None)?)
+            .err()
+            .ok_or("foreign agent history selector accepted")?
+            .code,
+        StoreErrorCode::ScopeMismatch
+    );
+    assert_eq!(
+        snapshot
+            .search(
+                SearchQuery {
+                    text: "recipient-probe".into(),
+                    history: selected(agent),
+                },
+                budget(1, 65536, None)?,
+            )
+            .err()
+            .ok_or("foreign agent search selector accepted")?
+            .code,
+        StoreErrorCode::ScopeMismatch
+    );
+    snapshot.close()?;
+    Ok(())
+}
+
 fn direct_mail(legacy: bool) -> Check {
     let f = Fixture::new()?;
     let (mut store, lease) = f.direct()?;
@@ -124,10 +156,9 @@ fn direct_mail(legacy: bool) -> Check {
             &[events[0].clone(), events[1].clone(), events[3].clone()],
         )?;
     }
-    // Selecting A does not authorize B to read the owner's private message to A.
-    check_reads(&mut store, f.self_scope(&f.b), &f.a, &events[..2])?;
-    // Selecting B similarly keeps the owner's private message to B hidden from A.
-    check_reads(&mut store, f.self_scope(&f.a), &f.b, &events[..2])?;
+    // SelfOnly callers cannot select a different agent, even for shared mail.
+    check_foreign_selector_refused(&mut store, f.self_scope(&f.b), &f.a)?;
+    check_foreign_selector_refused(&mut store, f.self_scope(&f.a), &f.b)?;
     check_reads(&mut store, f.scoped(Visibility::Owner), &f.b, &events[..3])?;
     store.close()?;
     Ok(())
@@ -179,8 +210,8 @@ fn work_fanout_is_one_history_event_and_never_expands_caller_visibility() -> Che
     }
     check_reads(&mut store, f.scoped(Visibility::Owner), &f.a, &events[..2])?;
     check_reads(&mut store, f.self_scope(&f.a), &f.a, &events[..2])?;
-    check_reads(&mut store, f.self_scope(&f.b), &f.a, &events[..1])?;
-    check_reads(&mut store, f.self_scope(&f.a), &f.b, &events[..1])?;
+    check_foreign_selector_refused(&mut store, f.self_scope(&f.b), &f.a)?;
+    check_foreign_selector_refused(&mut store, f.self_scope(&f.a), &f.b)?;
     check_reads(
         &mut store,
         f.scoped(Visibility::Owner),
