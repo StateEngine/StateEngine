@@ -5,7 +5,7 @@ use super::*;
 use crate::client::lease::Deadline;
 use se_types::{Read, Result, SeError, SessionId};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex, Weak},
 };
 mod binding;
@@ -29,6 +29,7 @@ pub struct TranscriptBindings {
 struct Registry {
     active: HashMap<SessionId, Arc<Mutex<BoundTranscript>>>,
     failed: HashMap<SessionId, se_types::ErrorBody>,
+    publishing: HashSet<SessionId>,
     unavailable: Option<se_types::ErrorBody>,
 }
 #[derive(Clone, Debug)]
@@ -48,40 +49,69 @@ impl TranscriptBindings {
             pins: Arc::new(Mutex::new(Registry::default())),
         }
     }
+    // Only bounded in-memory registry work holds this lock. Per-source scan
+    // locks retain their existing nonblocking behavior for the same transcript.
+    fn registry(&self) -> Result<std::sync::MutexGuard<'_, Registry>> {
+        self.pins.lock().map_err(|_| {
+            se_core::scope::unreadable(
+                "transcript binding",
+                "the binding registry is poisoned; preserve retained custody",
+            )
+        })
+    }
     fn insert(&self, source: BoundTranscript, persist: Option<&HostLease>) -> Result<()> {
-        let mut pins = try_guard(&self.pins)?;
-        if pins.active.contains_key(&source.binding.identity.session) {
-            return Err(SeError::invalid(
-                "transcript rebind",
-                "an explicit trusted rotation transition; a hook cannot replace a pin",
-            ));
+        self.insert_published(source, |source| match persist {
+            Some(lease) => persistent::publish(lease, source),
+            None => Ok(()),
+        })
+    }
+    fn insert_published(
+        &self,
+        source: BoundTranscript,
+        publish: impl FnOnce(&BoundTranscript) -> Result<()>,
+    ) -> Result<()> {
+        let session = source.binding.identity.session.clone();
+        let previous_failure = {
+            let mut pins = self.registry()?;
+            if pins.active.contains_key(&session) || pins.publishing.contains(&session) {
+                return Err(SeError::invalid(
+                    "transcript rebind",
+                    "an explicit trusted rotation transition; a hook cannot replace a pin",
+                ));
+            }
+            if pins.active.len() + pins.failed.len() + pins.publishing.len() >= self.maximum
+                && !pins.failed.contains_key(&session)
+            {
+                return Err(busy());
+            }
+            // Reserve this exact session and its capacity before releasing the
+            // registry. Durable I/O must not make unrelated launches refuse.
+            pins.publishing.insert(session.clone());
+            pins.failed.remove(&session)
+        };
+        let published = publish(&source);
+        let mut pins = self.registry()?;
+        pins.publishing.remove(&session);
+        if let Err(error) = published {
+            if let Some(previous) = previous_failure {
+                pins.failed.insert(session, previous);
+            }
+            return Err(error);
         }
-        if pins.active.len() + pins.failed.len() >= self.maximum
-            && !pins.failed.contains_key(&source.binding.identity.session)
-        {
-            return Err(busy());
-        }
-        if let Some(lease) = persist {
-            persistent::publish(lease, &source)?;
-        }
-        pins.failed.remove(&source.binding.identity.session);
-        pins.active.insert(
-            source.binding.identity.session.clone(),
-            Arc::new(Mutex::new(source)),
-        );
+        pins.active.insert(session, Arc::new(Mutex::new(source)));
         Ok(())
     }
     fn quarantine(&self, session: Option<SessionId>, error: se_types::ErrorBody) -> Result<()> {
-        let mut pins = try_guard(&self.pins)?;
+        let mut pins = self.registry()?;
         if let Some(session) = session {
-            if pins.active.contains_key(&session) {
+            if pins.active.contains_key(&session) || pins.publishing.contains(&session) {
                 return Err(SeError::invalid(
                     "capture quarantine",
                     "an unbound failed restoration, preserving any active pin",
                 ));
             }
             if !pins.failed.contains_key(&session)
-                && pins.failed.len() + pins.active.len() >= self.maximum
+                && pins.failed.len() + pins.active.len() + pins.publishing.len() >= self.maximum
             {
                 return Err(busy());
             }
@@ -92,9 +122,12 @@ impl TranscriptBindings {
         Ok(())
     }
     fn get(&self, session: &SessionId) -> Result<Arc<Mutex<BoundTranscript>>> {
-        let pins = try_guard(&self.pins)?;
+        let pins = self.registry()?;
         if let Some(pin) = pins.active.get(session) {
             return Ok(Arc::clone(pin));
+        }
+        if pins.publishing.contains(session) {
+            return Err(busy());
         }
         if let Some(error) = pins.failed.get(session).or(pins.unavailable.as_ref()) {
             return Err(error.clone().into());
@@ -488,3 +521,6 @@ impl CaptureHandle {
             .await
     }
 }
+
+#[cfg(test)]
+mod registry_tests;
