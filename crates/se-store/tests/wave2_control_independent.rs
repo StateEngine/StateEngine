@@ -65,6 +65,58 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
         ))?),
         vec![capture::prepared(&f, &session, &child)],
     )?)?)??;
+    let source = capture::record()?;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!("creator-capture-source-{}", serial()))?),
+        vec![capture::source(
+            source,
+            &session,
+            b"child",
+            Expected::Absent,
+        )],
+    )?)?)??;
+    assert_eq!(
+        wait(client.submit(f.batch(
+            admission.clone(),
+            Some(request(&format!(
+                "creator-capture-replacement-{}",
+                serial()
+            ))?),
+            vec![capture::source(
+                source,
+                &session,
+                b"replacement",
+                revision(1)?
+            )],
+        )?)?)?
+        .err()
+        .ok_or("creator replaced a child's private capture source")?
+        .code,
+        StoreErrorCode::ScopeMismatch
+    );
+    let foreign_session = capture::session()?;
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!("foreign-capture-session-{}", serial()))?),
+        vec![capture::prepared(&f, &foreign_session, &f.b)],
+    )?)?)??;
+    assert_eq!(
+        wait(client.submit(f.batch(
+            admission.clone(),
+            Some(request(&format!("foreign-capture-source-{}", serial()))?),
+            vec![capture::source(
+                capture::record()?,
+                &foreign_session,
+                b"foreign",
+                Expected::Absent
+            )],
+        )?)?)?
+        .err()
+        .ok_or("creator registered capture for an unrelated agent")?
+        .code,
+        StoreErrorCode::CreatorControlRefused
+    );
     let mut process = identity(&child)?;
     process.root_identity = RootIdentityState::NoChildCreated;
     process.session = Some(session.clone());
@@ -116,6 +168,34 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
     )?)?)??;
     let reader = present(SqliteFactory::open_reader(&f.options)?)?;
     let mut snapshot = reader.snapshot(f.self_scope(&f.a))?;
+    let own_grant = present(snapshot.grant(
+        Actor::Agent(f.a.clone()),
+        GrantKey::AgentCanCreate(f.a.clone()),
+    )?)?;
+    assert!(matches!(
+        own_grant.current.body,
+        EventBody::GrantRecorded { active: true, .. }
+    ));
+    assert_eq!(
+        snapshot
+            .event(own_grant.current.header.event)
+            .err()
+            .ok_or("permission read widened ordinary event visibility")?
+            .code,
+        StoreErrorCode::ScopeMismatch
+    );
+    assert_eq!(
+        reader
+            .snapshot(f.self_scope(&f.b))?
+            .grant(
+                Actor::Agent(f.a.clone()),
+                GrantKey::AgentCanCreate(f.a.clone()),
+            )
+            .err()
+            .ok_or("other agent's private grant became visible")?
+            .code,
+        StoreErrorCode::ScopeMismatch
+    );
     let control = present(snapshot.control_target(child.clone())?)?;
     assert!(
         matches!(control.profile, Read::Present { value } if matches!(&value.current.body, EventBody::ProfileSaved { agent, .. } if agent == &child))
@@ -239,12 +319,46 @@ fn creator_control_checks_grant_and_direct_child_in_one_snapshot() -> Check {
         ))?),
         vec![grant(&f.a, false, revision(1)?)],
     )?)?)??;
+    assert_eq!(
+        wait(client.submit(f.batch(
+            admission.clone(),
+            Some(request(&format!("revoked-capture-source-{}", serial()))?),
+            vec![capture::source(
+                capture::record()?,
+                &session,
+                b"revoked",
+                Expected::Absent
+            )],
+        )?)?)?
+        .err()
+        .ok_or("revoked creator registered child capture")?
+        .code,
+        StoreErrorCode::CreatorControlRefused
+    );
     // The already measured snapshot keeps its grant and child facts together.
     assert!(matches!(
         snapshot.control_target(child.clone())?,
         Read::Present { .. }
     ));
     let mut current = reader.snapshot(f.self_scope(&f.a))?;
+    assert!(matches!(
+        present(current.grant(
+            Actor::Agent(f.a.clone()),
+            GrantKey::AgentCanCreate(f.a.clone()),
+        )?)?
+        .current
+        .body,
+        EventBody::GrantRecorded { active: false, .. }
+    ));
+    assert!(matches!(
+        present(snapshot.grant(
+            Actor::Agent(f.a.clone()),
+            GrantKey::AgentCanCreate(f.a.clone()),
+        )?)?
+        .current
+        .body,
+        EventBody::GrantRecorded { active: true, .. }
+    ));
     assert_eq!(
         current
             .control_target(child.clone())
