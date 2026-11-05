@@ -566,6 +566,10 @@ fn security<T>(b: &EventBody<T>) -> bool {
             | SessionActivated { .. }
             | SessionEnded { .. }
             | SessionRevoked { .. }
+            | ProcessTransition {
+                from: ProcessState::Lost,
+                ..
+            }
             | RuntimeOwnerEstablished { .. }
             | RuntimeHandoverRecorded { .. }
             | ProjectRegistered { .. }
