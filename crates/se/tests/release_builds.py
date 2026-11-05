@@ -63,7 +63,7 @@ def main():
     for index, root in enumerate((source, second), 1):
         destination = out / f"build-{index}"
         result = subprocess.run([sys.executable, str(root / "scripts/release/build.py"), "--target", target,
-                                 "--out", str(destination)], cwd=root, text=True, capture_output=True)
+                                 "--offline", "--out", str(destination)], cwd=root, text=True, capture_output=True)
         (out / f"build-{index}.stdout").write_text(result.stdout)
         (out / f"build-{index}.stderr").write_text(result.stderr)
         assert result.returncode == 0, f"build {index} refused: {result.stderr}"
@@ -147,7 +147,7 @@ def main():
         destination = out / ("refused-" + label)
         try:
             result = subprocess.run([sys.executable, str(second / "scripts/release/build.py"), "--target", target,
-                                 "--out", str(destination)], cwd=second, env=env, text=True, capture_output=True, timeout=120)
+                                 "--offline", "--out", str(destination)], cwd=second, env=env, text=True, capture_output=True, timeout=120)
             (out / (label + "-override.stderr")).write_text(result.stderr)
             if result.returncode == 0:
                 failures.append(f"ambient {label} configuration was accepted")

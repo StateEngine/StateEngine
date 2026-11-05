@@ -59,7 +59,7 @@ impl Engine {
             && let Err(error) = self.db.execute_batch("ROLLBACK")
         {
             self.poisoned = true;
-            return Err(sql(error));
+            return Err(context(sql(error), &self.path, StoreIoStage::Commit));
         }
         if !self.db.is_autocommit() {
             self.poisoned = true;

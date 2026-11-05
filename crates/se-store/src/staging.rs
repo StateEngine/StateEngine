@@ -6,12 +6,13 @@ use sha2::{Digest, Sha256};
 use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Mutex,
 };
 
 pub struct StagedText {
     file: Mutex<File>,
+    path: PathBuf,
     store: StoreId,
     incarnation: u64,
     generation: u64,
@@ -45,12 +46,13 @@ impl StagedText {
             .file
             .lock()
             .map_err(|_| invalid("staged text handle poisoned"))?;
-        file.seek(SeekFrom::Start(0)).map_err(stream_error)?;
+        file.seek(SeekFrom::Start(0))
+            .map_err(|error| stream_error(error, &self.path))?;
         let mut bytes = Vec::with_capacity(self.length as usize);
         Read::by_ref(&mut *file)
             .take(self.length + 1)
             .read_to_end(&mut bytes)
-            .map_err(stream_error)?;
+            .map_err(|error| stream_error(error, &self.path))?;
         if bytes.len() as u64 != self.length || Sha256::digest(&bytes).as_slice() != self.digest {
             return Err(fail(
                 StoreErrorCode::SourceChanged,
@@ -60,14 +62,18 @@ impl StagedText {
         String::from_utf8(bytes).map_err(|_| invalid("staged text is not UTF-8"))
     }
 }
-fn stream_error(error: std::io::Error) -> Box<StoreError> {
-    fail(
-        if error.kind() == std::io::ErrorKind::StorageFull {
-            StoreErrorCode::DiskFull
-        } else {
-            StoreErrorCode::Unreadable
-        },
-        format!("staged text stream: {error}"),
+fn stream_error(error: std::io::Error, path: &Path) -> Box<StoreError> {
+    context(
+        fail(
+            if error.kind() == std::io::ErrorKind::StorageFull {
+                StoreErrorCode::DiskFull
+            } else {
+                StoreErrorCode::Unreadable
+            },
+            format!("staged text stream: {error}"),
+        ),
+        path,
+        StoreIoStage::Stage,
     )
 }
 pub(crate) fn stage(
@@ -97,6 +103,7 @@ pub(crate) fn stage(
         .join("staging");
     lease.files().prepare_directory(&directory)?;
     let staged = lease.files().create_staging(&directory)?;
+    let staged_path = staged.path.clone();
     let mut file = lease.files().retire_empty_staging(staged)?;
     let mut hash = Sha256::new();
     let mut length = 0u64;
@@ -106,7 +113,7 @@ pub(crate) fn stage(
         let available = (maximum + 1 - length).min((buffer.len() - carry) as u64) as usize;
         let read = source
             .read(&mut buffer[carry..carry + available])
-            .map_err(stream_error)?;
+            .map_err(|error| stream_error(error, path))?;
         if read == 0 {
             if carry != 0 {
                 return Err(invalid("staged text ends inside a UTF-8 sequence"));
@@ -129,12 +136,14 @@ pub(crate) fn stage(
             Err(_) => return Err(invalid("staged text is not UTF-8")),
         };
         hash.update(&buffer[..valid]);
-        file.write_all(&buffer[..valid]).map_err(stream_error)?;
+        file.write_all(&buffer[..valid])
+            .map_err(|error| stream_error(error, &staged_path))?;
         carry = filled - valid;
         buffer.copy_within(valid..filled, 0);
     }
     Ok(StagedText {
         file: Mutex::new(file),
+        path: staged_path,
         store: info.id.clone(),
         incarnation: info.incarnation,
         generation: identity.generation,

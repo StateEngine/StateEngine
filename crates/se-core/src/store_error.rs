@@ -71,7 +71,10 @@ pub fn store_error(error: &StoreError) -> SeError {
             next_step,
         }),
         C::DiskFull => Detail::StoreDiskFull(details::StoreDiskFull {
-            path: reason,
+            path: match &error.detail {
+                se_store::StoreDetail::Io { opened_path, .. } => opened_path.clone(),
+                _ => reason,
+            },
             free_bytes: None,
         }),
         C::TooNew | C::VersionUnsupported => match &error.detail {

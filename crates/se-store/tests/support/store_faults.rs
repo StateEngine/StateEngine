@@ -209,7 +209,7 @@ fn fault_child_fixture() -> Check {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
     )?;
     let integrity: String = database.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-    let report = json!({"mode":mode,"results":results,"timing_keys":timing_keys,"reopen_busy":reopen_busy,"next":next,"drain":drain,"close":close,"integrity":integrity});
+    let report = json!({"mode":mode,"database":f.options.state_directory.join("state.db"),"results":results,"timing_keys":timing_keys,"reopen_busy":reopen_busy,"next":next,"drain":drain,"close":close,"integrity":integrity});
     std::fs::write(
         root.join("outcome.json"),
         serde_json::to_vec_pretty(&report)?,

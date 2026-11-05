@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Build the standalone CLI from pinned, already available offline inputs."""
+"""Build the standalone CLI from lockfile-pinned inputs, fetching them by default.
+
+Pass --offline to build only from the local Cargo cache instead.
+"""
 import argparse
 import hashlib
 import json
@@ -117,7 +120,10 @@ def main():
     parser.add_argument("--target", required=True)
     parser.add_argument("--out", required=True, type=Path,
                         help="new build-output directory outside the source tree")
+    parser.add_argument("--offline", action="store_true",
+                        help="build only from the local Cargo cache instead of fetching the lockfile-pinned inputs")
     args = parser.parse_args()
+    offline = ["--offline"] if args.offline else []
     inputs = json.loads((ROOT / "scripts/release/inputs.json").read_text())
     if args.target not in inputs["targets"]:
         parser.error("target is not in scripts/release/inputs.json")
@@ -146,14 +152,14 @@ def main():
     overrides = ["--config", 'build.rustc-wrapper=""', "--config", 'build.rustc-workspace-wrapper=""',
                  "--config", 'profile.release.panic="unwind"',
                  "--config", 'profile.distribution.panic="unwind"']
-    metadata = json.loads(run("cargo", "+" + toolchain, *overrides, "metadata", "--offline", "--locked",
+    metadata = json.loads(run("cargo", "+" + toolchain, *overrides, "metadata", *offline, "--locked",
                               "--format-version=1"))
     source = run("git", "rev-parse", "HEAD")
     epoch = int(run("git", "show", "-s", "--format=%ct", "HEAD"))
     sysroot = Path(run("rustc", "+" + toolchain, "--print", "sysroot"))
     config = tomllib.loads((ROOT / ".cargo/config.toml").read_text())
     flags = config.get("target", {}).get(args.target, {}).get("rustflags", [])
-    argv = ["cargo", "+" + toolchain, *overrides, "build", "--offline", "--locked", "--profile", "distribution",
+    argv = ["cargo", "+" + toolchain, *overrides, "build", *offline, "--locked", "--profile", "distribution",
             "--package", inputs["package"], "--no-default-features", "--target", args.target,
             "--jobs", "1", "--message-format=json-render-diagnostics"]
     if inputs["features"]:
@@ -214,7 +220,8 @@ def main():
         "cargo_config_overrides": overrides,
         "path_remap": {name: value for name, (_, value) in zip(("source", "cargo", "toolchain", "target"), mappings)},
         "native_requirements": requirements, "version_stdout": version,
-        "default_features": False, "features": inputs["features"], "compiled_features": features,
+        "default_features": False, "offline": args.offline,
+        "features": inputs["features"], "compiled_features": features,
         "cargo_lock_sha256": digest(ROOT / "Cargo.lock"),
         "inputs_sha256": digest(ROOT / "scripts/release/inputs.json"),
         "release_assets": {p.name: digest(p) for p in sorted((ROOT / "scripts/release").iterdir())

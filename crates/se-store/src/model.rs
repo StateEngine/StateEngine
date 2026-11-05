@@ -437,6 +437,8 @@ pub enum StoreIoStage {
     BeginSnapshot,
     HeaderReadback,
     ReadSnapshot,
+    Commit,
+    Stage,
 }
 #[derive(Clone, Debug)]
 pub enum StoreDetail {

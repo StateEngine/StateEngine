@@ -85,11 +85,13 @@ impl StoreFactory for SqliteFactory {
                 let db = connection::connect(&reader.path, true, o.busy_timeout)?;
                 let info = connection::info_at(&db, &reader.path)?;
                 let identity = connection::validate_lease(&info, lease, LeaseMode::DirectClient)?;
+                let reader_path = reader.path.clone();
                 Ok(Read::Present {
                     value: SqliteDirect {
                         reader,
                         engine: Engine {
                             db,
+                            path: reader_path,
                             identity,
                             poisoned: false,
                             pending: Vec::new(),
@@ -125,11 +127,13 @@ impl StoreFactory for SqliteFactory {
                     reader.slots.clone(),
                 );
                 crate::migration::upgrade(&db, o, lease, context)?;
+                let reader_path = reader.path.clone();
                 Ok(Read::Present {
                     value: SqliteHost::maintenance(
                         reader,
                         Engine {
                             db,
+                            path: reader_path,
                             identity,
                             poisoned: false,
                             pending: Vec::new(),

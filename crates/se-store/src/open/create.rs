@@ -91,10 +91,12 @@ impl SqliteFactory {
                 store: Some(id),
                 ..identity
             };
+            let reader_path = reader.path.clone();
             Ok((
                 reader,
                 Engine {
                     db,
+                    path: reader_path,
                     identity,
                     poisoned: false,
                     pending: Vec::new(),

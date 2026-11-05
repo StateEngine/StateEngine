@@ -109,6 +109,10 @@ def main():
     if mode == "before":
         if codes != ["DiskFull", "DiskFull"]:
             failures.append("pre-COMMIT ENOSPC must report DiskFull for every group member")
+        database = report["database"]
+        for result in report["results"]:
+            if database not in result.get("detail", ""):
+                failures.append(f"pre-COMMIT DiskFull lost the opened store path: {result}")
         if report["next"]["code"] != "Committed":
             failures.append("confirmed full rollback must leave the same writer usable")
     elif mode == "commit":
