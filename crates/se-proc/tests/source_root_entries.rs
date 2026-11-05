@@ -8,7 +8,7 @@ type Check = Result<(), Box<dyn std::error::Error>>;
 #[test]
 fn retained_directory_streams_restart_and_reject_replaced_names() -> Check {
     let base = std::env::temp_dir().join(format!(
-        "5p-source-entries-{}-{}",
+        "atlas-source-entries-{}-{}",
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));

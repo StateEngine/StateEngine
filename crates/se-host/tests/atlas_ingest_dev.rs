@@ -78,7 +78,7 @@ fn ingest(
 fn complete_file_stale_recovery_and_publication() -> Check {
     se_proc::initialize_file_creation_owner()?;
     let dir = std::env::temp_dir().join(format!(
-        "5p-ingest-dev-{}-{}",
+        "atlas-ingest-dev-{}-{}",
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));

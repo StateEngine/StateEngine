@@ -28,7 +28,7 @@ mod linux {
     }
     fn prepared() -> Check<(PathBuf, Request)> {
         let base = std::env::temp_dir().join(format!(
-            "5p-cold-crash-{}-{}",
+            "atlas-cold-crash-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)?

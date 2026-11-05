@@ -137,7 +137,7 @@ mod native {
             CoverageReason::HistoryUnavailable
         };
         let base = std::env::temp_dir().join(format!(
-            "5p-cold-history-{}-{}",
+            "atlas-cold-history-{}-{}",
             std::process::id(),
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
         ));

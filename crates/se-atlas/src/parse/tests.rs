@@ -11,7 +11,7 @@ fn scope() -> AtlasResult<Scope> {
             root,
             canonical_source_root: std::env::temp_dir(),
             cache: CacheLocation {
-                directory: std::env::temp_dir().join("5p-parser-unit"),
+                directory: std::env::temp_dir().join("atlas-parser-unit"),
             },
             git_metadata: None,
         },

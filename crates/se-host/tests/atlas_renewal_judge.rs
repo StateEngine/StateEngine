@@ -186,7 +186,7 @@ fn start(controller: &mut Native, registration: &RootRegistration) -> Check {
 fn native_events_repair_after_writer_contention_and_release_root_slots() -> Check {
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
     let base: PathBuf =
-        std::env::temp_dir().join(format!("se-5d-atlas-{}-{nonce}", std::process::id()));
+        std::env::temp_dir().join(format!("se-atlas-native-{}-{nonce}", std::process::id()));
     fs::create_dir(&base)?;
     eprintln!(
         "independent native Atlas fixture retained: {}",
