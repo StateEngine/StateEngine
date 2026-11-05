@@ -43,6 +43,7 @@ pub(crate) fn observe(
             if let Some(page) = &mut value.value.agents {
                 *page = enrich_page(page, &mut observations)?;
             }
+            se_core::ops::status::pending_mail(&mut value.value);
         }
         AnyOutput::AgentList(value) => {
             value.value.page = enrich_page(&value.value.page, &mut observations)?;
