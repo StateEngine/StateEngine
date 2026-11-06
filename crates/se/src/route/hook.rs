@@ -28,7 +28,9 @@ pub fn forward(
     let options = execute::options();
     let bound = Deadline::from_options(&options)?;
     let target = super::autostart::endpoint(cx, files, &bound, diagnostic)?;
-    // Authenticated discovery and frame exchange use the original clock too.
+    // As for ordinary automatic calls, startup precedes the hook request's
+    // own fixed IPC budget. Exchange never renews that request clock.
+    let bound = Deadline::from_options(&options)?;
     se_proc::native_ipc::restore_image_cache(&cx.home, target.image_sha256, &bound.native_bound())
         .map_err(|error| {
             se_core::scope::unreadable("protected executable cache", &error.to_string())

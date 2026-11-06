@@ -76,8 +76,8 @@ fn exchange(
         NonZeroU32::new(DEFAULT_REPLY_BYTES).ok_or_else(|| invalid("nonzero reply budget"))?,
         options,
     )?;
-    // Authentication and exchange consume one caller budget, including discovery
-    // already charged by the route. A new connection never renews that budget.
+    // Authentication and exchange consume one caller budget after any separate
+    // runtime bootstrap. A new connection never renews that request budget.
     let remaining = options
         .timeout
         .min(se_host::client::lease::CALL_TIMEOUT)
