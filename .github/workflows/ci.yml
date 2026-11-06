@@ -98,10 +98,15 @@ jobs:
         with:
           shared-key: hosted-debug-v1
       - name: Compile once per platform, including custom harness executables
-        run: cargo nextest archive --workspace --all-features --locked --archive-file tests.tar.zst
+        # Target linker flags must not leak into host-side procedural macros.
+        run: |
+          target="$(rustc --print host-tuple)"
+          cargo nextest archive --target "$target" --workspace --all-features --locked --archive-file tests.tar.zst
       - name: Preserve native macOS compiler loader diagnostics after a build failure
         if: ${{ failure() && runner.os == 'macOS' }}
-        run: RUSTC_LOG=rustc_metadata::locator=info cargo test -p se-types --locked --no-run -vv
+        run: |
+          target="$(rustc --print host-tuple)"
+          RUSTC_LOG=rustc_metadata::locator=info cargo test --target "$target" -p se-types --locked --no-run -vv
       - name: Check documentation examples and compile-fail API boundaries
         if: matrix.os == 'ubuntu-24.04'
         run: cargo test --workspace --all-features --locked --doc
