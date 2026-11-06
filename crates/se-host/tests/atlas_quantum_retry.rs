@@ -74,6 +74,10 @@ impl CacheFiles for PausedCache {
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }
+// Epoch construction includes durable filesystem setup, outside read/work slices.
+fn setup_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(60)
+}
 #[test]
 fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
     se_proc::initialize_file_creation_owner()?;
@@ -151,7 +155,7 @@ fn expired_directory_entry_is_retried_without_another_source_event() -> Check {
         &seed,
         ConnectionRole::HostWriter,
         &SqlProfile::from_qualified_overhead(1)?,
-        deadline(),
+        setup_deadline(),
     )?;
     let work = Scheduled {
         root: root.clone(),
