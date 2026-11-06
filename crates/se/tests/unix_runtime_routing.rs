@@ -1,9 +1,10 @@
 //! The busy-home comparison must use the same explicit XDG selector as bind.
 #![cfg(target_os = "linux")]
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Output},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -11,6 +12,16 @@ type Check = Result<(), Box<dyn std::error::Error>>;
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
 
+fn socket_root(home: &Path) -> PathBuf {
+    // Bulk fixture data honors TMPDIR. Only the tiny private socket directory
+    // needs a short Linux path, independent of an arbitrarily long TMPDIR.
+    let key = Sha256::digest(home.as_os_str().as_encoded_bytes());
+    Path::new("/tmp").join(format!(
+        "se-route-x-{}-{}",
+        std::process::id(),
+        se_types::hex_lower(&key[..8])
+    ))
+}
 fn command(image: &Path, home: &Path, json: bool) -> Command {
     let mut command = Command::new(image);
     if json {
@@ -31,7 +42,7 @@ fn command(image: &Path, home: &Path, json: bool) -> Command {
     }
     // This fixture's explicit platform root is also passed to every repeated
     // CLI call made by the shared exact-instance cleanup helper.
-    command.env("XDG_RUNTIME_DIR", home.with_file_name("x"));
+    command.env("XDG_RUNTIME_DIR", socket_root(home));
     command
 }
 fn checked(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
@@ -44,6 +55,8 @@ fn checked(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Erro
     Ok(serde_json::from_slice(&output.stdout)?)
 }
 #[test]
+/// Protects: long homes stay on the selected TMPDIR while repeated up uses the same legal, private XDG socket and exact native host.
+/// Bug: deriving XDG_RUNTIME_DIR from a long redirected TMPDIR exceeded Linux's Unix socket path limit.
 fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Check {
     let root = std::env::temp_dir().join(format!(
         "se-route-{}-{}",
@@ -52,12 +65,12 @@ fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Ch
     ));
     fs::create_dir(&root)?;
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
-    let runtime = root.join("x");
+    let home = root.join("long-state-home-".repeat(8));
+    let runtime = socket_root(&home);
     fs::create_dir(&runtime)?;
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
     let repository = root.join("repository");
     fs::create_dir(&repository)?;
-    let home = root.join("long-state-home-".repeat(8));
     let image = root.join("se");
     fs::copy(env!("CARGO_BIN_EXE_se"), &image)?;
     checked(
@@ -113,6 +126,7 @@ fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Ch
     lock.try_lock()?;
     drop(lock);
     drop(host);
+    fs::remove_dir_all(runtime)?;
     fs::remove_dir_all(root)?;
     Ok(())
 }

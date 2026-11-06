@@ -32,6 +32,8 @@ fn checked(output: std::process::Output) -> Result<serde_json::Value, Box<dyn st
 }
 
 #[test]
+/// Protects: failed reply parsing and a panicked native observation close the published fixture host while retaining its state for diagnosis.
+/// Bug: a detached host could be committed before RunningHost existed to clean up a failed startup observation.
 fn failed_reply_and_panicked_observation_close_the_published_host_but_keep_its_home() -> Check {
     let root = std::env::temp_dir().join(format!(
         "se-start-cleanup-{}-{}",
