@@ -87,7 +87,7 @@ struct Host {
 }
 impl Host {
     fn start(image: &Path, home: &Path, root: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        value(command(image, home, root).arg("up").output()?)?;
+        value(command(image, home, root).arg("up").output_executable()?)?;
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
             home.join("endpoint.json"),
         )?)?;
@@ -145,7 +145,7 @@ impl Host {
         if !self.exited(until)? {
             let output = command(&self.image, &self.home, &self.root)
                 .arg("down")
-                .output()?;
+                .output_executable()?;
             assert!(
                 matches!(output.status.code(), Some(0) | Some(2)),
                 "actual down failed: {}",
@@ -267,7 +267,7 @@ fn check(hosted: bool) -> Check {
     let initialized = value(
         command(&image, home, &root)
             .args(["init", "--name", "allocation-routes"])
-            .output()?,
+            .output_executable()?,
     )?;
     let owner: HumanId = initialized["owner"]["human_id"]
         .as_str()
@@ -312,7 +312,11 @@ fn check(hosted: bool) -> Check {
         let name = format!("independent-{index}");
         let key = format!("route-allocation-{index}");
         let args = ["--key", key.as_str(), "agent", "add", name.as_str()];
-        let first = value(command(&image, home, &root).args(args).output()?)?;
+        let first = value(
+            command(&image, home, &root)
+                .args(args)
+                .output_executable()?,
+        )?;
         assert_eq!(first["state"], "committed");
         assert_eq!(first["process_started"], false);
         assert_eq!(
@@ -370,7 +374,11 @@ fn check(hosted: bool) -> Check {
             );
         }
         snapshot.close()?;
-        let replay = value(command(&image, home, &root).args(args).output()?)?;
+        let replay = value(
+            command(&image, home, &root)
+                .args(args)
+                .output_executable()?,
+        )?;
         assert_eq!(replay["state"], "replayed");
         assert_eq!(replay["agent"], first["agent"]);
         assert_eq!(replay["event_id"], first["event_id"]);
@@ -409,7 +417,7 @@ fn check(hosted: bool) -> Check {
         let replay = value(
             command(&image, home, &root)
                 .args(["--key", key.as_str(), "agent", "add", name.as_str()])
-                .output()?,
+                .output_executable()?,
         )?;
         assert_eq!(replay["state"], "replayed");
         assert_eq!(replay["agent"], first["agent"]);
@@ -441,3 +449,7 @@ fn check(hosted: bool) -> Check {
     }
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

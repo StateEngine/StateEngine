@@ -484,3 +484,6 @@ fn observation_names_recorded_exit_of_the_exact_live_process() -> Check {
 fn observation_disables_resume_until_exit_cleanup_completes() -> Check {
     observation(false)
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;

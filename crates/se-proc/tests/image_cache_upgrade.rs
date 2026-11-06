@@ -38,7 +38,7 @@ fn child(image: &Path, root: &Path, mode: &str, published: Sha256, actual: Sha25
         .env("SE_UPGRADE_MODE", mode)
         .env("SE_UPGRADE_PUBLISHED", serde_json::to_string(&published)?)
         .env("SE_UPGRADE_ACTUAL", serde_json::to_string(&actual)?)
-        .output()?;
+        .output_executable()?;
     assert!(output.status.success(), "{mode}: {output:?}");
     Ok(())
 }
@@ -120,3 +120,7 @@ fn persisted_image_hint_detects_upgrade() -> Result<()> {
     fs::remove_dir(root)?;
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

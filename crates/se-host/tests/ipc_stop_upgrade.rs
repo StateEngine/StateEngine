@@ -74,7 +74,7 @@ fn stop_keeps_exact_process_proof_across_real_executable_replacement() -> Check 
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()?;
+        .spawn_executable()?;
     let mut child = child;
     let deadline = Instant::now() + Duration::from_secs(10);
     let path = home.0.join("endpoint");
@@ -132,3 +132,7 @@ fn stop_keeps_exact_process_proof_across_real_executable_replacement() -> Check 
     );
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

@@ -164,14 +164,16 @@ fn absent_down_endpoint_names_status_and_preserves_initialized_state() -> Check 
             .arg("init")
             .arg("--repo")
             .arg(root)
-            .output()?,
+            .output_executable()?,
     )?;
     let reader = present(se_store::SqliteFactory::open_reader(&f.options)?)?;
     let before = reader.info()?.head;
     let identity = std::fs::read(home.join("machine.json"))?;
     let credential = std::fs::read(home.join("credential"))?;
     for json in [true, false] {
-        let output = command(&image, home, json).arg("down").output()?;
+        let output = command(&image, home, json)
+            .arg("down")
+            .output_executable()?;
         assert!(output.status.success(), "{output:?}");
         let diagnostic = String::from_utf8_lossy(&output.stdout);
         assert!(
@@ -228,7 +230,7 @@ fn stale_address_cli_names_lease_safe_recovery_and_preserves_foreign_socket() ->
             .arg("init")
             .arg("--repo")
             .arg(repository)
-            .output()?,
+            .output_executable()?,
     )?;
     let first = runtime_host::RunningHost::start(&image, home)?;
     let mut record =
@@ -253,7 +255,7 @@ fn stale_address_cli_names_lease_safe_recovery_and_preserves_foreign_socket() ->
         staged.file.sync_all()?;
         drop(staged.file);
         files.publish_no_replace(&staged.path, &home.join("endpoint.json"))?;
-        let output = command(&image, home, json).arg("up").output()?;
+        let output = command(&image, home, json).arg("up").output_executable()?;
         let after = std::fs::symlink_metadata(&foreign_path)?;
         assert_eq!(
             (after.dev(), after.ino(), after.mode()),
@@ -316,3 +318,7 @@ fn stale_address_cli_names_lease_safe_recovery_and_preserves_foreign_socket() ->
     foreign.close()?;
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

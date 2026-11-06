@@ -74,7 +74,7 @@ impl Host {
         if !self.exited()? {
             let output = command(&self.image, &self.home, &self.root, true)
                 .arg("down")
-                .output()?;
+                .output_executable()?;
             assert!(
                 matches!(output.status.code(), Some(0) | Some(2)),
                 "real down refused: {} {}",
@@ -135,10 +135,12 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
     value(
         command(&installed, &home, &root, true)
             .args(["init", "--name", "image-remedy"])
-            .output()?,
+            .output_executable()?,
     )?;
     for (json, executable) in [(true, &image), (false, &alias)] {
-        let output = command(executable, &home, &root, json).arg("up").output()?;
+        let output = command(executable, &home, &root, json)
+            .arg("up")
+            .output_executable()?;
         assert_eq!(
             output.status.code(),
             Some(1),
@@ -187,7 +189,11 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
             "refusal published a host"
         );
     }
-    let started = value(command(&installed, &home, &root, true).arg("up").output()?)?;
+    let started = value(
+        command(&installed, &home, &root, true)
+            .arg("up")
+            .output_executable()?,
+    )?;
     assert_eq!(started["state"], "running");
     let endpoint =
         se_host::client::endpoint::decode_endpoint(&fs::read(home.join("endpoint.json"))?)?;
@@ -216,3 +222,7 @@ fn multilink_image_names_the_launch_precondition_and_a_single_link_copy_starts()
     fs::remove_dir_all(fixture)?;
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

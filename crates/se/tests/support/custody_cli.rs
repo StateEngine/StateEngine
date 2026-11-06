@@ -1,5 +1,6 @@
 //! Execute the actual CLI; uninstall receives a real PTY, never injected admission.
 use super::*;
+use crate::executable::ExecutableCommand;
 use std::process::{Command, Output};
 
 fn command(image: &Path, f: &Fixture) -> Command {
@@ -40,7 +41,7 @@ pub fn checked(
     label: &str,
     args: &[&str],
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let output = command(image, f).args(args).output()?;
+    let output = command(image, f).args(args).output_executable()?;
     save(f, label, &output)?;
     assert!(output.status.success(), "{label}: {}", printed(&output));
     json(&output)
@@ -57,7 +58,7 @@ pub fn uninstall(image: &Path, f: &Fixture) -> Result<Output, Box<dyn std::error
         .arg(image)
         .arg(&f.options.state_directory)
         .current_dir(f.home.join("repository"))
-        .output()?;
+        .output_executable()?;
     save(f, "uninstall", &output)?;
     Ok(output)
 }

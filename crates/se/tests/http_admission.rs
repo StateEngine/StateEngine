@@ -147,7 +147,7 @@ fn public_http_admission_precedes_anonymous_and_private_routes() -> Check {
         command(&image, home, true)
             .args(["init", "--repo"])
             .arg(&repository)
-            .output()?,
+            .output_executable()?,
     )?;
     let configuration: toml::Value =
         toml::from_str(&std::fs::read_to_string(home.join("config.toml"))?)?;
@@ -317,3 +317,7 @@ fn public_http_admission_precedes_anonymous_and_private_routes() -> Check {
     drop(std::mem::ManuallyDrop::into_inner(f));
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;
