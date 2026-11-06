@@ -35,12 +35,12 @@ pub(super) fn resume_at(
     };
     writeln!(
         out,
-        "{} in {} — {}{}",
+        "{} in {} — context read: {}{}",
         value.principal.agent.name,
         value.principal.project.name,
         status,
         if value.principal.preview {
-            " (owner preview; nothing acknowledged)"
+            " (owner preview; no messages marked read)"
         } else {
             ""
         }
@@ -48,6 +48,10 @@ pub(super) fn resume_at(
     if let Some(session) = &value.principal.session_id {
         writeln!(out, "Session: {session}")?;
     }
+    writeln!(
+        out,
+        "This reads saved context only; provider sign-in and task completion are not checked."
+    )?;
     writeln!(out, "\nWhat was I doing?")?;
     match &value.working_state {
         Read::Present { value } => {
@@ -168,7 +172,7 @@ pub(super) fn resume_at(
     }
     writeln!(
         out,
-        "Context bytes: {} of {}; complete: {}",
+        "Context bytes: {} of {}; context complete: {}",
         value.budget.used_bytes, value.budget.limit_bytes, value.complete
     )?;
     write!(out, "Continue: se")?;

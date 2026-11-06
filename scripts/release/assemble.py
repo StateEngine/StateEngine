@@ -119,7 +119,7 @@ def main():
             f'StateEngine {metadata["version"]} ({metadata["target"]})\n'
             f'Unsigned development archive; source {metadata["source_commit"]}.\n\n'
             f'Extract this archive, then run {command} as your normal user.\n'
-            'Open a fresh login terminal and run se --version.\n'
+            'Run the installer\'s printed command to verify se in the same terminal.\n'
             'The notices.tar member collects the release notices for this archive.\n'
             'To remove the installation, run se uninstall from an owner terminal.\n'
             'The uninstall script delegates to the same operation.\n'
