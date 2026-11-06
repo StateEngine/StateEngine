@@ -12,8 +12,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+let work = null;
+
 function fail(message) {
   process.stderr.write(`Install refused: ${message}\n`);
+  if (work) {
+    try {
+      rmSync(work, { recursive: true, force: true });
+    } catch {
+      // best effort: the refusal stands even if cleanup fails
+    }
+  }
   process.exit(1);
 }
 
@@ -36,7 +45,7 @@ const windows = process.platform === 'win32';
 const archiveExt = windows ? '.zip' : '.tar.gz';
 const pubKeyB64 = process.env.SE_RELEASE_PUBLIC_KEY_B64 || SE_RELEASE_PUBLIC_KEY_B64_DEFAULT;
 
-const work = mkdtempSync(path.join(tmpdir(), 'se-one-line-'));
+work = mkdtempSync(path.join(tmpdir(), 'se-one-line-'));
 try {
   process.stdout.write(`Fetching the release index from ${base}\n`);
   let index;

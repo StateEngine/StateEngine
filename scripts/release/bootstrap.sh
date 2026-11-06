@@ -132,7 +132,9 @@ else
 fi
 
 printf 'Installing release %s as your normal user...\n' "$index_version"
-if ! "$pkgroot/secode" update --from "$pkgroot"; then
+if "$pkgroot/secode" update --from "$pkgroot"; then
+    :
+else
     rc=$?
     fail "the installer stopped (exit $rc); read the message it printed above, do what it says, and rerun the one-liner"
 fi

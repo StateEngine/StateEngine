@@ -61,7 +61,7 @@ class ReleaseServer:
         package = workdir / PACKAGE_DIR_NAME
         (package / "stateengine").mkdir(parents=True)
         handoff = package / "secode"
-        handoff.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "${SE_TEST_HANDOFF_LOG:?}"\n')
+        handoff.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "${SE_TEST_HANDOFF_LOG:?}"\nexit "${SE_TEST_EXIT:-0}"\n')
         handoff.chmod(0o755)
         payload = {
             "schema": "stateengine.se-payload.v1",
@@ -212,6 +212,36 @@ class BootstrapTests(unittest.TestCase):
 
     def test_unreachable_base_refused(self):
         self.assert_refused(self.run_sh(base="http://127.0.0.1:1"), "cannot reach")
+
+    def test_sh_handoff_failure_reports_the_true_exit_code(self):
+        result = self.run_sh(extra_env={"SE_TEST_EXIT": "37"})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("the installer stopped (exit 37)", result.stderr)
+        self.assertEqual(len(self.handoff_lines()), 1, "the failed handoff must still be the reported one")
+
+    def test_sh_refusal_leaves_no_workdir(self):
+        scoped = Path(self.tmp.name) / "scoped-tmp"
+        scoped.mkdir()
+        self.server.sign(self.other_key)
+        result = self.run_sh(extra_env={"TMPDIR": str(scoped)})
+        self.assert_refused(result, "does not verify against the release key")
+        self.assertEqual([path.name for path in scoped.iterdir()], [], "a refused run must not retain its workdir")
+
+    @unittest.skipUnless(node_major_version() >= 18, "the npx route needs Node 18 or newer")
+    def test_npx_handoff_failure_reports_the_true_exit_code(self):
+        result = self.run_npx(extra_env={"SE_TEST_EXIT": "37"})
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn("the installer stopped (exit 37)", result.stderr)
+        self.assertEqual(len(self.handoff_lines()), 1, "the failed handoff must still be the reported one")
+
+    @unittest.skipUnless(node_major_version() >= 18, "the npx route needs Node 18 or newer")
+    def test_npx_refusal_leaves_no_workdir(self):
+        scoped = Path(self.tmp.name) / "scoped-tmp"
+        scoped.mkdir()
+        self.server.sign(self.other_key)
+        result = self.run_npx(extra_env={"TMPDIR": str(scoped)})
+        self.assert_refused(result, "does not verify against the release key")
+        self.assertEqual([path.name for path in scoped.iterdir()], [], "a refused run must not retain its workdir")
 
     @unittest.skipUnless(node_major_version() >= 18, "the npx route needs Node 18 or newer")
     def test_npx_happy_path_hands_off(self):
