@@ -22,6 +22,7 @@ pub(super) fn public<R: Snapshot>(
 ) -> Result<(&'static str, Value)> {
     use EventBody::*;
     Ok(match &event.body {
+        ChannelRecorded{change}=>("channel.recorded",json!({"change":change})),
         MessageSent { message, recipient, kind, body, refs, reply_to, quiet } => ("message.sent", json!({"message_id":message,"to":receipt::actor_ref(read,recipient)?,"kind":kind,"body":text(body)?,"refs":refs,"reply_to":reply_to,"quiet":quiet})),
         WorkMessageSent {message,work,kind,body,refs,reply_to,quiet}=>("message.work_sent",json!({"message_id":message,"to":receipt::floor_ref(),"work":work,"kind":kind,"body":text(body)?,"refs":refs,"reply_to":reply_to,"quiet":quiet})),
         MessageRead{message,recipient}=>("message.read",json!({"message_id":message,"recipient":receipt::actor_ref(read,recipient)?})),

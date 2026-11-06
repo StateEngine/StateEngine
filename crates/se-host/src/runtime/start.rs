@@ -48,6 +48,8 @@ impl RuntimeLease for HostLease {
 pub struct HostedRuntime {
     #[cfg(target_os = "linux")]
     pub(super) atlas_owner: Option<Arc<super::atlas_owner::Service>>,
+    pub(crate) channels: Arc<std::sync::OnceLock<Arc<crate::channels::Channels>>>,
+    pub(crate) channel_transport: Option<Arc<dyn crate::channels::ChannelTransport>>,
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     pub(super) memory_reclaim: Option<super::memory::MemoryReclaim>,
     #[cfg(unix)]
@@ -338,6 +340,8 @@ fn prepare(
     Ok(HostedRuntime {
         #[cfg(target_os = "linux")]
         atlas_owner: None,
+        channels: Arc::default(),
+        channel_transport: None,
         #[cfg(unix)]
         socket_paths: Default::default(),
         execution,

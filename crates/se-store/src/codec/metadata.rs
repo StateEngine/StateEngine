@@ -12,6 +12,7 @@ fn notification(mut facts: Value, quiet: bool) -> Value {
 pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Value)> {
     use EventBody::*;
     Ok(match body {
+        ChannelRecorded { change } => ("channel.recorded", json!({"change":change})),
         ProjectRegistered {
             project,
             name,

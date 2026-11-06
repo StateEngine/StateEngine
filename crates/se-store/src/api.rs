@@ -427,6 +427,111 @@ pub trait Snapshot {
         Self: 'a;
     /// Bound to this snapshot's admitted project and recorded import sources.
     fn legacy_registry(&self) -> StoreResult<Self::LegacyRegistry<'_>>;
+    fn channel_reply_route(
+        &mut self,
+        _message: &MessageId,
+    ) -> StoreResult<Option<channel::ReplyRoute>> {
+        crate::error::later("channel reply route")
+    }
+    fn channel_active(&mut self) -> StoreResult<Vec<channel::Connection>> {
+        crate::error::later("active channels")
+    }
+    fn channel_update_handled(
+        &mut self,
+        _id: &channel::ChannelId,
+        _update: i64,
+    ) -> StoreResult<bool> {
+        crate::error::later("provider update disposition")
+    }
+    fn channel_version(&mut self) -> StoreResult<channel::Version> {
+        crate::error::later("channel snapshot version")
+    }
+    fn channel_connection(
+        &mut self,
+        _id: &channel::ChannelId,
+    ) -> StoreResult<Read<channel::Connection>> {
+        crate::error::later("channel point read")
+    }
+    fn channel_connections(
+        &mut self,
+        _after: u64,
+    ) -> StoreResult<channel::ChannelRows<channel::Connection>> {
+        crate::error::later("channel list")
+    }
+    fn channel_receipt(
+        &mut self,
+        _id: &channel::ChannelId,
+        _receipt: &channel::ReceiptId,
+    ) -> StoreResult<Read<channel::SavedUpdate>> {
+        crate::error::later("channel receipt point read")
+    }
+    fn channel_saved(
+        &mut self,
+        _id: &channel::ChannelId,
+        _after: u64,
+    ) -> StoreResult<channel::ChannelRows<channel::SavedUpdate>> {
+        crate::error::later("channel saved receipts")
+    }
+    fn channel_recent_rejections(
+        &mut self,
+        _id: &channel::ChannelId,
+    ) -> StoreResult<channel::RecentRejections> {
+        crate::error::later("recent channel input rejections")
+    }
+    fn channel_action(
+        &mut self,
+        _id: &channel::ChannelId,
+        _action: &channel::ActionId,
+    ) -> StoreResult<Read<channel::ResumeAction>> {
+        crate::error::later("channel action")
+    }
+    fn channel_message_action(
+        &mut self,
+        _id: &channel::ChannelId,
+        _message: &se_types::MessageId,
+    ) -> StoreResult<Read<channel::ResumeAction>> {
+        crate::error::later("channel message action")
+    }
+    fn channel_confirmed_actions(
+        &mut self,
+        _id: &channel::ChannelId,
+    ) -> StoreResult<Vec<channel::ResumeAction>> {
+        crate::error::later("confirmed channel actions")
+    }
+    fn channel_has_capacity(&mut self, _id: &channel::ChannelId) -> StoreResult<bool> {
+        crate::error::later("channel pending capacity")
+    }
+    fn channel_due_delays(
+        &mut self,
+        _id: &channel::ChannelId,
+        _at_us: i64,
+    ) -> StoreResult<Vec<se_types::MessageId>> {
+        crate::error::later("channel delayed status")
+    }
+    fn channel_pending_outputs(
+        &mut self,
+        _id: &channel::ChannelId,
+        _at_us: i64,
+    ) -> StoreResult<channel::ChannelRows<channel::Outbound>> {
+        crate::error::later("pending channel output")
+    }
+    fn channel_replies(
+        &mut self,
+        _id: &channel::ChannelId,
+        _original: &MessageId,
+    ) -> StoreResult<channel::ChannelRows<channel::Outbound>> {
+        crate::error::later("channel replies")
+    }
+    fn channel_outbox(
+        &mut self,
+        _id: &channel::ChannelId,
+        _after: u64,
+    ) -> StoreResult<channel::ChannelRows<channel::Outbound>> {
+        crate::error::later("channel outbox")
+    }
+    fn channel_offset(&mut self, _id: &channel::ChannelId) -> StoreResult<Option<i64>> {
+        crate::error::later("channel offset")
+    }
     fn info(&self) -> StoreInfo;
     /// Encode an admitted, visible position for a public receipt/checked/history
     /// field. Binds store/incarnation, scope, principal and purpose; no arithmetic.
@@ -443,6 +548,10 @@ pub trait Snapshot {
         purpose: PositionPurpose,
     ) -> StoreResult<StorePosition>;
     /// runtime.* facts are private: known excluded IDs return a typed refusal.
+    /// Read a committed position from this exact store/incarnation and scope.
+    fn event_position(&mut self, _position: &StorePosition) -> StoreResult<Read<StoredEvent>> {
+        crate::error::later("event position read")
+    }
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>>;
     /// Excludes runtime.* facts, including their native nonces.
     fn history(
@@ -565,6 +674,10 @@ pub trait Snapshot {
     fn pending_effects(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
     fn effect(&mut self, id: RecordId) -> StoreResult<Read<ProjectionRecord>>;
     fn integrations(&mut self, budget: ReadBudget) -> StoreResult<Page<ProjectionRecord>>;
+    /// Resolve the original key and semantic intent before native I/O or head checks.
+    fn resolve_request(&mut self, _request: &RequestIdentity) -> StoreResult<Read<CommitReceipt>> {
+        crate::error::later("keyed intent lookup")
+    }
     fn operation_receipt(
         &mut self,
         actor: Actor,

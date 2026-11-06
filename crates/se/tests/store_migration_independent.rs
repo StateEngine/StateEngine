@@ -21,7 +21,7 @@ fn schema_one(f: &Fixture, obstruct: bool) -> Check {
         }
     }
     db.execute_batch(
-        "DROP TABLE atlas_resume_deliveries; DROP TABLE atlas_resume_cursors;
+        "DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; DROP TABLE atlas_resume_deliveries; DROP TABLE atlas_resume_cursors;
          DROP TABLE atlas_resume_roots; DROP TABLE work_mark_data;
          DROP TABLE message_deliveries; ALTER TABLE message_data DROP COLUMN quiet; PRAGMA user_version=1",
     )?;
@@ -46,7 +46,7 @@ fn schema_four(f: &Fixture) -> Check {
     drop(lease);
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
     db.execute_batch(
-        "DROP TABLE atlas_resume_deliveries; DROP TABLE atlas_resume_cursors;
+        "DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; DROP TABLE atlas_resume_deliveries; DROP TABLE atlas_resume_cursors;
         DROP TABLE atlas_resume_roots; PRAGMA user_version=4",
     )?;
     Ok(())
@@ -95,8 +95,8 @@ fn backup_is_original(f: &Fixture, expected_schema: u32, expected_head: u64) -> 
             [],
             |row| row.get::<_, u32>(0)
         )?,
-        0,
-        "the original pre-Atlas backup must not contain later Atlas tables"
+        if expected_schema >= 5 { 3 } else { 0 },
+        "the backup must preserve the exact pre-migration Atlas schema"
     );
     Ok(())
 }
@@ -167,7 +167,7 @@ fn check(from: u32, obstruct: bool) -> Check {
     });
     outcome?;
     let after = reader.info()?;
-    assert_eq!(after.schema_version, if obstruct { from } else { 5 });
+    assert_eq!(after.schema_version, if obstruct { from } else { 6 });
     assert_eq!(after.id, before.id);
     // Startup may append runtime ownership; the backup must bind the old head.
     backup_is_original(&f, from, u64::try_from(before_sequence)?)?;
@@ -183,6 +183,8 @@ fn check(from: u32, obstruct: bool) -> Check {
     );
     let atlas: u32 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('atlas_resume_roots','atlas_resume_cursors','atlas_resume_deliveries')", [], |row| row.get(0))?;
     assert_eq!(atlas, if obstruct { 0 } else { 3 });
+    let channels: u32 = db.query_row("SELECT count(*) FROM sqlite_schema WHERE type='table' AND name IN ('channel_connections','channel_updates','channel_outbox','channel_actions')", [], |r| r.get(0))?;
+    assert_eq!(channels, if obstruct { 0 } else { 4 });
     if from == 4 {
         let quiet_messages: u32 =
             db.query_row("SELECT count(*) FROM message_data WHERE quiet=1", [], |r| {
@@ -201,16 +203,90 @@ fn check(from: u32, obstruct: bool) -> Check {
     }
     Ok(())
 }
+/// Protects: 49 — preserve verified pre-Atlas backups and quiet mail while adding channels.
 #[test]
 fn native_host_upgrades_schema_one_only_after_verified_original_backup() -> Check {
     check(1, false)
 }
+/// Protects: 49 — refused earlier DDL never partially installs channel tables.
 #[test]
 fn refused_ddl_keeps_schema_one_and_verified_backup_without_partial_indexes() -> Check {
     check(1, true)
 }
 
+/// Protects: 49 — preserve verified pre-Atlas backups and quiet mail while adding channels.
 #[test]
 fn native_host_adds_atlas_after_schema_four_without_reapplying_quiet_mail() -> Check {
     check(4, false)
+}
+
+/// Protects: 49 — add channel storage to an existing schema-five home without changing ordinary mail.
+#[test]
+fn channel_schema_upgrade_preserves_schema_five_mail_and_original_backup() -> Check {
+    let f = Fixture::new()?;
+    seed(&f)?;
+    let (mut writer, lease) = direct(&f)?;
+    let message = fixture::message()?;
+    writer.append(
+        f.send(
+            Actor::Agent(f.a.clone()),
+            Actor::Agent(f.b.clone()),
+            message.clone(),
+            "original mail survives channel migration",
+            "channel-migration-original",
+        )?,
+        &*lease,
+    )?;
+    writer.close()?;
+    drop(lease);
+    let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    db.execute_batch("DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; PRAGMA user_version=5")?;
+    db.execute("INSERT INTO atlas_resume_roots(project_id,root,epoch,active) SELECT project_id,'original-root','original-epoch',1 FROM projects LIMIT 1", [])?;
+    let head: i64 = db.query_row("SELECT MAX(seq) FROM events", [], |row| row.get(0))?;
+    drop(db);
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    assert_eq!(reader.info()?.schema_version, 5);
+    let mut old = reader.snapshot(f.scoped(Visibility::Owner))?;
+    assert!(old.channel_reply_route(&message)?.is_none());
+    assert!(old.channel_active()?.is_empty());
+    assert!(old.channel_connections(0)?.items.is_empty());
+    old.close()?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    rt.block_on(async {
+        let mut host = HostedRuntime::prepare(
+            initialize_host_process()?,
+            start(&f)?,
+            rt.handle().clone(),
+            &bound()?,
+        )
+        .await?;
+        let listener = host.listen(rt.handle().clone(), &bound()?).await?;
+        host.local_stop().request();
+        let report = host.serve(listener).await.finish(&bound()?).await;
+        assert!(report.transport_closed && report.endpoint_retired);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    })?;
+    assert_eq!(reader.info()?.schema_version, 6);
+    backup_is_original(&f, 5, u64::try_from(head)?)?;
+    let db = rusqlite::Connection::open_with_flags(
+        f.options.state_directory.join("state.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let epoch: String = db.query_row(
+        "SELECT epoch FROM atlas_resume_roots WHERE root='original-root'",
+        [],
+        |r| r.get(0),
+    )?;
+    assert_eq!(epoch, "original-epoch");
+    let phase = reader.read_phase()?;
+    let mut snapshot = phase.into_snapshot(f.self_scope(&f.b))?;
+    let mail = present(snapshot.message(message)?)?;
+    assert!(
+        matches!(mail.body, StoredText::Present(body) if body == "original mail survives channel migration")
+    );
+    assert!(mail.read.is_none());
+    snapshot.close()?;
+    Ok(())
 }

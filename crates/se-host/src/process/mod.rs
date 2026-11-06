@@ -28,7 +28,7 @@ mod shutdown;
 mod startup_stop;
 mod status;
 mod stop;
-mod store;
+pub(crate) mod store;
 mod supervisor;
 mod takeover;
 mod tasks;
@@ -38,7 +38,7 @@ mod window_join;
 pub use recovery::Reconciliation;
 pub use shutdown::ProcessDrain;
 
-use crate::{BlockingPool, ClaudeHarness, CodexHarness, PreparedRequestProofs, ProviderIoPlatform};
+use crate::{ClaudeHarness, CodexHarness, PreparedRequestProofs, ProviderIoPlatform};
 use se_core::config_policy::ConfigFile;
 use se_proc::{NativeProcessRuntime, ProcessRuntime};
 use se_types::{HostEpoch, NativePath, Result};

@@ -1,6 +1,7 @@
 // Canonical typed error declarations for section 50.
 // Like-class failures share a code while preserving cause and legal remedy in detail.
 codes! {
+    MessagingChannelRefused => ("messaging-channel-refused", Refused) {reason: MessagingChannelError, next_step:String} => "Messaging channel: {reason}", "{next_step}";
     AtlasSymbolAmbiguous => ("atlas-symbol-ambiguous", Usage) { symbol: String, candidates: Vec<String> } => "`{symbol}` names {candidates.len} symbols", "add `--path`";
     CommandRetired => ("command-retired", Usage) { old: String, reason: String, workflow: String } => "`{old}` was retired: {reason}", "{workflow}";
     CursorInvalid => ("cursor-invalid", Usage) { reason: String, next_step: String } => "this cursor isn't valid here ({reason})", "{next_step}";

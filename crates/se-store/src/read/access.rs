@@ -63,6 +63,11 @@ impl SqliteSnapshot {
     }
 
     pub(super) fn visible(&self, e: &StoredEvent) -> StoreResult<bool> {
+        if matches!(e.body, EventBody::ChannelRecorded { .. }) {
+            return Ok(matches!(self.scope.visibility, Visibility::Owner)
+                && matches!(self.scope.admission.actor, Actor::Human(_))
+                && self.scope.admission.session.is_none());
+        }
         Ok(match &self.scope.visibility {
             Visibility::Owner | Visibility::SharedProject(_) => true,
             Visibility::SelfOnly(a) => {

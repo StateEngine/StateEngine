@@ -70,6 +70,7 @@ impl Validate for AgentLaunch {
 #[derive(Clone)]
 pub struct LaunchPlan {
     pub input: AgentLaunch,
+    pub channel_resume: Option<(se_store::channel::ChannelId, se_store::channel::ActionId)>,
     pub project: Named<ProjectId>,
     pub owner: se_types::HumanId,
     pub agent: Named<AgentId>,

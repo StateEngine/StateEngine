@@ -138,6 +138,7 @@ pub struct OperationOutput {
     pub window: Option<se_types::Window>,
 }
 pub enum IpcRequest {
+    Channels(crate::channels::ChannelRequest),
     Operation(RawOperation),
     Hook(ClaudeHookInput),
 }
