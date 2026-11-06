@@ -422,3 +422,6 @@ impl CaptureHandle {
 
 #[cfg(test)]
 mod registry_tests;
+
+#[cfg(all(test, target_os = "linux"))]
+mod retirement_tests;
