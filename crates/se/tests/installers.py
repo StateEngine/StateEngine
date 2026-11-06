@@ -191,7 +191,9 @@ class LinuxInstaller(unittest.TestCase):
                     self.assertEqual(value["resume_status"], "ready")
                     self.assertEqual(value["recent_turns"], [])
                 self.assertEqual(value["complete"], not clipped, value)
-                self.assertIn(f"context read: {value['resume_status']}", plain.stdout.decode())
+                expected_status = ("saved context available" if stage == "empty"
+                                   else "saved context; unread messages below")
+                self.assertIn(f"context read: {expected_status}", plain.stdout.decode())
                 self.assertIn(f"context complete: {str(value['complete']).lower()}", plain.stdout.decode())
                 self.assertIn(b"provider sign-in and task completion are not checked", plain.stdout)
                 self.assertIn(b"owner preview; no messages marked read", plain.stdout)
