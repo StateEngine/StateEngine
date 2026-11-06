@@ -104,7 +104,7 @@ pub struct AgentConfigThen {
     pub(crate) human_only: bool,
 }
 fn agent<R: Snapshot>(selector: &str, cx: &mut Cx<'_, R>) -> Result<AgentId> {
-    match scope::actor_selector(cx.read, selector)? {
+    match scope::selected_actor(cx, selector)? {
         Actor::Agent(agent) => Ok(agent),
         Actor::Human(_) => Err(SeError::invalid(
             "agent selector",

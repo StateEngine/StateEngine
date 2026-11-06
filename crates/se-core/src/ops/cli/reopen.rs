@@ -12,7 +12,7 @@ pub(super) fn refuse<R: se_store::Snapshot>(
             },
         )));
     }
-    let se_store::Actor::Agent(agent) = crate::scope::actor_selector(cx.read, selector)? else {
+    let se_store::Actor::Agent(agent) = crate::scope::selected_actor(cx, selector)? else {
         return Err(SeError::invalid("resume agent", "a saved project agent"));
     };
     let project = crate::scope::project(cx.admission)?;
