@@ -14,13 +14,12 @@ pub(super) fn create() -> io::Result<OwnedHandle> {
         | JOB_OBJECT_LIMIT_JOB_MEMORY
         | JOB_OBJECT_LIMIT_PROCESS_TIME
         | JOB_OBJECT_LIMIT_PRIORITY_CLASS
-        | JOB_OBJECT_LIMIT_WORKINGSET
         | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
     limits.BasicLimitInformation.ActiveProcessLimit = 1;
     limits.BasicLimitInformation.PerProcessUserTimeLimit = 900 * 10_000_000;
     limits.BasicLimitInformation.PriorityClass = IDLE_PRIORITY_CLASS;
-    limits.BasicLimitInformation.MinimumWorkingSetSize = 4096;
-    limits.BasicLimitInformation.MaximumWorkingSetSize = MEMORY_BYTES as usize;
+    // A working-set reservation requires quota privilege on ordinary Windows
+    // accounts. Keep native commit caps; the parent checks the 64 MB resident peak.
     limits.ProcessMemoryLimit = MEMORY_BYTES as usize;
     limits.JobMemoryLimit = MEMORY_BYTES as usize;
     // SAFETY: retained job, exact aligned initialized native policy and size.

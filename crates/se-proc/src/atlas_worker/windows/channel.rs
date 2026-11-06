@@ -84,14 +84,12 @@ impl WorkerChannel {
             | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
             | JOB_OBJECT_LIMIT_PROCESS_MEMORY
             | JOB_OBJECT_LIMIT_JOB_MEMORY
-            | JOB_OBJECT_LIMIT_PROCESS_TIME
-            | JOB_OBJECT_LIMIT_WORKINGSET;
+            | JOB_OBJECT_LIMIT_PROCESS_TIME;
         if limits.BasicLimitInformation.LimitFlags & required != required
             || limits.BasicLimitInformation.ActiveProcessLimit != 1
             || limits.ProcessMemoryLimit != MEMORY_BYTES as usize
             || limits.JobMemoryLimit != MEMORY_BYTES as usize
             || limits.BasicLimitInformation.PerProcessUserTimeLimit != 900 * 10_000_000
-            || limits.BasicLimitInformation.MaximumWorkingSetSize != MEMORY_BYTES as usize
         {
             return Err(invalid(
                 "Atlas job memory/CPU/process/parent-death limits differ",
