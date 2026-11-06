@@ -129,7 +129,7 @@ jobs:
         os: [ubuntu-24.04, windows-2025, macos-15]
         shard: [1, 2]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 4
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
         with:
@@ -141,6 +141,13 @@ jobs:
       - name: Run shard from the existing build
         run: |
           filter="$(python scripts/ci/custom.py filter)"
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            target="$(rustc --print host-tuple)"
+            export SE_SHUTDOWN_JUDGE_SE="$PWD/target/$target/debug/se"
+            export SE_RUNTIME_JUDGE_SE="$SE_SHUTDOWN_JUDGE_SE"
+            judge_out="$(mktemp -d)"
+            export SE_RUNTIME_JUDGE_OUT="$judge_out"
+          fi
           cargo nextest run --archive-file tests.tar.zst --extract-to . --workspace-remap "$PWD" --profile ci --partition slice:${{ matrix.shard }}/2 -E "$filter"
       - name: Run custom harnesses once (their main functions serialize their own cases)
         if: ${{ !cancelled() && matrix.shard == 1 }}
