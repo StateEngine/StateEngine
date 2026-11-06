@@ -75,11 +75,23 @@ pub(super) fn finish(prepared: Prepared, home: &std::path::Path) -> Result<AnyOu
         return Ok(output);
     }
     let mut observations = plans.into_iter();
+    let mut pending = Vec::new();
+    let status = matches!(output, AnyOutput::ProjectStatus(_));
     let mut apply = |row: &mut AgentRow| -> Result<()> {
         let plan = observations
             .next()
             .ok_or_else(|| scope::unreadable("agent observation", "prepared row is absent"))?;
-        se_host::observe_agent(plan.with_command_home(home), deadline)?.apply(row)
+        let plan = plan.with_command_home(home);
+        let observation = se_host::observe_agent(
+            if status {
+                plan.with_status_attention()
+            } else {
+                plan
+            },
+            deadline,
+        )?;
+        pending.extend(observation.pending().cloned());
+        observation.apply(row)
     };
     match &mut output {
         AnyOutput::ProjectStatus(value) => {
@@ -88,6 +100,7 @@ pub(super) fn finish(prepared: Prepared, home: &std::path::Path) -> Result<AnyOu
             }
             se_core::ops::status::pending_mail(&mut value.value);
             se_host::claude::bell::pending_status(home, &mut value.value);
+            value.value.pending.extend(pending);
         }
         AnyOutput::AgentList(value) => enrich_page(&mut value.value.page, &mut apply)?,
         AnyOutput::AgentShow(value) => {

@@ -9,6 +9,7 @@ mod attended;
 mod completion;
 mod io;
 mod mail;
+mod settings;
 mod startup;
 use crate::{
     BindingWitness, CallContext, ConfigPlan, Harness, HarnessAttach, HarnessBinding, HarnessKind,
@@ -196,14 +197,24 @@ impl Harness for ClaudeHarness {
             let conversation = claude::conversation(request)?;
             let environment = claude::provider_environment();
             let command = request.executable.to_local()?;
+            let auth_command = command.clone();
             let auth_environment = environment.clone();
             tokio::task::spawn_blocking(move || {
-                io::authentication(&command, &auth_environment, cx.timeout)
+                io::authentication(&auth_command, &auth_environment, cx.timeout)
             })
             .await
             .map_err(|e| {
                 se_core::scope::unreadable("Claude authentication status", &e.to_string())
             })??;
+            let fallback = request.mode == se_proc::LaunchMode::Headless
+                && request.profile.named_profile == "default"
+                && !settings::has_saved_mode(
+                    &command,
+                    &request.cwd.to_local()?,
+                    &environment,
+                    cx.timeout,
+                )
+                .await?;
             let mut invocation =
                 claude::invocation(&self.plan(request, &directory, &conversation), environment)?;
             if let Some(plugin) = self
@@ -221,6 +232,11 @@ impl Harness for ClaudeHarness {
                     at..at,
                     ["--plugin-dir".into(), plugin.as_os_str().to_owned()],
                 );
+            }
+            if fallback {
+                invocation
+                    .arguments
+                    .extend(["--permission-mode".into(), "acceptEdits".into()]);
             }
             Ok(invocation)
         })

@@ -29,6 +29,7 @@ pub fn prepare_agent_observation<S: Snapshot>(
                 process: unreadable("agent session preparation", &error),
                 capture: unreadable("agent session preparation", &error),
                 control_failure: None,
+                status_attention: false,
             })
         }
     }
@@ -51,6 +52,7 @@ fn prepare<S: Snapshot>(
                 checked: "no launched conversation to verify".into(),
             },
             control_failure: None,
+            status_attention: false,
         });
     };
     let head = scope::require_present(
@@ -146,6 +148,7 @@ fn prepare<S: Snapshot>(
         process,
         capture,
         control_failure,
+        status_attention: false,
     })
 }
 fn capture_evidence<S: Snapshot>(
