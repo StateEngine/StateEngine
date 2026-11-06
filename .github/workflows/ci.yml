@@ -3,8 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    # Keep trial spending under operator control until the pilot is measured.
-    branches: [main, seat-5c/ci-pilot]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
