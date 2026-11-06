@@ -18,7 +18,10 @@ use se_store::{
     SqliteReader, StoreFactory, StoreOptions,
 };
 use se_types::{EventId, NativePath, Read, Result, SeError, details};
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 pub(super) fn execute(
     cx: &Bootstrap,
@@ -76,7 +79,9 @@ pub(super) fn execute(
             // call's output. The original target may have been moved on since,
             // so the retry must not require the folder to remain: canonicalize
             // only while the folder still exists, so equivalent spellings of a
-            // live target still match, and compare a gone target as written.
+            // live target still match, and resolve a gone spelling against its
+            // existing prefix, so equivalent spellings of a moved-on target
+            // still identify the same request.
             let requested = PathBuf::from(&input.root);
             let absolute = if requested.is_absolute() {
                 requested
@@ -85,7 +90,10 @@ pub(super) fn execute(
             };
             let target = match se_proc::canonicalize_path(&absolute) {
                 Ok(path) => path,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => absolute,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    resolve_moved_target(&absolute)
+                        .map_err(|e| scope::unreadable("move target identity", &e.to_string()))?
+                }
                 Err(e) => {
                     return Err(scope::unreadable("move target identity", &e.to_string()));
                 }
@@ -283,6 +291,48 @@ fn resolve_target(cx: &Bootstrap, root: &str) -> Result<PathBuf> {
         ));
     }
     Ok(target)
+}
+/// Resolve a spelling whose final folder is gone against its deepest
+/// existing ancestor. The committed target may have moved on after the
+/// retained call, so the spelling can no longer be fully canonicalized;
+/// canonicalizing what still exists and re-appending the missing components
+/// keeps an equivalent spelling (such as one through a folder symlink)
+/// identifying the same target as the canonical one. With no existing
+/// ancestor the spelling falls back to being compared as written.
+fn resolve_moved_target(absolute: &Path) -> std::io::Result<PathBuf> {
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    let mut deepest = absolute;
+    while let Some(name) = deepest.file_name() {
+        match std::fs::symlink_metadata(deepest) {
+            Ok(_) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+        missing.insert(0, name);
+        let Some(parent) = deepest.parent() else {
+            break;
+        };
+        if parent.as_os_str().is_empty() {
+            break;
+        }
+        deepest = parent;
+    }
+    if missing.is_empty() {
+        return Ok(absolute.to_path_buf());
+    }
+    let exists = match std::fs::symlink_metadata(deepest) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Err(error),
+    };
+    if !exists {
+        return Ok(absolute.to_path_buf());
+    }
+    let mut resolved = se_proc::canonicalize_path(deepest)?;
+    for name in &missing {
+        resolved.push(name);
+    }
+    Ok(resolved)
 }
 fn refusal(subject: &str, reason: &str, next_step: &str) -> SeError {
     SeError::new(se_types::Detail::RepoInvalid(details::RepoInvalid {

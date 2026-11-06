@@ -209,7 +209,7 @@ fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
     );
     std::fs::rename(&original, &moved)?;
     let moved_str = moved.to_str().ok_or("moved root is not UTF-8")?;
-    let key = "5e-fh07-replay-key-1";
+    let key = "se-fh07-replay-key-1";
     let first = command(home, &moved, false, Some("Replayer"))
         .args(["project", "move", moved_str, "--key", key])
         .output()?;
@@ -258,7 +258,7 @@ fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
             "move",
             again_str,
             "--key",
-            "5e-fh07-replay-key-3",
+            "se-fh07-replay-key-3",
         ])
         .output()?;
     assert!(
@@ -310,7 +310,7 @@ fn move_replays_the_retained_receipt_on_the_same_request_key() -> Check {
             "move",
             again_str,
             "--key",
-            "5e-fh07-replay-key-2",
+            "se-fh07-replay-key-2",
         ])
         .output()?;
     assert!(
@@ -401,5 +401,101 @@ fn move_refuses_an_unreadable_original_folder_instead_of_copying() -> Check {
         "project.root.Locked",
     )?;
     assert_eq!(row["state"], "ok");
+    Ok(())
+}
+
+#[test]
+#[cfg(unix)]
+fn move_replay_identifies_a_gone_target_spelled_through_a_folder_symlink() -> Check {
+    use std::os::unix::fs::symlink;
+    se_proc::initialize_file_creation_owner()?;
+    let fixture = Fixture::new()?;
+    let home = &fixture.options.state_directory;
+    let original = fixture.home.join("original repository");
+    let moved = fixture.home.join("moved repository");
+    let again = fixture.home.join("moved on repository");
+    std::fs::create_dir(&original)?;
+    git(&original, &["init", "-q", "-b", "main", "."])?;
+    git(&original, &["config", "user.email", "se@stateengine.local"])?;
+    git(&original, &["config", "user.name", "SE"])?;
+    std::fs::write(original.join("note.txt"), "symlink replay\n")?;
+    git(&original, &["add", "."])?;
+    git(&original, &["commit", "-qm", "base"])?;
+    let output = command(home, &original, true, None)
+        .args(["init", "--name", "Shortcut"])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "init refused: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    std::fs::rename(&original, &moved)?;
+    let key = "se-fh07-symlink-replay-key";
+    let moved_str = moved.to_str().ok_or("moved root is not UTF-8")?;
+    let output = command(home, &moved, false, Some("Shortcut"))
+        .args(["project", "move", moved_str, "--key", key])
+        .output()?;
+    assert!(
+        output.status.success(),
+        "move refused: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let first_stdout = String::from_utf8(output.stdout)?;
+    let first_event = event_id(&first_stdout)?;
+    // While the target is still live, the spelling through a folder symlink
+    // canonicalizes to the committed target and replays.
+    let link = fixture.home.join("shortcut");
+    symlink(&fixture.home, &link)?;
+    let linked = link.join("moved repository");
+    let linked_str = linked.to_str().ok_or("linked root is not UTF-8")?;
+    let pre = command(home, &moved, false, Some("Shortcut"))
+        .args(["project", "move", linked_str, "--key", key])
+        .output()?;
+    assert!(
+        pre.status.success(),
+        "symlink-spelled replay of a live target refused: {} {}",
+        String::from_utf8_lossy(&pre.stdout),
+        String::from_utf8_lossy(&pre.stderr)
+    );
+    assert_eq!(event_id(&String::from_utf8(pre.stdout)?)?, first_event);
+    // The repository moves on under a new key; the committed target is gone,
+    // but the same request spelled through the folder symlink must still
+    // identify it and return the retained receipt.
+    std::fs::rename(&moved, &again)?;
+    let replay = command(home, &again, false, Some("Shortcut"))
+        .args(["project", "move", linked_str, "--key", key])
+        .output()?;
+    assert!(
+        replay.status.success(),
+        "a gone target spelled through a folder symlink must replay its retained receipt: {} {}",
+        String::from_utf8_lossy(&replay.stdout),
+        String::from_utf8_lossy(&replay.stderr)
+    );
+    assert_eq!(
+        event_id(&String::from_utf8(replay.stdout)?)?,
+        first_event,
+        "the symlink-spelled replay must return the committed receipt, not a new event"
+    );
+    // A different gone folder behind the same symlink is a different target.
+    let other = link.join("never moved here");
+    let other_str = other.to_str().ok_or("other root is not UTF-8")?;
+    let refused = command(home, &again, false, Some("Shortcut"))
+        .args(["project", "move", other_str, "--key", key])
+        .output()?;
+    assert!(
+        !refused.status.success(),
+        "a different gone target must refuse"
+    );
+    let rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&refused.stdout),
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(
+        rendered.contains("retained for a different move target"),
+        "{rendered}"
+    );
     Ok(())
 }
