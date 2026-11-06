@@ -203,6 +203,7 @@ pub fn messages(value: &MessagePage, out: &mut impl Write) -> io::Result<()> {
             "{}  {} → {}  {}",
             message.id, message.from.name, message.to.name, message.sent_at
         )?;
+        notification::message_state(message, out)?;
         notification::render(&message.notification, out)?;
         if let Some(unreadable) = &message.unreadable {
             writeln!(out, "  Message unreadable: {}", unreadable.reason)?;

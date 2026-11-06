@@ -108,6 +108,7 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
                     value.value.message.to.name,
                     value.value.message.id
                 )?;
+                read::notification::message_state(&value.value.message, out)?;
                 writeln!(out, "{}", value.value.message.body.text)?;
                 writeln!(
                     out,
