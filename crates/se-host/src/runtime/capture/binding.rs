@@ -37,9 +37,21 @@ impl CaptureHandle {
         let lease = self.lease.upgrade().ok_or_else(|| {
             se_core::scope::unreadable("capture retirement", "the original host lease was released")
         })?;
+        // Native removal locks the shared metadata directory. Parallel lifecycle
+        // shutdown must queue its own removals instead of mistaking a sibling's
+        // short mutation for inaccessible custody. Keep the registry lock free.
+        let retirement = super::super::pool::within(
+            deadline,
+            Arc::clone(&self.sources.retirements).lock_owned(),
+        )
+        .await?;
         self.execution
             .blocking
-            .run_owned(deadline, move || persistent::retire(&lease, &identity))
+            .run_owned(deadline, move || {
+                // The native worker, not its awaiting caller, owns this guard.
+                let _retirement = retirement;
+                persistent::retire(&lease, &identity)
+            })
             .await
     }
     /// A failed startup restore can be repaired in place before an explicit
