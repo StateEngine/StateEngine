@@ -15,7 +15,7 @@ log them.
 ### 1.2 Who we defend against, by boundary
 **Same OS user: mistakes, not hostile programs.** Anything running as the user can read our files and
 `/proc/<pid>/environ`, attach a debugger, or run `se`. We don't pretend otherwise. Here we defend
-against *mistakes, drift and misattribution* (Jimmy, 2026-09-04): a stale binding after relaunch, an
+against *mistakes, drift and misattribution* (operator, 2026-09-04): a stale binding after relaunch, an
 agent running an owner command in its shell, a name passed as an identity, inherited environment
 changing who acts. The tool surface and ordinary agent-shell entry points apply the same
 authority checks (§2), which are mistake/drift guards. They are not proof against a determined agent
@@ -116,7 +116,7 @@ Five layers, each of which catches a different mistake:
    `agent.stop` release variant (`se stop AGENT --release`), and
    `config.set` of a security key require all of: stdin and stdout are a console/TTY (`isatty`;
    `GetConsoleMode` succeeds), layer 4 says "outside every agent tree", and no `SE_SESSION` is set.
-   There is no typed confirmation: Jimmy's ruling that friction is the enemy applies, and the three
+   There is no typed confirmation: the operator's ruling that friction is the enemy applies, and the three
    checks above are human-presence mistake/drift checks, not same-user adversary proof. In SE Code,
    the UI passes a `HumanPresence` token created by a UI gesture; tool calls never carry one.
 

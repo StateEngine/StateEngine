@@ -354,7 +354,7 @@ def main():
     args.se = args.se.resolve(strict=True)
     args.cleanup_se = (args.cleanup_se or args.se).resolve(strict=True)
     args.out.mkdir(mode=0o700)
-    root = Path(tempfile.mkdtemp(prefix='5d-console-events-'))
+    root = Path(tempfile.mkdtemp(prefix='se-console-events-'))
     image = root / 'se.exe'
     shutil.copy2(args.se, image)
     digest = hashlib.sha256(args.se.read_bytes()).hexdigest()

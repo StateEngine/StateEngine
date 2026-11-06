@@ -111,7 +111,7 @@ fn owner_resume_refusal_lists_saved_agents_with_the_exact_home_and_project() -> 
     );
     let listed = String::from_utf8(listed.stdout)?;
     assert!(
-        listed.contains("Alpha") && listed.contains("Beta"),
+        listed.contains("Sable") && listed.contains("Juniper"),
         "selection remedy did not list both saved agents: {listed}"
     );
     let mut preview = args;

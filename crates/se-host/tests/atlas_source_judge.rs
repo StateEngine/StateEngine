@@ -26,7 +26,7 @@ impl Drop for Fixture {
 }
 fn fixture() -> Result<Fixture, Box<dyn Error>> {
     let p = std::env::temp_dir().join(format!(
-        "5c-atlas-source-{}-{}",
+        "se-atlas-source-{}-{}",
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));

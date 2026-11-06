@@ -29,7 +29,7 @@ impl Drop for Fixture {
 fn fixture() -> Result<Fixture, Box<dyn Error>> {
     se_proc::initialize_file_creation_owner()?;
     let dir = std::env::temp_dir().join(format!(
-        "5c-native-cache-{}-{}",
+        "se-native-cache-{}-{}",
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));

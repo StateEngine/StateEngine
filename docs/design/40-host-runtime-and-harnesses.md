@@ -173,7 +173,7 @@ HostConfig supplies the trusted installed native `helper_executable` and typed
 The composition root validates/maps them to se-proc, never resolves a helper
 from provider input or PATH. Delegation selects agent scopes, not a migration
 of SE Code or a runtime-detachment promise. Linux wave 1 uses the uncontained
-process-group path; delegated scopes are wave-4 work (30, Jimmy’s round-4 ruling).
+process-group path; delegated scopes are wave-4 work (30, the operator’s round-4 ruling).
 The scope-capable path below describes that later implementation.
 
 Windows begin_launch associates the job **at creation** using

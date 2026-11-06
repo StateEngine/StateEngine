@@ -318,7 +318,7 @@ fn owner_selectors_read_real_catalogs_and_project_filtered_host_pages() -> Check
                 .iter()
                 .all(|r| r.target.binding.project == project)
         );
-        // Independent 5p counterexample (7d2291d): an earlier native
+        // Independent counterexample (7d2291d): an earlier native
         // SourceIncomplete omission must survive a later exhausted page.
         source_incomplete.store(true, Ordering::Relaxed);
         let partial_first = present(result(

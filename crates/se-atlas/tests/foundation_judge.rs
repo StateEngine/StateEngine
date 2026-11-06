@@ -95,7 +95,7 @@ impl CacheFiles for Native {
 }
 fn setup() -> Result<(Native, CacheSeed, SqlProfile), Box<dyn Error>> {
     let dir = std::env::temp_dir().join(format!(
-        "5c-atlas-{}-{}",
+        "se-atlas-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?

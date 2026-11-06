@@ -22,7 +22,7 @@ from mail_cli import Fixture
 
 
 def run(args):
-    root = Path(tempfile.mkdtemp(prefix='5d-two-homes-'))
+    root = Path(tempfile.mkdtemp(prefix='se-two-homes-'))
     image = root / 'se.exe'
     shutil.copy2(args.se, image)
     report = {'binary_sha256': hashlib.sha256(image.read_bytes()).hexdigest(),

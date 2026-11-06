@@ -672,7 +672,7 @@ fn assert_plain_status_labels(home: &Path) -> Check {
     );
     assert!(
         text.lines().any(|line| {
-            line.trim_start().starts_with("Agent Alpha: ") && line.ends_with(" — unread messages 1")
+            line.trim_start().starts_with("Agent Sable: ") && line.ends_with(" — unread messages 1")
         }),
         "the agent's unread mail is missing from the plain project status:\n{text}"
     );

@@ -843,7 +843,7 @@ were 0 CPU ticks/0 switches in 2 threads: useful proxy, not official oracle.
 impact 1.026/16.15, old full-body FTS 6.437/26.01; Rust SE Code def 0.072/10.60,
 refs 0.115/7.83, impact 0.028/9.75, FTS 1.845/13.45. These don't predict metadata-only
 FTS or qualify 30-run core budgets. Full reference:
-`/mnt/nvme/stateengine/5e-rust-atlas-s5-20261030/S5-REPORT.md`.
+the S5 atlas report in the private evidence root.
 
 | Journey | Atlas behavior | Core boundary |
 | --- | --- | --- |

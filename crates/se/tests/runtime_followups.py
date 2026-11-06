@@ -260,7 +260,7 @@ def main():
     args.se = args.se.resolve(strict=True)
     args.cleanup_se = (args.cleanup_se or args.se).resolve(strict=True)
     args.out.mkdir(mode=0o700)
-    directory = Path(tempfile.mkdtemp(prefix='5d-runtime-followups-', dir=Path.home()))
+    directory = Path(tempfile.mkdtemp(prefix='se-runtime-followups-', dir=Path.home()))
     image = directory / 'se'
     shutil.copy2(args.se, image)
     source_hash = hashlib.sha256(args.se.read_bytes()).hexdigest()

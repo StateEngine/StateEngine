@@ -23,7 +23,7 @@ class ReturnModel:
    def log_message(self,*args):pass
    def reply(self,data,kind):
     self.send_response(200);self.send_header('Content-Type',kind);self.send_header('Content-Length',str(len(data)));self.end_headers();self.wfile.write(data)
-   def do_GET(self):self.reply(json.dumps({'object':'list','data':[{'id':'5c-loopback','object':'model','owned_by':'local-protocol-fixture'}]}).encode(),'application/json')
+   def do_GET(self):self.reply(json.dumps({'object':'list','data':[{'id':'se-loopback','object':'model','owned_by':'local-protocol-fixture'}]}).encode(),'application/json')
    def do_POST(self):
     try:
      size=int(self.headers['Content-Length']);assert size<=2097152;body=json.loads(self.rfile.read(size));phase=owner.phase;prior=f'FIRST_WORK_DONE_{owner.nonce}'
@@ -33,7 +33,7 @@ class ReturnModel:
       args=item['arguments'];events=[('response.output_item.added',{'output_index':0,'item':{**item,'arguments':''}}),('response.function_call_arguments.delta',{'item_id':item['id'],'output_index':0,'delta':args}),('response.function_call_arguments.done',{'item_id':item['id'],'output_index':0,'arguments':args}),('response.output_item.done',{'output_index':0,'item':item})]
      else:
       text=item['content'][0]['text'];events=[('response.output_item.added',{'output_index':0,'item':{**item,'status':'in_progress','content':[]}}),('response.output_text.delta',{'item_id':item['id'],'output_index':0,'content_index':0,'delta':text}),('response.output_item.done',{'output_index':0,'item':item})]
-     response={'id':f'resp_{len(owner.requests)}','object':'response','created_at':int(time.time()),'status':'completed','model':'5c-loopback','output':[item],'error':None,'usage':{'input_tokens':0,'output_tokens':0,'total_tokens':0}}
+     response={'id':f'resp_{len(owner.requests)}','object':'response','created_at':int(time.time()),'status':'completed','model':'se-loopback','output':[item],'error':None,'usage':{'input_tokens':0,'output_tokens':0,'total_tokens':0}}
      events=[('response.created',{'response':{**response,'output':[],'status':'in_progress'}}),*events,('response.completed',{'response':response})]
      payload=''.join('event: '+name+'\ndata: '+json.dumps({'type':name,'sequence_number':i,**value})+'\n\n' for i,(name,value) in enumerate(events)).encode();self.reply(payload,'text/event-stream')
     except Exception as error:
@@ -62,7 +62,7 @@ class ReturnModel:
  def save(self,name,value):
   self.receipts[name]=value;(self.root/(name+'.json')).write_text(json.dumps(value,indent=2),encoding='utf-8')
  def configure(self,home):
-  home.mkdir(mode=0o700);(home/'config.toml').write_text('model="5c-loopback"\nmodel_provider="local_fixture"\napproval_policy="never"\nsandbox_mode="workspace-write"\n[model_providers.local_fixture]\nname="5c owned Responses fixture"\n'+f'base_url="http://127.0.0.1:{self.server.server_port}/v1"\n'+'wire_api="responses"\nrequires_openai_auth=false\nsupports_websockets=false\nrequest_max_retries=0\nstream_max_retries=0\n',encoding='utf-8')
+  home.mkdir(mode=0o700);(home/'config.toml').write_text('model="se-loopback"\nmodel_provider="local_fixture"\napproval_policy="never"\nsandbox_mode="workspace-write"\n[model_providers.local_fixture]\nname="local owned Responses fixture"\n'+f'base_url="http://127.0.0.1:{self.server.server_port}/v1"\n'+'wire_api="responses"\nrequires_openai_auth=false\nsupports_websockets=false\nrequest_max_retries=0\nstream_max_retries=0\n',encoding='utf-8')
  def close(self):self.server.shutdown();self.server.server_close();self.thread.join()
 
 parser=argparse.ArgumentParser(description=__doc__)
@@ -75,7 +75,7 @@ env={k:v for k,v in os.environ.items() if not k.startswith(('SE_','STATEENGINE_'
 codex=str(args.codex.resolve())
 class Model(ReturnModel):
  def plan(self,body):
-  ids=re.findall(r'OTTO_DOWN_(\d+)',json.dumps(body.get('input',[])));assert ids
+  ids=re.findall(r'SE_DOWN_(\d+)',json.dumps(body.get('input',[])));assert ids
   idx=ids[-1];cid='write_'+idx;outputs={x['call_id']:x for x in body.get('input',[]) if x.get('type')=='function_call_output'}
   if cid not in outputs:return self.shell(body,cid,self.write_command('work-'+idx+'.txt',self.nonce+'\n'))
   assert (repo/('work-'+idx+'.txt')).read_text()==self.nonce+'\n'
@@ -87,11 +87,11 @@ def call(label,*args,required=True):
  if required:assert p.returncode==0,(label,p.stdout,p.stderr)
  return json.loads(p.stdout) if p.stdout else None
 try:
- init=call('init','init','--repo',repo,'--name','Down regression','--agent','Down0','--provider','codex','--model','5c-loopback');project=init['project']['id'];first=init['agent']['id'];model.configure(home/'.codex')
+ init=call('init','init','--repo',repo,'--name','Down regression','--agent','Down0','--provider','codex','--model','se-loopback');project=init['project']['id'];first=init['agent']['id'];model.configure(home/'.codex')
  config=state/'config.toml';config.write_text(config.read_text().replace('[providers.codex]','[providers.codex]\ncommand = '+json.dumps(codex),1));call('up','up')
  for idx in range(8):
-  agent=first if idx==0 else call('add-'+str(idx),'--project',project,'agent','add','Down'+str(idx),'--provider','codex','--model','5c-loopback')['agent']['id']
-  call('launch-'+str(idx),'--project',project,'launch',agent,'--detach','--task','OTTO_DOWN_'+str(idx)+': write your assigned work file.')
+  agent=first if idx==0 else call('add-'+str(idx),'--project',project,'agent','add','Down'+str(idx),'--provider','codex','--model','se-loopback')['agent']['id']
+  call('launch-'+str(idx),'--project',project,'launch',agent,'--detach','--task','SE_DOWN_'+str(idx)+': write your assigned work file.')
   until=time.monotonic()+60
   while not (root/('done-'+str(idx))).exists() and time.monotonic()<until:time.sleep(.1)
   assert (root/('done-'+str(idx))).exists(),'work absent'

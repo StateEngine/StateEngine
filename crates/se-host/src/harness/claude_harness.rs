@@ -63,7 +63,7 @@ impl ClaudeHarness {
         self.bells = Some(bells);
         self
     }
-    /// The protected per-launch directory 5p's session pin also lives in.
+    /// The protected per-launch directory the session pin also lives in.
     pub fn launch_directory(&self, request: &HarnessRequest) -> Result<PathBuf> {
         Ok(self
             .state_home

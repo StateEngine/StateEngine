@@ -27,7 +27,7 @@ def main():
         parser.error('native Linux flock required; other operating systems not reached')
     image = args.se.resolve(strict=True)
     args.out.mkdir(mode=0o700)
-    root = Path(tempfile.mkdtemp(prefix='5d-init-homes-', dir=Path.home()))
+    root = Path(tempfile.mkdtemp(prefix='se-init-homes-', dir=Path.home()))
     binary = root / 'se'
     shutil.copy2(image, binary)
     digest = lambda p: hashlib.sha256(p.read_bytes()).hexdigest()

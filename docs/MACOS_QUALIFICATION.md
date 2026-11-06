@@ -20,7 +20,7 @@ sh /tmp/se-rustup-init.sh -y --profile minimal
 . "$HOME/.cargo/env"
 ```
 
-Prime supplies a rust-se Git URL or Git bundle with `main`, and the independent
+The coordinator supplies a rust-se Git URL or Git bundle with `main`, and the independent
 journey bundle. Set these two paths; the clone destination must be absent:
 
 ```sh
@@ -158,7 +158,7 @@ mac_run native-archive python3 scripts/release/assemble.py \
   --build "$MAC_LOGS/native-build" --out "$MAC_LOGS/archive"
 ```
 
-The build and archive must both succeed before running J1. Prime supplies the
+The build and archive must both succeed before running J1. The coordinator supplies the
 bundle's reviewed `product.json` pointing to that extracted native archive and
 its exact source SHA, with public installer/uninstaller argv and only `se`
 exposure. Preserve the unsigned manifest/checksum files. Do not transplant a

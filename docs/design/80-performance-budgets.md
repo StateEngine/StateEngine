@@ -32,7 +32,7 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | B6 | Idle wakeups | ≤ 1/s with no session; ≤ 2/s with one | Same | Same |
 | B7 | CLI reads | p95 strictly < 20 ms, 30 runs each of `--version`, `status`, `agent list`, `msg inbox`, `msg list`, `decision list` | Spawn to process exit | `CLI --version`, `CLI contextual read verbs` |
 | B8 | Re-adoption after handover or restart | ≤ 500 ms, no lost or doubled input | Cutover start (after participating agents are interrupted to exact idle) to every live session re-adopted; quiescence time reported separately | **Not yet probed** (§2.6) |
-| B9 | Ordinary CLI writes: `msg send`, `working-state set`, `hook claude stop` | Serial p95 ≤20 ms; eight-agent target initially ≤20 ms, with Jimmy’s ≤50 ms fallback if the quiet hosted rerun misses | Each command separately, spawn to exit through a running host; one in-flight write per agent, including FULL queue delay | Wave-1 hosted E3; component observations are not acceptance (§3.6) |
+| B9 | Ordinary CLI writes: `msg send`, `working-state set`, `hook claude stop` | Serial p95 ≤20 ms; eight-agent target initially ≤20 ms, with the operator’s ≤50 ms fallback if the quiet hosted rerun misses | Each command separately, spawn to exit through a running host; one in-flight write per agent, including FULL queue delay | Wave-1 hosted E3; component observations are not acceptance (§3.6) |
 | FULL | `se decision ratify`, `se decision reject`, `se decision retract`, `se decision supersede`, `se agent add`, `se config set agent.<A>.profile`, `se config set agent.<A>.model`, `se config set agent.<A>.can-create`, `se init` | p95 ≤ 75 ms on Windows with Defender | Spawn to exit; fresh-state init includes hostless schema/publication/setup, other commands use the running host; each sampled separately | E3; not yet qualified |
 
 B1 and B2 are SE Code's requirements. The rest are plan decisions. Budget failures make the Rust run exit
@@ -115,7 +115,7 @@ For B9 sample each named ordinary-write command through an already running
 host at serial and eight independent agents, one in-flight CLI write each.
 Report each command/client cohort unpooled; delay behind FULL traffic counts.
 The separate twenty-agent burst requires worst case ≤ 100 ms and no lost writes.
-If the quiet hosted rerun misses the initial eight-agent ≤ 20 ms target, Jimmy
+If the quiet hosted rerun misses the initial eight-agent ≤ 20 ms target, the operator
 permits eight-agent p95 ≤ 50 ms while serial stays ≤ 20 ms; build continues without
 a write-path redesign. A component rerun never substitutes for that host/CLI
 check or silently applies its fallback. Sample every FULL-command family separately under the
@@ -234,9 +234,7 @@ Claude 2.1.314 each also pass two-way mid-turn process/conversation transfer
 on Linux and Windows, then recall the first prompt's marker in a second answer.
 Those throwaway observers retain protocol framing/phase decisions. They do not
 qualify product store/lease/queue/capture integration, job-message reassociation,
-all crash phases, cancellation, RSS or B8. Raw results: `5p-native-handover-spike-
-20261030/{linux-r2,windows-pc-run-a}` and `5p-provider-handover-spike-20261030/
-{linux-r1,windows-pc-run-a}` under `/mnt/nvme/stateengine`.
+all crash phases, cancellation, RSS or B8. Raw results: `native-handover-spike-20261030/{linux-r2,windows-pc-run-a}` and `provider-handover-spike-20261030/{linux-r1,windows-pc-run-a}` under the private evidence root.
 
 ## 3. Allocation per component
 
@@ -475,10 +473,10 @@ render 0.16 ms, other Rust work 1.42 ms and exit/parent drain 1.17 ms.
 These elapsed clocks include instrumentation and scheduling; one loaded sample
 is neither a p95 nor production acceptance, and the allocation table above is
 still a design estimate. The cost is distributed across protective phases with
-no identified safe structural removal. Prime accepted this status investigation
-as complete under Jimmy's rule that an approximately 1 ms overrun does not block
+no identified safe structural removal. The coordinator accepted this status investigation
+as complete under the operator's rule that an approximately 1 ms overrun does not block
 landing; the B7 target remains unchanged. Raw clocks and installed-image binding
-are retained in `/mnt/nvme/stateengine/5p-status-profile-20261104`; its deliberately
+are retained in the status-profile evidence directory (private evidence root); its deliberately
 aborted pre-provider journey and profiling-stderr cleanup parse failure remain
 failures, with private-home/process/account-claim closure verified separately.
 
@@ -635,12 +633,12 @@ native effects establishes it. A miss remains a launch-budget miss for the
 maintainer’s decision, not permission to omit a commit or borrow the wave 4
 scope-stage allowance. Keep one target; do not add another local budget table.
 
-Raw writer data remains under `/mnt/nvme/stateengine/nell-import-rehearsal-20261030/`
+Raw writer data remains under the import-rehearsal evidence directory (private evidence root)
 and `nell-e3-write-latency-20261030/`; independent analysis is
-`5p-e3-write-decomposition-20261030/NATIVE-REPORT.txt` under the same root.
+`e3-write-decomposition-20261030/NATIVE-REPORT.txt` under the same root.
 The selected-transport quiet receipt is
-`5p-e7-containment-20261030/SCOPE-DIRECT-QUIET-RESULT.txt` there. W2 artifacts are
-`5p-r4-w2-20261031/quiet-run-2/{binding.json,summary.json,INDEPENDENT-AUDIT.txt}`;
+`e7-containment-20261030/SCOPE-DIRECT-QUIET-RESULT.txt` there. W2 artifacts are
+`r4-w2-20261031/quiet-run-2/{binding.json,summary.json,INDEPENDENT-AUDIT.txt}`;
 raw samples, traces, per-case witnesses and load admission are alongside them.
 The unchanged native binary SHA-256 is `1c270fef4969f7ca9ede674f5050d3c044d7735bdd8e40d9db718d3e53b24b77`;
 summary SHA-256 is `d57b5900cca15670b5b0d7d5e26e5fe0c33925bd87b5dab6a4fff48ada16f775`.

@@ -1,6 +1,6 @@
 # 00 — Overview and invariants
 
-Status: deep design, reconciled 2026-10-30 against Jimmy's decisions and both whole-design reviews.
+Status: deep design, reconciled 2026-10-30 against the operator's decisions and both whole-design reviews.
 The sections describe one system; where they disagreed they were corrected, not ranked. Siblings:
 10 types and host API, 20 data model, 30 process ownership, 40 host runtime and harnesses,
 50 surface and errors, 60 Atlas, 70/80/90 and 95 (lead maintainer). `docs/OPS.md` is the operation allowlist.
@@ -17,7 +17,7 @@ people without SE Code, and a thin `se` CLI.
 ### 1.2 What it is not
 Factory machinery stays out: campaigns, reviews, landings, gates, mutation checks, census, remote
 compute, brick, routing, Postgres floor administration, mirror and projection repair. The product
-and the factory are two repos (Jimmy 2026-10-30): `rust-se` is the shipped product; the existing Node
+and the factory are two repos (operator 2026-10-30): `rust-se` is the shipped product; the existing Node
 repo becomes the factory and keeps today's Node engine as its own private library. The factory is not
 rewired onto the Rust product in this plan (today 249 of its 391 files import Node product internals
 directly); moving the fleet onto Rust is a separate, later project. The product boundary is
@@ -48,7 +48,7 @@ Everything StateEngine adds, not counting the agent CLIs.
 | --- | --- | --- |
 | Memory added inside SE Code | **≤ 30 MB** | 1.4 MB (embedding prototype) |
 | Delay added to SE Code (B2) | **p95 ≤ 100 ms**: one combined in-window first-bind check; late startup and late bind-to-first-assistant-response are two separate checks, each with this bound | Revised FULL first binding and both late checks require native qualification; historical readiness-only 75/96 ms is not proof |
-| Re-adopting agents after handover or restart | **≤ 500 ms**, no lost or doubled input | Proposed by Alpha; unmeasured, a build task |
+| Re-adopting agents after handover or restart | **≤ 500 ms**, no lost or doubled input | Proposed during release qualification; unmeasured, a build task |
 | Idle cost | **~0 wakeups, < 0.1% CPU** | 0 over 10 min embedded |
 | Idle wakeups, exact | **≤ 1/s** across all StateEngine processes with no session, **≤ 2/s** with one; < 0.1% of one core, over 60 s | — |
 | Persistent processes | **0 embedded while no agent is live, 1 standalone**; after SE Code exits with live agents, the detached `se up` that took them over is the one standalone process and exits 10 minutes after its last live agent. An auto-started host (from `se launch` or a hook) follows the same 10-minute rule; only an explicit `se up` stays resident (40) | 0 added embedded |
@@ -94,7 +94,7 @@ whole life and publishes `<run>/endpoint.json` (IPC address, listener port, host
 `secode|daemon`, generation, API version). It owns all writes (one batching writer), every owned
 process, mail push, the loopback listener and Atlas. SE Code starting under a running daemon asks it
 to hand over (drain, release, exit), then takes the lock and re-adopts the agents; SE Code exiting
-with live agents hands back to a detached `se up` by default (live handover, Jimmy 2026-10-30: in
+with live agents hands back to a detached `se up` by default (live handover, operator 2026-10-30: in
 before alpha). Participating agents are interrupted to an exact idle before the handover is sealed;
 after SE Code exits, the daemon keeps their processes and capture, while SE Code-native input and
 mail stay held until SE Code reopens and status says so. After an SE Code crash, whichever owner
@@ -465,30 +465,30 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 | Decision | Source |
 | --- | --- |
 | Rebuild the product in Rust; plan before building | Ledger `rust-redesign-planned-before-rebuild-2026-10-30` |
-| Done = five journeys on three OSes | Jimmy 2026-10-29 (`jimmy-2026-10-29-done-is-five-journeys`) |
-| Product separated from factory; authors write no tests (reviewers add black-box and 6–8 property tests) | Jimmy 2026-10-29; plan |
-| Dedicated Rust product repository; journeys in a separate repository | Jimmy 2026-10-30 (plan) |
-| Project found from the folder you are in; any existing repo can be adopted (supersedes KERNEL's "never inferred from cwd" for owner CLI; never creates) | Jimmy 2026-10-30 (plan); OPS.md |
-| `se launch` resumes the conversation for Claude and Codex; `--new` starts fresh | Jimmy 2026-10-30 (plan) |
-| Alpha keeps everything users need, including import, windowed launch, handover; only Postgres multiplayer waits | Jimmy 2026-10-30 (plan) |
-| Closed source; public SE Code build stubs StateEngine out of its dependency graph | Jimmy 2026-10-30, 2026-10-08 |
+| Done = five journeys on three OSes | operator 2026-10-29 (`done-is-five-journeys` ruling) |
+| Product separated from factory; authors write no tests (reviewers add black-box and 6–8 property tests) | operator 2026-10-29; plan |
+| Dedicated Rust product repository; journeys in a separate repository | operator 2026-10-30 (plan) |
+| Project found from the folder you are in; any existing repo can be adopted (supersedes KERNEL's "never inferred from cwd" for owner CLI; never creates) | operator 2026-10-30 (plan); OPS.md |
+| `se launch` resumes the conversation for Claude and Codex; `--new` starts fresh | operator 2026-10-30 (plan) |
+| The alpha keeps everything users need, including import, windowed launch, handover; only Postgres multiplayer waits | operator 2026-10-30 (plan) |
+| Closed source; public SE Code build stubs StateEngine out of its dependency graph | operator 2026-10-30, 2026-10-08 |
 | Embedded in SE Code, no sidecar | Measured: 1.4 MB, +114 KB, 0 threads, 75/96 ms p95 |
 | WAL + `synchronous=NORMAL` | Measured: FULL 41–49 ms/commit; NORMAL 7.5/9 ms, 8 agents 11 ms, 0/100 lost on kill |
 | Host owns writes through a batching writer; direct write only with no host (resolves the 01/02 conflict) | Measured: 20-agent burst 22/77 ms vs 456–806 ms with lock failures direct |
 | No file watcher on the database | Plan; measured zero idle CPU |
 | Hooks hand writes to the host | Measured: 52–76 ms direct vs 3 ms bare start |
 | Windows: host holds job handles; host death stops the tree; relaunch resumes | Measured (process prototype), corrected named-job assumption |
-| Linux: BestAvailable containment. Every LinuxUserManager agent-process launch, including a warm launch, asks for its own delegated scope and short-lived creator (direct user-manager D-Bus StartTransientUnit). The creator starts the root inside that scope and hands custody to the unchanged embedded/standalone host, then exits; no resident helper or one cached scope is assumed. Scope acquisition has a distinct p95 ≤ 200 ms target inside the multi-second contained launch, measured at 148.459 ms desktop (load 25.18→26.03) and 145.384 ms real SSH (load 23.70→24.54); other launch paths retain ≤ 50 ms, these instrumented loaded runs are diagnostic only, and quiet-box qualification with starting load below 4 remains due. Window preparation checks the selected terminal/broker's entry permission before child creation; if unusable it selects uncontained with cause `no-delegation`. With no user manager or delegation (containers, WSL without systemd, minimal hosts) agents run in an explicitly `uncontained` process group: launch succeeds, and status and the launch receipt name `containment` and the probe cause. Never a launch refusal. In that mode a stop reports the process-group bound honestly: a tool that calls setsid or double-forks can escape the group, and the stop receipt says so rather than claiming every descendant is gone | Agreed with Alpha, adopted in 30; historical prototype: 28/28 trees, 15 ms readiness and 2.7 MB, excluding the newly measured fresh-scope stage; current launch latency remains unqualified |
+| Linux: BestAvailable containment. Every LinuxUserManager agent-process launch, including a warm launch, asks for its own delegated scope and short-lived creator (direct user-manager D-Bus StartTransientUnit). The creator starts the root inside that scope and hands custody to the unchanged embedded/standalone host, then exits; no resident helper or one cached scope is assumed. Scope acquisition has a distinct p95 ≤ 200 ms target inside the multi-second contained launch, measured at 148.459 ms desktop (load 25.18→26.03) and 145.384 ms real SSH (load 23.70→24.54); other launch paths retain ≤ 50 ms, these instrumented loaded runs are diagnostic only, and quiet-box qualification with starting load below 4 remains due. Window preparation checks the selected terminal/broker's entry permission before child creation; if unusable it selects uncontained with cause `no-delegation`. With no user manager or delegation (containers, WSL without systemd, minimal hosts) agents run in an explicitly `uncontained` process group: launch succeeds, and status and the launch receipt name `containment` and the probe cause. Never a launch refusal. In that mode a stop reports the process-group bound honestly: a tool that calls setsid or double-forks can escape the group, and the stop receipt says so rather than claiming every descendant is gone | Agreed with the release-qualification reviewer, adopted in 30; historical prototype: 28/28 trees, 15 ms readiness and 2.7 MB, excluding the newly measured fresh-scope stage; current launch latency remains unqualified |
 | Claude via launch flags, no config writes; hooks call `se`; mail through the plugin's small JS | Plan; measured (host prototype) |
-| Stock Codex over app-server; never bundle a fork | Jimmy 2026-10-23/24; measured with 0.166 |
+| Stock Codex over app-server; never bundle a fork | operator 2026-10-23/24; measured with 0.166 |
 | One op definition generates CLI and MCP; OPS.md is the allowlist; old names refuse with a hint | Plan; OPS.md `f8a2e59` |
-| Atlas: own db, code only; compiled only into the standalone `se`, disabled by default and enabled by `atlas.enabled = true` in `config.toml`; in embedded SE Code that setting returns feature-unavailable; cold index in a transient capped child; built after the five journeys and live handover pass and never holds a milestone | Jimmy 2026-10-30; measured: 1.36M lines in 165 s, 20 MB peak, 11 MB settled, 67 ms save-to-search |
+| Atlas: own db, code only; compiled only into the standalone `se`, disabled by default and enabled by `atlas.enabled = true` in `config.toml`; in embedded SE Code that setting returns feature-unavailable; cold index in a transient capped child; built after the five journeys and live handover pass and never holds a milestone | operator 2026-10-30; measured: 1.36M lines in 165 s, 20 MB peak, 11 MB settled, 67 ms save-to-search |
 | No hash chain over events or decisions; immutable typed decision transitions with expected revisions; no rollback writer into Node formats | Reconciliation 2026-10-30; OPS.md |
-| The host migrates automatically at startup as sole owner, after a verified pre-migration backup; no manual migration step; backups at start-of-day and clean shutdown, two kept, restore of the newest valid backup | Reconciliation 2026-10-30; Jimmy 09-02 (no manual steps) and 10-21 (refuse mixed old/new) |
-| Live handover is in before alpha; agents are interrupted to exact idle first; SE Code-native routes stay held while SE Code is gone | Jimmy 2026-10-30 |
-| `forget` is in alpha, built after the five journeys | Jimmy 2026-10-30 |
-| Human-only actions are mistake and drift guards, not proof against a determined agent on the user's own account, and say so | Jimmy 2026-10-30 |
-| Product and factory are separate repos; the factory keeps the Node engine | Jimmy 2026-10-30 |
+| The host migrates automatically at startup as sole owner, after a verified pre-migration backup; no manual migration step; backups at start-of-day and clean shutdown, two kept, restore of the newest valid backup | Reconciliation 2026-10-30; operator 09-02 (no manual steps) and 10-21 (refuse mixed old/new) |
+| Live handover is in before alpha; agents are interrupted to exact idle first; SE Code-native routes stay held while SE Code is gone | operator 2026-10-30 |
+| `forget` is in alpha, built after the five journeys | operator 2026-10-30 |
+| Human-only actions are mistake and drift guards, not proof against a determined agent on the user's own account, and say so | operator 2026-10-30 |
+| Product and factory are separate repos; the factory keeps the Node engine | operator 2026-10-30 |
 | Every public mutation carries one request identity reused across uncertain retries (CLI prints it, MCP requires it) | Reconciliation 2026-10-30 |
 | Codex minimum 0.152 (helper Authorization and credential refresh), one constant | Measured 2026-10-30 |
 | Writes: NORMAL can lose several recent ordinary commits on power loss or OS crash; decisions, credentials and owner records commit FULL | Reconciliation 2026-10-30 |
@@ -496,7 +496,7 @@ clippy `disallowed-methods` on `std::env::var*` outside `se::config`.
 | Loopback listener on a per-user port chosen at init; human-only actions need a TTY outside agent trees | Plan |
 | No telemetry; downloads from stateengine.ai | Plan defaults |
 | Toolchain 1.97.1, edition 2024, `unsafe` only in se-proc, unwrap/expect denied | Workspace `0ca97ba` |
-| SE Code requirements: takeover = interrupt + hold + absent from active map; one mail queue (SE Code's); crash adoption; job breakaway; async rules; vendored source for offline builds; Rust embedding after SE Code 0.1 | Alpha's review (plan) |
+| SE Code requirements: takeover = interrupt + hold + absent from active map; one mail queue (SE Code's); crash adoption; job breakaway; async rules; vendored source for offline builds; Rust embedding after SE Code 0.1 | Reviewer (plan) |
 
 ### 7.2 Open
 
@@ -521,5 +521,5 @@ Each open item is settled by an early proof in section 95, not by argument.
    Defender, 100 pairs: host-start p95 82.5 ms, direct p95 88.1 ms. The host-start max of 297.6 ms
    included 268.1 ms in FULL owner publication. This warm-cache native fixture settles routing,
    not a production cold-hook latency guarantee.
-5. **Signing** — Trusted Signing (suggested) or a certificate; Apple Developer ID enrollment (Jimmy).
-6. **Mac hardware** for the compatibility campaign (Jimmy's borrowed Mac).
+5. **Signing** — Trusted Signing (suggested) or a certificate; Apple Developer ID enrollment (the operator).
+6. **Mac hardware** for the compatibility campaign (the operator's borrowed Mac).

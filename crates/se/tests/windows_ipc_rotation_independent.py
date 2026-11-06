@@ -76,7 +76,7 @@ def endpoint(fixture):
 
 
 def run(args):
-    root = Path(tempfile.mkdtemp(prefix='5d-windows-ipc-rotation-'))
+    root = Path(tempfile.mkdtemp(prefix='se-windows-ipc-rotation-'))
     image = root / 'se.exe'
     shutil.copy2(args.se, image)
     report = {'binary_sha256': hashlib.sha256(image.read_bytes()).hexdigest(), 'fixture': str(root),

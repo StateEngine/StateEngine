@@ -1,7 +1,7 @@
 # 90 — Test strategy
 
 Status: reconciled design, 2026-10-31. Implements the plan's "How we know it works"
-and Jimmy's decisions: the five journeys are the judge; authors write no tests; reviewers add black-box
+and the operator's decisions: the five journeys are the judge; authors write no tests; reviewers add black-box
 tests only where a journey can't reach or a bug was found; about 6–8 property tests for the store.
 
 ## 1. Policy
@@ -115,7 +115,7 @@ With no host running, a real Claude hook must start one and commit with `writer.
 | Each product milestone | Windows and Linux clean user accounts, scheduled outside agent trees | Claude |
 | Nightly | Same two machines, outside agent trees | Claude and Codex, against current supported upstream CLIs |
 | Mac campaign | Borrowed Mac before alpha ships; the Windows/Linux build continues before access is available | Claude and Codex |
-| Alpha release candidate | Clean Windows, Linux and macOS from the signed download | Real Claude and Codex, inside SE Code and standalone |
+| alpha release candidate | Clean Windows, Linux and macOS from the signed download | Real Claude and Codex, inside SE Code and standalone |
 
 Partial runs (`--only`) are diagnostic and never qualify. `results.json` and `budgets.json` go to the
 project's results directory, never the engine's. Pass counts are reported daily.
@@ -237,7 +237,7 @@ core/store API. Print binary size and per-crate size as review signals using sec
 table. Do not add schema-freeze tooling, N-1 encoders, or additional CI machinery. Every JSON output
 retains its schema identifier; decoder behavior is exercised through the installed public surfaces.
 
-Embedded qualification links the actual Rust `secode-server` in `crates/secode-product` from Alpha's
+Embedded qualification links the actual Rust `secode-server` in `crates/secode-product` from the
 SE Code repository and its matching release source. It does not use the frozen TypeScript predecessor.
 The statically linked API version must match exactly. Dependencies use compatible caret ranges and one
 resolved SQLite linkage; the canary builds the real composition and runs a bound-session smoke and

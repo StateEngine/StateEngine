@@ -204,7 +204,7 @@ fn default_output_keeps_registration_payload() -> Check {
         json.status.success(),
         "registration readback failed: {value}"
     );
-    assert_eq!(value["payload"]["name"], "Alpha");
+    assert_eq!(value["payload"]["name"], "Sable");
     assert_eq!(value["payload"]["role"], "builder");
     let human = history_cli::human(&f.options.state_directory, &f.project, &id)?;
     let text = String::from_utf8(human.stdout)?;
@@ -214,7 +214,7 @@ fn default_output_keeps_registration_payload() -> Check {
         String::from_utf8_lossy(&human.stderr)
     );
     assert!(
-        text.contains("Alpha") && text.to_lowercase().contains("builder"),
+        text.contains("Sable") && text.to_lowercase().contains("builder"),
         "default history lost registration payload: {text}"
     );
     store.close()?;

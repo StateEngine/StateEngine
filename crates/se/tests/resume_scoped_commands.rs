@@ -319,7 +319,7 @@ fn every_resume_recovery_argv_reaches_the_selected_home_without_writing() -> Che
                 "history" => "scope turn",
                 "msg" => "scope unread body",
                 "working-state" => "saved working note",
-                "resume" => "Alpha",
+                "resume" => "Sable",
                 _ => return Err("unexpected recovery operation".into()),
             };
             assert!(

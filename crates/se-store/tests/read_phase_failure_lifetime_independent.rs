@@ -1,10 +1,10 @@
 //! Independent public-surface judge for the failed read-phase lifetime.
 //! The `read_phase` failure contract (slot returned, connection closed)
-//! landed with 5b's single-open e60e45191b3034ea1d0676ee2ac19b37fbebf35d;
+//! landed with single-open e60e45191b3034ea1d0676ee2ac19b37fbebf35d;
 //! this judge is built at 8ddbe0dd0c018e661e8d0b006c3f33f9b0679cf7, landed
 //! rust-se main, rebased from eef5a356 where the contract is unchanged.
 //!
-//! Prime 2026-11-03: "add a small judge that fails BEGIN and then checks
+//! Operator ruling 2026-11-03: "add a small judge that fails BEGIN and then checks
 //! reader capacity, to pin the slot-before-connection order."
 //!
 //! A failed phase open must (1) return its shared slot — repeated attempts
@@ -14,7 +14,7 @@
 //! readback, before BEGIN, and the stage is asserted so the judge cannot
 //! drift to a different refusal. Exhausted capacity must refuse with
 //! Backpressure before any connection attempt, pinning the
-//! slot-before-connection order Prime requested.
+//! slot-before-connection order the coordinator requested.
 
 use se_store::*;
 #[cfg(target_os = "linux")]

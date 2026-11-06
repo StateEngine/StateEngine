@@ -85,7 +85,7 @@ fn exercise(broken: Option<Vec<u8>>) -> Check {
     if broken.is_none() {
         require(
             format!("{:x}", Hasher::digest(COMPACT))
-                == "1f210dced6165d8a991e315ee12fc2d155ce787b190eec6686e3a017390ba191",
+                == "c31777638f9835f4f4332aab895bbce69ab1b433606c806d48a3bcfc4819fc23",
             "retained stock compaction record changed",
         )?;
         bytes.extend_from_slice(COMPACT);

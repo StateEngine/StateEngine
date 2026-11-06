@@ -15,13 +15,13 @@ fn duplicate_registration_and_rename_keep_the_existing_identity_and_head() -> Ch
             kind: PrincipalKind::Agent,
             owner: fixture.owner.clone(),
             created_by: None,
-            name: "Alpha".into(),
+            name: "Sable".into(),
             role: "".into(),
             expected: Expected::Absent,
         },
         EventBody::PrincipalRenamed {
             principal: Actor::Agent(fixture.b.clone()),
-            name: "Alpha".into(),
+            name: "Sable".into(),
             expected: revision(1)?,
         },
     ] {
@@ -38,7 +38,7 @@ fn duplicate_registration_and_rename_keep_the_existing_identity_and_head() -> Ch
             .ok_or("duplicate name accepted")?;
         assert_eq!(error.code, StoreErrorCode::AlreadyExists);
         assert!(
-            matches!(error.detail,StoreDetail::PrincipalNameConflict { project,ref name,existing:Actor::Agent(existing) } if project==fixture.project && name=="Alpha" && existing==fixture.a)
+            matches!(error.detail,StoreDetail::PrincipalNameConflict { project,ref name,existing:Actor::Agent(existing) } if project==fixture.project && name=="Sable" && existing==fixture.a)
         );
         assert_eq!(store.info()?.head, head);
     }
@@ -47,13 +47,13 @@ fn duplicate_registration_and_rename_keep_the_existing_identity_and_head() -> Ch
     let make = || {
         fixture.batch(
             fixture.owner_project(),
-            Some(request("create-gamma")?),
+            Some(request("create-meridian")?),
             vec![EventBody::PrincipalRegistered {
                 principal: Actor::Agent(new.clone()),
                 kind: PrincipalKind::Agent,
                 owner: fixture.owner.clone(),
                 created_by: None,
-                name: "Gamma".into(),
+                name: "Meridian".into(),
                 role: "".into(),
                 expected: Expected::Absent,
             }],

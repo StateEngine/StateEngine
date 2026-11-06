@@ -1,6 +1,6 @@
 # 95. Work breakdown — se-core and CLI/MCP surfaces
 
-Design reconciliation, 2026-10-30. Implementation awaits Jimmy's approval of the
+Design reconciliation, 2026-10-30. Implementation awaits the operator's approval of the
 assembled design. These tasks add no author tests, runtime stubs or gate tooling.
 The registry has **58 operations and 24 MCP tools (19 core, 5 optional Atlas)**.
 One closed input type per operation supplies CLI, MCP, IPC and linked validation;

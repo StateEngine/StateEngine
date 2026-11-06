@@ -32,12 +32,12 @@ def stop_owned(process, required):
 
 
 def run(mode, executable, injection=None):
-    project_logs = Path("/mnt/nvme/stateengine/otto-store-native-faults-20261031")
+    project_logs = Path(tempfile.gettempdir()) / "se-store-native-faults"
     project_logs.mkdir(parents=True, exist_ok=True)
     root = Path(tempfile.mkdtemp(prefix=mode + "-", dir=project_logs))
     child = tracer = None
     try:
-        environment = dict(os.environ, OTTO_SQLITE_FAULT_ROOT=str(root), OTTO_SQLITE_FAULT_MODE=mode)
+        environment = dict(os.environ, SE_SQLITE_FAULT_ROOT=str(root), SE_SQLITE_FAULT_MODE=mode)
         with (root / "child.log").open("w") as output:
             child = subprocess.Popen([sys.executable, __file__, "native-child", executable,
                                       "--exact", FIXTURE, "--ignored", "--nocapture"],

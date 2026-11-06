@@ -130,7 +130,7 @@ fn failed_linked_drain_refuses_close_and_retains_lease_until_application_exit() 
     let image = helper()?;
     let entropy = se_proc::random_secret().map_err(|e| format!("fixture entropy: {e:?}"))?;
     let root = std::env::temp_dir().join(format!(
-        "5d-ec-{}-{}",
+        "se-ec-{}-{}",
         std::process::id(),
         se_types::hex_lower(&entropy.expose()[..8])
     ));
@@ -235,7 +235,7 @@ fn public_down_closes_an_embedded_host_without_claiming_application_exit() -> Ch
         se_types::hex_lower(&entropy.expose()[..12])
     );
     let root = std::env::temp_dir().join(format!(
-        "5d-ep-{}-{}",
+        "se-ep-{}-{}",
         std::process::id(),
         se_types::hex_lower(&entropy.expose()[..8])
     ));
