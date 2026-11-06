@@ -7,6 +7,8 @@ pub mod error;
 mod event;
 mod import;
 mod labels;
+#[cfg(test)]
+mod mail_state_tests;
 mod read;
 mod stop;
 mod transcript;
