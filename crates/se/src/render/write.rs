@@ -94,7 +94,7 @@ pub fn message(value: &MessageOutput, out: &mut impl Write) -> io::Result<()> {
         "Message {}: {} → {}",
         value.message_id, value.from.name, value.to.name
     )?;
-    writeln!(out, "Delivery: {}", value.delivery.state)?;
+    notification::delivery(&value.delivery, out)?;
     notification::render(&value.notification, out)?;
     writeln!(
         out,

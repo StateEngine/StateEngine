@@ -1152,7 +1152,7 @@ These counters cover the host process. When `$.runtime.host` is `daemon`, that p
 | `$.idempotency_key` | string | yes | created before first send; replay retains the same key |
 | `$.body.bytes` | int | yes | body size; the receipt does not echo the body |
 | `$.body.sha256` | string | yes | hex digest of the stored body |
-| `$.delivery.state` | `"pending"` \| `"offered"` \| `"not-running"` \| `"not-applicable"` | yes | notification status when the call returned; `not-applicable` for messages to `owner`. Never a claim that the message was read. |
+| `$.delivery.state` | `"pending"` \| `"offered"` \| `"not-running"` \| `"not-applicable"` | yes | provider notification delivery observed at send time; `not-applicable` for messages to `owner`. This immutable receipt is not recipient read or task completion. |
 | `$.delivery.at` | Time \| null | yes | when it was offered |
 | `$.writer.mode` | `"host"` \| `"direct"` | yes | who committed the message event (A.0 Writer) |
 | `$.writer.host_generation` | string | when mode is `host` | generation of the host that committed it |
@@ -1203,7 +1203,7 @@ unchanged; [20 — bounded reads](20-data-model.md) owns the indexed reader/curs
 | `$.items[].body.complete` | bool | yes | |
 | `$.items[].body.bytes` | int | yes | size of the full body |
 | `$.items[].body` + Cmd | | yes | body reference: `se msg read ID` when `complete` is false; null otherwise |
-| `$.items[].delivery.state` | `"pending"` \| `"offered"` \| `"delivered"` \| `"not-applicable"` | yes | notification only |
+| `$.items[].delivery.state` | `"pending"` \| `"offered"` \| `"delivered"` \| `"not-applicable"` | yes | provider notification delivery only; `pending` means correlated provider input acceptance was not recorded, not that the recipient is still unread or has unfinished work |
 | `$.items[].delivery.at` | Time \| null | yes | |
 | `$.items[].disposition.state` | `"unread"` \| `"read"` \| `"dismissed"` | yes | the recipient's own marker |
 | `$.items[].disposition.at` | Time \| null | yes | |
@@ -1211,6 +1211,12 @@ unchanged; [20 — bounded reads](20-data-model.md) owns the indexed reader/curs
 | `$.window`, `$.next` | Window, Cursor \| null | yes | see A.0. Inbox exits 2 when `unread_total` is null, or is larger than the number of unread items shown, or any row is unreadable. With `full`, a page holds at most 256 KiB of bodies, never cuts a body and holds at least one row. Rows that did not fit are reported as `omitted.reason: "budget"` and returned by following `next`. |
 
 Markers are untouched: producing this family (inbox, list, `--full` or not, owner or session) never creates or changes a delivered, read or dismissed marker. `disposition` and `delivery` report the stored state as it was when the page was read. Observing history is not the recipient reading it; only `se.message-read/v1` and `se.disposition-receipt/v1` write markers.
+
+Plain output names `delivery` **Notification delivery** and shows **Recipient state**
+separately. A recipient can resume, read and reply without a correlated notification
+input event, so `delivery.state: "pending"` and `disposition.state: "read"` can both be
+true. Clients show the recipient marker as the read state; neither notification
+delivery nor reading is a task-completion acknowledgment. A reply is separate mail.
 
 ```json
 {"schema":"se.message-page/v1","consistency":"live-keyset",

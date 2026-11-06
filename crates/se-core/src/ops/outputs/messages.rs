@@ -30,6 +30,8 @@ pub struct MessageOutput {
     pub refs: Vec<EventId>,
     pub idempotency_key: IdempotencyKey,
     pub body: BodyDigest,
+    /// Provider notification delivery observed at send time, not a recipient
+    /// read acknowledgment or task completion. Replays retain this original fact.
     pub delivery: Delivery,
     pub writer: Writer,
     pub notification: Notification,
@@ -94,7 +96,12 @@ pub struct MessageRow {
     pub sent_at: String,
     pub reply_to: Option<MessageId>,
     pub refs: Vec<EventId>,
+    /// Provider notification delivery only. Pending means no correlated provider
+    /// input acceptance was recorded; it can coexist with a recipient read or
+    /// reply after resuming. Use disposition for the recipient's own read state.
     pub delivery: Delivery,
+    /// The recipient's authenticated read/dismiss marker, independent of
+    /// notification delivery. Reading or dismissing does not imply completed work.
     pub disposition: Delivery,
     pub notification: Notification,
     pub body: MessageBody,

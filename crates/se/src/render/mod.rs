@@ -7,6 +7,8 @@ pub mod error;
 mod event;
 mod import;
 mod labels;
+#[cfg(test)]
+mod mail_state_tests;
 mod read;
 mod stop;
 mod transcript;
@@ -108,6 +110,7 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
                     value.value.message.to.name,
                     value.value.message.id
                 )?;
+                read::notification::message_state(&value.value.message, out)?;
                 writeln!(out, "{}", value.value.message.body.text)?;
                 writeln!(
                     out,
