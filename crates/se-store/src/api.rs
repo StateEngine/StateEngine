@@ -411,8 +411,17 @@ pub struct ControlTarget {
     pub processes: Vec<ProjectionRecord>,
     /// Newest session in any state, ended or revoked included.
     pub latest_session: Read<ProjectionRecord>,
+    /// Newest session a launch auto-resume may select. A revoked
+    /// preparation that never activated (the launch failed before first
+    /// use) never shadows an older resumable session.
+    pub resume_session: Read<ProjectionRecord>,
     /// Newest process in any state, exited or ownership-released included.
     pub latest_process: Read<ProjectionRecord>,
+    /// Every registered root this project moved away from, newest move
+    /// first. Move roots are project identity, not private history: the
+    /// launch plan needs them to find a resumed provider transcript, which
+    /// stays under the slug of the root where it was written.
+    pub moved_from_roots: Vec<se_types::NativePath>,
 }
 /// Exact retained registration selector; active project lists remain separate.
 #[derive(Clone, Debug)]

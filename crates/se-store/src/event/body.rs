@@ -7,6 +7,7 @@ use super::*;
 pub enum EventKind {
     ProjectRegistered,
     ProjectUpdated,
+    ProjectMoved,
     ProjectRemoved,
     PrincipalRegistered,
     PrincipalRenamed,
@@ -75,6 +76,19 @@ pub enum EventBody<T> {
         project: ProjectId,
         name: String,
         roots: Vec<Root>,
+        expected: Expected,
+    },
+    /// A moved repository: the CLI verified the target's recorded git identity
+    /// (matching project, recorded HEAD ancestry) before this revision applied.
+    /// The registered name is carried so active-body readers stay uniform; the
+    /// store refuses any move that renames the project.
+    ProjectMoved {
+        project: ProjectId,
+        name: String,
+        from: Vec<Root>,
+        to: Root,
+        head: Option<String>,
+        branch: Option<String>,
         expected: Expected,
     },
     ProjectRemoved {

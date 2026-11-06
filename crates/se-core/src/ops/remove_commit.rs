@@ -49,6 +49,7 @@ pub fn inventory<R: Snapshot>(
                 .map(|r| r.path.clone())
                 .ok_or_else(|| scope::unreadable("removal project", "no registered root"))?
         }
+        EventBody::ProjectMoved { to, .. } => to.path.clone(),
         _ => {
             return Err(SeError::invalid(
                 "removal project",

@@ -77,7 +77,8 @@ pub fn projects<R: Snapshot>(cx: &mut Cx<'_, R>) -> Result<Vec<Named<ProjectId>>
 fn project_name(body: &EventBody<se_store::StoredText>) -> Result<Named<ProjectId>> {
     match body {
         EventBody::ProjectRegistered { project, name, .. }
-        | EventBody::ProjectUpdated { project, name, .. } => Ok(Named {
+        | EventBody::ProjectUpdated { project, name, .. }
+        | EventBody::ProjectMoved { project, name, .. } => Ok(Named {
             id: project.clone(),
             name: name.clone(),
         }),

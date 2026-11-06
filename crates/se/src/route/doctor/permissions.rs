@@ -201,7 +201,7 @@ pub(super) fn repair<R: se_store::ReadStore>(
     let at = se_core::ops::receipt::timestamp(crate::route::execute::now_us()?)?;
     let mut current = target(&cx.home.join(leaf), id, title, PermissionKind::File, &at)?;
     let (plan, fact, readback, changed) = tighten(&mut current, id, &at, cx.json, diagnostic)?;
-    let after = super::observe(cx, files, reader)?.diagnosis;
+    let after = super::observe(cx, files, reader, &[])?.diagnosis;
     let complete = after
         .checks
         .iter()

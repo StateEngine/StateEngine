@@ -82,6 +82,18 @@ pub(super) fn public<R: Snapshot>(
         ImportProgress{checkpoint,counts}=>("import.progress",json!({"family":checkpoint.family,"source_rows":checkpoint.row_offset,"counts":counts})),
         ImportFinished{counts,complete,..}=>("import.finished",json!({"complete":complete,"counts":counts})),
         ImportUnreadable{family,code,evidence,..}=>("import.unreadable",json!({"family":family,"reason":code,"source_range":evidence})),
+        ProjectMoved { name, from, to, head, branch, .. } => {
+            let local = |root: &se_store::Root| {
+                root.path.to_local().map(|p| p.display().to_string()).map_err(|e| {
+                    SeError::new(Detail::SourceUnreadable(details::SourceUnreadable {
+                        subject: "project move payload".into(),
+                        reason: e.to_string(),
+                        next_step: "Check the recorded project root paths.".into(),
+                    }))
+                })
+            };
+            ("project.moved", json!({"name":name,"from":from.iter().map(local).collect::<se_types::Result<Vec<_>>>()?,"to":local(to)?,"head":head,"branch":branch}))
+        }
         // Later-wave event families require their own complete public projection;
         // they cannot expose raw native/credential fields as a shortcut.
         _ => return Err(SeError::new(Detail::FeatureUnavailable(details::FeatureUnavailable {

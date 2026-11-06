@@ -140,6 +140,7 @@ pub fn launch<R: Snapshot>(
     let (project_name, roots) = match project.current.body {
         EventBody::ProjectRegistered { name, roots, .. }
         | EventBody::ProjectUpdated { name, roots, .. } => (name, roots),
+        EventBody::ProjectMoved { name, to, .. } => (name, vec![to.clone()]),
         _ => return Err(SeError::invalid("launch project", "an active project")),
     };
     let cwd = roots
@@ -187,7 +188,7 @@ pub fn launch<R: Snapshot>(
             checked: "an explicitly new provider conversation was requested".into(),
         }
     } else {
-        match &control.latest_session {
+        match &control.resume_session {
             Read::Absent { checked } => Read::Absent {
                 checked: checked.clone(),
             },

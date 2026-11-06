@@ -19,6 +19,8 @@ mod endpoint_diagnostic;
 pub mod execute;
 #[path = "route/files.rs"]
 pub mod files;
+#[path = "route/git_identity.rs"]
+mod git_identity;
 #[path = "route/git_state.rs"]
 mod git_state;
 #[path = "route/hook.rs"]
@@ -35,6 +37,8 @@ mod init_config;
 pub mod owner;
 #[path = "route/process.rs"]
 mod process;
+#[path = "route/project_move.rs"]
+mod project_move;
 #[path = "route/remove.rs"]
 mod remove;
 mod retained;

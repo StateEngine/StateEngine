@@ -32,6 +32,18 @@ pub(crate) fn metadata<T>(body: &EventBody<T>) -> StoreResult<(&'static str, Val
             "project.updated",
             json!({"project":project,"name":name,"roots":roots,"expected":expected}),
         ),
+        ProjectMoved {
+            project,
+            name,
+            from,
+            to,
+            head,
+            branch,
+            expected,
+        } => (
+            "project.moved",
+            json!({"project":project,"name":name,"from":from,"to":to,"head":head,"branch":branch,"expected":expected}),
+        ),
         PrincipalRegistered {
             principal,
             kind,

@@ -17,11 +17,11 @@ impl ClaudeHarness {
                 SeError::invalid("Claude window", "an actual provider probe before attach")
             })?;
         let conversation = claude::conversation(&request.request)?;
-        let transcript = claude::transcript_path(
+        let transcript = claude::transcript_location(
             &claude::config_home(&claude::provider_environment())?,
-            &request.request.cwd.to_local()?,
+            &request.request,
             &conversation,
-        );
+        )?;
         let until = tokio::time::Instant::now() + cx.timeout;
         let mut source = None;
         let mut offset = 0;

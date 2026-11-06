@@ -63,7 +63,10 @@ pub(super) fn finish(
                 name,
                 roots,
                 ..
-            } => (project, name, roots),
+            } => (project, name, roots.as_slice()),
+            EventBody::ProjectMoved {
+                project, name, to, ..
+            } => (project, name, std::slice::from_ref(to)),
             _ => continue,
         };
         if roots.iter().any(|candidate| candidate.path == root) {
@@ -142,6 +145,34 @@ pub(super) fn finish(
             project
         }
     };
+    // Record the git identity for future `se project move` verification.
+    // Non-fatal: a repository without commits records nothing, and init never
+    // fails because its move marker could not be written.
+    if let Some(view) = &repository.git
+        && let Some(head) = &view.head
+    {
+        match super::super::git_identity::record(
+            &repository.path,
+            &id.to_string(),
+            head,
+            &view.branch,
+        ) {
+            Ok(path) if created => changed.push(format!(
+                "recorded the git identity for future moves in {}",
+                path.display()
+            )),
+            Ok(_) => {}
+            Err(e) => {
+                let note = match e.body.detail() {
+                    se_types::Detail::SourceUnreadable(detail) => detail.reason.clone(),
+                    _ => "the marker write failed".into(),
+                };
+                changed.push(format!(
+                    "could not record the git identity for future moves: {note}"
+                ))
+            }
+        }
+    }
     admission.scope = Scope::Project(id.clone());
     if !present(store, &admission, admission.actor.clone())? {
         let kernel = Kernel::new(execute::facts()?)?;
@@ -179,9 +210,9 @@ pub(super) fn finish(
     )?;
     snap.close().map_err(|e| store_error(&e))?;
     let project_name = match &metadata.current.body {
-        EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => {
-            name.clone()
-        }
+        EventBody::ProjectRegistered { name, .. }
+        | EventBody::ProjectUpdated { name, .. }
+        | EventBody::ProjectMoved { name, .. } => name.clone(),
         _ => {
             return Err(scope::unreadable(
                 "initialized project",

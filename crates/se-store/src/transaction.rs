@@ -582,6 +582,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
             | RuntimeHandoverRecorded { .. }
             | ProjectRegistered { .. }
             | ProjectUpdated { .. }
+            | ProjectMoved { .. }
             | ProjectRemoved { .. }
             | PrincipalRegistered { .. }
             | GrantRecorded { .. }

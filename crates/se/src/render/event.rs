@@ -62,6 +62,16 @@ fn present(value: &HistoryEvent, out: &mut impl Write) -> io::Result<()> {
                 }
                 serde_json::Value::Bool(value) => fact(label, &value.to_string(), out)?,
                 serde_json::Value::Number(value) => fact(label, &value.to_string(), out)?,
+                serde_json::Value::Array(items) => {
+                    let joined = items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    if !joined.is_empty() {
+                        fact(label, &joined, out)?;
+                    }
+                }
                 _ => {}
             }
         }
@@ -161,6 +171,7 @@ fn summary_fields(kind: &str) -> &'static [(&'static str, &'static str)] {
         "import.progress" => &[("Family", "/family"), ("Source rows", "/source_rows")],
         "import.finished" => &[("Complete", "/complete")],
         "import.unreadable" => &[("Family", "/family"), ("Reason", "/reason")],
+        "project.moved" => &[("From", "/from"), ("To", "/to"), ("Head", "/head")],
         _ => &[],
     }
 }

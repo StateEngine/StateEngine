@@ -6,6 +6,7 @@ use crate::{
 pub enum Then {
     AgentConfig(crate::ops::agent_config::AgentConfigThen),
     AgentCreate(crate::ops::agent::AgentCreateThen),
+    ProjectMove(crate::ops::project::ProjectMoveThen),
     Decision(crate::ops::decision::DecisionThen),
     Capture(crate::ops::hook::CaptureThen),
     MessageSend(MessageSendThen),

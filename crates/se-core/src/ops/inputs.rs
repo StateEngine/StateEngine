@@ -55,6 +55,19 @@ pub struct MetaSchema {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct ProjectMove {
+    /// The folder the repository now lives in; verified against the git
+    /// identity recorded at `se init` before any revision is proposed.
+    pub root: String,
+    pub idempotency_key: IdempotencyKey,
+}
+impl Validate for ProjectMove {
+    fn validate(&self) -> Result<()> {
+        bounded("root", &self.root, 4096, false)
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ProjectInit {
     pub repo: Option<String>,
     pub name: Option<String>,

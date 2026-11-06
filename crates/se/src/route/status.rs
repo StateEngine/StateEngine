@@ -106,7 +106,8 @@ pub fn observe_snapshot<S: Snapshot>(
             }
             let (name, roots) = match &record.current.body {
                 EventBody::ProjectRegistered { name, roots, .. }
-                | EventBody::ProjectUpdated { name, roots, .. } => (name, roots),
+                | EventBody::ProjectUpdated { name, roots, .. } => (name, roots.as_slice()),
+                EventBody::ProjectMoved { name, to, .. } => (name, std::slice::from_ref(to)),
                 _ => {
                     return Err(scope::unreadable(
                         "project status",

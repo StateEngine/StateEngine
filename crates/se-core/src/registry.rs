@@ -69,6 +69,7 @@ pub enum HumanKind {
     Schema,
     Principal,
     Init,
+    ProjectMove,
     Status,
     Diagnosis,
     Repair,

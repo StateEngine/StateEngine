@@ -110,6 +110,11 @@ pub fn project_event<R: Snapshot>(event: StoredEvent, cx: &mut Cx<'_, R>) -> Res
             project: registered,
             name,
             ..
+        }
+        | EventBody::ProjectMoved {
+            project: registered,
+            name,
+            ..
         } if registered == &project => name.clone(),
         _ => {
             return Err(scope::unreadable(

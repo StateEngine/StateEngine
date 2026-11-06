@@ -210,7 +210,9 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         | EffectOffered { .. }
         | EffectSettled { .. }
         | IntegrationRecorded { .. } => effect::revision(c, e),
-        ProjectRemoved { .. } | ProjectUpdated { .. } => project::revision(c, e),
+        ProjectRemoved { .. } | ProjectUpdated { .. } | ProjectMoved { .. } => {
+            project::revision(c, e)
+        }
         CursorRecorded { .. } | CursorAcknowledged { .. } => cursor::revision(c, e),
         ImportStarted { .. }
         | ImportProgress { .. }

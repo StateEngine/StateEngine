@@ -149,6 +149,15 @@ pub(crate) fn body(
                     roots: field(&v, "roots")?,
                     expected: field(&v, "expected")?,
                 },
+                "project.moved" => ProjectMoved {
+                    project: field(&v, "project")?,
+                    name: field(&v, "name")?,
+                    from: field(&v, "from")?,
+                    to: field(&v, "to")?,
+                    head: field(&v, "head")?,
+                    branch: field(&v, "branch")?,
+                    expected: field(&v, "expected")?,
+                },
                 "project.registered" => ProjectRegistered {
                     project: field(&v, "project")?,
                     name: field(&v, "name")?,

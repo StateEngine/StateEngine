@@ -244,6 +244,42 @@ pub fn transcript_path(
         .join(slug)
         .join(format!("{}.jsonl", conversation.as_str()))
 }
+/// The transcript file the launch watches. A resumed conversation keeps its
+/// file under the slug of the root where it was written, so every registered
+/// root the project moved away from is probed, newest move first, before the
+/// current location. A brand-new conversation, or a resumed one whose file no
+/// probe found, resolves to the current location and the caller waits for the
+/// provider to create it, as before.
+pub fn transcript_location(
+    config_home: &Path,
+    request: &HarnessRequest,
+    conversation: &ProviderSessionId,
+) -> Result<PathBuf> {
+    let primary = transcript_path(
+        config_home,
+        &request
+            .cwd
+            .to_local()
+            .map_err(|e| se_core::scope::unreadable("launch working directory", &e.to_string()))?,
+        conversation,
+    );
+    if !matches!(&request.resume, Read::Present { .. }) {
+        return Ok(primary);
+    }
+    for root in &request.transcript_roots {
+        let path = transcript_path(
+            config_home,
+            &root
+                .to_local()
+                .map_err(|e| se_core::scope::unreadable("moved project root", &e.to_string()))?,
+            conversation,
+        );
+        if std::fs::metadata(&path).is_ok() {
+            return Ok(path);
+        }
+    }
+    Ok(primary)
+}
 
 /// Claude runs hook commands through the platform shell; quote each word.
 fn hook_command(launch: &ClaudeLaunch<'_>, event: &str) -> String {
@@ -365,4 +401,111 @@ pub fn config_home(environment: &[(OsString, OsString)]) -> Result<PathBuf> {
         .or_else(|| value("HOME").map(|home| home.join(".claude")))
         .or_else(|| value("USERPROFILE").map(|home| home.join(".claude")))
         .ok_or_else(|| SeError::invalid("Claude config home", "HOME or CLAUDE_CONFIG_DIR"))
+}
+
+#[cfg(test)]
+mod transcript_location_tests {
+    use super::*;
+    use se_proc::{
+        ContainmentRequirement, LaunchMode, LaunchPolicy, NetworkPolicy, OptionalHardening,
+        WritePolicy,
+    };
+
+    fn request(
+        cwd: &std::path::Path,
+        resume: bool,
+        roots: Vec<NativePath>,
+    ) -> std::result::Result<HarnessRequest, Box<dyn std::error::Error>> {
+        Ok(HarnessRequest {
+            identity: crate::SessionIdentity {
+                project: se_types::ProjectId::from_parts(1_700_000_000_000, [1; 10])?,
+                agent: se_types::AgentId::from_parts(1_700_000_000_000, [2; 10])?,
+                session: se_types::SessionId::from_parts(1_700_000_000_000, [3; 10])?,
+            },
+            executable: NativePath::from_local(cwd.join("claude"))?,
+            cwd: NativePath::from_local(cwd.to_path_buf())?,
+            profile: se_store::Profile {
+                provider: se_store::Provider::Claude,
+                model: None,
+                permission: se_store::PermissionProfile::WorkspaceWrite,
+                named_profile: "default".into(),
+                effort: None,
+            },
+            policy: LaunchPolicy {
+                containment: ContainmentRequirement::BestAvailable,
+                writes: WritePolicy::ReadOnly {
+                    scratch: cwd.to_path_buf(),
+                },
+                network: NetworkPolicy::Allow,
+                hardening: OptionalHardening::Off,
+            },
+            mode: LaunchMode::Headless,
+            resume: if resume {
+                Read::Present {
+                    value: ProviderSessionId::new("01234567-89ab-4cde-8f01-23456789abcd")?,
+                }
+            } else {
+                Read::Absent {
+                    checked: "new conversation".into(),
+                }
+            },
+            transcript_roots: roots,
+            initial_input: Body::new("transcript location unit")?,
+            launch_credential: Secret::new(vec![1; 32])?,
+            mcp_bearer: Secret::new(vec![2; 32])?,
+            key: se_types::IdempotencyKey::new("transcript-location-unit")?,
+        })
+    }
+
+    #[test]
+    fn transcript_location_follows_the_resumed_conversation_to_its_original_root()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "se-transcript-location-{}-{nonce}",
+            std::process::id()
+        ));
+        let config_home = base.join("config");
+        let cwd = base.join("cwd");
+        let newer_root = base.join("newer-root");
+        let oldest_root = base.join("oldest-root");
+        for path in [&config_home, &cwd, &newer_root, &oldest_root] {
+            std::fs::create_dir_all(path)?;
+        }
+        let conversation = ProviderSessionId::new("01234567-89ab-4cde-8f01-23456789abcd")?;
+        // The provider wrote the conversation while the project lived at the
+        // oldest root; the newer root holds nothing for it.
+        let held = transcript_path(&config_home, &oldest_root, &conversation);
+        std::fs::create_dir_all(held.parent().ok_or("held transcript has no parent")?)?;
+        std::fs::write(&held, "{}\n")?;
+        let newer = NativePath::from_local(newer_root.clone())?;
+        let oldest = NativePath::from_local(oldest_root.clone())?;
+        // A resumed conversation resolves to the root that holds its file,
+        // newest move first, skipping roots that do not hold it.
+        let chosen = transcript_location(
+            &config_home,
+            &request(&cwd, true, vec![newer.clone(), oldest.clone()])?,
+            &conversation,
+        )?;
+        assert_eq!(chosen, held);
+        // With no probe hit the watch falls back to the current location and
+        // waits for the provider to create the file, as before.
+        let fallback = transcript_location(
+            &config_home,
+            &request(&cwd, true, vec![newer])?,
+            &conversation,
+        )?;
+        assert_eq!(fallback, transcript_path(&config_home, &cwd, &conversation));
+        // A brand-new conversation never probes moved roots.
+        let fresh = transcript_location(
+            &config_home,
+            &request(&cwd, false, vec![oldest])?,
+            &conversation,
+        )?;
+        assert_eq!(fresh, transcript_path(&config_home, &cwd, &conversation));
+        let _ = std::fs::remove_dir_all(&base);
+        Ok(())
+    }
 }

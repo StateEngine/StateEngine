@@ -152,9 +152,9 @@ pub(crate) fn named_project<R: Snapshot>(
         "Verify the event's recorded project in this data home; when completing a write, preserve its original request key and event IDs.",
     )?;
     let name = match &record.current.body {
-        EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => {
-            name.clone()
-        }
+        EventBody::ProjectRegistered { name, .. }
+        | EventBody::ProjectUpdated { name, .. }
+        | EventBody::ProjectMoved { name, .. } => name.clone(),
         _ => match record.original.as_deref().map(|event| &event.body) {
             Some(EventBody::ProjectRegistered { name, .. }) => name.clone(),
             _ => {
@@ -181,7 +181,9 @@ pub fn message<R: Snapshot>(
         "Verify the event's recorded project in this data home; when completing a write, preserve its original request key and event IDs.",
     )?;
     let project_name = match record.current.body {
-        EventBody::ProjectRegistered { name, .. } | EventBody::ProjectUpdated { name, .. } => name,
+        EventBody::ProjectRegistered { name, .. }
+        | EventBody::ProjectUpdated { name, .. }
+        | EventBody::ProjectMoved { name, .. } => name,
         _ => {
             return Err(scope::unreadable(
                 "message project",

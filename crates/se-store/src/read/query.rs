@@ -150,6 +150,7 @@ pub(super) fn kind_name(k: EventKind) -> &'static str {
     match k {
         EventKind::ProjectRegistered => "project.registered",
         EventKind::ProjectUpdated => "project.updated",
+        EventKind::ProjectMoved => "project.moved",
         EventKind::ProjectRemoved => "project.removed",
         EventKind::PrincipalRegistered => "principal.registered",
         EventKind::PrincipalRenamed => "principal.renamed",

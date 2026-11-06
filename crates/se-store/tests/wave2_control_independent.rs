@@ -487,3 +487,190 @@ fn control_inventory_is_complete_or_refuses() -> Check {
     drop(wait(writer.drain(Duration::from_secs(2)))??);
     Ok(())
 }
+
+/// Protects: a launch that fails after session preparation revokes that preparation; the revoked
+/// never-activated preparation must not shadow an older activated-then-ended session for auto-resume,
+/// while latest_session keeps reporting the any-state newest for stop/status.
+#[test]
+fn resume_selector_skips_revoked_preparation_that_never_activated() -> Check {
+    let f = Fixture::new()?;
+    let (host, lease) = host(&f)?;
+    let writer = host.start_writer(options(256)?, lease)?;
+    let client = writer.client();
+    let child = agent()?;
+    wait(client.submit(f.batch(
+        f.owner_project(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-575-{}",
+            serial()
+        ))?),
+        vec![
+            grant(&f.a, true, Expected::Absent),
+            helper(&f, &child, Some(&f.a)),
+            EventBody::ProfileSaved {
+                agent: child.clone(),
+                profile: Profile {
+                    provider: Provider::Claude,
+                    model: None,
+                    permission: PermissionProfile::WorkspaceWrite,
+                    named_profile: "workspace-write".into(),
+                    effort: None,
+                },
+                expected: Expected::Absent,
+            },
+        ],
+    )?)?)??;
+    let admission = f.admission(Scope::Project(f.project.clone()), Actor::Agent(f.a.clone()));
+    let first = capture::session()?;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-594-{}",
+            serial()
+        ))?),
+        vec![capture::prepared(&f, &first, &child)],
+    )?)?)??;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-602-{}",
+            serial()
+        ))?),
+        vec![capture::activated(&first)?],
+    )?)?)??;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-609-{}",
+            serial()
+        ))?),
+        vec![EventBody::SessionEnded {
+            session: first.clone(),
+            expected: revision(2)?,
+            reason: InputText::Inline("finished before the failed relaunch".into()),
+            final_turn: None,
+            final_cursor: None,
+        }],
+    )?)?)??;
+    let second = capture::session()?;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-626-{}",
+            serial()
+        ))?),
+        vec![capture::prepared(&f, &second, &child)],
+    )?)?)??;
+    wait(client.submit(f.batch(
+        admission.clone(),
+        Some(request(&format!(
+            "fixture-wave2_control_independent-633-{}",
+            serial()
+        ))?),
+        vec![EventBody::SessionRevoked {
+            session: second.clone(),
+            expected: revision(1)?,
+            reason: InputText::Inline("launch failed before first use".into()),
+        }],
+    )?)?)??;
+    let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+    let control = present(reader.snapshot(f.self_scope(&f.a))?.control_target(child)?)?;
+    let latest = present(control.latest_session)?;
+    assert!(
+        matches!(&latest.current.body, EventBody::SessionRevoked { session, .. } if session == &second)
+    );
+    let resume = present(control.resume_session)?;
+    assert!(
+        matches!(&resume.current.body, EventBody::SessionEnded { session, .. } if session == &first)
+    );
+    drop(reader);
+    drop(wait(writer.drain(Duration::from_secs(2)))??);
+    Ok(())
+}
+
+/// Protects: the control target retains every root the project moved away
+/// from, newest move first and de-duplicated, so a launch can find a resumed
+/// provider transcript under the slug of the root where it was written.
+#[test]
+fn control_target_retains_every_moved_from_root_newest_first() -> Check {
+    let f = Fixture::new()?;
+    let (mut direct, lease) = f.direct()?;
+    let root = |name: &str| -> Result<Root, Box<dyn std::error::Error>> {
+        let path = se_types::NativePath::from_local(std::env::temp_dir().join(name))?;
+        Ok(Root {
+            canonical_key: serde_json::to_vec(&path)?,
+            path,
+        })
+    };
+    let moved = |f: &Fixture,
+                 from: Root,
+                 to: Root,
+                 rev: u64|
+     -> Result<EventBody<InputText>, Box<dyn std::error::Error>> {
+        Ok(EventBody::ProjectMoved {
+            project: f.project.clone(),
+            name: "Project".into(),
+            from: vec![from],
+            to,
+            head: None,
+            branch: None,
+            expected: revision(rev)?,
+        })
+    };
+    let read_roots =
+        |f: &Fixture| -> Result<Vec<se_types::NativePath>, Box<dyn std::error::Error>> {
+            let reader = present(SqliteFactory::open_reader(&f.options)?)?;
+            let mut snapshot = reader.snapshot(f.scoped(Visibility::Owner))?;
+            let control = present(snapshot.control_target(f.a.clone())?)?;
+            Ok(control.moved_from_roots)
+        };
+    assert_eq!(read_roots(&f)?, Vec::<se_types::NativePath>::new());
+    let a = root("moved-root-a")?;
+    let b = root("moved-root-b")?;
+    let c = root("moved-root-c")?;
+    direct.append(
+        f.batch(
+            f.owner_project(),
+            Some(request(&format!("move1-{}", serial()))?),
+            vec![moved(&f, a.clone(), b.clone(), 1)?],
+        )?,
+        &*lease,
+    )?;
+    assert_eq!(read_roots(&f)?, vec![a.path.clone()]);
+    direct.append(
+        f.batch(
+            f.owner_project(),
+            Some(request(&format!("move2-{}", serial()))?),
+            vec![moved(&f, b.clone(), c.clone(), 2)?],
+        )?,
+        &*lease,
+    )?;
+    assert_eq!(read_roots(&f)?, vec![b.path.clone(), a.path.clone()]);
+    direct.append(
+        f.batch(
+            f.owner_project(),
+            Some(request(&format!("move3-{}", serial()))?),
+            vec![moved(&f, c.clone(), a.clone(), 3)?],
+        )?,
+        &*lease,
+    )?;
+    assert_eq!(
+        read_roots(&f)?,
+        vec![c.path.clone(), b.path.clone(), a.path.clone()]
+    );
+    // Moving back to a root the project left before, then out again, leaves
+    // that root in two `from` vectors: de-duplication keeps one entry,
+    // newest position first.
+    let d = root("moved-root-d")?;
+    direct.append(
+        f.batch(
+            f.owner_project(),
+            Some(request(&format!("move4-{}", serial()))?),
+            vec![moved(&f, a.clone(), d, 4)?],
+        )?,
+        &*lease,
+    )?;
+    assert_eq!(read_roots(&f)?, vec![a.path, c.path, b.path]);
+    drop(direct);
+    Ok(())
+}
