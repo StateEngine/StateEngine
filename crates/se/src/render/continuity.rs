@@ -9,13 +9,36 @@ pub(super) fn resume_at(
     home: Option<&std::path::Path>,
     out: &mut impl Write,
 ) -> io::Result<()> {
-    writeln!(out, "Who am I?")?;
+    writeln!(
+        out,
+        "{}",
+        if value.principal.preview {
+            "Saved agent context"
+        } else {
+            "Who am I?"
+        }
+    )?;
+    let status = if value.principal.preview {
+        match value.resume_status.as_str() {
+            "ready" => "saved context available",
+            "needs_read"
+                if !value.unread.items().is_empty() || !value.required_reads.is_empty() =>
+            {
+                "saved context; unread messages below"
+            }
+            "needs_read" => "partial saved context; more available below",
+            "integrity_blocked" => "some saved context could not be read",
+            other => other,
+        }
+    } else {
+        &value.resume_status
+    };
     writeln!(
         out,
         "{} in {} — {}{}",
         value.principal.agent.name,
         value.principal.project.name,
-        value.resume_status,
+        status,
         if value.principal.preview {
             " (owner preview; nothing acknowledged)"
         } else {
@@ -32,6 +55,24 @@ pub(super) fn resume_at(
             writeln!(out, "{}", value.value.text)?;
             if let Some(command) = &value.command {
                 writeln!(out, "Full working state: {command}")?;
+            }
+        }
+        Read::Absent { .. } if value.principal.preview => {
+            writeln!(out, "No separate progress notes were saved.")?;
+            if !value.recent_turns.is_empty() {
+                writeln!(
+                    out,
+                    "Saved conversation messages follow under What changed?."
+                )?;
+            } else if value
+                .omissions
+                .iter()
+                .any(|item| item.section == "recent_turns")
+            {
+                writeln!(
+                    out,
+                    "Saved conversation messages are outside this context window; use the continuation below."
+                )?;
             }
         }
         Read::Absent { .. } => writeln!(out, "No saved working state.")?,

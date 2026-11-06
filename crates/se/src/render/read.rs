@@ -117,29 +117,40 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             count(value.inbox.owner_unread)
         )?;
     }
-    writeln!(
-        out,
-        "Proposed decisions: {}",
-        value
-            .decisions
-            .pending
-            .map_or("not counted".into(), |value| value.to_string())
-    )?;
-    writeln!(
-        out,
-        "Conversation recording: {}; code index: {}; history: {}",
-        if value.capture.state == "unknown" {
-            "not checked"
-        } else {
-            &value.capture.state
-        },
-        if value.atlas.state == "not-built" {
-            "not built"
-        } else {
-            &value.atlas.state
-        },
-        value.atlas.history
-    )?;
+    let healthy_stopped = value.runtime.state == "stopped"
+        && value.agents.as_ref().is_some_and(|agents| {
+            agents.window().complete()
+                && agents.items().iter().all(|agent| {
+                    matches!(agent.session.state.as_str(), "stopped" | "never-launched")
+                })
+        });
+    if value.decisions.pending.is_some() || !healthy_stopped {
+        writeln!(
+            out,
+            "Proposed decisions: {}",
+            value
+                .decisions
+                .pending
+                .map_or("not counted".into(), |value| value.to_string())
+        )?;
+    }
+    if !healthy_stopped || value.capture.state != "unknown" || value.atlas.state != "not-built" {
+        writeln!(
+            out,
+            "Conversation recording: {}; code index: {}; history: {}",
+            if value.capture.state == "unknown" {
+                "not checked"
+            } else {
+                &value.capture.state
+            },
+            if value.atlas.state == "not-built" {
+                "not built"
+            } else {
+                &value.atlas.state
+            },
+            value.atlas.history
+        )?;
+    }
     if let Some(reason) = &value.atlas.reason {
         writeln!(out, "  Atlas: {reason}")?;
     }
@@ -179,10 +190,12 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                 .detail
                 .starts_with("No runtime connection file was found.")
         {
-            writeln!(
-                out,
-                "Background runtime: no connection file found. Running agents have not been checked; use se doctor for this home."
-            )?;
+            if !healthy_stopped {
+                writeln!(
+                    out,
+                    "Background runtime: no connection file found. Running agents have not been checked; use se doctor for this home."
+                )?;
+            }
         } else {
             writeln!(out, "Pending {}: {}", pending.what, pending.detail)?;
         }
