@@ -3,7 +3,7 @@
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Output},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -45,7 +45,7 @@ fn checked(output: Output) -> Result<serde_json::Value, Box<dyn std::error::Erro
 }
 #[test]
 fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Check {
-    let root = PathBuf::from("/tmp").join(format!(
+    let root = std::env::temp_dir().join(format!(
         "se-route-{}-{}",
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()

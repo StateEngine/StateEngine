@@ -13,8 +13,47 @@ pub struct RunningHost {
     key: Secret,
     identity: se_proc::ProcessIdentity,
 }
+struct StartupCleanup<'a> {
+    image: &'a Path,
+    home: &'a Path,
+    armed: bool,
+}
+impl Drop for StartupCleanup<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // `up` can publish a detached runtime before its reply or our outside
+        // observation fails. No RunningHost exists to drop yet. The home's
+        // authenticated route checks its native instance; never guess a PID.
+        let result = command(self.image, self.home, true)
+            .arg("down")
+            .output_executable();
+        let closed = result.as_ref().is_ok_and(|output| {
+            output.status.success()
+                && serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                    .is_ok_and(|value| value["complete"] == true)
+        });
+        if !closed {
+            eprintln!(
+                "retaining failed runtime fixture {} after shutdown: {result:?}",
+                self.home.display()
+            );
+        }
+    }
+}
 impl RunningHost {
     pub fn start(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut cleanup = StartupCleanup {
+            image,
+            home,
+            armed: true,
+        };
+        let result = Self::start_observed(image, home);
+        cleanup.armed = result.is_err();
+        result
+    }
+    fn start_observed(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         checked(command(image, home, true).arg("up").output_executable()?)?;
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
             home.join("endpoint.json"),
