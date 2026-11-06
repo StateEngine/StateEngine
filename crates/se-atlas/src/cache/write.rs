@@ -12,11 +12,19 @@ use rusqlite::OptionalExtension;
 /// Replacements keep the file row and discard its complete old semantic set.
 /// Incoming candidates stay present as NameOnly, never resolved-to-NULL claims.
 pub fn clear_semantics(sql: &SqlView<'_>, file_row: i64) -> AtlasResult<()> {
+    super::reference_counts::incoming(sql, file_row)?;
     for statement in [
         "UPDATE refs SET accuracy='NameOnly',target=NULL
          WHERE target IN (SELECT id FROM symbols WHERE file=?1)",
         "UPDATE imports SET target_symbol=NULL,resolution='NameOnly'
          WHERE target_symbol IN (SELECT id FROM symbols WHERE file=?1)",
+    ] {
+        sql.prepare(statement)?
+            .execute([file_row])
+            .map_err(cache_error)?;
+    }
+    super::reference_counts::outgoing(sql, file_row)?;
+    for statement in [
         "DELETE FROM refs WHERE file=?1",
         "DELETE FROM imports WHERE file=?1",
         // The self-parent FK checks at statement completion, after this whole

@@ -81,6 +81,9 @@ pub struct MessageBody {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct MessageRow {
+    /// Trusted channel route, outside the untrusted phone message body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel_reply: Option<ChannelReply>,
     pub id: MessageId,
     pub event_id: EventId,
     pub from: ActorRef,
@@ -128,4 +131,12 @@ pub struct MessagePage {
     #[serde(flatten)]
     pub page: Page<MessageRow>,
     pub unread_total: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ChannelReply {
+    pub to: se_types::HumanId,
+    pub reply_to: MessageId,
+    pub active: bool,
+    pub instruction: String,
 }

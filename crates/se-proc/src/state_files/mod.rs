@@ -203,6 +203,20 @@ impl NativeStateFiles {
         self.check(path)?;
         Ok(result)
     }
+    /// Pin verified regular-file metadata without reading content. On Linux the
+    /// O_PATH descriptor preserves process-wide POSIX locks held by SQLite when
+    /// it closes. Other platforms retain the protected readback semantics.
+    pub fn pin_metadata(&self, path: &Path) -> Result<Option<File>> {
+        #[cfg(target_os = "linux")]
+        {
+            self.check(path)?;
+            let result = self.directory.pin_metadata(path, &self.root)?;
+            self.check(path)?;
+            Ok(result)
+        }
+        #[cfg(not(target_os = "linux"))]
+        self.readback(path)
+    }
     /// Prepare one immediate protected child of this held root. Existing unsafe
     /// directories refuse and are never chmod/chowned to make them admissible.
     pub fn prepare_directory(&self, path: &Path) -> Result<()> {

@@ -117,38 +117,85 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
             count(value.inbox.owner_unread)
         )?;
     }
-    writeln!(
-        out,
-        "Proposed decisions: {}",
-        value
-            .decisions
-            .pending
-            .map_or("not counted".into(), |value| value.to_string())
-    )?;
-    writeln!(
-        out,
-        "Conversation recording: {}; code index: {}",
-        if value.capture.state == "unknown" {
-            "not checked"
+    let healthy_stopped = value.runtime.state == "stopped"
+        && value.agents.as_ref().is_some_and(|agents| {
+            agents.window().complete()
+                && agents.items().iter().all(|agent| {
+                    matches!(agent.session.state.as_str(), "stopped" | "never-launched")
+                })
+        });
+    if value.decisions.pending.is_some() || !healthy_stopped {
+        writeln!(
+            out,
+            "Proposed decisions: {}",
+            value
+                .decisions
+                .pending
+                .map_or("not counted".into(), |value| value.to_string())
+        )?;
+    }
+    if !healthy_stopped || value.capture.state != "unknown" || value.atlas.state != "not-built" {
+        writeln!(
+            out,
+            "Conversation recording: {}; code index: {}; history: {}",
+            if value.capture.state == "unknown" {
+                "not checked"
+            } else {
+                &value.capture.state
+            },
+            if value.atlas.state == "not-built" {
+                "not built"
+            } else {
+                &value.atlas.state
+            },
+            value.atlas.history
+        )?;
+    }
+    if let Some(reason) = &value.atlas.reason {
+        writeln!(out, "  Atlas: {reason}")?;
+    }
+    if let Some(summary) = &value.atlas.summary {
+        let c = &summary.coverage;
+        if value.atlas.state == "preparing" && summary.epoch.is_none() {
+            writeln!(
+                out,
+                "  Atlas file counts: awaiting the first published index."
+            )?;
         } else {
-            &value.capture.state
-        },
-        if value.atlas.state == "not-built" {
-            "not built"
-        } else {
-            &value.atlas.state
+            writeln!(
+                out,
+                "  Atlas files: {} indexed / {} discovered; {} partial, {} deferred, {} failed, {} stale",
+                c.indexed_files,
+                c.discovered_files,
+                c.partial_files,
+                c.deferred_files,
+                c.failed_files,
+                c.stale_files
+            )?;
+            if !c.discovery_complete {
+                writeln!(out, "  Atlas file discovery is still preparing.")?;
+            }
+            if c.unwatched_directories > 0 || !c.watch_discovery_complete {
+                writeln!(
+                    out,
+                    "  Atlas watching is partial: {} directories unwatched; discovery complete: {}",
+                    c.unwatched_directories, c.watch_discovery_complete
+                )?;
+            }
         }
-    )?;
+    }
     for pending in &value.pending {
         if pending.what == "runtime observation"
             && pending
                 .detail
                 .starts_with("No runtime connection file was found.")
         {
-            writeln!(
-                out,
-                "Background runtime: no connection file found. Running agents have not been checked; use se doctor for this home."
-            )?;
+            if !healthy_stopped {
+                writeln!(
+                    out,
+                    "Background runtime: no connection file found. Running agents have not been checked; use se doctor for this home."
+                )?;
+            }
         } else {
             writeln!(out, "Pending {}: {}", pending.what, pending.detail)?;
         }
@@ -208,6 +255,9 @@ pub fn messages(value: &MessagePage, out: &mut impl Write) -> io::Result<()> {
             writeln!(out, "  Message unreadable: {}", unreadable.reason)?;
         } else {
             writeln!(out, "{}", message.body.text)?;
+            if let Some(route) = &message.channel_reply {
+                writeln!(out, "{}", route.instruction)?;
+            }
         }
         if !message.body.complete {
             if let Some(command) = &message.body.command {

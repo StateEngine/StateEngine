@@ -44,7 +44,7 @@ import or factory CLI adaptation is part of this product.
 
 No factory tooling, PostgreSQL multiplayer, remote HTTP, provider login manager,
 telemetry, Node runtime, dynamic plugins or new permission bypass is introduced.
-Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 Its build follows all five journeys and live handover; it never holds a milestone.
 Its cold-index child has the section-80 transient bound. Agent CLIs
 and their tools are separate provider processes, not extra StateEngine processes.
@@ -329,7 +329,7 @@ per file, including SQLite WAL/SHM, under section 70.
 | Windows native job/process completion | One existing se-proc IOCP collector thread per host | Section-80 custody row includes collector; no RegisterWait pool or second collector |
 | Windows provider stdin/out/err | Overlapped named-pipe host ends and IOCP readiness, bounded buffers | No tokio::fs::File/blocking read wrapper or thread per pipe; detailed below |
 | Transcript watch | Unix native events; Windows uses section 60's shared safe se-proc file-watch service (ReadDirectoryChangesW on the same per-host IOCP) | One shared service for capture/Atlas, no notify-owned helper thread; Section-80 watcher row includes state and any resident stack |
-| Optional Atlas | Standalone only, config opt-in after journeys and handover, disabled by default; unavailable embedded | Section-80 standalone Atlas share and separately bounded transient cold child |
+| Optional Atlas | Standalone only, enabled by default after journeys and handover; unavailable without an installed controller | Section-80 standalone Atlas share and separately bounded transient cold child |
 
 On Unix ReactorAdapter takes the owned File from NativeReactor::register, installs
 AsyncFd with requested read/priority interest on the supplied Handle, calls the
@@ -1533,15 +1533,15 @@ uninstall and diagnosed doctor repair, the host executes the exact typed plan
 and printed consequences in section 70; a configuration repair cannot silently
 rotate secrets, restore history or migrate.
 
-File-only general `config.set` and uninstall reconcile retries with the same request key by reading the current file/installation state and reporting the original result if it already matches the request, otherwise applying the requested effect and reading it back; no receipt journal is retained. Restore instead follows section 20’s keyed RecoveryRecorded publication/replay contract.
+General file-setting `config.set` is deferred; the supported CLI changes saved
+agent metadata only. Uninstall reconciles retries with the same request key by
+reading the installation state and reporting the original result when it already
+matches; restore follows section 20's keyed RecoveryRecorded contract.
 
-`config.toml` is the only effective general-settings authority. General
-`config.set` keys (including `runtime.listen_port`, provider defaults and
-`atlas.enabled`) use that readback-reconciled file-custody path: validate the closed key/value
-and per-key human-presence rule, compare the expected file/entry, atomically
-write and sync while preserving unrelated entries, then read back the actual
-file before reporting the result. Legal hostless general-setting writes never
-start a runtime. There is no general-settings event, config head or
+`config.toml` is the only effective general-settings authority. Edit startup
+settings such as `runtime.listen_port`, provider defaults and `atlas.enabled`
+in that selected file, then restart the same data home to apply them.
+There is no general-settings event, config head or
 `Snapshot.config` mirror in SQLite. Manual edits take effect on the next read,
 or on restart for startup-only values such as the listener port; no watcher,
 timer or background reconciliation copies them into a database. Agent metadata,
@@ -1599,7 +1599,7 @@ Resource defaults in HostLimits are admission/backpressure, not preallocation:
 per session; bounded aggregate payload/frame/notice permits retain overflow as
 durable debt. Higher negotiated embedded caps must fit section 80's reserve and
 keep aggregate byte caps fixed. Release request parsing buffers before parking;
-never reserve a full header/body buffer per wait. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+never reserve a full header/body buffer per wait. Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 Build it only after the journeys and handover, with a bounded transient cold
 child; it never blocks a milestone. Its embedded absence cannot remove capture's
 shared native watch service.

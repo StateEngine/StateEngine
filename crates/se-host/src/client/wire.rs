@@ -132,6 +132,7 @@ struct CallRef<'a> {
 #[derive(Serialize)]
 #[serde(tag = "kind", content = "input", rename_all = "snake_case")]
 enum RequestRef<'a> {
+    Channels(&'a crate::channels::ChannelRequest),
     Operation(OperationRef<'a>),
     Hook(HookRef<'a>),
 }
@@ -195,6 +196,7 @@ struct CallWire {
     deny_unknown_fields
 )]
 enum RequestWire {
+    Channels(crate::channels::ChannelRequest),
     Operation(OperationWire),
     Hook(HookWire),
 }
@@ -223,6 +225,7 @@ pub fn encode_call(call: &crate::IpcEnvelope) -> Result<WireBytes> {
     let request_id =
         NonZeroU64::new(call.request_id).ok_or_else(|| invalid("a positive request ID"))?;
     let request = match &call.request {
+        crate::IpcRequest::Channels(input) => RequestRef::Channels(input),
         crate::IpcRequest::Operation(operation) => RequestRef::Operation(OperationRef {
             name: &operation.name,
             arguments: &operation.arguments,
@@ -256,6 +259,7 @@ pub fn decode_call(payload: &[u8]) -> Result<crate::IpcEnvelope> {
         matches!(&wire.request, RequestWire::Hook(_)),
     )?;
     let request = match wire.request {
+        RequestWire::Channels(input) => crate::IpcRequest::Channels(input),
         RequestWire::Operation(operation) => crate::IpcRequest::Operation(crate::RawOperation {
             name: operation.name,
             arguments: operation.arguments,

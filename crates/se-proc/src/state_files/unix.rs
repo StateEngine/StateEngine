@@ -415,6 +415,13 @@ impl Directory {
             .ok_or_else(|| io_error("staging file absent", path, io::ErrorKind::NotFound.into()))
     }
     pub fn readback(&self, path: &Path, root: &Path) -> Result<Option<File>> {
+        self.open_file(path, root, libc::O_RDONLY | libc::O_NONBLOCK)
+    }
+    #[cfg(target_os = "linux")]
+    pub fn pin_metadata(&self, path: &Path, root: &Path) -> Result<Option<File>> {
+        self.open_file(path, root, libc::O_PATH)
+    }
+    fn open_file(&self, path: &Path, root: &Path, flags: i32) -> Result<Option<File>> {
         let (parent, name) = match self.parent(path, root) {
             Ok(v) => v,
             Err(e)
@@ -426,13 +433,13 @@ impl Directory {
             }
             Err(e) => return Err(e),
         };
-        // SAFETY: pinned parent and native component; no-follow and nonblocking
-        // flags reject links and prevent substituted FIFOs from blocking.
+        // SAFETY: pinned parent and native component. NOFOLLOW plus metadata
+        // rejects links; NONBLOCK or O_PATH prevents a FIFO from blocking.
         let raw = unsafe {
             libc::openat(
                 parent.as_raw_fd(),
                 name.as_ptr(),
-                libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
             )
         };
         if raw < 0 && io::Error::last_os_error().kind() == io::ErrorKind::NotFound {

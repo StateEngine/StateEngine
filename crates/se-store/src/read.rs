@@ -8,7 +8,9 @@ type ResumeRow = (
     u64,
 );
 mod access;
+mod atlas_resume;
 mod capture;
+mod channel;
 mod continuity;
 mod control;
 mod cursor;
@@ -151,6 +153,111 @@ impl Snapshot for SqliteSnapshot {
     fn legacy_registry(&self) -> StoreResult<Self::LegacyRegistry<'_>> {
         Ok(LegacyRegistry { snapshot: self })
     }
+    fn channel_reply_route(
+        &mut self,
+        message: &se_types::MessageId,
+    ) -> StoreResult<Option<crate::channel::ReplyRoute>> {
+        self.read_channel_route(message)
+    }
+    fn channel_active(&mut self) -> StoreResult<Vec<crate::channel::Connection>> {
+        self.read_active_channels()
+    }
+    fn channel_update_handled(
+        &mut self,
+        id: &crate::channel::ChannelId,
+        update: i64,
+    ) -> StoreResult<bool> {
+        self.read_update_handled(id, update)
+    }
+    fn channel_version(&mut self) -> StoreResult<crate::channel::Version> {
+        self.read_channel_version()
+    }
+    fn channel_connection(
+        &mut self,
+        id: &crate::channel::ChannelId,
+    ) -> StoreResult<Read<crate::channel::Connection>> {
+        self.read_channel(id)
+    }
+    fn channel_connections(
+        &mut self,
+        after: u64,
+    ) -> StoreResult<crate::channel::ChannelRows<crate::channel::Connection>> {
+        self.read_channels(after)
+    }
+    fn channel_receipt(
+        &mut self,
+        id: &crate::channel::ChannelId,
+        receipt: &crate::channel::ReceiptId,
+    ) -> StoreResult<Read<crate::channel::SavedUpdate>> {
+        self.read_saved_receipt(id, receipt)
+    }
+    fn channel_saved(
+        &mut self,
+        id: &crate::channel::ChannelId,
+        after: u64,
+    ) -> StoreResult<crate::channel::ChannelRows<crate::channel::SavedUpdate>> {
+        self.read_saved(id, after)
+    }
+    fn channel_recent_rejections(
+        &mut self,
+        id: &crate::channel::ChannelId,
+    ) -> StoreResult<crate::channel::RecentRejections> {
+        self.read_recent_rejections(id)
+    }
+    fn channel_action(
+        &mut self,
+        id: &crate::channel::ChannelId,
+        action: &crate::channel::ActionId,
+    ) -> StoreResult<Read<crate::channel::ResumeAction>> {
+        self.read_channel_action(id, action)
+    }
+    fn channel_message_action(
+        &mut self,
+        id: &crate::channel::ChannelId,
+        message: &se_types::MessageId,
+    ) -> StoreResult<Read<crate::channel::ResumeAction>> {
+        self.read_message_action(id, message)
+    }
+    fn channel_confirmed_actions(
+        &mut self,
+        id: &crate::channel::ChannelId,
+    ) -> StoreResult<Vec<crate::channel::ResumeAction>> {
+        self.read_confirmed_actions(id)
+    }
+    fn channel_has_capacity(&mut self, id: &crate::channel::ChannelId) -> StoreResult<bool> {
+        self.read_channel_capacity(id)
+    }
+    fn channel_due_delays(
+        &mut self,
+        id: &crate::channel::ChannelId,
+        at_us: i64,
+    ) -> StoreResult<Vec<se_types::MessageId>> {
+        self.read_channel_due_delays(id, at_us)
+    }
+    fn channel_pending_outputs(
+        &mut self,
+        id: &crate::channel::ChannelId,
+        at_us: i64,
+    ) -> StoreResult<crate::channel::ChannelRows<crate::channel::Outbound>> {
+        self.read_outputs(id, 0, None, Some(at_us))
+    }
+    fn channel_replies(
+        &mut self,
+        id: &crate::channel::ChannelId,
+        original: &se_types::MessageId,
+    ) -> StoreResult<crate::channel::ChannelRows<crate::channel::Outbound>> {
+        self.read_outputs(id, 0, Some(original), None)
+    }
+    fn channel_outbox(
+        &mut self,
+        id: &crate::channel::ChannelId,
+        after: u64,
+    ) -> StoreResult<crate::channel::ChannelRows<crate::channel::Outbound>> {
+        self.read_outbox(id, after)
+    }
+    fn channel_offset(&mut self, id: &crate::channel::ChannelId) -> StoreResult<Option<i64>> {
+        self.read_channel_offset(id)
+    }
     fn info(&self) -> StoreInfo {
         self.info.clone()
     }
@@ -192,6 +299,22 @@ impl Snapshot for SqliteSnapshot {
         purpose: PositionPurpose,
     ) -> StoreResult<StorePosition> {
         self.read_cursor_position(cursor, purpose)
+    }
+    fn event_position(&mut self, position: &StorePosition) -> StoreResult<Read<StoredEvent>> {
+        if !position.belongs(&self.info) {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "position belongs to another store incarnation",
+            ));
+        }
+        let event = self.record(i64::try_from(position.sequence()).map_err(invalid)?)?;
+        if event.header.scope != self.scope.admission.scope {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "event position outside admitted scope",
+            ));
+        }
+        Ok(Read::Present { value: event })
     }
     fn event(&mut self, id: EventId) -> StoreResult<Read<StoredEvent>> {
         match self.event_seq(&id)? {
@@ -316,6 +439,21 @@ impl Snapshot for SqliteSnapshot {
     }
     fn message_count(&mut self, query: MessageQuery) -> StoreResult<u64> {
         self.count_messages(query)
+    }
+    fn resolve_request(&mut self, request: &RequestIdentity) -> StoreResult<Read<CommitReceipt>> {
+        let probe = AtomicBatch {
+            expected_incarnation: self.info.incarnation,
+            admission: self.scope.admission.clone(),
+            request: Some(request.clone()),
+            events: vec![],
+            import_checkpoint: None,
+        };
+        Ok(
+            match crate::transaction::idempotency::lookup(&self.db, &probe, &self.info)? {
+                Some(value) => Read::Present { value },
+                None => self.absent("original request intent"),
+            },
+        )
     }
     fn operation_receipt(
         &mut self,

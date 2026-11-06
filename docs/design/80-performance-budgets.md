@@ -27,7 +27,7 @@ decimal, as in the runner (`30 MB` = 30,000,000 bytes).
 | B1 | Memory added inside SE Code | ≤ 30,000,000 bytes | A/B against a baseline SE Code server | `embedded A/B` |
 | B2 | Delay StateEngine adds to SE Code | In-window first bind: one combined check, p95 ≤ 100 ms including the first bound session; late path: two checks, each p95 ≤ 100 ms | Late check 1: added startup at server start; late check 2: from late first-session open (bind request) through the first visible assistant response to the user's first message, including activation and any fallback-owner-COMMIT race, against the paired unbound run; each has its own n and over-count, never derived from a summed percentile | `embedded A/B`, actual first-request consumer |
 | B3 | Persistent processes added | 0 while embedded with no live agent; exactly 1 standalone or detached handback daemon; 0 persistent helpers per agent | Outside inventory by exact pid + birth; include the daemon after SE Code exits | `standalone persistent processes`, `persistent processes after 1/2 seat(s)` |
-| B4 | Standalone memory | ≤ 25,000,000 bytes with one live session, after one real agent task | Sum over every attributed StateEngine process | `standalone RSS one session` |
+| B4 | Standalone memory | ≤ 64,000,000 bytes with one live session, after one real agent task | Sum over every attributed StateEngine process | `standalone RSS one session` |
 | B5 | Idle CPU | < 0.1% of one core (< 60 ms CPU per 60 s) | All StateEngine processes, 60 s with no product queries | `idle no session`, `idle one session` |
 | B6 | Idle wakeups | ≤ 1/s with no session; ≤ 2/s with one | Same | Same |
 | B7 | CLI reads | p95 strictly < 20 ms, 30 runs each of `--version`, `status`, `agent list`, `msg inbox`, `msg list`, `decision list` | Spawn to process exit | `CLI --version`, `CLI contextual read verbs` |
@@ -78,7 +78,7 @@ Long operations have their own targets, measured on StateEngine's share only:
 - **Native custody setup:** identity-read p95 < 1 ms and synchronous runtime-open
   setup ≤ 2 ms. These retained design targets exclude the separately reported
   async readiness/re-adoption wait; native qualification is still required.
-- **Atlas** (standalone only, opt-in and off the milestone path): cold index peak ≤ 64 MB in its own process (§3.2); save-to-searchable
+- **Atlas** (standalone only, enabled by default and off the milestone path): cold index peak ≤ 64 MB in its own process (§3.2); save-to-searchable
   ≤ 200 ms (prototype 67 ms); query p95 ≤ 50 ms (prototype 7–16 ms); zero idle wakeups once settled.
 
 Linux cgroups are wave-4 work; wave 1 uses the uncontained process-group path.
@@ -259,19 +259,20 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Estimated reserve at two jobs | 12.4 MB | About 6.1 MB at eight jobs with idle cache targets, before additional overhead; Atlas is off in embedded |
 | **Hard total budget** | **30.0 MB** | Unchanged |
 
-### 3.2 Standalone memory (B4: 25 MB)
+### 3.2 Standalone memory (B4: 64 MB)
 | Component | Allocation | Baseline / basis |
 | --- | ---: | --- |
-| `se` code pages and system libraries | 5.0 MB | Prototype owners 2.7–3.8 MB in total; Rust MCP server 5 MB |
+| `se` code pages and system libraries, excluding Atlas grammars | 30.0 MB | Provisional allocation: the native public-consumer host showed 29.2 MB file-backed immediately after up, with preceding SSD noise 0.47 MB/s at 0.44% busy and NVMe 40.66 MB/s at 24.00%; attribution and quiet joined qualification remain outstanding |
 | tokio `current_thread`, blocking pool (two threads by default; explicit caps 2–8), writer and native collector stack pages | 1.0 MB | One fixed set, all committed stack pages included |
 | SQLite page-cache targets: writer + active/idle host readers × 512 KiB | About 2.6 MB at the two-job default; 8.9 MB at eight jobs | `cache_size=-512`; hosted planning and continuations use readers even though independent CLI reads also access the file directly |
 | SQLite connections, schema, statements | 1.0 MB | Up to 5 foreground connections at the two-job default; additional connection overhead unmeasured |
 | Sessions, mail, listener/MCP, capture + watcher, custody, resume | 7.5 MB | Includes the same single-large-packet resume allowance as 3.1 |
-| Optional Atlas in-host: queries and single-file updates after config opt-in | 2.0 MB | One closed-when-idle connection plus one parser |
+| Optional Atlas anonymous: queries and single-file updates when enabled | 13.0 MB | One closed-when-idle connection plus one parser; measured Linux ordinary-file profiles in 60 §9 |
+| Shared Atlas grammar/parser file pages | 5.5 MB | One 5,473,485-byte reservation across all roots/grammars; separately reported from anonymous memory |
 | Allocator slack | 1.0 MB | |
-| **Estimated spend at two jobs** | **20.1 MB** | Eight jobs with idle cache targets increase this estimate to 26.4 MB before additional connection overhead |
-| Estimated reserve at two jobs | 4.9 MB | Eight jobs with idle cache targets exceed this estimate by 1.4 MB before additional overhead; configuration does not relax B4 |
-| **Hard total budget** | **25.0 MB** | Unchanged |
+| **Estimated spend at two jobs** | **61.6 MB** | Eight jobs with idle cache targets increase this estimate to 67.9 MB before additional connection overhead |
+| Estimated reserve at two jobs | 2.4 MB | Eight jobs exceed the estimate by 3.9 MB before additional connection overhead; configuration does not relax B4 |
+| **Hard total budget** | **64.0 MB** | Larger standalone host budget adopted 2026-11-05; quiet joined qualification remains outstanding |
 
 The shipped finite-work default is two jobs for standalone and embedded hosts;
 more cores do not raise it. An explicit `runtime.blocking_jobs` in 2–8 is capped
@@ -291,14 +292,24 @@ still require measurement. E2 must establish actual pooled-host and post-task
 memory within unchanged B1/B4 limits; larger configured caps remain subject
 to those same budgets.
 
-Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 It is built after the journeys and live handover pass and never holds a
-milestone. Explicit config opt-in admits its cold index as
+milestone. After readiness, an enabled standalone host admits its cold index as
 a transient background child; it is not triggered by an ordinary first query.
 The child has a separate cold-window cap and exits after indexing; resident
 queries/incremental updates stay in the allocation above. The runner reports
 that window separately and measures B4 outside it. The prototype's large-file
 peak makes the per-file admission/deadline mandatory, not already qualified.
+
+The cold child's resident ceiling remains 64,000,000 bytes. On Linux its
+virtual-address limit is separately 96,000,000 bytes: the Rust54 release maps
+about 50.9 MB of ELF segments, and ordinary JavaScript needed about 64.03 MB
+including the unchanged 8 MB cancellation/SQL margin. The larger address
+envelope leaves about 32 MB above that admission requirement for image growth;
+it does not raise the resident ceiling. Windows committed-memory and macOS
+footprint limits remain unchanged. Per-file failures remain visible in the
+published partial status even if later maintenance cannot acquire its writer
+lease; successful reparsing clears the diagnostic.
 
 ### Shared input limits and packet sizing
 

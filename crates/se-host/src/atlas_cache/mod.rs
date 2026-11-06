@@ -1,6 +1,7 @@
 //! Protected cache files shared by hosted and hostless readers. Only activation
 //! creates directories or acquires the permanent kernel-owned writer lock.
 mod inventory;
+mod reopen;
 mod reservation;
 use se_atlas::{cache::*, errors::AtlasResult, model::CacheEpoch, scope::Scope};
 use se_proc::{NativeStateFiles, OwnedFile, observe_file_revision};
@@ -21,7 +22,6 @@ pub struct NativeAtlasCache {
     writer: Option<File>,
     reserved: RefCell<Option<(CacheEpoch, se_proc::NativeFileRevision)>>,
     growth: Cell<u64>,
-    other_roots_bytes: u64,
 }
 impl NativeAtlasCache {
     /// No creation, permissions repair, writer lock or schema action on reads.
@@ -44,12 +44,26 @@ impl NativeAtlasCache {
             writer: None,
             reserved: RefCell::new(None),
             growth: Cell::new(0),
-            other_roots_bytes: 0,
         }))
     }
     /// Explicit after-ready activation only. All writers across this Atlas home,
     /// including cold children, share the same kernel lock and disk inventory.
     pub fn create(home: &Path, scope: Scope) -> AtlasResult<Self> {
+        if let Some(cache) = Self::reopen(home, scope.clone())? {
+            return Ok(cache);
+        }
+        Self::create_inner(home, scope, None)
+    }
+    /// Host calls only after independently reaping its exact cold child. Claim
+    /// the child's journaled inode instead of crash-reclaiming its candidate.
+    pub fn resume_unpublished(home: &Path, scope: Scope, epoch: &CacheEpoch) -> AtlasResult<Self> {
+        Self::create_inner(home, scope, Some(epoch))
+    }
+    fn create_inner(
+        home: &Path,
+        scope: Scope,
+        candidate: Option<&CacheEpoch>,
+    ) -> AtlasResult<Self> {
         let home = NativeStateFiles::create(home).map_err(fail)?;
         let lock = home.root().join("writer.lock");
         if home.readback(&lock).map_err(fail)?.is_none() {
@@ -67,21 +81,7 @@ impl NativeAtlasCache {
                 Err(e) => return Err(fail(e)),
             }
         }
-        let writer = home
-            .readback(&lock)
-            .map_err(fail)?
-            .ok_or_else(|| fail("writer lock absent"))?;
-        writer.try_lock().map_err(|e| match e {
-            std::fs::TryLockError::WouldBlock => busy("Atlas home writer lease", 1, 0),
-            std::fs::TryLockError::Error(e) => fail(e),
-        })?;
-        let named = home
-            .readback(&lock)
-            .map_err(fail)?
-            .ok_or_else(|| fail("writer lock replaced"))?;
-        if !same(&writer, &named)? {
-            return Err(fail("writer lock identity changed"));
-        }
+        let writer = Self::writer_lease(&home)?;
         let path = cache_path(&home, &scope)?;
         let project = path
             .parent()
@@ -91,7 +91,6 @@ impl NativeAtlasCache {
         project_files.prepare_directory(&path).map_err(fail)?;
         let root = NativeStateFiles::open(&path).map_err(fail)?;
         root.prepare_directory(&path.join("epochs")).map_err(fail)?;
-        let (total, root_bytes) = inventory::measure(&home, root.root())?;
         let cache = Self {
             home,
             root,
@@ -99,9 +98,12 @@ impl NativeAtlasCache {
             writer: Some(writer),
             reserved: RefCell::new(None),
             growth: Cell::new(0),
-            other_roots_bytes: total - root_bytes,
         };
-        cache.recover_reservation()?;
+        if let Some(epoch) = candidate {
+            cache.claim_reservation(epoch)?;
+        } else {
+            cache.recover_reservation()?;
+        }
         Ok(cache)
     }
     fn require_writer(&self) -> AtlasResult<()> {
@@ -153,6 +155,29 @@ impl NativeAtlasCache {
     }
 }
 impl CacheFiles for NativeAtlasCache {
+    fn configure_connection_role(
+        &self,
+        connection: &se_atlas::cache::connection::NativeSqlConnection,
+        role: se_atlas::cache::connection::ConnectionRole,
+    ) -> AtlasResult<()> {
+        self.configure_connection(connection)?;
+        if matches!(
+            role,
+            se_atlas::cache::connection::ConnectionRole::MaintenanceWriter
+                | se_atlas::cache::connection::ConnectionRole::QueryReader
+                | se_atlas::cache::connection::ConnectionRole::HostReader
+        ) {
+            se_proc::atlas_sql::retain_wal(connection)
+                .map_err(|error| fail(error.to_string().as_str()))?;
+        }
+        Ok(())
+    }
+    fn configure_connection(
+        &self,
+        connection: &se_atlas::cache::connection::NativeSqlConnection,
+    ) -> AtlasResult<()> {
+        se_proc::atlas_sql::configure(connection).map_err(|error| fail(error.to_string().as_str()))
+    }
     fn read_pointer(&self) -> AtlasResult<Option<Vec<u8>>> {
         let Some(file) = self.root.readback(&self.pointer()).map_err(fail)? else {
             return Ok(None);
@@ -171,6 +196,31 @@ impl CacheFiles for NativeAtlasCache {
             .ok_or_else(|| fail("candidate epoch absent"))?;
         if self.read_pointer()?.as_deref() != expected {
             return Err(fail("Atlas pointer changed; rediscover"));
+        }
+        // A swap turns the old current into the one retired epoch. An already
+        // retained retirement must drain before another pointer can replace it.
+        if expected.is_none_or(|b| {
+            se_atlas::cache::pointer::decode(b, &self.scope).is_ok_and(|p| p.epoch != pointer.epoch)
+        }) {
+            let epochs = NativeStateFiles::open(&self.root.root().join("epochs")).map_err(fail)?;
+            let mut count = 0u32;
+            for entry in std::fs::read_dir(epochs.root()).map_err(fail)? {
+                let entry = entry.map_err(fail)?;
+                if !entry.file_type().map_err(fail)?.is_dir() {
+                    return Err(fail("unknown epoch entry preserved before publication"));
+                }
+                count += 1;
+            }
+            epochs
+                .readback(&epochs.root().join(".atlas-publication-check"))
+                .map_err(fail)?;
+            if count > 2 {
+                return Err(busy(
+                    "Atlas retired epoch pending cleanup before publication",
+                    1,
+                    0,
+                ));
+            }
         }
         match expected {
             Some(expected) => {
@@ -208,7 +258,7 @@ impl CacheFiles for NativeAtlasCache {
         let path = self.path(epoch);
         Ok(self
             .root
-            .readback(&path)
+            .pin_metadata(&path)
             .map_err(fail)?
             .map(|file| DatabasePin { file, path }))
     }
@@ -327,7 +377,7 @@ impl CacheFiles for NativeAtlasCache {
         self.validate_database(pin)?;
         let path = pin.path.with_file_name("atlas.db-wal");
         self.root
-            .readback(&path)
+            .pin_metadata(&path)
             .map_err(fail)?
             .map(|f| f.metadata().map(|m| m.len()).map_err(fail))
             .transpose()
@@ -336,19 +386,12 @@ impl CacheFiles for NativeAtlasCache {
     fn reserve_growth(&self, bytes: u64) -> AtlasResult<Box<dyn GrowthReservation + '_>> {
         self.require_writer()?;
         let root = inventory::root(&self.root)?;
-        let total = self
-            .other_roots_bytes
-            .checked_add(root)
-            .ok_or_else(|| fail("Atlas home usage overflow"))?;
         let reserved = self.growth.get();
         let maximum = self.scope.registration.cache.directory.as_path();
         if maximum != self.root.root() {
             return Err(fail("cache registration differs from held root"));
         }
-        for (resource, used, cap) in [
-            ("Atlas root disk", root, 512_000_000u64),
-            ("Atlas home disk", total, 2_000_000_000),
-        ] {
+        for (resource, used, cap) in [("Atlas root disk", root, 512_000_000u64)] {
             if used
                 .checked_add(reserved)
                 .and_then(|n| n.checked_add(bytes))

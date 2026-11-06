@@ -19,6 +19,7 @@ use std::{
     sync::{Arc, Weak},
 };
 use zeroize::Zeroizing;
+mod channel;
 mod codex;
 mod http;
 
@@ -381,7 +382,7 @@ impl AdmissionContext {
             generation: self.generation.get(),
         })
     }
-    fn machine_key(&self) -> Result<se_types::Secret> {
+    pub(crate) fn machine_key(&self) -> Result<se_types::Secret> {
         let path = self.state_directory.join("credential");
         let lease = self.lease()?;
         let mut file = match lease.files().readback(&path).map_err(|e| store_error(&e))? {

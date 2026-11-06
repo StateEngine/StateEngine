@@ -13,6 +13,8 @@ pub enum Then {
     WorkingStateSet(WorkingStateSetThen),
 }
 pub enum CustodyPlan {
+    AtlasRead(Box<crate::ops::atlas::AtlasRead>),
+    AtlasAugment(crate::ops::AtlasAugment),
     Launch(Box<crate::ops::agent_launch::LaunchPlan>),
     Stop(Box<crate::ops::stop_plan::StopPlan>),
     Remove(Box<crate::ops::project_remove::RemovePlan>),

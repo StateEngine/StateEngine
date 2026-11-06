@@ -32,6 +32,8 @@ enum ConnectionEnd {
     Cancelled,
     Stop(Box<AuthorizedStop>),
     CatchUp(Result<()>),
+    #[cfg(target_os = "linux")]
+    Atlas(Result<()>),
 }
 #[allow(
     clippy::large_enum_variant,
@@ -72,6 +74,10 @@ impl HostedRuntime {
             }
             Err(error) => return ended(self, listener, Some(error)),
         };
+        let channels = match self.channels() {
+            Ok(service) => service,
+            Err(error) => return ended(self, listener, Some(error)),
+        };
         let runtime = self.execution.blocking.handle();
         // Provider MCP sessions reach this host over the loopback HTTP listener
         // bound at publication, before readiness was reported.
@@ -90,7 +96,12 @@ impl HostedRuntime {
         // Built once: unrelated traffic must not restart its zero-activity window.
         let idle: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> =
             match self.auto_start.then(|| self.activity.take()).flatten() {
-                Some(mut activity) => Box::pin(async move { idle_expiry(&mut activity).await }),
+                Some(mut activity) => {
+                    let channels = channels.clone();
+                    Box::pin(async move {
+                        crate::channels::runtime::idle(&mut activity, channels).await
+                    })
+                }
                 None => Box::pin(std::future::pending()),
             };
         let (shutdown, cancelled) = watch::channel(None);
@@ -99,6 +110,16 @@ impl HostedRuntime {
             super::memory::while_serving(idle, self.memory_reclaim.clone()),
         );
         let mut tasks = JoinSet::new();
+        #[cfg(target_os = "linux")]
+        if let Some(service) = self.atlas_owner.clone() {
+            let context = self.execution.clone();
+            let stopped = cancelled.clone();
+            tasks.spawn_on(
+                async move { Ok(ConnectionEnd::Atlas(service.run(context, stopped).await)) },
+                &runtime,
+            );
+        }
+        let channel_task = runtime.spawn(channels.run(cancelled.clone()));
         let mut timers = super::live::Timers::new(
             idle,
             activity.clone(),
@@ -210,6 +231,12 @@ impl HostedRuntime {
                     exit.stop = Some(stop);
                     break exit;
                 }
+                #[cfg(target_os = "linux")]
+                Event::Joined(Ok(Ok(ConnectionEnd::Atlas(result)))) => {
+                    if let Err(error) = result {
+                        eprintln!("Code index owner paused: {error}");
+                    }
+                }
                 Event::Joined(Ok(Ok(ConnectionEnd::CatchUp(result)))) => {
                     catch_up_running = false;
                     if let Err(error) = result {
@@ -261,6 +288,18 @@ impl HostedRuntime {
         {
             outcome.failure.get_or_insert(error);
         }
+        match channel_task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                outcome.failure.get_or_insert(error);
+            }
+            Err(error) => {
+                outcome.failure.get_or_insert(se_core::scope::unreadable(
+                    "channel receiver",
+                    &error.to_string(),
+                ));
+            }
+        }
         while let Some(joined) = tasks.join_next().await {
             match joined {
                 Ok(Ok(ConnectionEnd::Stop(stop))) => {
@@ -303,6 +342,10 @@ impl HostedRuntime {
                     }
                 }
                 Ok(Err(error)) => outcome.runtime.failed_connection(error),
+                #[cfg(target_os = "linux")]
+                Ok(Ok(ConnectionEnd::Atlas(Err(error)))) => {
+                    outcome.failure.get_or_insert(error);
+                }
                 Ok(Ok(ConnectionEnd::CatchUp(Err(error)))) => {
                     outcome.runtime.failed_connection(error)
                 }
@@ -316,6 +359,14 @@ impl HostedRuntime {
         }
         outcome.failed_connections = outcome.runtime.connection_failures;
         outcome.last_connection_error = outcome.runtime.last_connection_error.clone();
+        #[cfg(target_os = "linux")]
+        if let (Some(service), Some(bound)) = (
+            outcome.runtime.atlas_owner.clone(),
+            outcome.runtime.shutdown_deadline.as_ref(),
+        ) && let Err(error) = service.close(&outcome.runtime.execution, bound).await
+        {
+            outcome.failure.get_or_insert(error);
+        }
         outcome
     }
     fn failed_connection(&mut self, error: SeError) {
@@ -432,6 +483,14 @@ async fn connection(
         let Some((mut exchange, deadline)) = next else {
             return Ok(ConnectionEnd::Closed);
         };
+        if let Some(input) = exchange.take_channels() {
+            let output = router.execute_channels(input, &deadline).await;
+            let draining = shutdown.borrow().clone();
+            connection = exchange
+                .reply_channels(output, draining.as_ref().unwrap_or(&deadline))
+                .await?;
+            continue;
+        }
         let output = match exchange.take_call() {
             Ok(call) => router.execute_call(call, &deadline).await,
             Err(error) => Err(error),
@@ -523,7 +582,7 @@ pub const AUTO_EXIT_IDLE: std::time::Duration = std::time::Duration::from_secs(1
 
 /// Resolve only after the activity count has stayed zero for the whole window,
 /// rechecked at expiry. A closed activity source never ends the host.
-async fn idle_expiry(activity: &mut watch::Receiver<u32>) {
+pub(crate) async fn idle_expiry(activity: &mut watch::Receiver<u32>) {
     loop {
         if activity.wait_for(|count| *count == 0).await.is_err() {
             return std::future::pending().await;

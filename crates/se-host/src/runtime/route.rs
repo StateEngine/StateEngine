@@ -21,7 +21,7 @@ pub enum AcceptedPeer {
     Stop(Box<AuthorizedStop>),
 }
 pub struct HostedConnection {
-    connection: IpcConnection,
+    pub(super) connection: IpcConnection,
     grant: ConnectionGrant,
 }
 pub struct AuthorizedStop {
@@ -47,9 +47,10 @@ pub struct RoutedCall {
     pub hook: Option<crate::ClaudeHookInput>,
 }
 pub struct AdmittedExchange {
-    connection: HostedConnection,
-    request_id: u64,
+    pub(super) connection: HostedConnection,
+    pub(super) request_id: u64,
     call: Option<Result<RoutedCall>>,
+    pub(super) channels: Option<crate::channels::ChannelRequest>,
     admission: Option<se_core::ops::HostPhaseSpan>,
     admitted_at: Instant,
 }
@@ -61,6 +62,7 @@ pub struct HostedRouter {
     pub(crate) execution: ExecutionContext,
     pub(crate) sources: TranscriptBindings,
     pub(crate) context: AdmissionContext,
+    pub(crate) channels: std::sync::Arc<crate::channels::Channels>,
     response_bytes: std::num::NonZeroU32,
     pub(crate) fenced: std::sync::Arc<std::sync::atomic::AtomicBool>,
     http_port: std::sync::Arc<std::sync::OnceLock<u16>>,
@@ -77,6 +79,7 @@ impl HostedRuntime {
             execution: self.execution.clone(),
             sources: self.sources.clone(),
             context: self.admission_context(),
+            channels: self.channels()?,
             response_bytes: self.response_bytes,
             fenced: std::sync::Arc::clone(&self.fenced),
             http_port: std::sync::Arc::clone(&self.http_port),
@@ -190,10 +193,16 @@ impl HostedRouter {
                 } else {
                     route(&context, &connection, wire)
                 };
+                let (call, channels) = match call {
+                    Ok(RouteChoice::Channels(input)) => (None, Some(input)),
+                    Ok(RouteChoice::Core(call)) => (Some(Ok(*call)), None),
+                    Err(error) => (Some(Err(error)), None),
+                };
                 Ok(Some(AdmittedExchange {
                     connection,
                     request_id,
-                    call: Some(call),
+                    call,
+                    channels,
                     admission: None,
                     admitted_at,
                 }))
@@ -207,9 +216,16 @@ impl HostedRouter {
 }
 impl AdmittedExchange {
     pub fn take_call(&mut self) -> Result<RoutedCall> {
-        self.call
+        let mut call = self
+            .call
             .take()
-            .ok_or_else(|| SeError::invalid("admitted exchange", "one owned call consumer"))?
+            .ok_or_else(|| SeError::invalid("admitted exchange", "one owned call consumer"))??;
+        if let HostedInput::Operation(se_core::ops::AnyOp::AtlasAugment(input)) =
+            &mut call.admitted.input
+        {
+            input.deadline = Some(self.admitted_at + std::time::Duration::from_millis(5));
+        }
+        Ok(call)
     }
     /// The original id/API/G are taken from the admitted exchange. A complete
     /// response is budgeted and written once; an incomplete write consumes it.
@@ -312,12 +328,32 @@ impl AdmittedExchange {
         Ok(connection)
     }
 }
+enum RouteChoice {
+    Core(Box<RoutedCall>),
+    Channels(crate::channels::ChannelRequest),
+}
 fn route(
     context: &AdmissionContext,
     connection: &HostedConnection,
     wire: crate::IpcEnvelope,
-) -> Result<RoutedCall> {
+) -> Result<RouteChoice> {
     let (raw, hook) = match wire.request {
+        IpcRequest::Channels(input) => {
+            context.channel_owner(
+                connection.connection.peer(),
+                connection.connection.connection_authority(),
+                wire.authority.as_ref(),
+                &connection.grant,
+            )?;
+            if wire.cli_selections.is_some() {
+                return Err(SeError::invalid(
+                    "channel scope",
+                    "the closed native channel input without CLI selection overrides",
+                ));
+            }
+            input.validate().map_err(|error| error.refusal())?;
+            return Ok(RouteChoice::Channels(input));
+        }
         IpcRequest::Operation(raw) => {
             if raw.name == "hook.claude" {
                 return Err(SeError::invalid(
@@ -355,7 +391,7 @@ fn route(
             presence: wire.presence,
         },
     )?;
-    Ok(RoutedCall { admitted, hook })
+    Ok(RouteChoice::Core(Box::new(RoutedCall { admitted, hook })))
 }
 /// The one completed-output encoding shared by IPC and loopback MCP replies.
 pub(crate) fn encode_executed(completed: ExecutedCall) -> Result<OperationOutput> {

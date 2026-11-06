@@ -167,7 +167,7 @@ impl CoreOps for Kernel {
         admitted(cx)?;
         let recipient = if let Some(work) = &input.work {
             for agent in &work.addressees {
-                if scope::actor_selector(cx.read, agent.as_str())? != Actor::Agent(agent.clone()) {
+                if scope::selected_actor(cx, agent.as_str())? != Actor::Agent(agent.clone()) {
                     return Err(SeError::invalid(
                         "work.addressees",
                         "registered canonical agents in this project",
@@ -176,7 +176,7 @@ impl CoreOps for Kernel {
             }
             None
         } else {
-            Some(scope::actor_selector(cx.read, &input.to)?)
+            Some(scope::selected_actor(cx, &input.to)?)
         };
         let registry = cx.read.legacy_registry().map_err(|e| store_error(&e))?;
         let refs = input
@@ -365,6 +365,21 @@ impl Kernel {
             crate::admission::require_human_terminal(op.meta().name, cx.admission, terminal)?;
         }
         Ok(match op {
+            AnyOp::AtlasFind(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Find(input),
+            ))),
+            AnyOp::AtlasRefs(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Refs(input),
+            ))),
+            AnyOp::AtlasImpact(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Impact(input),
+            ))),
+            AnyOp::AtlasChanges(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Changes(input),
+            ))),
+            AnyOp::AtlasOutline(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Outline(input),
+            ))),
             AnyOp::Resume(input) => OpStep::Complete(
                 crate::ops::continuity::resume_at_home(
                     input,
@@ -541,6 +556,7 @@ impl Kernel {
             AnyOp::RuntimeUp(input) => OpStep::Custody(CustodyPlan::RuntimeUp(input)),
             AnyOp::RuntimeDown(input) => OpStep::Custody(CustodyPlan::RuntimeDown(input)),
             AnyOp::Uninstall(input) => OpStep::Custody(CustodyPlan::Uninstall(input)),
+            AnyOp::AtlasAugment(input) => OpStep::Custody(CustodyPlan::AtlasAugment(input)),
             AnyOp::HookClaude(input) => OpStep::Custody(CustodyPlan::ClaudeHook(input)),
             AnyOp::MetaVersion(_) | AnyOp::MetaHelp(_) | AnyOp::MetaSchema(_) => {
                 return Err(scope::unreadable(

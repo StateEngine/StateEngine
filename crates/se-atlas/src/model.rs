@@ -4,15 +4,26 @@ pub use se_types::code::{
     Accuracy, Answer, AtlasCursor, AtlasJobId, AtlasPrincipal, AuthorHint, BulkChange, BulkReason,
     ChangeId, ChangeKind, CodeChange, CodeEdit, CodeHit, CodePointer, CommitHit, ContentHash,
     Coverage, CoverageReason, Dependent, DependentCount, FileCoverage, FileId, FindMethod,
-    Generation, HitReason, HitTarget, Impact, ImpactHop, IndexState, IndexSummary, Language,
-    MentionTarget, Outline, OutlineSymbol, Position, QueryBudget, QueryText, RecordHit, RecordKey,
-    RecordKind, RecordPointer, RecordVisibility, Reference, ReferenceHit, ReferenceKind,
-    RelativePath, SearchHit, SnapshotFreshness, Span, SurfaceAtlasState, SymbolId, SymbolKind,
+    Generation, GrammarPages, HitReason, HitTarget, Impact, ImpactHop, IndexState, IndexSummary,
+    Language, MemoryBudget, MentionTarget, Outline, OutlineSymbol, Position, QueryBudget,
+    QueryText, RecordHit, RecordKey, RecordKind, RecordPointer, RecordVisibility, Reference,
+    ReferenceHit, ReferenceKind, RelativePath, SearchHit, SnapshotFreshness, Span,
+    SurfaceAtlasState, SymbolId, SymbolKind,
 };
 pub use se_types::{AtlasRootId as RootId, IndexEpochId as CacheEpoch};
 use std::{path::PathBuf, time::Duration};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+pub const ANONYMOUS_BYTES: u32 = 13_000_000;
+pub const SQL_QUERY_BYTES: u32 = 603_082;
+pub const PARSER_BYTES: u32 = 12_000_000;
+pub const QUEUE_BYTES: u32 = 50_000;
+pub const ADAPTER_BYTES: u32 = 200_000;
+pub const ALLOCATOR_SLACK_BYTES: u32 = 146_918;
+/// One finite source turn includes a separately bounded 200 ms parse, live
+/// source verification, resolution and its atomic cache transaction.
+pub const MAX_WORK_QUANTUM: Duration = Duration::from_millis(500);
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CacheLocation {
     pub directory: PathBuf,
 }
@@ -24,14 +35,14 @@ pub struct CachePointer {
     pub root: RootId,
     pub epoch: CacheEpoch,
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct GitMetadataRegistration {
     pub physical_git_directory: PathBuf,
     pub physical_common_directory: PathBuf,
     pub git_directory_identity: [u8; 32],
     pub common_directory_identity: [u8; 32],
 }
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct RootRegistration {
     pub project: ProjectId,
     pub root: RootId,

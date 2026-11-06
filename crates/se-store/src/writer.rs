@@ -13,6 +13,7 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+mod atlas;
 /// Diagnostics separate from immutable receipts. commit_sync measures SQLite's
 /// COMMIT call, not a claimed filesystem syscall duration/count.
 #[derive(Clone, Debug)]
@@ -54,6 +55,7 @@ struct Request {
 )]
 enum Command {
     Append(Request),
+    Atlas(atlas::AtlasRequest),
     Flush(Instant, Reply<FlushReport>),
     Drain(Instant),
     Recover,
@@ -413,6 +415,7 @@ fn run(
             })?,
         };
         match command {
+            Command::Atlas(request) => atlas::execute(&mut host, &*lease, &shared, request)?,
             Command::Append(first) => {
                 let mut group = vec![first];
                 let mut bytes = group[0].materialized;

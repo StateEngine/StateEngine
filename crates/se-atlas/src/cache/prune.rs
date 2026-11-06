@@ -115,12 +115,49 @@ pub fn commits(db: &CacheConnection<'_>, rows: u32, deadline: Instant) -> AtlasR
             ));
         }
         for id in &ids {
+            // A producer quantum admits at most 32 changed files per commit.
+            // Hold only those keys before the FK cascade removes their seeds.
+            let mut statement = sql.prepare(
+                "SELECT target_key FROM touches
+                 WHERE source_commit=?1 AND target_kind='file' LIMIT 33",
+            )?;
+            let keys = statement
+                .query_map([id], |r| r.get::<_, Vec<u8>>(0))
+                .map_err(cache_error)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(cache_error)?;
+            drop(statement);
+            if keys.len() > 32 {
+                return Err(capacity(
+                    "Git commit file-seed retirement",
+                    keys.len() as u64,
+                    32,
+                ));
+            }
             execute(
                 sql,
                 "DELETE FROM mentions WHERE source_kind='commit' AND source_id=?1",
                 [*id],
             )?;
             execute(sql, "DELETE FROM commits WHERE id=?1", [*id])?;
+            for key in keys {
+                execute(
+                    sql,
+                    "UPDATE activity SET last_touch_unix_ms=coalesce(
+                    (SELECT max(at_unix_ms) FROM touches WHERE target_kind='file'
+                     AND target_key=?1 AND restricted_record IS NULL),0)
+                    WHERE target_kind='file' AND target_key=?1",
+                    [&key],
+                )?;
+                execute(
+                    sql,
+                    "DELETE FROM activity WHERE target_kind='file'
+                    AND target_key=?1 AND inbound_resolved=0
+                    AND NOT EXISTS(SELECT 1 FROM touches WHERE target_kind='file'
+                                   AND target_key=?1 AND restricted_record IS NULL)",
+                    [&key],
+                )?;
+            }
         }
         // A fully referenced excess remains explicit; callers must report a
         // retention capacity shortage instead of retrying without progress.

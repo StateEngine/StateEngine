@@ -21,8 +21,21 @@ pub fn output_at(
     json: bool,
     quiet: bool,
     home: &std::path::Path,
+    atlas: Option<&se_core::ops::AtlasOptions>,
     out: &mut impl Write,
 ) -> io::Result<u8> {
+    if !json
+        && let Some(options) = atlas
+        && let Some(text) =
+            se_host::atlas_queries::compact(value, options.byte_budget as usize, options.explain)
+                .map_err(io::Error::other)?
+    {
+        if !quiet || value.exit_code() != 0 {
+            write!(out, "{text}")?;
+        }
+        out.flush()?;
+        return Ok(value.exit_code());
+    }
     if !json
         && !quiet
         && let AnyOutput::Resume(resume) = value
@@ -44,6 +57,13 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
         serde_json::to_writer(&mut *out, value).map_err(io::Error::other)?;
         writeln!(out)?;
     } else if !quiet || value.exit_code() != 0 || matches!(value.human_kind(), HumanKind::Help) {
+        if let Some(text) =
+            se_host::atlas_queries::compact(value, 4096, false).map_err(io::Error::other)?
+        {
+            write!(out, "{text}")?;
+            out.flush()?;
+            return Ok(value.exit_code());
+        }
         match (value.human_kind(), value) {
             (HumanKind::Resume, AnyOutput::Resume(value)) => continuity::resume(&value.value, out)?,
             (HumanKind::SessionContext, AnyOutput::SessionContext(value)) => {

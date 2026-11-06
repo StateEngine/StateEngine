@@ -70,6 +70,7 @@ pub fn from_matches_with_key(
     };
     let op =
         match meta.name {
+            name if name.starts_with("atlas.") => atlas::decode(name, m, common.json)?,
             "continuity.resume" => AnyOp::Resume(Resume {
                 limit: required(m, "limit")?
                     .parse()
@@ -117,12 +118,12 @@ pub fn from_matches_with_key(
             }),
             "meta.version" => AnyOp::MetaVersion(MetaVersion {}),
             "meta.help" => AnyOp::MetaHelp(MetaHelp {
-                path: if flag(m, "help") {
-                    path
+                path: if flag(m, "help") || path == ["atlas"] {
+                    path.clone()
                 } else {
                     many(m, "path")
                 },
-                all: if flag(m, "help") {
+                all: if flag(m, "help") || path == ["atlas"] {
                     false
                 } else {
                     flag(m, "all")
@@ -277,7 +278,7 @@ pub fn from_matches_with_key(
                 owner_agent: if flag(m, "all") {
                     None
                 } else {
-                    Some(required(m, "agent")?)
+                    Some(stop_agent(m)?)
                 },
                 all: flag(m, "all"),
                 release: flag(m, "release"),
@@ -402,9 +403,32 @@ pub fn from_matches_with_key(
     Ok(op)
 }
 
+fn stop_agent(m: &ArgMatches) -> Result<String> {
+    text(m, "agent").ok_or_else(|| {
+        let mut error = SeError::new(Detail::UsageMissingArgument(
+            details::UsageMissingArgument {
+                command: "se stop".into(),
+                argument: "an agent name/ID or --all".into(),
+            },
+        ));
+        error.body = error.body.with_remedy(se_types::Remedy {
+            text: "Use se stop AGENT for one agent, or se stop --all for all agents in the selected project. Use se down only to stop the background runtime.".into(),
+            command: None,
+        });
+        error
+    })
+}
+
 fn work_addressing(m: &ArgMatches) -> Result<Option<se_types::WorkAddressing>> {
+    let floor = text(m, "to").as_deref() == Some("floor");
     let addressees = many(m, "addressees");
     let Some(action) = text(m, "work_action") else {
+        if floor {
+            return Err(floor_guidance(SeError::invalid(
+                "floor message",
+                "--work-action ACTION and 1..20 distinct --addressee AGENT_ID values",
+            )));
+        }
         if !addressees.is_empty() {
             return Err(SeError::invalid(
                 "addressee",
@@ -413,15 +437,28 @@ fn work_addressing(m: &ArgMatches) -> Result<Option<se_types::WorkAddressing>> {
         }
         return Ok(None);
     };
-    Ok(Some(se_types::WorkAddressing {
+    let work = se_types::WorkAddressing {
         action: serde_json::from_value(serde_json::Value::String(action))
             .map_err(|_| SeError::invalid("work-action", "a registered work action"))?,
         addressees: addressees
             .into_iter()
             .map(|id| {
-                id.parse()
-                    .map_err(|_| SeError::invalid("addressee", "a canonical agent ID"))
+                id.parse().map_err(|_| {
+                    floor_guidance(SeError::invalid("addressee", "a canonical agent ID"))
+                })
             })
             .collect::<Result<Vec<_>>>()?,
-    }))
+    };
+    if floor {
+        work.validate().map_err(floor_guidance)?;
+    }
+    Ok(Some(work))
+}
+
+fn floor_guidance(mut error: SeError) -> SeError {
+    error.body = error.body.with_remedy(se_types::Remedy {
+        text: "Run se msg send --help for --work-action values and --addressee syntax. Use se agent list with the same --home and --project to find agent IDs; repeat --addressee for each distinct recipient (1..20).".into(),
+        command: None,
+    });
+    error
 }

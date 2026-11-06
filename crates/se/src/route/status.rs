@@ -307,8 +307,29 @@ pub(super) fn finish<R: ReadStore>(
         return Ok(output);
     };
     let value = &mut status.value;
+    if value.removal.is_none() && value.runtime.state != "running" {
+        value.atlas.state = if cx.config.value.atlas.enabled {
+            "unknown"
+        } else {
+            "disabled"
+        }
+        .into();
+        value.atlas.reason = Some(
+            if cx.config.value.atlas.enabled && value.runtime.state == "stopped" {
+                "The runtime is stopped; start it with se up to observe the Atlas index."
+            } else if cx.config.value.atlas.enabled {
+                "Atlas state is unknown because a live runtime could not be verified; inspect the pending runtime observations."
+            } else {
+                "Atlas is disabled in the selected config.toml."
+            }
+            .into(),
+        );
+    }
     if cx.selections.status_all {
         value.scope = "all".into();
+        value.atlas = se_core::ops::status::atlas_view(Ok(Read::Absent {
+            checked: "Select one project with --project to observe its Atlas index.".into(),
+        }));
         value.projects = Some(projects::page(reader, admission)?);
     }
     if value.removal.is_none() {

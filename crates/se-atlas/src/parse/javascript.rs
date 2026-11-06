@@ -6,6 +6,9 @@ pub(super) fn declaration<'a>(node: Node<'a>, bytes: &[u8]) -> Option<Declaratio
     use SymbolKind::*;
     let kind = match node.kind() {
         "function_declaration" | "generator_function_declaration" => Function,
+        "function_expression" | "arrow_function" if super::syntax::default_export(node, bytes) => {
+            Function
+        }
         "method_definition" | "method_signature" | "abstract_method_signature" => Method,
         "class_declaration" | "class" => Class,
         "interface_declaration" => Interface,
@@ -36,14 +39,21 @@ pub(super) fn declaration<'a>(node: Node<'a>, bytes: &[u8]) -> Option<Declaratio
         }
         _ => return None,
     };
-    let name = node
+    let candidate = node
         .child_by_field_name("name")
         .or_else(|| node.child_by_field_name("pattern"))
-        .or_else(|| (node.kind() == "identifier").then_some(node))?;
-    if !matches!(
-        name.kind(),
-        "identifier" | "property_identifier" | "private_property_identifier" | "type_identifier"
-    ) {
+        .or_else(|| (node.kind() == "identifier").then_some(node));
+    let anonymous = candidate.is_none() && super::syntax::default_export(node, bytes);
+    let name = if anonymous { node } else { candidate? };
+    if !anonymous
+        && !matches!(
+            name.kind(),
+            "identifier"
+                | "property_identifier"
+                | "private_property_identifier"
+                | "type_identifier"
+        )
+    {
         return None;
     }
     let body = node.child_by_field_name("body").or_else(|| {
@@ -52,6 +62,7 @@ pub(super) fn declaration<'a>(node: Node<'a>, bytes: &[u8]) -> Option<Declaratio
     });
     Some(Declaration {
         name,
+        name_override: anonymous.then_some("default"),
         kind,
         body,
         exported: exported(node, bytes),

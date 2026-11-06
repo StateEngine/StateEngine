@@ -15,12 +15,12 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
     let from = input
         .from
         .as_deref()
-        .map(|name| scope::actor_selector(cx.read, name))
+        .map(|name| scope::selected_actor(cx, name))
         .transpose()?;
     let selected_to = input
         .owner_to
         .as_deref()
-        .map(|name| scope::actor_selector(cx.read, name))
+        .map(|name| scope::selected_actor(cx, name))
         .transpose()?;
     let (to, from) = if input.cli_list {
         (selected_to, from)
@@ -200,6 +200,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
             at: None,
         };
         items.push(MessageRow {
+            channel_reply: channel_reply(cx.read, &record.message)?,
             id: record.message,
             event_id: record.event,
             from: receipt::actor_ref(cx.read, &record.sender)?,
@@ -312,4 +313,26 @@ fn command_text(argv: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+pub(super) fn channel_reply<R: se_store::Snapshot>(
+    read: &mut R,
+    id: &se_types::MessageId,
+) -> se_types::Result<Option<super::outputs::ChannelReply>> {
+    if read.info().schema_version < 5 {
+        return Ok(None);
+    }
+    let route = read
+        .channel_reply_route(id)
+        .map_err(|e| se_core_store_error(&e))?;
+    Ok(route.map(|r|super::outputs::ChannelReply{instruction:if r.active {format!("This message came from the Owner's paired phone. Send your answer with stateengine_msg_send to {} and set reply_to to {}. A final turn answer alone stays local and does not reach the phone. Keep each linked reply under 1500 characters; send several linked replies when a longer answer is needed.",r.owner,r.original)}else{"The phone channel is disconnected; a new mail reply remains saved but cannot reach that phone.".into()},to:r.owner,reply_to:r.original,active:r.active}))
+}
+fn se_core_store_error(error: &se_store::StoreError) -> se_types::SeError {
+    crate::store_error::store_error(error)
+}
+pub fn channel_reply_instruction<R: se_store::Snapshot>(
+    read: &mut R,
+    id: &se_types::MessageId,
+) -> se_types::Result<Option<String>> {
+    Ok(channel_reply(read, id)?.map(|r| r.instruction))
 }

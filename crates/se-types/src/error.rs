@@ -1,6 +1,6 @@
 use crate::{
-    AgentId, Cursor, DecisionId, EventId, Generation, LaunchId, MessageId, ObservationId,
-    ProjectId, SessionId, UnixMicros,
+    AgentId, Cursor, DecisionId, EventId, Generation, LaunchId, MessageId, MessagingChannelError,
+    ObservationId, ProjectId, SessionId, UnixMicros,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -106,6 +106,7 @@ macro_rules! display_values {
 }
 display_values!(
     str,
+    MessagingChannelError,
     String,
     Cursor,
     u16,

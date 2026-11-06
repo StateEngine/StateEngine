@@ -140,6 +140,22 @@ pub fn runtime_start(value: &RuntimeStart, out: &mut impl Write) -> io::Result<(
 
 pub fn runtime_stop(value: &RuntimeStop, out: &mut impl Write) -> io::Result<()> {
     if value.already_down {
+        if value.complete && matches!(value.witness.state, WitnessState::Witnessed) {
+            writeln!(
+                out,
+                "{}",
+                value
+                    .witness
+                    .detail
+                    .as_deref()
+                    .filter(|detail| !detail.is_empty())
+                    .unwrap_or("Already down; no host was running. No process was stopped.")
+            )?;
+            return writeln!(
+                out,
+                "Verified an absent endpoint. Use --json for full absence checks."
+            );
+        }
         writeln!(out, "Already down; no host was running.")?;
         return witness(&value.witness, out);
     }
@@ -153,7 +169,18 @@ pub fn runtime_stop(value: &RuntimeStop, out: &mut impl Write) -> io::Result<()>
             "incomplete"
         }
     )?;
-    witness(&value.witness, out)
+    shutdown_witness(value.complete, &value.witness, out)
+}
+
+fn shutdown_witness(complete: bool, value: &Witness, out: &mut impl Write) -> io::Result<()> {
+    if complete && matches!(value.state, WitnessState::Witnessed) {
+        writeln!(
+            out,
+            "Pending writes saved. Shutdown verified. Use --json for full shutdown details."
+        )
+    } else {
+        witness(value, out)
+    }
 }
 
 pub fn uninstall(value: &UninstallOutput, out: &mut impl Write) -> io::Result<()> {
@@ -310,11 +337,19 @@ fn stops(values: &[StopFact], out: &mut impl Write) -> io::Result<()> {
                 "incomplete"
             }
         )?;
-        witness(&stop.witness, out)?;
+        let stopped = stop.complete && matches!(stop.witness.state, WitnessState::Witnessed);
+        if !stopped {
+            witness(&stop.witness, out)?;
+        }
         if let Some(command) = &stop.resume.command {
             writeln!(out, "  Resume conversation: {command}")?;
         }
-        if let Some(reason) = &stop.resume.reason {
+        if let Some(reason) = &stop.resume.reason
+            && !(stopped
+                && stop.resume.mode == "unknown"
+                && reason
+                    == "The original conversation is retained when available; no provider resume command was independently verified. Runtime shutdown completion does not imply resume readiness.")
+        {
             writeln!(out, "  Resume: {reason}")?;
         }
     }

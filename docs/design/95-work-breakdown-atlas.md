@@ -8,7 +8,7 @@ The contracts are [section 60](60-atlas.md), `docs/OPS.md`, and section 80
 (`80-performance-budgets.md` in the approved design handoff). References below use
 those section numbers. Section 80 defines cold-window accounting; section 60
 supplies the explicit config-enable activation and private child entry.
-Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 
 ## Dependencies and estimate convention
 
@@ -101,7 +101,7 @@ correct Atlas provenance. Corrupt/newer/foreign/link targets refuse without muta
 bodyless NULL differs from an actual empty-body hash. Inspect persisted tables/FTS
 for absence of source bodies. Hold an external read transaction while writes reach
 the WAL bound: writes stop truthfully and reader data remains readable. Observe
-both in-host connections/caches inside the 500,000-byte SQL/query allocation.
+both in-host connections/caches inside the 603,082-byte SQL/query allocation (100,000 bytes transferred from the queue and 3,082 from allocator slack).
 
 **Estimate:** 400–600 Rust LOC; no duplicate SQLite library or unbounded pool.
 
@@ -178,7 +178,7 @@ file transaction, with no half-replaced FTS or stale resolved target.
 explicit enable/session/restart/source events and cancellation. Native watches A08
 feed this same port; no second scheduler is created there.
 
-**Satisfies:** 60 §§3–4/4.2 and §9 (150,000-byte/256-hint queue, logical bulk batches,
+**Satisfies:** 60 §§3–4/4.2 and §9 (50,000-byte/64-hint queue, logical bulk batches,
 10-second unpublished grace, separate index/published fences, retained stale fallback);
 80 §4 no polling/lazy/bounded work, B4–B6 and save-to-searchable <=200 ms.
 

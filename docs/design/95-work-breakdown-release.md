@@ -36,7 +36,7 @@ Three release variants must stay explicit:
 | --- | --- | --- |
 | Public SE Code | permissively licensed host API and unavailable stub | no proprietary se-types/store/core/proc/host/atlas dependency, source or `se` payload |
 | Commercial SE Code | linked StateEngine host plus separately licensed native `se` payload/alias | embedded host uses default-features=false, secode+listener, no linked Atlas; one product host |
-| Standalone StateEngine | native `se`, required notices and install/uninstall scripts | Atlas optional and disabled by default; user-history import, no fleet data; one daemon only when normal custody requires it |
+| Standalone StateEngine | native `se`, required notices and install/uninstall scripts | Atlas optional and enabled by default; user-history import, no fleet data; one daemon only when normal custody requires it |
 
 The commercial package and standalone download use the same version/target-pinned
 CLI bytes; the linked server has its separately recorded embedded feature graph.
@@ -64,9 +64,9 @@ earlier-numbered units to finish:
 | 5 | macOS R03/R04 work in the borrowed-Mac compatibility campaign; final R08 | all five journeys on clean Windows/Linux/macOS, both providers, standalone and embedded SE Code |
 
 Atlas implementation follows the journeys and live handover. It may be included
-if ready and qualified, remains off by default, and never holds a milestone or
-release. An Atlas-free build reports NotBuilt rather than advertising tools.
-Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+if ready and qualified, is enabled by default in included builds, and never holds
+a milestone or release. An Atlas-free build reports NotBuilt rather than advertising tools.
+Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 Windows/Linux is an intermediate milestone; macOS qualification precedes alpha
 shipping, while Windows/Linux development does not wait for borrowed hardware.
 

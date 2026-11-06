@@ -218,6 +218,7 @@ pub(crate) fn revision_for(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
         | ImportUnreadable { .. }
         | LegacyRetained { .. }
         | AliasImported { .. } => crate::import::revision(c, e),
+        ChannelRecorded { change } => super::channel::revision(c, change),
         _ => later("event revision"),
     }
 }

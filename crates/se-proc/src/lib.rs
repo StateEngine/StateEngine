@@ -16,6 +16,8 @@ mod windows_package;
 pub use windows_package::process_has_package_identity;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 mod allocator;
+pub mod atlas_git;
+pub mod atlas_worker;
 mod canonical_path;
 #[cfg(all(target_os = "linux", target_env = "gnu"))]
 pub use allocator::reclaim_unused_allocator_pages;
@@ -49,9 +51,15 @@ mod process_descendants;
 #[cfg(target_os = "linux")]
 pub use process_descendants::read_process_descendants;
 mod source_root;
+#[cfg(target_os = "linux")]
+pub use source_root::{
+    NativeSourceWatch, NativeWatchAction, NativeWatchDirectory, NativeWatchEvent,
+    NativeWatchEvents, NativeWatchRegistration,
+};
 mod state_files;
 pub use source_root::{
-    NativeFileRevision, NativeRootFile, NativeSourceRoot, observe_file_revision,
+    NativeFileRevision, NativeRootDirectory, NativeRootFile, NativeSourceEntry, NativeSourceKind,
+    NativeSourceRoot, observe_file_revision,
 };
 pub use state_files::{
     NativeStateFiles, PermissionKind, PermissionProtection, PermissionRepairPin,
@@ -64,6 +72,8 @@ mod stdio;
 pub use error::*;
 pub use identity::*;
 pub use launch::*;
+#[cfg(target_os = "macos")]
+pub use owner_probe::observe_boot_id;
 pub use owner_probe::{
     AgentTreeBasis, AgentTreeMatch, AncestryBound, NativeOwner, OwnerObservation, OwnerProbeError,
     OwnerTarget, OwnerTreeObservation, observe_owner, observe_owner_self,
@@ -128,3 +138,5 @@ pub use self_resources::{SelfResources, observe_self_resources};
 mod parent_image;
 #[cfg(windows)]
 pub use parent_image::parent_process_image;
+
+pub mod atlas_sql;

@@ -4,8 +4,10 @@
 extern crate self as se_store;
 mod api;
 mod apply;
+pub mod atlas_resume;
 mod backup;
 mod backup_context;
+pub mod channel;
 mod codec;
 mod completion;
 mod connection;

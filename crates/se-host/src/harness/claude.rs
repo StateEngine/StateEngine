@@ -39,10 +39,16 @@ pub struct ClaudeLaunch<'a> {
 /// The two protected launch files. The coordinator writes them owner-only
 /// before exec and removes them after the process is witnessed closed.
 pub fn configuration(launch: &ClaudeLaunch<'_>) -> Result<ConfigPlan> {
+    configuration_with_hooks(launch, None)
+}
+pub fn configuration_with_hooks(
+    launch: &ClaudeLaunch<'_>,
+    augmentation: Option<Value>,
+) -> Result<ConfigPlan> {
     let hook = |event: &str| -> Value {
         json!([{"hooks": [{"type": "command", "command": hook_command(launch, event)}]}])
     };
-    let settings = json!({
+    let mut settings = json!({
         "hooks": {
             "SessionStart": hook("session-start"),
             "UserPromptSubmit": hook("prompt"),
@@ -51,6 +57,9 @@ pub fn configuration(launch: &ClaudeLaunch<'_>) -> Result<ConfigPlan> {
             "StopFailure": hook("stop-failure"),
         }
     });
+    if let Some(hooks) = augmentation {
+        settings["hooks"]["PreToolUse"] = hooks["PreToolUse"].clone();
+    }
     let mut bearer = b"Bearer ".to_vec();
     bearer.extend_from_slice(launch.request.mcp_bearer.expose());
     let bearer = String::from_utf8(bearer)

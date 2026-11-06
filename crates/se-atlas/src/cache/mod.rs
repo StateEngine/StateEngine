@@ -1,7 +1,9 @@
 //! One owner-only cache per registered physical root; no authoritative floor reads.
 pub mod connection;
+pub(crate) mod path_scope;
 pub mod pointer;
 pub mod prune;
+pub(crate) mod reference_counts;
 pub mod schema;
 pub mod write;
 use crate::{errors::AtlasResult, model::*, scope::Scope};
@@ -10,6 +12,22 @@ use std::{fs::File, path::PathBuf};
 /// open. SQLite's own NOFOLLOW flag also rejects a linked final database name.
 /// This trusted port is never constructed from CLI/MCP destination arguments.
 pub trait CacheFiles {
+    /// Fresh-connection allocator setup before any SQL prepares. Native Atlas
+    /// disables lookaside here; other adapters must include their actual SQLite
+    /// defaults in their independent profile measurement. This hook supplies no
+    /// admission claim and cannot change another connection's allocation policy.
+    fn configure_connection(&self, _connection: &rusqlite::Connection) -> AtlasResult<()> {
+        Ok(())
+    }
+    /// Native adapters may give short-lived maintenance and read connections
+    /// explicit checkpoint ownership without changing cold-writer behavior.
+    fn configure_connection_role(
+        &self,
+        connection: &rusqlite::Connection,
+        _role: connection::ConnectionRole,
+    ) -> AtlasResult<()> {
+        self.configure_connection(connection)
+    }
     /// At most 1024 bytes; native bounded read refuses an oversized pointer.
     fn read_pointer(&self) -> AtlasResult<Option<Vec<u8>>>;
     /// Compare old bytes/absence, atomic protected replacement, sync and external
@@ -32,6 +50,7 @@ pub trait CacheFiles {
 }
 pub trait GrowthReservation {}
 pub struct DatabasePin {
+    /// Native identity/metadata pin; content reads need not be supported.
     pub file: File,
     pub path: PathBuf,
 }

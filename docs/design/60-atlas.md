@@ -45,32 +45,52 @@ neither rotates credentials nor restores authoritative history.
 
 Atlas is built only after the five core journeys and live handover pass. It may
 ship in alpha if ready, but never holds a milestone or the alpha release.
-Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable.
+Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable.
 An Atlas-free standalone build reports NotBuilt and advertises no Atlas tools.
 Registration is metadata-only, including when a project first binds. The
 activation lifecycle below applies only to a feature-enabled standalone build;
 embedded requests neither write the setting nor schedule work.
 
-`config.set atlas.enabled true` atomically writes and rereads the user
-`config.toml` setting using the shared config operation's request identity.
-There is no project-setting row or Atlas activation event in the authoritative
-store. After a successful effective false->true change, an already-running host
-queues a ConfigEnabled effect after ready for its registered roots, including a
-first cold index when the cache is absent. The shared config receipt distinguishes
-saved readback from host notification; a failed notification reports pending
-application, not an applied activation. If no host is running, config set does
-not start one: its next normal startup reads the saved setting and reconciles
-after ready. If the host exits between config readback and notification, the same
-startup reconciliation recovers activation without a second durable queue.
+Enable Atlas by editing the selected user `config.toml`: add `[atlas]` and
+`enabled = true` (or change the existing table). By default this is the file in
+`se --home`; an explicit `SE_CONFIG` selects a different file. Run `se down` and
+`se up` with that same home to apply the change. `se config get/set` currently
+supports saved `agent.<AGENT>.model`, `.profile` and `.can-create` only; it does
+not edit general file settings or activate a running Atlas controller.
 
-Host restart/first bound session rereads the resolved configuration. Once enabled,
-it schedules HostRestart/FirstSession
-reconciliation after the bind response, including cold indexing when its cache
-is absent. An already-true config set is idempotent and does not rebuild a cache.
-Disabling stops admission and drains owned Atlas work; it preserves the cache for
-later enablement. First bind never waits for Atlas. Queries, status and resume
-never index, write, enable, start a daemon or schedule an after-query action.
-A missing cache remains honestly absent until an explicit host activation event.
+The native owner currently runs on Linux. Other host compositions report an
+unavailable controller rather than pretending that a code index was built.
+After normal startup, an enabled owner reconciles registered roots and builds
+an absent cache after readiness. Status observes its published metadata only:
+preparing, partial, updating, current, disabled and unreadable remain distinct.
+It reports partial/deferred/failed/stale file counts and watch limitations; JSON
+retains the full index summary. A stopped runtime reports unknown index state,
+not absence; start it to observe the current controller. There is **no limit on registered or indexed projects**. Each canonical worktree keeps
+its project-scoped disk index. Idle projects retain disk data only; the host's
+small live pool contains native watches and unfinished work, never the catalogue
+of everything that may be queried. An Atlas query records durable interest in
+that project and can traverse its retained index without a live-watch slot.
+
+The owner services a disk-backed, coalesced FIFO one project/worktree at a time;
+only pending requests are scanned, separately from the persistent catalogue. Idle
+project metadata is not reopened when selecting another project's work. Authoritative writes set only bounded in-memory activity hints; the background
+owner transfers settled hints to the disk FIFO. At most 64 distinct activity hints
+are retained; overflow requests a paged reconciliation of registered projects,
+never a project-count refusal or silently dropped activity. After a host restart,
+unwatched cached indexes remain verification-needed until queried or worked on.
+Only one
+cold child and one writer own the home at a time. A new query cannot
+cancel another project's in-flight cold job. Until an initial epoch is published,
+answers explicitly say indexing is starting or queued and suggest a one-second
+retry; status reports observed cold discovery progress. Retained epochs remain
+readable as partial answers while catch-up is pending. Retry is not a completion
+promise. A plain status read observes metadata without scheduling work.
+
+`se atlas` and `se atlas --help` list the five existing read commands above.
+Queries never enable Atlas, open a substitute cache or start a daemon; they only
+signal interest to an installed, enabled background owner. Status does not
+request admission or schedule work. Disable it by setting
+`enabled = false` in the same file and restarting; the cache is retained.
 
 ## 2. Identity, physical paths and source revisions
 
@@ -147,28 +167,47 @@ before acting. This is snapshot evidence, not a filesystem transaction guarantee
 Cache directory is owner-only StateEngine home `atlas/<project-id>/<root-id>/`.
 It contains `current.json` and `epochs/<epoch>/atlas.db` (plus SQLite WAL/SHM).
 Paths derive from validated IDs, never a user destination. Application_id is
-0x41544c53 (ATLS), user_version 1. Only the host creates/upgrades/retires caches;
+0x41544c53 (ATLS), user_version 4. Only the host creates/upgrades/retires caches;
 CLI is read-only. Newer schema preserves bytes and refuses. Foreign application,
 foreign scope, links or corrupt bytes are unreadable, never an absent index.
+Schema-3 pointers remain readable only as owned replacement fences. Their old
+bytes stay in place until a newly built schema-4 epoch passes exact child reap,
+validation and compare/replace; queries refuse the legacy schema in the meantime.
 
 Use WAL, synchronous NORMAL, foreign_keys ON, temp_store FILE, mmap_size 0 and
 4,096-byte pages. At most two in-host connections exist globally: one writer and
 one reader, including hostless requests delegated to the host; no hidden pool.
-Each connection cache is **32 pages =131,072 bytes**, at most eight cached statements
-within a 16,384-byte statement allowance each; query arena 98,304 bytes. Both
-connection objects/SQLite overhead and these reservations must fit the 500,000-byte
+Each connection cache is **16 pages =65,536 bytes**, with no cached statements
+and a 16,384-byte active statement allowance each; query arena 98,304 bytes. Both
+connection objects/SQLite overhead and these reservations must fit the 603,082-byte
 SQL share. Excess statement/overhead allocations fail admission, not borrow an
 unmeasured allowance. Hostless CLI has one RO connection in its own bounded process;
 80's external budget runner accounts for it when present. Cold child cache is
 <=2,000,000 bytes (488 pages =1,998,848 bytes), separate from its parser arena.
+An unpublished cold writer selects exclusive WAL locking before its first WAL
+access. Its index stays in process memory, with no mapped cache data or SHM file;
+normal host locking resumes on new connections after that writer closes.
 WAL admission stops at 8,000,000 bytes; checkpoint target 4,000,000. Reader transactions
 have bounded query deadlines and close at response completion. External readers
 cannot be forcibly expired: if their pins prevent checkpoint, suspend Atlas writes
 with CacheBusy, preserve the old cache and report it. No idle checkpoint/expiry tick.
+Short-lived host readers and maintenance writers retain the WAL on close;
+the source-work owner checkpoints accumulated bytes before its next transaction.
+Closing a read or work slice never adds an implicit whole-WAL checkpoint. Cold
+creation and its owned completion keep their separate job-clock behavior.
 
 Normative relational layout follows. Checked nonnegative counters and blob/text
 limits in this document also apply where SQL checks are abbreviated. All ordinary
 tables are STRICT. Cached source bodies and transcript text are never stored.
+
+File and symbol `activity.inbound_resolved` counters belong to the graph writer,
+independent of record touches. `last_touch_unix_ms` is nullable: a counter row
+with no public touch has NULL, never a fabricated zero timestamp. A reference
+contributes only while it has a target and its accuracy is not NameOnly. Insertion, invalidation, replacement, re-resolution and
+removal adjust both counters inside the same finite file transaction; rollback
+keeps the graph and its counts together. Ranking reads one counter by stable key,
+without a query-time edge scan. Counts never create a touch; a missing last-touch
+timestamp remains absent, including after a record is removed or restricted.
 
 ```sql
 CREATE TABLE meta (
@@ -353,9 +392,11 @@ All cache growth is bounded by actual work, with no maintenance daemon/timer:
   accumulation through repeated saves. observed_commits caps at 256 observations;
   older commit baselines become BaselineUnavailable explicitly.
 - Per-root disk ceiling: 512,000,000 bytes including DB, WAL, staging and retired
-  epochs; host total Atlas home ceiling 2,000,000,000 bytes. Reserve space for status
-  before writing; stop admission with a visible budget failure before exceeding
-  the ceiling. Max_files=100,000; traversal and database results are streamed.
+  epochs. There is no project-count or whole-home index ceiling: adding an idle
+  project's disk index cannot exhaust another project's admission. Growth checks
+  inventory only the affected root; filesystem space/IO failures and the retained
+  per-root ceiling remain explicit failures. Reserve space for status before
+  writing. Max_files=100,000; traversal and database results are streamed.
   Cold extraction <=65,536 rows/file AND <=8,000,000 emitted bytes; qualified host
   profiles impose smaller limits inside their parser arena. JSON coverage has
   fixed reason tags/counters, never a path list proportional to repository size.
@@ -396,7 +437,11 @@ exhaustive; reasons, progress, coverage and diagnostic accompany the six values.
 register validates supplied scope/policy without source traversal. activate queues
 an admitted host effect. enqueue coalesces hints without blocking. work_quantum
 runs Discover->Read->Parse->Resolve->Diff->Commit->Prune->Checkpoint within allowance;
-only complete file transactions commit. next_work is Park without actual work,
+only complete file transactions commit. The native owner lends at most 500 ms
+per source-work turn so the qualified 200 ms parse plus source verification,
+resolution and atomic SQL commit can finish without endless 100 ms restarts.
+This is a finite background allowance, not a relaxed parse deadline or a
+save-to-searchable latency qualification. next_work is Park without actual work,
 Ready with work, or AfterEventDebounce for an event-armed one-shot. reader is scoped;
 status is cached metadata. captured_edit accepts exact registered path, before/after
 content hashes and trusted evidence ID: None on one side is witnessed absence,
@@ -405,7 +450,7 @@ never claims stuck filesystem IO disappeared at its deadline.
 
 One global low-priority scheduler, one active parse and one global cold child serve
 all roots. No per-agent process, thread, parser tree or watch duplication. Event
-queue <=150,000 bytes and <=256 path hints shared across roots; overflow is a sticky
+queue <=50,000 bytes and <=64 path hints shared across roots; overflow is a sticky
 root reconcile bit. Discovery/hash scans are streamed and cancellation-aware. Ignore
 policy uses nested .gitignore, registered info/exclude and already-loaded global
 patterns plus <=32 generated prefixes, together <=32,768 bytes (within metadata share).
@@ -442,8 +487,14 @@ hash-map/path allocation or separate parser connection hides behind watch count.
 Windows uses its two 65,536-byte root buffers instead of the Linux map/event arena;
 platform-specific layouts must independently qualify within the SAME share.
 
-At most TWO active roots share these limits; excess roots remain partial, supplied
-by harness events/session-triggered reconcile. Status also reports per-root
+The native pool currently retains watches for at most two recently used roots;
+this is a limit on **live resources**, never on registered or indexed projects.
+Recycling closes the old native handles and retains its disk index. Roots without
+live watches reconcile registered Git metadata and stream file identity/content
+checks on their next query or agent activity, under the same revision-trust rules
+as restart. Their answers carry VerificationNeeded/StaleSnapshot until catch-up
+finishes; a retained Current claim never survives watch loss. Watch exhaustion
+and per-root disk exhaustion remain visible. Status also reports per-root
 **watch_activation_attempts and watch_limited_activations**, process-lifetime scope
 and watch_stats_started timestamp (unknown if the clock is unavailable), so chronic watch exhaustion is observable rather than permanently
 "updating" without explanation. Native qualification reports those counts plus
@@ -456,10 +507,10 @@ Network/synced roots without reliable identity/events degrade with no polling fa
 ### 4.1 Cold child and atomic epoch discovery
 
 80's approved cold-full-index window has a **64,000,000-byte child peak cap** and
-is reported separately; **B4's 25,000,000-byte steady-state measurement is outside
+is reported separately; **B4's 64,000,000-byte steady-state measurement is outside
 that window**. No aggregate_ceiling_bytes exists: it falsely implied another cold
 aggregate limit. Host allocation still targets its steady share; defer cold work
-for machine pressure, never merely because parent+child exceeds 25 MB. Only first
+for machine pressure, never merely because parent+child exceeds 64 MB. Only first
 index/extractor rebuild/owned repair uses this transient path. Ordinary incremental
 updates always stay in-host inside B4; relabelling an edit as rebuild grants no exemption.
 
@@ -510,8 +561,10 @@ path/text eligibility. Token density alone doesn't prove generated code.
 
 The former universal 16 KiB/100 ms host cap was unmeasured and is withdrawn. Host
 admission requires a measured per-grammar/platform profile fitting source, tree,
-extraction, grammar loads and retained allocator high-water mark inside its
-1,000,000-byte parser share and the overall 2,000,000-byte Atlas share. Profile
+extraction and retained anonymous allocator high-water mark inside its
+12,000,000-byte parser share and the overall 13,000,000-byte anonymous Atlas share.
+Shared file-backed grammar code/data pages have a separate measured reservation
+printed on profiles and status; they are not charged once per root or language. Profile
 limits cannot exceed 512 KiB/200 ms; they may lower source/row/work limits, stated
 in coverage. Without a qualified profile, semantics are ParserUnqualified/deferred,
 not a guessed promise of fit. Keep last-good rows visibly stale and offer bounded
@@ -552,6 +605,15 @@ reservation, not just row counts. Names are stored in full only up to 1024 UTF-8
 excluded from exact semantics with Partial/ByteLimit coverage and a file pointer,
 never a falsely exact truncated key. Containers/doc strings have the same explicit
 byte accounting; terminal rendering escapes controls.
+
+Compact code pointers print their line range and byte count, rather than source
+bodies. JSON already carries symbol/reference/text spans with end-exclusive byte
+offsets. Whole-file pointers gain an extent during live whole-file hash verification,
+using the same fixed scratch buffer and request deadline; only a matching revision
+gets that extent. Historical or unavailable extents remain explicitly unavailable,
+not zero, and stale symbol spans retain their stale label. Outline symbols and
+resume file changes use the same compact target format. Explicit full-body reads
+retain their existing bounded opt-in behavior.
 
 Every method returns **AtlasResult<Answer<Read<T>>>**, including Page<T> inside
 Read for list operations. IndexSummary and snapshot/epoch flags survive Absent,
@@ -733,7 +795,7 @@ exhaustively to typed shared detail; no catch returns an empty vector.
 
 | Local cause | Shared catalog mapping | Cause and legal action |
 | --- | --- | --- |
-| FeatureDisabled | FeatureUnavailable | explicitly disabled; config set atlas.enabled true |
+| FeatureDisabled | FeatureUnavailable | explicitly disabled; edit [atlas] enabled in config.toml and restart |
 | EmbeddedUnavailable | FeatureUnavailable | embedded setting returns feature-unavailable; use feature-enabled standalone se |
 | ConfigurationInvalid | UsageInvalidValue | correct the named config.toml policy |
 | RootUnavailable | RepoInvalid | restore registered physical source |
@@ -796,22 +858,61 @@ can become current again merely by an old completion/offer arriving.
 ## 9. Budgets, measurements and five journeys
 
 All budget MB are decimal bytes; KiB is labelled explicitly. Proposed in-host Atlas
-allocation is exactly **2,000,000 bytes** across ALL roots, not per connection/root:
+allocation is exactly **13,000,000 bytes** across ALL roots, not per connection/root:
 
 | Allocation | Bytes | Bound |
 | --- | ---: | --- |
-| SQLite + query | 500,000 | two 131,072-byte caches, two <=16,384-byte statement allowances, 98,304-byte query arena, remaining 106,784 for connection/SQLite overhead |
-| Source/parser/extraction/grammar | 1,000,000 | one measured admission profile, including retained allocator pages |
-| Coalesced work queue | 150,000 | <=256 hints, overflow becomes sticky reconcile |
-| Native watches/root/ignore metadata | 200,000 | <=2 active roots, path map cap and bounded policy |
-| Remaining allocator/accounting slack | 150,000 | not an extra pool or a new parser |
+| SQLite + query | 603,082 | two 65,536-byte caches, two <=16,384-byte statement allowances, 98,304-byte query arena; measured native whole-SQL peak plus arena must also fit; retained writer profile 93,702 bytes (81,480 plus 15%) |
+| Source/parser/extraction | 12,000,000 | one measured admission profile, including retained anonymous allocator pages |
+| Coalesced work queue | 50,000 | <=64 hints and 32,000 active bytes; retained capacity/root bookkeeping fits the remainder; overflow becomes sticky reconcile |
+| Native watches/root/ignore metadata | 200,000 | <=2 live watch roots, path map cap and bounded policy; idle catalogue and queued project records stay on disk |
+| Remaining allocator/accounting slack | 146,918 | not an extra pool or a new parser |
 
-These are proposed reservations, NOT measurements. A profile that exceeds one
-share must reduce admission or stay deferred; unused other-core memory and 80's
-3.5 MB reserve are not silently borrowed. No per-root parser/tree/cache pool. Source,
-SQL response data and output serialization ownership must avoid overlapping copies
-beyond these reservations; native adapters include their buffers and kernel charges
-in the external measurement. Global root registration bounds also count here.
+The larger standalone host budget was adopted on 2026-11-05. Linux/glibc
+component profiles now admit 65,536 source bytes and 8,192 extracted rows, still
+within 200 ms: each reserves 8,000,000 parser/retained bytes and 3,000,000 extraction
+bytes, plus source capacity, or 11,065,536 bytes at its source cap. This fits the
+12 MB parser share; other shares are unchanged. All six grammars share one parser.
+
+The ordinary-file measurement uses 102 tracked Rust/Python/JavaScript/TypeScript/TSX
+files plus 30 explicitly synthetic density cases, including JSX. Both source orders
+indexed 132/132 cases in the initial cold-only diagnostic. Anonymous growth reached
+6,574,080 bytes across diagnostic/default runs (7,560,192 with 15 percent margin).
+A separate native heap trace observed 5,459,397 requested bytes; preceding SSD noise
+was 3.52 MB/s at 15.38 percent busy, NVMe 90.71 MB/s at 65.16 percent busy. These
+are observed component peaks, not a universal bound or joined-host qualification.
+The production default profiles separately indexed 132/132 in each order with
+their actual 64 KiB/8,192-row/3 MB extraction limits. Their preceding root-SSD
+noise was 1.01/1.05 MB/s at 0.70/0.66 percent busy, versus NVMe 62.50/30.25 MB/s
+at 62.06/33.92 percent busy. These runs qualify observed component admission, not
+a quiet latency or joined-memory result; cold-only diagnostics alone do not.
+Shared parser/grammar file pages retain the prior larger reservation: 4,759,552 bytes
+observed, 5,473,485 reserved including 15 percent margin, once per process.
+
+Measurements run on pinned CPU 28 with source and outputs on the less busy root
+SSD. Disk noise accompanies every run: the forward/reverse baseline samples showed
+4.21/1.60 MB/s and 2.12/1.10 percent busy there, versus 46.89/79.71 MB/s and
+40.64/55.66 percent on NVMe. This is not a quiet qualification; the final check awaits
+the next restart. Other platforms and joined owner/watch/query memory remain
+unqualified. The separately measured Linux components are the installation default;
+status explicitly reports joined_qualified=false.
+
+Two default native CLI/MCP consumers observed a 14,716-byte Rust file become
+current in 192/218 ms, including polling and outside hashing; one exceeds the
+200 ms save target, so neither is a latency qualification. Both verified the new
+whole-file hash outside the host and returned its 443-line file
+extent and 49-byte declaration span without source bodies. Host RSS samples reached
+43,552,768 bytes, with 6,320,128 anonymous bytes; this uses a Claude protocol fixture,
+not a real-agent B4 qualification. Preceding SSD noise was 0.47/1.34 MB/s at 0.44/0.96
+percent busy, versus NVMe 40.66/69.40 MB/s at 24.00/50.62 percent busy. The former 5 MB code-page
+estimate understates these native mappings; section 80 now reserves 30 MB provisionally
+for non-grammar code/libraries and 64 MB for the standalone total. Quiet joined and
+real-agent qualification still remain outstanding.
+
+These are finite reservations, not measurements of the whole owner. Admission over
+one share stays deferred; no per-root parser/tree/cache pool and no silent borrowing
+from other shares. Source, SQL response data, output serialization, native adapter
+buffers, kernel charges and root metadata count in the joined external measurement.
 
 The single budget table in section 80 defines whole-host B1-B9, including the
 standalone steady-state ceiling (B4) and reserve. Cold child **<=64,000,000 peak**
@@ -829,6 +930,12 @@ Target save-to-searchable <=200 ms for ADMITTED small updates, query p95 <=50 ms
 parse deadline 200 ms is a cancellation ceiling, not proof debounce+IO+parse meets
 latency. Core CLI read targets and sample counts are those in section 80;
 Atlas's query target isn't a replacement acceptance oracle.
+
+An expired maintenance slice retains its unfinished work and reports TimeLimit
+without claiming Current; the next scheduled turn gets a fresh finite slice.
+An admitted CLI or MCP read may retry an expired SQL snapshot once after rollback.
+Each attempt keeps the same query budget; a second expiry remains an explicit
+timeout with a one-second retry delay. Writes and other failures are not replayed.
 
 Linux prototype (shared host, not revised-design qualification): StateEngine 6,179
 files / 1,356,850 lines, cold 165.35 s, peak 19.89 MiB, settled 10.60 MiB, DB 275.79 MiB.

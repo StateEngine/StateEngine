@@ -6,6 +6,21 @@ use se_store::{CredentialRecord, ReadPhase, RecordId, RecordIdentity};
 use se_types::{Result, SeError};
 
 impl HostedRuntime {
+    /// The same slot is cloned into CLI/MCP/linked execution. Install its native
+    /// controller before readiness; an absent port refuses rather than opening
+    /// another cache from an individual query route.
+    pub fn install_atlas_read_port(
+        &mut self,
+        reader: std::sync::Arc<dyn crate::atlas_runtime::read_port::AtlasReadPort>,
+    ) -> Result<()> {
+        if self.phase != crate::HostPhase::Prepared {
+            return Err(SeError::invalid(
+                "Atlas read port",
+                "installation before host readiness",
+            ));
+        }
+        self.execution.atlas.install(reader)
+    }
     /// Install the coordinator's exact registry before either listener serves.
     pub fn install_prepared_request_proofs(&mut self, proofs: PreparedRequestProofs) -> Result<()> {
         if self.phase != crate::HostPhase::Prepared {

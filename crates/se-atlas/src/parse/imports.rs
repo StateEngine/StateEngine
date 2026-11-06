@@ -53,6 +53,7 @@ fn emit(
         imported_name: binding.imported.map(|s| arena.text(s)).transpose()?,
         target_file: None,
         target_symbol: None,
+        target_namespace: false,
         span: span(node),
         kind: binding.kind,
         lexical_scope: scope,
@@ -213,7 +214,17 @@ fn python(
         };
         (text(source, bytes), Some(name), alias.or(Some(name)))
     } else {
-        (name, None, alias.or_else(|| name.split('.').next()))
+        // Without an alias, `import pkg.child` binds pkg, not pkg.child. Do
+        // not attribute pkg.member to an unrelated export of the child module.
+        (
+            if alias.is_some() {
+                name
+            } else {
+                name.split('.').next().unwrap_or(name)
+            },
+            None,
+            alias.or_else(|| name.split('.').next()),
+        )
     };
     let wildcard = node.kind() == "wildcard_import";
     emit(

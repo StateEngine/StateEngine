@@ -248,7 +248,14 @@ pub struct OwnedObservation {
 }
 pub struct StopAttempt {
     pub ticket: StopTicket,
-    pub dispatch: ProcResult<()>,
+    pub dispatch: ProcResult<StopDispatch>,
+}
+/// A dispatched signal is not an exit witness. An empty native scope needs no
+/// signal, and must not be reported as a forced provider termination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StopDispatch {
+    Requested,
+    NotNeeded,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

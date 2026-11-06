@@ -50,6 +50,20 @@ pub fn reserve<R: Snapshot>(
             initial: ProcessState::Reserved,
         },
     ];
+    if let Some((connection, action)) = &plan.channel_resume {
+        // The normal SessionPrepared remains primary for launch replay. The
+        // grant is consumed in this same C1 transaction before native creation.
+        bodies.insert(
+            1,
+            EventBody::ChannelRecorded {
+                change: se_store::channel::Change::ResumeReleased {
+                    connection: connection.clone(),
+                    action: action.clone(),
+                    session: plan.session.clone(),
+                },
+            },
+        );
+    }
     // Re-read the control grant and preparations in the same finite planning
     // snapshot. No new native effect may coexist with an unreleased lifecycle.
     let current = scope::require_present(

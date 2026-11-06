@@ -6,6 +6,7 @@
 extern crate self as se_host;
 #[cfg(feature = "runtime")]
 mod agent_observation;
+pub mod channels;
 pub mod client;
 #[cfg(feature = "runtime")]
 pub use agent_observation::{
@@ -37,6 +38,15 @@ pub use process_io::UnixProviderIo;
 #[cfg(all(windows, feature = "listener"))]
 pub use process_io::WindowsProviderIo;
 pub mod atlas_cache;
+pub mod atlas_cold;
+#[cfg(feature = "listener")]
+mod atlas_continuity;
+pub mod atlas_hooks;
+pub mod atlas_queries;
+pub mod atlas_records;
+#[cfg(target_os = "linux")]
+pub mod atlas_renewal;
+pub mod atlas_runtime;
 pub mod atlas_source;
 mod session;
 pub mod state_files;

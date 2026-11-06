@@ -348,7 +348,7 @@ impl Scope {
             cap = (cap * 2).min(self.max_members);
         }
     }
-    pub fn stop(&mut self, deadline: std::time::Instant) -> ProcResult<()> {
+    pub fn stop(&mut self, deadline: std::time::Instant) -> ProcResult<StopDispatch> {
         self.verify_limits()?;
         check_stop_deadline(deadline)?;
         // SAFETY: held original job, never a PID/name lookup or replacement job.
@@ -358,7 +358,7 @@ impl Scope {
                 "TerminateJobObject",
             ));
         }
-        Ok(())
+        Ok(StopDispatch::Requested)
     }
     pub fn release(&mut self, witnessed: bool) -> ProcResult<()> {
         if !witnessed {

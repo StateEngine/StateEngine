@@ -43,6 +43,13 @@ impl Field {
             });
             error
         };
+        if key.starts_with("atlas.") {
+            return Err(SeError::new(se_types::Detail::ConfigurationInvalid(se_types::details::ConfigurationInvalid {
+                subject: key.into(),
+                reason: "Atlas settings are user config.toml entries; se config get/set supports saved agent settings.".into(),
+                next_step: "Edit [atlas] in the selected config.toml (inside the data home printed by se status, unless SE_CONFIG selects another file); set enabled = true, then run se down and se up with the same --home. Use se atlas for query help.".into(),
+            })));
+        }
         let (selector, field) = key
             .strip_prefix("agent.")
             .and_then(|key| key.rsplit_once('.'))
@@ -97,7 +104,7 @@ pub struct AgentConfigThen {
     pub(crate) human_only: bool,
 }
 fn agent<R: Snapshot>(selector: &str, cx: &mut Cx<'_, R>) -> Result<AgentId> {
-    match scope::actor_selector(cx.read, selector)? {
+    match scope::selected_actor(cx, selector)? {
         Actor::Agent(agent) => Ok(agent),
         Actor::Human(_) => Err(SeError::invalid(
             "agent selector",
