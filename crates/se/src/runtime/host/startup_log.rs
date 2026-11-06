@@ -6,6 +6,8 @@ use std::{
     time::Instant,
 };
 
+const RETAINED_LOGS: usize = 8;
+
 pub(crate) struct StartupLog {
     home: PathBuf,
     entries: String,
@@ -28,7 +30,7 @@ impl StartupLog {
             self.started.elapsed().as_millis()
         ));
     }
-    fn save(&self) -> std::result::Result<PathBuf, String> {
+    fn save(&self) -> std::result::Result<(PathBuf, Option<String>), String> {
         let files = se_proc::NativeStateFiles::open(&self.home).map_err(|e| e.to_string())?;
         let mut staged = files
             .create_staging(&self.home)
@@ -48,7 +50,8 @@ impl StartupLog {
         files
             .publish_no_replace(&staged.path, &path)
             .map_err(|e| e.to_string())?;
-        Ok(path)
+        let cleanup_failure = prune(&files, &path).err();
+        Ok((path, cleanup_failure))
     }
     pub(crate) fn refusal(&mut self, mut error: SeError) -> SeError {
         let phase = self.phase.clone();
@@ -56,10 +59,18 @@ impl StartupLog {
         // Successful startup pays no diagnostic file creation or durability
         // barriers. Only a refusal publishes the finite observed phase trace.
         let diagnostic = match self.save() {
-            Ok(path) => format!(
-                "Last startup phase: {phase}. Read the startup log: {}",
-                path.display()
-            ),
+            Ok((path, cleanup_failure)) => {
+                let mut diagnostic = format!(
+                    "Last startup phase: {phase}. Read the startup log: {}",
+                    path.display()
+                );
+                if let Some(reason) = cleanup_failure {
+                    diagnostic.push_str(&format!(
+                        ". Older startup logs could not be removed: {reason}"
+                    ));
+                }
+                diagnostic
+            }
             Err(reason) => {
                 format!("Last startup phase: {phase}. Startup log could not be written: {reason}")
             }
@@ -80,6 +91,59 @@ impl StartupLog {
         error.body = error.body.with_remedy(remedy);
         error
     }
+}
+
+fn prune(files: &se_proc::NativeStateFiles, current: &Path) -> std::result::Result<(), String> {
+    let mut older = Vec::new();
+    for entry in std::fs::read_dir(files.root()).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if path == current || !log_name(&entry.file_name()) {
+            continue;
+        }
+        if entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .map_err(|e| e.to_string())?;
+            older.push((modified, path));
+        }
+    }
+    older.sort_unstable_by(|a, b| b.cmp(a));
+    let mut failure = None;
+    // Always retain the log advertised by this refusal, even if its clock is
+    // behind another writer's. Unrelated names and non-files are never removed.
+    for (_, path) in older.into_iter().skip(RETAINED_LOGS - 1) {
+        let removed = (|| {
+            let Some(mut owned) = se_proc::OwnedFile::open(&path)? else {
+                return Ok(());
+            };
+            // Revalidate the held state root as well as the deletion pin.
+            if files.readback(&path)?.is_none() {
+                return Ok(());
+            }
+            let digest = owned.sha256()?;
+            owned.remove(digest)
+        })();
+        if let Err(error) = removed {
+            failure.get_or_insert_with(|| format!("{}: {error}", path.display()));
+        }
+    }
+    failure.map_or(Ok(()), Err)
+}
+
+fn log_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .and_then(|name| name.strip_prefix("runtime-startup-"))
+        .and_then(|name| name.strip_suffix(".log"))
+        .is_some_and(|suffix| {
+            // NativeStateFiles staging names contain exactly 16 random bytes
+            // encoded as lowercase hexadecimal on every supported platform.
+            suffix.len() == 32
+                && suffix
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
 }
 
 pub(crate) fn pending(home: &Path, mut error: SeError, waiting_for: &str) -> SeError {
