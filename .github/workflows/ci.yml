@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    # Keep trial spending under operator control until the pilot is measured.
+    branches: [main, seat-5c/ci-pilot]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+  # Keep debug assertions, but omit symbols to fit private runners and artifacts.
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_PROFILE_TEST_DEBUG: '0'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    outputs:
+      rust: ${{ steps.detect.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Detect changes (unresolved diffs run everything)
+        id: detect
+        run: python scripts/ci/changes.py
+
+  fmt:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - run: cargo fmt --all -- --check
+      - name: Exercise CI routing and final status
+        run: python -m unittest discover -s scripts/ci -p 'test_*.py' -v
+
+  clippy:
+    needs: [changes, fmt]
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@v2
+        id: cache
+        with:
+          shared-key: hosted-debug-v1
+      - name: Strict Clippy (native target, including Windows MSVC)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Cache observation
+        if: ${{ always() }}
+        run: echo 'Compile cache hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
+
+  archive:
+    needs: [changes, fmt, clippy]
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.clippy.result == 'success' }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@v2
+        id: cache
+        with:
+          shared-key: hosted-debug-v1
+      - name: Compile once per platform, including custom harness executables
+        run: cargo nextest archive --workspace --all-features --locked --archive-file tests.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tests-${{ matrix.os }}
+          path: tests.tar.zst
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - name: Cache observation
+        if: ${{ always() }}
+        run: echo 'Compile cache hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
+
+  test:
+    needs: [changes, fmt, clippy, archive]
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.archive.result == 'success' }}
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+        shard: [1, 2]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: actions/download-artifact@v4
+        with:
+          name: tests-${{ matrix.os }}
+      - name: Run shard from the existing build
+        run: |
+          filter="$(python scripts/ci/custom.py filter)"
+          cargo nextest run --archive-file tests.tar.zst --extract-to . --workspace-remap "$PWD" --profile ci --partition slice:${{ matrix.shard }}/2 -E "$filter"
+      - name: Run custom harnesses once (their main functions serialize their own cases)
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        run: python scripts/ci/custom.py run
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: results-${{ matrix.os }}-${{ matrix.shard }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 3
+          if-no-files-found: warn
+
+  # Configure only this status as required; failures/cancellations cannot turn green by skipping.
+  check:
+    name: check
+    if: ${{ always() }}
+    needs: [changes, fmt, clippy, archive, test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Require all applicable jobs
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: python scripts/ci/check.py
