@@ -5,7 +5,6 @@ use se_proc::{
     HelperCleanupOutcome, NativeInstallationClaim, NativeStateFiles, OwnedFile,
     UninstallHelperCleanup,
 };
-use se_store::StateFiles;
 const NAME: &str = "uninstall-helper-cleanup.json";
 const MAXIMUM: usize = 256 * 1024;
 
@@ -38,36 +37,6 @@ fn read(files: &NativeStateFiles) -> Result<Option<CleanupRecord>> {
         }
         _ => Err(conflict(&path.to_string_lossy())),
     }
-}
-pub(crate) fn publish(
-    home: &Path,
-    _claim: &NativeInstallationClaim,
-    debt: &UninstallHelperCleanup,
-) -> Result<()> {
-    let files = NativeStateFiles::open(home).map_err(native)?;
-    let bytes = debt
-        .encode()
-        .map_err(|e| invalid("cannot encode native helper cleanup custody").with_cause(e))?;
-    if let Some(previous) = read(&files)? {
-        if previous.bytes != bytes {
-            return Err(conflict(&home.join(NAME).to_string_lossy()));
-        }
-    } else {
-        crate::route::files::Files::from_native(files)
-            .replace_owned(&home.join(NAME), None, &bytes)
-            .map_err(|e| se_core::store_error::store_error(&e))?;
-    }
-    verify(home, debt)
-}
-pub(crate) fn verify(home: &Path, debt: &UninstallHelperCleanup) -> Result<()> {
-    let files = NativeStateFiles::open(home).map_err(native)?;
-    let expected = debt
-        .encode()
-        .map_err(|e| invalid("cannot encode native helper cleanup custody").with_cause(e))?;
-    if read(&files)?.is_none_or(|record| record.bytes != expected) {
-        return Err(conflict(&home.join(NAME).to_string_lossy()));
-    }
-    Ok(())
 }
 /// The permanent account claim serializes journal retirement with every new
 /// installation. A live helper, replacement or unreadable fact preserves debt.

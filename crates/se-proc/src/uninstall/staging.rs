@@ -236,43 +236,6 @@ pub(super) fn cleanup_directory(custody: &DirectoryCustody) -> Result<()> {
     drop(pin);
     native::absent_name(&custody.path)
 }
-pub(super) fn arm_directory_cleanup(custody: &DirectoryCustody, deadline: u64) -> Result<File> {
-    let until = deadline.min(clock().saturating_add(2000));
-    loop {
-        // SAFETY: terminated no-follow path and explicit directory delete-on-close
-        // flags; a successful exact reference stays alive through carrier exit.
-        let raw = unsafe {
-            CreateFileW(
-                native::wide(&custody.path)?.as_ptr(),
-                GENERIC_READ | READ_CONTROL | DELETE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                ptr::null(),
-                OPEN_EXISTING,
-                FILE_FLAG_OPEN_REPARSE_POINT
-                    | FILE_FLAG_BACKUP_SEMANTICS
-                    | FILE_FLAG_DELETE_ON_CLOSE,
-                ptr::null_mut(),
-            )
-        };
-        if raw != INVALID_HANDLE_VALUE && !raw.is_null() {
-            let file = File::from(native::handle(raw, "arm High staging directory cleanup")?);
-            if directory_id(&file)? != custody.id {
-                return Err(refuse(
-                    "arm High staging cleanup",
-                    "directory identity changed",
-                ));
-            }
-            verify_high(&file, true)?;
-            return Ok(file);
-        }
-        let cause = io::Error::last_os_error();
-        if cause.raw_os_error() != Some(ERROR_SHARING_VIOLATION as i32) || clock() >= until {
-            return Err(error("arm High staging directory cleanup", cause));
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
 #[cfg(test)]
 #[path = "../../tests/support/windows_high_policy.rs"]
 mod judges;

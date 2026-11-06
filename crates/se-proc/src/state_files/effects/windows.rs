@@ -223,7 +223,7 @@ impl Pin {
         }
         security::verify_owner(&current, &self.path)
     }
-    fn mutation_guard(&self) -> Result<File> {
+    pub(in crate::state_files) fn mutation_guard(&self) -> Result<File> {
         self.check()?;
         let guard = open_shared(&self.physical, false, 0, false, false)?;
         if metadata(&guard, &self.path, false, false)? != self.identity {
@@ -422,6 +422,29 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
         Err(e) if absent(&e) => return Ok(DirectoryRemoval::AlreadyAbsent),
         Err(e) => return Err(e),
     };
+    // The retained state root deliberately denies delete sharing. Preserve a
+    // nonempty directory before requesting DELETE; its retained history/config
+    // must not turn successful archive recovery into a sharing violation.
+    let observed = match open(&physical, true, 0, false) {
+        Ok(file) => file,
+        Err(error) if absent(&error) => return Ok(DirectoryRemoval::AlreadyAbsent),
+        Err(error) => return Err(error),
+    };
+    let identity = metadata(&observed, path, true, false)?;
+    security::verify_owner(&observed, path)?;
+    if recovery::has_entries(&physical)? {
+        let outside = open(&physical, true, 0, false)?;
+        let (outside_parent, _) = location(path)?;
+        if metadata(&outside, path, true, false)? != identity
+            || outside_parent.identity != parent.identity
+        {
+            return Err(changed(
+                "nonempty directory changed during inspection",
+                path,
+            ));
+        }
+        return Ok(DirectoryRemoval::NotEmpty);
+    }
     let directory = match open(
         &physical,
         true,
@@ -432,7 +455,9 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
         Err(e) if absent(&e) => return Ok(DirectoryRemoval::AlreadyAbsent),
         Err(e) => return Err(e),
     };
-    metadata(&directory, path, true, false)?;
+    if metadata(&directory, path, true, false)? != identity {
+        return Err(changed("empty directory changed before removal", path));
+    }
     security::verify_owner(&directory, path)?;
     if let Err(error) = dispose(&directory, path) {
         return if error
@@ -456,6 +481,25 @@ pub(in crate::state_files) fn remove_empty_directory(path: &Path) -> Result<Dire
         Err(e) => Err(e),
         Ok(_) => Err(changed("directory remained after removal", path)),
     }
+}
+
+/// Retain an admitted directory without requesting DELETE while the native
+/// state-root pin still denies delete sharing. The carrier reopens this exact
+/// object with DELETE only after the actual parent exits.
+pub(crate) fn uninstall_directory(path: &Path) -> Result<Option<File>> {
+    let (_parent, physical) = match location(path) {
+        Ok(value) => value,
+        Err(error) if absent(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let file = match open(&physical, true, GENERIC_READ | GENERIC_WRITE, false) {
+        Ok(file) => file,
+        Err(error) if absent(&error) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    metadata(&file, path, true, false)?;
+    security::verify_owner(&file, path)?;
+    Ok(Some(file))
 }
 
 #[path = "recovery_windows.rs"]

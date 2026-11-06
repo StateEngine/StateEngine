@@ -1,8 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-#[path = "../../tests/support/uninstall_handle_flags.rs"]
-mod handle_flag_tests;
 use sha2::{Digest, Sha256};
 use std::{
     mem::size_of,
@@ -28,31 +25,6 @@ pub(super) fn open_image(path: &Path, delete: bool) -> Result<File> {
         .map_err(|e| error("pin uninstall image", e))?;
     file_id(&file)?;
     Ok(file)
-}
-/// Arm kernel cleanup on the exact staged object before it has an image section.
-/// All inheritable copies refer to this same native file object; no filename is
-/// reopened after launch to acquire delete-on-close authority.
-pub(super) fn delete_on_close(file: &File) -> Result<File> {
-    let armed = File::from(handle(
-        // SAFETY: retained verified staged object, explicit read/delete access
-        // and share-delete; successful reopen transfers one independent file object.
-        unsafe {
-            ReOpenFile(
-                file.as_raw_handle(),
-                GENERIC_READ | READ_CONTROL | DELETE,
-                FILE_SHARE_READ,
-                FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_DELETE_ON_CLOSE,
-            )
-        },
-        "arm staged helper delete-on-close",
-    )?);
-    if file_id(&armed)? != file_id(file)? {
-        return Err(refuse(
-            "arm staged helper cleanup",
-            "staged object identity changed",
-        ));
-    }
-    Ok(armed)
 }
 pub(super) fn file_id(file: &File) -> Result<FileId> {
     let info = crate::windows_native::file_information(file)
@@ -97,9 +69,7 @@ pub(super) fn digest(file: &mut File) -> Result<[u8; 32]> {
         .map_err(|e| error("rewind uninstall image", e))?;
     Ok(hash.finalize().into())
 }
-pub(super) fn process_identity(process: &OwnedHandle) -> Result<UninstallProcessIdentity> {
-    let creation_filetime = crate::windows_native::process_start(process.as_raw_handle())
-        .map_err(|e| error(e.operation, e.source))?;
+pub(super) fn process_image(process: &OwnedHandle) -> Result<PathBuf> {
     let mut image = vec![0u16; 32768];
     let mut length = image.len() as u32;
     // SAFETY: retained process handle and writable UTF-16 buffer with explicit capacity.
@@ -115,17 +85,9 @@ pub(super) fn process_identity(process: &OwnedHandle) -> Result<UninstallProcess
             "invalid native image length",
         ));
     }
-    // SAFETY: immutable process identity query on the retained native handle.
-    let pid = unsafe { GetProcessId(process.as_raw_handle()) };
-    if pid == 0 {
-        return Err(last("read uninstall process PID"));
-    }
-    Ok(UninstallProcessIdentity {
-        pid,
-        creation_filetime,
-        image: std::ffi::OsString::from_wide(&image[..length as usize]).into(),
-    })
+    Ok(std::ffi::OsString::from_wide(&image[..length as usize]).into())
 }
+
 pub(super) fn current_process() -> Result<OwnedHandle> {
     duplicate(
         // SAFETY: native current-process pseudo handle; duplication supplies an owned reference.
@@ -153,27 +115,6 @@ pub(super) fn duplicate(raw: HANDLE, access: u32, inherit: bool) -> Result<Owned
     }
     handle(out, "duplicate uninstall custody handle")
 }
-pub(super) fn inherited(raw: u64) -> Result<OwnedHandle> {
-    let raw = usize::try_from(raw)
-        .map_err(|_| refuse("authenticate inherited handle", "handle width overflow"))?
-        as HANDLE;
-    let mut flags = 0;
-    // SAFETY: native validates this startup handle value before any ownership or use.
-    if unsafe { GetHandleInformation(raw, &mut flags) } == 0 {
-        return Err(last("inspect inherited uninstall handle"));
-    }
-    if flags & HANDLE_FLAG_INHERIT == 0 {
-        return Err(refuse(
-            "authenticate inherited handle",
-            "uninstall handle was not inherited",
-        ));
-    }
-    // Duplicate before clearing startup's original. Neither reference can leak
-    // into a later helper/carrier child after this function returns.
-    let duplicate = duplicate_same(raw, false)?;
-    clear_inherit(raw)?;
-    Ok(duplicate)
-}
 pub(super) fn duplicate_same(raw: HANDLE, inherit: bool) -> Result<OwnedHandle> {
     let mut out = ptr::null_mut();
     // SAFETY: native validates source; successful duplication yields a new owned reference.
@@ -192,16 +133,6 @@ pub(super) fn duplicate_same(raw: HANDLE, inherit: bool) -> Result<OwnedHandle> 
         return Err(last("duplicate uninstall handle with exact access"));
     }
     handle(out, "duplicate uninstall handle with exact access")
-}
-pub(super) fn require_pipe(file: &File) -> Result<()> {
-    // SAFETY: immutable type query on the retained inherited handle.
-    if unsafe { GetFileType(file.as_raw_handle()) } != FILE_TYPE_PIPE {
-        return Err(refuse(
-            "authenticate uninstall envelope",
-            "inherited anonymous pipe required",
-        ));
-    }
-    Ok(())
 }
 pub(super) fn pipe() -> Result<(File, File)> {
     let mut read = ptr::null_mut();
@@ -253,19 +184,6 @@ pub(super) fn exited(process: &OwnedHandle) -> Result<bool> {
         _ => Err(last("observe exact uninstall process exit")),
     }
 }
-pub(super) fn actual_parent() -> Result<u32> {
-    crate::windows_native::parents()
-        .map_err(|e| error(e.operation, e.source))?
-        .get(&std::process::id())
-        .copied()
-        .ok_or_else(|| {
-            refuse(
-                "read actual helper creator",
-                "current helper missing from native ancestry snapshot",
-            )
-        })
-}
-
 pub(super) fn unlink(file: &File, posix: bool) -> Result<()> {
     // ReOpenFile creates an independent native file object for POSIX unlink.
     // Its close removes the name even while inherited read pins remain open.

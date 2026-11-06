@@ -54,7 +54,19 @@ try {
         }
     }
     $manifest = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'manifest.json') -Raw | ConvertFrom-Json
-    if ($manifest.files.'se.exe'.sha256 -ne (Get-Digest $binary)) {
+    $runner = $binary
+    $imageAbsent = $false
+    try { $null = [IO.File]::GetAttributes($binary) }
+    catch [IO.FileNotFoundException] { $imageAbsent = $true }
+    catch [IO.DirectoryNotFoundException] { $imageAbsent = $true }
+    if ($imageAbsent) {
+        # A working newer archive can recover an absent/quarantined image. The
+        # native owner command still validates the retained record and custody;
+        # this selection grants no removal authority or absence proof.
+        $runner = Join-Path $PSScriptRoot 'se.exe'
+        if ($manifest.files.'se.exe'.sha256 -cne (Get-Digest $runner)) { throw 'recovery archive image differs from its manifest' }
+        [Console]::Error.WriteLine('Installed se.exe is absent, possibly quarantined by security software. Using this archive for owner-authorized leftover cleanup; retained history, configuration and provider login are preserved.')
+    } elseif ($manifest.files.'se.exe'.sha256 -cne (Get-Digest $binary)) {
         throw 'installed se differs from this archive; invoke the current installed se uninstall instead'
     }
 } catch {
@@ -80,7 +92,7 @@ try {
     $connected = $pipe.WaitForConnectionAsync()
     $env:SE_UNINSTALL_COMPLETION_PIPE = $name
     $env:SE_UNINSTALL_COMPLETION_TOKEN = $token
-    & $binary uninstall @args
+    & $runner uninstall @args
     $code = $LASTEXITCODE
     if ($code -ne 75) { exit $code }
 
@@ -105,7 +117,7 @@ try {
         if ($bytes.Length -eq 0) { throw 'helper channel closed without a completion verdict' }
         $reply = [Text.Encoding]::UTF8.GetString($bytes.ToArray()) | ConvertFrom-Json
     } finally { $bytes.Dispose() }
-    if ($reply.schema -cne 'se.uninstall-completion/v1' -or $reply.token -cne $token) {
+    if ($reply.schema -cnotin @('se.uninstall-completion/v1','se.uninstall-completion/v2') -or $reply.token -cne $token) {
         throw 'helper completion reply does not match this invocation'
     }
     if ($null -ne $reply.PSObject.Properties['achieved']) { $achieved = $reply.achieved }
@@ -127,7 +139,8 @@ try {
     }
     # The endpoint's claimed names cannot substitute for the entry's own targets.
     # PATH is witnessed by the native parent; this step verifies file cleanup only.
-    $pending = @($binary, $record, $reply.helper)
+    $pending = @($binary, $record)
+    if ($null -ne $reply.helper) { $pending += $reply.helper }
     if ($null -ne $reply.directory) { $pending += $reply.directory }
     foreach ($path in $pending) {
         if ($path -isnot [string] -or -not [IO.Path]::IsPathRooted($path)) {

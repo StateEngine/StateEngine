@@ -27,25 +27,6 @@ pub enum HelperCleanupOutcome {
     StillRunning,
 }
 impl UninstallHelperCleanup {
-    pub(super) fn new(
-        root: PathBuf,
-        path: PathBuf,
-        helper: &UninstallProcessIdentity,
-        file: FileId,
-        digest: [u8; 32],
-        directory: Option<staging::DirectoryCustody>,
-    ) -> Self {
-        Self {
-            version: 2,
-            root,
-            path,
-            pid: helper.pid,
-            creation_filetime: helper.creation_filetime,
-            file,
-            digest,
-            directory,
-        }
-    }
     pub fn path(&self) -> &Path {
         &self.path
     }

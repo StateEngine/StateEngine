@@ -117,6 +117,7 @@ fn reason_and_signed_entropy_status_remain_sourceless() {
 }
 
 #[cfg(windows)]
+/// Protects: PATH commit phases, original native causes and unresolved uninstall artifact warnings survive formatting.
 #[test]
 fn path_commit_phase_and_uninstall_cleanup_debt_survive_error_formatting() {
     use se_proc::{PathUpdateError, PathUpdatePhase, UninstallNativeError};
@@ -148,8 +149,23 @@ fn path_commit_phase_and_uninstall_cleanup_debt_survive_error_formatting() {
     };
     assert_eq!(
         error.to_string(),
-        format!("remove helper: {}", error.source)
+        format!(
+            "remove helper: {}; preserve pending artifact {}; preserve pending artifact {}",
+            error.source,
+            pending_paths[0].display(),
+            pending_paths[1].display()
+        )
     );
     same_source(&error, &error.source);
     assert_eq!(error.pending_paths, pending_paths);
+    let cleared = UninstallNativeError {
+        operation: error.operation,
+        source: error.source,
+        pending_paths: Vec::new(),
+    };
+    assert_eq!(
+        cleared.to_string(),
+        format!("remove helper: {}", cleared.source)
+    );
+    same_source(&cleared, &cleared.source);
 }

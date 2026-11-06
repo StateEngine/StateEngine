@@ -27,6 +27,12 @@ pub enum DirectoryRemoval {
 }
 
 impl OwnedFile {
+    /// Internal native handoff only: revalidate the original object and deny
+    /// concurrent writes for the lifetime of the returned custody handle.
+    #[cfg(windows)]
+    pub(crate) fn uninstall_custody(&self) -> Result<File> {
+        self.0.mutation_guard()
+    }
     /// None means native ENOENT, including an actually absent ancestor. Permission,
     /// sharing, link and identity failures retain their distinct error.
     pub fn open(path: &Path) -> Result<Option<Self>> {
@@ -219,6 +225,14 @@ pub struct NativeInstallationClaim {
     _pin: os::Pin,
 }
 impl NativeInstallationClaim {
+    #[cfg(windows)]
+    pub(crate) fn uninstall_custody(&self) -> Result<File> {
+        self._pin.check()?;
+        self._pin
+            .file()
+            .try_clone()
+            .map_err(|error| io_error("retain uninstall account claim", self._pin.path(), error))
+    }
     pub fn acquire() -> Result<Self> {
         let path = os::installation_claim_path()?;
         let pin = os::Pin::create_claim(&path)?;

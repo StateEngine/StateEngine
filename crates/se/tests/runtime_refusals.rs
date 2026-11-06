@@ -230,17 +230,16 @@ fn uninstall_live_host(json: bool) -> Check {
                 && diagnostic.contains("uninstall.ps1"),
             "deferred exit lost its meaning or final-verdict alternative: {printed}"
         );
-        // The installed parent must exit before Windows can remove its image.
-        // Exit 75 only delegates: independently wait for every reported effect,
-        // including the helper's own teardown, without performing cleanup here.
-        let cleanup = se_proc::UninstallHelperCleanup::decode(&std::fs::read(
-            home.join("uninstall-helper-cleanup.json"),
-        )?)?;
-        let mut paths = vec![installed.as_path(), record.as_path(), cleanup.path()];
-        if let Some(directory) = cleanup.directory_path() {
-            paths.push(directory);
-        }
-        wait_for_absence(&paths, std::time::Duration::from_secs(45))?;
+        // The system carrier never stages a helper executable. Exit 75 only
+        // delegates; independently observe the exact image and record names.
+        wait_for_absence(
+            &[installed.as_path(), record.as_path()],
+            std::time::Duration::from_secs(45),
+        )?;
+        assert!(
+            !home.join("uninstall-helper-cleanup.json").try_exists()?,
+            "system carrier created obsolete executable-helper cleanup debt"
+        );
     }
     assert!(
         !host.live()?,

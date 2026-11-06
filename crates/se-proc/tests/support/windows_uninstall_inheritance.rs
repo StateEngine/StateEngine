@@ -23,6 +23,7 @@ fn uninstall_spawn_inherits_only_explicit_handles_and_stdio() -> Check {
         &[allowed.as_raw_handle()],
         0,
         None,
+        None,
     )?;
     wait_for_fixture(&process, 10000)?;
     assert!(signaled(&allowed)?, "explicit event was not inherited");
@@ -94,10 +95,19 @@ fn uninstall_helpers_do_not_retain_redirected_caller_output() -> Check {
     wait_for_fixture(&parent, 30000)?;
     parent.wait()?;
     // Read independently after the spawned parent has closed its copies.
-    for name in ["helper.report", "carrier.report"] {
+    for name in ["helper.report", "carrier.report", "diagnostic.report"] {
         let actual: [u32; 2] = serde_json::from_slice(&std::fs::read(home.0.join(name))?)?;
-        assert_eq!(actual, [FILE_TYPE_CHAR; 2], "{name} retained caller output");
+        let expected = if name == "diagnostic.report" {
+            [FILE_TYPE_CHAR, FILE_TYPE_DISK]
+        } else {
+            [FILE_TYPE_CHAR; 2]
+        };
+        assert_eq!(actual, expected, "{name} retained caller output");
     }
+    assert_eq!(
+        std::fs::read_to_string(home.0.join("private.stderr"))?,
+        "owned diagnostic\n"
+    );
     Ok(())
 }
 
@@ -111,7 +121,16 @@ fn redirected_output_parent() -> Check {
     }
     // Both real consumers use the same native builder: helper has no extra
     // creation flag, and PowerShell's last-close carrier uses CREATE_NO_WINDOW.
-    for (name, creation_flags) in [("helper.report", 0), ("carrier.report", CREATE_NO_WINDOW)] {
+    for (name, creation_flags) in [
+        ("helper.report", 0),
+        ("carrier.report", CREATE_NO_WINDOW),
+        ("diagnostic.report", CREATE_NO_WINDOW),
+    ] {
+        let diagnostic = if name == "diagnostic.report" {
+            Some(File::create(root.join("private.stderr"))?)
+        } else {
+            None
+        };
         let input = event()?;
         let args = output_fixture_args("observe_private_output", &root.join(name))?;
         let process = command(
@@ -121,6 +140,7 @@ fn redirected_output_parent() -> Check {
             &[],
             creation_flags,
             None,
+            diagnostic.as_ref(),
         )?;
         wait_for_fixture(&process, 10000)?;
         assert!(signaled(&input)?, "private stdin channel was not usable");
@@ -138,6 +158,7 @@ fn observe_private_output() -> Check {
             GetFileType(GetStdHandle(STD_ERROR_HANDLE)),
         ]
     };
+    eprintln!("owned diagnostic");
     std::fs::write(output_fixture_report()?, serde_json::to_vec(&types)?)?;
     // SAFETY: the parent explicitly passed its live event as this child's stdin.
     assert_ne!(unsafe { SetEvent(GetStdHandle(STD_INPUT_HANDLE)) }, 0);
