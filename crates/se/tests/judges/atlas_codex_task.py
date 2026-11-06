@@ -1,6 +1,6 @@
 """Protects: B4 follows real Codex file work and captured history in a live session.
 
-The loopback Responses framing follows grace's native provider review fixture.
+The loopback Responses framing follows the native provider review fixture.
 The real installed Codex executes the tool; this is not a paid-model witness.
 """
 import ctypes
