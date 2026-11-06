@@ -4,6 +4,7 @@ use se_core::ops::{AgentRow, ConversationView, ResumeCommand, SessionView};
 use se_store::{ProcessIdentityRecord, SourceEvidence};
 use se_types::{ProjectId, Read, Result, SeError};
 use std::time::Instant;
+mod approval;
 mod capture;
 mod native;
 pub(crate) mod output;
@@ -19,8 +20,13 @@ pub struct AgentObservationPlan {
     process: Read<ProcessIdentityRecord>,
     capture: Read<SourceEvidence>,
     control_failure: Option<String>,
+    status_attention: bool,
 }
 impl AgentObservationPlan {
+    pub fn with_status_attention(mut self) -> Self {
+        self.status_attention = true;
+        self
+    }
     /// Presentation context only; native observation authority is unchanged.
     pub fn with_command_home(mut self, home: &std::path::Path) -> Self {
         self.command_home = Some(home.to_owned());
@@ -33,8 +39,13 @@ pub struct AgentObservation {
     session: SessionView,
     conversation: ConversationView,
     resume: ResumeCommand,
+    pending: Option<se_core::ops::PendingFact>,
 }
 impl AgentObservation {
+    /// Observed harness attention for status, separate from native liveness.
+    pub fn pending(&self) -> Option<&se_core::ops::PendingFact> {
+        self.pending.as_ref()
+    }
     pub fn apply(self, row: &mut AgentRow) -> Result<()> {
         if row.id != self.agent
             || row.session.session_id.as_ref() != self.identity.as_ref().map(|id| &id.session)
@@ -66,7 +77,7 @@ pub fn observe_agent(
     if let Err(error) = observed {
         degrade(&mut plan.row, &error);
     }
-    if let Some(reason) = plan.control_failure {
+    if let Some(reason) = &plan.control_failure {
         plan.row.session.state = "recovery-pending".into();
         plan.row.resume.ready = false;
         plan.row.resume.mode = "reconcile".into();
@@ -128,12 +139,14 @@ pub fn observe_agent(
             plan.row.resume.argv = None;
         }
     }
+    let pending = approval::observe(&plan, deadline);
     Ok(AgentObservation {
         identity: plan.identity,
         agent: plan.row.id,
         session: plan.row.session,
         conversation: plan.row.conversation,
         resume: plan.row.resume,
+        pending,
     })
 }
 fn invalid(reason: &str) -> SeError {

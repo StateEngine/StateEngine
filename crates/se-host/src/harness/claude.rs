@@ -110,12 +110,18 @@ pub fn invocation(
         }
         .into(),
         launch.conversation.as_str().into(),
-        "--permission-mode".into(),
-        permission_mode(request.profile.permission).into(),
         // Only this host's tools are pre-approved; no human answers prompts.
         "--allowedTools".into(),
         format!("mcp__{MCP_SERVER}").into(),
     ]);
+    // The harness reads Claude's native settings before selecting a headless
+    // fallback at launch. Named profiles remain explicit.
+    if request.profile.named_profile != "default" {
+        arguments.extend([
+            "--permission-mode".into(),
+            permission_mode(request.profile.permission).into(),
+        ]);
+    }
     if let Some(model) = &request.profile.model {
         arguments.extend(["--model".into(), model.into()]);
     }
@@ -141,8 +147,8 @@ pub fn invocation(
     })
 }
 
-/// Headless mode has no one to answer a prompt: an unapproved action is
-/// refused, never silently allowed. Only a named saved profile bypasses.
+/// Explicit named profiles opt into a per-launch Claude permission mode;
+/// the default consults Claude's native settings before headless launch.
 fn permission_mode(profile: se_store::PermissionProfile) -> &'static str {
     match profile {
         se_store::PermissionProfile::ReadOnly => "default",

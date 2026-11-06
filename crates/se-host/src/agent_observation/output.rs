@@ -33,11 +33,26 @@ pub(crate) fn observe(
     deadline: Instant,
     home: &std::path::Path,
 ) -> Result<()> {
-    let mut observations = plans
+    let status = matches!(output, AnyOutput::ProjectStatus(_));
+    let observations = plans
         .into_iter()
-        .map(|plan| observe_agent(plan.with_command_home(home), deadline))
-        .collect::<Result<Vec<_>>>()?
-        .into_iter();
+        .map(|plan| {
+            let plan = plan.with_command_home(home);
+            observe_agent(
+                if status {
+                    plan.with_status_attention()
+                } else {
+                    plan
+                },
+                deadline,
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let pending: Vec<_> = observations
+        .iter()
+        .filter_map(|item| item.pending().cloned())
+        .collect();
+    let mut observations = observations.into_iter();
     match output {
         AnyOutput::ProjectStatus(value) => {
             if let Some(page) = &mut value.value.agents {
@@ -45,6 +60,7 @@ pub(crate) fn observe(
             }
             se_core::ops::status::pending_mail(&mut value.value);
             crate::harness::claude::bell::pending_status(home, &mut value.value);
+            value.value.pending.extend(pending);
         }
         AnyOutput::AgentList(value) => {
             value.value.page = enrich_page(&value.value.page, &mut observations)?;
