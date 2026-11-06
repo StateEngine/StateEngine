@@ -177,7 +177,7 @@ impl<'a> CacheConnection<'a> {
         };
         files.validate_database(&pin)?;
         let db = open(&pin, role, deadline)?;
-        files.configure_connection(&db)?;
+        files.configure_connection_role(&db, role)?;
         configure_limits(&db, role, profile)?;
         finite(&db, deadline, |_| {
             schema::validate(&db, &id)?;
@@ -222,7 +222,7 @@ impl<'a> CacheConnection<'a> {
                 return Err(cache_error("new epoch reservation is not empty"));
             }
             let db = open(&pin, role, deadline)?;
-            files.configure_connection(&db)?;
+            files.configure_connection_role(&db, role)?;
             db.execute_batch("PRAGMA page_size=4096")
                 .map_err(cache_error)?;
             configure(&db, role, profile)?;

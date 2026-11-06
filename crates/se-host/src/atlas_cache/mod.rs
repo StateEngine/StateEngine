@@ -155,6 +155,22 @@ impl NativeAtlasCache {
     }
 }
 impl CacheFiles for NativeAtlasCache {
+    fn configure_connection_role(
+        &self,
+        connection: &se_atlas::cache::connection::NativeSqlConnection,
+        role: se_atlas::cache::connection::ConnectionRole,
+    ) -> AtlasResult<()> {
+        self.configure_connection(connection)?;
+        if matches!(
+            role,
+            se_atlas::cache::connection::ConnectionRole::MaintenanceWriter
+                | se_atlas::cache::connection::ConnectionRole::QueryReader
+                | se_atlas::cache::connection::ConnectionRole::HostReader
+        ) {
+            se_proc::atlas_sql::retain_wal(connection).map_err(fail)?;
+        }
+        Ok(())
+    }
     fn configure_connection(
         &self,
         connection: &se_atlas::cache::connection::NativeSqlConnection,

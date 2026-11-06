@@ -19,6 +19,15 @@ pub trait CacheFiles {
     fn configure_connection(&self, _connection: &rusqlite::Connection) -> AtlasResult<()> {
         Ok(())
     }
+    /// Native adapters may give short-lived maintenance and read connections
+    /// explicit checkpoint ownership without changing cold-writer behavior.
+    fn configure_connection_role(
+        &self,
+        connection: &rusqlite::Connection,
+        _role: connection::ConnectionRole,
+    ) -> AtlasResult<()> {
+        self.configure_connection(connection)
+    }
     /// At most 1024 bytes; native bounded read refuses an oversized pointer.
     fn read_pointer(&self) -> AtlasResult<Option<Vec<u8>>>;
     /// Compare old bytes/absence, atomic protected replacement, sync and external

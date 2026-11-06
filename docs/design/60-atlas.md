@@ -191,6 +191,10 @@ WAL admission stops at 8,000,000 bytes; checkpoint target 4,000,000. Reader tran
 have bounded query deadlines and close at response completion. External readers
 cannot be forcibly expired: if their pins prevent checkpoint, suspend Atlas writes
 with CacheBusy, preserve the old cache and report it. No idle checkpoint/expiry tick.
+Short-lived host readers and maintenance writers retain the WAL on close;
+the source-work owner checkpoints accumulated bytes before its next transaction.
+Closing a read or work slice never adds an implicit whole-WAL checkpoint. Cold
+creation and its owned completion keep their separate job-clock behavior.
 
 Normative relational layout follows. Checked nonnegative counters and blob/text
 limits in this document also apply where SQL checks are abbreviated. All ordinary
