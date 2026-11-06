@@ -218,6 +218,7 @@ fn optional_hint_deadline(error: &(dyn std::error::Error + 'static)) -> bool {
             if detail.op == "local IPC" && detail.deadline_ms <= 5)
         })
 }
+/// Protects: only the typed optional-hint ingress timeout is tolerated; all other failures stay visible.
 #[test]
 fn optional_hint_deadline_rejects_other_failures() {
     let timeout = |op: &str, deadline_ms| {
