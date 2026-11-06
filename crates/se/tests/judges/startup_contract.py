@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import subprocess
+import sys
 import time
 import uuid
 
@@ -67,31 +68,51 @@ def agent(f):
 
 def retry(f, argv, label, control_env, track, groups):
     unit = 'se-startup-retry-' + uuid.uuid4().hex + '.scope'
+    # Hold the owned scope before exec, so even an instant keyed replay has an
+    # outside-observed group and native birth. The advertised CLI argv and its
+    # EOF stdin remain unchanged after the one-byte controller handshake.
+    gate = 'import os,sys; token=os.read(0,1); sys.exit(70) if token!=b"1" else os.execv(sys.argv[1],sys.argv[1:])'
     launcher = ['systemd-run', '--user', '--scope', '--quiet', '--unit=' + unit,
                 '/usr/bin/env', 'XDG_RUNTIME_DIR=' + f.env['XDG_RUNTIME_DIR'],
-                str(f.se), *argv[1:]]
+                sys.executable, '-c', gate, str(f.se), *argv[1:]]
     environment = {**f.env, 'XDG_RUNTIME_DIR': control_env['XDG_RUNTIME_DIR'],
                    'DBUS_SESSION_BUS_ADDRESS': control_env['DBUS_SESSION_BUS_ADDRESS']}
     group = None
     until = time.monotonic() + 90
     outpath, errpath = f.root / (label + '.stdout'), f.root / (label + '.stderr')
     with outpath.open('wb') as out, errpath.open('wb') as err:
-        run = subprocess.Popen(launcher, env=environment, stdin=subprocess.DEVNULL, stdout=out, stderr=err)
-        while run.poll() is None:
-            assert time.monotonic() < until, 'advertised retry exceeded the judge bound'
-            if group is None:
-                shown = subprocess.run(['systemctl', '--user', 'show', unit, '--property=ControlGroup', '--value'],
-                                       env=control_env, capture_output=True, text=True, timeout=5)
-                if shown.returncode == 0 and shown.stdout.strip():
-                    group = Path('/sys/fs/cgroup') / shown.stdout.strip().lstrip('/')
-                    assert group.resolve().is_relative_to('/sys/fs/cgroup')
-                    groups.append(group)
-            if group is not None and (group / 'cgroup.procs').exists():
-                for pid in map(int, (group / 'cgroup.procs').read_text().split()):
-                    track(pid, required=False)
-            time.sleep(0.1)
-    assert group is not None, 'retry CPU scope was not observed'
-    return subprocess.CompletedProcess(argv, run.returncode, outpath.read_bytes(), errpath.read_bytes())
+        run = subprocess.Popen(launcher, env=environment, stdin=subprocess.PIPE, stdout=out, stderr=err)
+        released = False
+        before_exec = []
+        try:
+            while run.poll() is None:
+                assert time.monotonic() < until, 'advertised retry exceeded the judge bound'
+                if group is None:
+                    shown = subprocess.run(['systemctl', '--user', 'show', unit, '--property=ControlGroup', '--value'],
+                                           env=control_env, capture_output=True, text=True, timeout=5)
+                    if shown.returncode == 0 and shown.stdout.strip():
+                        group = Path('/sys/fs/cgroup') / shown.stdout.strip().lstrip('/')
+                        assert group.resolve().is_relative_to('/sys/fs/cgroup')
+                        groups.append(group)
+                if group is not None and (group / 'cgroup.procs').exists():
+                    observed = [track(pid, required=False)
+                                for pid in map(int, (group / 'cgroup.procs').read_text().split())]
+                    if not released and any(observed):
+                        before_exec = [pin for pin in observed if pin is not None]
+                        run.stdin.write(b'1')
+                        run.stdin.close()
+                        released = True
+                time.sleep(0.1)
+        finally:
+            # EOF aborts a gate whose identity could not be observed. Never leave
+            # a new wrapper parked merely because the manager was unreadable.
+            if not run.stdin.closed:
+                run.stdin.close()
+                run.wait(timeout=5)
+    assert group is not None and released, 'retry scope and native birth were not observed before exec'
+    response = subprocess.CompletedProcess(argv, run.returncode, outpath.read_bytes(), errpath.read_bytes())
+    response.scope_witness = {'unit': unit, 'group': str(group), 'before_exec': before_exec}
+    return response
 
 
 def pending_recovery(f, reply, stderr, key, task, release_quota, track, result, control_env, groups):
@@ -124,6 +145,7 @@ def pending_recovery(f, reply, stderr, key, task, release_quota, track, result, 
     replies = []
     for label in ['retry', 'replay']:
         run = retry(f, argv, label, control_env, track, groups)
+        result[label + '_scope_witness'] = run.scope_witness
         assert run.returncode == 0, (label, run.stdout, run.stderr)
         status, row = agent(f)
         assert status['runtime']['state'] == 'running', status['runtime']

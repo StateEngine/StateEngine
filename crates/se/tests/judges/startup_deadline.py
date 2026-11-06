@@ -105,6 +105,7 @@ def run_case(image, directory, control_env, quota, expect):
             assert pin is not None, 'native process exited before its outside identity read'
         if pin is not None:
             pins[(pid, pin['birth'])] = pin
+        return pin
 
     def release_quota():
         release_scope_quota(unit, cgroup, list(pins.values()), control_env, exited, result)
