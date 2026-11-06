@@ -45,6 +45,11 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
     if !registered {
         return Ok(None);
     }
+    if super::git_identity::git_missing() {
+        // Git metadata is present but the machine has no Git binary: the
+        // state is absent to this machine, not unreadable.
+        return Ok(None);
+    }
     let symbolic = run(root, &["symbolic-ref", "-q", "HEAD"])?;
     let full_branch = if symbolic.status.success() {
         Some(text(&symbolic)?)

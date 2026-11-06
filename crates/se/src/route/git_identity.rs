@@ -15,8 +15,14 @@ use std::{
 const STDOUT_BOUND: usize = 4096;
 
 /// True when the selected path is itself a bare repository (no working tree).
-/// A path that is not a Git repository at all is not bare.
+/// A path that is not a Git repository at all is not bare, and a path cannot
+/// be detected as bare when Git is not installed: a missing binary leaves no
+/// repository state to observe, so the path proceeds as a plain folder and
+/// its git identity is recorded as absent.
 pub fn is_bare(root: &Path) -> Result<bool> {
+    if git_missing() {
+        return Ok(false);
+    }
     let output = run(root, &["rev-parse", "--is-bare-repository"])?;
     if output.status.success() {
         Ok(text(&output)? == "true")
@@ -84,6 +90,13 @@ pub fn record(
 /// directions (unrelated history), while allowing continued work and
 /// ordinary resets after the registration.
 pub fn verify(root: &Path, project_id: &str) -> Result<(String, Option<String>)> {
+    if git_missing() {
+        return Err(refusal(
+            "moved repository folder",
+            "Git is not installed on this machine",
+            "A moved repository is verified against its recorded commit history, which requires Git. Install Git (https://git-scm.com) and retry the move.",
+        ));
+    }
     let path = marker_path(root, project_id)?;
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -189,6 +202,16 @@ fn unreadable(root: &Path, subject: &str, output: &Output) -> SeError {
             root.display(),
             output.status.code()
         ),
+    )
+}
+/// True when the Git binary is not installed: the spawn itself fails with
+/// `NotFound`. That is a different fact from a Git command that ran and
+/// failed — a missing binary means the repository state is absent to this
+/// machine, not unreadable.
+pub(super) fn git_missing() -> bool {
+    matches!(
+        Command::new("git").arg("--version").output(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
     )
 }
 fn run(root: &Path, args: &[&str]) -> Result<Output> {
