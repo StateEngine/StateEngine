@@ -32,7 +32,7 @@ Before a saved receipt, show failure or **save outcome unknown**, resolving with
 | Attended Claude | Use the provider-native plugin route; never synthesize console input. If the plugin/session cannot receive, show that reason and keep mail pending. |
 | Never reads / never replies | After 60 seconds without a read marker show **Not read yet**, elapsed time and current reason; after reading show **Read; no reply yet**. Offer status, the authorized resume choice or another agent selected explicitly. No repeated wake loop, automatic rerouting, read marking or fabricated reply. |
 
-On the inspected Rust base `a04c3ca6`, `process/mail.rs` skips inactive/unbound work, gates autonomous Claude on idle, and bypasses attended Claude for its plugin; provider input is correlated before delivery observation. `claude_harness/mail.rs` also refuses attended stdin offers. These are source findings, not native stopped-agent proof. Nell's separate measurement must establish actual send receipt, unread retention and resume behavior before implementation acceptance; this proposal does not claim mail currently starts stopped agents.
+On the inspected Rust base `a04c3ca6`, `process/mail.rs` skips inactive/unbound work, gates autonomous Claude on idle, and bypasses attended Claude for its plugin; provider input is correlated before delivery observation. `claude_harness/mail.rs` also refuses attended stdin offers. These are source findings, not native stopped-agent proof. Independent native qualification must establish actual send receipt, unread retention and resume behavior before implementation acceptance; this proposal does not claim mail currently starts stopped agents.
 
 ## Paired sender means Owner mail
 
