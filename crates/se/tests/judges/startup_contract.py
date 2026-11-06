@@ -6,6 +6,41 @@ import time
 import uuid
 
 
+def release_scope_quota(unit, group, pins, control_env, exited, result):
+    released = subprocess.run(['systemctl', '--user', 'set-property', unit, 'CPUQuota=100%'],
+                              env=control_env, capture_output=True, timeout=5)
+    result['recovery_quota_exit'] = released.returncode
+    if released.returncode == 0:
+        result['recovery_scope'] = 'quota released'
+        return
+    assert group is not None, 'owned recovery scope identity was not witnessed'
+    try:
+        members = (group / 'cgroup.procs').read_text().split()
+    except FileNotFoundError:
+        try:
+            group.stat()
+        except FileNotFoundError:
+            members = None
+        else:
+            raise AssertionError('owned scope exists but its membership is unreadable')
+    shown = subprocess.run(['systemctl', '--user', 'show', unit, '--property=LoadState',
+                            '--property=ActiveState', '--property=ControlGroup'],
+                           env=control_env, capture_output=True, text=True, timeout=5)
+    state = dict(line.split('=', 1) for line in shown.stdout.splitlines() if '=' in line)
+    outside = [{'pid': pin['pid'], 'birth': pin['birth'], 'not_executing': exited(pin)}
+               for pin in pins]
+    result['recovery_settled_scope'] = {'path': str(group), 'members': members,
+                                       'unit': state, 'outside': outside}
+    assert members in (None, []), 'owned scope is live and its recovery quota could not be released'
+    assert all(pin['not_executing'] for pin in outside), 'owned startup birth still executes after quota failure'
+    missing = state.get('LoadState') == 'not-found' and state.get('ActiveState') == 'inactive'
+    inactive = (shown.returncode == 0 and state.get('LoadState') == 'loaded'
+                and state.get('ActiveState') in ['inactive', 'failed']
+                and state.get('ControlGroup') in ['', '/' + str(group.relative_to('/sys/fs/cgroup'))])
+    assert missing or inactive, 'owned scope state is unreadable or not settled after quota failure'
+    result['recovery_scope'] = 'proven absent' if members is None else 'proven empty'
+
+
 def same_request(argv, f, key, task):
     assert argv and argv[0] == 'se', 'recovery is not a literal se command'
     values, positional, flags = {}, [], []

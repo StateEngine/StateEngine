@@ -22,7 +22,7 @@ import traceback
 import uuid
 
 from mail_cli import Fixture
-from startup_contract import pending_recovery, native_refusal
+from startup_contract import pending_recovery, native_refusal, release_scope_quota
 
 
 def native(pid):
@@ -107,10 +107,7 @@ def run_case(image, directory, control_env, quota, expect):
             pins[(pid, pin['birth'])] = pin
 
     def release_quota():
-        released = subprocess.run(['systemctl', '--user', 'set-property', unit, 'CPUQuota=100%'],
-                                  env=control_env, capture_output=True, timeout=5)
-        assert released.returncode == 0, 'owned recovery quota was not released'
-        result['recovery_quota_released'] = True
+        release_scope_quota(unit, cgroup, list(pins.values()), control_env, exited, result)
 
     started = time.monotonic()
     try:
