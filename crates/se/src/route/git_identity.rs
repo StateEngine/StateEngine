@@ -20,10 +20,11 @@ const STDOUT_BOUND: usize = 4096;
 /// repository state to observe, so the path proceeds as a plain folder and
 /// its git identity is recorded as absent.
 pub fn is_bare(root: &Path) -> Result<bool> {
-    if git_missing() {
-        return Ok(false);
-    }
-    let output = run(root, &["rev-parse", "--is-bare-repository"])?;
+    let output = match run(root, &["rev-parse", "--is-bare-repository"]) {
+        Spawn::Output(output) => output,
+        Spawn::Missing => return Ok(false),
+        Spawn::Unreadable(error) => return Err(error),
+    };
     if output.status.success() {
         Ok(text(&output)? == "true")
     } else if output.status.code() == Some(128) {
@@ -35,7 +36,11 @@ pub fn is_bare(root: &Path) -> Result<bool> {
 /// The common Git directory: the main `.git` of a worktree or bare
 /// repository, wherever the working copy sits.
 fn common_dir(root: &Path) -> Result<PathBuf> {
-    let output = run(root, &["rev-parse", "--git-common-dir"])?;
+    let output = match run(root, &["rev-parse", "--git-common-dir"]) {
+        Spawn::Output(output) => output,
+        Spawn::Missing => return Err(missing_refusal()),
+        Spawn::Unreadable(error) => return Err(error),
+    };
     if !output.status.success() {
         return Err(unreadable(root, "Git common directory", &output));
     }
@@ -90,13 +95,6 @@ pub fn record(
 /// directions (unrelated history), while allowing continued work and
 /// ordinary resets after the registration.
 pub fn verify(root: &Path, project_id: &str) -> Result<(String, Option<String>)> {
-    if git_missing() {
-        return Err(refusal(
-            "moved repository folder",
-            "Git is not installed on this machine",
-            "A moved repository is verified against its recorded commit history, which requires Git. Install Git (https://git-scm.com) and retry the move.",
-        ));
-    }
     let path = marker_path(root, project_id)?;
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -149,7 +147,11 @@ pub fn verify(root: &Path, project_id: &str) -> Result<(String, Option<String>)>
             )
         })?
         .to_owned();
-    let output = run(root, &["rev-parse", "--verify", "--quiet", "HEAD"])?;
+    let output = match run(root, &["rev-parse", "--verify", "--quiet", "HEAD"]) {
+        Spawn::Output(output) => output,
+        Spawn::Missing => return Err(missing_refusal()),
+        Spawn::Unreadable(error) => return Err(error),
+    };
     let current_head = if output.status.success() {
         text(&output)?
     } else if output.status.code() == Some(1) {
@@ -179,7 +181,11 @@ pub fn verify(root: &Path, project_id: &str) -> Result<(String, Option<String>)>
     Ok((recorded_head, branch))
 }
 fn ancestor(root: &Path, candidate: &str, head: &str) -> Result<bool> {
-    let output = run(root, &["merge-base", "--is-ancestor", candidate, head])?;
+    let output = match run(root, &["merge-base", "--is-ancestor", candidate, head]) {
+        Spawn::Output(output) => output,
+        Spawn::Missing => return Err(missing_refusal()),
+        Spawn::Unreadable(error) => return Err(error),
+    };
     if output.status.success() || output.status.code() == Some(1) {
         return Ok(output.status.success());
     }
@@ -204,18 +210,16 @@ fn unreadable(root: &Path, subject: &str, output: &Output) -> SeError {
         ),
     )
 }
-/// True when the Git binary is not installed: the spawn itself fails with
-/// `NotFound`. That is a different fact from a Git command that ran and
-/// failed — a missing binary means the repository state is absent to this
-/// machine, not unreadable.
-pub(super) fn git_missing() -> bool {
-    matches!(
-        Command::new("git").arg("--version").output(),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound
-    )
+/// The outcome of one bounded Git invocation. `Missing` keeps a spawn that
+/// found no Git binary distinct from a command that ran and failed: absent
+/// is a different fact from unreadable, and each caller reports it as such.
+enum Spawn {
+    Output(Output),
+    Missing,
+    Unreadable(SeError),
 }
-fn run(root: &Path, args: &[&str]) -> Result<Output> {
-    let output = Command::new("git")
+fn run(root: &Path, args: &[&str]) -> Spawn {
+    match Command::new("git")
         .arg("-c")
         .arg("core.fsmonitor=false")
         .arg("-C")
@@ -226,8 +230,21 @@ fn run(root: &Path, args: &[&str]) -> Result<Output> {
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
         .output()
-        .map_err(|e| se_core::scope::unreadable("Git repository observation", &e.to_string()))?;
-    Ok(output)
+    {
+        Ok(output) => Spawn::Output(output),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Spawn::Missing,
+        Err(error) => Spawn::Unreadable(se_core::scope::unreadable(
+            "Git repository observation",
+            &error.to_string(),
+        )),
+    }
+}
+fn missing_refusal() -> SeError {
+    refusal(
+        "moved repository folder",
+        "Git is not installed on this machine",
+        "A moved repository is verified against its recorded commit history, which requires Git. Install Git (https://git-scm.com) and retry the move.",
+    )
 }
 fn text(output: &Output) -> Result<String> {
     if output.stdout.len() > STDOUT_BOUND {

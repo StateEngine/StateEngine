@@ -45,12 +45,13 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
     if !registered {
         return Ok(None);
     }
-    if super::git_identity::git_missing() {
+    let symbolic = match run(root, &["symbolic-ref", "-q", "HEAD"]) {
+        Spawn::Output(output) => output,
         // Git metadata is present but the machine has no Git binary: the
         // state is absent to this machine, not unreadable.
-        return Ok(None);
-    }
-    let symbolic = run(root, &["symbolic-ref", "-q", "HEAD"])?;
+        Spawn::Missing => return Ok(None),
+        Spawn::Unreadable(error) => return Err(error),
+    };
     let full_branch = if symbolic.status.success() {
         Some(text(&symbolic)?)
     } else if symbolic.status.code() == Some(1) {
@@ -61,7 +62,11 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
             "symbolic HEAD could not be read",
         ));
     };
-    let head = run(root, &["rev-parse", "--verify", "--quiet", "HEAD"])?;
+    let head = match run(root, &["rev-parse", "--verify", "--quiet", "HEAD"]) {
+        Spawn::Output(output) => output,
+        Spawn::Missing => return Ok(None),
+        Spawn::Unreadable(error) => return Err(error),
+    };
     let (head, commits) = if head.status.success() {
         let value = text(&head)?;
         if !matches!(value.len(), 40 | 64) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -70,7 +75,11 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
                 "Git returned an invalid object identity",
             ));
         }
-        let count = run(root, &["rev-list", "--count", "HEAD"])?;
+        let count = match run(root, &["rev-list", "--count", "HEAD"]) {
+            Spawn::Output(output) => output,
+            Spawn::Missing => return Ok(None),
+            Spawn::Unreadable(error) => return Err(error),
+        };
         if !count.status.success() {
             return Err(scope::unreadable(
                 "Git HEAD",
@@ -85,7 +94,11 @@ pub fn observe(root: &Path) -> Result<Option<GitView>> {
         let branch = full_branch.as_deref().ok_or_else(|| {
             scope::unreadable("Git HEAD", "detached HEAD does not resolve to a commit")
         })?;
-        let exists = run(root, &["show-ref", "--verify", "--quiet", branch])?;
+        let exists = match run(root, &["show-ref", "--verify", "--quiet", branch]) {
+            Spawn::Output(output) => output,
+            Spawn::Missing => return Ok(None),
+            Spawn::Unreadable(error) => return Err(error),
+        };
         if exists.status.code() != Some(1) {
             return Err(scope::unreadable(
                 "Git HEAD",
@@ -309,12 +322,25 @@ async fn bounded_exit(
     }
 }
 
-fn run(root: &Path, args: &[&str]) -> Result<Output> {
+/// The outcome of one bounded Git invocation. `Missing` keeps a spawn that
+/// found no Git binary distinct from a command that ran and failed: the
+/// observation reports the state as absent, not unreadable.
+enum Spawn {
+    Output(Output),
+    Missing,
+    Unreadable(SeError),
+}
+fn run(root: &Path, args: &[&str]) -> Spawn {
     let mut command = Command::new("git");
     configured(root, &mut command).args(args);
-    command
-        .output()
-        .map_err(|e| scope::unreadable("Git repository observation", &e.to_string()))
+    match command.output() {
+        Ok(output) => Spawn::Output(output),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Spawn::Missing,
+        Err(error) => Spawn::Unreadable(scope::unreadable(
+            "Git repository observation",
+            &error.to_string(),
+        )),
+    }
 }
 
 /// The flags every observation call shares. Both Git command builders —
