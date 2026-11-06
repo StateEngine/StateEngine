@@ -67,7 +67,7 @@ fn exchange(
             .key
             .as_ref()
             .map(|key| (operation.name.clone(), key.clone())),
-        IpcRequest::Hook(_) => None,
+        IpcRequest::Hook(_) | IpcRequest::Channels(_) => None,
     };
     let started = Instant::now();
     let mut connection = BlockingIpcClient::connect_authenticated(
@@ -161,6 +161,7 @@ fn call_operation(call: &IpcEnvelope) -> &str {
     match &call.request {
         IpcRequest::Operation(op) => &op.name,
         IpcRequest::Hook(_) => "hook.claude",
+        IpcRequest::Channels(_) => "native.channels",
     }
 }
 fn invalid(expected: &str) -> SeError {

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Judge a real Linux archive: python3 crates/se/tests/installers.py --archive ARCHIVE.
 
-These exercise installation ownership, not native CLI/uninstall completion or Windows.
+These judge Linux installation ownership and first-hour output through real scripts and binaries.
+Run in an owner terminal outside managed agent ancestry; no Windows or provider-task qualification.
 """
 import argparse
 import hashlib
@@ -11,6 +12,7 @@ import pwd
 from pathlib import Path
 import select
 import signal
+import shlex
 import shutil
 import stat
 import subprocess
@@ -97,6 +99,123 @@ class LinuxInstaller(unittest.TestCase):
     def install(self, home, bundle=None):
         argv, environment = self.command(home, bundle)
         return subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
+
+    def uninstall_owned(self, home):
+        """Remove this test's real installation from an outside-agent owner PTY."""
+        binary = home / ".local/bin/se"
+        if not binary.exists():
+            return
+        _, environment = self.command(home)
+        command = shlex.join([str(binary), "--home", str(home / ".local/state/stateengine"), "uninstall"])
+        removed = subprocess.run(
+            ["/usr/bin/script", "--quiet", "--return", "--command", command, "/dev/null"],
+            env=environment, cwd=self.root, capture_output=True, timeout=INSTALL_TIMEOUT,
+        )
+        self.assertEqual(removed.returncode, 0, (removed.stdout, removed.stderr))
+        self.assertFalse(binary.exists())
+        self.assertFalse((home / ".local/state/stateengine/standalone-install.json").exists())
+
+    def test_printed_commands_work_in_current_terminal_with_literal_home(self):
+        """Bug: first-hour D01 — printed commands work without a new terminal or shell evaluation of HOME."""
+        home = self.home("owner's $(touch injected)")
+        installed = self.install(home)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.addCleanup(self.uninstall_owned, home)
+        lines = installed.stdout.decode().splitlines()
+        marker = "Run this command now in this terminal to verify the installation:"
+        self.assertEqual(lines.count(marker), 1, installed.stdout)
+        literal = lines[lines.index(marker) + 1].strip()
+        self.assertEqual(shlex.split(literal), [str(home / ".local/bin/se"), "--version"])
+        activation = lines[lines.index("To use se by name here, add its directory to this terminal PATH:") + 1].strip()
+        empty_path = self.root / "empty-search-path"
+        empty_path.mkdir()
+        _, environment = self.command(home)
+        environment["PATH"] = str(empty_path)
+        for command in (literal, activation + "\nse --version"):
+            result = subprocess.run(
+                ["/bin/sh", "-c", command], env=environment, cwd=self.root,
+                capture_output=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, (command, result.stdout, result.stderr))
+            self.assertRegex(result.stdout, rb"^stateengine [0-9]+\.[0-9]+\.[0-9]+")
+        self.assertFalse((self.root / "injected").exists(), "printed path executed shell syntax from HOME")
+
+    def test_unsigned_in_preview_labels_context_and_preserves_unread_and_history(self):
+        """Bug: first-hour D09 — preview readiness describes context, never sign-in/task success or mail acknowledgment."""
+        home = self.home("preview owner's")
+        installed = self.install(home)
+        self.assertEqual(installed.returncode, 0, installed.stderr)
+        self.addCleanup(self.uninstall_owned, home)
+        repository = self.root / "user repository"
+        repository.mkdir()
+        work = repository / "work.txt"
+        work.write_bytes(b"preserved user work\n")
+        _, environment = self.command(home)
+        subprocess.run(["git", "init", "--quiet"], env=environment, cwd=repository, check=True)
+        subprocess.run(["git", "add", "--", "work.txt"], env=environment, cwd=repository, check=True)
+        subprocess.run(["git", "-c", "user.name=Onboarding fixture", "-c", "user.email=fixture@invalid.example",
+                        "commit", "-F", "-", "--", "work.txt"], input=b"Keep user work.\n",
+                       env=environment, cwd=repository, capture_output=True, check=True)
+        head = subprocess.check_output(["git", "rev-parse", "HEAD"], env=environment, cwd=repository)
+        state = home / ".local/state/stateengine"
+        binary = home / ".local/bin/se"
+
+        def call(*arguments, structured=True, codes=(0,)):
+            argv = [str(binary), "--home", str(state)]
+            if structured:
+                argv.append("--json")
+            result = subprocess.run(argv + list(arguments), env=environment, cwd=repository,
+                                    capture_output=True, timeout=INSTALL_TIMEOUT)
+            self.assertIn(result.returncode, codes, (arguments, result.stdout, result.stderr))
+            return (result.returncode, json.loads(result.stdout)) if structured else result
+
+        try:
+            call("init", "--provider", "codex")
+            for stage in ("empty", "unread", "incomplete"):
+                clipped = stage == "incomplete"
+                if stage == "unread":
+                    call("msg", "send", "main", "Keep this unread.", "--no-wake", "--key", "preview-unread")
+                if clipped:
+                    call("msg", "send", "main", "Second unread message exceeds the one-row window.",
+                         "--no-wake", "--key", "preview-clipped")
+                history_before = call("history")[1]
+                unread_before = call("msg", "list", "--to", "main", "--full")[1]
+                window = ("--limit", "1") if clipped else ()
+                code, value = call("resume", "--preview", "main", *window, codes=(0, 2))
+                plain = call("resume", "--preview", "main", *window, structured=False, codes=(0, 2))
+                self.assertEqual(plain.returncode, code)
+                self.assertEqual(value["schema"], "se.resume/v1")
+                self.assertTrue(value["principal"]["preview"])
+                self.assertIsNone(value["principal"]["session_id"])
+                if stage == "empty":
+                    self.assertEqual(value["resume_status"], "ready")
+                    self.assertEqual(value["recent_turns"], [])
+                self.assertEqual(value["complete"], not clipped, value)
+                expected_status = ("saved context available" if stage == "empty"
+                                   else "saved context; unread messages below")
+                self.assertIn(f"context read: {expected_status}", plain.stdout.decode())
+                self.assertIn(f"context complete: {str(value['complete']).lower()}", plain.stdout.decode())
+                self.assertIn(b"provider sign-in and task completion are not checked", plain.stdout)
+                self.assertIn(b"owner preview; no messages marked read", plain.stdout)
+                self.assertNotIn("provider_signed_in", value)
+                self.assertNotIn("task_complete", value)
+                self.assertEqual(call("history")[1], history_before, "preview wrote history")
+                self.assertEqual(call("msg", "list", "--to", "main", "--full")[1], unread_before,
+                                 "preview acknowledged mail")
+            self.assertFalse((home / ".codex/auth.json").exists())
+            self.assertFalse((home / ".claude/.credentials.json").exists())
+            self.assertEqual(work.read_bytes(), b"preserved user work\n")
+            self.assertEqual(subprocess.check_output(["git", "rev-parse", "HEAD"], env=environment,
+                                                    cwd=repository), head)
+        finally:
+            _, stopped = call("down")
+            self.assertTrue(stopped["complete"], stopped)
+            self.assertFalse((state / "endpoint.json").exists())
+            lock = state / "runtime.lock"
+            if lock.exists():
+                import fcntl
+                with lock.open("rb") as lease:
+                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
     def test_foreign_paths_and_profiles_are_preserved(self):
         # Existing commands, records, assets, links and unreadable profile encodings

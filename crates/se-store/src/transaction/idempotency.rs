@@ -6,7 +6,7 @@ struct StoredRequest {
     version: u16,
     erased: bool,
 }
-pub(super) fn lookup(
+pub(crate) fn lookup(
     c: &Connection,
     batch: &AtomicBatch,
     info: &StoreInfo,

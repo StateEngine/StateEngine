@@ -1,199 +1,239 @@
-# StateEngine (Rust)
+# StateEngine
 
-The StateEngine product, rebuilt in Rust. One `se` binary; library crates that SE Code links.
-Plan: https://claude.ai/artifact/F82qoYRSPSaVZfXevnWU5D (ledger: rust-redesign-planned-before-rebuild-2026-10-30).
+Run a coding assistant in your project, save its conversation, and pick up where you
+left off. StateEngine launches **Claude Code** or **Codex**, records their work, and
+lets assistants exchange project messages. The `se` command manages those assistants.
+
+## Before you install
+
+The first-agent workflow below is for **Linux x86_64** and **Windows x86_64**.
+**macOS cannot run the background service or launch managed agents in this alpha**;
+those commands refuse. macOS packages support installation and saved-state inspection,
+but are not a working first-agent path. Native macOS qualification is still pending;
+see the [macOS qualification notes](docs/MACOS_QUALIFICATION.md).
+
+**Release download URL: not published yet; the publishing location is undecided.**
+Until that is settled, obtain the unsigned archive and its checksum from the
+maintainer. There is no public download command to copy here yet. Archive names use
+`stateengine-VERSION-TARGET-unsigned` with these endings:
+
+| Your machine | TARGET | Archive ending |
+| --- | --- | --- |
+| Linux, Intel/AMD 64-bit | `x86_64-unknown-linux-gnu` | `.tar.gz` |
+| Windows, Intel/AMD 64-bit | `x86_64-pc-windows-msvc` | `.zip` |
+| macOS, Apple silicon (limited as above) | `aarch64-apple-darwin` | `.tar.gz` |
+| macOS, Intel (limited as above) | `x86_64-apple-darwin` | `.tar.gz` |
+
+Install [Git](https://git-scm.com/downloads) and **one** provider before continuing.
+Use the provider's official installation instructions for your OS:
+
+- [Install Codex CLI](https://developers.openai.com/codex/cli/) (version 0.152.0 or newer),
+  then run `codex login`, finish browser sign-in, and run `codex login status`.
+- [Install Claude Code](https://code.claude.com/docs/en/setup), then run
+  `claude auth login`, finish sign-in, and run `claude auth status`.
+
+Continue only when your chosen provider reports that you are signed in. Run the
+provider and StateEngine as the same OS user, on the same machine. An open sign-in
+page is not a completed login. Provider access and billing belong to your provider
+account; StateEngine does not supply a provider account.
 
 ## Your first agent
 
-StateEngine is one command, `se`. A **home** is its data directory (Linux default
-`~/.local/state/stateengine`; macOS/Windows differ); a **project** is a folder it tracks,
-usually a git repo; an **agent** is one saved coding assistant (Claude Code or Codex) in a
-project; the **floor** is the append-only message log between you and your agents.
+An **agent** is one saved coding assistant in a **project** (the folder containing
+your work). A **state home** is the directory where StateEngine keeps its settings
+and saved conversations; it is separate from your project. These commands assume
+one default state home and a terminal you opened yourself.
 
-These examples show one Linux run; only machine-specific paths and IDs are
-shortened. Your agent’s wording and timestamps will differ.
+### 1. Install and verify in this terminal
 
-1. Install the release: extract the release archive for your platform and, from the
-   extracted folder, run `sh ./install.sh` (Linux, macOS) or `./install.ps1` (Windows),
-   or build one from this tree on the target platform with `python3
-   scripts/release/build.py --target <target> --out <new-dir>` and `python3
-   scripts/release/assemble.py --build <new-dir> --out <archive-dir>`. Verify:
+Check the archive against its supplied checksum, then extract it. Open a terminal
+in the extracted folder and run the installer as your normal user:
 
-       $ se --version
-       stateengine 0.0.1
+**Linux, sh/bash/zsh:**
 
-2. First install and log in to the agent you will use: a Codex agent needs the Codex CLI
-   (0.152.0 or newer) and `codex login`; the default Claude Code is installed and logged
-   in the same way. Then, in an existing git repo, register the project and create your
-   first agent. `--provider codex` makes it a Codex agent.
+```sh
+sh ./install.sh
+export PATH="$HOME/.local/bin:$PATH"
+se --version
+```
 
-       $ se init --provider codex
-       Project repo registered at /path/to/repo
-       State home: /home/you/.local/state/stateengine
-       Repository files written: 0
-       Agent main uses Codex
-       Permission profile default: workspace-write, approval never, network false, bypass false
-       To enable network, set network = true under [profiles.default] in this state home's config.toml, then relaunch the agent.
-         registered the home owner
-         registered the project
-         registered the project owner
-         created the initial saved agent
-         persisted the initial listener port
-       From the project folder /path/to/repo:
-       Launch your first agent: se --home /home/you/.local/state/stateengine launch main --detach
+The installer also prints a quoted absolute `se --version` command that works
+immediately, even before changing PATH. PATH is the list of folders your terminal
+searches for commands. The `export` above adds StateEngine for this terminal;
+future login terminals load the installer's saved change. In **fish**, replace
+that `export` line with `set -gx PATH "$HOME/.local/bin" $PATH`.
 
-   `State home` above is the Linux default; macOS: `~/Library/Application Support/StateEngine`,
-   Windows: `%LOCALAPPDATA%\StateEngine`. The profile line says what the agent may do; init
-   explains how to change the named profile in that state home's `config.toml`.
-   The `se config` command changes saved agent settings; it does not edit permission profiles.
+**Windows PowerShell:**
 
-3. Launch the agent without opening a window, with a one-line task:
+```powershell
+.\install.ps1
+$env:Path = "$env:LOCALAPPDATA\StateEngine\bin;$env:Path"
+se --version
+```
 
-       $ se launch main --task "Create a file called notes.md with one sentence describing what this repo is for." --detach
-       Agent main: running (Codex, headless)
-       Process: PID ..., started 2026-11-05T02:06:07.860000Z
-       Containment: uncontained
-       Containment reason: The OS has not delegated a containment scope to this user.
-       Permission profile default: workspace-write, approval never, network false, bypass false
-       To enable network, set network = true under [profiles.default] in this state home's config.toml, then relaunch the agent.
-       Conversation: ...
-       Resume: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
-       Read replies: se --home /home/you/.local/state/stateengine --project prj_... history --agent ag_... --kind session.turn
-       Event: ev_...; request key: ...
+The installer prints an absolute PowerShell command that also works immediately.
+A successful version check prints `stateengine` and a version number. If `se` is
+not found, copy that exact printed command; do not continue with an unverified
+installation. Keep the extracted archive for upgrades and removal.
 
-4. Check on it:
+### 2. Open your project and create an agent
 
-       $ se status
-       StateEngine 0.0.1
-       State home: /home/you/.local/state/stateengine
-       Project: repo (/path/to/repo)
-       Runtime: running
-       Host: runs as a session process and stops when this login session ends
-         PID ... (started 2026-11-05T02:06:07.140000Z)
-         Agent main: running — unread messages 0
-           Containment reason: The OS has not delegated a containment scope to this user.
-           Resume: Ready to reopen the saved conversation.
-       Owner unread messages: 0
-       Proposed decisions: not counted
-       Conversation recording: not checked; code index: unknown
-       Inspect your saved agent: se --home /home/you/.local/state/stateengine --project prj_... agent show ag_...
+Change into the folder you want the assistant to work in; replace the example path
+with your own:
 
-5. Read what it did: a plain task launch reports in its conversation and in your folder, not by floor mail:
+```sh
+cd "/path/to/your/repo"
+se init --provider codex
+```
 
-       $ se msg list
-       Unread messages: 0
-       $ se history --agent main
-       Conversation message — repo
-         Event: ev_...
-         By: main
-         At: 2026-11-05T02:06:10.715018Z
-         Role: user
-         Text: Create a file called notes.md with one sentence describing what this repo is for.
-       Conversation message — repo
-         Event: ev_...
-         By: main
-         At: 2026-11-05T02:06:12.683270Z
-         Role: assistant
-         Text: I’ll check the README and create `notes.md` with a one-sentence description.
-       Tool action — repo
-         Event: ev_...
-         By: main
-         At: 2026-11-05T02:06:18.737384Z
-         ran: ...
-       Conversation message — repo
-         Event: ev_...
-         By: main
-         At: 2026-11-05T02:06:20.726552Z
-         Role: assistant
-         Text: Created [notes.md](/path/to/repo/notes.md) with one sentence describing the repo’s purpose.
-       Use --json for full event details.
+In PowerShell, for example, use `cd "C:\path\to\your\repo"`. If the folder is
+not a Git repository yet, run `git init` there first. For Claude Code, use
+`se init --provider claude` instead. Init registers the folder and creates the
+saved agent named `main`; it does not change your repository files or Git history.
+It ends by printing the exact first-launch command for your project and state home.
 
-6. Resume it: `se resume --preview AGENT` reads the saved context without restarting
-   the agent; `se resume AGENT` refuses, because resume is a context read, and hands
-   back the exact launch command that reopens the saved conversation; `se stop AGENT`
-   ends a running session; `se launch AGENT --detach` restarts the same conversation.
+Default state homes are:
 
-   Launching over an existing managed session refuses and lists its scoped jobs
-   (PID and command), without stopping anything. Wait for the jobs to finish, run
-   long jobs in a separate terminal outside the agent's scope, or explicitly use
-   `se launch AGENT --detach --override-live`. The override stops the old agent
-   and its scope, saves its conversation, then resumes it and reports the jobs
-   stopped with an outside exit witness. An unreadable inventory refuses even
-   with the override. Linux observes the tracked process group and current
-   descendants, including `setsid` children. The receipt distinguishes observed
-   exits from jobs still alive outside the stopped group. Already reparented
-   escaped jobs cannot be attributed and are not claimed absent.
-   Windows observes job-object members and reports executable paths (without
-   arguments); explicit breakaway is outside the job. macOS managed launch and
-   takeover remain unsupported and refuse; no empty-job claim is made there.
-
-       $ se resume --preview main
-       Who am I?
-       main in repo — ready (owner preview; nothing acknowledged)
-       Session: ses_...
-
-       What was I doing?
-       No saved working state.
-
-       What's waiting?
-       No unread messages in this snapshot.
-       Pending decisions in this authorized view: 0
-
-       What changed?
-       Recent context; use --since with the returned cursor for later changes.
-       Recent user turn at 2026-11-05T02:06:10.710850Z [ev_...]: Create a file called notes.md with one sentence describing what this repo is for.
-       Recent assistant turn at 2026-11-05T02:06:12.681265Z [ev_...]: I’ll check the README and create `notes.md` with a one-sentence description.
-       Recent assistant turn at 2026-11-05T02:06:20.723701Z [ev_...]: Created [notes.md](/path/to/repo/notes.md) with one sentence describing the repo’s purpose.
-       Context bytes: 3263 of 4096; complete: true
-       Continue: se --home '/home/you/.local/state/stateengine' --project prj_... resume --since ... --preview ag_...
-       $ se stop main
-       Stop complete.
-       Agent main in repo
-       Original process: PID ..., started 2026-11-05T02:06:07.860000Z
-       Exit check complete.
-       The original process exited and its recorded process group is empty. Processes that left that group may remain.
-       Checked: 2026-11-05T02:06:22.245731Z
-       No processes remain in the checked scope.
-       The process list is complete.
-       Saved conversation: up to date.
-       Resume: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
-       Use --json for full stop details.
-       $ se resume main
-       error[usage-invalid-value]: se resume AGENT: `provider conversation reopen` is not a context read; use launch to reopen the saved conversation
-         fix: Reopen this agent's saved conversation with the command below. Run: se --home /home/you/.local/state/stateengine --project prj_... launch ag_... --detach
-
-7. When you are done, stop the runtime; the next launch starts it again. `se down`
-   reports each verified shutdown step in plain words, and names any step it could
-   not verify as pending instead of implying success.
-
-       $ se down
-       Runtime stop complete
-         witnessed via authenticated shutdown stages and outside native completion readback: Verified: agents stopped, resume information saved, storage writer stopped, captured work saved, pending writes saved, service resources closed, service lock released; saved conversation references: 0.
-
-| Crate | Holds |
+| OS | Default state home |
 | --- | --- |
-| se-types | IDs, errors with remedies, Read/Window types, host API types |
-| se-store | SQLite event log, projections, migrations, backup and salvage |
-| se-core | kernel operations and the operation registry (CLI + MCP generated from it) |
-| se-proc | owned processes per OS; the only crate allowed `unsafe` |
-| se-host | session tasks, batched writer, mail, Claude/Codex/SE Code integrations, MCP, listener |
-| se-atlas | code-only index with its own database |
-| se | the binary: CLI, hooks, doctor, import |
+| Linux | `~/.local/state/stateengine` (or `$XDG_STATE_HOME/stateengine` when set) |
+| Windows | `%LOCALAPPDATA%\StateEngine` |
+| macOS | `~/Library/Application Support/StateEngine` |
 
-Dependency direction: se-types <- se-store <- se-core <- se-host <- se; se-proc depends on se-types only;
-se-atlas depends on se-types and se-store. Authors write no tests; reviewers add black-box tests;
-the five journey scripts are the acceptance judge. Line counts are estimates, never caps.
+Init prints the actual path. Use that path if you chose a custom home with
+`--home` or `SE_HOME`; the default examples below will otherwise select a different
+home. A permission profile is the saved set of rules for what the assistant may do.
+For the default Codex profile, `workspace-write` allows edits in its permitted
+workspace and scratch locations; `approval never` means no interactive requests
+for tool approval; `network false` disables tool network access; and `bypass false`
+keeps sandbox bypass disabled. These are provider tool permissions, not a provider
+sign-in check. Init describes the selected provider's rules and how to edit a
+named profile in the state home's `config.toml`; relaunch to apply changes.
+`se config` changes saved agent settings, not permission profiles.
 
-To upgrade, first run `se --home HOME down` for every running data home. In your
-own terminal, run the old installation's `se --home INSTALL_HOME uninstall` and
-wait for it to finish successfully; this keeps history, conversations, identity,
-credentials, configuration and repository files. Then install the new archive and
-run `se --home HOME up` for each home. Reinstalling over an existing executable
-refuses safely, even after down; uninstall is required before installing again.
-On Windows, run the old release archive's `uninstall.ps1` instead of direct
-`se uninstall` and wait for its final successful completion before installing the
-new release. Use each home's original path throughout; an old Windows host keeps
-the pipe name chosen by its executable until restarted.
+### 3. Give it a task
+
+From the same project folder:
+
+```sh
+se launch main --task "Create a file called notes.md with one sentence describing what this repo is for." --detach
+se status
+se history --agent main
+```
+
+`--detach` runs the assistant in the background. **Running does not mean the task
+has finished.** Read history again until there is an assistant reply, then open
+`notes.md` and check its contents:
+
+```sh
+cat notes.md
+```
+
+In PowerShell, use `Get-Content .\notes.md`. Success means both a reply and the
+requested file exist and the file says what you asked for. An empty message inbox
+is normal: task replies go into conversation history, not project mail.
+
+Status calls StateEngine's background service the **runtime**; its listener port
+is its local connection address. `Not counted` and `not checked` mean that
+information was not inspected, not proved empty or broken. An unknown code-index
+status likewise does not establish that no index exists. An event identifies
+a saved change; a request key lets a retry refer to that same change.
+
+Launch may report `Containment: uncontained`. Containment is the OS process
+boundary used to track and stop an agent's jobs; uncontained means the OS did
+not supply that boundary. It does not mean provider sandbox permissions were
+bypassed.
+
+If there is no assistant reply or file, run `se agent show main`, read
+`se history --agent main` for errors, and recheck `codex login status` or
+`claude auth status` before moving on. Finish sign-in if it is still pending.
+To retry after correcting the cause, stop the agent with `se stop main` and
+repeat the task launch above.
+
+Before the first conversation turn is saved, status can say that no conversation
+cursor is established yet. That means there is nothing saved to reopen yet;
+keep the current agent running and read its history after it replies. It does
+not establish that the task failed or succeeded.
+
+### 4. Stop and come back
+
+```sh
+se stop main
+se launch main --detach
+```
+
+The second command reopens the saved provider conversation. Stop prints the exact
+resume command for the selected home and project; use it if yours differ from
+these defaults. A session is one running instance of a saved agent. If launch
+refuses because the old session or its jobs (processes it started) are still
+running, finish them first or inspect the stop instructions printed by launch.
+The explicit `--override-live` option stops the old session and its identified
+jobs before reopening; it is not needed for this ordinary stop-and-reopen path.
+
+To inspect saved context without restarting or marking messages read:
+
+```sh
+se resume --preview main
+```
+
+This is an **owner preview**: you, the current OS user, read the agent's saved
+information. A snapshot is what was available at that read. Working state is a
+saved note about ongoing work; pending decisions are project proposals awaiting
+an owner's decision. A cursor is a bookmark for later reads: copy the full
+`Continue` command printed by your run rather than inventing one.
+**Saved context available (JSON `ready`) and context complete describe this read
+only; provider sign-in and task completion are not checked.** Missing information, unreadable sources and clipped
+results are reported separately with follow-up commands.
+
+### 5. Finish for now
+
+```sh
+se down
+```
+
+This stops StateEngine's background service and its active agents while retaining
+saved work. The next launch starts the service again.
+
+## Help, upgrade and removal
+
+Run `se --help`, then a command's own help, such as `se launch --help` or
+`se history --help`, for the commands implemented by your installed version.
+[OPS](docs/OPS.md) describes the operation design; some listed paths are not shipped.
+
+For one default Linux installation, stop its service and remove the installed
+program from a terminal you opened yourself:
+
+```sh
+se down
+se --home "$HOME/.local/state/stateengine" uninstall
+```
+
+If you set `XDG_STATE_HOME`, use `"$XDG_STATE_HOME/stateengine"` instead. On Windows,
+run `se down`, then the old extracted archive's `uninstall.ps1` in PowerShell and
+wait for its final successful completion. The installation home is the directory
+containing `standalone-install.json`; it is the path selected during installation,
+which may differ from a custom data home used later. Removal keeps history,
+conversations, identity, credentials, configuration and repository files.
+
+To upgrade, uninstall the old version successfully before installing the new
+archive. Installing over an existing executable refuses. Start with `se up` or
+launch your saved agent after installing the replacement. For **multiple data
+homes**, first run `se --home "/original/path" down` for each active home, then
+uninstall using the installation home's original path; after upgrading, start
+each home using its original path. Do not substitute another home merely to get
+past a refusal.
+
+## Optional migration from the older Node implementation
+
+New users can skip this section. `se import --help` lists the migration options.
+For source-owner selection, read `owner_human_id` in the retained source copy's
+`.stateengine/projects.jsonl` and match it to `human_id` in
+`.stateengine/humans.jsonl`; a display name is not an identity. Target human IDs
+must already be registered in the target project. Run
+`se --json history --kind principal.registered` in that project; for a human entry,
+`payload.principal.kind` is `owner` or `human`, and `payload.principal.id` is the ID
+to use. Follow returned page cursors if needed; `se history --help` describes
+paging. Do not create or guess IDs to make an import pass.
 
 To import existing Node user history, first preserve a source copy containing its
 `.stateengine/projects.jsonl`, named project history, and saved profiles. Initialize
@@ -228,7 +268,9 @@ in history only; launching an imported agent starts a fresh conversation. Missin
 or unsupported references are reported explicitly. Provider
 account files, credentials, running processes and factory authority are not imported.
 
-Atlas is the optional code index. The native index owner currently runs on Linux.
+## Optional code navigation (Atlas)
+
+Atlas is the optional code index. Its background indexer currently runs on Linux.
 It is enabled by default. If you disabled it, edit the `config.toml` in the data home printed by `se status` (or
 the file selected by `SE_CONFIG`), set `enabled = true` in `[atlas]`, then run
 `se down` and `se up` with the same `--home` you normally use. `se config set`
@@ -237,3 +279,29 @@ changes and outline commands; `se status` reports preparation and partial covera
 Answers are compact pointers: a line range and byte count show how much source a
 target contains before you read it. JSON retains the full span and byte offsets.
 Unverified or unavailable extents say `size unavailable`; stale revisions stay labelled.
+
+## For developers
+
+The Rust workspace provides one `se` binary and libraries linked by the SE Code
+application. [Design overview](docs/design/00-overview-and-invariants.md) and
+[operation reference](docs/OPS.md) describe its architecture.
+
+To build an unsigned archive from a clean, committed source checkout, install Git,
+Python 3.11+, and rustup with the toolchain pinned in `rust-toolchain.toml`
+(currently Rust 1.97.1, including rust-docs). Use a native machine matching the target:
+Linux needs a C compiler/linker and binutils; Windows needs Visual Studio Build
+Tools with the MSVC C++ workload and Windows SDK; macOS needs Xcode Command Line
+Tools and has the runtime limits stated above. SQLite's C source is bundled;
+Node.js is not needed by the installed product. The build downloads lockfile-pinned
+Cargo inputs unless `--offline` is selected with an already populated cache.
+
+For example, on Linux x86_64, choose new output paths outside the source tree:
+
+```sh
+rustup component add rust-docs
+python3 scripts/release/build.py --target x86_64-unknown-linux-gnu --out /absolute/path/new-build
+python3 scripts/release/assemble.py --build /absolute/path/new-build --out /absolute/path/new-archive
+```
+
+Use the matching target from the platform table for other native builds. Building
+or cross-checking a target does not qualify its runtime behavior on that OS.

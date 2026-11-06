@@ -6,6 +6,7 @@
 extern crate self as se_host;
 #[cfg(feature = "runtime")]
 mod agent_observation;
+pub mod channels;
 pub mod client;
 #[cfg(feature = "runtime")]
 pub use agent_observation::{

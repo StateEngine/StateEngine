@@ -47,6 +47,7 @@ pub enum EventKind {
     EffectOffered,
     EffectSettled,
     IntegrationRecorded,
+    ChannelRecorded,
     RuntimeOwnerEstablished,
     RuntimeHandoverRecorded,
     BackupRecorded,
@@ -64,6 +65,9 @@ pub enum EventKind {
 
 #[derive(Clone)]
 pub enum EventBody<T> {
+    ChannelRecorded {
+        change: crate::channel::Change,
+    },
     ProjectRegistered {
         project: ProjectId,
         name: String,

@@ -42,6 +42,8 @@ mod drain;
 #[cfg(feature = "listener")]
 pub use drain::StorageDrainReport;
 #[cfg(feature = "listener")]
+mod channels;
+#[cfg(feature = "listener")]
 mod route;
 #[cfg(feature = "listener")]
 pub use route::{
@@ -59,8 +61,10 @@ mod history_import;
 pub(crate) mod mail;
 #[cfg(feature = "listener")]
 pub use mail::MailRecipient;
-#[cfg(feature = "runtime")]
-mod submit;
+#[cfg(feature = "listener")]
+pub(crate) mod store;
+#[cfg(feature = "listener")]
+pub(crate) mod submit;
 #[cfg(feature = "listener")]
 mod timings;
 #[cfg(feature = "listener")]
@@ -71,7 +75,7 @@ mod embedded;
 #[cfg(feature = "secode")]
 pub use embedded::{EmbeddedFactory, embedded_factory};
 #[cfg(feature = "listener")]
-mod serve;
+pub(crate) mod serve;
 #[cfg(feature = "listener")]
 pub use serve::{HostServeExit, LocalStop};
 

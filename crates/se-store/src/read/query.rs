@@ -190,6 +190,7 @@ pub(super) fn kind_name(k: EventKind) -> &'static str {
         EventKind::EffectOffered => "effect.offered",
         EventKind::EffectSettled => "effect.settled",
         EventKind::IntegrationRecorded => "integration.recorded",
+        EventKind::ChannelRecorded => "channel.recorded",
         EventKind::RuntimeOwnerEstablished => "runtime.owner",
         EventKind::RuntimeHandoverRecorded => "runtime.handover",
         EventKind::BackupRecorded => "backup.recorded",

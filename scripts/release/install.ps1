@@ -461,7 +461,11 @@ try {
     if ((Get-Digest $pending) -cne $pendingDigest) { throw 'partial journal changed before completion' }
     [IO.File]::Delete($pending)
     Write-Output "Installed se at $binary"
-    Write-Output 'Open a fresh login terminal and run se --version.'
+    Write-Output 'Run this command now in this PowerShell terminal to verify the installation:'
+    Write-Output ("  & '" + $binary.Replace("'", "''") + "' --version")
+    Write-Output 'To use se by name in this terminal, run:'
+    Write-Output '  $env:Path = "$env:LOCALAPPDATA\StateEngine\bin;$env:Path"'
+    Write-Output 'New login terminals load the saved PATH change automatically.'
 } catch {
     [Console]::Error.WriteLine("Install refused: $($_.Exception.Message)")
     if ($claimed) {

@@ -229,6 +229,18 @@ remove_stale_temps() {
         rm "$stale" || fail "cannot remove owned stale installation scratch: $stale"
     done
 }
+report_install() {
+    printf 'Installed se at %s\n' "$bin/se"
+    printf 'Run this command now in this terminal to verify the installation:\n  '
+    # Single-quote the literal path, including homes containing spaces or apostrophes.
+    printf "'%s' --version\n" "$(printf '%s' "$bin/se" | sed "s/'/'\"'\"'/g")"
+    printf 'To use se by name here, add its directory to this terminal PATH:\n'
+    case ${SHELL-} in
+        */fish) printf '  set -gx PATH "$HOME/.local/bin" $PATH\n' ;;
+        *) printf '  export PATH="$HOME/.local/bin:$PATH"\n' ;;
+    esac
+    printf 'New login terminals load the saved PATH change automatically.\n'
+}
 cleanup() {
     exit_code=$?
     trap - EXIT HUP INT TERM
@@ -249,7 +261,7 @@ cleanup() {
         flush "$data" || exit_code=1
     fi
     if [ "$exit_code" -eq 0 ]; then
-        printf 'Installed se at %s\nOpen a fresh login terminal and run se --version.\n' "$bin/se"
+        report_install
     fi
     # The native holder retains the identities of its created directories and
     # owns failed-child directory cleanup; the script never removes them by name.

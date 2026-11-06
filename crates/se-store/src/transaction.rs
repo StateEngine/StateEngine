@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 mod first_binding;
-mod idempotency;
+pub(crate) mod idempotency;
 mod input;
 use idempotency::fingerprint;
 mod receipt;
@@ -564,7 +564,8 @@ fn security<T>(b: &EventBody<T>) -> bool {
     use EventBody::*;
     matches!(
         b,
-        CredentialIssued { .. }
+        ChannelRecorded { .. }
+            | CredentialIssued { .. }
             | CredentialActivated { .. }
             | CredentialRevoked { .. }
             | DecisionRatified { .. }

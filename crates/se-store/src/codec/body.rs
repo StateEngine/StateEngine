@@ -9,6 +9,9 @@ pub(crate) fn body(
 ) -> StoreResult<EventBody<StoredText>> {
     use EventBody::*;
     Ok(match kind {
+        "channel.recorded" => ChannelRecorded {
+            change: field(&facts(c, seq)?, "change")?,
+        },
         "runtime.owner" | "runtime.handover" | "backup.recorded" | "turn.erased"
         | "message.erased" | "erasure.requested" | "erasure.completed" | "recovery.recorded" => {
             super::maintenance::body(c, seq, kind)?

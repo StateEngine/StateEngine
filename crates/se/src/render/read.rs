@@ -256,6 +256,9 @@ pub fn messages(value: &MessagePage, out: &mut impl Write) -> io::Result<()> {
             writeln!(out, "  Message unreadable: {}", unreadable.reason)?;
         } else {
             writeln!(out, "{}", message.body.text)?;
+            if let Some(route) = &message.channel_reply {
+                writeln!(out, "{}", route.instruction)?;
+            }
         }
         if !message.body.complete {
             if let Some(command) = &message.body.command {

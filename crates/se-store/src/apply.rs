@@ -1,5 +1,7 @@
 //! Transaction-only projections. No native, network or provider calls.
 pub(crate) mod capture;
+pub(crate) mod channel;
+pub(crate) use channel::capacity as channel_capacity;
 pub(crate) mod credential;
 pub(crate) mod cursor;
 pub(crate) mod decision;
@@ -170,6 +172,7 @@ pub(crate) fn apply(
         )
     };
     match body {
+        ChannelRecorded { change } => channel::apply(c, header, change, seq, revision, facts)?,
         b @ (ProcessRegistered { .. } | ProcessTransition { .. }) => {
             process::apply(c, header, b, seq, revision, lease)?
         }
@@ -414,6 +417,7 @@ pub(crate) fn apply(
             if connection::mail_table(c)? == "message_deliveries" {
                 c.execute("INSERT INTO message_deliveries(project_id,message_id,sent_seq,sender_id,recipient_id,message_kind,is_floor,revision) VALUES(?,?,?,?,?,?,0,?)",crate::sql_value::sql_params![project()?,m,seq,sender,recipient,kind,revision]).map_err(sql)?;
             }
+            channel::enqueue_reply(c, header, &m, reply.as_deref(), seq)?;
             notification::sent(c, seq, &recipient, quiet)?;
             count(c, project()?, &recipient, 1, seq)?;
         }
@@ -422,7 +426,16 @@ pub(crate) fn apply(
         }
         body @ WorkMessageSent { .. } => work_message::send(c, header, body, seq, revision, facts)?,
         body @ (MessageRead { .. } | MessageDismissed { .. } | MessageDelivered { .. }) => {
+            let channel_mark = match &body {
+                MessageRead { message, .. } => Some((message.clone(), "read")),
+                MessageDismissed { message, .. } => Some((message.clone(), "dismiss")),
+                MessageDelivered { message, .. } => Some((message.clone(), "notice")),
+                _ => None,
+            };
             work_message::mark(c, header, body, seq, revision)?;
+            if let Some((message, kind)) = channel_mark {
+                channel::enqueue_mark(c, header, &message, kind, seq)?;
+            }
         }
         WorkingStateSet {
             agent,
