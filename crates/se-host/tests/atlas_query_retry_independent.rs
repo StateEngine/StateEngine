@@ -1,5 +1,5 @@
 //! Protects: the public Atlas adapter retries one expired read, never errors or writes.
-//! Real native SQLite; injected authorizer delays model preemption, not memory qualification.
+//! Real native SQLite; injected delays model preemption, not memory qualification.
 use rusqlite::hooks::{AuthAction, Authorization, TransactionOperation};
 use se_atlas::{
     cache::{connection::*, *},
@@ -32,7 +32,7 @@ struct Fault {
     writes: AtomicUsize,
     delay_count: AtomicUsize,
     deny: AtomicBool,
-    delay_write: AtomicBool,
+    expire_write: AtomicBool,
 }
 struct ControlledCache {
     native: NativeAtlasCache,
@@ -73,10 +73,9 @@ impl CacheFiles for ControlledCache {
                     table_name: "meta",
                     column_name: "published_generation"
                 }
-            ) && fault.delay_write.load(Ordering::SeqCst)
+            ) && fault.expire_write.load(Ordering::SeqCst)
             {
                 fault.writes.fetch_add(1, Ordering::SeqCst);
-                std::thread::sleep(Duration::from_millis(250));
             }
             Authorization::Allow
         }))
@@ -105,6 +104,11 @@ impl CacheFiles for ControlledCache {
         self.native.wal_bytes(pin)
     }
     fn reserve_growth(&self, bytes: u64) -> se_types::Result<Box<dyn GrowthReservation + '_>> {
+        if self.fault.expire_write.load(Ordering::SeqCst) {
+            // Native write admission must finish before the injected expiry.
+            // Keep it slower than the former 50 ms fixture deadline.
+            std::thread::sleep(Duration::from_millis(150));
+        }
         self.native.reserve_growth(bytes)
     }
 }
@@ -211,26 +215,35 @@ fn exercise(case: Case) -> Check {
     )?;
     fault.selects.store(0, Ordering::SeqCst);
     if matches!(case, Case::Write) {
-        fault.delay_write.store(true, Ordering::SeqCst);
+        fault.expire_write.store(true, Ordering::SeqCst);
+        // This is a fixture admission budget, not the public read-slice limit.
+        let deadline = Instant::now() + Duration::from_secs(5);
         let error = cache
-            .write(
-                1_000_000,
-                Instant::now() + Duration::from_millis(50),
-                |sql| {
-                    sql.prepare("UPDATE meta SET published_generation=published_generation+1")?
-                        .execute([])
-                        .map_err(|e| failure(&e.to_string()))?;
-                    Ok(())
-                },
-            )
+            .write(1_000_000, deadline, |sql| {
+                let changed = sql
+                    .prepare("UPDATE meta SET published_generation=published_generation+1")?
+                    .execute([])
+                    .map_err(|e| failure(&e.to_string()))?;
+                assert_eq!(changed, 1, "native UPDATE did not execute");
+                // Expire the same write deadline only after real mutation, so
+                // generation zero below proves rollback rather than non-admission.
+                std::thread::sleep(
+                    deadline.saturating_duration_since(Instant::now()) + Duration::from_millis(25),
+                );
+                Ok(())
+            })
             .err()
             .ok_or("expired write unexpectedly completed")?;
         assert!(
             matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(_)),
             "{error}"
         );
-        assert_eq!(fault.writes.load(Ordering::SeqCst), 1, "write was replayed");
-        fault.delay_write.store(false, Ordering::SeqCst);
+        assert_eq!(
+            fault.writes.load(Ordering::SeqCst),
+            1,
+            "expected exactly one admitted write"
+        );
+        fault.expire_write.store(false, Ordering::SeqCst);
         let generation: i64 = cache.read(end(), |sql| {
             sql.prepare("SELECT published_generation FROM meta")?
                 .query_row([], |row| row.get(0))
