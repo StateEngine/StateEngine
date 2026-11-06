@@ -321,13 +321,15 @@ impl<'a> CacheConnection<'a> {
             None
         };
         self.files.validate_database(&self.pin)?;
-        let wal = self.files.wal_bytes(&self.pin)?;
-        if write && (growth > WAL_STOP || wal.checked_add(growth).is_none_or(|v| v > WAL_STOP)) {
-            return Err(capacity(
-                "Atlas WAL capacity; checkpoint or release external readers",
-                growth,
-                WAL_STOP.saturating_sub(wal),
-            ));
+        if write {
+            let wal = self.files.wal_bytes(&self.pin)?;
+            if growth > WAL_STOP || wal.checked_add(growth).is_none_or(|v| v > WAL_STOP) {
+                return Err(capacity(
+                    "Atlas WAL capacity; checkpoint or release external readers",
+                    growth,
+                    WAL_STOP.saturating_sub(wal),
+                ));
+            }
         }
         let _reservation = if write {
             Some(self.files.reserve_growth(growth)?)

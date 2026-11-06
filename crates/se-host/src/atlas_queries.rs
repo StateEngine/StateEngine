@@ -24,6 +24,32 @@ pub fn execute(
     reader: &QueryReader<'_>,
     request: &se_core::ops::AtlasRead,
 ) -> AtlasResult<se_core::ops::AnyOutput> {
+    match execute_once(reader, request) {
+        Err(error) if sql_deadline(&error) => {
+            // The failed read snapshot has rolled back. Retry the same admitted
+            // read once with a fresh query slice; never replay a write or widen
+            // either slice's SQL, source or output budget.
+            execute_once(reader, request).map_err(|error| {
+                if sql_deadline(&error) {
+                    error.with_retry(se_types::Retry::After(std::time::Duration::from_secs(1)))
+                } else {
+                    error
+                }
+            })
+        }
+        result => result,
+    }
+}
+
+fn sql_deadline(error: &SeError) -> bool {
+    matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail)
+        if detail.op == "Atlas SQL")
+}
+
+fn execute_once(
+    reader: &QueryReader<'_>,
+    request: &se_core::ops::AtlasRead,
+) -> AtlasResult<se_core::ops::AnyOutput> {
     use se_core::ops::{
         AtlasChangesOutput, AtlasFindOutput, AtlasImpactOutput, AtlasOutlineOutput, AtlasRead,
         AtlasRefsOutput,
