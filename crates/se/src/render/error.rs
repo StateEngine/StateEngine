@@ -42,6 +42,21 @@ pub fn write(
         ErrorEnvelope::new(body, context)
     }
     .map_err(io::Error::other)?;
+    if !json
+        && matches!(error.body.detail(), se_types::Detail::UsageInvalidValue(detail)
+            if detail.argument == "se resume AGENT")
+        && let Some(se_types::Cmd::Se { argv }) = &remedy.command
+        && let Some(command) = se_core::ops::AgentCommand::from_argv(argv.as_slice().to_vec())
+    {
+        writeln!(
+            stderr,
+            "error[{}]: Resume with: {}",
+            error.code().as_str(),
+            command.command
+        )?;
+        stderr.flush()?;
+        return Ok(error.class().exit_code());
+    }
     let diagnostic = writeln!(
         stderr,
         "error[{}]: {}",
