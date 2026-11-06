@@ -3,7 +3,7 @@
 //! See docs/design/30-process-ownership.md for normative semantics. The public
 //! process runtime and Windows provider streams share one native custody arena.
 //! NativeStateFiles supplies protected staging/readback/publication. Owner observations and the
-//! Windows private uninstall handoff have concrete native implementations. Native
+//! Windows system uninstall carrier have concrete native implementations. Native
 //! resource layouts are intentionally opaque; no handle is Clone or Default.
 
 #[cfg(windows)]
@@ -35,9 +35,7 @@ mod owner_probe;
 mod uninstall;
 #[cfg(windows)]
 pub use uninstall::{
-    HelperCleanupOutcome, NativeUninstallHandoff, NativeUninstallHelper, UninstallHandoffReceipt,
-    UninstallHelperCleanup, UninstallImageWitness, UninstallNativeError, UninstallProcessIdentity,
-    UninstallReady,
+    HelperCleanupOutcome, NativeUninstallCarrier, UninstallHelperCleanup, UninstallNativeError,
 };
 mod ownership;
 #[cfg(any(target_os = "linux", windows))]

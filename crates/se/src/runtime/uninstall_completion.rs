@@ -29,28 +29,6 @@ impl Request {
         }
         Ok(())
     }
-    #[cfg(windows)]
-    pub(crate) fn connect(&self) -> Result<Sender> {
-        use std::os::windows::fs::OpenOptionsExt;
-        self.validate()?;
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            // SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION: this output
-            // recipient must never impersonate an elevated uninstall helper.
-            .custom_flags(0x0010_0000 | 0x0001_0000)
-            .open(format!(r"\\.\pipe\{}", self.pipe))
-            .map_err(|error| {
-                SeError::invalid(
-                    "uninstall completion pipe",
-                    "the waiting uninstall.ps1 output reader",
-                )
-                .with_cause(error)
-            })?;
-        Ok(Sender {
-            file,
-            token: self.token.clone(),
-        })
-    }
 }
 pub(crate) fn request() -> Result<Option<Request>> {
     #[cfg(windows)]
@@ -99,56 +77,6 @@ pub(crate) fn take_started() -> Option<bool> {
     #[cfg(not(windows))]
     {
         None
-    }
-}
-
-#[cfg(windows)]
-pub(crate) struct Sender {
-    file: std::fs::File,
-    token: String,
-}
-#[cfg(windows)]
-impl Sender {
-    pub(crate) fn finish(
-        mut self,
-        outcome: &Result<u8>,
-        image: &std::path::Path,
-        record: &std::path::Path,
-        cleanup: &se_proc::UninstallHelperCleanup,
-        achieved: &se_core::ops::UninstallOutput,
-    ) -> Result<()> {
-        use std::io::Write;
-        // Success here covers the native image, owned record and directory
-        // effects. The script must still observe the helper's teardown itself.
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "schema": "se.uninstall-completion/v1",
-            "token": self.token,
-            "complete": matches!(outcome, Ok(0)),
-            "error": outcome.as_ref().err().map(|error| format!("{}: {}", error.code().as_str(), error.body.message())),
-            "image": image,
-            "record": record,
-            "helper": cleanup.path(),
-            "directory": cleanup.directory_path(),
-            "achieved": se_core::ops::AnyOutput::from(achieved.clone()),
-        }))
-        .map_err(|error| {
-            SeError::invalid(
-                "uninstall completion reply",
-                "a serializable helper outcome",
-            )
-            .with_cause(error)
-        })?;
-        self.file
-            .write_all(&bytes)
-            .and_then(|()| self.file.write_all(b"\n"))
-            .and_then(|()| self.file.flush())
-            .map_err(|error| {
-                SeError::invalid(
-                    "uninstall completion delivery",
-                    "the live uninstall.ps1 output reader",
-                )
-                .with_cause(error)
-            })
     }
 }
 

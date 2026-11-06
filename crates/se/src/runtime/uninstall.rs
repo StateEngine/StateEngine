@@ -130,6 +130,34 @@ pub(super) fn execute(
             Err(error) => return Err(unreadable(Path::new(&file.path), error)),
         }
     }
+    // A quarantined/missing installed image cannot run its own uninstaller.
+    // An owner may use a working archive's CLI, but only after native proof
+    // that the record's unique Windows image is actually absent, not unreadable.
+    #[cfg(windows)]
+    let missing_image = if matches.is_empty() {
+        let images: Vec<_> = plan
+            .files()
+            .iter()
+            .filter(|file| {
+                Path::new(&file.path)
+                    .file_name()
+                    .is_some_and(|name| name.eq_ignore_ascii_case("se.exe"))
+            })
+            .collect();
+        if images.len() != 1
+            || OwnedFile::open(Path::new(&images[0].path))
+                .map_err(native_error)?
+                .is_some()
+        {
+            return Err(invalid(
+                "the installed image is present or ambiguous; run its se uninstall, or resolve the named security-software refusal before recovery",
+            ));
+        }
+        matches.push(images[0].path.clone());
+        true
+    } else {
+        false
+    };
     if matches.len() != 1 {
         return Err(invalid(
             "the admitted plan must uniquely own the running image",
@@ -220,6 +248,31 @@ pub(super) fn execute(
     let claim = installation_claim
         .as_ref()
         .ok_or_else(|| invalid("native installation claim missing"))?;
+    // Preparation must finish before recovery, PATH changes or removal. A policy
+    // refusal here preserves every installed payload and the user's PATH.
+    #[cfg(windows)]
+    let carrier = if missing_image {
+        None
+    } else {
+        Some(
+            se_proc::NativeUninstallCarrier::prepare(
+                &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
+                claim,
+                record
+                    .as_ref()
+                    .ok_or_else(|| invalid("installation record custody missing"))?,
+                &record_path,
+                record_digest,
+                plan.created_directories(),
+            )
+            .map_err(|error| {
+                se_core::scope::unreadable(
+                    "Windows uninstall carrier preparation",
+                    &error.to_string(),
+                )
+            })?,
+        )
+    };
     recover(plan, &mut effects.recovery);
     cleanup_temporary(plan, claim, &mut effects.recovery);
     let clean = effects.recovery.iter().all(recovery::resolved);
@@ -246,27 +299,30 @@ pub(super) fn execute(
     safe &= effects.recovery.iter().all(recovery::resolved);
     // Never strand a partially removed installation without its retry entry point.
     if safe {
-        #[cfg(windows)]
-        {
-            drop(record.take());
-            // The authenticated helper must acquire the same account-wide
-            // claim before Ready. If another installer wins, no image
-            // authorization is sent and the installed retry entry survives.
-            drop(installation_claim.take());
-        }
         // Preserve the already achieved native facts and original request key
         // across parent exit. Missing post-exit outcomes remain pending here.
         let achieved =
             se_core::ops::installation::finish_uninstall(plan, key.clone(), effects.clone())?;
-        let result = remove_image(cx, plan, installed, record_digest, completion, achieved)
-            .unwrap_or_else(|error| {
-                file_effect(
-                    &installed.path,
-                    FileOutcome::Pending,
-                    WitnessState::Failed,
-                    &error.to_string(),
-                )
-            });
+        #[cfg(windows)]
+        let result = remove_image(
+            cx,
+            plan,
+            installed,
+            record_digest,
+            completion,
+            achieved,
+            carrier,
+        );
+        #[cfg(not(windows))]
+        let result = remove_image(cx, plan, installed, record_digest, completion, achieved);
+        let result = result.unwrap_or_else(|error| {
+            file_effect(
+                &installed.path,
+                FileOutcome::Pending,
+                WitnessState::Failed,
+                &error.to_string(),
+            )
+        });
         effects.install_files.push(result);
     } else {
         effects.install_files.push(file_effect(

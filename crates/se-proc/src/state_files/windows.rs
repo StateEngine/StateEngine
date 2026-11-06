@@ -1,6 +1,6 @@
 use super::*;
 #[path = "effects/windows.rs"]
-pub(super) mod effects;
+pub(crate) mod effects;
 use std::{
     mem::{size_of, zeroed},
     os::windows::{

@@ -1,25 +1,11 @@
 use super::*;
 use std::{
     mem::{size_of, zeroed},
-    os::windows::{
-        ffi::OsStrExt,
-        io::{AsRawHandle, OwnedHandle},
-    },
+    os::windows::io::{AsRawHandle, OwnedHandle},
     ptr,
 };
 use windows_sys::Win32::Foundation::HANDLE;
 
-pub(super) fn start(
-    path: &Path,
-    stdin: &OwnedHandle,
-    inherited: &mut [windows_sys::Win32::Foundation::HANDLE],
-) -> Result<OwnedHandle> {
-    let mut line: Vec<u16> = std::ffi::OsStr::new("se --stateengine-private-uninstall-handoff")
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    command(&native::wide(path)?, &mut line, stdin, inherited, 0, None)
-}
 pub(super) fn command(
     application: &[u16],
     line: &mut [u16],
@@ -27,8 +13,17 @@ pub(super) fn command(
     inherited: &[HANDLE],
     flags: u32,
     environment: Option<&[u16]>,
+    diagnostic: Option<&File>,
 ) -> Result<OwnedHandle> {
-    let result = command_inner(application, line, stdin, inherited, flags, environment);
+    let result = command_inner(
+        application,
+        line,
+        stdin,
+        inherited,
+        flags,
+        environment,
+        diagnostic,
+    );
     // Originals in this process must not remain inheritable for later children.
     // Child-table entries are independent and retain their startup flags.
     let mut clear_error = None;
@@ -49,17 +44,19 @@ fn command_inner(
     inherited: &[HANDLE],
     flags: u32,
     environment: Option<&[u16]>,
+    diagnostic: Option<&File>,
 ) -> Result<OwnedHandle> {
-    // Both the helper and its last-close carrier can outlive the CLI. Their
-    // output must not retain a redirected caller file or pipe after CLI exit.
+    // The carrier can outlive the CLI. Its output must not retain a redirected
+    // caller file or pipe after CLI exit.
     // Readiness and authorization still use the explicit private channels.
+    // An opted-in diagnostic is an owned private file, never caller output.
     let sink = File::options()
         .write(true)
         .open(r"\\.\NUL")
         .map_err(|cause| error("open private uninstall output sink", cause))?;
     let streams = [
         native::duplicate_same(sink.as_raw_handle(), true)?,
-        native::duplicate_same(sink.as_raw_handle(), true)?,
+        native::duplicate_same(diagnostic.unwrap_or(&sink).as_raw_handle(), true)?,
     ];
     let mut handles: Vec<HANDLE> = Vec::new();
     let mut attributes = crate::windows_native::attributes::Attributes::new(

@@ -4,15 +4,20 @@ use crate::state_files::effects::InventoryKind;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
 pub(in crate::state_files) fn scan_recovery(path: &Path) -> Result<Vec<PathBuf>> {
-    scan(path, InventoryKind::Recovery)
+    scan(path, InventoryKind::Recovery, false)
 }
 pub(in crate::state_files) fn scan_temporary(path: &Path) -> Result<Vec<PathBuf>> {
-    scan(path, InventoryKind::Temporary)
+    scan(path, InventoryKind::Temporary, false)
 }
 pub(in crate::state_files) fn list_names(path: &Path) -> Result<Vec<PathBuf>> {
-    scan(path, InventoryKind::Owned)
+    scan(path, InventoryKind::Owned, false)
 }
-fn scan(path: &Path, kind: InventoryKind) -> Result<Vec<PathBuf>> {
+// A preservation decision needs one observed child, not a complete inventory.
+// Keep the same held-parent and outside identity checks as the full scans.
+pub(super) fn has_entries(path: &Path) -> Result<bool> {
+    Ok(!scan(path, InventoryKind::Owned, true)?.is_empty())
+}
+fn scan(path: &Path, kind: InventoryKind, first_only: bool) -> Result<Vec<PathBuf>> {
     let parent = Parent::open_with_access(path, false)?;
     let before = parent
         .file()?
@@ -64,6 +69,9 @@ fn scan(path: &Path, kind: InventoryKind) -> Result<Vec<PathBuf>> {
                 return Err(unsafe_path("recovery inventory exceeds 256 siblings", path));
             }
             found.push(path.join(name));
+            if first_only {
+                break;
+            }
         }
         // SAFETY: retained search handle and writable result with the native layout.
         if unsafe { FindNextFileW(search.0, &mut entry) } == 0 {

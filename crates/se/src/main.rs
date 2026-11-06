@@ -286,9 +286,6 @@ fn main() -> std::process::ExitCode {
             Err(error) => return finish(Err(error), &args),
         }
     }
-    if let Some(result) = private_entry::dispatch(&args, private_entry::receive_uninstall_handoff) {
-        return finish(result, &args);
-    }
     std::process::ExitCode::from(run(args, route::execute::dispatch).unwrap_or(70))
 }
 
