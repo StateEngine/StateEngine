@@ -75,7 +75,7 @@ env={k:v for k,v in os.environ.items() if not k.startswith(('SE_','STATEENGINE_'
 codex=str(args.codex.resolve())
 class Model(ReturnModel):
  def plan(self,body):
-  ids=re.findall(r'OTTO_DOWN_(\d+)',json.dumps(body.get('input',[])));assert ids
+  ids=re.findall(r'SE_DOWN_(\d+)',json.dumps(body.get('input',[])));assert ids
   idx=ids[-1];cid='write_'+idx;outputs={x['call_id']:x for x in body.get('input',[]) if x.get('type')=='function_call_output'}
   if cid not in outputs:return self.shell(body,cid,self.write_command('work-'+idx+'.txt',self.nonce+'\n'))
   assert (repo/('work-'+idx+'.txt')).read_text()==self.nonce+'\n'
@@ -91,7 +91,7 @@ try:
  config=state/'config.toml';config.write_text(config.read_text().replace('[providers.codex]','[providers.codex]\ncommand = '+json.dumps(codex),1));call('up','up')
  for idx in range(8):
   agent=first if idx==0 else call('add-'+str(idx),'--project',project,'agent','add','Down'+str(idx),'--provider','codex','--model','se-loopback')['agent']['id']
-  call('launch-'+str(idx),'--project',project,'launch',agent,'--detach','--task','OTTO_DOWN_'+str(idx)+': write your assigned work file.')
+  call('launch-'+str(idx),'--project',project,'launch',agent,'--detach','--task','SE_DOWN_'+str(idx)+': write your assigned work file.')
   until=time.monotonic()+60
   while not (root/('done-'+str(idx))).exists() and time.monotonic()<until:time.sleep(.1)
   assert (root/('done-'+str(idx))).exists(),'work absent'
