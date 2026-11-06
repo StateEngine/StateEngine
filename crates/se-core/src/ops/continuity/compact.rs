@@ -26,6 +26,25 @@ pub(super) fn recovery(value: &mut ResumeOutput) -> Result<bool> {
         state.argv = None;
         changed = true;
     }
+    // The unread omission already keeps one scoped, paged full-mail read.
+    // Repeating that same recovery on every preview can make even one unread
+    // item exceed the MCP wire budget after JSON escaping and framing.
+    if value
+        .omissions
+        .iter()
+        .any(|item| item.section == "unread" && !item.command.is_empty() && !item.argv.is_empty())
+    {
+        let mut rows = value.unread.items().to_vec();
+        for row in &mut rows {
+            changed |= row.body.command.take().is_some();
+            changed |= row.body.argv.take().is_some();
+        }
+        value.unread = Page::new(
+            rows,
+            value.unread.window().clone(),
+            value.unread.next().cloned(),
+        )?;
+    }
     for required in &mut value.required_reads {
         if required.why.len() > 64 {
             required.why = "Unread; read this message in full.".into();

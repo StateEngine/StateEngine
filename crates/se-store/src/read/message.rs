@@ -77,7 +77,25 @@ impl SqliteSnapshot {
             .progress_handler(1000, Some(move || Instant::now() >= deadline))
             .map_err(|error| self.read_sql(error))?;
         let result: StoreResult<Vec<DeliveryRow>> = (|| {
-            let mut rows = if let Some(own) = own {
+            let mut rows = if own
+                .as_ref()
+                .is_some_and(|own| to.as_ref() == Some(own) || from.as_ref() == Some(own))
+            {
+                // An explicit self sender or recipient already bounds visibility.
+                // Its intersection with the other self stream is a subset, so
+                // querying that stream again can scan the whole unread inbox
+                // just to prove an empty self-sent intersection.
+                self.mail_stream(
+                    &p,
+                    to.as_deref(),
+                    from.as_deref(),
+                    &query,
+                    h,
+                    after,
+                    &budget,
+                    pending,
+                )?
+            } else if let Some(own) = own {
                 // A sent-or-received view is two index streams, not a broad page
                 // followed by a visibility filter that can hide eligible rows.
                 let mut sent = if from.as_ref().is_none_or(|v| v == &own) {
