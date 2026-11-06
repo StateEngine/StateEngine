@@ -460,6 +460,24 @@ fn move_replay_identifies_a_gone_target_spelled_through_a_folder_symlink() -> Ch
         String::from_utf8_lossy(&pre.stderr)
     );
     assert_eq!(event_id(&String::from_utf8(pre.stdout)?)?, first_event);
+    // An alias pointing directly at the moved folder canonicalizes to the
+    // committed target while the folder is still live.
+    let alias = fixture.home.join("alias");
+    symlink(&moved, &alias)?;
+    let alias_str = alias.to_str().ok_or("alias is not UTF-8")?;
+    let alias_pre = command(home, &moved, false, Some("Shortcut"))
+        .args(["project", "move", alias_str, "--key", key])
+        .output()?;
+    assert!(
+        alias_pre.status.success(),
+        "direct-alias replay of a live target refused: {} {}",
+        String::from_utf8_lossy(&alias_pre.stdout),
+        String::from_utf8_lossy(&alias_pre.stderr)
+    );
+    assert_eq!(
+        event_id(&String::from_utf8(alias_pre.stdout)?)?,
+        first_event
+    );
     // The repository moves on under a new key; the committed target is gone,
     // but the same request spelled through the folder symlink must still
     // identify it and return the retained receipt.
@@ -477,6 +495,22 @@ fn move_replay_identifies_a_gone_target_spelled_through_a_folder_symlink() -> Ch
         event_id(&String::from_utf8(replay.stdout)?)?,
         first_event,
         "the symlink-spelled replay must return the committed receipt, not a new event"
+    );
+    // The direct alias now dangles: the retained key must still resolve
+    // through it to the committed target.
+    let alias_replay = command(home, &again, false, Some("Shortcut"))
+        .args(["project", "move", alias_str, "--key", key])
+        .output()?;
+    assert!(
+        alias_replay.status.success(),
+        "a dangling direct alias must replay its retained receipt: {} {}",
+        String::from_utf8_lossy(&alias_replay.stdout),
+        String::from_utf8_lossy(&alias_replay.stderr)
+    );
+    assert_eq!(
+        event_id(&String::from_utf8(alias_replay.stdout)?)?,
+        first_event,
+        "the dangling-alias replay must return the committed receipt, not a new event"
     );
     // A different gone folder behind the same symlink is a different target.
     let other = link.join("never moved here");
@@ -496,6 +530,29 @@ fn move_replay_identifies_a_gone_target_spelled_through_a_folder_symlink() -> Ch
     assert!(
         rendered.contains("retained for a different move target"),
         "{rendered}"
+    );
+    // A dangling alias to a different gone folder still refuses.
+    let side = fixture.home.join("side repository");
+    std::fs::create_dir(&side)?;
+    let side_alias = fixture.home.join("side alias");
+    symlink(&side, &side_alias)?;
+    std::fs::remove_dir(&side)?;
+    let side_alias_str = side_alias.to_str().ok_or("side alias is not UTF-8")?;
+    let side_refused = command(home, &again, false, Some("Shortcut"))
+        .args(["project", "move", side_alias_str, "--key", key])
+        .output()?;
+    assert!(
+        !side_refused.status.success(),
+        "a different dangling target must refuse"
+    );
+    let side_rendered = format!(
+        "{}{}",
+        String::from_utf8_lossy(&side_refused.stdout),
+        String::from_utf8_lossy(&side_refused.stderr)
+    );
+    assert!(
+        side_rendered.contains("retained for a different move target"),
+        "{side_rendered}"
     );
     Ok(())
 }

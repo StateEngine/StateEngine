@@ -292,16 +292,62 @@ fn resolve_target(cx: &Bootstrap, root: &str) -> Result<PathBuf> {
     }
     Ok(target)
 }
-/// Resolve a spelling whose final folder is gone against its deepest
-/// existing ancestor. The committed target may have moved on after the
-/// retained call, so the spelling can no longer be fully canonicalized;
-/// canonicalizing what still exists and re-appending the missing components
-/// keeps an equivalent spelling (such as one through a folder symlink)
-/// identifying the same target as the canonical one. With no existing
-/// ancestor the spelling falls back to being compared as written.
+/// Resolve a spelling that no longer fully canonicalizes against what still
+/// exists, so a retained move key keeps its identity after the target moved on.
+/// An alias that points directly at the folder (a symlink, or on Windows a
+/// junction) is unwrapped to the target it named, a relative link resolving
+/// against the link's folder; a spelling with missing components is resolved
+/// against its deepest existing ancestor. With nothing left to resolve
+/// against, the spelling is compared as written, and a different target still
+/// refuses.
 fn resolve_moved_target(absolute: &Path) -> std::io::Result<PathBuf> {
+    let mut current = absolute.to_path_buf();
+    for _ in 0..8 {
+        match std::fs::metadata(&current) {
+            Ok(_) => return se_proc::canonicalize_path(&current),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let node = match std::fs::symlink_metadata(&current) {
+                    Ok(node) => node,
+                    Err(_) => break,
+                };
+                if !dangling_link(&node) {
+                    break;
+                }
+                let link = std::fs::read_link(&current)?;
+                let parent = current.parent().filter(|p| !p.as_os_str().is_empty());
+                current = match (link.is_absolute(), parent) {
+                    (true, _) => link,
+                    (false, Some(dir)) => dir.join(link),
+                    (false, None) => link,
+                };
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    resolve_against_existing(&current)
+}
+/// The node is a link whose target spelling is what a resolution would
+/// follow: a symlink anywhere, a Windows junction reparse point.
+fn dangling_link(node: &std::fs::Metadata) -> bool {
+    if node.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        node.file_attributes() & 0x0000_0200 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+/// Canonicalize the deepest existing prefix of the spelling and re-append the
+/// missing components; with no existing prefix, compare the spelling as
+/// written.
+fn resolve_against_existing(path: &Path) -> std::io::Result<PathBuf> {
     let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
-    let mut deepest = absolute;
+    let mut deepest = path;
     while let Some(name) = deepest.file_name() {
         match std::fs::symlink_metadata(deepest) {
             Ok(_) => break,
@@ -318,7 +364,7 @@ fn resolve_moved_target(absolute: &Path) -> std::io::Result<PathBuf> {
         deepest = parent;
     }
     if missing.is_empty() {
-        return Ok(absolute.to_path_buf());
+        return Ok(path.to_path_buf());
     }
     let exists = match std::fs::symlink_metadata(deepest) {
         Ok(_) => true,
@@ -326,7 +372,7 @@ fn resolve_moved_target(absolute: &Path) -> std::io::Result<PathBuf> {
         Err(error) => return Err(error),
     };
     if !exists {
-        return Ok(absolute.to_path_buf());
+        return Ok(path.to_path_buf());
     }
     let mut resolved = se_proc::canonicalize_path(deepest)?;
     for name in &missing {
