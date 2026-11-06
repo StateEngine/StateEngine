@@ -38,6 +38,7 @@ fn external_stdio_gets_only_the_new_public_session_in_both_surfaces()
         resume: Read::Absent {
             checked: "new launch".into(),
         },
+        transcript_roots: Vec::new(),
         initial_input: Body::new("Read your context.")?,
         launch_credential: Secret::new(b"sec1.never-in-environment".to_vec())?,
         mcp_bearer: Secret::new(b"sels-never-in-environment".to_vec())?,
