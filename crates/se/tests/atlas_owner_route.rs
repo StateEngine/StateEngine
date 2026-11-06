@@ -269,8 +269,6 @@ fn five_queries_reach_the_real_owner_after_a_contained_cold_build() -> Check {
         )?,
         &*lease,
     )?;
-    direct.close()?;
-    drop(lease);
     let files = se_proc::NativeStateFiles::open(&f.options.state_directory)?;
     let mut staged = files.create_staging(&f.options.state_directory)?;
     staged.file.write_all(&[23; 32])?;
@@ -331,7 +329,6 @@ fn five_queries_reach_the_real_owner_after_a_contained_cold_build() -> Check {
     let index = controller.runtime().summary(&root)?;
     assert!(index.epoch.is_some(), "cold child did not publish an epoch");
     // Cold work must not consume the query session credential's useful lifetime.
-    let (mut direct, lease) = f.direct()?;
     let id = session::session()?;
     let credential = session::record()?;
     let token = Secret::new(format!("sec1.{}.{}", id.as_str(), "A".repeat(43)).into_bytes())?;
