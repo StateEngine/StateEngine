@@ -29,13 +29,14 @@ fn transcript_directory_matches_native_claude_long_slug_vectors()
     Ok(())
 }
 
+/// Protects: window tasks stay literal under native-default and named-profile permissions.
 #[test]
 fn window_task_cannot_supply_claude_options_on_new_or_resumed_launches()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = std::env::current_dir()?;
     let conversation = ProviderSessionId::new("01234567-89ab-4cde-8f01-23456789abcd")?;
     let task = "--dangerously-skip-permissions --permission-mode bypassPermissions";
-    let request = HarnessRequest {
+    let mut request = HarnessRequest {
         identity: SessionIdentity {
             project: se_types::ProjectId::from_parts(1_700_000_000_000, [1; 10])?,
             agent: se_types::AgentId::from_parts(1_700_000_000_000, [2; 10])?,
@@ -67,44 +68,52 @@ fn window_task_cannot_supply_claude_options_on_new_or_resumed_launches()
         mcp_bearer: Secret::new(vec![2; 32])?,
         key: IdempotencyKey::new("leading-dash-task")?,
     };
-    for resume in [false, true] {
-        let launch = claude::ClaudeLaunch {
-            request: &request,
-            se_executable: &directory.join("se"),
-            state_home: &directory,
-            launch_directory: &directory,
-            mcp_port: 21345,
-            conversation: &conversation,
-            resume,
-        };
-        let invocation = claude::invocation(&launch, Vec::new())?;
-        let args: Vec<_> = invocation
-            .arguments
-            .iter()
-            .map(|a| a.to_string_lossy())
-            .collect();
-        let guard = args
-            .iter()
-            .position(|arg| arg == "--")
-            .ok_or("missing prompt guard")?;
-        assert_eq!(&args[guard + 1..], &[task]);
-        assert!(
-            !args[..guard]
+    for named_profile in ["default", "workspace-write"] {
+        request.profile.named_profile = named_profile.into();
+        for resume in [false, true] {
+            let launch = claude::ClaudeLaunch {
+                request: &request,
+                se_executable: &directory.join("se"),
+                state_home: &directory,
+                launch_directory: &directory,
+                mcp_port: 21345,
+                conversation: &conversation,
+                resume,
+            };
+            let invocation = claude::invocation(&launch, Vec::new())?;
+            let args: Vec<_> = invocation
+                .arguments
                 .iter()
-                .any(|a| a.contains("bypassPermissions"))
-        );
-        for flag in [
-            "--permission-mode",
-            "--model",
-            if resume { "--resume" } else { "--session-id" },
-        ] {
-            assert!(args[..guard].iter().any(|a| a == flag));
+                .map(|a| a.to_string_lossy())
+                .collect();
+            let guard = args
+                .iter()
+                .position(|arg| arg == "--")
+                .ok_or("missing prompt guard")?;
+            assert_eq!(&args[guard + 1..], &[task]);
+            assert!(
+                !args[..guard]
+                    .iter()
+                    .any(|a| a.contains("bypassPermissions"))
+            );
+            assert!(
+                !args[..guard]
+                    .iter()
+                    .any(|a| a == "--dangerously-skip-permissions")
+            );
+            for flag in ["--model", if resume { "--resume" } else { "--session-id" }] {
+                assert!(args[..guard].iter().any(|a| a == flag));
+            }
+            if named_profile == "default" {
+                assert!(!args[..guard].iter().any(|a| a == "--permission-mode"));
+            } else {
+                assert!(
+                    args[..guard]
+                        .windows(2)
+                        .any(|a| a == ["--permission-mode", "acceptEdits"])
+                );
+            }
         }
-        assert!(
-            args[..guard]
-                .windows(2)
-                .any(|a| a == ["--permission-mode", "acceptEdits"])
-        );
     }
     Ok(())
 }
