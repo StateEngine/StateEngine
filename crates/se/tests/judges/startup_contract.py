@@ -63,6 +63,7 @@ def pending_recovery(f, reply, stderr, key, task, release_quota, track, result, 
     assert reply['code'] == 'runtime-start-pending' and reply['class'] == 'incomplete', reply
     assert reply['exit'] == 2, reply
     assert 25_000 <= reply['detail']['waited_ms'] <= 45_000, 'incomplete startup did not consume its thirty-second budget'
+    assert 25 <= result['cli_seconds'] <= 60, 'measured CLI elapsed does not match the thirty-second startup budget'
     human = (reply['message'] + '\n' + reply['remedy']['text']).lower()
     for text in [human, stderr.lower()]:
         assert 'slow' in text and 'nothing was lost' in text, text
