@@ -11,10 +11,19 @@ pub fn write(
     stderr: &mut impl Write,
 ) -> io::Result<u8> {
     let mut body = error.body.clone();
-    let mut remedy = body.remedy(context).map_err(io::Error::other)?;
-    let literal_recovery = error.code() == se_types::Code::AgentNameConflict
-        || (error.code() == se_types::Code::TargetUnknown
-            && matches!(remedy.command, Some(se_types::Cmd::Se { .. })))
+    // Startup recovery already preserves the full original argv and resolved
+    // selectors. Setup's home injection must not rewrite that literal retry.
+    let mut remedy = if error.code() == se_types::Code::RuntimeStartPending {
+        body.remedy(&RenderCx::default())
+    } else {
+        body.remedy(context)
+    }
+    .map_err(io::Error::other)?;
+    let literal_recovery = matches!(
+        error.code(),
+        se_types::Code::AgentNameConflict | se_types::Code::RuntimeStartPending
+    ) || (error.code() == se_types::Code::TargetUnknown
+        && matches!(remedy.command, Some(se_types::Cmd::Se { .. })))
         || matches!(error.body.detail(), se_types::Detail::UsageMissingArgument(detail)
             if detail.command == "se resume" && detail.argument == "--preview AGENT")
         || matches!(error.body.detail(), se_types::Detail::UsageInvalidValue(detail)
@@ -59,7 +68,12 @@ pub fn write(
     }
     let diagnostic = writeln!(
         stderr,
-        "error[{}]: {}",
+        "{}[{}]: {}",
+        if error.code() == se_types::Code::RuntimeStartPending {
+            "incomplete"
+        } else {
+            "error"
+        },
         error.code().as_str(),
         error.body.message()
     )

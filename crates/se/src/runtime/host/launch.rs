@@ -54,6 +54,17 @@ pub fn start_with_origin(
             Ok(started)
         }
         Err(mut failure) => {
+            if matches!(
+                failure.error.code(),
+                se_types::Code::DeadlineExceeded | se_types::Code::RuntimeStartPending
+            ) {
+                failure.error.body = se_types::ErrorBody::new(
+                    se_types::Detail::RuntimeStartPending(se_types::details::RuntimeStartPending {
+                        waited_ms: log.elapsed_ms(),
+                    }),
+                )
+                .with_retry(se_types::Retry::WhenRuntimeReady);
+            }
             failure.error = log.refusal(failure.error);
             Err(failure)
         }
@@ -136,7 +147,11 @@ fn start_recorded(
     let nonce = spec.startup_nonce;
     log.note("Waiting for the detached runtime's authenticated native startup handshake");
     let launched = NativeProcessRuntime::spawn_runtime(spec).map_err(|failure| {
-        startup_failure(native_error(failure.error), failure.remaining, bound)
+        startup_failure(
+            native_startup_error(failure.error),
+            failure.remaining,
+            bound,
+        )
     })?;
     log.note(&format!(
         "Waiting for runtime owner PID {} to publish endpoint.json",
@@ -158,9 +173,7 @@ fn start_recorded(
             endpoint.image_sha256,
             &bound.native_bound(),
         )
-        .map_err(|error| {
-            se_core::scope::unreadable("protected executable cache", &error.to_string())
-        })?;
+        .map_err(|error| startup_ipc_error("protected executable cache", error))?;
         #[cfg(unix)]
         let stream = match &endpoint.address {
             se_host::IpcEndpoint::UnixSocket(path) => {
@@ -181,18 +194,13 @@ fn start_recorded(
             }
             _ => return Err(invalid("a native Windows startup endpoint")),
         };
-        let stream = stream.map_err(|error| {
-            se_core::scope::unreadable("runtime ready channel", &error.to_string())
-                .with_cause(error)
-        })?;
+        let stream = stream.map_err(|error| startup_ipc_error("runtime ready channel", error))?;
         let peer = se_proc::native_ipc::observe_ipc_peer_bounded(
             stream.channel(),
             se_proc::native_ipc::IpcPeerSide::Server,
             &bound.native_bound(),
         )
-        .map_err(|error| {
-            se_core::scope::unreadable("runtime ready peer", &error.to_string()).with_cause(error)
-        })?;
+        .map_err(|error| startup_ipc_error("runtime ready peer", error))?;
         peer.verify_instance(&endpoint.epoch.owner, endpoint.image_sha256)
             .map_err(|error| {
                 se_core::scope::unreadable("runtime ready owner", &error.to_string())
@@ -217,7 +225,11 @@ fn start_recorded(
     };
     log.note("Waiting for the runtime ownership commit");
     let ready = NativeProcessRuntime::commit_runtime(launched.child, proof).map_err(|failure| {
-        startup_failure(native_error(failure.error), Some(failure.child), bound)
+        startup_failure(
+            native_startup_error(failure.error),
+            Some(failure.child),
+            bound,
+        )
     })?;
     let detachment_record = match super::detachment::publish(home, &endpoint, &ready, bound) {
         Ok(value) => se_types::Read::Present { value },
@@ -245,22 +257,64 @@ fn startup_failure(
             let until = bound
                 .at()
                 .min(std::time::Instant::now() + Duration::from_millis(100));
-            let observed = match child.startup_stderr(until) {
-                Ok(stderr) => format!(
-                    "child startup stderr (complete={}, truncated={}, read_failure={:?}): {}",
-                    stderr.complete,
-                    stderr.truncated,
-                    stderr.failure,
-                    String::from_utf8_lossy(&stderr.bytes),
+            let (observed, no_reported_failure) = match child.startup_stderr(until) {
+                Ok(stderr) => (
+                    format!(
+                        "child startup stderr (complete={}, truncated={}, read_failure={:?}): {}",
+                        stderr.complete,
+                        stderr.truncated,
+                        stderr.failure,
+                        String::from_utf8_lossy(&stderr.bytes),
+                    ),
+                    stderr.bytes.is_empty()
+                        && !stderr.truncated
+                        && stderr.failure.is_none()
+                        && !stderr.complete,
                 ),
-                Err(failure) => format!("child startup stderr unreadable: {failure:?}"),
+                Err(failure) => (
+                    format!("child startup stderr unreadable: {failure:?}"),
+                    false,
+                ),
             };
-            se_core::scope::unreadable("runtime startup", &format!("{error}; {observed}"))
-                .with_cause(error)
+            let timed_out = matches!(
+                error.code(),
+                se_types::Code::DeadlineExceeded | se_types::Code::RuntimeStartPending
+            );
+            let diagnostic =
+                se_core::scope::unreadable("runtime startup", &format!("{error}; {observed}"))
+                    .with_cause(error);
+            if timed_out && no_reported_failure {
+                SeError::new(se_types::Detail::RuntimeStartPending(
+                    se_types::details::RuntimeStartPending { waited_ms: 0 },
+                ))
+                .with_cause(diagnostic)
+            } else {
+                diagnostic
+            }
         }
         None => error,
     };
     Box::new(StartupFailure { error, child })
+}
+fn native_startup_error(error: se_proc::ProcError) -> SeError {
+    if error.code == se_proc::ProcErrorCode::LaunchTimedOut {
+        SeError::new(se_types::Detail::RuntimeStartPending(
+            se_types::details::RuntimeStartPending { waited_ms: 0 },
+        ))
+        .with_cause(native_error(error))
+    } else {
+        native_error(error)
+    }
+}
+fn startup_ipc_error(source: &str, error: se_proc::native_ipc::IpcNativeError) -> SeError {
+    if error.code == se_proc::native_ipc::IpcNativeErrorCode::TimedOut {
+        SeError::new(se_types::Detail::RuntimeStartPending(
+            se_types::details::RuntimeStartPending { waited_ms: 0 },
+        ))
+        .with_cause(error)
+    } else {
+        se_core::scope::unreadable(source, &error.to_string()).with_cause(error)
+    }
 }
 fn wait_endpoint(
     files: &se_proc::NativeStateFiles,

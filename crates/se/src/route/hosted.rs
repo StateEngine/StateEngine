@@ -10,8 +10,6 @@ use se_core::{
 use se_host::client::{ClientOptions, lease::Deadline};
 use se_types::{Read, Result, SeError};
 use std::sync::Arc;
-#[cfg(any(target_os = "linux", windows))]
-use std::time::Duration;
 
 pub fn forward<R: se_store::ReadStore>(
     cx: &Bootstrap,
@@ -24,15 +22,11 @@ pub fn forward<R: se_store::ReadStore>(
 ) -> Result<AnyOutput> {
     let options = execute::options();
     let bound = Deadline::from_options(&options)?;
-    let target = if operation.meta().runtime == RuntimeNeed::HostAutoStart {
+    let automatic = operation.meta().runtime == RuntimeNeed::HostAutoStart;
+    let target = if automatic {
         #[cfg(any(target_os = "linux", windows))]
         {
-            super::autostart::endpoint(
-                cx,
-                files,
-                &bound.stage(Duration::from_secs(10))?,
-                diagnostic,
-            )?
+            super::autostart::endpoint(cx, files, &bound, diagnostic)?
         }
         #[cfg(not(any(target_os = "linux", windows)))]
         {
@@ -62,6 +56,14 @@ pub fn forward<R: se_store::ReadStore>(
             }
             Read::Unknown { what } => return Err(scope::unreadable("runtime endpoint", &what)),
         }
+    };
+    // Bootstrap has its own se-up budget before any operation is submitted.
+    // The ensuing call still gets the ordinary bounded IPC budget; a slow
+    // but successful bootstrap must not leave just milliseconds for custody.
+    let bound = if automatic {
+        Deadline::from_options(&options)?
+    } else {
+        bound
     };
     se_proc::native_ipc::restore_image_cache(&cx.home, target.image_sha256, &bound.native_bound())
         .map_err(|error| {

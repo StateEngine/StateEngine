@@ -49,6 +49,7 @@ mod select;
 mod session_observation;
 #[path = "route/setup.rs"]
 pub mod setup;
+pub(crate) mod startup_retry;
 #[path = "route/status.rs"]
 mod status;
 #[path = "route/uninstall.rs"]

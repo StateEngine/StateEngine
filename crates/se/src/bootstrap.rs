@@ -31,6 +31,7 @@ pub struct Bootstrap {
     pub log: Option<String>,
     pub no_color: bool,
     pub json: bool,
+    pub(crate) retry_invocation: Option<crate::route::startup_retry::Invocation>,
     pub legacy_environment_present: bool,
 }
 
@@ -102,6 +103,7 @@ impl Bootstrap {
             no_color: no_color
                 || std::env::var_os("NO_COLOR").is_some_and(|value| !value.is_empty()),
             json,
+            retry_invocation: None,
             // Inspect names only. Legacy values never participate in resolution.
             legacy_environment_present: std::env::vars_os().any(|(name, _)| {
                 name.to_str()

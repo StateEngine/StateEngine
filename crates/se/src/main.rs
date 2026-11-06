@@ -33,6 +33,7 @@ pub fn run(
 ) -> io::Result<u8> {
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
+    let original_args = args.clone();
     let invocation = match grammar::parse(args) {
         Ok(invocation) => invocation,
         Err(failure) => {
@@ -50,6 +51,7 @@ pub fn run(
         _ => None,
     };
     let common = invocation.common;
+    let retry_invocation = route::startup_retry::Invocation::new(original_args, &common);
     let mut operation = invocation.operation;
     match metadata_output(&operation) {
         Ok(Some(output)) => return render::output(&output, common.json, common.quiet, &mut stdout),
@@ -118,6 +120,7 @@ pub fn run(
         }
     };
     context.selections = common.selections;
+    context.retry_invocation = Some(retry_invocation);
     if context.legacy_environment_present {
         writeln!(
             stderr,
