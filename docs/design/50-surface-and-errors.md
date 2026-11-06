@@ -434,7 +434,7 @@ launch, and MCP launch. An existing-but-missing reference refuses with
 | atlas.find | `se atlas find QUERY [--kind symbol\|text\|path] [--in PATH] [--limit N]` | `src/store/tx.rs:41 fn commit (symbol, resolved)` | `se.code-hits/v1` |
 | atlas.refs | `se atlas refs SYMBOL [--path PATH] [--limit N] [--cursor C]` | sites with enclosing symbol and `resolved`/`name-only` | `se.code-refs/v1` |
 | atlas.impact | `se atlas impact SYMBOL [--path PATH] [--depth 1..3]` (default 2) | dependents by hop, tests, omitted frontier | `se.impact/v1` |
-| atlas.changes | `se atlas changes [--since CURSOR\|COMMIT\|TIME] [--limit N]` | added/removed/signature/body changes | `se.code-changes/v1` |
+| atlas.changes | `se atlas changes --since CURSOR\|COMMIT\|TIME [--limit N]` | added/removed/signature/body changes | `se.code-changes/v1` |
 | atlas.outline | `se atlas outline PATH` | symbol tree with lines | `se.outline/v1` |
 
 `identity.whoami` has no CLI (OPS.md); in an agent shell `se status` shows the bound principal.
@@ -596,7 +596,7 @@ The table below mirrors `crates/se-types/src/error/catalog.rs`; typed detail fie
 | --- | --- | --- | --- | --- |
 | api-version-unsupported | R | client: String, host: String | client API {client} vs runtime {host} | upgrade the older side |
 | atlas-file-over-budget | R | path: String, size: u64, budget: u64 | {path} ({size}) exceeds the per-file parse budget | none; the file stays text-searchable |
-| atlas-index-absent | R | project: ProjectId | no code index for {project} yet | Use `se config set atlas.enabled true`; indexing runs after readiness in a transient capped child; `se status` reports progress |
+| atlas-index-absent | R | project: ProjectId | no code index for {project} yet | Set `enabled = true` under `[atlas]` in the selected config.toml, then `se down` and `se up` with the same --home; `se status` reports progress |
 | atlas-language-unsupported | R | path: String, language: Option<String> | {language} files aren't parsed | text search: `--kind text` |
 | atlas-path-outside-root | R | path: String, root: String | {path} is outside {root} | use a project-relative path |
 | backup-failed | R | path: String, step: String, reason: String | Backup {path} failed at {step}: {reason} | Run `se doctor`; automatic backup or restore must verify before proceeding |
@@ -837,7 +837,7 @@ General settings live only in the selected `config.toml`; no project settings la
 
 ### 7.4 Precedence and application
 
-For general settings: CLI flag > documented environment variable > selected `config.toml` > built-in default. Configuration is never read from cwd, the repository or the binary folder. A saved named profile is the only bypass opt-in, explicitly selected for that agent; neither default configuration nor doctor repair selects bypass. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable. A successful standalone `config set atlas.enabled true` notifies an active host after readiness; restart recovers from the file. Its cold index is a transient child capped below the section 80 budget, never work that blocks host readiness.
+For general settings: CLI flag > documented environment variable > selected `config.toml` > built-in default. Configuration is never read from cwd, the repository or the binary folder. A saved named profile is the only bypass opt-in, explicitly selected for that agent; neither default configuration nor doctor repair selects bypass. Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable. Edit the selected config.toml and restart with `se down` then `se up` using the same --home; `config get/set` changes saved agent settings only. Its cold index is a transient child capped below the section 80 budget, never work that blocks host readiness.
 
 ### 7.5 Renamed-command refusal table
 
@@ -897,7 +897,7 @@ History search is a bounded streamed scan with a byte/time window and continuati
 
 Install/uninstall scripts and SE Code's installer invoke this same `se uninstall` operation rather than reimplementing it. It never kills an agent without the ordinary stop witness. File-only retries follow section 40’s readback-reconciliation rule, without a separate persistent journal; file readbacks never claim an event/writer.
 
-The product is complete only after real Claude and Codex pass all five journeys on clean Windows, Linux and macOS in standalone and embedded compositions. Windows/Linux is intermediate; the borrowed-Mac qualification runs before alpha release, without delaying the build. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable. Atlas is built after journeys/handover and never blocks a milestone; forget and live handover remain before alpha. Numerical budgets live only in section 80, size/build order in 95.
+The product is complete only after real Claude and Codex pass all five journeys on clean Windows, Linux and macOS in standalone and embedded compositions. Windows/Linux is intermediate; the borrowed-Mac qualification runs before alpha release, without delaying the build. Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable. Atlas is built after journeys/handover and never blocks a milestone; forget and live handover remain before alpha. Numerical budgets live only in section 80, size/build order in 95.
 
 ---
 

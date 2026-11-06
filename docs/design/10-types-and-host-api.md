@@ -201,7 +201,7 @@ The linked declarations do not establish any performance, crash or native result
 [95 — work breakdown](95-work-breakdown.md) owns the build order and generated
 size table. Standalone Windows/Linux is an intermediate milestone; done includes
 all five journeys, real Claude and Codex, standalone and embedded, plus borrowed-Mac
-qualification before alpha release. Atlas is compiled only into the standalone `se`; it is disabled by default and enabled by `atlas.enabled = true` in config.toml; in embedded SE Code that setting returns feature-unavailable. Atlas is built after
+qualification before alpha release. Atlas is compiled only into the standalone `se`; it is enabled by default and can be disabled with `atlas.enabled = false` in config.toml; a host without an installed Atlas controller reports it unavailable. Atlas is built after
 the journeys and handover; it cannot hold a milestone. Forget remains before
 release, after the journeys. No factory cutover or Rust implementation is admitted
 by a compilation result or by this index.

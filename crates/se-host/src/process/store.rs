@@ -7,6 +7,7 @@ use se_store::{Admission, AtomicBatch, CommitReceipt, Snapshot, SqliteSnapshot, 
 use se_types::{Generation, Read, Result};
 
 pub(super) struct Store {
+    pub record_feed: Arc<crate::atlas_runtime::record_fence::RecordFeedFence>,
     pub reader: Arc<se_store::SqliteReader>,
     pub writer: se_store::SqliteClient,
     pub pool: BlockingPool,
@@ -85,14 +86,23 @@ impl Store {
         let pending = self.pending.clone();
         let mail_waits = self.mail_waits.clone();
         let runtime = self.pool.handle();
+        let record_feed = self.record_feed.clone();
         let fault = self.fault.clone();
         let completion = self
             .pool
             .run_owned(deadline, move || {
+                let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
                 pending.register(&submitted)?;
                 match writer.submit(batch) {
                     Ok(completion) => Ok(runtime.spawn(async move {
                         let receipt = completion.await;
+                        if receipt.as_ref().is_err_and(|e| {
+                            e.code == se_store::StoreErrorCode::CommitOutcomeUnknown
+                        }) {
+                            record_write.uncertain();
+                        } else {
+                            drop(record_write);
+                        }
                         if let Err(error) = &receipt {
                             fault.observe_writer(error);
                         }

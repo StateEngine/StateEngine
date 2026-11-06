@@ -32,6 +32,25 @@ impl Scope {
         key.copy_from_slice(&digest[..16]);
         FileId(key)
     }
+    pub fn child_symbol_id(
+        &self,
+        file: FileId,
+        parent: Option<SymbolId>,
+        kind: &str,
+        name: &str,
+        ordinal: u32,
+    ) -> SymbolId {
+        let parent = parent.map(|p| p.0);
+        SymbolId(digest(&[
+            b"atlas-child-v1",
+            self.registration.root.as_str().as_bytes(),
+            &file.0,
+            parent.as_ref().map_or(&[][..], |p| p.as_slice()),
+            kind.as_bytes(),
+            name.as_bytes(),
+            &ordinal.to_be_bytes(),
+        ]))
+    }
     pub fn symbol_id(
         &self,
         file: FileId,

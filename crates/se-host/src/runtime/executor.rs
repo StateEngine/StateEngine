@@ -36,6 +36,28 @@ pub fn execute(
 ) -> impl Future<Output = Result<ExecutedCall>> + Send {
     async move {
         let ExecutionCall { admitted, deadline } = call;
+        let deadline = if let HostedInput::Operation(se_core::ops::AnyOp::AtlasAugment(input)) =
+            &admitted.input
+        {
+            let remaining = input
+                .deadline
+                .and_then(|end| end.checked_duration_since(std::time::Instant::now()))
+                .filter(|remaining| !remaining.is_zero());
+            if let Some(remaining) = remaining {
+                deadline.stage(remaining)?
+            } else {
+                return Ok(ExecutedCall {
+                    host_phases: Default::default(),
+                    output: se_core::ops::AtlasHookOutput::default().into(),
+                    write_timings: None,
+                    committed: None,
+                    capture_commits: Vec::new(),
+                    capture_keys: Vec::new(),
+                });
+            }
+        } else {
+            deadline
+        };
         let reader = context.reads.clone();
         let generation = context.generation;
         if admitted.admission.generation != generation.get() {
@@ -45,11 +67,20 @@ pub fn execute(
             ));
         }
         let plan_deadline = deadline.clone();
+        let atlas = context.atlas.clone();
         let (planned, planning) =
             timings::blocking(&context.blocking, Mode::Finite, &deadline, move || {
                 plan_deadline.remaining()?;
+                let needs_atlas = matches!(&admitted.input, HostedInput::Operation(operation) if operation.atlas_options().is_some() || matches!(operation, se_core::ops::AnyOp::AtlasAugment(_) | se_core::ops::AnyOp::Resume(_) | se_core::ops::AnyOp::SessionContext(_)));
+                let ticket = if needs_atlas {
+                    match atlas.records.ticket() {
+                        Ok(ticket)=>ticket,
+                        Err(error) if matches!(&admitted.input,HostedInput::Operation(op) if op.atlas_options().is_some())=>return Err(error),
+                        Err(_)=>None,
+                    }
+                } else { None };
                 let phase = checked_pooled_phase(&reader, generation)?;
-                plan(phase, admitted)
+                plan(phase, admitted, Some((&atlas, ticket)))
             })
             .await?;
         let mut host_phases = se_core::ops::HostPhaseTimings {
@@ -178,7 +209,14 @@ pub fn execute(
         }
     }
 }
-fn plan(phase: se_store::ReadPhase, call: HostedCall) -> Result<Planned> {
+fn plan(
+    phase: se_store::ReadPhase,
+    call: HostedCall,
+    atlas: Option<(
+        &crate::atlas_runtime::read_port::AtlasOwnerPort,
+        Option<crate::atlas_runtime::record_fence::RecordFeedTicket>,
+    )>,
+) -> Result<Planned> {
     let natural_key = match &call.input {
         HostedInput::Capture(capture) => Some(format!(
             "session={:?}, provider={:?}, conversation={}, turn={}",
@@ -213,7 +251,53 @@ fn plan(phase: se_store::ReadPhase, call: HostedCall) -> Result<Planned> {
                 if let Some(selections) = selections {
                     selections.apply(&mut operation, &mut cx)?;
                 }
-                kernel.plan(operation, &mut cx, &terminal)
+                let context_bytes = match &operation {
+                    se_core::ops::AnyOp::SessionContext(input) => Some(input.byte_budget),
+                    _ => None,
+                };
+                match kernel.plan(operation, &mut cx, &terminal)? {
+                    OpStep::Complete(mut output)
+                        if matches!(
+                            output,
+                            AnyOutput::Resume(_) | AnyOutput::SessionContext(_)
+                        ) =>
+                    {
+                        if let Some((owner, ticket)) = atlas {
+                            crate::atlas_continuity::attach(
+                                owner,
+                                ticket,
+                                cx.read,
+                                &admission,
+                                &mut output,
+                                context_bytes,
+                            )?;
+                        }
+                        Ok(OpStep::Complete(output))
+                    }
+                    OpStep::Custody(CustodyPlan::AtlasAugment(input)) => {
+                        let result = atlas.map_or_else(
+                            || Ok(se_core::ops::AtlasHookOutput::default()),
+                            |(owner, ticket)| {
+                                crate::atlas_hooks::owner_augment(
+                                    owner, ticket, &input, cx.read, &admission,
+                                )
+                            },
+                        );
+                        Ok(OpStep::Complete(result?.into()))
+                    }
+                    OpStep::Custody(CustodyPlan::AtlasRead(request)) => {
+                        let (owner, ticket) = atlas.ok_or_else(|| se_core::scope::unreadable("Atlas owner reader", "the admitted runtime must supply its existing controller read port"))?;
+                        Ok(OpStep::Complete(crate::atlas_queries::owner_read(
+                            owner,
+                            ticket,
+                            &request,
+                            cx.read,
+                            &admission,
+                            super::start::now_unix_micros()? / 1000,
+                        )?))
+                    }
+                    step => Ok(step),
+                }
             }
             HostedInput::Capture(capture) => {
                 if selections.is_some() {

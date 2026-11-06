@@ -61,6 +61,7 @@ pub(super) fn extract(
             kind: SymbolKind::Module,
             span: span(root),
             exported: false,
+            export_alias: None,
             signature_hash: None,
             body_hash: None,
             doc_line: String::new(),
@@ -104,10 +105,13 @@ pub(super) fn extract(
             Language::Rust => super::rust::declaration(node, &snapshot.bytes),
             Language::Python => super::python::declaration(node, &snapshot.bytes),
             _ => super::javascript::declaration(node, &snapshot.bytes),
-        };
+        }
+        .or_else(|| pattern_binding(node, language, &snapshot.bytes));
         let declaration_name = declaration.as_ref().map(|d| d.name.id());
         if let Some(declaration) = declaration {
-            let name = text(declaration.name, &snapshot.bytes);
+            let name = declaration
+                .name_override
+                .unwrap_or_else(|| text(declaration.name, &snapshot.bytes));
             if name.is_empty() || name.len() > 1024 {
                 if !reasons.contains(&CoverageReason::ByteLimit) {
                     reasons.push(CoverageReason::ByteLimit)
@@ -120,11 +124,7 @@ pub(super) fn extract(
                     .iter()
                     .filter(|s| s.parent == parent && s.name == name && s.kind == declaration.kind)
                     .count() as u32;
-                let mut chain = [""; 128];
-                for (out, frame) in chain.iter_mut().zip(&symbols) {
-                    *out = &parsed.symbols[frame.symbol].name
-                }
-                let id = scope.symbol_id(file, &kind, &chain[..symbols.len()], name, ordinal);
+                let id = scope.child_symbol_id(file, parent, &kind, name, ordinal);
                 let name = arena.text(name)?;
                 let doc_line = arena.text(doc_line(node, &snapshot.bytes))?;
                 let Some(signature_hash) =
@@ -133,6 +133,11 @@ pub(super) fn extract(
                     reasons.push(CoverageReason::ParseWorkLimit);
                     break;
                 };
+                let export_alias = if default_export(node, &snapshot.bytes) && name != "default" {
+                    Some(arena.text("default")?)
+                } else {
+                    None
+                };
                 let record = SymbolRecord {
                     id,
                     parent,
@@ -140,6 +145,7 @@ pub(super) fn extract(
                     kind: declaration.kind,
                     span: span(node),
                     exported: declaration.exported,
+                    export_alias,
                     signature_hash: Some(signature_hash),
                     body_hash: declaration.body.map(|b| body_hash(b, &snapshot.bytes)),
                     doc_line,
@@ -188,12 +194,23 @@ pub(super) fn extract(
             let spelling = text(name, &snapshot.bytes);
             if !spelling.is_empty() && spelling.len() <= 1024 {
                 let spelling = arena.text(spelling)?;
-                if let ReferenceQualifier::Namespace(parts) = &qualifier {
-                    arena.charge(
-                        parts.capacity() * std::mem::size_of::<String>()
-                            + parts.iter().map(String::capacity).sum::<usize>(),
-                    )?;
-                }
+                let qualifier = match qualifier {
+                    SyntaxQualifier::Unqualified => ReferenceQualifier::Unqualified,
+                    SyntaxQualifier::Dynamic => ReferenceQualifier::Dynamic,
+                    SyntaxQualifier::Namespace(text)
+                        if text.len() <= 4096 && text.split("::").count() <= 8 =>
+                    {
+                        let count = text.split("::").count();
+                        arena.charge(count * std::mem::size_of::<String>())?;
+                        let mut parts = Vec::with_capacity(count);
+                        for part in text.split("::") {
+                            parts.push(arena.text(part)?);
+                        }
+                        ReferenceQualifier::Namespace(parts)
+                    }
+                    _ => ReferenceQualifier::Dynamic,
+                };
+                arena.charge(snapshot.path.as_str().len())?;
                 arena.row(
                     &mut parsed.references,
                     ParsedReference {
@@ -215,7 +232,6 @@ pub(super) fn extract(
                         qualifier,
                     },
                 )?;
-                arena.charge(snapshot.path.as_str().len())?;
             } else if !reasons.contains(&CoverageReason::ByteLimit) {
                 reasons.push(CoverageReason::ByteLimit)
             }

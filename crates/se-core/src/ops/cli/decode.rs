@@ -70,6 +70,7 @@ pub fn from_matches_with_key(
     };
     let op =
         match meta.name {
+            name if name.starts_with("atlas.") => atlas::decode(name, m, common.json)?,
             "continuity.resume" => AnyOp::Resume(Resume {
                 limit: required(m, "limit")?
                     .parse()
@@ -117,12 +118,12 @@ pub fn from_matches_with_key(
             }),
             "meta.version" => AnyOp::MetaVersion(MetaVersion {}),
             "meta.help" => AnyOp::MetaHelp(MetaHelp {
-                path: if flag(m, "help") {
-                    path
+                path: if flag(m, "help") || path == ["atlas"] {
+                    path.clone()
                 } else {
                     many(m, "path")
                 },
-                all: if flag(m, "help") {
+                all: if flag(m, "help") || path == ["atlas"] {
                     false
                 } else {
                     flag(m, "all")

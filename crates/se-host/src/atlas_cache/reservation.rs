@@ -10,6 +10,27 @@ struct Record {
     file: [u8; 16],
 }
 impl NativeAtlasCache {
+    pub(super) fn claim_reservation(&self, epoch: &CacheEpoch) -> AtlasResult<()> {
+        self.require_writer()?;
+        self.check_unpublished(epoch)?;
+        let record = self
+            .read_reservation()?
+            .ok_or_else(|| fail("cold candidate reservation journal absent"))?;
+        if &record.epoch != epoch {
+            return Err(fail("cold candidate differs from reserved epoch"));
+        }
+        let pin = self
+            .pin_database(epoch)?
+            .ok_or_else(|| fail("cold candidate database absent"))?;
+        let identity = observe_file_revision(&pin.file).map_err(fail)?;
+        if identity.volume != record.volume || identity.file != record.file {
+            return Err(fail(
+                "cold candidate native identity changed; preserve epoch",
+            ));
+        }
+        *self.reserved.borrow_mut() = Some((record.epoch, identity));
+        Ok(())
+    }
     fn journal(&self) -> PathBuf {
         self.root.root().join("reservation.json")
     }

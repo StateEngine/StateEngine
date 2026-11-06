@@ -219,20 +219,24 @@ impl Scope {
             },
         })
     }
-    pub fn stop(&mut self, deadline: std::time::Instant) -> ProcResult<()> {
+    pub fn stop(&mut self, deadline: std::time::Instant) -> ProcResult<StopDispatch> {
         self.signal(deadline, libc::SIGKILL)
     }
-    pub fn terminate(&mut self, deadline: std::time::Instant) -> ProcResult<()> {
+    pub fn terminate(&mut self, deadline: std::time::Instant) -> ProcResult<StopDispatch> {
         self.signal(deadline, libc::SIGTERM)
     }
-    fn signal(&mut self, deadline: std::time::Instant, signal: libc::c_int) -> ProcResult<()> {
+    fn signal(
+        &mut self,
+        deadline: std::time::Instant,
+        signal: libc::c_int,
+    ) -> ProcResult<StopDispatch> {
         if let Some(child) = &mut self.child {
             child.authorization = None;
         }
         let Some(group) = self.group else {
             // Before R was read, only our exact unreaped helper can exist.
             let Some(child) = &self.child else {
-                return Ok(());
+                return Ok(StopDispatch::NotNeeded);
             };
             let pin = child
                 .pin
@@ -249,18 +253,21 @@ impl Scope {
                     0u32,
                 )
             };
-            if rc < 0 && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            if rc < 0 {
+                if io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                    return Ok(StopDispatch::NotNeeded);
+                }
                 return Err(native(
                     ProcErrorCode::StopDispatchFailed,
                     "pidfd stop helper",
                     io::Error::last_os_error(),
                 ));
             }
-            return Ok(());
+            return Ok(StopDispatch::Requested);
         };
         let before = self.observe()?;
         if before.remaining.population == Population::Empty {
-            return Ok(());
+            return Ok(StopDispatch::NotNeeded);
         }
         let root = self
             .root_identity()
@@ -281,16 +288,17 @@ impl Scope {
         check_stop_deadline(deadline)?;
         // SAFETY: exact native group just bracketed against an original member.
         // Linux tracked groups retain the documented non-atomic check/signal bound.
-        if unsafe { libc::kill(-(group.0 as i32), signal) } < 0
-            && io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
-        {
+        if unsafe { libc::kill(-(group.0 as i32), signal) } < 0 {
+            if io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                return Ok(StopDispatch::NotNeeded);
+            }
             return Err(native(
                 ProcErrorCode::StopDispatchFailed,
                 "signal tracked group",
                 io::Error::last_os_error(),
             ));
         }
-        Ok(())
+        Ok(StopDispatch::Requested)
     }
     pub fn release(&mut self, witnessed: bool) -> ProcResult<()> {
         for registration in &mut self.registrations {

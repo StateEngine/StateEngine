@@ -1,4 +1,4 @@
-use crate::{errors::AtlasResult, model::*, queries::AtlasQueries};
+use crate::{errors::AtlasResult, model::*};
 use se_types::{AgentId, EventId};
 use std::time::Duration;
 
@@ -16,7 +16,7 @@ pub enum ReconcileReason {
     ExtractorChanged,
     ConfigurationChanged,
 }
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum SourceHint {
     FileChanged(RelativePath),
     FileRemoved(RelativePath),
@@ -93,7 +93,7 @@ pub struct CacheRemoval {
 /// Host-internal lifecycle, never added to OPS as another user operation.
 /// A single host-owned low-priority worker owns this mutable value.
 pub trait AtlasController {
-    type Reader: AtlasQueries;
+    type Source: AtlasSource;
     fn register(
         &mut self,
         root: RootRegistration,
@@ -108,7 +108,14 @@ pub trait AtlasController {
     ) -> AtlasResult<ScheduleReceipt>;
     fn work_quantum(&mut self, allowance: Duration) -> AtlasResult<Option<WorkReport>>;
     fn next_work(&self) -> NextWork;
-    fn reader(&self, root: RootId) -> AtlasResult<Self::Reader>;
+    fn with_reader<T>(
+        &self,
+        root: RootId,
+        read: impl FnOnce(
+            &crate::cache::connection::CacheConnection<'_>,
+            &Self::Source,
+        ) -> AtlasResult<T>,
+    ) -> AtlasResult<T>;
     fn close(
         &mut self,
         root: RootId,
@@ -205,6 +212,12 @@ pub struct SourceSnapshot {
 #[derive(Debug)]
 pub enum SourceRead {
     Bytes(SourceSnapshot),
+    /// A verified full-file hash without a retained parser source buffer.
+    Hashed {
+        identity: FileIdentity,
+        content_hash: ContentHash,
+        reason: CoverageReason,
+    },
     Deferred {
         identity: FileIdentity,
         reason: CoverageReason,
@@ -257,6 +270,7 @@ pub struct SymbolRecord {
     pub kind: SymbolKind,
     pub span: Span,
     pub exported: bool,
+    pub export_alias: Option<String>,
     /// None means absent syntax; Some(hash(empty)) means an actual empty body.
     pub signature_hash: Option<ContentHash>,
     pub body_hash: Option<ContentHash>,
@@ -270,6 +284,7 @@ pub struct ImportRecord {
     pub imported_name: Option<String>,
     pub target_file: Option<FileId>,
     pub target_symbol: Option<SymbolId>,
+    pub target_namespace: bool,
     pub span: Span,
     pub kind: ImportKind,
     pub lexical_scope: u32,

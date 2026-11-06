@@ -1,6 +1,8 @@
 //! Kernel operations and the single operation registry that generates the CLI and MCP surfaces.
 
 pub mod admission;
+pub mod atlas_records;
+pub mod atlas_resume;
 /// Synchronous read/batch/typed-continuation seam.
 pub mod commit;
 pub mod dispatch;

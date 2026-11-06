@@ -207,9 +207,16 @@ impl HostedRouter {
 }
 impl AdmittedExchange {
     pub fn take_call(&mut self) -> Result<RoutedCall> {
-        self.call
+        let mut call = self
+            .call
             .take()
-            .ok_or_else(|| SeError::invalid("admitted exchange", "one owned call consumer"))?
+            .ok_or_else(|| SeError::invalid("admitted exchange", "one owned call consumer"))??;
+        if let HostedInput::Operation(se_core::ops::AnyOp::AtlasAugment(input)) =
+            &mut call.admitted.input
+        {
+            input.deadline = Some(self.admitted_at + std::time::Duration::from_millis(5));
+        }
+        Ok(call)
     }
     /// The original id/API/G are taken from the admitted exchange. A complete
     /// response is budgeted and written once; an incomplete write consumes it.

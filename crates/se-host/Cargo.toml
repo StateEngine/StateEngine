@@ -24,6 +24,7 @@ serde.workspace = true
 shlex = "2.0.1"
 hmac = "0.12.1"
 sha2.workspace = true
+ignore = "=0.4.25"
 uuid.workspace = true
 zeroize.workspace = true
 serde_ignored = "0.1.14"
@@ -52,4 +53,13 @@ path = "tests/w3_lifecycle_independent.rs"
 required-features = ["secode"]
 
 [dev-dependencies]
+rusqlite = { version = "0.40", features = ["hooks"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[[test]]
+name = "atlas_cold_crash_dev"
+harness = false
+
+[[test]]
+name = "atlas_cold_history_dev"
+harness = false

@@ -99,6 +99,10 @@ mod failure_tests;
 #[cfg(test)]
 mod pool_tests;
 
+#[cfg(all(feature = "listener", target_os = "linux"))]
+mod atlas_owner;
 #[cfg(all(test, feature = "listener"))]
 #[path = "../tests/support/wave2_host_fixture.rs"]
 pub(crate) mod test_support;
+#[cfg(all(feature = "listener", target_os = "linux"))]
+pub use atlas_owner::NativeAtlasQualification;

@@ -365,6 +365,21 @@ impl Kernel {
             crate::admission::require_human_terminal(op.meta().name, cx.admission, terminal)?;
         }
         Ok(match op {
+            AnyOp::AtlasFind(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Find(input),
+            ))),
+            AnyOp::AtlasRefs(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Refs(input),
+            ))),
+            AnyOp::AtlasImpact(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Impact(input),
+            ))),
+            AnyOp::AtlasChanges(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Changes(input),
+            ))),
+            AnyOp::AtlasOutline(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
+                crate::ops::AtlasRead::Outline(input),
+            ))),
             AnyOp::Resume(input) => OpStep::Complete(
                 crate::ops::continuity::resume_at_home(
                     input,
@@ -549,6 +564,7 @@ impl Kernel {
             AnyOp::RuntimeUp(input) => OpStep::Custody(CustodyPlan::RuntimeUp(input)),
             AnyOp::RuntimeDown(input) => OpStep::Custody(CustodyPlan::RuntimeDown(input)),
             AnyOp::Uninstall(input) => OpStep::Custody(CustodyPlan::Uninstall(input)),
+            AnyOp::AtlasAugment(input) => OpStep::Custody(CustodyPlan::AtlasAugment(input)),
             AnyOp::HookClaude(input) => OpStep::Custody(CustodyPlan::ClaudeHook(input)),
             AnyOp::MetaVersion(_) | AnyOp::MetaHelp(_) | AnyOp::MetaSchema(_) => {
                 return Err(scope::unreadable(

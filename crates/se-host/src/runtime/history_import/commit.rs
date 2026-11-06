@@ -23,14 +23,24 @@ pub(super) async fn append(
     let writer = context.writer.clone();
     let bound = deadline.clone();
     let runtime = context.blocking.handle();
+    let record_feed = context.atlas.records.clone();
     let completion = context
         .blocking
         .run_owned(deadline, move || {
             bound.remaining()?;
+            let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
             pending.register(&identity)?;
             match writer.submit(batch) {
                 Ok(waiter) => Ok(runtime.spawn(async move {
                     let receipt = waiter.await;
+                    if receipt
+                        .as_ref()
+                        .is_err_and(|e| e.code == se_store::StoreErrorCode::CommitOutcomeUnknown)
+                    {
+                        record_write.uncertain();
+                    } else {
+                        drop(record_write);
+                    }
                     let settled = match &receipt {
                         Ok(_) => pending.resolve(&identity),
                         Err(error)

@@ -5,9 +5,11 @@ use se_atlas::{
     lifecycle::{CaseMode, FileIdentity, RevisionTrust},
     model::{RelativePath, RootRegistration},
     scope::Scope,
-    source::{RegisteredSource, SourceAccess, SourceFile},
+    source::{
+        RegisteredSource, SourceAccess, SourceDirectory, SourceEntry, SourceEntryKind, SourceFile,
+    },
 };
-use se_proc::{NativeRootFile, NativeSourceRoot};
+use se_proc::{NativeRootDirectory, NativeRootFile, NativeSourceKind, NativeSourceRoot};
 use se_types::{Detail, SeError, code::AtlasText, details};
 use std::io::{self, Read, Seek, SeekFrom};
 
@@ -41,11 +43,48 @@ impl SourceAccess for NativeAtlasSource {
         self.case_mode
     }
     fn open(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>> {
+        private_path(path)?;
         Ok(self
             .root
             .open_relative(path.as_str())
             .map_err(|e| error(path.as_str(), e))?
             .map(|file| Box::new(PinnedSource(file)) as Box<dyn SourceFile>))
+    }
+    fn open_directory(
+        &self,
+        path: Option<&RelativePath>,
+    ) -> AtlasResult<Option<Box<dyn SourceDirectory + '_>>> {
+        if let Some(path) = path {
+            private_path(path)?;
+        }
+        self.root
+            .open_directory(path.map_or("", AtlasText::as_str))
+            .map(|d| d.map(|d| Box::new(PinnedDirectory(d)) as Box<dyn SourceDirectory>))
+            .map_err(|e| error("retained source directory", e))
+    }
+}
+struct PinnedDirectory<'a>(NativeRootDirectory<'a>);
+impl SourceDirectory for PinnedDirectory<'_> {
+    fn next_entry(&mut self) -> AtlasResult<Option<SourceEntry>> {
+        self.0
+            .next_entry()
+            .map(|entry| {
+                entry.map(|e| SourceEntry {
+                    name: e.name,
+                    kind: match e.kind {
+                        NativeSourceKind::File => SourceEntryKind::File,
+                        NativeSourceKind::Directory => SourceEntryKind::Directory,
+                        NativeSourceKind::Link => SourceEntryKind::Link,
+                        NativeSourceKind::Other => SourceEntryKind::Other,
+                    },
+                })
+            })
+            .map_err(|e| error("source enumeration", e))
+    }
+    fn validate_path(&self) -> AtlasResult<bool> {
+        self.0
+            .validate_name()
+            .map_err(|e| error("source directory identity", e))
     }
 }
 struct PinnedSource<'a>(NativeRootFile<'a>);
@@ -88,4 +127,16 @@ fn error(path: &str, error: io::Error) -> SeError {
         },
     ))
     .with_cause(error)
+}
+
+fn private_path(path: &RelativePath) -> AtlasResult<()> {
+    if se_atlas::policy::built_in_denied(path) {
+        return Err(SeError::new(Detail::AtlasSourceUnreadable(
+            details::AtlasSourceUnreadable {
+                path: path.as_str().into(),
+                reason: "built-in private-file exclusion; source bytes were not opened".into(),
+            },
+        )));
+    }
+    Ok(())
 }

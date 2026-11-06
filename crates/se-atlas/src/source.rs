@@ -12,6 +12,31 @@ pub trait SourceAccess {
     fn physical_root(&self) -> AtlasResult<[u8; 32]>;
     fn case_mode(&self) -> CaseMode;
     fn open(&self, path: &RelativePath) -> AtlasResult<Option<Box<dyn SourceFile + '_>>>;
+    fn open_directory(
+        &self,
+        _path: Option<&RelativePath>,
+    ) -> AtlasResult<Option<Box<dyn SourceDirectory + '_>>> {
+        Err(SeError::invalid(
+            "Atlas source enumeration",
+            "a native retained-directory adapter",
+        ))
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceEntryKind {
+    File,
+    Directory,
+    Link,
+    Other,
+}
+#[derive(Debug)]
+pub struct SourceEntry {
+    pub name: std::ffi::OsString,
+    pub kind: SourceEntryKind,
+}
+pub trait SourceDirectory: Send {
+    fn next_entry(&mut self) -> AtlasResult<Option<SourceEntry>>;
+    fn validate_path(&self) -> AtlasResult<bool>;
 }
 pub trait SourceFile: Read + Seek {
     fn identity(&self) -> AtlasResult<FileIdentity>;
@@ -43,6 +68,65 @@ impl<A: SourceAccess> RegisteredSource<A> {
             ));
         }
         self.access.open(path)
+    }
+    /// Observe a deferred file with fixed streaming scratch, retaining no body.
+    /// The hash is accepted only after identity and root/path custody revalidation.
+    pub fn observe(
+        &self,
+        path: &RelativePath,
+        budget: ParseBudget,
+        reason: CoverageReason,
+    ) -> AtlasResult<SourceRead> {
+        if !(1..=524288).contains(&budget.max_source_bytes)
+            || budget.max_work.is_zero()
+            || budget.max_work > Duration::from_millis(200)
+        {
+            return Err(SeError::invalid(
+                "Atlas observation budget",
+                "1..524288 bytes and 1..200 ms",
+            ));
+        }
+        let deadline = Instant::now() + budget.max_work;
+        let Some(mut file) = self.open(path)? else {
+            return Ok(SourceRead::Removed);
+        };
+        let identity = file.identity()?;
+        if identity.size > u64::from(budget.max_source_bytes) {
+            return Ok(SourceRead::Deferred {
+                identity,
+                reason: CoverageReason::SourceBytesLimit,
+            });
+        }
+        let content_hash = stream(
+            &mut *file,
+            path,
+            identity.size,
+            deadline,
+            budget.max_work,
+            |_| {},
+        )?;
+        if file.identity()? != identity || !file.validate_path()? {
+            return Err(changed());
+        }
+        Ok(SourceRead::Hashed {
+            identity,
+            content_hash,
+            reason,
+        })
+    }
+    /// None opens the registered root itself. Names stream from a retained
+    /// no-follow directory cursor under the caller's item/time/memory budget.
+    pub fn open_directory(
+        &self,
+        path: Option<&RelativePath>,
+    ) -> AtlasResult<Option<Box<dyn SourceDirectory + '_>>> {
+        if self.access.physical_root()? != self.scope.physical_root {
+            return Err(SeError::invalid(
+                "Atlas source enumeration",
+                "the unchanged registered physical root",
+            ));
+        }
+        self.access.open_directory(path)
     }
 }
 impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
@@ -80,7 +164,12 @@ impl<A: SourceAccess> AtlasSource for RegisteredSource<A> {
                 },
             )));
         }
-        let mut bytes = Vec::with_capacity(before.size as usize);
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(before.size as usize)
+            .map_err(|error| source_error(path, format!(
+                "source allocation of {} bytes refused within the {}-byte reservation: {error}",
+                before.size, budget.reserved_bytes
+            )))?;
         let hash = stream(
             &mut *file,
             path,

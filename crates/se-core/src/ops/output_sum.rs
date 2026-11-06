@@ -81,6 +81,12 @@ macro_rules! output_types {
     }
 }
 output_types! {
+AtlasAugment => AtlasAugment, AtlasHookOutput;
+AtlasFind => AtlasFind, AtlasFindOutput;
+AtlasRefs => AtlasRefs, AtlasRefsOutput;
+AtlasImpact => AtlasImpact, AtlasImpactOutput;
+AtlasChanges => AtlasChanges, AtlasChangesOutput;
+AtlasOutline => AtlasOutline, AtlasOutlineOutput;
 Resume => Resume, ResumeOutput;
 SessionContext => SessionContextRequest, SessionContextOutput;
 MetaVersion => MetaVersion, VersionOutput;

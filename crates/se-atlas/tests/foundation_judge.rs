@@ -136,6 +136,8 @@ fn setup() -> Result<(Native, CacheSeed, SqlProfile), Box<dyn Error>> {
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }
+#[path = "foundation_judge/history.rs"]
+mod history;
 #[test]
 fn empty_cache_real_consumer_prune() -> Check {
     let _serial = SERIAL.lock().map_err(|_| "lock")?;
@@ -287,10 +289,10 @@ fn fts_and_commit_dependents_are_erased_with_native_owner_rows() -> Check {
    "INSERT INTO record_fts(rowid,title,kind) VALUES(1,'needle','message')",
    "INSERT INTO record_text_fts(rowid,body) VALUES(1,'needle')",
    "INSERT INTO mentions VALUES('record',1,'file',x'01','exact')",
-   "INSERT INTO touches VALUES('file',x'01',0,'message',NULL,0,1,NULL)",
+   "INSERT INTO touches(target_kind,target_key,ordinal,touch_kind,actor,at_unix_ms,source_record,restricted_record) VALUES('file',x'01',0,'message',NULL,0,1,NULL)",
    "INSERT INTO commits(id,oid,author_unix_ms,author,subject) VALUES(1,x'01',0,'author','subject')",
    "INSERT INTO mentions VALUES('commit',1,'file',x'01','exact')",
-   "INSERT INTO touches VALUES('commit',x'01',0,'commit',NULL,0,NULL,NULL)"
+   "INSERT INTO touches(target_kind,target_key,ordinal,touch_kind,actor,at_unix_ms,source_record,restricted_record) VALUES('commit',x'01',0,'commit',NULL,0,NULL,NULL)"
   ]{v.prepare(statement)?.execute([]).map_err(cache_error)?;}Ok(())
  })?;
     db.write(1_000_000, deadline(), |v| {
@@ -329,7 +331,7 @@ fn populated_prune_uses_production_budget_and_keeps_referenced_commits() -> Chec
  for statement in [
   "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20001) INSERT INTO commits(id,oid,author_unix_ms,author,subject) SELECT x,CAST(printf('%040d',x) AS BLOB),x,'author','subject' FROM n",
   "INSERT INTO mentions SELECT 'record',99,'commit',oid,'exact' FROM commits WHERE id=1",
-  "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<14) INSERT INTO touches SELECT 'file',x'01',x,'edit',NULL,x,NULL,NULL FROM n",
+  "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<14) INSERT INTO touches(target_kind,target_key,ordinal,touch_kind,actor,at_unix_ms,source_record,restricted_record) SELECT 'file',x'01',x,'edit',NULL,x,NULL,NULL FROM n",
   "INSERT INTO names(text) VALUES('orphan')"
  ]{v.prepare(statement)?.execute([]).map_err(cache_error)?;}Ok(())
  })?;
@@ -601,7 +603,7 @@ fn file_retirement_repairs_incoming_edges_and_handles_nested_symbols_atomically(
  "INSERT INTO symbols(id,key,file,parent,name,kind,start_byte,end_byte,start_line,start_column,end_line,end_column,exported,doc_line) VALUES(2,x'0101010101010101010101010101010101010101010101010101010101010101',1,1,1,'function',1,8,1,1,1,8,0,'doc')",
  "INSERT INTO refs(file,target,spelling,kind,start_byte,end_byte,start_line,start_column,end_line,end_column,accuracy) VALUES(2,2,1,'call',0,1,1,0,1,1,'Resolved')",
  "INSERT INTO imports(file,spelling,local_name,imported_name,target_file,target_symbol,start_byte,end_byte,resolution) VALUES(2,'a.rs',1,1,1,2,0,1,'Resolved')",
- "INSERT INTO touches VALUES('symbol',zeroblob(32),0,'edit',NULL,0,NULL,NULL),('file',zeroblob(16),0,'edit',NULL,0,NULL,NULL)",
+ "INSERT INTO touches(target_kind,target_key,ordinal,touch_kind,actor,at_unix_ms,source_record,restricted_record) VALUES('symbol',zeroblob(32),0,'edit',NULL,0,NULL,NULL),('file',zeroblob(16),0,'edit',NULL,0,NULL,NULL)",
  "INSERT INTO activity VALUES('symbol',zeroblob(32),0,0),('file',zeroblob(16),0,0)"
  ]{v.prepare(statement)?.execute([]).map_err(cache_error)?;}Ok(())})?;
     db.write(1_000_000, deadline(), |v| {
@@ -637,3 +639,6 @@ fn file_retirement_repairs_incoming_edges_and_handles_nested_symbols_atomically(
     }
     Ok(())
 }
+
+#[path = "foundation_judge/counts.rs"]
+mod counts;

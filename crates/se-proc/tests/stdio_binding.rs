@@ -10,6 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
+#[cfg(target_os = "linux")]
+#[path = "support/stop_dispatch_review.rs"]
+mod stop_dispatch_review;
 fn error(value: ProcError) -> String {
     format!("{value:?}")
 }

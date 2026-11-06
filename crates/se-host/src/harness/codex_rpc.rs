@@ -42,6 +42,7 @@ pub struct CodexHarness {
     socket_root: PathBuf,
     mcp_port: u16,
     configuration: ConfigFile,
+    atlas_helper: Option<PathBuf>,
     probed: Mutex<Option<ProviderVersion>>,
     #[cfg(windows)]
     windows_shell: Mutex<Option<PathBuf>>,
@@ -79,10 +80,29 @@ impl CodexHarness {
             socket_root,
             mcp_port,
             configuration,
+            atlas_helper: None,
             probed: Mutex::new(None),
             #[cfg(windows)]
             windows_shell: Mutex::new(None),
         }
+    }
+    pub fn with_atlas_helper(mut self, executable: PathBuf) -> Self {
+        if self.configuration.atlas.enabled && self.configuration.atlas.hooks {
+            self.atlas_helper = Some(executable);
+        }
+        self
+    }
+    fn thread(&self, launch: &CodexLaunch<'_>) -> Result<(&'static str, Value)> {
+        let (method, mut params) = input::thread(launch)?;
+        if let Some(hooks) = self
+            .atlas_helper
+            .as_ref()
+            .and_then(|image| crate::atlas_hooks::hook_configuration(image, &self.state_home))
+        {
+            params["config"]["hooks"] = hooks;
+            params["config"]["features.hooks"] = true.into();
+        }
+        Ok((method, params))
     }
     fn directory(&self, session: &se_types::SessionId) -> Result<PathBuf> {
         Ok(self.state_home.join("launch").join(
@@ -278,7 +298,7 @@ impl Harness for CodexHarness {
         Box::pin(async move {
             let socket = self.socket(request)?;
             let resolved = self.resolved(request)?;
-            input::thread(&self.plan(request, &resolved, socket.as_deref()))?;
+            self.thread(&self.plan(request, &resolved, socket.as_deref()))?;
             let plan = json!({"session":request.identity.session,"socket":socket.as_ref().map(|path| NativePath::from_local(path.clone())).transpose()?});
             let bytes = serde_json::to_vec(&plan)
                 .map_err(|e| se_core::scope::unreadable("Codex launch plan", &e.to_string()))?;
@@ -317,10 +337,17 @@ impl Harness for CodexHarness {
                         )
                     })?,
             )?;
-            input::invocation(
+            let mut invocation = input::invocation(
                 &self.plan(request, &resolved, socket.as_deref()),
                 environment,
-            )
+            )?;
+            if self.atlas_helper.is_some() {
+                invocation.environment.entries.push((
+                    "SE_SESSION".into(),
+                    request.identity.session.as_str().into(),
+                ));
+            }
+            Ok(invocation)
         })
     }
     fn attach<'a>(

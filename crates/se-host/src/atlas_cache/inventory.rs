@@ -1,12 +1,6 @@
-//! Finite activation inventory. The exclusive home lease prevents cooperating
-//! writers changing other roots while this adapter owns its cached total.
+//! Per-root disk inventory. Idle projects are never walked while another root
+//! grows; project count does not impose a whole-home ceiling or scan.
 use super::*;
-pub(super) fn measure(home: &NativeStateFiles, wanted: &Path) -> AtlasResult<(u64, u64)> {
-    let mut entries = 0;
-    let mut root = 0;
-    let total = walk(home, 0, wanted, &mut root, &mut entries)?;
-    Ok((total, root))
-}
 pub(super) fn root(files: &NativeStateFiles) -> AtlasResult<u64> {
     let mut entries = 0;
     let mut bytes = 0;
@@ -73,7 +67,7 @@ fn walk(
                 ));
             }
             files
-                .readback(&path)
+                .pin_metadata(&path)
                 .map_err(fail)?
                 .ok_or_else(|| fail("Atlas inventory file disappeared"))?
                 .metadata()

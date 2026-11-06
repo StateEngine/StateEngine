@@ -88,6 +88,7 @@ fn initial(
         recent_turns: data.turns.clone(),
         transcript: data.transcript.clone(),
         code_changes: None,
+        code_status: None,
         omissions: data.omissions.clone(),
         attention: data
             .attention
@@ -102,7 +103,7 @@ fn initial(
         cursor: data.cursor.clone(),
     })
 }
-fn wire_bytes<T: serde::Serialize>(schema: &str, value: &T) -> Result<usize> {
+pub(crate) fn wire_bytes<T: serde::Serialize>(schema: &str, value: &T) -> Result<usize> {
     let mut value = serde_json::to_value(value)
         .map_err(|e| scope::unreadable("continuity encoding", &e.to_string()))?;
     value
@@ -412,7 +413,15 @@ fn trim_turn(
     Ok(false)
 }
 fn model_input(value: &ResumeOutput) -> Result<String> {
-    let state = serde_json::json!({"principal":value.principal,"working_state":value.working_state,"unread":value.unread,"required_reads":value.required_reads,"decisions":value.decisions,"recent_turns":value.recent_turns,"omissions":value.omissions,"attention":value.attention,"complete":value.complete,"resume_status":value.resume_status,"cursor":value.cursor});
+    let mut state = serde_json::json!({"principal":value.principal,"working_state":value.working_state,"unread":value.unread,"required_reads":value.required_reads,"decisions":value.decisions,"recent_turns":value.recent_turns,"omissions":value.omissions,"attention":value.attention,"complete":value.complete,"resume_status":value.resume_status,"cursor":value.cursor});
+    if let Some(items) = &value.code_changes {
+        state["code_changes"] = serde_json::to_value(items)
+            .map_err(|e| scope::unreadable("code changes encoding", &e.to_string()))?;
+    }
+    if let Some(status) = &value.code_status {
+        state["code_status"] = serde_json::to_value(status)
+            .map_err(|e| scope::unreadable("code status encoding", &e.to_string()))?;
+    }
     serde_json::to_string(&state)
         .map_err(|e| scope::unreadable("assembled model input", &e.to_string()))
 }

@@ -1,3 +1,4 @@
+mod atlas_hook;
 mod bootstrap;
 mod compat;
 mod config;
@@ -148,6 +149,7 @@ pub fn run(
             ),
         };
     }
+    let atlas_presentation = operation.atlas_options().cloned();
     let result = {
         let mut diagnostic = |message: &str| {
             writeln!(stderr, "{message}")?;
@@ -240,6 +242,7 @@ pub fn run(
             common.json,
             common.quiet,
             &context.home,
+            atlas_presentation.as_ref(),
             &mut stdout,
         ),
         Err(error) => render::error::write(
@@ -271,6 +274,38 @@ fn main() -> std::process::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
     if let Err(error) = bootstrap::initialize_file_owner() {
         return finish(Err(error), &args);
+    }
+    if args
+        .get(1)
+        .is_some_and(|arg| arg == se_proc::atlas_worker::ENTRY)
+    {
+        #[cfg(any(target_os = "linux", windows, target_os = "macos"))]
+        {
+            return finish(
+                if args.len() == 2 {
+                    se_host::atlas_cold::private_entry()
+                } else {
+                    Err(se_types::SeError::invalid(
+                        "Atlas private entry",
+                        "no public arguments",
+                    ))
+                },
+                &args,
+            );
+        }
+        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+        {
+            return finish(
+                Err(se_types::SeError::invalid(
+                    "Atlas cold worker",
+                    "native containment on this platform",
+                )),
+                &args,
+            );
+        }
+    }
+    if let Some(code) = atlas_hook::entry(&args) {
+        return code;
     }
     if let Some(result) = mcp::entry(&args) {
         return finish(result, &args);

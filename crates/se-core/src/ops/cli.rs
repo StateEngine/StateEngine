@@ -6,6 +6,7 @@ use se_types::{Cursor, Detail, IdempotencyKey, Result, SeError, details};
 use std::path::PathBuf;
 
 mod agent_command;
+mod atlas;
 pub use agent_command::AgentCommand;
 mod decode;
 mod help;
@@ -287,6 +288,7 @@ fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> 
 }
 fn input_command(name: &str, c: Command) -> Command {
     let c = match name {
+        name if name.starts_with("atlas.") => atlas::command(name, c),
         "meta.help" => c
             .arg(
                 Arg::new("path")
@@ -470,6 +472,9 @@ pub fn selected_meta(matches: &ArgMatches) -> Result<&'static crate::registry::O
     }
     if path.is_empty() {
         return Ok(&ProjectStatus::META);
+    }
+    if path.len() == 1 && path[0] == "atlas" {
+        return Ok(&MetaHelp::META);
     }
     if path.len() == 1 && matches!(path[0].as_str(), "decision" | "pending") {
         return Ok(&DecisionList::META);

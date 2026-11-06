@@ -10,6 +10,7 @@ pub(super) fn group(name: &str) -> Option<&'static str> {
         "msg" => "Send and read direct or shared project messages",
         "working-state" => "Read or save an agent's working notes",
         "agent" => "Create and inspect saved agents",
+        "atlas" => "Find code and inspect references, impact, changes and file outlines",
         "config" => "Read or change saved agent settings",
         "hook" => "Receive provider lifecycle events",
         "session" => "Read the current agent session",

@@ -80,6 +80,16 @@ pub struct CaptureView {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AtlasView {
     pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<se_types::code::IndexSummary>,
+    /// History is unavailable until its cold-child cost gate is qualified.
+    #[serde(default = "unavailable_history")]
+    pub history: String,
+}
+fn unavailable_history() -> String {
+    "unavailable".into()
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct PendingFact {

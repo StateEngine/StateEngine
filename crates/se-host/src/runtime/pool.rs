@@ -64,6 +64,37 @@ impl BlockingPool {
         T: Send + 'static,
         F: FnOnce() -> Result<T> + Send + 'static,
     {
+        let job = self.start(class, deadline, work).await?;
+        let result = within(deadline, job)
+            .await?
+            .map_err(|error| pool_error(&format!("bounded blocking job failed: {error}")))?;
+        deadline.remaining()?;
+        result
+    }
+    /// Maintenance can produce owned readiness descriptors and its next wake.
+    /// Join that finite work even when native IO outlives the admission clock;
+    /// losing the result would strand already-committed pending work.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn run_background_owned<T, F>(&self, deadline: &Deadline, work: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T> + Send + 'static,
+    {
+        self.start(BlockingClass::Background, deadline, work)
+            .await?
+            .await
+            .map_err(|error| pool_error(&format!("owned maintenance work failed: {error}")))?
+    }
+    async fn start<T, F>(
+        &self,
+        class: BlockingClass,
+        deadline: &Deadline,
+        work: F,
+    ) -> Result<tokio::task::JoinHandle<Result<T>>>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T> + Send + 'static,
+    {
         deadline.remaining()?;
         let class = self.class_override.unwrap_or(class);
         // A maintenance job holds its gate before shared admission. At most
@@ -89,15 +120,10 @@ impl BlockingPool {
             )
         };
         deadline.remaining()?;
-        let job = self.runtime.spawn_blocking(move || {
+        Ok(self.runtime.spawn_blocking(move || {
             let _permits = (permit, maintenance);
             work()
-        });
-        let result = within(deadline, job)
-            .await?
-            .map_err(|error| pool_error(&format!("bounded blocking job failed: {error}")))?;
-        deadline.remaining()?;
-        result
+        }))
     }
     /// Resource-producing/closing jobs must return their custody even if the
     /// caller's clock expires during native work. Admission is deadline-bound;

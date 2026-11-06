@@ -62,6 +62,10 @@ fn epoch(n: u8) -> Result<CacheEpoch, Box<dyn Error>> {
 fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(5)
 }
+// Epoch construction includes durable filesystem setup, outside read/work slices.
+fn setup_deadline() -> Instant {
+    Instant::now() + Duration::from_secs(60)
+}
 fn seed(f: &Fixture) -> Result<CacheSeed, Box<dyn Error>> {
     Ok(CacheSeed {
         identity: CacheIdentity {
@@ -102,7 +106,7 @@ fn failed_real_create_discards_the_reserved_epoch_with_outside_absence() -> Chec
         &seed,
         ConnectionRole::HostWriter,
         &SqlProfile::from_qualified_overhead(1)?,
-        deadline(),
+        setup_deadline(),
     )
     .err()
     .ok_or("bad seed accepted")?;
@@ -164,7 +168,13 @@ fn published_epoch_cannot_be_discarded_and_readers_do_no_inventory() -> Check {
     let cache = NativeAtlasCache::create(&f.home, f.scope.clone())?;
     let s = seed(&f)?;
     let profile = SqlProfile::from_qualified_overhead(1)?;
-    let db = CacheConnection::create(&cache, &s, ConnectionRole::HostWriter, &profile, deadline())?;
+    let db = CacheConnection::create(
+        &cache,
+        &s,
+        ConnectionRole::HostWriter,
+        &profile,
+        setup_deadline(),
+    )?;
     pointer::publish(&cache, &db, None, deadline())?;
     let pin = cache.pin_database(&s.identity.epoch)?.ok_or("pin absent")?;
     assert!(cache.discard_unpublished(&pin).is_err());
@@ -437,7 +447,7 @@ fn three_killed_unpublished_writers_do_not_exhaust_epoch_slots() -> Check {
         &seed,
         ConnectionRole::HostWriter,
         &SqlProfile::from_qualified_overhead(1)?,
-        deadline(),
+        setup_deadline(),
     );
     drop(serial); // a real recovery failure must not poison unrelated judges
     let database = result.map_err(|error| {
@@ -474,7 +484,7 @@ fn crash_recovery_preserves_published_epoch_and_unowned_sidecars() -> Check {
             &seed(&f)?,
             ConnectionRole::HostWriter,
             &profile,
-            deadline(),
+            setup_deadline(),
         )?;
         pointer::publish(&cache, &database, None, deadline())?;
         published = cache.read_pointer()?.ok_or("published pointer absent")?;

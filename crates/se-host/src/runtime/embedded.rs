@@ -8,6 +8,7 @@
 //! `drain` stops serving through the in-process stop and joins every
 //! obligation; `close` returns that same result. Methods outside the W3 slice
 //! refuse by name instead of inventing an outcome.
+mod atlas_tools;
 mod binding;
 mod capture;
 mod context;
@@ -425,22 +426,26 @@ impl api::Host for EmbeddedHost {
     }
     fn tools<'a>(
         &'a self,
-        _session: &'a api::BoundSession,
-        _page: api::PageRequest,
-        _options: api::CallOptions,
+        session: &'a api::BoundSession,
+        page: api::PageRequest,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::Page<api::ToolDefinition>> {
-        self.protected("tools", false, async {
-            Err(unavailable("embedded tool listing"))
+        self.protected("tools", false, async move {
+            self.atlas_tools(session, page, options)
+                .await
+                .map_err(|e| api_error(&e))
         })
     }
     fn call_tool<'a>(
         &'a self,
-        _session: &'a api::BoundSession,
-        _call: api::ToolCall,
-        _options: api::CallOptions,
+        session: &'a api::BoundSession,
+        call: api::ToolCall,
+        options: api::CallOptions,
     ) -> api::HostFuture<'a, api::ToolOutput> {
-        self.protected("call_tool", false, async {
-            Err(unavailable("embedded tool calls"))
+        self.protected("call_tool", false, async move {
+            self.atlas_call(session, call, options)
+                .await
+                .map_err(|e| api_error(&e))
         })
     }
     fn continuity<'a>(

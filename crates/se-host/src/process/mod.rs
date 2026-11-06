@@ -80,6 +80,7 @@ pub struct LaunchCoordinator {
     activity: tokio::sync::watch::Sender<u32>,
     controls: requests::Controls,
     capture: crate::runtime::CaptureHandle,
+    atlas: Arc<crate::atlas_runtime::read_port::AtlasOwnerPort>,
     proofs: PreparedRequestProofs,
     stopping: std::sync::atomic::AtomicBool,
     orphans: std::sync::Mutex<std::collections::BTreeSet<se_types::LifecycleId>>,
@@ -190,7 +191,10 @@ impl LaunchCoordinator {
                 options.home.clone(),
                 options.http_port,
             )
-            .with_bells(context.mail_waits.bells.clone()),
+            .with_bells(context.mail_waits.bells.clone())
+            .with_atlas_hooks(
+                options.configuration.atlas.enabled && options.configuration.atlas.hooks,
+            ),
         );
         #[cfg(unix)]
         let socket_root = host_runtime
@@ -201,14 +205,17 @@ impl LaunchCoordinator {
             .unwrap_or_else(std::env::temp_dir);
         #[cfg(not(unix))]
         let socket_root = options.home.clone();
-        let codex = Arc::new(CodexHarness::new(
-            io.clone(),
-            pool.clone(),
-            options.home.clone(),
-            socket_root,
-            options.http_port,
-            options.configuration.clone(),
-        ));
+        let codex = Arc::new(
+            CodexHarness::new(
+                io.clone(),
+                pool.clone(),
+                options.home.clone(),
+                socket_root,
+                options.http_port,
+                options.configuration.clone(),
+            )
+            .with_atlas_helper(options.helper_executable.to_local()?),
+        );
         Ok(Arc::new(Self {
             kind: host_runtime.kind,
             native,
@@ -216,6 +223,7 @@ impl LaunchCoordinator {
             harness,
             codex,
             store: store::Store {
+                record_feed: context.atlas.records.clone(),
                 reader: context.reader.clone(),
                 writer: context.writer.clone(),
                 pool: context.blocking.clone(),
@@ -227,6 +235,7 @@ impl LaunchCoordinator {
             options,
             configuration_file: host_runtime.configuration_file.clone(),
             capture: host_runtime.capture_handle(),
+            atlas: context.atlas.clone(),
             proofs: PreparedRequestProofs::new(maximum),
             owner,
             human: host_runtime.owner.clone(),

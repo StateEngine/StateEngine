@@ -1,9 +1,10 @@
-use crate::{lifecycle::*, model::*};
+use crate::model::*;
 use std::time::Instant;
 use tree_sitter::Node;
 
 pub(super) struct Declaration<'a> {
     pub name: Node<'a>,
+    pub name_override: Option<&'static str>,
     pub kind: SymbolKind,
     pub body: Option<Node<'a>>,
     pub exported: bool,
@@ -39,12 +40,14 @@ pub(super) fn literal<'a>(node: Node<'_>, bytes: &'a [u8]) -> Option<&'a str> {
     (!value.contains(['\\', '\0', '\n', '\r'])).then_some(value)
 }
 pub(super) fn exported(node: Node<'_>, bytes: &[u8]) -> bool {
-    node.parent()
-        .is_some_and(|n| matches!(n.kind(), "export_statement" | "ambient_declaration"))
-        || node
-            .child_by_field_name("name")
-            .is_some_and(|n| !text(n, bytes).starts_with('_'))
-            && matches!(node.kind(), "function_definition" | "class_definition")
+    node.parent().is_some_and(|n| {
+        matches!(n.kind(), "export_statement" | "ambient_declaration")
+            || matches!(n.kind(), "lexical_declaration" | "variable_declaration")
+                && n.parent().is_some_and(|p| p.kind() == "export_statement")
+    }) || node
+        .child_by_field_name("name")
+        .is_some_and(|n| !text(n, bytes).starts_with('_'))
+        && matches!(node.kind(), "function_definition" | "class_definition")
         || (0..node.named_child_count())
             .filter_map(|i| node.named_child(i as u32))
             .any(|n| n.kind() == "visibility_modifier")
@@ -160,11 +163,28 @@ pub(super) fn scope_boundary(node: Node<'_>, language: Language) -> bool {
 }
 /// Returns a syntactic use, not every identifier token. Member calls remain
 /// qualified candidates; lexical/import resolution decides their accuracy later.
-pub(super) fn reference<'a>(
+pub(super) enum SyntaxQualifier<'a> {
+    Unqualified,
+    Namespace(&'a str),
+    Dynamic,
+}
+pub(super) fn reference<'a, 'b>(
     node: Node<'a>,
-    bytes: &[u8],
-) -> Option<(Node<'a>, ReferenceKind, ReferenceQualifier)> {
+    bytes: &'b [u8],
+) -> Option<(Node<'a>, ReferenceKind, SyntaxQualifier<'b>)> {
     let kind = match node.kind() {
+        "jsx_opening_element" | "jsx_self_closing_element" => {
+            let name = node.child_by_field_name("name")?;
+            if name.kind() != "identifier"
+                || !text(name, bytes)
+                    .chars()
+                    .next()
+                    .is_some_and(char::is_uppercase)
+            {
+                return None;
+            }
+            return Some((name, ReferenceKind::ValueUse, SyntaxQualifier::Unqualified));
+        }
         "call_expression" | "call" => ReferenceKind::Call,
         "new_expression" => ReferenceKind::Call,
         "type_identifier" => {
@@ -172,15 +192,14 @@ pub(super) fn reference<'a>(
             if parent.child_by_field_name("name") == Some(node) {
                 return None;
             }
-            return Some((
-                node,
-                ReferenceKind::TypeUse,
-                ReferenceQualifier::Unqualified,
-            ));
+            return Some((node, ReferenceKind::TypeUse, SyntaxQualifier::Unqualified));
         }
-        "identifier" => {
+        "identifier" | "shorthand_property_identifier" => {
             let parent = node.parent()?;
-            let rhs = ["value", "right", "condition"]
+            if parent.kind() == "type" {
+                return Some((node, ReferenceKind::TypeUse, SyntaxQualifier::Unqualified));
+            }
+            let rhs = ["value", "right", "condition", "object"]
                 .into_iter()
                 .any(|field| parent.child_by_field_name(field) == Some(node));
             if !rhs
@@ -202,15 +221,13 @@ pub(super) fn reference<'a>(
                         | "array"
                         | "array_expression"
                         | "tuple_expression"
+                        | "block"
+                        | "object"
                 )
             {
                 return None;
             }
-            return Some((
-                node,
-                ReferenceKind::ValueUse,
-                ReferenceQualifier::Unqualified,
-            ));
+            return Some((node, ReferenceKind::ValueUse, SyntaxQualifier::Unqualified));
         }
         _ => return None,
     };
@@ -218,7 +235,7 @@ pub(super) fn reference<'a>(
         .child_by_field_name("function")
         .or_else(|| node.child_by_field_name("constructor"))?;
     if matches!(function.kind(), "identifier" | "type_identifier") {
-        return Some((function, kind, ReferenceQualifier::Unqualified));
+        return Some((function, kind, SyntaxQualifier::Unqualified));
     }
     let name = function
         .child_by_field_name("property")
@@ -236,9 +253,98 @@ pub(super) fn reference<'a>(
                 "identifier" | "scoped_identifier" | "crate" | "self" | "super"
             )
         })
-        .map(|p| {
-            ReferenceQualifier::Namespace(text(p, bytes).split("::").map(str::to_owned).collect())
-        })
-        .unwrap_or(ReferenceQualifier::Dynamic);
+        .map(|p| SyntaxQualifier::Namespace(text(p, bytes)))
+        .unwrap_or(SyntaxQualifier::Dynamic);
     Some((name, kind, qualifier))
+}
+
+/// Individual leaves of supported destructuring patterns are bindings too.
+/// Keys, type syntax and default-value expressions are not declaration names.
+pub(super) fn pattern_binding<'a>(
+    node: Node<'a>,
+    language: Language,
+    bytes: &[u8],
+) -> Option<Declaration<'a>> {
+    if !matches!(
+        node.kind(),
+        "identifier" | "shorthand_property_identifier_pattern"
+    ) {
+        return None;
+    }
+    let mut child = node;
+    for _ in 0..32 {
+        let parent = child.parent()?;
+        let (field, kind) = match parent.kind() {
+            "variable_declarator" => ("name", SymbolKind::Variable),
+            "let_declaration" => ("pattern", SymbolKind::Variable),
+            "assignment" if language == Language::Python => ("left", SymbolKind::Variable),
+            "required_parameter" | "optional_parameter" | "parameter" => {
+                ("pattern", SymbolKind::Parameter)
+            }
+            "formal_parameters" | "parameters" => {
+                if child == node {
+                    return None;
+                }
+                return Some(Declaration {
+                    name: node,
+                    name_override: None,
+                    kind: SymbolKind::Parameter,
+                    body: None,
+                    exported: false,
+                });
+            }
+            "pair_pattern" => {
+                if parent.child_by_field_name("value") != Some(child) {
+                    return None;
+                }
+                child = parent;
+                continue;
+            }
+            "assignment_pattern" => {
+                if parent.child_by_field_name("left") != Some(child) {
+                    return None;
+                }
+                child = parent;
+                continue;
+            }
+            "tuple_pattern"
+            | "slice_pattern"
+            | "tuple_struct_pattern"
+            | "struct_pattern"
+            | "field_pattern"
+            | "ref_pattern"
+            | "mut_pattern"
+            | "reference_pattern"
+            | "array_pattern"
+            | "object_pattern"
+            | "rest_pattern"
+            | "list_pattern"
+            | "pattern_list" => {
+                child = parent;
+                continue;
+            }
+            _ => return None,
+        };
+        if child == node || parent.child_by_field_name(field) != Some(child) {
+            return None;
+        }
+        return Some(Declaration {
+            name: node,
+            name_override: None,
+            kind,
+            body: None,
+            exported: exported(parent, bytes),
+        });
+    }
+    None
+}
+
+pub(super) fn default_export(node: Node<'_>, bytes: &[u8]) -> bool {
+    node.parent()
+        .filter(|p| p.kind() == "export_statement")
+        .is_some_and(|p| {
+            let mut cursor = p.walk();
+            p.children(&mut cursor)
+                .any(|n| !n.is_named() && text(n, bytes) == "default")
+        })
 }

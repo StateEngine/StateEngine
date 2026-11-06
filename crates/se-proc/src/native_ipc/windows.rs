@@ -98,6 +98,89 @@ pub struct NativePipeStream {
     bound: IpcIoBound,
 }
 impl NativePipeStream {
+    /// Synchronous stderr writer for the C/Rust standard-stream APIs. The
+    /// parent peeks before reading; exactly one reader consumes this pipe.
+    pub(crate) fn worker_stderr() -> IpcNativeResult<(std::fs::File, OwnedHandle)> {
+        let descriptor = security::descriptor()?;
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: descriptor.0,
+            bInheritHandle: 1,
+        };
+        let (mut reader, mut writer) = (ptr::null_mut(), ptr::null_mut());
+        // SAFETY: owner-only descriptor, initialized handle outputs; ownership
+        // transfers into RAII immediately after this successful native call.
+        if unsafe { CreatePipe(&mut reader, &mut writer, &attributes, 65536) } == 0 {
+            return Err(last("create worker stderr pipe"));
+        }
+        let reader = owned(reader, "own worker stderr reader")?;
+        let writer = owned(writer, "own worker stderr writer")?;
+        // SAFETY: only this retained reader loses inheritance; the closed
+        // startup handle list contains its distinct writer alone.
+        if unsafe { SetHandleInformation(reader.as_raw_handle(), HANDLE_FLAG_INHERIT, 0) } == 0 {
+            return Err(last("protect worker stderr reader"));
+        }
+        Ok((reader.into(), writer))
+    }
+    /// One connected owner-only pair for a private inherited worker channel.
+    /// The caller inherits only the client duplicate through its closed handle list.
+    pub(crate) fn worker_pair(bound: IpcIoBound) -> IpcNativeResult<(Self, OwnedHandle)> {
+        let mut entropy = [0; 16];
+        crate::fill_entropy(&mut entropy)
+            .map_err(|e| error("allocate worker pipe name", io::Error::other(e)))?;
+        let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
+        let name = std::ffi::OsString::from(format!(r"\\.\pipe\se-atlas-cold-{suffix}"));
+        let pair = NativePipeReservation::create(&name)?;
+        let mut inherited = ptr::null_mut();
+        // SAFETY: retained client and process pseudo handles; ownership of the
+        // new inheritable duplicate transfers immediately into an OwnedHandle.
+        if unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                pair._client.as_raw_handle(),
+                GetCurrentProcess(),
+                &mut inherited,
+                0,
+                1,
+                DUPLICATE_SAME_ACCESS,
+            )
+        } == 0
+        {
+            return Err(last("duplicate private worker channel"));
+        }
+        Ok((
+            Self {
+                handle: pair._server,
+                bound,
+            },
+            owned(inherited, "duplicate worker channel")?,
+        ))
+    }
+    pub(crate) fn worker_inherited(
+        handle: OwnedHandle,
+        bound: IpcIoBound,
+    ) -> IpcNativeResult<Self> {
+        security::verify(handle.as_raw_handle())?;
+        Ok(Self { handle, bound })
+    }
+    pub(crate) fn readable_bytes(&self) -> io::Result<usize> {
+        let mut available = 0;
+        // SAFETY: retained byte pipe and exact writable count; no read is issued.
+        if unsafe {
+            PeekNamedPipe(
+                self.handle.as_raw_handle(),
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                &mut available,
+                ptr::null_mut(),
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(available as usize)
+    }
     pub fn connect(name: &OsStr, bound: IpcIoBound) -> IpcNativeResult<Self> {
         let name = wide(name)?;
         loop {

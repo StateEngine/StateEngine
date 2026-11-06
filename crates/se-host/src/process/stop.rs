@@ -378,14 +378,26 @@ impl LaunchCoordinator {
                     }
                     work.stop_method = Some("graceful".into());
                     loop {
+                        // Register before observing: a monitor can otherwise
+                        // consume the single retained nudge between read/wait.
+                        let changed = work.wake.event.notified();
+                        tokio::pin!(changed);
+                        changed.as_mut().enable();
                         if let StopObservation::Complete(witness) =
                             self.exit_observation(work, deadline).await?
                         {
                             return Ok(*witness);
                         }
-                        if wait(&work.wake, &graceful).await.is_err() {
+                        // This read also runs once at the graceful deadline,
+                        // before preparing any force against the provider.
+                        if graceful.remaining().is_err() {
                             break;
                         }
+                        let _ = tokio::time::timeout_at(
+                            tokio::time::Instant::from_std(graceful.at()),
+                            changed,
+                        )
+                        .await;
                     }
                 }
                 Ok(_) => {
@@ -439,9 +451,15 @@ impl LaunchCoordinator {
         // A dispatch failure does not prevent observing a concurrent natural
         // exit; preserve it if the final bounded witness is still incomplete.
         let dispatch = attempt.dispatch;
-        work.stop_method = Some("forced".into());
+        if matches!(dispatch, Ok(se_proc::StopDispatch::NotNeeded)) {
+            if work.stop_method.as_deref() != Some("graceful") {
+                work.stop_method = Some("already-exited".into());
+            }
+        } else if dispatch.is_ok() {
+            work.stop_method = Some("forced".into());
+        }
         let (ticket, result) = self.stop_observation(attempt.ticket, deadline).await?;
-        self.finish_stop_wait(work, ticket, result, dispatch, force, deadline)
+        self.finish_stop_wait(work, ticket, result, dispatch.map(|_| ()), force, deadline)
             .await
     }
     async fn stop_observation(
