@@ -18,7 +18,7 @@ fn stop_row(
     f: &Fixture,
 ) -> Result<se_core::ops::agent_stop::AgentStopResult, Box<dyn std::error::Error>> {
     Ok(serde_json::from_value(json!({
-        "target": {"project":{"id":f.project,"name":"Repo"}, "agent":{"id":f.a,"name":"Alpha"},
+        "target": {"project":{"id":f.project,"name":"Repo"}, "agent":{"id":f.a,"name":"Sable"},
             "session_id":null,"launch_id":null,"provider":"claude","process":null},
         "result":"stopped", "event_id":null,"method":"native-stop",
         "witness":{"state":"witnessed","method":"start-identity-exit+pgid-empty",
@@ -26,7 +26,7 @@ fn stop_row(
         "population":"empty", "population_reason":null,"ownership_release":null,
         "remaining":[],"enumeration":"complete", "capture":{"flushed":true,"last_event_id":null},
         "resume":{"state":"ready","reason":null,"conversation_id":"native-conversation", "provider":"claude",
-            "model":null,"command":"se --home '/selected home' --project repo launch alpha --detach", "argv":[]}
+            "model":null,"command":"se --home '/selected home' --project repo launch sable --detach", "argv":[]}
     }))?)
 }
 
@@ -79,7 +79,7 @@ fn single_and_all_stop_summarize_native_witness_but_json_keeps_it() -> Check {
         assert_eq!(render::output(&output, false, false, &mut plain)?, 0);
         let plain = String::from_utf8(plain)?;
         for fact in [
-            "Alpha",
+            "Sable",
             "Repo",
             "Exit check complete.",
             "No processes remain in the checked scope.",
@@ -222,7 +222,7 @@ fn public_history_page_and_exact_event_show_chat_text_without_payload_envelope()
         assert!(plain.contains("Role: assistant"), "{plain}");
         assert!(plain.contains("Conversation message"), "{plain}");
         assert!(plain.contains(&format!("Event: {event}")), "{plain}");
-        assert!(plain.contains("By: Alpha"), "{plain}");
+        assert!(plain.contains("By: Sable"), "{plain}");
         assert!(plain.contains("Use --json"), "{plain}");
         for raw in [
             "Payload:",

@@ -37,7 +37,7 @@ se-proc may contain unsafe implementations; each eventual block must justify
 resource ownership, pointer lifetime/alignment and thread/fork safety.
 
 Same-user guards defend mistakes, drift and misattribution, not hostile code
-already running as the OS user (section 70 / Jimmy's trust-boundary law).
+already running as the OS user (section 70 / the operator's trust-boundary law).
 Neither cgroups nor Windows BREAKAWAY_OK are sold as an adversarial sandbox.
 Safe provider permissions remain the default; unrestricted permissions require
 a saved named opt-in. Cgroup containment does not disable that opt-in.
@@ -61,7 +61,7 @@ BestAvailable selects a scope before child creation: delegated kernel scope
 when available, otherwise Uncontained with a structured reason; status and
 launch receipts always name that weaker guarantee. An explicit KernelScope
 requirement still refuses if impossible, and a failure after native cgroup
-entry is never retried silently in another mode. Under Prime's ruling, an empty macOS
+entry is never retried silently in another mode. Under the coordinator's ruling, an empty macOS
 group with all tracked instances exited is `Complete` **at this stated bound**.
 `Bounded` remains for a requested guarantee not met, incomplete tracking or a
 known escape. Neither means all descendants anywhere on the machine are gone.
@@ -797,7 +797,7 @@ map lock. A stop token releases its slot lock before the host's CAS, and
 request_stop reacquires/rechecks it through the native effect. Generation
 handover cannot race an already authorized effect.
 
-**panic=unwind is required**, matching Alpha's SE Code setting. Slots are
+**panic=unwind is required**, matching the release-qualification SE Code setting. Slots are
 inserted before any effect; fallible native resources are RAII-owned inside
 that slot immediately, never only in stack locals across publication. Wrap
 native operation boundaries and every ExitSink callback in catch_unwind.
@@ -897,14 +897,14 @@ suffix as bytes after the final `) `; comm may contain spaces/parentheses or
 invalid UTF-8. Bracket executable symlink read with start/state rereads and
 combine field 22 with boot UUID. A zombie is an exited record, not absence.
 
-**A stranger needs no manual manager command.** Prime adopted Alpha's
+**A stranger needs no manual manager command.** the coordinator adopted the reviewer's
 option (b): neither SE Code nor its existing process must move. HostConfig
 AutoUserManager probes current delegation, and the embedded
 host **and se up's host** request a fresh delegated user scope and temporary
 creator for every LinuxUserManager process launch, warm launches included.
 Each creator exits after handoff; no resident creator or reused empty scope is
 assumed for the next launch. se up calls spawn_runtime only to create the runtime; delegation
-for agents is lazy prepare_launch plumbing shared by both hosts. Prime's
+for agents is lazy prepare_launch plumbing shared by both hosts. The coordinator's
 2026-10-30 native-timing decision replaces the systemd-run process on this
 agent-scope path with direct user-manager D-Bus StartTransientUnit. Reuse is
 rejected: it would require resident creation authority, contrary to B3.
@@ -1119,7 +1119,7 @@ replaced, preserving unknown status as unknown. A still-live tracked member
 outside the group is explicitly reported as an escaped remaining obligation;
 no false success and no unowned-PID rescue kill.
 
-This is Prime's supported alpha policy: deliberate setsid/setpgid escape or
+This is the coordinator's supported alpha policy: deliberate setsid/setpgid escape or
 unobserved reparenting is a stated limit under the same-user boundary, not a
 reason to refuse default J2/J5. Native PID rechecks are not atomic signal
 handles; no Mach task entitlement or impossible task_for_pid guarantee is
@@ -1651,7 +1651,7 @@ with original root exited/reused; (b) root exits but children remain; (c)
 Linux double-fork/setsid, clone3 ENOSYS fallback before exec, real provider
 launch without mandatory hardening, automatic delegation from a normal
 terminal/SSH scope; (d) macOS ordinary group/tracked-member stop, crash adoption
-and labelled deliberate escape (T15/T16 at Prime's stated bound); (e) Windows
+and labelled deliberate escape (T15/T16 at the coordinator's stated bound); (e) Windows
 job-list atomic association, strict caller breakaway refusal, explicit detached
 se up, console streams and `wt` single-instance broker handoff; (f) natural
 exit/failed launch and crashes around each reservation/checkpoint/Exited/
@@ -1692,8 +1692,7 @@ including native ENOSYS-only fallback, live stdio/optional pidfd handoff, helper
 exit and unchanged host cgroup; the two uncontained cases preserve the escaped
 setsid/double-fork survivor until exact fixture cleanup. Podman has no manager
 and honestly reports all four cases uncontained; zombies remain labelled exited.
-Raw failures, source and outside readback are retained under
-`/mnt/nvme/stateengine/5p-e7-containment-20261030`, including the original SSH
+Raw failures, source and outside readback are retained in the E7 containment evidence directory (private evidence root), including the original SSH
 cross-boundary EACCES and final `FINAL-AUDIT.json`. This is headless native
 mechanism evidence, not durable host integration, terminal qualification or
 launch-budget acceptance. The measured manager collected the exact pinned

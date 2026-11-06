@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Proposal for Alpha's MIT/Apache secode-stateengine-api crate, not an engine API.
+//! Proposal for the alpha release's MIT/Apache secode-stateengine-api crate, not an engine API.
 //! Standalone trait/data declarations: deliberately no dependency on se-types.
 //! Checked independently as a crate root for design review, not published or wired.
-//! API 2 remains unpublished; additions before its first release don't bump the major (Prime 2026-11-04).
+//! API 2 remains unpublished; additions before its first release don't bump the major (operator ruling 2026-11-04).
 //! From the first published release onward, this is a closed Rust API: adding/removing/changing any public field, enum variant,
 //! trait method or its meaning requires a Cargo/API major version change.
 //! No blocking or joining in Drop; resources close through explicit async calls.

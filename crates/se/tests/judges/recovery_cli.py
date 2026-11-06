@@ -28,7 +28,7 @@ class Case:
         self.marker.write_bytes(b'Existing user work must remain.\n')
         self.marker_hash = digest(self.marker)
         self.env = {'HOME': str(self.owner), 'USERPROFILE': str(self.owner),
-                    'PATH': str(se.parent) + ':/home/jimmy/.local/bin:/usr/bin:/bin',
+                    'PATH': str(se.parent) + ':/home/user/.local/bin:/usr/bin:/bin',
                     'LANG': 'C.UTF-8'}
         self.count = 0
 

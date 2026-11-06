@@ -76,7 +76,7 @@ def main():
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.prctl(36, 1, 0, 0, 0) != 0:
         raise OSError(ctypes.get_errno(), 'PR_SET_CHILD_SUBREAPER')
-    root = Path(tempfile.mkdtemp(prefix='5d-fg-', dir=Path.home()))
+    root = Path(tempfile.mkdtemp(prefix='se-fg-', dir=Path.home()))
     results = []
     for ending in ('down', 'ctrl-c'):
         home = root / ending

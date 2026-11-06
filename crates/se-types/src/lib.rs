@@ -28,7 +28,7 @@ pub struct ApiVersion {
     pub major: u16,
     pub minor: u16,
 }
-/// Internal CLI/IPC version, distinct from Alpha's linked API version ownership.
+/// Internal CLI/IPC version, distinct from the alpha release's linked API version ownership.
 pub const API_VERSION: ApiVersion = ApiVersion { major: 1, minor: 0 };
 
 /// Shared default and bounds for finite work and its matching store reader budget.

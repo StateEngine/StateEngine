@@ -97,7 +97,7 @@ async function ready(t, host) {
 }
 async function makeRun(seconds) {
   const artifact = path.join(out, `idle-${seconds}`); fs.mkdirSync(artifact, { mode: 0o700 });
-  const home = fs.mkdtempSync(path.join(os.homedir(), '5d-idle-'));
+  const home = fs.mkdtempSync(path.join(os.homedir(), 'se-idle-'));
   const image = path.join(home, 'se'); fs.copyFileSync(binary, image); fs.chmodSync(image, 0o700);
   const repo = path.join(home, 'repo'); fs.mkdirSync(repo); fs.writeFileSync(path.join(repo, 'user.txt'), 'Keep user work.\n');
   const t = trial(home, artifact, image, repo); t.stateHome = path.join(home, 'state');

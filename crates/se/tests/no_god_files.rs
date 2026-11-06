@@ -1,4 +1,4 @@
-//! Protects: Jimmy rulings 2026-11-04 — no god files. No non-test .rs source file under
+//! Protects: operator rulings 2026-11-04 — no god files. No non-test .rs source file under
 //! `crates/*/src` may exceed 800 lines (a split is planned once a file reaches 600), and no test
 //! .rs file under `crates/*/tests` may exceed 1000 lines. Each check walks its tree and fails
 //! naming every over-limit file and its line count.

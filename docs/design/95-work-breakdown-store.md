@@ -1,7 +1,7 @@
 # 95. Work breakdown — se-store
 
 Planning input for the project maintainer against the reconciled design. This breakdown
-grants no independent implementation or test authority; section 95 and Jimmy’s
+grants no independent implementation or test authority; section 95 and the operator’s
 ratified wave-1 decision govern admission.
 
 The normative storage contract is [20-data-model.md](20-data-model.md), including
@@ -184,4 +184,4 @@ Per-unit estimate check (including declarations; Q-S contributes zero):
 | S15 | 500 |
 | **Total** | **8,800** |
 
-Wave 0 lost-ACK slice owner: Nell, with Q observing one committed mutation retried through CLI, MCP, IPC and linked API; each returns the same receipt after a later head change and adds no second operation. Wave 1 uses the minimal S01/S03/S04/S06/S08 production subset through the installed CLI and authenticated hosted path. Its exit is J1 plus hosted E3 with NORMAL/FULL traffic and separate queue/transaction/sync/checkpoint timings; prototype W2 remains diagnostic and section 80 owns budgets.
+Wave 0 lost-ACK slice owner: assigned seat, with the reviewer observing one committed mutation retried through CLI, MCP, IPC and linked API; each returns the same receipt after a later head change and adds no second operation. Wave 1 uses the minimal S01/S03/S04/S06/S08 production subset through the installed CLI and authenticated hosted path. Its exit is J1 plus hosted E3 with NORMAL/FULL traffic and separate queue/transaction/sync/checkpoint timings; prototype W2 remains diagnostic and section 80 owns budgets.

@@ -121,7 +121,7 @@ mod linux {
     /// kernels still verify both peer identities without claiming a retained pin.
     #[test]
     fn socket_peer_proof_survives_peer_exit_and_closes_on_drop() -> Check {
-        let root = std::env::temp_dir().join(format!("5d-ipc-pin-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("se-ipc-pin-{}", std::process::id()));
         fs::create_dir(&root)?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
         let path = root.join("socket");

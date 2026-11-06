@@ -3,7 +3,7 @@ use crate::windows_policy_fixture::*;
 // High labels require an actual elevated native run. This test is explicit,
 // never silently skipped by an ordinary Medium-token pass.
 #[test]
-#[ignore = "Prime: run --ignored --exact uninstall::staging::judges::high_label_policy under a High token"]
+#[ignore = "run --ignored --exact uninstall::staging::judges::high_label_policy under a High token"]
 fn high_label_policy() -> Check {
     assert!(
         elevated()?,

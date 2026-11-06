@@ -280,7 +280,7 @@ fn absence_scope_and_per_event_visibility() -> Check {
     let f = Fixture::new()?;
     let (mut s, l) = f.direct()?;
     let d = id()?;
-    let p = propose(&f, &mut s, &l, &d, None, "Alpha proposal")?;
+    let p = propose(&f, &mut s, &l, &d, None, "Sable proposal")?;
     let (fp, fd) = foreign(&f, &mut s, &l)?;
     let old = alias(&f, &fd, &fp)?;
     let mut own = s.snapshot(f.self_scope(&f.a))?;

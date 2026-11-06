@@ -1,7 +1,7 @@
 # 95. Work breakdown — se-host
 
 Round-2 planning input for the project maintainer, 2026-10-30; assembled base `f25ca90`.
-**No code, tests or build permission. Jimmy approves the full design before
+**No code, tests or build permission. The operator approves the full design before
 implementation.** The accepted [section 40](40-host-runtime-and-harnesses.md)
 and [OPS inventory](../OPS.md) govern; sections 80 and 90 are the shared budget
 and acceptance chapters. These are planning tasks, not mandatory separate

@@ -213,7 +213,7 @@ fn main(){
 fn aborting_actual_claude_drains_releases_every_idle_read_and_exact_port() -> Check {
     let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
     let root = std::env::temp_dir().join(format!(
-        "5d-harness-close-{}-{}",
+        "se-harness-close-{}-{}",
         std::process::id(),
         se_types::hex_lower(&nonce)
     ));

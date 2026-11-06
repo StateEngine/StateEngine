@@ -11,8 +11,7 @@ remains deferred; this does not revive the historical Electron/Tauri experiment.
 This revision applies the single `RECONCILIATION-DECISIONS-2026-10-30.md` list
 beside the design handoff. Section **00** supplies product scope, **80** supplies
 the single budget table, and **95** supplies the generated size table and build
-order. The `secode-integration.md` planning note remains a source map in
-`/mnt/nvme/stateengine/prime-handoff-20261030/`.
+order. The `secode-integration.md` planning note remains a source map in the release handoff directory (private evidence root).
 Integration references below name its headings: **Payloads and entrypoints**,
 **Choice of Rust integration**, **Changes SE Code would make**, and **Desktop
 history and future requirements**. Its source/package observations are pinned
@@ -151,7 +150,7 @@ artifact; build provenance alone cannot qualify another architecture/OS.
 **Files:** SE `scripts/release/sign-windows.ps1` and `sign-macos.sh`; reuse SC's
 existing signing/package finalization and truthful signing-manifest fields.
 
-**Depends on:** R03 exact native bytes at stage 4; Jimmy's Windows signing
+**Depends on:** R03 exact native bytes at stage 4; the operator's Windows signing
 identity/provider and Apple Developer ID enrollment/access (00 §7.2 item 8); authorized release
 credentials and platform verifier. No signing secret enters source or artifacts.
 

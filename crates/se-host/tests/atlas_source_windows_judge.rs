@@ -32,7 +32,7 @@ impl Drop for Fixture {
 }
 fn fixture() -> Result<Fixture, Box<dyn Error>> {
     let root = std::env::temp_dir().join(format!(
-        "5c-atlas-win-{}-{}",
+        "se-atlas-win-{}-{}",
         std::process::id(),
         SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos()
     ));

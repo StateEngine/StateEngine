@@ -42,7 +42,7 @@ fn wait<F: std::future::Future>(future: F) -> Result<F::Output, Box<dyn std::err
 }
 fn ready_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(PathBuf::from(
-        std::env::var_os("OTTO_SQLITE_FAULT_ROOT").ok_or("native fault root absent")?,
+        std::env::var_os("SE_SQLITE_FAULT_ROOT").ok_or("native fault root absent")?,
     ))
 }
 fn wait_path(path: &std::path::Path) -> Check {
@@ -98,7 +98,7 @@ fn payload(
 #[ignore = "explicitly spawned by the native syscall fault consumer"]
 fn fault_child_fixture() -> Check {
     let root = ready_path()?;
-    let mode = std::env::var("OTTO_SQLITE_FAULT_MODE")?;
+    let mode = std::env::var("SE_SQLITE_FAULT_MODE")?;
     let f = Fixture::new()?;
     let (host, lease) = host(&f)?;
     let mut owner = host.start_writer(options(256)?, lease.clone())?;

@@ -103,7 +103,7 @@ fn selectors_use_id_order_and_stale_on_catalog_changes_only() -> Check {
             ))?),
             vec![EventBody::PrincipalRenamed {
                 principal: Actor::Agent(f.a.clone()),
-                name: "New Alpha".into(),
+                name: "New Sable".into(),
                 expected: revision(1)?,
             }],
         )?,

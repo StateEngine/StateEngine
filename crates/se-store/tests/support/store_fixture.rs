@@ -272,7 +272,7 @@ impl Fixture {
             )?,
             &*lease,
         )?;
-        for (a, name) in [(&self.a, "Alpha"), (&self.b, "Beta")] {
+        for (a, name) in [(&self.a, "Sable"), (&self.b, "Juniper")] {
             direct.append(
                 self.batch(
                     self.owner_project(),

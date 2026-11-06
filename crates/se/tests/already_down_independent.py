@@ -38,7 +38,7 @@ def main():
     image = args.se.resolve(strict=True)
     setup = (args.setup_se or args.se).resolve(strict=True)
     args.out.mkdir(mode=0o700)
-    root = Path(tempfile.mkdtemp(prefix='5d-already-down-', dir=Path.home()))
+    root = Path(tempfile.mkdtemp(prefix='se-already-down-', dir=Path.home()))
     binary = root / 'se'
     shutil.copy2(image, binary)
     env = {'HOME': str(root), 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
