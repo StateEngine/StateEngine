@@ -3,6 +3,45 @@
 use super::*;
 
 impl CaptureHandle {
+    /// Terminal sessions retain recovery metadata only while capture is owed.
+    /// Native source and directory handles do not outlive their session.
+    pub(crate) async fn retire(
+        &self,
+        identity: crate::SessionIdentity,
+        complete: bool,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let source = {
+            let mut pins = self.sources.registry()?;
+            if pins.publishing.contains(&identity.session) {
+                return Err(busy());
+            }
+            if let Some(source) = pins.active.get(&identity.session) {
+                let source = try_guard(source)?;
+                if source.binding.identity.project != identity.project
+                    || source.binding.identity.agent != identity.agent
+                {
+                    return Err(SeError::invalid(
+                        "capture retirement",
+                        "the exact protected project, agent and session",
+                    ));
+                }
+            }
+            pins.failed.remove(&identity.session);
+            pins.active.remove(&identity.session)
+        };
+        drop(source);
+        if !complete {
+            return Ok(());
+        }
+        let lease = self.lease.upgrade().ok_or_else(|| {
+            se_core::scope::unreadable("capture retirement", "the original host lease was released")
+        })?;
+        self.execution
+            .blocking
+            .run_owned(deadline, move || persistent::retire(&lease, &identity))
+            .await
+    }
     /// A failed startup restore can be repaired in place before an explicit
     /// stop retry. Reopen only this session's original protected binding.
     pub(crate) async fn recover_binding(

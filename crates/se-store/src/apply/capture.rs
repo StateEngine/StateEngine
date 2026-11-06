@@ -3,7 +3,9 @@ use crate::codec::capture::{consent, provider, role};
 use se_types::{AgentId, SessionId};
 pub(super) fn revision(c: &Connection, e: &NewEvent) -> StoreResult<u64> {
     let (source, want) = match &e.body {
-        EventBody::SessionTurn { .. } | EventBody::CaptureFailed { .. } => return Ok(1),
+        EventBody::SessionTurn { .. }
+        | EventBody::CaptureFailed { .. }
+        | EventBody::CaptureVerified { .. } => return Ok(1),
         EventBody::CaptureSource {
             source, expected, ..
         }
@@ -387,6 +389,21 @@ pub(super) fn apply(
                 .as_object_mut()
                 .ok_or_else(|| invalid("capture progress metadata"))?
                 .insert("project".into(), serde_json::json!(project(&h.scope)?));
+            codec::aux(c, seq, facts)?;
+        }
+        CaptureVerified {
+            source,
+            session,
+            offset,
+        } => {
+            let (id, _) = bound_session(c, &p, &scope, &session, h, false)?;
+            let valid: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM capture_sources WHERE project_id=? AND source_id=? AND session_id=? AND byte_offset=? AND consent='capture')", crate::sql_value::sql_params![p,source.as_bytes().as_slice(),id,offset], |r| r.get(0)).map_err(sql)?;
+            if !valid {
+                return Err(fail(
+                    StoreErrorCode::SourceChanged,
+                    "final capture verification differs from the committed session/source cursor",
+                ));
+            }
             codec::aux(c, seq, facts)?;
         }
         CaptureFailed {

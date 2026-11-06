@@ -89,6 +89,14 @@ impl LaunchCoordinator {
                         }
                     }
                 }
+                // Capture and mail each have a bounded maintenance window.
+                // Release between them so an already queued stop acquires the
+                // agent before another window starts; accepted work is joined.
+                drop(state);
+                let mut state = job.state.lock().await;
+                if state.released {
+                    return;
+                }
                 let result = self.exit_observation(&state, &deadline).await;
                 match result {
                     Ok(StopObservation::Complete(witness)) => {

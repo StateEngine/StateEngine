@@ -71,6 +71,7 @@ pub(super) fn public<R: Snapshot>(
             };
             ("session.turn", json!({"session_id":session,"turn_id":if vendor_ref.is_empty() {None} else {Some(vendor_ref)},"provider":provider,"provider_session":native_ref,"role":role,"source":source,"occurred_at":receipt::timestamp(event.header.occurred_at_us)?,"body":text(body)?}))
         }
+        CaptureVerified { source, session, offset } => ("capture.verified", json!({"source":source,"session_id":session,"offset":offset})),
         CaptureSuppressed { session, count, reason, .. } => ("capture.suppressed", json!({"session_id":session,"count":count,"reason":reason})),
         LegacyRetained{family,legacy_id,bytes,retained_from,..} => {
             let body=bytes.as_ref().map(|content|String::from_utf8(content.bytes.clone()).map_err(|e|scope::unreadable("retained user history",&e.to_string()))).transpose()?;

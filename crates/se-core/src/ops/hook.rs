@@ -17,7 +17,7 @@ use se_types::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-mod replay;
+pub(crate) mod replay;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]

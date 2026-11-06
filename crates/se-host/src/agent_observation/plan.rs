@@ -180,45 +180,39 @@ fn capture_evidence<S: Snapshot>(
         });
     }
     // Native exit and session retirement do not erase a failed final capture.
-    // Keep its diagnostic until repaired-source capture advances the cursor.
+    // Keep its diagnostic until capture advances the cursor or a trusted final
+    // reader verifies EOF at that cursor, including a retry with no new records.
     {
-        let failures = read
-            .history(
-                se_store::HistoryQuery {
-                    agent: None,
-                    session: Some(session.clone()),
-                    kinds: vec![se_store::EventKind::CaptureFailed],
-                    families: Vec::new(),
-                    transcript: se_store::TranscriptFilter::All,
-                    since: Some(source.current.position.clone()),
-                },
-                se_store::ReadBudget {
-                    page: se_types::PageRequest {
-                        after: None,
-                        limit: std::num::NonZeroU32::new(1)
-                            .ok_or_else(|| invalid("positive diagnostic limit"))?,
-                        max_bytes: std::num::NonZeroU32::new(32 * 1024)
-                            .ok_or_else(|| invalid("positive diagnostic byte bound"))?,
-                    },
-                    deadline: std::time::Duration::from_secs(1),
-                },
-            )
+        let outcome = read
+            .capture_outcome(source_id, None)
             .map_err(|e| store_error(&e))?;
-        if let Some(failure) = failures.items().first() {
-            return match &failure.body {
+        let failure = match &outcome {
+            Read::Present { value } => Some(value),
+            Read::Absent { .. } => None,
+            _ => return Err(invalid("the latest capture outcome is unavailable")),
+        };
+        if let Some(failure) = failure {
+            match &failure.body {
+                EventBody::CaptureVerified {
+                    source: found,
+                    session: recorded,
+                    ..
+                } if *found == source_id && recorded == session => (),
                 EventBody::CaptureFailed {
                     source,
                     session: found,
                     cause,
                     code,
                     ..
-                } if *source == source_id && found == session => Ok(unreadable(
-                    "transcript capture",
-                    format!(
-                        "Capture failed since the last committed turn ({code:?}): {cause}. The saved cursor is preserved; retry capture or stop to reconcile."
-                    ),
-                )),
-                _ => Err(invalid("the exact session/source capture failure")),
+                } if *source == source_id && found == session => {
+                    return Ok(unreadable(
+                        "transcript capture",
+                        format!(
+                            "Capture failed since the last committed turn ({code:?}): {cause}. The saved cursor is preserved; retry capture or stop to reconcile."
+                        ),
+                    ));
+                }
+                _ => return Err(invalid("the exact session/source capture failure")),
             };
         }
     }

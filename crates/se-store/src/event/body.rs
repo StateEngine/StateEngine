@@ -35,6 +35,7 @@ pub enum EventKind {
     CaptureSource,
     CaptureProgress,
     CaptureFailed,
+    CaptureVerified,
     CaptureSuppressed,
     ProcessRegistered,
     ProcessTransition,
@@ -256,6 +257,12 @@ pub enum EventBody<T> {
         last_turn: RecordId,
         /// Current source range when the turn was retained from an earlier engine session.
         replay_evidence: Option<SourceEvidence>,
+    },
+    /// A trusted final reader reached EOF at this exact committed source cursor.
+    CaptureVerified {
+        source: RecordId,
+        session: SessionId,
+        offset: u64,
     },
     CaptureFailed {
         source: RecordId,

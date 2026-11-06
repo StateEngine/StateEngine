@@ -501,6 +501,7 @@ pub(crate) fn apply(
         | CaptureSource { .. }
         | CaptureProgress { .. }
         | CaptureFailed { .. }
+        | CaptureVerified { .. }
         | CaptureSuppressed { .. }) => capture::apply(c, header, b, seq, revision, facts)?,
         b @ (CredentialIssued { .. } | CredentialActivated { .. } | CredentialRevoked { .. }) => {
             credential::apply(c, header, b, seq, revision, facts)?

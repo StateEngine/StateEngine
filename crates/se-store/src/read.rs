@@ -581,6 +581,13 @@ impl Snapshot for SqliteSnapshot {
     fn capture_source(&mut self, _source: RecordId) -> StoreResult<Read<ProjectionRecord>> {
         self.read_capture_source(_source)
     }
+    fn capture_outcome(
+        &mut self,
+        source: RecordId,
+        kind: Option<EventKind>,
+    ) -> StoreResult<Read<StoredEvent>> {
+        self.read_capture_outcome(source, kind)
+    }
     fn control_target(&mut self, target: AgentId) -> StoreResult<Read<ControlTarget>> {
         self.read_control_target(target)
     }

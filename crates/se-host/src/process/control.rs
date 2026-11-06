@@ -186,6 +186,7 @@ impl LaunchCoordinator {
                 {
                     return Err(error);
                 }
+                self.retire_capture(&mut work, deadline).await?;
                 fill_stopped(&mut row,&work,true)?;
                 return Ok(());
             }

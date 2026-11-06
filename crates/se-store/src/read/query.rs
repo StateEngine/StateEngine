@@ -178,6 +178,7 @@ pub(super) fn kind_name(k: EventKind) -> &'static str {
         EventKind::CaptureSource => "capture.source",
         EventKind::CaptureProgress => "capture.progress",
         EventKind::CaptureFailed => "capture.failed",
+        EventKind::CaptureVerified => "capture.verified",
         EventKind::CaptureSuppressed => "capture.suppressed",
         EventKind::ProcessRegistered => "process.registered",
         EventKind::ProcessTransition => "process.transition",

@@ -1,5 +1,54 @@
 use super::*;
 impl SqliteSnapshot {
+    pub(super) fn read_capture_outcome(
+        &self,
+        source: RecordId,
+        kind: Option<EventKind>,
+    ) -> StoreResult<Read<StoredEvent>> {
+        let kind = match kind {
+            None => None,
+            Some(EventKind::CaptureFailed) => Some("capture.failed"),
+            Some(EventKind::CaptureVerified) => Some("capture.verified"),
+            _ => return Err(invalid("capture outcome kind")),
+        };
+        let record = match self.read_capture_source(source)? {
+            Read::Present { value } => value,
+            Read::Absent { .. } => {
+                return Err(fail(
+                    StoreErrorCode::ReferenceMissing,
+                    "capture source is absent; no final outcome can be inferred",
+                ));
+            }
+            _ => {
+                return Err(fail(
+                    StoreErrorCode::ProjectionInconsistent,
+                    "capture source is unavailable",
+                ));
+            }
+        };
+        let original = record.original.as_deref().unwrap_or(&record.current);
+        let EventBody::CaptureSource { session, .. } = &original.body else {
+            return Err(fail(
+                StoreErrorCode::ProjectionInconsistent,
+                "capture source original registration is unavailable",
+            ));
+        };
+        let scope = scope_key(&self.db, &self.scope.admission.scope, false)?;
+        let id = key(&self.db, "session", session.as_str(), &scope, false)?;
+        let seq: Option<i64> = self.db.query_row("SELECT seq FROM events INDEXED BY events_session_seq WHERE project_id=? AND session_id=? AND seq>? AND kind IN ('capture.failed','capture.verified') AND (? IS NULL OR kind=?) ORDER BY seq DESC LIMIT 1",crate::sql_value::sql_params![self.project_bytes()?,id,record.current.position.sequence(),kind,kind],|row|row.get(0)).optional().map_err(|error|self.read_sql(error))?;
+        let Some(seq) = seq else {
+            return Ok(self.absent("capture outcome after the current source cursor"));
+        };
+        let event = self.record(seq)?;
+        if !matches!(&event.body, EventBody::CaptureFailed {source:found,session:recorded,..} | EventBody::CaptureVerified {source:found,session:recorded,..} if *found==source && recorded==session)
+        {
+            return Err(fail(
+                StoreErrorCode::ProjectionInconsistent,
+                "capture outcome differs from the exact protected source/session",
+            ));
+        }
+        Ok(Read::Present { value: event })
+    }
     pub(super) fn session_visible(
         &self,
         session: &SessionId,

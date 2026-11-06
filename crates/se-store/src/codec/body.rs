@@ -139,7 +139,7 @@ pub(crate) fn body(
             session::decode(c, seq, kind, scope)?
         }
         "session.turn" | "capture.source" | "capture.progress" | "capture.failed"
-        | "capture.suppressed" => capture::decode(c, seq, kind, scope)?,
+        | "capture.verified" | "capture.suppressed" => capture::decode(c, seq, kind, scope)?,
         _ => {
             let v = facts(c, seq)?;
             match kind {

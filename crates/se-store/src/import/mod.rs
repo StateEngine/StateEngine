@@ -150,6 +150,8 @@ pub(crate) fn validate_batch(batch: &AtomicBatch) -> StoreResult<bool> {
                     | SessionTurn { .. }
                     | CaptureSource { .. }
                     | CaptureProgress { .. }
+                    | CaptureFailed { .. }
+                    | CaptureVerified { .. }
             )
         {
             return Err(invalid(
