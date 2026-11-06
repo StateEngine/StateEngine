@@ -16,110 +16,153 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
         deadline: Instant,
     ) -> AtlasResult<Step> {
         self.admit(registration, policy)?;
-        let root = self.root(&registration.root)?;
-        if (root.summary.epoch.is_none() || root.needs_rebuild) && self.active.is_none() {
-            let mut bytes = [0; 16];
-            se_proc::fill_entropy(&mut bytes).map_err(atlas_cold::failure)?;
-            let job = AtlasJobId(bytes);
-            self.pending = Some(WorkerRequest {
-                job,
-                root: registration.clone(),
-                expected_epoch: root.summary.epoch.clone(),
-                purpose: WorkerPurpose::ColdIndex,
-                paths: Vec::new(),
-                reservation: WorkerReservation {
-                    host_steady_ceiling_bytes: 25_000_000,
-                    child_peak_bytes: 64_000_000,
-                    wall_deadline: Duration::from_secs(900),
-                },
-                policy: policy.clone(),
-            });
-            self.active = Some((job, registration.root.clone()));
-        }
-        if let Some((job, id)) = &self.active
-            && id == &registration.root
-        {
+        let result = (|| {
+            let root = self.root(&registration.root)?;
+            if (root.summary.epoch.is_none() || root.needs_rebuild) && self.active.is_none() {
+                let mut bytes = [0; 16];
+                se_proc::fill_entropy(&mut bytes).map_err(atlas_cold::failure)?;
+                let job = AtlasJobId(bytes);
+                self.pending = Some(WorkerRequest {
+                    job,
+                    root: registration.clone(),
+                    expected_epoch: root.summary.epoch.clone(),
+                    purpose: WorkerPurpose::ColdIndex,
+                    paths: Vec::new(),
+                    reservation: WorkerReservation {
+                        host_steady_ceiling_bytes: 25_000_000,
+                        child_peak_bytes: 64_000_000,
+                        wall_deadline: Duration::from_secs(900),
+                    },
+                    policy: policy.clone(),
+                });
+                self.active = Some((job, registration.root.clone()));
+            }
+            if let Some((job, id)) = &self.active
+                && id == &registration.root
+            {
+                let root = self
+                    .roots
+                    .iter_mut()
+                    .find(|r| r.summary.root == registration.root)
+                    .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
+                root.summary.state = IndexState::ColdIndexing {
+                    job: *job,
+                    discovered_files: 0,
+                };
+                return Ok(Step {
+                    report: WorkReport {
+                        root: registration.root.clone(),
+                        phase: WorkPhase::Discover,
+                        completed_files: 0,
+                        remaining_known: 1,
+                        generation: None,
+                        state: root.summary.state.clone(),
+                    },
+                    summary: root.summary.clone(),
+                    complete: true,
+                });
+            }
+            if self.active.is_some() {
+                if let Some(root) = self
+                    .roots
+                    .iter_mut()
+                    .find(|r| r.summary.root == registration.root)
+                {
+                    root.waiting_on_child = true;
+                }
+                return Err(atlas_cold::failure(
+                    "another cold root owns the home writer; work resumes on exact child exit",
+                ));
+            }
+            let profile = self.profile.as_ref().ok_or_else(|| {
+                atlas_cold::failure(
+                    "native SQL profile is unqualified; cold map remains verification-needed",
+                )
+            })?;
             let root = self
                 .roots
                 .iter_mut()
                 .find(|r| r.summary.root == registration.root)
                 .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
-            root.summary.state = IndexState::ColdIndexing {
-                job: *job,
-                discovered_files: 0,
-            };
-            return Ok(Step {
-                report: WorkReport {
-                    root: registration.root.clone(),
-                    phase: WorkPhase::Discover,
-                    completed_files: 0,
-                    remaining_known: 1,
-                    generation: None,
-                    state: root.summary.state.clone(),
-                },
-                summary: root.summary.clone(),
-                complete: true,
-            });
-        }
-        if self.active.is_some() {
-            if let Some(root) = self
-                .roots
-                .iter_mut()
-                .find(|r| r.summary.root == registration.root)
-            {
-                root.waiting_on_child = true;
+            let cache = NativeAtlasCache::create(&self.home, root.source.scope.clone())?;
+            let current = super::connections::writer(&cache, root, profile, deadline)?
+                .ok_or_else(|| atlas_cold::failure("renewal index disappeared"))?;
+            root.checked_epoch = Some(current.connection.identity().epoch.clone());
+            if root.serial_domain.is_none() {
+                let base = current.connection.read(deadline, |sql| {
+                    let value: i64 = sql
+                        .prepare("SELECT observed_serial FROM meta WHERE singleton=1")?
+                        .query_row([], |r| r.get(0))
+                        .map_err(atlas_cold::failure)?;
+                    u64::try_from(value).map_err(atlas_cold::failure)
+                })?;
+                root.serial_domain = Some((current.connection.identity().epoch.clone(), base));
             }
-            return Err(atlas_cold::failure(
-                "another cold root owns the home writer; work resumes on exact child exit",
-            ));
+            let (epoch, base) = root
+                .serial_domain
+                .as_ref()
+                .ok_or_else(|| atlas_cold::failure("renewal serial domain disappeared"))?;
+            if epoch != &current.connection.identity().epoch {
+                return Err(atlas_cold::failure(
+                    "cache epoch changed; close and reconcile the native root before renewal",
+                ));
+            }
+            let mapped = Scheduled {
+                root: work.root.clone(),
+                serial: durable_serial(*base, work.serial)?,
+                hint: work.hint.clone(),
+            };
+            let step = self.driver.step(
+                &root.source,
+                &current.connection,
+                &root.policy,
+                &mapped,
+                deadline,
+            )?;
+            root.summary = step.summary.clone();
+            Ok(step)
+        })();
+        match result {
+            Err(error) if se_atlas::controller::quantum_expired(&error) => {
+                let root = self
+                    .roots
+                    .iter_mut()
+                    .find(|root| root.summary.root == work.root)
+                    .ok_or_else(|| atlas_cold::failure("paused native root disappeared"))?;
+                // No failed SQL transaction advances its cursor. Keep native
+                // readiness and the controller's unfinished work for the next
+                // finite slice, with an explicit non-current observation.
+                if !matches!(root.summary.state, IndexState::Partial { .. }) {
+                    root.summary.state = IndexState::VerificationNeeded {
+                        reason: CoverageReason::TimeLimit,
+                    };
+                }
+                if !root
+                    .summary
+                    .coverage
+                    .reasons
+                    .contains(&CoverageReason::TimeLimit)
+                {
+                    root.summary
+                        .coverage
+                        .reasons
+                        .push(CoverageReason::TimeLimit);
+                }
+                Ok(Step {
+                    report: WorkReport {
+                        root: work.root.clone(),
+                        phase: WorkPhase::Read,
+                        completed_files: 0,
+                        remaining_known: 1,
+                        generation: root.summary.generation,
+                        state: root.summary.state.clone(),
+                    },
+                    summary: root.summary.clone(),
+                    complete: false,
+                })
+            }
+            result => result,
         }
-        let profile = self.profile.as_ref().ok_or_else(|| {
-            atlas_cold::failure(
-                "native SQL profile is unqualified; cold map remains verification-needed",
-            )
-        })?;
-        let root = self
-            .roots
-            .iter_mut()
-            .find(|r| r.summary.root == registration.root)
-            .ok_or_else(|| atlas_cold::failure("native root disappeared"))?;
-        let cache = NativeAtlasCache::create(&self.home, root.source.scope.clone())?;
-        let current = super::connections::writer(&cache, root, profile, deadline)?
-            .ok_or_else(|| atlas_cold::failure("renewal index disappeared"))?;
-        root.checked_epoch = Some(current.connection.identity().epoch.clone());
-        if root.serial_domain.is_none() {
-            let base = current.connection.read(deadline, |sql| {
-                let value: i64 = sql
-                    .prepare("SELECT observed_serial FROM meta WHERE singleton=1")?
-                    .query_row([], |r| r.get(0))
-                    .map_err(atlas_cold::failure)?;
-                u64::try_from(value).map_err(atlas_cold::failure)
-            })?;
-            root.serial_domain = Some((current.connection.identity().epoch.clone(), base));
-        }
-        let (epoch, base) = root
-            .serial_domain
-            .as_ref()
-            .ok_or_else(|| atlas_cold::failure("renewal serial domain disappeared"))?;
-        if epoch != &current.connection.identity().epoch {
-            return Err(atlas_cold::failure(
-                "cache epoch changed; close and reconcile the native root before renewal",
-            ));
-        }
-        let mapped = Scheduled {
-            root: work.root.clone(),
-            serial: durable_serial(*base, work.serial)?,
-            hint: work.hint.clone(),
-        };
-        let step = self.driver.step(
-            &root.source,
-            &current.connection,
-            &root.policy,
-            &mapped,
-            deadline,
-        )?;
-        root.summary = step.summary.clone();
-        Ok(step)
     }
     fn publish(
         &mut self,

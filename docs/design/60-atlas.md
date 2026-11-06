@@ -927,6 +927,12 @@ parse deadline 200 ms is a cancellation ceiling, not proof debounce+IO+parse mee
 latency. Core CLI read targets and sample counts are those in section 80;
 Atlas's query target isn't a replacement acceptance oracle.
 
+An expired maintenance slice retains its unfinished work and reports TimeLimit
+without claiming Current; the next scheduled turn gets a fresh finite slice.
+An admitted CLI or MCP read may retry an expired SQL snapshot once after rollback.
+Each attempt keeps the same query budget; a second expiry remains an explicit
+timeout with a one-second retry delay. Writes and other failures are not replayed.
+
 Linux prototype (shared host, not revised-design qualification): StateEngine 6,179
 files / 1,356,850 lines, cold 165.35 s, peak 19.89 MiB, settled 10.60 MiB, DB 275.79 MiB.
 Current Rust SE Code 2,917 files / 851,724 lines, 72.30 s, peak 62.04 MiB, settled

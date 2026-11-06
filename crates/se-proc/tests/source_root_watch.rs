@@ -97,7 +97,7 @@ fn overflow_is_explicit_and_malformed_events_never_look_empty() -> Check {
 #[test]
 fn directory_cursor_survives_its_callers_root_borrow() -> Result<(), Box<dyn std::error::Error>> {
     let directory =
-        std::env::temp_dir().join(format!("vera-owned-watch-cursor-{}", std::process::id()));
+        std::env::temp_dir().join(format!("atlas-owned-watch-cursor-{}", std::process::id()));
     std::fs::create_dir(&directory)?;
     std::fs::write(directory.join("a.rs"), "fn a() {}")?;
     let mut cursor = {

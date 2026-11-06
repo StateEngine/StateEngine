@@ -495,7 +495,9 @@ fn empty_coverage() -> Coverage {
     }
 }
 
-fn quantum_expired(error: &se_types::SeError) -> bool {
+/// A maintenance slice may yield on these deadlines while retaining its work.
+/// Other failures still require their concrete diagnostic to reach the caller.
+pub fn quantum_expired(error: &se_types::SeError) -> bool {
     match error.body.detail() {
         se_types::Detail::DeadlineExceeded(detail) => {
             matches!(detail.op.as_str(), "Atlas SQL" | "Atlas source read")
