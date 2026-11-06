@@ -207,6 +207,51 @@ fn exchange_as(
     value["schema"] = response.schema.into();
     Ok(serde_json::from_value(value)?)
 }
+// Only the optional hook's server-side ingress slice may expire. Public reads
+// and the client's ten-second transport deadline must still succeed.
+// Sub-millisecond remaining slices are serialized as zero milliseconds.
+fn optional_hint_deadline(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<se_types::SeError>()
+        .is_some_and(|error| {
+            matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(detail)
+            if detail.op == "local IPC" && detail.deadline_ms <= 5)
+        })
+}
+#[test]
+fn optional_hint_deadline_rejects_other_failures() {
+    let timeout = |op: &str, deadline_ms| {
+        se_types::SeError::new(se_types::Detail::DeadlineExceeded(
+            se_types::details::DeadlineExceeded {
+                op: op.into(),
+                deadline_ms,
+            },
+        ))
+    };
+    for milliseconds in [0, 3, 5] {
+        assert!(optional_hint_deadline(&timeout("local IPC", milliseconds)));
+    }
+    for error in [
+        timeout("local IPC", 6),
+        timeout("local IPC", 10_000),
+        timeout("Atlas SQL", 3),
+        se_types::SeError::invalid("authority", "the admitted session"),
+        se_types::SeError::new(se_types::Detail::Cancelled(se_types::details::Cancelled {
+            op: "local IPC".into(),
+        })),
+    ] {
+        assert!(
+            !optional_hint_deadline(&error),
+            "unexpected tolerated error: {error}"
+        );
+    }
+    assert!(
+        !optional_hint_deadline(&std::io::Error::other(
+            "atlas.augment: deadline-exceeded: local IPC didn't finish in 3 ms",
+        )),
+        "matching text without the typed error is not a legal timeout"
+    );
+}
 #[test]
 fn five_queries_reach_the_real_owner_after_a_contained_cold_build() -> Check {
     let initialized = initialize_host_process()?;
@@ -351,7 +396,7 @@ fn five_queries_reach_the_real_owner_after_a_contained_cold_build() -> Check {
         let project=f.project.clone();
         let root_wire=root.clone();
         let query_endpoint=endpoint.clone();
-        let replies=tokio::task::spawn_blocking(move ||->Result<Vec<se_core::ops::AnyOutput>,String> {
+        let replies=tokio::task::spawn_blocking(move ||->Result<(Vec<se_core::ops::AnyOutput>,Option<se_core::ops::AnyOutput>),String> {
             let mut replies=Vec::new();
             for (name,mut input) in [
                 ("atlas.find",serde_json::json!({"query":"alpha","mode":"exact"})),
@@ -367,8 +412,12 @@ fn five_queries_reach_the_real_owner_after_a_contained_cold_build() -> Check {
                 input["byte_budget"]=16384.into();
                 replies.push(exchange(&query_endpoint,project.clone(),name,input).map_err(|e|format!("{name}: {e}"))?);
             }
-            replies.push(exchange_as(&query_endpoint,project,"atlas.augment",serde_json::json!({"target":{"Symbol":"alpha"},"root":root_wire}),client::lease::ClientCredential::Session(token)).map_err(|e|format!("atlas.augment: {e}"))?);
-            Ok(replies)
+            let hook=match exchange_as(&query_endpoint,project,"atlas.augment",serde_json::json!({"target":{"Symbol":"alpha"},"root":root_wire}),client::lease::ClientCredential::Session(token)) {
+                Ok(output)=>Some(output),
+                Err(error) if optional_hint_deadline(error.as_ref())=>None,
+                Err(error)=>return Err(format!("atlas.augment: {error}")),
+            };
+            Ok((replies,hook))
         }).await?;
         let disabled = {
             let mut controller = controller.lock().map_err(|_|"controller poisoned")?;
@@ -391,7 +440,8 @@ fn five_queries_reach_the_real_owner_after_a_contained_cold_build() -> Check {
         assert!(report.writer_joined && report.pending.is_empty());
         outcome.listener.close_transport(&context.blocking,&deadline()?).await?.retire(&context.blocking,&deadline()?).await?;
         if let Some(error)=outcome.failure {return Err(Box::<dyn std::error::Error>::from(error));}
-        let replies=replies?;
+        let (replies,hook)=replies?;
+        assert_eq!(replies.len(),8,"every public query must return a successful reply");
         use se_core::ops::AnyOutput;
         let AnyOutput::AtlasFind(found)=&replies[0] else {return Err("find family".into());};
         assert!(!present(found.value.answer.data.clone())?.page.items().is_empty());
@@ -410,14 +460,16 @@ fn five_queries_reach_the_real_owner_after_a_contained_cold_build() -> Check {
         assert!(present(top_level.value.answer.data.clone())?.dependents.iter().any(|d|d.symbol.is_none() && d.file_hops.iter().any(|h|h.from==h.to && h.site.path.as_str()=="entry.js" && h.site.span.is_some())));
         let AnyOutput::AtlasFind(private)=&replies[7] else {return Err("private find family".into());};
         assert!(present(private.value.answer.data.clone())?.page.items().is_empty(), "cold worker indexed a built-in secret path");
-        let AnyOutput::AtlasAugment(hook)=&replies[8] else {return Err("hook family".into());};
-        if !hook.value.stdout.is_empty() {
-            assert!(matches!(found.value.answer.index.state,IndexState::Current),"uncertain cold index supplied hook context");
-            assert!(hook.value.stdout.contains("definition alpha alpha.rs:1"));
-            let hint:serde_json::Value=serde_json::from_str(&hook.value.stdout)?;
-            assert_eq!(hint["hookSpecificOutput"]["hookEventName"],"PreToolUse");
+        if let Some(hook)=hook {
+            let AnyOutput::AtlasAugment(hook)=hook else {return Err("hook family".into());};
+            if !hook.value.stdout.is_empty() {
+                assert!(matches!(found.value.answer.index.state,IndexState::Current),"uncertain cold index supplied hook context");
+                assert!(hook.value.stdout.contains("definition alpha alpha.rs:1"));
+                let hint:serde_json::Value=serde_json::from_str(&hook.value.stdout)?;
+                assert_eq!(hint["hookSpecificOutput"]["hookEventName"],"PreToolUse");
+            }
+            assert!(hook.value.stdout.len()<=600);
         }
-        assert!(hook.value.stdout.len()<=600);
         assert_eq!(before,after,"query route wrote core history");
         controller.lock().map_err(|_|"controller poisoned")?.close(root,CloseReason::HostDrain,Duration::from_secs(2))?;
         Ok::<(),Box<dyn std::error::Error>>(())
