@@ -29,12 +29,13 @@ pub fn execute(
             // The failed read snapshot has rolled back. Retry the same admitted
             // read once with a fresh query slice; never replay a write or widen
             // either slice's SQL, source or output budget.
-            execute_once(reader, request).map_err(|error| {
+            execute_once(reader, request).map_err(|mut error| {
                 if sql_deadline(&error) {
-                    error.with_retry(se_types::Retry::After(std::time::Duration::from_secs(1)))
-                } else {
-                    error
+                    error.body = error
+                        .body
+                        .with_retry(se_types::Retry::After(std::time::Duration::from_secs(1)));
                 }
+                error
             })
         }
         result => result,
