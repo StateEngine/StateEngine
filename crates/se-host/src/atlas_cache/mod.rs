@@ -167,7 +167,8 @@ impl CacheFiles for NativeAtlasCache {
                 | se_atlas::cache::connection::ConnectionRole::QueryReader
                 | se_atlas::cache::connection::ConnectionRole::HostReader
         ) {
-            se_proc::atlas_sql::retain_wal(connection).map_err(fail)?;
+            se_proc::atlas_sql::retain_wal(connection)
+                .map_err(|error| fail(error.to_string().as_str()))?;
         }
         Ok(())
     }
