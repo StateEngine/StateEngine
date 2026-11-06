@@ -11,7 +11,14 @@ pub fn write(
     stderr: &mut impl Write,
 ) -> io::Result<u8> {
     let mut body = error.body.clone();
-    let mut remedy = body.remedy(context).map_err(io::Error::other)?;
+    // Startup recovery already preserves the full original argv and resolved
+    // selectors. Setup's home injection must not rewrite that literal retry.
+    let mut remedy = if error.code() == se_types::Code::RuntimeStartPending {
+        body.remedy(&RenderCx::default())
+    } else {
+        body.remedy(context)
+    }
+    .map_err(io::Error::other)?;
     let literal_recovery = matches!(
         error.code(),
         se_types::Code::AgentNameConflict | se_types::Code::RuntimeStartPending
