@@ -470,7 +470,7 @@ fn renamed_commands_keep_supported_replacements_without_opening_state() -> Check
             "se status --all",
             vec!["status", "--all", "--help"],
         ),
-        (vec!["stop"], "se down", vec!["down", "--help"]),
+        (vec!["stop"], "se stop --all", vec!["stop", "--help"]),
         (
             vec!["init", "--status"],
             "se status",
@@ -521,7 +521,17 @@ fn renamed_commands_keep_supported_replacements_without_opening_state() -> Check
         let output = command(&home).args(&old).output()?;
         assert_eq!(output.status.code(), Some(64), "{old:?}");
         let error = json(&output)?;
-        assert_eq!(error["code"], "renamed", "{old:?}: {error}");
+        if old == ["stop"] {
+            assert_eq!(error["code"], "usage-missing-argument", "{error}");
+            assert!(
+                error["remedy"]["text"]
+                    .as_str()
+                    .ok_or("stop remedy")?
+                    .contains("se stop AGENT")
+            );
+        } else {
+            assert_eq!(error["code"], "renamed", "{old:?}: {error}");
+        }
         assert!(
             error["remedy"]["text"]
                 .as_str()
