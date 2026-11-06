@@ -1,7 +1,9 @@
 """Observe public CLI startup under an owned Linux CPU quota.
 
 python3 startup_deadline.py --se SHIPPED_SE --output NEW_DIRECTORY --quota 25
-Repeat with a tighter quota. Retains readiness, typed refusals, live progress and
+For the ratified incomplete/recovery case, use --quota 1 --expect pending.
+For a real native listener-bind failure, use --quota 100 --expect refusal.
+Retains readiness, typed refusals, live progress and
 outside cleanup separately; a progressing child is never labeled a clean refusal.
 Uses a native provider double, without a provider account or deadline changes.
 """
@@ -10,6 +12,8 @@ import fcntl
 import hashlib
 import json
 import os
+import socket
+import tomllib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -18,6 +22,7 @@ import traceback
 import uuid
 
 from mail_cli import Fixture
+from startup_contract import pending_recovery, native_refusal
 
 
 def native(pid):
@@ -47,10 +52,15 @@ def provider(path):
             "effective":{}, "sources":[], "errors":[]}}}), flush=True)
         return
 ''' + anchor, 1)
+    anchor = '    conversation = arguments[arguments.index(flag) + 1]'
+    assert source.count(anchor) == 1, 'provider conversation anchor missing'
+    source = source.replace(anchor, anchor + '\n' + """    with (cwd / "provider-starts.jsonl").open("a") as starts:
+        starts.write(json.dumps({"pid":os.getpid(), "conversation":conversation}) + "\\n")
+""", 1)
     path.write_text(source)
 
 
-def run_case(image, directory, control_env, quota):
+def run_case(image, directory, control_env, quota, expect):
     directory.mkdir(mode=0o700)
     runtime = Path(tempfile.mkdtemp(prefix='startup-runtime-', dir=os.environ.get('TMPDIR')))
     isolated = {'XDG_RUNTIME_DIR': str(runtime)}
@@ -68,17 +78,40 @@ def run_case(image, directory, control_env, quota):
     provider(helper)
     f = PrivateFixture(image, directory / 'home', provider_helper=helper)
     subprocess.run(['git', 'init', '--quiet', str(f.repo)], env=f.env, check=True)
+    occupied = None
+    if expect == 'refusal':
+        config = tomllib.loads((f.home / 'config.toml').read_text())
+        occupied = socket.socket()
+        occupied.bind(('127.0.0.1', config['runtime']['listen_port']))
+        occupied.listen()
+    key, task = 'startup-' + uuid.uuid4().hex, 'Startup regression'
     unit = 'se-startup-judge-' + uuid.uuid4().hex + '.scope'
     command = [str(f.se), '--json', '--home', str(f.home), '--project', f.project,
-               'launch', f.agent, '--detach', '--task', 'Startup regression']
+               '--key', key, 'launch', f.agent, '--detach', '--task', task]
     launcher = ['systemd-run', '--user', '--scope', '--quiet', '--unit=' + unit,
                 '--property=CPUQuota=' + str(quota) + '%', '/usr/bin/env',
                 'XDG_RUNTIME_DIR=' + str(runtime), *command]
     pins, samples = {}, []
+    retry_groups = []
     endpoint_seen = None
     cgroup = None
     run = None
     result = {'home_bytes': len(os.fsencode(f.home)), 'unit': unit, 'quota_percent': quota, 'passed': False}
+    result.update(expected=expect, request_key=key)
+
+    def track(pid, required=True):
+        pin = native(pid)
+        if required:
+            assert pin is not None, 'native process exited before its outside identity read'
+        if pin is not None:
+            pins[(pid, pin['birth'])] = pin
+
+    def release_quota():
+        released = subprocess.run(['systemctl', '--user', 'set-property', unit, 'CPUQuota=100%'],
+                                  env=control_env, capture_output=True, timeout=5)
+        assert released.returncode == 0, 'owned recovery quota was not released'
+        result['recovery_quota_released'] = True
+
     started = time.monotonic()
     try:
         with (directory / 'launch.stdout').open('wb') as out, (directory / 'launch.stderr').open('wb') as err:
@@ -152,6 +185,7 @@ def run_case(image, directory, control_env, quota):
         launched = json.loads(stdout)
         result['reply'] = launched
         if run.returncode == 0:
+            assert expect == 'ready', 'required pending/refusal control was not reached'
             assert launched['state'] == 'running', launched
             ready = json.loads((f.repo / 'provider-ready.json').read_text())
             assert ready['session_discovery'] and ready['http_discovery'], ready
@@ -175,9 +209,19 @@ def run_case(image, directory, control_env, quota):
             result['hash_progress_near_refusal'] = len(set(positions)) > 1
             result['outcome'] = ('refused-with-live-startup' if live else 'refused')
             result['failure'] = stderr
+            if expect == 'pending':
+                pending_recovery(f, launched, stderr, key, task, release_quota, track, result, control_env, retry_groups)
+                result['outcome'] = 'incomplete-recovered-and-replayed'
+                result['passed'] = True
+            elif expect == 'refusal':
+                native_refusal(f, launched, stderr)
+                result['outcome'] = 'genuine-native-refusal'
+                result['passed'] = True
     except Exception:
         result['failure'] = traceback.format_exc()
     finally:
+        if occupied is not None:
+            occupied.close()
         # Release only this exercise's quota after recording the outcome. This
         # lends cleanup CPU without changing the startup observation or clocks.
         try:
@@ -197,7 +241,11 @@ def run_case(image, directory, control_env, quota):
             outside = [{'pid': pin['pid'], 'birth': pin['birth'], 'not_executing': exited(pin)} for pin in pins.values()]
             remaining = (cgroup / 'cgroup.procs').read_text().split() if cgroup and (cgroup / 'cgroup.procs').exists() else []
             result['outside'] = outside
+            for group in retry_groups:
+                if (group / 'cgroup.procs').exists():
+                    remaining.extend((group / 'cgroup.procs').read_text().split())
             result['scope_remaining_pids'] = remaining
+            result['retry_scopes'] = [str(group) for group in retry_groups]
             result['endpoint_absent'] = not (f.home / 'endpoint.json').exists()
             with (f.home / 'runtime.lock').open('rb') as lease:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -226,6 +274,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--se', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--expect', choices=['ready', 'pending', 'refusal'], default='ready')
     parser.add_argument('--quota', type=int, default=25, metavar='PERCENT')
     args = parser.parse_args()
     if not 1 <= args.quota <= 100:
@@ -245,7 +294,7 @@ def main():
                    'DBUS_SESSION_BUS_ADDRESS': 'unix:path=/run/user/' + str(os.getuid()) + '/bus'}
     results = []
     for label in ['short', 'long-' + 'x' * 70]:
-        result = run_case(args.se, args.output / label, control_env, args.quota)
+        result = run_case(args.se, args.output / label, control_env, args.quota, args.expect)
         results.append(result)
         print(('ok' if result['passed'] else 'not ok'), len(results), '-', label.split('-')[0], flush=True)
     assert results[1]['home_bytes'] - results[0]['home_bytes'] >= 64, 'long/short home control collapsed'
@@ -257,7 +306,7 @@ def main():
               'failed': sum(not item['passed'] for item in results)}
     (args.output / 'result.json').write_text(json.dumps(report, indent=2))
     print('1..2', flush=True)
-    assert report['failed'] == 0, 'public CLI startup did not reach readiness; see retained outcomes and cleanup'
+    assert report['failed'] == 0, 'public CLI startup contract failed; see retained outcomes and cleanup'
 
 
 if __name__ == '__main__':
