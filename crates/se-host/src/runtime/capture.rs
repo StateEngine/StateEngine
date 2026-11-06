@@ -27,6 +27,7 @@ struct BoundTranscript {
 pub struct TranscriptBindings {
     maximum: usize,
     pins: Arc<Mutex<Registry>>,
+    retirements: Arc<tokio::sync::Mutex<()>>,
 }
 #[derive(Default)]
 struct Registry {
@@ -50,6 +51,7 @@ impl TranscriptBindings {
         Self {
             maximum,
             pins: Arc::new(Mutex::new(Registry::default())),
+            retirements: Arc::default(),
         }
     }
     // Only bounded in-memory registry work holds this lock. Per-source scan
