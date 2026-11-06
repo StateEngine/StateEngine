@@ -10,8 +10,6 @@ use se_core::{
 use se_host::client::{ClientOptions, lease::Deadline};
 use se_types::{Read, Result, SeError};
 use std::sync::Arc;
-#[cfg(any(target_os = "linux", windows))]
-use std::time::Duration;
 
 pub fn forward<R: se_store::ReadStore>(
     cx: &Bootstrap,
@@ -27,12 +25,7 @@ pub fn forward<R: se_store::ReadStore>(
     let target = if operation.meta().runtime == RuntimeNeed::HostAutoStart {
         #[cfg(any(target_os = "linux", windows))]
         {
-            super::autostart::endpoint(
-                cx,
-                files,
-                &bound.stage(Duration::from_secs(10))?,
-                diagnostic,
-            )?
+            super::autostart::endpoint(cx, files, &bound, diagnostic)?
         }
         #[cfg(not(any(target_os = "linux", windows)))]
         {

@@ -8,7 +8,7 @@ use se_types::{Result, SeError};
 #[cfg(any(target_os = "linux", windows))]
 use {
     se_host::client::{ClientOptions, lease::Deadline},
-    std::{sync::Arc, time::Duration},
+    std::sync::Arc,
 };
 
 #[cfg(any(target_os = "linux", windows))]
@@ -25,8 +25,7 @@ pub fn forward(
             },
         )));
     }
-    let mut options = execute::options();
-    options.timeout = Duration::from_secs(10);
+    let options = execute::options();
     let bound = Deadline::from_options(&options)?;
     let target = super::autostart::endpoint(cx, files, &bound, diagnostic)?;
     // Authenticated discovery and frame exchange use the original clock too.

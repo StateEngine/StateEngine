@@ -248,7 +248,9 @@ pub fn dispatch(
         return super::runtime_control::down(cx, &files, &reader, input);
     }
     if host_required && !matches!(op, AnyOp::RuntimeUp(_)) {
-        return super::hosted::forward(cx, &files, &reader, &caller, op, &selections, diagnostic);
+        let retry = super::startup_retry::Retry::capture(cx, &caller.admission, &op);
+        return super::hosted::forward(cx, &files, &reader, &caller, op, &selections, diagnostic)
+            .map_err(|error| retry.attach(error));
     }
     let identity = LeaseIdentity {
         store: Some(reader.info().map_err(|e| store_error(&e))?.id),
@@ -261,11 +263,13 @@ pub fn dispatch(
         identity,
     )
     .map_err(|e| store_error(&e))?;
+    let retry = super::startup_retry::Retry::capture(cx, &caller.admission, &op);
     if let AnyOp::RuntimeUp(input) = op {
         // Activation requires the host's exclusive lease, so the direct shared
         // lease must be gone before spawning or rendezvousing with it.
         drop(lease);
-        return super::runtime_control::up(cx, &files, &caller, input, diagnostic);
+        return super::runtime_control::up(cx, &files, &caller, input, diagnostic)
+            .map_err(|error| retry.attach(error));
     }
     let Some(lease) = lease else {
         let target = scope::require_present(

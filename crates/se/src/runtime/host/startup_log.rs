@@ -30,6 +30,9 @@ impl StartupLog {
             self.started.elapsed().as_millis()
         ));
     }
+    pub(crate) fn elapsed_ms(&self) -> u64 {
+        self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+    }
     fn save(&self) -> std::result::Result<(PathBuf, Option<String>), String> {
         let files = se_proc::NativeStateFiles::open(&self.home).map_err(|e| e.to_string())?;
         let mut staged = files
@@ -55,7 +58,12 @@ impl StartupLog {
     }
     pub(crate) fn refusal(&mut self, mut error: SeError) -> SeError {
         let phase = self.phase.clone();
-        self.note(&format!("Startup refused: {}", error.body.message()));
+        let outcome = if error.code() == se_types::Code::RuntimeStartPending {
+            "Startup incomplete"
+        } else {
+            "Startup refused"
+        };
+        self.note(&format!("{outcome}: {}", error.body.message()));
         // Successful startup pays no diagnostic file creation or durability
         // barriers. Only a refusal publishes the finite observed phase trace.
         let diagnostic = match self.save() {
