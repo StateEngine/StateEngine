@@ -99,6 +99,9 @@ jobs:
           shared-key: hosted-debug-v1
       - name: Compile once per platform, including custom harness executables
         run: cargo nextest archive --workspace --all-features --locked --archive-file tests.tar.zst
+      - name: Check documentation examples and compile-fail API boundaries
+        if: matrix.os == 'ubuntu-24.04'
+        run: cargo test --workspace --all-features --locked --doc
       - uses: actions/upload-artifact@v4
         with:
           name: tests-${{ matrix.os }}
