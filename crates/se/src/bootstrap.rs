@@ -61,6 +61,7 @@ impl Bootstrap {
         operation: &se_core::ops::AnyOp,
     ) -> Result<Self> {
         let home = state_home(home)?;
+        check_home_directory(&home)?;
         let config = if matches!(
             operation,
             se_core::ops::AnyOp::DoctorInspect(_) | se_core::ops::AnyOp::DoctorRepair(_)
@@ -107,6 +108,28 @@ impl Bootstrap {
                     .is_some_and(|name| name.starts_with("STATEENGINE_"))
             }),
         })
+    }
+}
+
+/// Diagnose a file-valued home before its config.toml produces a misleading
+/// file-access error. Native directory custody checks still run at admission.
+fn check_home_directory(home: &Path) -> Result<()> {
+    let next_step = "Select a state directory with --home DIR (or SE_HOME), then run se init for that directory if it is new. SE_CONFIG selects a configuration file; it does not change the state directory. Leave the existing file intact.";
+    match std::fs::symlink_metadata(home) {
+        Ok(metadata) if metadata.is_file() => Err(SeError::new(Detail::SourceUnreadable(
+            details::SourceUnreadable {
+                subject: format!("state home {}", home.display()),
+                reason: "the selected path is a regular file, not a directory".into(),
+                next_step: next_step.into(),
+            },
+        ))),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(unreadable(
+            "state home",
+            error,
+            "Restore directory access or select a state directory with --home DIR (or SE_HOME). SE_CONFIG selects only the configuration file.",
+        )),
     }
 }
 

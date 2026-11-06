@@ -15,12 +15,12 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
     let from = input
         .from
         .as_deref()
-        .map(|name| scope::actor_selector(cx.read, name))
+        .map(|name| scope::selected_actor(cx, name))
         .transpose()?;
     let selected_to = input
         .owner_to
         .as_deref()
-        .map(|name| scope::actor_selector(cx.read, name))
+        .map(|name| scope::selected_actor(cx, name))
         .transpose()?;
     let (to, from) = if input.cli_list {
         (selected_to, from)

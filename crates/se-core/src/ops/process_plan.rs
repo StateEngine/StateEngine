@@ -36,7 +36,7 @@ pub fn target<R: Snapshot>(
                 "one exact ID or CLI name",
             ));
         }
-        return match scope::actor_selector(cx.read, selector)? {
+        return match scope::selected_actor(cx, selector)? {
             Actor::Agent(agent) => Ok(agent),
             Actor::Human(_) => Err(SeError::invalid("launch target", "a saved agent")),
         };

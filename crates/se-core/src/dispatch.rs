@@ -167,7 +167,7 @@ impl CoreOps for Kernel {
         admitted(cx)?;
         let recipient = if let Some(work) = &input.work {
             for agent in &work.addressees {
-                if scope::actor_selector(cx.read, agent.as_str())? != Actor::Agent(agent.clone()) {
+                if scope::selected_actor(cx, agent.as_str())? != Actor::Agent(agent.clone()) {
                     return Err(SeError::invalid(
                         "work.addressees",
                         "registered canonical agents in this project",
@@ -176,7 +176,7 @@ impl CoreOps for Kernel {
             }
             None
         } else {
-            Some(scope::actor_selector(cx.read, &input.to)?)
+            Some(scope::selected_actor(cx, &input.to)?)
         };
         let registry = cx.read.legacy_registry().map_err(|e| store_error(&e))?;
         let refs = input

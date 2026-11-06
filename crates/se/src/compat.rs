@@ -20,7 +20,6 @@ pub fn refusal(args: &[OsString]) -> Option<SeError> {
     }
     let replacement = match first {
         "projects" => "se status --all",
-        "stop" if only_presentation_flags(&rest[1..]) => "se down",
         "ratify" => "se decision ratify ID",
         "ratifyall" => "se decision ratify ID (once per decision; no bulk approval)",
         "reject" => "se decision reject ID",
@@ -40,15 +39,6 @@ fn renamed(old: &str, replacement: &str) -> SeError {
         old: old.into(),
         replacement: replacement.into(),
     }))
-}
-
-fn only_presentation_flags(args: &[OsString]) -> bool {
-    args.iter().all(|arg| {
-        matches!(
-            arg.to_str(),
-            Some("--json" | "--quiet" | "-q" | "--no-color")
-        )
-    })
 }
 
 /// Skip only documented root options, including their values. Do not scan option
