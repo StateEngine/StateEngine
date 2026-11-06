@@ -70,7 +70,7 @@ fn pre_init_command_names_setup_and_resolved_home() -> Check {
     for json in [true, false] {
         let output = command(Path::new(env!("CARGO_BIN_EXE_se")), home, json)
             .arg("working-state")
-            .output()?;
+            .output_executable()?;
         assert_eq!(
             output.status.code(),
             Some(1),
@@ -139,7 +139,7 @@ fn uninstall_live_host(json: bool) -> Check {
             .arg("--repo")
             .arg(&repo)
             .args(["--name", "runtime-refusal"])
-            .output()?,
+            .output_executable()?,
     )?;
     let installed = f.home.join(if cfg!(windows) {
         "installed-se.exe"
@@ -197,7 +197,7 @@ fn uninstall_live_host(json: bool) -> Check {
         checked(
             command(binary, home, true)
                 .args(["--project", project, "history", "--limit", "100"])
-                .output()?,
+                .output_executable()?,
         )
     };
     let before = history()?;
@@ -388,7 +388,7 @@ else:
 os.close(master)
 sys.stdout.buffer.write(data)
 sys.exit(child.wait(timeout=3))
-"#).arg(image).arg(home).arg(json.to_string()).output()?)
+"#).arg(image).arg(home).arg(json.to_string()).output_executable()?)
 }
 
 #[cfg(windows)]
@@ -433,7 +433,7 @@ fn terminal_uninstall(
     );
     Ok(run
         .args(["-NoProfile", "-NonInteractive", "-Command", &invocation])
-        .output()?)
+        .output_executable()?)
 }
 
 /// Protects: F3 on both native platforms — init while a real host holds the writer lease names down/init, preserves identities and history, then the same requested project initializes after graceful down.
@@ -461,7 +461,7 @@ fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
             .arg("--repo")
             .arg(&first)
             .args(["--name", "before-host"])
-            .output()?,
+            .output_executable()?,
     )?;
     let host = RunningHost::start(&image, home)?;
     let retained = ["machine.json", "credential", "endpoint.json"]
@@ -476,7 +476,7 @@ fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
             .arg("--repo")
             .arg(&second)
             .args(["--name", "after-host"])
-            .output()?;
+            .output_executable()?;
         assert_eq!(output.status.code(), Some(1));
         let diagnostic = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -514,7 +514,11 @@ fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
     // Exercise the documented recovery through the real CLI. The fixture's
     // direct IPC stop has a five-second budget and must cold-prove this much
     // larger test executable; it is not the owner's ordinary `se down` path.
-    let stopped = checked(command(&image, home, true).arg("down").output()?)?;
+    let stopped = checked(
+        command(&image, home, true)
+            .arg("down")
+            .output_executable()?,
+    )?;
     assert_eq!(stopped["complete"], true);
     assert!(!host.live()?, "public down retained the exact live host");
     let retried = checked(
@@ -523,7 +527,7 @@ fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
             .arg("--repo")
             .arg(&second)
             .args(["--name", "after-host"])
-            .output()?,
+            .output_executable()?,
     )?;
     assert_ne!(retried["project"]["id"], initialized["project"]["id"]);
     assert_eq!(retried["project"]["name"], "after-host");
@@ -535,3 +539,7 @@ fn live_host_init_refuses_with_down_then_retry_succeeds() -> Check {
     assert!(home.join("state.db").try_exists()?);
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

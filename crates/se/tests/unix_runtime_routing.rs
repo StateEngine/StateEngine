@@ -65,7 +65,7 @@ fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Ch
             .arg("init")
             .arg("--repo")
             .arg(&repository)
-            .output()?,
+            .output_executable()?,
     )?;
     let host = runtime_host::RunningHost::start(&image, &home)?;
     let record = fs::read(home.join("endpoint.json"))?;
@@ -90,7 +90,7 @@ fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Ch
     assert_eq!(parent.uid(), metadata.uid());
     let machine = fs::read(home.join("machine.json"))?;
     let credential = fs::read(home.join("credential"))?;
-    checked(command(&image, &home, true).arg("up").output()?)?;
+    checked(command(&image, &home, true).arg("up").output_executable()?)?;
     assert!(host.live()?);
     assert_eq!(fs::read(home.join("endpoint.json"))?, record);
     assert_eq!(fs::read(home.join("machine.json"))?, machine);
@@ -116,3 +116,7 @@ fn repeated_up_for_a_long_home_keeps_the_same_xdg_host_and_native_socket() -> Ch
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

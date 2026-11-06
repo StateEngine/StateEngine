@@ -171,7 +171,7 @@ fn check_preview(f: &Fixture, from: &str, event: &EventId, body: &str) -> Check 
                 "--preview-chars",
                 "16",
             ])
-            .output()?,
+            .output_executable()?,
     )?;
     assert_eq!(page["items"].as_array().ok_or("message rows")?.len(), 1);
     let row = &page["items"][0];
@@ -192,7 +192,7 @@ fn check_preview(f: &Fixture, from: &str, event: &EventId, body: &str) -> Check 
     );
     let output = command(&f.options.state_directory)
         .args(&argv[1..])
-        .output()?;
+        .output_executable()?;
     assert!(
         output.status.success(),
         "printed full-body argv {argv:?} refused: {}",
@@ -264,7 +264,7 @@ fn config_reused_message_key_names_the_original_event() -> Check {
                 f.a.as_str(),
                 "key belongs to this message",
             ])
-            .output()?,
+            .output_executable()?,
     )?;
     let head = store.info()?.head;
     let key = format!("agent.{}.model", f.a);
@@ -313,7 +313,7 @@ fn project_choices_and_init_next_step_are_real_and_executable() -> Check {
                 .arg("--repo")
                 .arg(&repo)
                 .args(["--name", name])
-                .output()?,
+                .output_executable()?,
         )?;
         ids.push(initialized["project"]["id"].clone());
         let argv = initialized["next"]["argv"]
@@ -335,7 +335,7 @@ fn project_choices_and_init_next_step_are_real_and_executable() -> Check {
         );
         assert!(argv.contains(&initialized["agent"]["id"].as_str().ok_or("agent ID")?));
         next.args(&argv[1..]).arg("--help");
-        let help = next.output()?;
+        let help = next.output_executable()?;
         assert!(
             help.status.success(),
             "printed launch argv refused: {}",
@@ -346,7 +346,7 @@ fn project_choices_and_init_next_step_are_real_and_executable() -> Check {
     let output = command(&f.options.state_directory)
         .current_dir(&f.home)
         .arg("working-state")
-        .output()?;
+        .output_executable()?;
     let error = json(&output)?;
     assert_eq!(error["code"], "project-required");
     let choices = error["detail"]["choices"]
@@ -369,7 +369,7 @@ fn project_choices_and_init_next_step_are_real_and_executable() -> Check {
         .arg(&f.options.state_directory)
         .arg("working-state")
         .current_dir(&f.home)
-        .output()?;
+        .output_executable()?;
     let diagnostic = String::from_utf8_lossy(&human.stderr);
     assert!(
         diagnostic.contains("first-choice") && diagnostic.contains("second-choice"),
@@ -394,7 +394,9 @@ fn compatibility_refusals_and_missing_status_use_supported_hints() -> Check {
         vec!["msg", "complete", "example"],
         vec!["process", "list"],
     ] {
-        let output = command(&f.options.state_directory).args(&args).output()?;
+        let output = command(&f.options.state_directory)
+            .args(&args)
+            .output_executable()?;
         assert!(!output.status.success());
         let error = json(&output)?;
         let hint = error["remedy"]["text"]
@@ -420,7 +422,7 @@ fn compatibility_refusals_and_missing_status_use_supported_hints() -> Check {
         .arg("--home")
         .arg(&f.options.state_directory)
         .arg("status")
-        .output()?;
+        .output_executable()?;
     assert!(status.status.success());
     assert!(!String::from_utf8_lossy(&status.stdout).contains("se launch"));
     Ok(())
@@ -449,7 +451,7 @@ fn obsolete_commands_use_the_live_grammar_without_opening_state() -> Check {
         vec!["rawlog-search", "text"],
         vec!["backup"],
     ] {
-        let output = command(&home).args(&args).output()?;
+        let output = command(&home).args(&args).output_executable()?;
         assert_eq!(output.status.code(), Some(64), "{args:?}");
         let error = json(&output)?;
         assert_eq!(error["code"], "usage-unknown-command", "{args:?}: {error}");
@@ -518,7 +520,7 @@ fn renamed_commands_keep_supported_replacements_without_opening_state() -> Check
             vec!["working-state", "set", "--help"],
         ),
     ] {
-        let output = command(&home).args(&old).output()?;
+        let output = command(&home).args(&old).output_executable()?;
         assert_eq!(output.status.code(), Some(64), "{old:?}");
         let error = json(&output)?;
         assert_eq!(error["code"], "renamed", "{old:?}: {error}");
@@ -535,7 +537,7 @@ fn renamed_commands_keep_supported_replacements_without_opening_state() -> Check
             .arg("--json")
             .args(help)
             .current_dir(&f.home)
-            .output()?;
+            .output_executable()?;
         assert!(
             output.status.success(),
             "replacement help failed: {replacement}: {}",
@@ -548,7 +550,7 @@ fn renamed_commands_keep_supported_replacements_without_opening_state() -> Check
         if old == "ratify" {
             args.push("all");
         }
-        let error = json(&command(&home).args(args).output()?)?;
+        let error = json(&command(&home).args(args).output_executable()?)?;
         assert_eq!(error["code"], "renamed");
         assert!(
             error["remedy"]["text"]
@@ -639,7 +641,7 @@ fn plain_status_labels_the_owner_unread_scope() -> Check {
         .arg("init")
         .arg("--repo")
         .arg(&repository)
-        .output()?;
+        .output_executable()?;
     assert!(
         init.status.success(),
         "se init refused: {} {}",
@@ -663,7 +665,7 @@ fn assert_plain_status_labels(home: &Path) -> Check {
         .arg("--project")
         .arg("Project")
         .arg("status")
-        .output()?;
+        .output_executable()?;
     let text = String::from_utf8_lossy(&status.stdout).into_owned();
     assert!(
         status.status.success(),
@@ -689,7 +691,7 @@ fn assert_plain_status_labels(home: &Path) -> Check {
         .arg("Project")
         .arg("status")
         .arg("--all")
-        .output()?;
+        .output_executable()?;
     let text = String::from_utf8_lossy(&all.stdout).into_owned();
     assert!(
         all.status.success(),
@@ -756,7 +758,7 @@ impl StatusHost {
             .arg("--home")
             .arg(home)
             .arg("up")
-            .output()?;
+            .output_executable()?;
         assert!(
             up.status.success(),
             "se up refused: {} {}",
@@ -960,5 +962,9 @@ else:
     if actual!=[os.fsencode(value) for value in args]:raise RuntimeError('owned config child identity changed; refusing signal')
     os.kill(child.pid,signal.SIGKILL);child.wait();raise RuntimeError('owned config child exceeded deadline')
 os.close(master);sys.stdout.buffer.write(data);sys.exit(child.wait(timeout=3))
-"#).arg(serde_json::to_string(&argv)?).output()?)
+"#).arg(serde_json::to_string(&argv)?).output_executable()?)
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

@@ -42,7 +42,7 @@ fn checked(
     label: &str,
     args: &[&str],
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let output = command(image, f, root).args(args).output()?;
+    let output = command(image, f, root).args(args).output_executable()?;
     std::fs::write(f.home.join(format!("{label}.stdout")), &output.stdout)?;
     std::fs::write(f.home.join(format!("{label}.stderr")), &output.stderr)?;
     assert!(
@@ -118,7 +118,7 @@ fn check_case(case: &str) -> Check {
     let se_proc::ProcessRead::Present(original) = native else {
         return Err("started host is absent".into());
     };
-    let output = command(&image, &f, &root).arg("down").output()?;
+    let output = command(&image, &f, &root).arg("down").output_executable()?;
     std::fs::write(f.home.join("down.stdout"), &output.stdout)?;
     std::fs::write(f.home.join("down.stderr"), &output.stderr)?;
     // Seed sessions only after the public shutdown succeeds and the outside
@@ -310,7 +310,7 @@ fn check_case(case: &str) -> Check {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()?;
+        .spawn_executable()?;
     // Keep stdin open to distinguish refusal from later payload validation.
     let input = child.stdin.take().ok_or("hook input pipe absent")?;
     let until = Instant::now()
@@ -434,3 +434,7 @@ fn hook_session_prepared() -> Check {
 fn hook_session_active() -> Check {
     check_case("active")
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

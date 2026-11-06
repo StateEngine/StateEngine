@@ -70,7 +70,7 @@ fn child(
     if oversized {
         command.env("SE_IPC_NATIVE_OVERSIZED", "1");
     }
-    Ok(command.spawn()?)
+    Ok(command.spawn_executable()?)
 }
 fn joined(child: Child) -> Check {
     let output = child.wait_with_output()?;
@@ -348,3 +348,7 @@ fn native_client_timeout_cancellation_and_reuse_survive_idle_tokio_accept() -> C
     outcome?;
     client.map_err(|e| -> Box<dyn std::error::Error> { e.into() })
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

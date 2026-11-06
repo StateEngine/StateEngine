@@ -104,7 +104,7 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
             .arg("init")
             .arg("--repo")
             .arg(repository)
-            .output()?,
+            .output_executable()?,
     )?;
     let first = runtime_host::RunningHost::start(&image, home)?;
     let mut stale =
@@ -125,7 +125,9 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
     for json in [true, false] {
         publish(&files, bytes.as_bytes())?;
         let before = retained(home)?;
-        let output = command(&image, home, json).arg("down").output()?;
+        let output = command(&image, home, json)
+            .arg("down")
+            .output_executable()?;
         assert!(
             output.status.success(),
             "stale down refused: {} {}",
@@ -155,7 +157,7 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
         publish(&files, bytes.as_bytes())?;
         let old = fs::symlink_metadata(home.join("endpoint.json"))?;
         let before = retained(home)?;
-        let output = command(&image, home, json).arg("up").output()?;
+        let output = command(&image, home, json).arg("up").output_executable()?;
         assert!(
             output.status.success(),
             "automatic recovery refused: {} {}",
@@ -203,7 +205,7 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
         fs::rename(&endpoint, &backup)?;
         publish(&files, bytes.as_bytes())?;
         for mode in [true, false] {
-            let refusal = command(&image, home, mode).arg("up").output()?;
+            let refusal = command(&image, home, mode).arg("up").output_executable()?;
             assert!(
                 !refusal.status.success(),
                 "busy lease allowed endpoint recovery"
@@ -234,7 +236,7 @@ fn automatic_retention_is_visible_and_live_or_unsafe_records_are_preserved() -> 
     fs::set_permissions(&endpoint, fs::Permissions::from_mode(0o644))?;
     let before = retained(home)?;
     for json in [true, false] {
-        let output = command(&image, home, json).arg("up").output()?;
+        let output = command(&image, home, json).arg("up").output_executable()?;
         assert!(!output.status.success(), "unsafe record was recovered");
         assert_eq!(fs::read(&endpoint)?, bytes.as_bytes());
         assert_eq!(fs::symlink_metadata(&endpoint)?.mode() & 0o777, 0o644);
@@ -268,7 +270,7 @@ fn empty_live_endpoint_is_diagnosed_and_send_keeps_the_same_cause() -> Check {
             .arg("Worker")
             .arg("--provider")
             .arg("claude")
-            .output()?,
+            .output_executable()?,
     )?;
     let agent = initialized["agent"]["id"]
         .as_str()
@@ -283,7 +285,9 @@ fn empty_live_endpoint_is_diagnosed_and_send_keeps_the_same_cause() -> Check {
     // RunningHost retains authenticated routing for exact graceful cleanup,
     // without restoring the corrupt record or trusting its existence.
     for json in [true, false] {
-        let diagnosis = command(&image, home, json).arg("doctor").output()?;
+        let diagnosis = command(&image, home, json)
+            .arg("doctor")
+            .output_executable()?;
         assert!(!diagnosis.status.success());
         let printed = format!(
             "{}{}",
@@ -318,7 +322,7 @@ fn empty_live_endpoint_is_diagnosed_and_send_keeps_the_same_cause() -> Check {
                 "--key",
                 "empty-endpoint-fault",
             ])
-            .output()?;
+            .output_executable()?;
         assert!(!send.status.success());
         assert_ne!(
             send.status.code(),
@@ -342,3 +346,7 @@ fn empty_live_endpoint_is_diagnosed_and_send_keeps_the_same_cause() -> Check {
     host.stop()?;
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

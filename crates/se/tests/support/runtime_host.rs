@@ -1,3 +1,4 @@
+use crate::executable::ExecutableCommand;
 use crate::{Check, checked, command};
 use se_types::Secret;
 use std::{
@@ -14,7 +15,7 @@ pub struct RunningHost {
 }
 impl RunningHost {
     pub fn start(image: &Path, home: &Path) -> Result<Self, Box<dyn std::error::Error>> {
-        checked(command(image, home, true).arg("up").output()?)?;
+        checked(command(image, home, true).arg("up").output_executable()?)?;
         let endpoint = se_host::client::endpoint::decode_endpoint(&std::fs::read(
             home.join("endpoint.json"),
         )?)?;

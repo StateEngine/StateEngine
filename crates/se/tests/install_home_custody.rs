@@ -49,7 +49,9 @@ fn unsafe_home_reports_native_custody_and_preserves_existing_state() -> Check {
     let before = fs::symlink_metadata(&home)?;
     for operation in ["init", "status"] {
         for json in [true, false] {
-            let output = command(&image, &home, json).arg(operation).output()?;
+            let output = command(&image, &home, json)
+                .arg(operation)
+                .output_executable()?;
             assert!(!output.status.success(), "unsafe home was accepted");
             let printed = format!(
                 "{}{}",
@@ -82,7 +84,9 @@ fn unsafe_home_reports_native_custody_and_preserves_existing_state() -> Check {
         }
     }
     fs::set_permissions(&home, fs::Permissions::from_mode(0o700))?;
-    let output = command(&image, &home, true).arg("status").output()?;
+    let output = command(&image, &home, true)
+        .arg("status")
+        .output_executable()?;
     assert!(
         output.status.success(),
         "private empty home status refused: {output:?}"
@@ -92,3 +96,7 @@ fn unsafe_home_reports_native_custody_and_preserves_existing_state() -> Check {
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

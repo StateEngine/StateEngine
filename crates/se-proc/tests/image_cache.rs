@@ -27,7 +27,7 @@ fn restore_child(root: &Path, digest: Sha256) -> Result<()> {
             "SE_IMAGE_CACHE_TEST_DIGEST",
             serde_json::to_string(&digest)?,
         )
-        .output()?;
+        .output_executable()?;
     assert!(output.status.success(), "child: {output:?}");
     Ok(())
 }
@@ -142,7 +142,7 @@ fn restored_modification_time_does_not_reuse_old_digest() -> Result<()> {
             .env("SE_IMAGE_CTIME_ROOT", &cache)
             .env("SE_IMAGE_CTIME_DIGEST", &digest_path)
             .env("SE_IMAGE_CTIME_ACTION", action)
-            .output()?;
+            .output_executable()?;
         assert!(output.status.success(), "{action}: {output:?}");
         Ok(())
     };
@@ -194,3 +194,7 @@ fn changed_image_child() -> Result<()> {
     }
     Ok(())
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;

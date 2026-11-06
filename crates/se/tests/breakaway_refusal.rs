@@ -74,7 +74,7 @@ impl Fixture {
         command
     }
     fn ok(&self, args: &[&str]) -> Result<serde_json::Value> {
-        let output = self.command().args(args).output()?;
+        let output = self.command().args(args).output_executable()?;
         assert!(
             output.status.success(),
             "public CLI failed; retained {}: {output:?}",
@@ -130,7 +130,7 @@ impl Fixture {
         if refuse {
             command.arg("-NoEligibleBroker");
         }
-        let output = command.output()?;
+        let output = command.output_executable()?;
         // This outside reader runs only after the strict-job shell has exited.
         self.host = self.read_host()?;
         assert!(
@@ -189,7 +189,7 @@ impl Fixture {
         // Public down resolves only this fresh protected home's owned endpoint.
         // It also cleans a host when a preceding assertion failed before identity capture.
         if self.home.join("endpoint.json").try_exists()? {
-            let output: Output = self.command().arg("down").output()?;
+            let output: Output = self.command().arg("down").output_executable()?;
             if !matches!(output.status.code(), Some(0) | Some(2)) {
                 return Err(format!(
                     "public down failed; retained {}: {output:?}",
@@ -326,3 +326,7 @@ fn no_eligible_broker_reports_named_refusal_and_current_legal_alternatives() -> 
     }
     f.finish()
 }
+
+#[path = "../../test-support/executable.rs"]
+mod executable;
+use executable::ExecutableCommand;
