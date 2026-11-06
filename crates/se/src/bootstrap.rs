@@ -152,11 +152,36 @@ pub(crate) fn session_input(home: &std::path::Path) -> Result<Option<Secret>> {
     let _: se_types::SessionId = handle.parse().map_err(|_| {
         invalid("must be a canonical ses_ UUID handle, never credential bytes".into())
     })?;
-    let files =
-        se_proc::NativeStateFiles::open(home).map_err(|error| invalid(error.to_string()))?;
+    let files = se_proc::NativeStateFiles::open(home).map_err(session_pin_error)?;
     se_proc::read_session_pin(&files, handle)
         .map(Some)
-        .map_err(|error| invalid(error.to_string()))
+        .map_err(session_pin_error)
+}
+
+fn session_pin_error(error: se_proc::StateFileError) -> SeError {
+    // An overflow UID can stand for root or another unmapped account. Keep
+    // native admission unchanged; unavailable ownership is never root proof.
+    let ancestor_owner = error.code == se_proc::StateFileErrorCode::LocationUnsafe
+        && error.operation == "ancestor owner is not root or current user";
+    let (reason, next_step) = if ancestor_owner {
+        (
+            format!(
+                "cannot verify the protected session credential's directory owner here: {error}"
+            ),
+            "Use this agent session's configured StateEngine MCP tools. A sandbox can hide directory owners; this process still requires verified ownership before reading its session credential.",
+        )
+    } else {
+        (
+            error.to_string(),
+            "Use the opaque session handle supplied to a launched agent; invalid session input cannot grant owner authority",
+        )
+    };
+    SeError::new(Detail::CapabilityInvalid(details::CapabilityInvalid {
+        subject: "SE_SESSION".into(),
+        reason,
+        next_step: next_step.into(),
+    }))
+    .with_cause(error)
 }
 
 fn variable(name: &str) -> Result<Option<OsString>> {
