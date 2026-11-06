@@ -47,10 +47,10 @@ impl Retry {
                             })?;
                             words.extend(["--home".into(), home.into()]);
                         }
-                        if invocation.project_missing {
-                            if let se_store::Scope::Project(project) = &admission.scope {
-                                words.extend(["--project".into(), project.to_string()]);
-                            }
+                        if invocation.project_missing
+                            && let se_store::Scope::Project(project) = &admission.scope
+                        {
+                            words.extend(["--project".into(), project.to_string()]);
                         }
                         if invocation.key_missing {
                             words.extend(["--key".into(), key.to_string()]);
