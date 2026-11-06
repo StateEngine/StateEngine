@@ -293,7 +293,7 @@ fn write(endpoint: &EndpointRecord) -> Result<(), String> {
         .index
         .memory
         .ok_or("Atlas query omitted the owner memory report")?;
-    assert_eq!(memory.anonymous_ceiling_bytes, 2_000_000);
+    assert_eq!(memory.anonymous_ceiling_bytes, 13_000_000);
     assert!(!memory.joined_qualified && memory.shared_grammar_pages.is_none());
     Ok(())
 }
@@ -313,7 +313,7 @@ async fn caught_up(
                 let memory = summary.memory.ok_or_else(|| {
                     se_types::SeError::invalid("Atlas status", "memory qualification report")
                 })?;
-                assert_eq!(memory.anonymous_ceiling_bytes, 2_000_000);
+                assert_eq!(memory.anonymous_ceiling_bytes, 13_000_000);
                 assert!(memory.shared_grammar_pages.is_none() && !memory.joined_qualified);
                 let ticket = context.atlas.records.ticket()?;
                 let mut observed = None;
@@ -376,58 +376,54 @@ async fn caught_up(
 }
 #[test]
 fn automatic_owner_indexes_and_catches_committed_records_up() -> Check {
-    for kind in [HostKind::Standalone, HostKind::EmbeddedSecode] {
-        let initialized = initialize_host_process()?;
-        let f = Fixture::new()?;
-        setup(&f)?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .max_blocking_threads(3)
-            .build()?;
-        runtime.block_on(async {
-            let mut options = start(&f)?;
-            options.kind = kind;
-            let mut host = HostedRuntime::prepare(
-                initialized,
-                options,
-                runtime.handle().clone(),
-                &deadline()?,
-            )
-            .await?;
-            host.configure(se_core::config_policy::ConfigFile::default())?;
-            host.install_native_atlas(
-                std::path::PathBuf::from(env!("CARGO_BIN_EXE_se")).canonicalize()?,
-                NativeAtlasQualification {
-                    sql: Some(SqlProfile::from_qualified_overhead(1)?),
-                    parsers: Vec::new(),
-                },
-            )?;
-            let context = host.execution_context();
-            let stop = host.local_stop();
-            let listener = host.listen(runtime.handle().clone(), &deadline()?).await?;
-            let endpoint = listener.endpoint().clone();
-            let serving = tokio::spawn(host.serve(listener));
-            let result = async {
-                caught_up(&context, &f.project, 1).await?;
-                tokio::task::spawn_blocking(move || write(&endpoint)).await??;
-                caught_up(&context, &f.project, 2).await?;
-                Ok::<(), Box<dyn std::error::Error>>(())
-            }
-            .await;
-            stop.request();
-            let mut exit = serving.await?;
-            let drained = exit.runtime.drain_storage(&deadline()?).await?;
-            assert!(drained.writer_joined && drained.pending.is_empty());
-            exit.listener
-                .close_transport(&context.blocking, &deadline()?)
-                .await?
-                .retire(&context.blocking, &deadline()?)
+    // Embedded hosts deliberately have no native Atlas owner; their refusal
+    // is exercised by atlas_embedded_tools in se-host.
+    let initialized = initialize_host_process()?;
+    let f = Fixture::new()?;
+    setup(&f)?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(3)
+        .build()?;
+    runtime.block_on(async {
+        let options = start(&f)?;
+        let mut host =
+            HostedRuntime::prepare(initialized, options, runtime.handle().clone(), &deadline()?)
                 .await?;
-            if let Some(error) = exit.failure {
-                return Err(error.into());
-            }
-            result
-        })?;
-    }
+        host.configure(se_core::config_policy::ConfigFile::default())?;
+        host.install_native_atlas(
+            std::path::PathBuf::from(env!("CARGO_BIN_EXE_se")).canonicalize()?,
+            NativeAtlasQualification {
+                sql: Some(SqlProfile::from_qualified_overhead(1)?),
+                parsers: Vec::new(),
+            },
+        )?;
+        let context = host.execution_context();
+        let stop = host.local_stop();
+        let listener = host.listen(runtime.handle().clone(), &deadline()?).await?;
+        let endpoint = listener.endpoint().clone();
+        let serving = tokio::spawn(host.serve(listener));
+        let result = async {
+            caught_up(&context, &f.project, 1).await?;
+            tokio::task::spawn_blocking(move || write(&endpoint)).await??;
+            caught_up(&context, &f.project, 2).await?;
+            Ok::<(), Box<dyn std::error::Error>>(())
+        }
+        .await;
+        stop.request();
+        let mut exit = serving.await?;
+        let drained = exit.runtime.drain_storage(&deadline()?).await?;
+        assert!(drained.writer_joined && drained.pending.is_empty());
+        exit.listener
+            .close_transport(&context.blocking, &deadline()?)
+            .await?
+            .retire(&context.blocking, &deadline()?)
+            .await?;
+        if let Some(error) = exit.failure {
+            return Err(error.into());
+        }
+        result
+    })?;
+
     Ok(())
 }

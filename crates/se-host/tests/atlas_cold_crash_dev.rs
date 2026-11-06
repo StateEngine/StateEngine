@@ -122,12 +122,18 @@ mod linux {
             if pressure {
                 let used = se_proc::atlas_worker::virtual_bytes()?;
                 let bytes = usize::try_from(
-                    58_000_000u64
+                    (se_proc::atlas_worker::ADDRESS_SPACE_BYTES - 4_000_000)
                         .checked_sub(used)
                         .ok_or("pressure fixture baseline is already too large")?,
                 )?;
                 padding.try_reserve_exact(bytes)?;
-                padding.resize(bytes, 0);
+                // Reserve address space without faulting every page into RSS.
+                // Even the maximum 2 MB arena credit cannot supply the
+                // unchanged 8 MB cancellation/SQL margin at this occupancy.
+                assert!(
+                    se_proc::atlas_worker::virtual_bytes()?
+                        > se_proc::atlas_worker::ADDRESS_SPACE_BYTES - 6_000_000
+                );
             }
             let code = atlas_cold::private_entry()?;
             std::hint::black_box(&padding);
@@ -204,7 +210,7 @@ mod linux {
             Ok(())
         })?;
         drop(candidate);
-        job.cancel()?;
+        job.cancel_until(end())?;
         assert!(
             job.poll().is_err(),
             "a killed child was treated as a successfully reaped producer"
@@ -299,10 +305,32 @@ mod linux {
                 .query_row([], |r| Ok((r.get(0)?, r.get(1)?)))
                 .map_err(|e| se_types::SeError::invalid("pressure witness", &e.to_string()))?;
             assert_eq!(path, "good.js");
-            assert!(
-                coverage.contains("64000000") && coverage.contains("virtual address space"),
-                "memory refusal lost its limit or resource: {coverage}"
-            );
+            let FileCoverage::Failed { error } = serde_json::from_str(&coverage)
+                .map_err(|e| se_types::SeError::invalid("pressure coverage", &e.to_string()))?
+            else {
+                return Err(se_types::SeError::invalid(
+                    "pressure witness",
+                    "a retained typed per-file refusal",
+                ));
+            };
+            let se_types::Detail::AtlasUnreadable(detail) = error.detail() else {
+                return Err(se_types::SeError::invalid(
+                    "pressure witness",
+                    "the address-space budget refusal",
+                ));
+            };
+            assert_eq!(detail.path, "good.js");
+            for expected in [
+                "atlas-resource-budget:",
+                "96000000 available",
+                "virtual address space",
+                "8 MB cancellation/SQL margin",
+            ] {
+                assert!(
+                    detail.reason.contains(expected),
+                    "typed memory refusal lost {expected}: {detail:?}"
+                );
+            }
             Ok(())
         })?;
         drop(current);

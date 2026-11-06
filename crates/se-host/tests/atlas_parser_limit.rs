@@ -191,13 +191,16 @@ fn parser_limit_retains_stale_graph_and_other_files_keep_renewing() -> Check {
     controller.activate(registration.root.clone(), ReconcileReason::FirstSession)?;
     std::thread::sleep(Duration::from_millis(20));
     let expired = controller
-        .work_quantum(Duration::from_nanos(1))
-        .err()
-        .ok_or("expired native work was admitted")?;
+        .work_quantum(Duration::from_nanos(1))?
+        .ok_or("expired native work disappeared")?;
     assert!(matches!(
-        expired.body.detail(),
-        se_types::Detail::DeadlineExceeded(_)
+        expired.state,
+        IndexState::VerificationNeeded {
+            reason: CoverageReason::TimeLimit
+        }
     ));
+    assert!(expired.remaining_known > 0);
+    assert!(controller.work_pending(&registration.root));
     assert_eq!(controller.next_work(), NextWork::Ready);
     assert!(matches!(
         controller.summary(&registration.root)?.state,
@@ -237,7 +240,17 @@ fn parser_limit_retains_stale_graph_and_other_files_keep_renewing() -> Check {
         SourceHint::FileChanged(RelativePath::new("resume.py")?),
     )?;
     std::thread::sleep(Duration::from_millis(20));
-    assert!(controller.work_quantum(Duration::from_nanos(1)).is_err());
+    let paused = controller
+        .work_quantum(Duration::from_nanos(1))?
+        .ok_or("expired Python edit disappeared")?;
+    assert!(matches!(
+        paused.state,
+        IndexState::VerificationNeeded {
+            reason: CoverageReason::TimeLimit
+        }
+    ));
+    assert!(paused.remaining_known > 0);
+    assert!(controller.work_pending(&registration.root));
     assert_eq!(controller.next_work(), NextWork::Ready);
     drain(&mut controller)?;
     let resumed = controller.with_reader(registration.root.clone(), |db, _| {
