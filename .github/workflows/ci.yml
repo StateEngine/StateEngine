@@ -83,7 +83,7 @@ jobs:
     needs: [changes, fmt, clippy]
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.clippy.result == 'success' }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2025, macos-15]
     runs-on: ${{ matrix.os }}
@@ -99,6 +99,9 @@ jobs:
           shared-key: hosted-debug-v1
       - name: Compile once per platform, including custom harness executables
         run: cargo nextest archive --workspace --all-features --locked --archive-file tests.tar.zst
+      - name: Preserve native macOS compiler loader diagnostics after a build failure
+        if: ${{ failure() && runner.os == 'macOS' }}
+        run: RUSTC_LOG=rustc_metadata::locator=info cargo test -p se-types --locked --no-run -vv
       - name: Check documentation examples and compile-fail API boundaries
         if: matrix.os == 'ubuntu-24.04'
         run: cargo test --workspace --all-features --locked --doc
@@ -115,9 +118,9 @@ jobs:
 
   test:
     needs: [changes, fmt, clippy, archive]
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.archive.result == 'success' }}
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' && needs.clippy.result == 'success' }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2025, macos-15]
         shard: [1, 2]
