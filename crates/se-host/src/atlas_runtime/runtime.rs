@@ -88,9 +88,6 @@ impl<D: RenewalDriver> Runtime for NativeRuntime<D> {
             let current = super::connections::writer(&cache, root, profile, deadline)?
                 .ok_or_else(|| atlas_cold::failure("renewal index disappeared"))?;
             root.checked_epoch = Some(current.connection.identity().epoch.clone());
-            // Close leaves this disposable WAL in place. Checkpoint its bounded
-            // accumulated bytes before admitting another source transaction.
-            current.connection.checkpoint(deadline)?;
             if root.serial_domain.is_none() {
                 let base = current.connection.read(deadline, |sql| {
                     let value: i64 = sql

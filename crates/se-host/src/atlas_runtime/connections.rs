@@ -130,7 +130,7 @@ pub(super) fn writer<'a>(
     profile: &SqlProfile,
     deadline: Instant,
 ) -> AtlasResult<Option<pointer::DiscoveredEpoch<'a>>> {
-    match &root.checked_epoch {
+    let current = match &root.checked_epoch {
         Some(epoch) => {
             pointer::open_checked_writer(cache, &root.source.scope, profile, epoch, deadline)
         }
@@ -141,5 +141,11 @@ pub(super) fn writer<'a>(
             profile,
             deadline,
         ),
+    }?;
+    if let Some(current) = &current {
+        // Every native write path shares this admission point. Close retains
+        // the WAL, so checkpoint bounded accumulated work before another write.
+        current.connection.checkpoint(deadline)?;
     }
+    Ok(current)
 }
