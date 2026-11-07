@@ -64,7 +64,7 @@ class Container:
         self.id = None
         self.deadline = deadline
         self.storage = {"/work": work, "/home": 3 * GIB, "/t": GIB,
-                        "/tmp": 256 * 1024**2, "/run": 16 * 1024**2}
+                        "/tmp": 2 * GIB, "/run": 16 * 1024**2}
         self.started = time.monotonic()
         args = ["create", "--name", self.name, "--label", "stateengine.shadow=true", "--pull=never",
                 "--user", "1000:1000", "--cap-drop=ALL", "--security-opt=no-new-privileges",
@@ -76,7 +76,7 @@ class Container:
                 "--pids-limit", str(pids), "--stop-timeout", "5", "--timeout", str(deadline), "--workdir=/work",
                 "--env=HOME=/home/ci", "--env=TMPDIR=/t/j", "--env=TMP=/t/j", "--env=TEMP=/t/j"]
         for path, size in (("/work", work), ("/home", 3 * GIB), ("/t", GIB),
-                           ("/tmp", 256 * 1024**2), ("/run", 16 * 1024**2)):
+                           ("/tmp", 2 * GIB), ("/run", 16 * 1024**2)):
             args += ["--tmpfs", f"{path}:rw,nosuid,nodev,mode=1777,size={size}"]
         try:
             raw = command(*args, image, "hold").decode().strip()
