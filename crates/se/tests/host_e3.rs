@@ -4,6 +4,7 @@
 )]
 #[path = "support/host_abandoned.rs"]
 mod abandoned_judge;
+#[cfg(any(target_os = "linux", windows))]
 #[path = "support/host_cold_capture.rs"]
 mod cold_capture;
 #[path = "../src/config.rs"]
@@ -36,6 +37,7 @@ mod route;
 mod shutdown_judge;
 #[path = "support/host_shutdown_write.rs"]
 mod shutdown_write_judge;
+#[cfg(any(target_os = "linux", windows))]
 #[path = "support/host_startup.rs"]
 mod startup_judge;
 use fixture::*;
@@ -53,6 +55,7 @@ use std::{
     time::Duration,
 };
 /// Protects: wave-1 hosted E3 — real authenticated listener/supervisor commits message, working state and pinned Claude stop; fresh outside snapshots observe their atomic facts and natural replay.
+#[cfg(any(target_os = "linux", windows))]
 fn listener_message_working_and_hook() -> Check {
     let initialized = se_host::initialize_host_process()?;
     let f = std::mem::ManuallyDrop::new(Fixture::new()?);
@@ -283,6 +286,12 @@ fn listener_message_working_and_hook() -> Check {
     drop(std::mem::ManuallyDrop::into_inner(f));
     Ok(())
 }
+#[cfg(not(any(target_os = "linux", windows)))]
+fn main() -> Check {
+    Err("host_e3 requires Linux or Windows detached-host support; native lifecycle checks were not exercised".into())
+}
+
+#[cfg(any(target_os = "linux", windows))]
 fn main() -> Check {
     let args: Vec<_> = std::env::args_os().collect();
     if let Some(result) = host::dispatch(&args) {

@@ -3,7 +3,7 @@
 //! configuration and machine identity are read through retained custody.
 use crate::client::{ClientOptions, lease::Deadline};
 use se_types::{
-    HostEpoch, HostGeneration, NativePath, ProcessFields, ProcessInstance, Result, SeError, Sha256,
+    HostEpoch, HostGeneration, ProcessFields, ProcessInstance, Result, SeError, Sha256,
 };
 use secode_stateengine_api as api;
 use sha2::{Digest, Sha256 as Hasher};
@@ -20,16 +20,21 @@ pub(super) fn current_epoch(generation: u64, home: &Path) -> Result<HostEpoch> {
     let files =
         crate::state_files::Files::open(home).map_err(|e| se_core::store_error::store_error(&e))?;
     let machine = crate::state_files::machine_identity(&files)?;
-    let identity = se_proc::current_runtime_identity(machine).map_err(native)?;
+    #[cfg(any(target_os = "linux", windows))]
+    let boot = se_proc::current_runtime_identity(machine.clone())
+        .map_err(native)?
+        .boot_id;
+    #[cfg(target_os = "macos")]
+    let boot = se_proc::observe_boot_id().map_err(native)?;
     let peer = se_proc::native_ipc::observe_ipc_self().map_err(native)?;
     let epoch = HostEpoch {
         owner: ProcessInstance::from_observation(ProcessFields {
-            machine: identity.process.machine,
-            boot: identity.boot_id,
+            machine,
+            boot,
             pid: NonZeroU32::new(peer.pid())
                 .ok_or_else(|| SeError::invalid("host pid", "a nonzero process id"))?,
             started: peer.started().clone(),
-            executable: NativePath::from_local(identity.process.image)?,
+            executable: peer.image().clone(),
             argv_sha256: argv_digest(),
         })?,
         generation: HostGeneration::new(generation)?,

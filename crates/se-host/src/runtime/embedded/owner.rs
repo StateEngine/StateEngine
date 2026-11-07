@@ -25,7 +25,9 @@ pub(super) struct OwnerInputs {
     pub(super) owner: std::sync::Weak<super::Generation>,
     pub(super) runtime: Handle,
     pub(super) home: PathBuf,
+    #[cfg(any(target_os = "linux", windows))]
     pub(super) helper_executable: PathBuf,
+    #[cfg(any(target_os = "linux", windows))]
     pub(super) linux_delegation: api::LinuxDelegation,
     pub(super) limits: api::Limits,
     pub(super) generation: api::Generation,
@@ -230,6 +232,7 @@ async fn take_ownership(
     LocalStop,
     HostedRouter,
 )> {
+    require_process_supervision()?;
     let deadline = support::deadline(inputs.timeout)?;
     let poisoned = inputs.poisoned;
     let router_fence = inputs.router_fence;
@@ -274,23 +277,28 @@ async fn take_ownership(
     }
     host.restore_transcripts(&deadline).await?;
     host.configure(config)?;
-    let linux_delegation = match inputs.linux_delegation {
-        api::LinuxDelegation::AutoUserManager => se_proc::LinuxDelegation::AutoUserManager,
-        api::LinuxDelegation::CurrentScope => se_proc::LinuxDelegation::CurrentScope,
-        api::LinuxDelegation::ExplicitRoot(path) => se_proc::LinuxDelegation::ExplicitRoot(path),
-    };
-    let (_coordinator, reconciliation) = crate::LaunchCoordinator::install(
-        &mut host,
-        crate::ProcessOptions {
-            helper_executable: core::NativePath::from_local(inputs.helper_executable)?,
-            linux_delegation,
-            maximum_sessions: crate::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
-        },
-        &deadline,
-    )
-    .await?;
-    for failure in &reconciliation.unproved {
-        eprintln!("Agent recovery incomplete; its custody remains fenced: {failure}");
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        let linux_delegation = match inputs.linux_delegation {
+            api::LinuxDelegation::AutoUserManager => se_proc::LinuxDelegation::AutoUserManager,
+            api::LinuxDelegation::CurrentScope => se_proc::LinuxDelegation::CurrentScope,
+            api::LinuxDelegation::ExplicitRoot(path) => {
+                se_proc::LinuxDelegation::ExplicitRoot(path)
+            }
+        };
+        let (_coordinator, reconciliation) = crate::LaunchCoordinator::install(
+            &mut host,
+            crate::ProcessOptions {
+                helper_executable: core::NativePath::from_local(inputs.helper_executable)?,
+                linux_delegation,
+                maximum_sessions: crate::ProcessOptions::DEFAULT_MAXIMUM_SESSIONS,
+            },
+            &deadline,
+        )
+        .await?;
+        for failure in &reconciliation.unproved {
+            eprintln!("Agent recovery incomplete; its custody remains fenced: {failure}");
+        }
     }
     let stop = host.local_stop();
     let listener = host.listen(inputs.runtime, &deadline).await?;
@@ -302,4 +310,21 @@ async fn take_ownership(
             .store(true, std::sync::atomic::Ordering::Release);
     }
     Ok((host, listener, stop, router))
+}
+
+// Refuse before acquiring a lease, opening a writer or publishing an endpoint.
+// Compiling the linked API does not provide native process supervision.
+fn require_process_supervision() -> core::Result<()> {
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    Err(core::SeError::new(core::Detail::FeatureUnavailable(
+        core::details::FeatureUnavailable {
+            subject: "embedded host process supervision on macOS".into(),
+            reason: "this build implements hosted process supervision only on Linux and Windows".into(),
+            next_step: "Use se init, se status and direct saved-state operations on macOS; use a Linux or Windows installation for hosted agent work".into(),
+        },
+    )))
 }

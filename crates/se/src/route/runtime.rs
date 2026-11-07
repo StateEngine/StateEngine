@@ -7,9 +7,7 @@ use crate::bootstrap::Bootstrap;
 #[cfg(any(target_os = "linux", windows))]
 use crate::config::Origin;
 use se_core::{ops::*, scope};
-use se_host::client::BlockingIpcClient;
-#[cfg(any(target_os = "linux", windows))]
-use se_host::client::lease::Deadline;
+use se_host::client::{BlockingIpcClient, lease::Deadline};
 #[cfg(any(target_os = "linux", windows))]
 use se_types::Read;
 use se_types::{Result, SeError};
@@ -323,7 +321,7 @@ pub(super) fn down_endpoint(
         } => {
             // The fixed reply precedes native closure. A protected post-transport
             // record supplies per-lifecycle facts without changing stop/v1.
-            let mut report = None;
+            let mut report: Option<se_host::client::closure::RuntimeClosure> = None;
             #[cfg(any(target_os = "linux", windows))]
             match completion::report(files, endpoint, &original_key, &bound) {
                 Ok(value) => report = value,

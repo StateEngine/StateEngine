@@ -1,4 +1,6 @@
 //! Public CLI boundary: typed store setup is not a provider launch witness.
+//! Managed-host startup and exact process readback require Linux or Windows.
+#![cfg(any(target_os = "linux", windows))]
 use se_store::*;
 use se_types::{AgentId, LifecycleId};
 use sha2::{Digest, Sha256};

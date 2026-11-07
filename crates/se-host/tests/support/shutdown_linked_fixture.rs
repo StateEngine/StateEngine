@@ -122,8 +122,12 @@ pub fn build_epoch(generation: u64, home: &Path) -> Result<api::HostEpoch, Strin
         se_host::state_files::Files::open(home).map_err(|e| format!("state files: {e:?}"))?;
     let machine = se_host::state_files::machine_identity(&files)
         .map_err(|e| format!("machine identity: {e}"))?;
-    let native = se_proc::current_runtime_identity(machine)
-        .map_err(|e| format!("runtime identity: {e:?}"))?;
+    #[cfg(any(target_os = "linux", windows))]
+    let boot = se_proc::current_runtime_identity(machine.clone())
+        .map_err(|e| format!("runtime identity: {e:?}"))?
+        .boot_id;
+    #[cfg(target_os = "macos")]
+    let boot = se_proc::observe_boot_id().map_err(|e| format!("boot identity: {e:?}"))?;
     // This debug judge binary is ~150 MiB and the workspace SHA-256 is
     // software-only on the shared box, so the one-time self-proof hash needs
     // more than the 5 s default proof bound (measured: a 28 MiB probe hashes
@@ -138,12 +142,11 @@ pub fn build_epoch(generation: u64, home: &Path) -> Result<api::HostEpoch, Strin
         .map_err(|e| format!("native self proof: {e:?}"))?;
     let pid = std::num::NonZeroU32::new(peer.pid()).ok_or("the judge process has a zero pid")?;
     let owner = se_types::ProcessInstance::from_observation(se_types::ProcessFields {
-        machine: native.process.machine,
-        boot: native.boot_id,
+        machine,
+        boot,
         pid,
         started: peer.started().clone(),
-        executable: se_types::NativePath::from_local(native.process.image.clone())
-            .map_err(|e| format!("native image: {e}"))?,
+        executable: peer.image().clone(),
         argv_sha256: argv_digest(),
     })
     .map_err(|e| format!("process observation: {e}"))?;

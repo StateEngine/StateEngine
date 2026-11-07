@@ -86,6 +86,14 @@ pub fn epoch() -> Result<HostEpoch, Box<dyn std::error::Error>> {
             },
         )
     };
+    #[cfg(target_os = "macos")]
+    let (boot, started) = {
+        let peer = se_proc::native_ipc::observe_ipc_self()?;
+        (
+            se_proc::observe_boot_id()?.as_str().to_owned(),
+            peer.started().clone(),
+        )
+    };
     let owner = ProcessInstance::from_observation(ProcessFields {
         machine: MachineId::new("public-store-consumer")?,
         boot: BootId::new(boot)?,
