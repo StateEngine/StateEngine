@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -76,16 +76,12 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Cache observation
         if: ${{ always() }}
-        run: echo 'Compile cache hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Clippy cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
 
   archive:
     needs: [changes, fmt, clippy]
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.clippy.result == 'success' }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -95,41 +91,36 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         id: cache
         with:
-          shared-key: hosted-debug-v1
+          shared-key: hosted-linux-archive-v1
+          cache-workspace-crates: true
       - name: Compile once per platform, including custom harness executables
         run: |
-          target_args=()
-          # Match Windows Clippy's native build layout for cache reuse.
-          if [[ "$RUNNER_OS" != Windows ]]; then
-            target_args=(--target "$(rustc --print host-tuple)")
-          fi
+          target="$(rustc --print host-tuple)"
           # Test the shipping defaults; all-feature linked-product judges need SE Code's native fixtures.
-          cargo nextest archive "${target_args[@]}" --workspace --locked --archive-file tests.tar.zst
+          cargo nextest archive --target "$target" --workspace --locked --archive-file tests.tar.zst
       - name: Check documentation examples and compile-fail API boundaries
-        if: matrix.os == 'ubuntu-24.04'
         run: |
           target="$(rustc --print host-tuple)"
           cargo test --target "$target" --workspace --locked --doc
       - uses: actions/upload-artifact@v4
         with:
-          name: tests-${{ matrix.os }}
+          name: tests-ubuntu-24.04
           path: tests.tar.zst
           retention-days: 1
           compression-level: 0
           if-no-files-found: error
       - name: Cache observation
         if: ${{ always() }}
-        run: echo 'Compile cache hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Linux archive cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
 
   test:
-    needs: [changes, fmt, clippy, archive]
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' && needs.clippy.result == 'success' }}
+    needs: archive
+    if: ${{ !cancelled() && needs.archive.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2025]
         shard: [1, 2]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
@@ -137,20 +128,69 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/test
         with:
-          os: ${{ matrix.os }}
+          os: ubuntu-24.04
           shard: ${{ matrix.shard }}
-          mode: ${{ matrix.os == 'windows-2025' && 'smoke' || 'full' }}
 
-  # Full Windows runtime checks stay visible; the native VM remains required for
-  # runtime/process/install changes until its Actions-runner follow-up is qualified.
-  windows-runtime:
-    name: Windows runtime (informational, shard ${{ matrix.shard }})
-    needs: [changes, fmt, clippy, archive]
+  # Warm the complete native test build on main; PRs restore it without saving.
+  # Promote only after a warm PR archive succeeds within fifteen minutes.
+  windows-archive:
+    name: Windows archive (informational)
+    needs: [changes, fmt, clippy]
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.clippy.result == 'success' }}
+    runs-on: windows-2025
+    timeout-minutes: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 45 || 15 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: actions/cache/restore@v4
+        id: build-cache
+        with:
+          path: |
+            target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: windows-archive-v1-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', '.github/actions/rust/action.yml', '.github/workflows/ci.yml') }}-${{ github.sha }}
+          restore-keys: windows-archive-v1-${{ hashFiles('Cargo.lock', '**/Cargo.toml', '.cargo/config.toml', '.github/actions/rust/action.yml', '.github/workflows/ci.yml') }}-
+      - name: Compile native Windows shipping-default archive
+        # Match Clippy's native Windows layout; macOS alone needs host/target flag isolation.
+        run: cargo nextest archive --workspace --locked --archive-file tests.tar.zst
+      - uses: actions/cache/save@v4
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.build-cache.outputs.cache-hit != 'true' }}
+        with:
+          path: |
+            target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tests-windows-2025
+          path: tests.tar.zst
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
+      - name: Windows build-cache observation
+        if: ${{ always() }}
+        env:
+          CACHE_HIT: ${{ steps.build-cache.outputs.cache-hit }}
+          CACHE_MATCH: ${{ steps.build-cache.outputs.cache-matched-key }}
+        run: |
+          echo "Windows build cache exact hit = ${CACHE_HIT:-not reported}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Windows build cache restored key = ${CACHE_MATCH:-not reported}" >> "$GITHUB_STEP_SUMMARY"
+
+  # Every Windows test remains visible but non-required; runtime/process/install
+  # changes still require native VM qualification before merge.
+  windows-test:
+    name: Windows ${{ matrix.mode == 'full' && 'runtime' || 'smoke' }} (informational, shard ${{ matrix.shard }})
+    needs: [changes, fmt, clippy, windows-archive]
     if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' && needs.clippy.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2]
+        mode: [smoke, full]
     runs-on: windows-2025
     timeout-minutes: 6
     steps:
@@ -161,6 +201,7 @@ jobs:
         with:
           os: windows-2025
           shard: ${{ matrix.shard }}
+          mode: ${{ matrix.mode }}
 
   # macOS promotion remains open until the full-feature workspace compiles there.
   # Preserve its real failure in the run without adding it to required check's needs.
@@ -178,7 +219,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         id: cache
         with:
-          shared-key: hosted-debug-v1
+          shared-key: hosted-macos-compile-v1
       - name: Compile full-feature macOS workspace (promotion pending)
         run: |
           target="$(rustc --print host-tuple)"
@@ -190,9 +231,9 @@ jobs:
           RUSTC_LOG=rustc_metadata::locator=info cargo test --target "$target" -p se-types --locked --no-run -vv
       - name: Cache observation
         if: ${{ always() }}
-        run: echo 'Compile cache hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'macOS compile cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
 
-  # Only this status is required: Linux/Windows failures and cancellations remain red.
+  # Required: both strict Clippys and Linux archive/tests; Windows promotion is open.
   check:
     name: check
     if: ${{ always() }}
