@@ -206,6 +206,7 @@ fn unreadable(path: &Path, error: std::io::Error) -> SeError {
 
 #[path = "runtime/uninstall.rs"]
 mod uninstall;
+pub(crate) use uninstall::remove_for_reinstall;
 pub fn uninstall(
     cx: &crate::bootstrap::Bootstrap,
     key: &se_types::IdempotencyKey,

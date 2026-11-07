@@ -258,6 +258,14 @@ try {
         if (-not [IO.File]::Exists($pending)) { throw "partial installation journal is absent: $pending" }
     } elseif (Test-Path -LiteralPath $pending) { throw "partial installation at $pending; rerun this archive's install.ps1 -Recover" }
     foreach ($path in @($root, $bin, $assets, $record)) { Assert-PlainPath $path }
+    # Current native code reads the retained schema and validates the exact old
+    # installation. It refuses a live runtime and retains both claims through
+    # this script's normal fresh-install journal; no old executable is invoked.
+    if (-not $Recover -and (Test-Path -LiteralPath $record)) {
+        & (Join-Path $bundle 'se.exe') __install-replace $data
+        if ($LASTEXITCODE -ne 0) { throw 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying' }
+        exit 0
+    }
     foreach ($path in @($binary, $assets, $record)) {
         if (-not $Recover -and (Test-Path -LiteralPath $path)) { throw "existing installation path is preserved; run se uninstall before reinstalling: $path" }
     }

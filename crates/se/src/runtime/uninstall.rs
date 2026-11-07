@@ -29,6 +29,20 @@ pub(super) fn execute(
     key: &se_types::IdempotencyKey,
     diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
 ) -> Result<(ValidatedUninstallPlan, UninstallEffects)> {
+    let (plan, effects, _lease) = execute_inner(cx, key, diagnostic, None)?;
+    Ok((plan, effects))
+}
+
+#[path = "uninstall/reinstall.rs"]
+mod reinstall;
+pub(crate) use reinstall::remove_for_reinstall;
+
+fn execute_inner(
+    cx: &Bootstrap,
+    key: &se_types::IdempotencyKey,
+    diagnostic: &mut dyn FnMut(&str) -> io::Result<()>,
+    reinstall: Option<(&se_proc::NativeInstallationClaim, &Path)>,
+) -> Result<(ValidatedUninstallPlan, UninstallEffects, std::fs::File)> {
     // Store absence and a complete inventory with no unresolved custody are
     // distinct observations. Retained exit history is never live custody;
     // endpoint absence never supplies an empty-process proof.
@@ -66,15 +80,24 @@ pub(super) fn execute(
             }
         })
     };
+    // Standalone installation accepts the native owner without a console. Keep
+    // ancestry/session/provider-marker checks; ordinary uninstall still needs a TTY.
     let (owner, _) = observe(false)?;
     owner.authorize(
         "installation.uninstall",
         owner.os_owner(),
         cx.session.is_some(),
-        true,
+        reinstall.is_none(),
     )?;
-    let mut installation_claim =
-        Some(se_proc::NativeInstallationClaim::acquire().map_err(native_error)?);
+    let installation_claim = if reinstall.is_none() {
+        Some(se_proc::NativeInstallationClaim::acquire().map_err(native_error)?)
+    } else {
+        None
+    };
+    let claim = reinstall
+        .map(|(claim, _)| claim)
+        .or(installation_claim.as_ref())
+        .ok_or_else(|| invalid("native installation claim missing"))?;
     // Only uninstall takes the account claim, protecting install/PATH effects
     // across homes. Share setup's persistent home lock through every effect,
     // including when no store exists yet, then re-observe under exclusion.
@@ -108,7 +131,7 @@ pub(super) fn execute(
         "installation.uninstall",
         &parsed.owner,
         cx.session.is_some(),
-        true,
+        reinstall.is_none(),
     )?;
     let owned_plan = Installation {
         record_path: record_path.clone(),
@@ -129,6 +152,9 @@ pub(super) fn execute(
             Err(error) if error.kind() == io::ErrorKind::NotFound => (),
             Err(error) => return Err(unreadable(Path::new(&file.path), error)),
         }
+    }
+    if let Some((_, expected)) = reinstall {
+        matches.push(reinstall::image(plan, &matches, expected)?);
     }
     // A quarantined/missing installed image cannot run its own uninstaller.
     // An owner may use a working archive's CLI, but only after native proof
@@ -172,28 +198,30 @@ pub(super) fn execute(
 
     // The account claim and exact installation record stay held across ordinary
     // down. Do not take the home writer lease until down has released it.
-    let stops = shutdown::execute(cx, key, diagnostic)?;
-    let _runtime_lease = route::files::setup_lock(&files)
+    let stops = if reinstall.is_some() {
+        Vec::new()
+    } else {
+        shutdown::execute(cx, key, diagnostic)?
+    };
+    let runtime_lease = route::files::setup_lock(&files)
         .map_err(|e| se_core::store_error::store_error(&e))?
         .ok_or_else(|| SeError::new(Detail::StateConflict(details::StateConflict {
             subject: "uninstall runtime custody".into(),
-            reason: "setup, another writer or the runtime holds this home's exclusive lease".into(),
-            next_step: "Wait for setup/removal or retry se uninstall after the named writer finishes; no installation effects were attempted".into(),
+            reason: "setup, another writer or a live runtime holds this home's exclusive lease".into(),
+            next_step: "Run se down with this same --home, or wait for the named writer to finish, then retry the current installer or se uninstall; no installation effects were attempted".into(),
         })))?;
     let (owner, store_observation) = observe(true)?;
     owner.authorize(
         "installation.uninstall",
         plan.owner(),
         cx.session.is_some(),
-        true,
+        reinstall.is_none(),
     )?;
 
     #[cfg(windows)]
     super::helper_cleanup::retry(
         &se_proc::NativeStateFiles::open(&cx.home).map_err(native_error)?,
-        installation_claim
-            .as_ref()
-            .ok_or_else(|| invalid("native installation claim missing"))?,
+        claim,
     )?;
     let mut effects = UninstallEffects {
         install_files: Vec::new(),
@@ -220,7 +248,11 @@ pub(super) fn execute(
         preserved: preserved(&cx.home),
         recovery: Vec::new(),
     };
-    let completion = super::uninstall_completion::request()?;
+    let completion = if reinstall.is_some() {
+        None
+    } else {
+        super::uninstall_completion::request()?
+    };
     let parents = plan.recovery_directories();
     effects.recovery = scan(plan, parents);
     // Diagnostics flush before recovery restoration, PATH edits or file removal.
@@ -245,13 +277,10 @@ pub(super) fn execute(
     diagnosis.push_str("Recovery: restore only a uniquely proved owned backup to an absent planned target in its original directory; preserve every unresolved copy.\n");
     diagnostic(&diagnosis)
         .map_err(|error| se_core::scope::unreadable("uninstall diagnostic", &error.to_string()))?;
-    let claim = installation_claim
-        .as_ref()
-        .ok_or_else(|| invalid("native installation claim missing"))?;
     // Preparation must finish before recovery, PATH changes or removal. A policy
     // refusal here preserves every installed payload and the user's PATH.
     #[cfg(windows)]
-    let carrier = if missing_image {
+    let carrier = if missing_image || reinstall.is_some() {
         None
     } else {
         Some(
@@ -282,7 +311,7 @@ pub(super) fn execute(
             &mut effects,
             "recovery inventory is unreadable or contains unresolved copies",
         );
-        return Ok((owned_plan, effects));
+        return Ok((owned_plan, effects, runtime_lease));
     }
     let mut safe = true;
     reconcile_paths(plan, &mut effects);
@@ -304,15 +333,19 @@ pub(super) fn execute(
         let achieved =
             se_core::ops::installation::finish_uninstall(plan, key.clone(), effects.clone())?;
         #[cfg(windows)]
-        let result = remove_image(
-            cx,
-            plan,
-            installed,
-            record_digest,
-            completion,
-            achieved,
-            carrier,
-        );
+        let result = if reinstall.is_some() {
+            Ok(remove_file(installed))
+        } else {
+            remove_image(
+                cx,
+                plan,
+                installed,
+                record_digest,
+                completion,
+                achieved,
+                carrier,
+            )
+        };
         #[cfg(not(windows))]
         let result = remove_image(cx, plan, installed, record_digest, completion, achieved);
         let result = result.unwrap_or_else(|error| {
@@ -448,6 +481,5 @@ pub(super) fn execute(
             }
         }
     }
-    drop(installation_claim.take());
-    Ok((owned_plan, effects))
+    Ok((owned_plan, effects, runtime_lease))
 }
