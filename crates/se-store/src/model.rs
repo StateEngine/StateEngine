@@ -443,6 +443,10 @@ pub enum StoreIoStage {
 #[derive(Clone, Debug)]
 pub enum StoreDetail {
     None,
+    /// Time spent acquiring native file custody before its bounded refusal.
+    NativeContention {
+        waited_ms: u64,
+    },
     PrincipalNameConflict {
         project: ProjectId,
         name: String,

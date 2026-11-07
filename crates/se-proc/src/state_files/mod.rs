@@ -54,9 +54,9 @@ impl StateFileError {
                 return true;
             }
             #[cfg(windows)]
-            if error.raw_os_error() == Some(33) {
+            if matches!(error.raw_os_error(), Some(32 | 33)) {
                 return true;
-            } // ERROR_LOCK_VIOLATION
+            } // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION
             false
         })
     }

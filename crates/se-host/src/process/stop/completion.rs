@@ -1,5 +1,38 @@
 //! Durable terminal publication, file retirement and native custody release.
 use super::*;
+use crate::state_files::{Acquisition, AcquisitionRetry};
+
+#[derive(Clone)]
+enum CleanupFile {
+    SessionPin(se_types::SessionId, [u8; 32]),
+    Launch(std::path::PathBuf, [u8; 32]),
+}
+impl CleanupFile {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::SessionPin(..) => "revoked session pin removal",
+            Self::Launch(..) => "launch file cleanup",
+        }
+    }
+    // Only acquisition errors reach the outer result and its retry policy.
+    // Mutation failures remain public errors and are never replayed here.
+    fn remove(
+        &self,
+        state: &se_proc::NativeStateFiles,
+    ) -> std::result::Result<Result<()>, se_proc::StateFileError> {
+        Ok(match self {
+            Self::SessionPin(session, digest) => {
+                se_proc::SessionPinRemoval::acquire(state, session)?
+                    .remove(*digest)
+                    .map_err(|e| error(self.label(), e))
+            }
+            Self::Launch(path, digest) => match se_proc::OwnedFile::open(path)? {
+                Some(file) => file.remove(*digest).map_err(|e| error(self.label(), e)),
+                None => Ok(()),
+            },
+        })
+    }
+}
 
 impl LaunchCoordinator {
     pub(in crate::process) async fn finish(
@@ -161,7 +194,14 @@ impl LaunchCoordinator {
         let files = work.files.clone();
         let codex = self.codex.clone();
         let is_codex = work.meta.provider == se_store::Provider::Codex;
-        self.store
+        // Retain one absolute cleanup bound across every file, leaving time to
+        // deliver a busy refusal before the caller's end-to-end request expires.
+        let cleanup_deadline = deadline
+            .at()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or(deadline.at());
+        let state = self
+            .store
             .pool
             .run_owned(deadline, move || {
                 let state = se_proc::NativeStateFiles::open(&home)
@@ -169,21 +209,42 @@ impl LaunchCoordinator {
                 if is_codex {
                     codex.retire_socket(&session)?;
                 }
-                if let Some(pin) = pin {
-                    se_proc::remove_session_pin(&state, &session, pin)
-                        .map_err(|e| error("revoked session pin removal", e))?;
-                }
-                for (path, digest) in files {
-                    if let Some(file) = se_proc::OwnedFile::open(&path)
-                        .map_err(|e| error("launch file cleanup", e))?
-                    {
-                        file.remove(digest)
-                            .map_err(|e| error("launch file cleanup", e))?;
-                    }
-                }
-                Ok(())
+                Ok(Arc::new(state))
             })
             .await?;
+        let removals = pin
+            .map(|pin| CleanupFile::SessionPin(work.meta.session.clone(), pin))
+            .into_iter()
+            .chain(
+                files
+                    .into_iter()
+                    .map(|(path, digest)| CleanupFile::Launch(path, digest)),
+            );
+        for removal in removals {
+            let mut retry = AcquisitionRetry::new(cleanup_deadline);
+            loop {
+                let state = state.clone();
+                let operation = removal.clone();
+                let (next, attempt) = self
+                    .store
+                    .pool
+                    .run_owned(deadline, move || {
+                        let result = retry.acquire(|| operation.remove(&state));
+                        Ok((retry, result))
+                    })
+                    .await?;
+                retry = next;
+                match attempt
+                    .map_err(|failure| failure.into_public(|e| error(removal.label(), e)))?
+                {
+                    Acquisition::Ready(result) => {
+                        result?;
+                        break;
+                    }
+                    Acquisition::Wait(delay) => tokio::time::sleep(delay).await,
+                }
+            }
+        }
         Ok(())
     }
 }
