@@ -5,6 +5,14 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      job:
+        description: Run the full workflow or only native macOS compilation
+        type: choice
+        default: all
+        options: [all, macos]
+  schedule:
+    - cron: '23 3 * * *'
 
 permissions:
   contents: read
@@ -27,6 +35,7 @@ defaults:
 
 jobs:
   changes:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.job != 'macos' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     outputs:
@@ -42,7 +51,7 @@ jobs:
 
   fmt:
     needs: changes
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' }}
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -79,8 +88,8 @@ jobs:
         run: echo 'Clippy cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
 
   archive:
-    needs: [changes, fmt, clippy]
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.clippy.result == 'success' }}
+    needs: [changes, fmt]
+    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -96,8 +105,24 @@ jobs:
       - name: Compile once per platform, including custom harness executables
         run: |
           target="$(rustc --print host-tuple)"
+          if ! command -v strace >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install --yes --no-install-recommends strace
+          fi
+          mkdir -p target/cargo-timings
           # Test the shipping defaults; all-feature linked-product judges need SE Code's native fixtures.
-          cargo nextest archive --target "$target" --workspace --locked --archive-file tests.tar.zst
+          # Process-only tracing measures native linker lifetimes without changing compiler flags.
+          strace -f -qq -ttt -s 4096 -e trace=execve,execveat,exit_group \
+            -o target/cargo-timings/linker-processes.trace \
+            cargo nextest archive --timings --target "$target" --workspace --locked --archive-file tests.tar.zst
+      - name: Retain compilation and linker timings
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-build-timings
+          path: target/cargo-timings/
+          retention-days: 1
+          if-no-files-found: warn
       - name: Check documentation examples and compile-fail API boundaries
         run: |
           target="$(rustc --print host-tuple)"
@@ -132,7 +157,7 @@ jobs:
           shard: ${{ matrix.shard }}
 
   # Warm the complete native test build on main; PRs restore it without saving.
-  # Promote only after a warm PR archive succeeds within fifteen minutes.
+  # Promotion also waits for all Windows smoke cases to pass.
   windows-archive:
     name: Windows archive (informational)
     needs: [changes, fmt, clippy]
@@ -190,7 +215,8 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2]
-        mode: [smoke, full]
+        # Runtime detachment is qualified by the VM; hosted runtime runs are nightly/manual.
+        mode: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["smoke", "full"]' || '["smoke"]') }}
     runs-on: windows-2025
     timeout-minutes: 6
     steps:
@@ -204,11 +230,10 @@ jobs:
           mode: ${{ matrix.mode }}
 
   # macOS promotion remains open until the full-feature workspace compiles there.
-  # Preserve its real failure in the run without adding it to required check's needs.
+  # Nightly/manual only; dispatch job=macos compiles the selected branch in isolation.
   macos:
     name: macOS portability (informational)
-    needs: [changes, fmt, clippy]
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.clippy.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
     runs-on: macos-15
     timeout-minutes: 10
     steps:
@@ -236,7 +261,7 @@ jobs:
   # Required: both strict Clippys and Linux archive/tests; Windows promotion is open.
   check:
     name: check
-    if: ${{ always() }}
+    if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') }}
     needs: [changes, fmt, clippy, archive, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 2

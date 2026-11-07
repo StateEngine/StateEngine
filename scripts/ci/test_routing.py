@@ -48,6 +48,9 @@ class Routing(unittest.TestCase):
     def test_proved_prose_diff_skips(self):
         self.assertFalse(changes.affected(self.event(), "push"))
 
+    def test_root_agent_guide_skips(self):
+        self.assertFalse(changes.affected(self.event("AGENTS.md"), "push"))
+
     def test_rust_and_unknown_paths_run(self):
         self.assertTrue(changes.affected(self.event("lib.rs"), "push"))
 
