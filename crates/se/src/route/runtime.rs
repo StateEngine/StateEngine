@@ -321,7 +321,7 @@ pub(super) fn down_endpoint(
         } => {
             // The fixed reply precedes native closure. A protected post-transport
             // record supplies per-lifecycle facts without changing stop/v1.
-            let mut report = None;
+            let mut report: Option<se_host::client::closure::RuntimeClosure> = None;
             #[cfg(any(target_os = "linux", windows))]
             match completion::report(files, endpoint, &original_key, &bound) {
                 Ok(value) => report = value,
