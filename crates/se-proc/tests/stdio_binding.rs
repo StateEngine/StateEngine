@@ -11,6 +11,9 @@ use std::{
 };
 type Check<T = ()> = Result<T, Box<dyn std::error::Error>>;
 #[cfg(target_os = "linux")]
+#[path = "support/stop_census_review.rs"]
+mod stop_census_review;
+#[cfg(target_os = "linux")]
 #[path = "support/stop_dispatch_review.rs"]
 mod stop_dispatch_review;
 fn error(value: ProcError) -> String {
