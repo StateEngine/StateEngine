@@ -8,9 +8,8 @@ import json
 import os
 from pathlib import Path
 import shlex
-import socket
 import subprocess
-import tempfile
+from fixture_paths import private_runtime_directory
 
 
 class Judge:
@@ -20,7 +19,7 @@ class Judge:
         self.home = self.root / "selected state's directory"
         self.repo = self.root / "repository"
         self.repo.mkdir()
-        self.runtime = Path(tempfile.mkdtemp(prefix="se-rg-"))
+        self.runtime = private_runtime_directory()
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("SE_", "STATEENGINE_", "CODEX", "CLAUDE",
                                          "OPENAI", "ANTHROPIC"))}
@@ -43,18 +42,9 @@ class Judge:
             text = text.replace("[providers." + provider + "]",
                                 "[providers." + provider + "]\ncommand = " +
                                 json.dumps(str(self.root / ("absent-" + provider))), 1)
-        for port in range(20000 + os.getpid() % 9000, 30000):
-            with socket.socket() as listener:
-                try:
-                    listener.bind(("127.0.0.1", port))
-                    break
-                except OSError:
-                    continue
-        else:
-            raise AssertionError("no available supported fixture port")
+        # The host binds and retains an OS-selected listener when no port is configured.
         config.write_text(text.replace(
-            "listen_port = " + str(initial["profile"]["native_server_port"]),
-            "listen_port = " + str(port), 1))
+            "listen_port = " + str(initial["profile"]["native_server_port"]), "", 1))
 
     def raw(self, argv, extra=None):
         result = subprocess.run([str(self.image), *argv], cwd=self.repo,

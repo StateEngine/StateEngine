@@ -1,13 +1,18 @@
 //! Execute the actual CLI; uninstall receives a real PTY, never injected admission.
 use super::*;
 use crate::executable::ExecutableCommand;
-use std::process::{Command, Output};
+use std::{
+    process::{Command, Output},
+    time::{Duration, Instant},
+};
 
 fn command(image: &Path, f: &Fixture) -> Command {
     let mut command = Command::new(image);
     command
         .args(["--json", "--home"])
         .arg(&f.options.state_directory)
+        .env("HOME", f.home.join("user-home"))
+        .env("USERPROFILE", f.home.join("user-home"))
         .current_dir(f.home.join("repository"));
     for (name, _) in std::env::vars_os() {
         let key = name.to_string_lossy();
@@ -52,13 +57,48 @@ fn save(f: &Fixture, label: &str, output: &Output) -> Check {
     Ok(())
 }
 pub fn uninstall(image: &Path, f: &Fixture) -> Result<Output, Box<dyn std::error::Error>> {
-    let output = Command::new("/usr/bin/python3")
-        .arg("-c")
-        .arg(include_str!("custody_terminal.py"))
-        .arg(image)
-        .arg(&f.options.state_directory)
-        .current_dir(f.home.join("repository"))
-        .output_executable()?;
+    let until = Instant::now() + Duration::from_secs(30);
+    let mut attempt = 0;
+    let output = loop {
+        attempt += 1;
+        let output = Command::new("/usr/bin/python3")
+            .arg("-c")
+            .arg(include_str!("custody_terminal.py"))
+            .arg(image)
+            .arg(&f.options.state_directory)
+            .arg(
+                until
+                    .saturating_duration_since(Instant::now())
+                    .as_millis()
+                    .to_string(),
+            )
+            .env("HOME", f.home.join("user-home"))
+            .env("USERPROFILE", f.home.join("user-home"))
+            .current_dir(f.home.join("repository"))
+            .output_executable()?;
+        save(f, &format!("uninstall-attempt-{attempt}"), &output)?;
+        // The native claim is account-wide even with a private HOME. Only its
+        // pre-write contention refusal permits another attempt; all custody
+        // and filesystem refusals remain the test's original result.
+        let busy = output.status.code() == Some(1)
+            && json(&output).is_ok_and(|row| {
+                row["code"] == "state-conflict"
+                    && row["detail"]["subject"]
+                        .as_str()
+                        .is_some_and(|subject| subject.starts_with("installation lock "))
+                    && row["detail"]["reason"]
+                        == "Native installation custody is contended by another operation"
+            });
+        if !busy || Instant::now() >= until {
+            break output;
+        }
+        std::thread::sleep(
+            Duration::from_millis(25).min(until.saturating_duration_since(Instant::now())),
+        );
+        if Instant::now() >= until {
+            break output;
+        }
+    };
     save(f, "uninstall", &output)?;
     Ok(output)
 }

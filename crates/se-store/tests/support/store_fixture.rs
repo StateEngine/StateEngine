@@ -18,8 +18,14 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
+#[path = "../../../test-support/directory.rs"]
+#[allow(
+    clippy::duplicate_mod,
+    reason = "Independent fixture modules also compile together in native unit tests."
+)]
+mod directory;
 pub type Check = Result<(), Box<dyn Error>>;
 pub static NEXT: AtomicU64 = AtomicU64::new(1);
 pub fn serial() -> u64 {
@@ -159,9 +165,7 @@ pub struct Fixture {
 impl Fixture {
     pub fn new() -> Result<Self, Box<dyn Error>> {
         let n = serial();
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let home =
-            std::env::temp_dir().join(format!("otto-store-{}-{nonce}-{n}", std::process::id()));
+        let home = directory::private_directory()?;
         let root = home.join("state");
         drop(NativeStateFiles::create(&root)?);
         Ok(Self {

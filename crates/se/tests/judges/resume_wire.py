@@ -11,7 +11,7 @@ from pathlib import Path
 import select
 import shutil
 import subprocess
-import tempfile
+from fixture_paths import private_runtime_directory
 import traceback
 import urllib.request
 
@@ -47,7 +47,7 @@ else:
               "checks": [], "failures": [], "responses": []}
     f = None
     rpc = None
-    runtime = Path(tempfile.mkdtemp(prefix="se-rw-"))
+    runtime = private_runtime_directory()
     result["runtime_directory"] = str(runtime)
     try:
         f = Fixture(args.se, args.output / 'owner home "quoted"', provider_helper=helper)

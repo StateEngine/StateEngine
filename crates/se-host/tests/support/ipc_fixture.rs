@@ -16,10 +16,18 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
+#[path = "../../../test-support/directory.rs"]
+#[allow(
+    clippy::duplicate_mod,
+    reason = "Independent fixture modules also compile together in native unit tests."
+)]
+mod directory;
+#[cfg(windows)]
+use std::sync::atomic::Ordering;
 pub type Check = Result<(), Box<dyn Error>>;
 static NEXT: AtomicU64 = AtomicU64::new(1);
 static FIXTURES: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -34,10 +42,7 @@ pub struct Home(
 impl Home {
     pub fn new() -> Result<Self, Box<dyn Error>> {
         let guard = FIXTURES.lock().unwrap_or_else(|e| e.into_inner());
-        let n = NEXT.fetch_add(1, Ordering::Relaxed);
-        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let path = std::env::temp_dir().join(format!("oi-{}-{nonce}-{n}", std::process::id()));
-        drop(se_proc::NativeStateFiles::create(&path)?);
+        let path = directory::private_directory()?;
         Ok(Self(path, guard))
     }
     pub fn record(&self) -> Result<EndpointRecord, Box<dyn Error>> {

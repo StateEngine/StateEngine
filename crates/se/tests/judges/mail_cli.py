@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import socket
 import subprocess
 import sys
 import time
@@ -33,19 +32,9 @@ class Fixture:
                        "--model", "claude-sonnet-5-5")
         self.project, self.agent = init["project"]["id"], init["agent"]["id"]
         config = self.home / "config.toml"
-        start = uuid.uuid4().int % 10000
-        for offset in range(10000):
-            port = 20000 + (start + offset) % 10000
-            with socket.socket() as listener:
-                try:
-                    listener.bind(("127.0.0.1", port))
-                    break
-                except OSError:
-                    continue
-        else:
-            raise RuntimeError("no available listener port")
+        # The actual host owns its OS-selected listener from bind through shutdown.
         text = config.read_text().replace(f'listen_port = {init["profile"]["native_server_port"]}',
-                                         f"listen_port = {port}", 1)
+                                         "", 1)
         helper = (provider_helper or Path(__file__).with_name("mail_provider.py")).resolve()
         source = self.root / "provider.rs"
         source.write_text('''fn main(){let a:Vec<String>=std::env::args().collect();

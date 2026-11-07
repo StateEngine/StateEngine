@@ -14,8 +14,7 @@ use std::{sync::mpsc, time::Instant};
 use support::session;
 use support::*;
 
-// These three fixtures use the shared explicit-port selector. Serialize only
-// their listeners; each source-lock race remains concurrent inside the case.
+// Each source-lock race remains concurrent inside its fixture scenario.
 static LISTENER: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
