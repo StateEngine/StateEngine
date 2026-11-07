@@ -107,6 +107,11 @@ else:
                         os.kill(pin["pid"], signal.SIGKILL)
                         record["outside_rescue"].append(pin)
                 wait(lambda: all(gone(pin) for pin in pins[1:]), "rescue did not join provider births")
+                if record["outside_rescue"] and not (f.home / "endpoint.json").exists():
+                    # Follow the public already-down remedy before asking the
+                    # successor to retire the original durable cleanup debt.
+                    f.ok("up")
+                    f.ok("--project", f.project, "--key", "rescued-cleanup", "stop", f.agent)
                 if (f.home / "endpoint.json").exists() or record["outside_rescue"]:
                     f.close()
                 if host_process:
