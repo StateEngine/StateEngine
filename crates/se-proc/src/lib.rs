@@ -128,7 +128,7 @@ mod windows_policy_fixture;
 
 mod session_pin;
 pub use session_pin::{
-    publish_session_pin, read_session_pin, remove_session_pin, session_launch_id,
+    SessionPinRemoval, publish_session_pin, read_session_pin, remove_session_pin, session_launch_id,
 };
 
 #[cfg(target_os = "linux")]
