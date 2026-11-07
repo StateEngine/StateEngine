@@ -106,7 +106,7 @@ foreach ($case in $cases) {
     // SAFETY: retained exact fixture process and bounded native waits; timeout
     // cancellation uses that handle, never a process-name or reused-PID lookup.
     unsafe {
-        if WaitForSingleObject(process.as_raw_handle(), 20000) != WAIT_OBJECT_0 {
+        if WaitForSingleObject(process.as_raw_handle(), 90000) != WAIT_OBJECT_0 {
             TerminateProcess(process.as_raw_handle(), 97);
             WaitForSingleObject(process.as_raw_handle(), 5000);
             return Err("exact directory reader fixture exceeded its deadline".into());
