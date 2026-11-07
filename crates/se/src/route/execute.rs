@@ -98,8 +98,27 @@ pub fn credential(cx: &Bootstrap, files: &Files) -> Result<ClientCredential> {
 }
 pub fn dispatch(
     cx: &Bootstrap,
+    op: AnyOp,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<AnyOutput> {
+    dispatch_with_cold_recovery(cx, op, diagnostic, true)
+}
+
+/// Removal may stop a live host, but retained cold custody requires an explicit
+/// down first. Keep ordinary admission and its non-mutating refusal intact.
+pub(crate) fn stop_for_uninstall(
+    cx: &Bootstrap,
+    input: se_core::ops::RuntimeDown,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<AnyOutput> {
+    dispatch_with_cold_recovery(cx, AnyOp::RuntimeDown(input), diagnostic, false)
+}
+
+fn dispatch_with_cold_recovery(
+    cx: &Bootstrap,
     mut op: AnyOp,
     diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+    recover_cold: bool,
 ) -> Result<AnyOutput> {
     let observation_deadline = super::session_observation::deadline()?;
     if let AnyOp::ImportNode(input) = &mut op {
@@ -274,7 +293,7 @@ pub fn dispatch(
         return super::project_move::execute(cx, &reader, &caller, input.clone());
     }
     if let AnyOp::RuntimeDown(input) = op {
-        return super::runtime_control::down(cx, &files, &reader, input);
+        return super::runtime_control::down(cx, &files, &reader, input, recover_cold);
     }
     if host_required && !matches!(op, AnyOp::RuntimeUp(_)) {
         let retry = super::startup_retry::Retry::capture(cx, &caller.admission, &op);

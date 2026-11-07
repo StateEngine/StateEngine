@@ -198,6 +198,7 @@ pub fn down<R: se_store::ReadStore>(
     files: &Files,
     reader: &R,
     input: RuntimeDown,
+    recover_cold: bool,
 ) -> Result<AnyOutput> {
     let options = execute::options();
     #[cfg(any(target_os = "linux", windows))]
@@ -213,6 +214,12 @@ pub fn down<R: se_store::ReadStore>(
                 let observed = already_down::observe(files, reader, &options).and_then(|closed| {
                     if let Some(output) = closed {
                         return Ok(output);
+                    }
+                    if !recover_cold {
+                        return Err(scope::unreadable(
+                            "already-down native custody",
+                            "Unresolved owned process or session cleanup remains in this home. Run se down with this same --home to reconcile the retained custody, then retry se uninstall; installation removal has not started a recovery host or changed durable history.",
+                        ));
                     }
                     // A failed launch can leave exact cleanup debt after its
                     // host exits. Reuse startup's native reconciliation, then
@@ -248,7 +255,7 @@ pub fn down<R: se_store::ReadStore>(
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {
-        let _ = cx;
+        let _ = (cx, recover_cold);
         let observed = execute::endpoint(files)?;
         if matches!(observed, se_types::Read::Absent { .. }) {
             return already_down::observe(files, reader, &options)?.ok_or_else(|| scope::unreadable(

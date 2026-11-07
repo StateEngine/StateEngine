@@ -307,7 +307,7 @@ fn uninstall_refusal(unproved: bool) -> Check {
         "refusal must name unverified shutdown custody: {printed}"
     );
     assert!(
-        printed.contains("Run se up to reconcile") && printed.contains("then se down"),
+        printed.contains("Run se down") && printed.contains("then retry se uninstall"),
         "missing cold-runtime reconciliation remedy: {printed}"
     );
     assert_eq!(std::fs::read(&c.image)?, image);
@@ -459,7 +459,7 @@ fn observation(contradiction: bool) -> Check {
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(cli::json(&output)?["code"], "state-conflict");
         assert!(
-            cli::printed(&output).contains("Run se up to reconcile"),
+            cli::printed(&output).contains("Run se down"),
             "pending exit lost its uninstall diagnosis: {}",
             cli::printed(&output)
         );
