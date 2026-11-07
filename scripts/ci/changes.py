@@ -22,7 +22,7 @@ def affected(event, name):
     paths = [path for path in paths if path]
     # Unknown files and empty diffs fail open. Markdown embedded in Rust isn't prose-only.
     if not paths or any(not (path.startswith("docs/") and path.endswith(".md"))
-                        and path != "README.md" for path in paths):
+                        and path not in {"README.md", "AGENTS.md"} for path in paths):
         return True
     sources = git("grep", "-l", "-e", "include_str!", "-e", "include_bytes!", "--", "*.rs")
     for source in sources.decode().splitlines():
