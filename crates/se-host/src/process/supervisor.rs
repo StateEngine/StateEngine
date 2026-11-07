@@ -58,10 +58,14 @@ impl LaunchCoordinator {
         )?;
         let attended = !plan.input.detach && plan.profile.provider == se_store::Provider::Claude;
         let waiter = if attended {
+            // The CLI's call budget also covers cold host startup. Return a
+            // useful pending result before that client clock expires; this
+            // does not shorten native custody or the human onboarding wait.
             deadline.stage(
                 deadline
                     .remaining()?
-                    .saturating_sub(std::time::Duration::from_secs(2)),
+                    .saturating_sub(std::time::Duration::from_secs(2))
+                    .min(std::time::Duration::from_secs(15)),
             )?
         } else {
             deadline.clone()
