@@ -17,6 +17,9 @@ mod interrupt;
 #[cfg(any(target_os = "linux", windows))]
 #[path = "host/launch.rs"]
 mod launch;
+#[cfg(windows)]
+#[path = "host/stack.rs"]
+mod stack;
 #[cfg(any(target_os = "linux", windows))]
 #[path = "host/startup_log.rs"]
 pub(crate) mod startup_log;

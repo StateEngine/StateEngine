@@ -103,7 +103,7 @@ pub(crate) fn foreground(
     home: PathBuf,
     configuration: PathBuf,
     machine: se_types::MachineId,
-    ready: &mut dyn FnMut(&se_host::HostedListener) -> Result<()>,
+    ready: &mut (dyn FnMut(&se_host::HostedListener) -> Result<()> + Send),
 ) -> Result<u8> {
     let mut bytes = [0; 8];
     se_proc::fill_entropy(&mut bytes).map_err(|error| {
@@ -137,7 +137,7 @@ fn serve(
     #[cfg(unix)] socket_paths: se_proc::native_ipc::UnixSocketPaths,
     instance: Option<se_proc::HostInstanceId>,
     guard: &mut Option<se_proc::RuntimeBootstrap>,
-    ready: &mut dyn FnMut(&se_host::HostedListener) -> Result<()>,
+    ready: &mut (dyn FnMut(&se_host::HostedListener) -> Result<()> + Send),
 ) -> Result<u8> {
     let initialized = se_host::initialize_host_process()?;
     let config = crate::config::load::<se_core::config_policy::ConfigFile>(
@@ -193,7 +193,8 @@ fn serve(
             se_core::scope::unreadable("standalone host runtime", &error.to_string())
                 .with_cause(error)
         })?;
-    let result = engine.block_on(async {
+    let serve = || {
+        engine.block_on(async {
         let bound = deadline(Duration::from_secs(30))?;
         let mut host = se_host::HostedRuntime::prepare(
             initialized,
@@ -274,7 +275,12 @@ fn serve(
             None => host.serve(listener).await,
         };
         finish(exit).await
-    });
+    })
+    };
+    #[cfg(windows)]
+    let result = super::stack::run(serve)?;
+    #[cfg(not(windows))]
+    let result = serve();
     #[cfg(windows)]
     let started = std::time::Instant::now();
     #[cfg(windows)]

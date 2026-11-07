@@ -173,14 +173,30 @@ pub(crate) fn uncertain(
     error: SeError,
 ) -> SeError {
     match keyed {
-        Some((operation, key)) => SeError::new(Detail::CommitOutcomeUnknown(
-            details::CommitOutcomeUnknown {
-                operation: operation.clone(),
-                key: Some(key.to_string()),
-                natural_events: Vec::new(),
-            },
-        ))
-        .with_cause(error),
+        Some((operation, key)) => {
+            let mut unknown = SeError::new(Detail::CommitOutcomeUnknown(
+                details::CommitOutcomeUnknown {
+                    operation: operation.clone(),
+                    key: Some(key.to_string()),
+                    natural_events: Vec::new(),
+                },
+            ));
+            // Preserve the safe public transport/decode refusal in both human
+            // and JSON output. Arbitrary internal source chains stay private.
+            let mut remedy = unknown.body.remedy(&se_types::RenderCx::default())
+                .unwrap_or_else(|failure| se_types::Remedy {
+                    text: format!("Retry the original request key; its recovery advice could not be rendered: {failure}"),
+                    command: None,
+                });
+            remedy.text = format!(
+                "Cause [{}]: {}. {}",
+                error.code().as_str(),
+                error.body.message(),
+                remedy.text
+            );
+            unknown.body = unknown.body.with_remedy(remedy);
+            unknown.with_cause(error)
+        }
         None => error,
     }
 }

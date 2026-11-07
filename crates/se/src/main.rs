@@ -129,6 +129,12 @@ pub fn run(
     }
     #[cfg(any(target_os = "linux", windows))]
     if matches!(&operation, AnyOp::RuntimeUp(input) if input.foreground) {
+        // The Windows host loop uses its own bounded stack. Do not hold a
+        // main-thread stream lock while that loop prints startup or shutdown.
+        drop(stdout);
+        drop(stderr);
+        let mut stdout = io::stdout();
+        let mut stderr = io::stderr();
         let result = route::foreground(&context, &mut |output| {
             render::output(&output, common.json, common.quiet, &mut stdout)
                 .map(|_| ())

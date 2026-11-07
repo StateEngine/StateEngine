@@ -89,6 +89,40 @@ pub fn decode_owner_inventory(inventory: &OwnerGuardInventory) -> Result<Vec<Pro
                 continue;
             }
         }
+        #[cfg(windows)]
+        {
+            let prepared = match (&checkpoint.checkpoint, entry.state) {
+                (CheckpointKind::Scope(prepared), ProcessState::Starting) => Some(prepared),
+                // A second crash can interrupt credential/file cleanup after
+                // native exit was committed. Re-probe the original job rather
+                // than treating its terminal witness as a current observation.
+                (CheckpointKind::Exit { source, .. }, ProcessState::Exited) => {
+                    match source.as_ref() {
+                        CheckpointSource::Scope(prepared) => Some(prepared),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            if let Some(prepared) = prepared
+                && matches!(identity.instance, RecordedIdentity::Absent { .. })
+                && matches!(
+                    identity.containment,
+                    ContainmentFact::Contained {
+                        kind: se_store::ContainmentKind::Job,
+                        ..
+                    }
+                )
+            {
+                // Unlike an uncontained tree, the original Windows job can
+                // independently prove closure before any root was published.
+                // Keep its protected bytes: normal startup still has to commit
+                // retirement, revoke credentials and remove the exact files.
+                se_proc::observe_prepared_scope_exit(prepared)
+                    .map_err(|error| unreadable(&format!("{error:?}")))?;
+                continue;
+            }
+        }
         let (record, terminal_cleanup) = match checkpoint
             .owner_guard_record()
             .map_err(|error| unreadable(&error.to_string()))?

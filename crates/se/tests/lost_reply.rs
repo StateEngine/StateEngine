@@ -416,3 +416,70 @@ fn definite_direct_append_cannot_become_an_unreadable_or_unknown_write() -> Chec
     );
     Ok(())
 }
+
+// Development check through the same renderer as the native lost-reply case.
+#[test]
+fn uncertain_transport_and_decode_keep_public_cause_and_original_key() -> se_types::Result<()> {
+    let key = ("agent.launch".into(), "original-launch-key".parse()?);
+    for cause in [
+        se_types::SeError::new(se_types::Detail::IpcUnavailable(
+            se_types::details::IpcUnavailable {
+                endpoint: "protected local endpoint".into(),
+                reason: "read named pipe: native peer closed the channel".into(),
+            },
+        )),
+        ipc::decode(
+            se_host::OperationOutput {
+                schema: "se.agent-launch/v1".into(),
+                value: serde_json::json!({"private-input": "must-not-enter-output"}),
+                window: None,
+            },
+            "se.agent-launch/v1",
+        )
+        .err()
+        .ok_or_else(|| se_types::SeError::invalid("malformed closed output", "a decode refusal"))?,
+    ] {
+        let expected = cause.body.message();
+        let cause = cause.with_cause(std::io::Error::other("private-source-must-stay-private"));
+        let unknown = ipc::uncertain(Some(&key), cause);
+        for json in [false, true] {
+            let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+            let exit = render_error::write(
+                &unknown,
+                &se_types::RenderCx::default(),
+                json,
+                &mut stdout,
+                &mut stderr,
+            )
+            .map_err(|e| se_core::scope::unreadable("test error output", &e.to_string()))?;
+            assert_eq!(exit, 4);
+            let human = String::from_utf8_lossy(&stderr);
+            assert!(
+                human.contains(&expected),
+                "public cause was discarded: {human}"
+            );
+            assert!(!human.contains("private-source-must-stay-private"));
+            assert!(!human.contains("must-not-enter-output"));
+            if json {
+                let value: serde_json::Value = serde_json::from_slice(&stdout)
+                    .map_err(|e| se_core::scope::unreadable("test JSON output", &e.to_string()))?;
+                assert_eq!(value["code"], "commit-outcome-unknown");
+                assert_eq!(value["detail"]["key"], "original-launch-key");
+                assert_eq!(value["detail"]["operation"], "agent.launch");
+                assert_eq!(value["class"], "unknown");
+                assert!(
+                    value["remedy"]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(&expected))
+                );
+                assert!(
+                    !String::from_utf8_lossy(&stdout).contains("private-source-must-stay-private")
+                );
+                assert!(!String::from_utf8_lossy(&stdout).contains("must-not-enter-output"));
+            } else {
+                assert!(stdout.is_empty());
+            }
+        }
+    }
+    Ok(())
+}

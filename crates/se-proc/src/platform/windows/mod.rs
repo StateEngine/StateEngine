@@ -1,6 +1,7 @@
 mod identity;
 mod notify;
 mod recovery;
+pub use recovery::observe_prepared_scope_exit;
 pub(crate) use recovery::uncreated_scope;
 mod security;
 mod spawn;
