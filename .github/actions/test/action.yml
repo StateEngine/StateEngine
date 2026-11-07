@@ -1,0 +1,43 @@
+name: Archived Rust tests
+description: Reuse one native build for required tests and informational Windows runtime checks
+inputs:
+  os:
+    description: Platform label of the uploaded archive
+    required: true
+  shard:
+    description: One of two test partitions
+    required: true
+  mode:
+    description: Full suite or supported hosted Windows smoke tests
+    default: full
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/rust
+    - uses: actions/download-artifact@v4
+      with:
+        name: tests-${{ inputs.os }}
+    - name: Run shard from the existing build
+      shell: bash
+      env:
+        CI_TEST_MODE: ${{ inputs.mode }}
+      run: |
+        filter="$(python scripts/ci/custom.py filter)"
+        if [[ "$RUNNER_OS" == Windows && "$CI_TEST_MODE" == smoke ]]; then
+          smoke='kind(lib)'
+          smoke="$smoke or (binary(=atlas_hook_native) and test(=missing_host_and_unclosed_provider_input_are_silent_and_finite))"
+          smoke="$smoke or (binary(=breakaway_refusal) and test(=no_eligible_broker_reports_named_refusal_and_current_legal_alternatives))"
+          filter="($filter) and ($smoke)"
+        fi
+        cargo nextest run --archive-file tests.tar.zst --extract-to . --workspace-remap "$PWD" --profile ci --partition slice:${{ inputs.shard }}/2 -E "$filter"
+    - name: Run custom harnesses once (their main functions serialize their own cases)
+      if: ${{ !cancelled() && inputs.shard == '1' && inputs.mode != 'smoke' }}
+      shell: bash
+      run: python scripts/ci/custom.py run
+    - uses: actions/upload-artifact@v4
+      if: ${{ always() }}
+      with:
+        name: results-${{ inputs.os }}-${{ inputs.mode }}-${{ inputs.shard }}
+        path: target/nextest/ci/junit.xml
+        retention-days: 3
+        if-no-files-found: warn

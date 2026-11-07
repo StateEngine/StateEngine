@@ -1,0 +1,15 @@
+name: Rust CI tools
+description: Pinned compiler and nextest, with Python for portable fixture drivers
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: 1.97.1
+        components: rustfmt, clippy
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-nextest@0.9.143
