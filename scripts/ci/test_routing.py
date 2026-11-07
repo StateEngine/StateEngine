@@ -5,6 +5,7 @@ import os
 import re
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -113,7 +114,118 @@ class Routing(unittest.TestCase):
         with patch.dict(os.environ, GITHUB_EVENT_PATH=str(event), GITHUB_EVENT_NAME="push",
                         GITHUB_OUTPUT=str(output)):
             changes.main()
-        self.assertEqual(output.read_text(), "rust=true\n")
+        self.assertEqual(output.read_text(), "rust=true\nwindows=true\n")
+
+    def windows_event(self, *paths):
+        self.base = self.git("rev-parse", "HEAD")
+        for name in paths:
+            path = Path(name)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("routing fixture\n")
+        self.git("add", "--", *paths)
+        self.git("commit", "-qm", "routing fixture", "--", *paths)
+        return {"before": self.base, "after": self.git("rev-parse", "HEAD"),
+                "ref": "refs/heads/topic"}
+
+    def detector(self, event, name="pull_request"):
+        event_path = self.root / "event.json"
+        event_path.write_text(json.dumps(event))
+        output = self.root / "output"
+        output.unlink(missing_ok=True)
+        environment = {**os.environ, "GITHUB_EVENT_PATH": str(event_path),
+                       "GITHUB_EVENT_NAME": name, "GITHUB_OUTPUT": str(output)}
+        result = subprocess.run([sys.executable, str(Path(changes.__file__).resolve())],
+                                env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return dict(line.split("=", 1) for line in output.read_text().splitlines())
+
+    def test_windows_skips_only_named_non_windows_sources_or_box_tools(self):
+        for path in ["factory/ci/box/engine.py", "factory/ci/box/Dockerfile",
+                     "crates/se-proc/src/platform/linux/group.rs",
+                     "crates/se-proc/src/birth_time/macos.rs",
+                     "crates/se-proc/src/native_ipc/unix/paths.rs",
+                     "crates/se-proc/src/state_files/effects/unix.rs",
+                     "crates/se-proc/src/state_files/effects/permissions_linux.rs",
+                     "crates/se-proc/src/state_files/effects/permissions_macos.rs",
+                     "crates/se-proc/src/state_files/effects/claim_unix.rs",
+                     "crates/se-proc/src/state_files/effects/install_child_unix.rs"]:
+            with self.subTest(path=path):
+                event = self.windows_event(path)
+                self.assertFalse(changes.windows_affected(event, "push"))
+                self.assertTrue(changes.affected(event, "push"))
+
+    def test_windows_keeps_shared_windows_test_build_and_workflow_paths(self):
+        for path in ["crates/se-proc/src/state_files/effects.rs",
+                     "crates/se-proc/src/state_files/effects/listing.rs",
+                     "crates/se-proc/src/state_files/effects/created.rs",
+                     "crates/se-proc/src/state_files/effects/permissions_windows.rs",
+                     "crates/se-proc/src/platform/windows/mod.rs",
+                     "crates/se-proc/tests/linux_process_exit.rs",
+                     "crates/se-proc/Cargo.toml", "Cargo.lock", "build.rs",
+                     ".github/workflows/ci.yml", "scripts/ci/changes.py",
+                     "factory/ci/boxlike/engine.py", "crates/se-proc/src/linuxish.rs",
+                     "crates/se-proc/src/adapter_unix.rs.backup", "unknown.config"]:
+            with self.subTest(path=path):
+                self.assertTrue(changes.windows_affected(self.windows_event(path), "push"))
+
+    def test_windows_mixed_changes_do_not_hide_shared_code(self):
+        event = self.windows_event("factory/ci/box/runner.sh",
+                                   "crates/se-proc/src/platform/linux/spawn.rs",
+                                   "crates/se-proc/src/state_files/mod.rs")
+        self.assertTrue(changes.windows_affected(event, "push"))
+
+    def test_windows_main_manual_schedule_and_empty_diffs_run(self):
+        event = self.windows_event("crates/se-proc/src/platform/linux/group.rs")
+        self.assertTrue(changes.windows_affected(dict(event, ref="refs/heads/main"), "push"))
+        for name in ["workflow_dispatch", "schedule", "unknown"]:
+            with self.subTest(event=name):
+                self.assertTrue(changes.windows_affected({}, name))
+        self.assertTrue(changes.windows_affected({"before": self.base, "after": self.base}, "push"))
+
+    def test_windows_pull_request_uses_merge_base_and_publishes_both_outputs(self):
+        common = self.base
+        self.git("checkout", "-qb", "base-update")
+        target = self.windows_event("crates/se-proc/src/platform/windows/mod.rs")["after"]
+        self.git("checkout", "-qb", "topic", common)
+        source = self.windows_event("crates/se-proc/src/state_files/effects/claim_unix.rs")["after"]
+        event = {"pull_request": {"base": {"sha": target}, "head": {"sha": source}}}
+        self.assertEqual(self.detector(event), {"rust": "true", "windows": "false"})
+        # Shared work in the same topic must re-enable Windows too.
+        source = self.windows_event("crates/se-proc/src/state_files/effects.rs")["after"]
+        event["pull_request"]["head"]["sha"] = source
+        self.assertEqual(self.detector(event), {"rust": "true", "windows": "true"})
+
+    def test_windows_renames_preserve_both_old_and_new_paths(self):
+        for old, new in [("crates/se-proc/src/platform/windows/old.rs",
+                          "crates/se-proc/src/platform/linux/new.rs"),
+                         ("crates/se-proc/src/native_ipc/unix.rs",
+                          "crates/se-proc/src/shared.rs")]:
+            with self.subTest(old=old, new=new):
+                before = self.windows_event(old)["after"]
+                Path(new).parent.mkdir(parents=True, exist_ok=True)
+                Path(old).rename(new)
+                self.git("add", "--", old, new)
+                self.git("commit", "-qm", "rename fixture", "--", old, new)
+                event = {"before": before, "after": self.git("rev-parse", "HEAD")}
+                self.assertTrue(changes.windows_affected(event, "push"))
+
+    def test_windows_deletions_are_classified_by_the_deleted_path(self):
+        for path, expected in [("crates/se-proc/src/platform/linux/old.rs", False),
+                               ("crates/se-proc/src/state_files/mod.rs", True)]:
+            with self.subTest(path=path):
+                before = self.windows_event(path)["after"]
+                Path(path).unlink()
+                self.git("add", "--", path)
+                self.git("commit", "-qm", "delete fixture", "--", path)
+                event = {"before": before, "after": self.git("rev-parse", "HEAD")}
+                self.assertEqual(changes.windows_affected(event, "push"), expected)
+
+    def test_windows_unavailable_pr_diff_fails_open_through_real_entrypoint(self):
+        for event in [{"pull_request": {}},
+                      {"pull_request": {"base": {"sha": "0" * 40},
+                                        "head": {"sha": self.base}}}]:
+            with self.subTest(event=event):
+                self.assertEqual(self.detector(event), {"rust": "true", "windows": "true"})
 
 
 class FinalStatus(unittest.TestCase):
@@ -141,6 +253,16 @@ class FinalStatus(unittest.TestCase):
         jobs = self.jobs()
         del jobs["test"]
         self.assertFalse(check.accepted(jobs))
+
+    def test_windows_exemption_still_requires_linux_clippy_and_tests(self):
+        jobs = self.jobs()
+        jobs["changes"]["outputs"]["windows"] = "false"
+        self.assertTrue(check.accepted(jobs))
+        for name in ["fmt", "clippy", "archive", "test"]:
+            with self.subTest(job=name):
+                missing = {key: dict(value) for key, value in jobs.items()}
+                missing[name]["result"] = "skipped"
+                self.assertFalse(check.accepted(missing))
 
 
 if __name__ == "__main__":
