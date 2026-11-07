@@ -3,6 +3,7 @@
 
 These judge Linux installation ownership and first-hour output through real scripts and binaries.
 Run in an owner terminal outside managed agent ancestry; no Windows or provider-task qualification.
+Cargo does not discover this Python judge; invoke it explicitly with its archive input.
 """
 import argparse
 import hashlib
@@ -350,15 +351,15 @@ class LinuxInstaller(unittest.TestCase):
         argv, environment = self.command(home)
         tools = self.root / "claim-barrier"
         tools.mkdir()
-        # Pause inside the native holder before record publication. A forged
-        # worker must refuse even though the holder's protected directories exist.
-        shim = tools / "ln"
-        shim.write_text('#!/bin/sh\nfor destination do :; done\ncase "$destination" in */standalone-install.json)\n'
-                        'for source do case "$source" in */install.json) break;; esac; done\n'
-                        'printf "CLAIM-READY:%s\\n" "$source"\nIFS= read -r release;; esac\n'
-                        'exec /usr/bin/ln "$@"\n')
+        # Pause at the real binary copy, after the native holder and durable
+        # partial journal exist but before the completed record is published.
+        shim = tools / "cp"
+        shim.write_text('#!/bin/sh\nif [ "$1" = "$JUDGE_BINARY" ]; then\n'
+                        'printf "CLAIM-READY:%s\\n" "$HOME/.local/state/stateengine/standalone-install.partial/install.json"\n'
+                        'IFS= read -r release\nfi\nexec /usr/bin/cp "$@"\n')
         shim.chmod(0o700)
         environment["PATH"] = str(tools) + ":" + environment["PATH"]
+        environment["JUDGE_BINARY"] = str(self.bundle / "se")
         foreign = self.root / "foreign custody"
         foreign.mkdir()
         environment["SE_INSTALL_CREATED_DIRECTORIES"] = str(foreign)
@@ -372,7 +373,7 @@ class LinuxInstaller(unittest.TestCase):
             before = contents(home)
             # Also preserve a caller-nominated directory outside the installation.
             forged = dict(environment, SE_INSTALL_CREATED_DIRECTORIES=str(foreign))
-            fake = subprocess.run([*argv, "--native-held"], env=forged, capture_output=True, timeout=15)
+            fake = subprocess.run([*argv, "--native-held", "--recover"], env=forged, capture_output=True, timeout=15)
             self.assertNotEqual(fake.returncode, 0, fake.stdout)
             self.assertIn(b"native installation claim", fake.stderr)
             self.assertEqual(contents(home), before)
@@ -383,17 +384,17 @@ class LinuxInstaller(unittest.TestCase):
             with native_lock.open("rb") as impostor:
                 forged.update(SE_INSTALL_CLAIM_FD=str(impostor.fileno()),
                               SE_INSTALL_CUSTODY_FD=str(impostor.fileno()))
-                fake = subprocess.run([*argv, "--native-held"], env=forged,
+                fake = subprocess.run([*argv, "--native-held", "--recover"], env=forged,
                                       pass_fds=(impostor.fileno(),), capture_output=True, timeout=15)
             self.assertNotEqual(fake.returncode, 0)
-            self.assertIn(b"installation object is in use", fake.stderr + fake.stdout)
+            self.assertIn(b"Native installation custody is contended", fake.stderr + fake.stdout)
             self.assertEqual(contents(home), before)
             # A second account-wide holder cannot join the active claim.
             competing = subprocess.run([str(self.bundle / "se"), "__install-hold", "--home",
                                         str(home / ".local/state/stateengine"), "--", "/usr/bin/true"],
                                        env=environment, capture_output=True, timeout=15)
             self.assertNotEqual(competing.returncode, 0)
-            self.assertIn(b"busy", competing.stderr + competing.stdout)
+            self.assertIn(b"Native installation custody is contended", competing.stderr + competing.stdout)
             self.assertEqual(contents(home), before)
             process.stdin.write(b"publish\n")
             process.stdin.flush()
@@ -426,8 +427,9 @@ class LinuxInstaller(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((install_root / "bin/se").stat().st_mode), 0o755)
         self.assertEqual({Path(edit["target"]).name for edit in record["path_edits"]}, {".profile", ".bash_profile"})
         for edit in record["path_edits"]:
-            self.assertEqual(set(edit), {"target", "before_sha256", "block"})
+            self.assertEqual(set(edit), {"target", "before_sha256", "before_bytes", "block"})
             self.assertEqual(edit["before_sha256"], hashlib.sha256(profile).hexdigest())
+            self.assertEqual(edit["before_bytes"], len(profile))
             self.assertEqual(Path(edit["target"]).read_bytes(), profile + edit["block"].encode())
         native = subprocess.run([str(self.bundle / "se"), "__install-files-check",
                                  *[entry["path"] for entry in record["files"]]],
@@ -437,6 +439,7 @@ class LinuxInstaller(unittest.TestCase):
         self.assertNotIn(str(foreign), record["created_directories"])
         self.assertTrue(foreign.is_dir())
         self.assertFalse(list(home.rglob(".install-*")))
+        self.assertFalse((home / ".local/state/stateengine/standalone-install.partial").exists())
         self.assertFalse(list(home.glob(".se-profile-*")))
         for shell in ("/bin/sh", "/bin/bash"):
             terminal = subprocess.run([shell, "-lc", "command -v se"], env=environment,
@@ -452,26 +455,47 @@ class LinuxInstaller(unittest.TestCase):
         self.assertEqual(run.returncode, 0, run.stderr)
 
     def publication_fault(self, home, abrupt):
-        """Fail at the first binary publication, after the durable ownership claim."""
+        """Fail the real binary copy, after assets and the durable partial journal."""
         tools = self.root / ("kill-tools" if abrupt else "fail-tools")
         tools.mkdir()
-        shim = tools / "ln"
-        record = home / ".local/state/stateengine/standalone-install.json"
+        shim = tools / "cp"
+        journal = home / ".local/state/stateengine/standalone-install.partial/install.json"
         shim.write_text(
-            '#!/bin/sh\nfor destination do :; done\ncase "$destination" in */se)\n'
-            '  test -f "$HOME/.local/state/stateengine/standalone-install.json" || exit 75\n'
+            '#!/bin/sh\nif [ "$1" = "$JUDGE_BINARY" ]; then\n'
+            '  test -f "$HOME/.local/state/stateengine/standalone-install.partial/manifest.sha256" || exit 75\n'
             '  printf "JUDGE-AFTER-CLAIM\\n" >&2\n'
             + ('  case "$(tr "\\000" " " < /proc/$PPID/cmdline)" in *"$JUDGE_INSTALL_SCRIPT"*) kill -KILL "$PPID";; *) exit 76;; esac\n' if abrupt else '')
-            + '  exit 74;;\nesac\nexec /usr/bin/ln "$@"\n')
+            + '  exit 74\nfi\nexec /usr/bin/cp "$@"\n')
         shim.chmod(0o700)
         argv, environment = self.command(home)
         environment["JUDGE_INSTALL_SCRIPT"] = str(self.bundle / "install.sh")
+        environment["JUDGE_BINARY"] = str(self.bundle / "se")
         environment["PATH"] = str(tools) + ":" + environment["PATH"]
         run = subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
         self.assertIn(b"JUDGE-AFTER-CLAIM", run.stderr, "fault must occur after the real exclusive claim")
-        return run, record
+        self.assertTrue(journal.is_file(), "the fault must leave its actual partial ownership plan")
+        self.assertFalse((journal.parent.parent / "standalone-install.json").exists())
+        return run, journal
 
-    def test_failure_after_claim_rolls_back_only_its_effects(self):
+    def resume_owned(self, home):
+        argv, environment = self.command(home)
+        run = subprocess.run([*argv, "--recover"], env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
+        self.assertEqual(run.returncode, 0, (run.stdout, run.stderr))
+        self.assertFalse((home / ".local/state/stateengine/standalone-install.partial").exists())
+        record = json.loads((home / ".local/state/stateengine/standalone-install.json").read_bytes())
+        for entry in record["files"]:
+            self.assertEqual(digest(Path(entry["path"])), entry["sha256"])
+
+    def assert_uninstalled_contents(self, home, before):
+        after = contents(home)
+        lease = ".local/state/stateengine/runtime.lock"
+        # Uninstall may create its private, empty runtime lease to prove idle.
+        # Every preexisting file and every other path still matches exactly.
+        if lease not in before and lease in after:
+            self.assertEqual(after.pop(lease), ("file", b"", 0o600))
+        self.assertEqual(after, before)
+
+    def test_failure_after_journal_preserves_history_and_can_resume(self):
         home = self.home("rollback")
         (home / ".profile").write_bytes(b"# original profile\n")
         self.prepare_state(home)
@@ -479,12 +503,17 @@ class LinuxInstaller(unittest.TestCase):
         history.mkdir(parents=True)
         (history / "sentinel").write_bytes(b"unrelated durable history\n")
         before = contents(home)
-        run, record = self.publication_fault(home, abrupt=False)
+        run, journal = self.publication_fault(home, abrupt=False)
         self.assertNotEqual(run.returncode, 0)
-        self.assertFalse(record.exists())
-        self.assertEqual(contents(home), before, "complete rollback removes only new files/directories and preserves prior history")
+        self.assertIn(b"Partial installation preserved", run.stderr)
+        self.assertEqual((history / "sentinel").read_bytes(), b"unrelated durable history\n")
+        self.assertEqual((home / ".profile").read_bytes(), b"# original profile\n")
+        self.assertEqual(stat.S_IMODE(journal.stat().st_mode), 0o600)
+        self.resume_owned(home)
+        self.uninstall_owned(home)
+        self.assert_uninstalled_contents(home, before)
 
-    def test_failure_after_real_profile_publication_restores_or_preserves_foreign_edits(self):
+    def test_failure_after_profile_append_resumes_and_refuses_foreign_edits(self):
         for concurrent_edit in (False, True):
             with self.subTest(concurrent_edit=concurrent_edit):
                 home = self.home("profile-rollback-" + str(concurrent_edit))
@@ -498,45 +527,56 @@ class LinuxInstaller(unittest.TestCase):
                 before = contents(home)
                 tools = self.root / ("profile-fault-tools-" + str(concurrent_edit))
                 tools.mkdir()
-                # Profiles are appended in place, preserving their inode and
-                # metadata. Fail at the ensuing flush after both real appends.
-                shim = tools / "sync"
+                # Complete both actual dd appends, then fail before the native
+                # flush. No external sync/ln call exists in that native path.
+                shim = tools / "dd"
                 shim.write_text(
-                    '#!/bin/sh\ncase "$1" in */.bash_profile)\n'
-                    '  if [ -e "$JUDGE_PROFILE_FAULT" ]; then exec /usr/bin/sync "$@"; fi\n'
-                    '  grep -q -F "# >>> StateEngine PATH >>>" "$HOME/.profile" || exit 75\n'
-                    '  grep -q -F "# >>> StateEngine PATH >>>" "$HOME/.bash_profile" || exit 75\n'
-                    '  test -f "$HOME/.local/state/stateengine/standalone-install.json" || exit 76\n'
-                    '  : > "$JUDGE_PROFILE_FAULT"\n'
-                    '  printf "JUDGE-AFTER-PROFILE-PUBLICATION\\n" >&2\n'
+                    '#!/bin/sh\n/usr/bin/dd "$@" || exit $?\n'
+                    'if [ ! -e "$JUDGE_PROFILE_FAULT" ] &&\n'
+                    '  grep -q -F "# >>> StateEngine PATH >>>" "$HOME/.profile" &&\n'
+                    '  grep -q -F "# >>> StateEngine PATH >>>" "$HOME/.bash_profile"; then\n'
+                    '  test -f "$HOME/.local/state/stateengine/standalone-install.partial/manifest.sha256" || exit 76\n'
+                    '  printf "JUDGE-AFTER-PROFILE-PUBLICATION\\n" > "$JUDGE_PROFILE_FAULT"\n'
                     + ('  printf "# concurrent foreign edit\\n" >> "$HOME/.profile"\n' if concurrent_edit else '')
-                    + '  exit 78;;\nesac\nexec /usr/bin/sync "$@"\n')
+                    + '  exit 78\nfi\n')
                 shim.chmod(0o700)
                 argv, environment = self.command(home)
                 environment["JUDGE_PROFILE_FAULT"] = str(tools / "fired")
                 environment["PATH"] = str(tools) + ":" + environment["PATH"]
                 run = subprocess.run(argv, env=environment, capture_output=True, timeout=INSTALL_TIMEOUT)
                 self.assertNotEqual(run.returncode, 0)
-                self.assertIn(b"JUDGE-AFTER-PROFILE-PUBLICATION", run.stderr)
+                # The real append redirects dd stderr to /dev/null; witness
+                # the injected branch through its separate marker instead.
+                self.assertEqual((tools / "fired").read_bytes(), b"JUDGE-AFTER-PROFILE-PUBLICATION\n")
+                for name in (".profile", ".bash_profile"):
+                    self.assertIn(b"# >>> StateEngine PATH >>>", (home / name).read_bytes())
                 self.assertEqual(os.getxattr(profile, b"user.se-install-judge"), b"preserve-profile-metadata")
-                record = home / ".local/state/stateengine/standalone-install.json"
+                partial = home / ".local/state/stateengine/standalone-install.partial"
+                self.assertTrue((partial / "install.json").is_file())
+                self.assertFalse((partial.parent / "standalone-install.json").exists())
                 if concurrent_edit:
-                    self.assertIn(b"Rollback incomplete", run.stderr)
-                    self.assertTrue(record.is_file(), "unresolved foreign edits retain exact recovery ownership")
                     self.assertTrue(profile.read_bytes().startswith(prior))
                     self.assertTrue(profile.read_bytes().endswith(b"# concurrent foreign edit\n"))
                     self.assertIn(b"# >>> StateEngine PATH >>>", profile.read_bytes())
-                else:
-                    self.assertEqual(contents(home), before, "published profile rollback restores original bytes, mode and owned paths")
-                    self.assertFalse(record.exists())
+                    foreign = contents(home)
+                    refused = subprocess.run([*argv, "--recover"], env=environment,
+                                             capture_output=True, timeout=INSTALL_TIMEOUT)
+                    self.assertNotEqual(refused.returncode, 0)
+                    self.assertIn(b"profile", refused.stdout + refused.stderr)
+                    self.assertEqual(contents(home), foreign, "refused recovery preserves the exact foreign edit and journal")
+                    profile.write_bytes(profile.read_bytes().removesuffix(b"# concurrent foreign edit\n"))
+                self.resume_owned(home)
+                self.assertEqual(os.getxattr(profile, b"user.se-install-judge"), b"preserve-profile-metadata")
+                self.uninstall_owned(home)
+                self.assert_uninstalled_contents(home, before)
 
-    def test_abrupt_loss_after_claim_retains_recoverable_nonsecret_ownership(self):
+    def test_abrupt_loss_after_journal_retains_recoverable_nonsecret_ownership(self):
         home = self.home("interrupted")
         prior = b"# credential=not-a-real-interruption-secret\n"
         (home / ".profile").write_bytes(prior)
         run, record = self.publication_fault(home, abrupt=True)
         self.assertEqual(run.returncode, 128 + signal.SIGKILL)
-        self.assertTrue(record.is_file(), "recovery ownership must precede installed effects")
+        self.assertTrue(record.is_file(), "the partial journal must precede installed effects")
         self.assertEqual(stat.S_IMODE(record.stat().st_mode), 0o600)
         raw = record.read_bytes()
         self.assertNotIn(b"not-a-real-interruption-secret", raw)
@@ -557,6 +597,9 @@ class LinuxInstaller(unittest.TestCase):
             if Path(entry["path"]).exists():
                 self.assertEqual(digest(Path(entry["path"])), entry["sha256"])
         self.assertFalse((home / ".local/bin/se").exists())
+        self.assertEqual((home / ".profile").read_bytes(), prior)
+        self.resume_owned(home)
+        self.uninstall_owned(home)
         self.assertEqual((home / ".profile").read_bytes(), prior)
 
     def test_unsupported_login_shells_refuse_without_creating_install_state(self):
