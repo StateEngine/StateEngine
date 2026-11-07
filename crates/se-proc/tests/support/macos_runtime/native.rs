@@ -29,17 +29,27 @@ pub fn bsd(pid: ProcessId) -> Check<Option<libc::proc_bsdinfo>> {
         )
     };
     if n == size {
-        assert_eq!(value.pbi_pid, pid.0);
+        if value.pbi_pid != pid.0 {
+            return Err(failure(
+                pid,
+                "proc_pidinfo(PROC_PIDTBSDINFO)",
+                format!("returned PID {}", value.pbi_pid),
+            ));
+        }
         return Ok(Some(value));
     }
     let e = std::io::Error::last_os_error();
     if n == 0 && e.raw_os_error() == Some(libc::ESRCH) {
         return Ok(None);
     }
-    Err(format!("outside BSD {n}/{size}: {e}").into())
+    Err(failure(
+        pid,
+        "proc_pidinfo(PROC_PIDTBSDINFO)",
+        format!("returned {n}/{size}: {e:?}"),
+    ))
 }
 pub fn identity(pid: ProcessId) -> Check<ProcessIdentity> {
-    let before = bsd(pid)?.ok_or("outside process absent")?;
+    let before = bsd(pid)?.ok_or_else(|| failure(pid, "identity initial BSD", "process absent"))?;
     let mut path = vec![0u8; 4096];
     // SAFETY: bounded writable buffer for the selected PID's native image.
     let n = unsafe {
@@ -50,12 +60,20 @@ pub fn identity(pid: ProcessId) -> Check<ProcessIdentity> {
         )
     };
     if n <= 0 || n as usize >= path.len() {
-        return Err("outside image unreadable".into());
+        return Err(failure(
+            pid,
+            "proc_pidpath",
+            format!(
+                "returned {n}/{}: {:?}",
+                path.len(),
+                std::io::Error::last_os_error()
+            ),
+        ));
     }
     path.truncate(
         path.iter()
             .position(|b| *b == 0)
-            .ok_or("outside image lacks NUL")?,
+            .ok_or_else(|| failure(pid, "proc_pidpath", "image lacks NUL"))?,
     );
     let mut mib = [libc::CTL_KERN, libc::KERN_BOOTTIME];
     // SAFETY: native POD initialized before a bounded kernel read.
@@ -73,14 +91,35 @@ pub fn identity(pid: ProcessId) -> Check<ProcessIdentity> {
         )
     } != 0
     {
-        return Err(std::io::Error::last_os_error().into());
+        return Err(failure(
+            pid,
+            "sysctl(KERN_BOOTTIME)",
+            format!("{:?}", std::io::Error::last_os_error()),
+        ));
     }
-    assert_eq!(length, size_of::<libc::timeval>());
-    let after = bsd(pid)?.ok_or("outside process vanished during read")?;
-    assert_eq!(
-        (before.pbi_start_tvsec, before.pbi_start_tvusec),
-        (after.pbi_start_tvsec, after.pbi_start_tvusec)
-    );
+    if length != size_of::<libc::timeval>() {
+        return Err(failure(
+            pid,
+            "sysctl(KERN_BOOTTIME)",
+            format!("returned {length} bytes"),
+        ));
+    }
+    let after = bsd(pid)?.ok_or_else(|| {
+        failure(
+            pid,
+            "identity final BSD",
+            "process vanished during image read",
+        )
+    })?;
+    if (before.pbi_start_tvsec, before.pbi_start_tvusec)
+        != (after.pbi_start_tvsec, after.pbi_start_tvusec)
+    {
+        return Err(failure(
+            pid,
+            "identity final BSD",
+            "birth changed during image read",
+        ));
+    }
     Ok(ProcessIdentity {
         machine: machine()?,
         boot: BootIdentity::MacOs {
@@ -111,15 +150,32 @@ fn argv(pid: ProcessId) -> Check<Vec<Vec<u8>>> {
         )
     } != 0
     {
-        return Err(std::io::Error::last_os_error().into());
+        return Err(failure(
+            pid,
+            "sysctl(KERN_PROCARGS2)",
+            format!("{:?}", std::io::Error::last_os_error()),
+        ));
     }
     bytes.truncate(length);
-    let argc = i32::from_ne_bytes(bytes.get(..4).ok_or("outside argc missing")?.try_into()?);
+    let argc = i32::from_ne_bytes(
+        bytes
+            .get(..4)
+            .ok_or_else(|| failure(pid, "sysctl(KERN_PROCARGS2)", "argc missing"))?
+            .try_into()?,
+    );
     if !(1..=65536).contains(&argc) {
-        return Err("outside argc invalid".into());
+        return Err(failure(
+            pid,
+            "sysctl(KERN_PROCARGS2)",
+            format!("invalid argc {argc}"),
+        ));
     }
     let mut at = 4;
-    while *bytes.get(at).ok_or("outside exec path truncated")? != 0 {
+    while *bytes
+        .get(at)
+        .ok_or_else(|| failure(pid, "sysctl(KERN_PROCARGS2)", "exec path truncated"))?
+        != 0
+    {
         at += 1;
     }
     while bytes.get(at) == Some(&0) {
@@ -130,7 +186,7 @@ fn argv(pid: ProcessId) -> Check<Vec<Vec<u8>>> {
         let end = bytes[at..]
             .iter()
             .position(|b| *b == 0)
-            .ok_or("outside argv truncated")?
+            .ok_or_else(|| failure(pid, "sysctl(KERN_PROCARGS2)", "argv truncated"))?
             + at;
         args.push(bytes[at..end].to_vec());
         at = end + 1;
@@ -151,26 +207,55 @@ pub fn read_pin(root: &Path, who: &str) -> Check<Pin> {
         root.join(format!("pin-{who}.json")),
     )?)?)
 }
-pub fn live(pin: &Pin) -> Check<bool> {
+fn original_running(pin: &Pin) -> Check<bool> {
     let Some(value) = bsd(pin.identity.pid)? else {
         return Ok(false);
     };
-    let expected = &pin.identity.start;
-    if *expected
-        != (StartIdentity::MacOs {
+    Ok(pin.identity.start
+        == (StartIdentity::MacOs {
             seconds: value.pbi_start_tvsec,
             microseconds: u32::try_from(value.pbi_start_tvusec)?,
         })
-    {
+        && value.pbi_status != libc::SZOMB)
+}
+pub fn live(pin: &Pin) -> Check<bool> {
+    if !original_running(pin)? {
         return Ok(false);
     }
-    if value.pbi_status == libc::SZOMB {
-        return Ok(false);
+    let read = (|| -> Check {
+        if identity(pin.identity.pid)? != pin.identity || argv(pin.identity.pid)? != pin.argv {
+            return Err(failure(
+                pin.identity.pid,
+                "full identity/argv verification",
+                "original process changed image or full argv; cleanup refused",
+            ));
+        }
+        Ok(())
+    })();
+    match read {
+        Ok(()) => original_running(pin),
+        Err(initial) => match original_running(pin) {
+            // A fresh native record, never an image/argv error, proves the original cannot execute.
+            Ok(false) => Ok(false),
+            Ok(true) => Err(initial),
+            Err(fresh) => Err(failure(
+                pin.identity.pid,
+                "exit-race recheck",
+                format!("image/argv read failed: {initial}; fresh BSD unreadable: {fresh}"),
+            )),
+        },
     }
-    if identity(pin.identity.pid)? != pin.identity || argv(pin.identity.pid)? != pin.argv {
-        return Err("outside original process changed image or full argv; cleanup refused".into());
-    }
-    Ok(true)
+}
+fn failure(
+    pid: ProcessId,
+    operation: &str,
+    detail: impl std::fmt::Display,
+) -> Box<dyn std::error::Error> {
+    format!(
+        "outside native observation: operation={operation}, pid={}, {detail}",
+        pid.0
+    )
+    .into()
 }
 pub fn cleanup(pin: &Pin) -> Check {
     if !live(pin)? {
@@ -184,7 +269,11 @@ pub fn cleanup(pin: &Pin) -> Check {
     if unsafe { libc::kill(i32::try_from(pin.identity.pid.0)?, libc::SIGKILL) } != 0 {
         let e = std::io::Error::last_os_error();
         if e.raw_os_error() != Some(libc::ESRCH) {
-            return Err(e.into());
+            return Err(failure(
+                pin.identity.pid,
+                "kill(SIGKILL) exact-owned cleanup",
+                format!("{e:?}"),
+            ));
         }
     }
     wait(|| Ok(!live(pin)?))

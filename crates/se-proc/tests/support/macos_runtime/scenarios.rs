@@ -164,7 +164,11 @@ fn observe_child(
     if escape {
         fs::write(root.join("escape"), b"escape")?;
         wait(|| Ok(root.join("escaped").exists()))?;
-        let observed = runtime.observe(process).map_err(error)?;
+        let observed = phase(
+            "observe previously tracked child after escape",
+            child.identity.pid,
+            || Ok(runtime.observe(process).map_err(error)?),
+        )?;
         assert!(
             observed
                 .scope
@@ -182,36 +186,84 @@ fn observe_child(
     Ok(())
 }
 pub fn cold(home: &Home, mode: &str) -> Check {
-    let mut child = spawn_host(home, mode, None)?;
-    joined(&mut child)?; // the first runtime process is now gone, not merely dropped.
+    let case = format!("case={mode}");
+    let mut child = phase(
+        &format!("{case} spawn previous host"),
+        ProcessId(std::process::id()),
+        || spawn_host(home, mode, None),
+    )?;
+    let old_host_pid = child.pin.identity.pid;
+    phase(&format!("{case} join previous host"), old_host_pid, || {
+        joined(&mut child)
+    })?;
+    // The first runtime process is now gone, not merely dropped.
     let record: ProcessRecord = serde_json::from_slice(&fs::read(home.0.join("record.json"))?)?;
     let original_execs = fs::read(home.0.join("executions"))?;
-    let runtime = lifecycle::runtime()?;
+    let root_pid = record.root.pid;
+    let runtime = phase(
+        &format!("{case} open replacement runtime"),
+        ProcessId(std::process::id()),
+        lifecycle::runtime,
+    )?;
     let generation = GenerationId::new(2)?;
-    let plan = runtime
-        .plan_recovery(RecoverySource::Record(Box::new(record.clone())))
-        .map_err(error)?;
-    let recovered = runtime.recover(plan, generation).map_err(error)?;
+    let plan = phase(&format!("{case} plan cold recovery"), root_pid, || {
+        Ok(runtime
+            .plan_recovery(RecoverySource::Record(Box::new(record.clone())))
+            .map_err(error)?)
+    })?;
+    let recovered = phase(&format!("{case} recover cold record"), root_pid, || {
+        Ok(runtime.recover(plan, generation).map_err(error)?)
+    })?;
     if mode == "cold-root-exited" {
-        assert!(
-            matches!(recovered, RecoveryOutcome::Unproved { .. }),
-            "cold reconciliation forgot a known live escaped child"
+        let RecoveryOutcome::Unproved { error, .. } = recovered else {
+            return Err(format!(
+                "{case} pid={}: cold reconciliation forgot a known live escaped child",
+                root_pid.0
+            )
+            .into());
+        };
+        println!(
+            "{case} pid={} unproved reconciliation: {error:?}",
+            root_pid.0
         );
-        assert!(native::live(&native::read_pin(&home.0, "child")?)?);
-        native::cleanup(&native::read_pin(&home.0, "child")?)?;
+        assert_eq!(
+            error.code,
+            ProcErrorCode::RecoveryUnproved,
+            "unrelated native unreadability is not a history witness"
+        );
+        phase(&format!("{case} outside root exit"), root_pid, || {
+            closed(&home.0, "provider")
+        })?;
+        let child = native::read_pin(&home.0, "child")?;
+        assert!(native::live(&child)?);
+        phase(
+            &format!("{case} exact escaped-child cleanup"),
+            child.identity.pid,
+            || native::cleanup(&child),
+        )?;
     } else {
-        let RecoveryOutcome::Recovered {
-            process,
-            record: adopted,
-        } = recovered
-        else {
-            return Err("live original birth was not adopted".into());
+        let (process, adopted) = match recovered {
+            RecoveryOutcome::Recovered { process, record } => (process, record),
+            RecoveryOutcome::Unproved { error, .. } => {
+                return Err(
+                    format!("{case} phase=cold adoption pid={}: {error:?}", root_pid.0).into(),
+                );
+            }
+            _ => {
+                return Err(format!(
+                    "{case} phase=cold adoption pid={}: live original birth was not adopted",
+                    root_pid.0
+                )
+                .into());
+            }
         };
         assert_eq!(adopted.root, record.root);
         assert_eq!(adopted.generation, generation);
         if mode == "cold-escaped" {
             let child = native::read_pin(&home.0, "child")?;
-            let observed = runtime.observe(&process).map_err(error)?;
+            let observed = phase(&format!("{case} observe adopted scope"), root_pid, || {
+                Ok(runtime.observe(&process).map_err(error)?)
+            })?;
             assert!(
                 observed
                     .scope
@@ -219,17 +271,29 @@ pub fn cold(home: &Home, mode: &str) -> Check {
                     .known_live
                     .contains(&child.identity)
             );
-            let result = escaped_stop(&runtime, &process, generation, &home.0)?;
+            let result = phase(&format!("{case} stop adopted scope"), root_pid, || {
+                escaped_stop(&runtime, &process, generation, &home.0)
+            })?;
             assert!(
                 !matches!(result, StopObservation::Complete(_)),
                 "cold stop erased an observed escape"
             );
             assert!(native::live(&child)?);
-            native::cleanup(&child)?;
+            phase(
+                &format!("{case} exact escaped-child cleanup"),
+                child.identity.pid,
+                || native::cleanup(&child),
+            )?;
         } else {
-            lifecycle::close(&runtime, &process, generation)?;
+            phase(
+                &format!("{case} stop/witness/release adopted scope"),
+                root_pid,
+                || lifecycle::close(&runtime, &process, generation),
+            )?;
         }
-        closed(&home.0, "provider")?;
+        phase(&format!("{case} outside root closure"), root_pid, || {
+            closed(&home.0, "provider")
+        })?;
     }
     assert_eq!(
         fs::read(home.0.join("executions"))?,
@@ -239,20 +303,41 @@ pub fn cold(home: &Home, mode: &str) -> Check {
     assert!(runtime.arena_snapshot().map_err(error)?.entries.len() <= 1);
     // Records predating tracked history never grant a cold empty-scope witness.
     let mut legacy = record;
-    let legacy_runtime = lifecycle::runtime()?;
+    let legacy_runtime = phase(
+        &format!("{case} open legacy-record runtime"),
+        ProcessId(std::process::id()),
+        lifecycle::runtime,
+    )?;
     let mut value = serde_json::to_value(&legacy)?;
     value
         .as_object_mut()
         .ok_or("record must be an object")?
         .remove("tracked_obligations");
     legacy = serde_json::from_value(value)?;
-    let plan = legacy_runtime
-        .plan_recovery(RecoverySource::Record(Box::new(legacy)))
-        .map_err(error)?;
-    assert!(matches!(
-        legacy_runtime.recover(plan, generation).map_err(error)?,
-        RecoveryOutcome::Unproved { .. }
-    ));
+    let plan = phase(
+        &format!("{case} plan legacy-record recovery"),
+        root_pid,
+        || {
+            Ok(legacy_runtime
+                .plan_recovery(RecoverySource::Record(Box::new(legacy)))
+                .map_err(error)?)
+        },
+    )?;
+    let outcome = phase(&format!("{case} refuse missing history"), root_pid, || {
+        Ok(legacy_runtime.recover(plan, generation).map_err(error)?)
+    })?;
+    let RecoveryOutcome::Unproved { error, .. } = outcome else {
+        return Err(format!(
+            "{case} pid={}: absent history granted cold custody/proof",
+            root_pid.0
+        )
+        .into());
+    };
+    println!(
+        "{case} pid={} absent history refusal: {error:?}",
+        root_pid.0
+    );
+    assert_eq!(error.code, ProcErrorCode::RecoveryUnproved);
     Ok(())
 }
 #[test]
@@ -262,7 +347,11 @@ fn detached_host() -> Check {
     let mode = std::env::var("SE_MACOS_CASE")?;
     let sentinel = lifecycle::sentinel(&root)?;
     fs::write(root.join("sentinel"), sentinel.as_raw_fd().to_string())?;
-    let runtime = lifecycle::open(&root)?;
+    let runtime = phase(
+        &format!("case={mode} open previous runtime"),
+        ProcessId(std::process::id()),
+        || lifecycle::open(&root),
+    )?;
     if mode == "eof" {
         let (_ticket, _process, _checkpoint) = lifecycle::begin(&runtime, &root)?;
         // No Rust destructor cancels the child; only native channel EOF authorizes refusal.
@@ -275,15 +364,27 @@ fn detached_host() -> Check {
     if descendants {
         fs::write(root.join("make-child"), b"child")?;
     }
-    let launched = lifecycle::launch(&runtime, &root)?;
+    let launched = phase(
+        &format!("case={mode} previous host launch/checkpoint/exec"),
+        ProcessId(std::process::id()),
+        || lifecycle::launch(&runtime, &root),
+    )?;
     let process = &launched.process;
     let generation = launched.record.generation;
     let pin = native::read_pin(&root, "provider")?;
     if descendants {
-        observe_child(&runtime, process, &root, mode != "descendant")?;
+        phase(
+            &format!("case={mode} previous host track child/escape"),
+            pin.identity.pid,
+            || observe_child(&runtime, process, &root, mode != "descendant"),
+        )?;
     }
     if mode.starts_with("cold") {
-        let observed = runtime.observe(process).map_err(error)?;
+        let observed = phase(
+            &format!("case={mode} previous host observe before save"),
+            pin.identity.pid,
+            || Ok(runtime.observe(process).map_err(error)?),
+        )?;
         // Describe, observations and snapshots must all retain already-observed history.
         let described = runtime.describe(process).map_err(error)?;
         let snap = runtime.arena_snapshot().map_err(error)?;
@@ -305,7 +406,11 @@ fn detached_host() -> Check {
         json(root.join("record.json"), &described)?;
         if mode == "cold-root-exited" {
             fs::write(root.join("exit-root"), b"exit")?;
-            wait(|| Ok(!native::live(&pin)?))?;
+            phase(
+                &format!("case={mode} previous host outside root exit"),
+                pin.identity.pid,
+                || wait(|| Ok(!native::live(&pin)?)),
+            )?;
         }
         std::process::exit(0);
     }

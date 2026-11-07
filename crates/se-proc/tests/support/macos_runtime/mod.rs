@@ -79,3 +79,15 @@ impl Drop for Home {
         // Retain the small transcript, including original pins, for the native job.
     }
 }
+
+/// Keep the consumer stage and exact PID alongside the original native cause.
+pub fn phase<T>(label: &str, pid: ProcessId, action: impl FnOnce() -> Check<T>) -> Check<T> {
+    println!("native phase={label} pid={} start", pid.0);
+    match action() {
+        Ok(value) => {
+            println!("native phase={label} pid={} complete", pid.0);
+            Ok(value)
+        }
+        Err(cause) => Err(format!("native phase={label}, pid={}: {cause}", pid.0).into()),
+    }
+}
