@@ -151,24 +151,46 @@ pub fn remove_session_pin(
     session: &SessionId,
     expected: [u8; 32],
 ) -> Result<()> {
-    let (_, path) = pin_path(state, session.as_str())?;
-    if state.readback(&path)?.is_none() {
-        return Ok(());
+    SessionPinRemoval::acquire(state, session)?.remove(expected)
+}
+
+/// Native custody for a revoked session pin. Acquisition performs no mutation,
+/// so callers may retry contention before committing to one digest-checked remove.
+pub struct SessionPinRemoval<'a> {
+    state: &'a NativeStateFiles,
+    path: PathBuf,
+    file: Option<OwnedFile>,
+}
+impl<'a> SessionPinRemoval<'a> {
+    /// Reopen and validate the protected pin and its parent on every attempt.
+    pub fn acquire(state: &'a NativeStateFiles, session: &SessionId) -> Result<Self> {
+        let (_, path) = pin_path(state, session.as_str())?;
+        let file = if state.readback(&path)?.is_none() {
+            None
+        } else {
+            Some(OwnedFile::open(&path)?.ok_or_else(|| {
+                failure(
+                    StateFileErrorCode::SourceChanged,
+                    "session pin disappeared before removal custody",
+                    &path,
+                )
+            })?)
+        };
+        Ok(Self { state, path, file })
     }
-    let file = OwnedFile::open(&path)?.ok_or_else(|| {
-        failure(
-            StateFileErrorCode::SourceChanged,
-            "session pin disappeared before removal custody",
-            &path,
-        )
-    })?;
-    file.remove(expected)?;
-    if state.readback(&path)?.is_some() {
-        return Err(failure(
-            StateFileErrorCode::SourceChanged,
-            "session pin remains after removal",
-            &path,
-        ));
+    /// Preserve edited or replaced pins and independently witness native absence.
+    pub fn remove(self, expected: [u8; 32]) -> Result<()> {
+        let Some(file) = self.file else {
+            return Ok(());
+        };
+        file.remove(expected)?;
+        if self.state.readback(&self.path)?.is_some() {
+            return Err(failure(
+                StateFileErrorCode::SourceChanged,
+                "session pin remains after removal",
+                &self.path,
+            ));
+        }
+        Ok(())
     }
-    Ok(())
 }

@@ -3,14 +3,96 @@
 //! Both routes retain the same root and use the same no-follow reads and
 //! digest-checked mutations. Policy preserves their public inventory errors,
 //! directory allowlists and recovery advice.
-use se_proc::{NativeStateFiles, StateFileError, StateFileErrorCode};
+use se_proc::{NativeStateFiles, OwnedFile, StateFileError, StateFileErrorCode};
 use se_store::{StateFiles, StoreDetail, StoreError, StoreErrorCode, StoreResult};
 use se_types::{Read, Remedy, Retry};
 use std::{
     fs::File,
     io::Write,
     path::{Component, Path},
+    time::{Duration, Instant},
 };
+
+pub(crate) struct AcquisitionError {
+    error: StateFileError,
+    waited: Duration,
+}
+impl AcquisitionError {
+    pub(crate) fn into_store(self) -> Box<StoreError> {
+        if !self.error.is_contended() {
+            return native_error(self.error);
+        }
+        Box::new(StoreError {
+            code: StoreErrorCode::Busy,
+            cause: format!("Native file acquisition remains contended: {}", self.error),
+            detail: StoreDetail::NativeContention {
+                waited_ms: self.waited.as_millis().try_into().unwrap_or(u64::MAX),
+            },
+            remedy: Remedy {
+                text: "Wait for the current file operation to finish, reread the protected state, then retry the same request; preserve the existing files.".into(),
+                command: None,
+            },
+            retry: Retry::AfterReread,
+        })
+    }
+    pub(crate) fn into_public(
+        self,
+        fallback: impl FnOnce(StateFileError) -> se_types::SeError,
+    ) -> se_types::SeError {
+        if self.error.is_contended() {
+            se_core::store_error::store_error(&self.into_store())
+        } else {
+            fallback(self.error)
+        }
+    }
+}
+
+/// One retry policy for synchronous staging and asynchronous launch cleanup.
+/// Every attempt reopens native pins; waiting does not retain a worker slot.
+pub(crate) struct AcquisitionRetry {
+    deadline: Instant,
+    started: Instant,
+    contended: Option<StateFileError>,
+}
+pub(crate) enum Acquisition<T> {
+    Ready(T),
+    Wait(Duration),
+}
+impl AcquisitionRetry {
+    pub(crate) fn new(deadline: Instant) -> Self {
+        Self {
+            deadline,
+            started: Instant::now(),
+            contended: None,
+        }
+    }
+    pub(crate) fn acquire<T>(
+        &mut self,
+        acquire: impl FnOnce() -> Result<T, StateFileError>,
+    ) -> Result<Acquisition<T>, AcquisitionError> {
+        let failed = |error| AcquisitionError {
+            error,
+            waited: self.started.elapsed(),
+        };
+        if Instant::now() >= self.deadline
+            && let Some(error) = self.contended.take()
+        {
+            return Err(failed(error));
+        }
+        match acquire() {
+            Ok(value) => Ok(Acquisition::Ready(value)),
+            Err(error) if error.is_contended() => {
+                let remaining = self.deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(failed(error));
+                }
+                self.contended = Some(error);
+                Ok(Acquisition::Wait(remaining.min(Duration::from_millis(10))))
+            }
+            Err(error) => Err(failed(error)),
+        }
+    }
+}
 
 /// Caller policy; native custody and mutation rules are identical in both modes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,6 +200,7 @@ impl Files {
     /// Retire only this caller's exact native staging bytes. A losing create
     /// can briefly contend with another retirement's cooperating parent pin.
     pub fn retire_staging(&self, path: &Path, digest: [u8; 32]) -> StoreResult<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
         self.check_path(path)?;
         if !path
             .file_name()
@@ -128,29 +211,21 @@ impl Files {
                 "staging retirement requires a native unique staging name",
             ));
         }
-        for attempt in 0..50 {
-            match se_proc::OwnedFile::open(path) {
-                Ok(Some(file)) => {
-                    file.remove(digest).map_err(native_error)?;
-                    return self.check_root();
-                }
-                Ok(None) => return self.check_root(),
-                Err(error)
-                    if error
-                        .source
-                        .as_ref()
-                        .is_some_and(|source| source.kind() == std::io::ErrorKind::WouldBlock)
-                        && attempt < 49 =>
-                {
-                    std::thread::sleep(std::time::Duration::from_millis(10))
-                }
-                Err(error) => return Err(native_error(error)),
+        let mut retry = AcquisitionRetry::new(deadline);
+        let acquired = loop {
+            match retry
+                .acquire(|| OwnedFile::open(path))
+                .map_err(AcquisitionError::into_store)?
+            {
+                Acquisition::Ready(file) => break file,
+                Acquisition::Wait(delay) => std::thread::sleep(delay),
             }
+        };
+        if let Some(file) = acquired {
+            self.check_path(path)?;
+            file.remove(digest).map_err(native_error)?;
         }
-        Err(self.1.fail(
-            StoreErrorCode::Unreadable,
-            "bounded native staging parent contention did not clear",
-        ))
+        self.check_root()
     }
     fn check_root(&self) -> StoreResult<()> {
         // The real database read revalidates the original retained root before

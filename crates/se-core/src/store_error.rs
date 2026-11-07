@@ -36,7 +36,7 @@ pub fn store_error(error: &StoreError) -> SeError {
     let subject = format!("store {:?}", error.code);
     let reason = error.cause.clone();
     let next_step = error.remedy.text.clone();
-    SeError::new(match error.code {
+    let mut mapped = SeError::new(match error.code {
         C::Absent | C::ReferenceMissing => Detail::TargetUnknown(details::TargetUnknown {
             subject,
             reason,
@@ -50,7 +50,10 @@ pub fn store_error(error: &StoreError) -> SeError {
             check: reason,
         }),
         C::Busy | C::Backpressure => Detail::StoreBusy(details::StoreBusy {
-            waited_ms: 0,
+            waited_ms: match error.detail {
+                se_store::StoreDetail::NativeContention { waited_ms } => waited_ms,
+                _ => 0,
+            },
             replay: None,
             reason,
             next_step,
@@ -197,7 +200,11 @@ pub fn store_error(error: &StoreError) -> SeError {
             })
         }
     })
-    .with_cause(error.clone())
+    .with_cause(error.clone());
+    if matches!(error.detail, se_store::StoreDetail::NativeContention { .. }) {
+        mapped.body = mapped.body.with_retry(error.retry.clone());
+    }
+    mapped
 }
 
 /// The adapter retains these submitted identities around append/await; lost ACK
