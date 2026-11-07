@@ -114,17 +114,38 @@ impl Channels {
                 _=self.changed.notified()=>{},
             }
             let deadline = super::service::deadline(Duration::from_secs(5))?;
-            let states = match self
-                .read(None, &deadline, |cx| {
-                    cx.read.channel_active().map_err(|e| store_error(&e))
-                })
-                .await
-            {
-                Ok(states) => states,
-                Err(error) => {
-                    failure = Some(error);
-                    break;
+            let scan = self.read(None, &deadline, |cx| {
+                cx.read.channel_active().map_err(|e| store_error(&e))
+            });
+            let states = tokio::select! {
+                biased;
+                changed = stopped.changed() => {
+                    if changed.is_err() || stopped.borrow().is_some() {
+                        break;
+                    }
+                    continue;
                 }
+                result = scan => match result {
+                    Ok(states) => states,
+                    Err(error) if matches!(error.body.detail(), se_types::Detail::DeadlineExceeded(_)) => {
+                        // A read timeout delays discovery while existing receivers retain custody.
+                        eprintln!("Channel connection scan delayed: {error}");
+                        timer.reset();
+                        continue;
+                    }
+                    Err(error)
+                        if self.fenced.load(std::sync::atomic::Ordering::Acquire)
+                        && matches!(error.body.detail(),
+                            se_types::Detail::MessagingChannelRefused(detail)
+                                if detail.reason == ChannelError::ReceiverNotRunning) => {
+                        // The host fences new reads before waking its shutdown waiters.
+                        break;
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                },
             };
             let retired: Vec<_> = workers
                 .keys()
