@@ -89,19 +89,19 @@ pub use bootstrap::{
 };
 #[cfg(target_os = "linux")]
 mod linux_native;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod platform;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod runtime;
 mod support;
 #[cfg(windows)]
 mod windows_native;
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub use runtime::{read_process, read_process_until};
 #[cfg(target_os = "macos")]
 mod macos_process;
 #[cfg(target_os = "macos")]
-pub use macos_process::{read_process, read_process_until};
+pub use platform::process_attach_entry;
 mod creation_owner;
 pub use creation_owner::{FileOwnerError, FileOwnerInitialization, initialize_file_creation_owner};
 

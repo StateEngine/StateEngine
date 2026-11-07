@@ -1,3 +1,12 @@
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub(crate) use crate::macos_process::{read_process, read_process_until};
+#[cfg(target_os = "macos")]
+pub use macos::process_attach_entry;
+#[cfg(target_os = "macos")]
+pub(crate) use macos::{Driver, Scope, uncreated_scope};
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
@@ -13,9 +22,9 @@ use crate::{
 };
 
 pub(crate) enum Progress {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Pending,
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     Root(ProcessIdentity),
     Executed(ProcessIdentity, Box<ProcessObservation>),
 }

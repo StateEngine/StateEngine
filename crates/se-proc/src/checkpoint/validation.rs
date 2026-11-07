@@ -224,6 +224,20 @@ pub(super) fn process(value: &ProcessRecord, lifecycle: &LifecycleId) -> Result<
     )?;
     identity(&value.owner)?;
     identity(&value.root)?;
+    if let Some(history) = &value.tracked_obligations {
+        require(
+            matches!(value.scope, ScopeIdentity::MacOsTracked { .. })
+                && history.members.contains(&value.root),
+            "tracking history requires its exact Darwin root",
+        )?;
+        for member in &history.members {
+            identity(member)?;
+            require(
+                member.machine == value.root.machine && member.boot == value.root.boot,
+                "tracked member machine/boot differs from root",
+            )?;
+        }
+    }
     scope(&value.scope)?;
     require(
         value.owner.machine == value.root.machine && value.owner.boot == value.root.boot,

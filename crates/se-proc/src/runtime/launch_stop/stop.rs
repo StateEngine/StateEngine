@@ -47,15 +47,15 @@ impl NativeProcessRuntime {
     pub(super) fn native_request_stop(&self, prepared: PreparedStop) -> ProcResult<StopAttempt> {
         self.request_stop_mode(prepared, false)
     }
-    /// Linux's graceful signal consumes the same identity/generation-bound
+    /// Unix graceful signalling consumes the same identity/generation-bound
     /// single-use stop token as force, after the host's durable StopRequested.
     /// Scope exit still requires an independent witness; this is not release.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn request_termination(&self, prepared: PreparedStop) -> ProcResult<StopAttempt> {
         self.request_stop_mode(prepared, true)
     }
     fn request_stop_mode(&self, prepared: PreparedStop, graceful: bool) -> ProcResult<StopAttempt> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = graceful;
         let key = prepared.key;
         let (attempt, dispatch) = self.inner.apply(&key, true, |s| {
@@ -71,7 +71,7 @@ impl NativeProcessRuntime {
             } else {
                 s.stop_consumed = prepared.nonce;
                 match &mut s.native {
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     Some(native) if graceful => native.terminate(prepared.deadline),
                     Some(native) => native.stop(prepared.deadline),
                     None if !s.launched => Ok(StopDispatch::NotNeeded),
@@ -230,18 +230,12 @@ fn same_root_custody(a: &RootWitness, b: &RootWitness) -> bool {
 }
 pub(in crate::runtime) fn witness(s: &mut Slot) -> ProcResult<StopObservation> {
     match witness_inner(s) {
-        // Windows can revoke image-query access during teardown before the
-        // retained process handle becomes signalled. Only exit observation is
+        // Image queries can become unavailable during teardown before native
+        // exit evidence becomes readable. Only exit observation is
         // retryable here: stateless reads and identity/control checks still
         // return their original unreadable error. No absence or live identity
         // is manufactured while waiting for independent native exit evidence.
-        Err(cause)
-            if cfg!(windows)
-                && cause.code == ProcErrorCode::IdentityUnreadable
-                && cause.native.as_ref().is_some_and(|failure| {
-                    failure.api == "QueryFullProcessImageNameW" && failure.code == Some(5)
-                }) =>
-        {
+        Err(cause) if pending_exit_image(&cause) => {
             if s.phase == LifecycleState::StopRequested {
                 s.set_phase(LifecycleState::StopUnproved)?;
             }
@@ -254,7 +248,7 @@ pub(in crate::runtime) fn witness(s: &mut Slot) -> ProcResult<StopObservation> {
                         known_live: Vec::new(),
                         extent: EnumerationExtent::Partial {
                             reason: format!(
-                                "Windows exit remains unproved while image access is unavailable: {cause:?}"
+                                "native exit remains unproved while image access is unavailable: {cause:?}"
                             ),
                             omitted: None,
                         },
@@ -266,6 +260,21 @@ pub(in crate::runtime) fn witness(s: &mut Slot) -> ProcResult<StopObservation> {
         }
         result => result,
     }
+}
+fn pending_exit_image(cause: &ProcError) -> bool {
+    if cause.code != ProcErrorCode::IdentityUnreadable {
+        return false;
+    }
+    let Some(failure) = &cause.native else {
+        return false;
+    };
+    let windows =
+        cfg!(windows) && failure.api == "QueryFullProcessImageNameW" && failure.code == Some(5);
+    #[cfg(target_os = "macos")]
+    let darwin = failure.api == "proc_pidpath" && failure.code == Some(i64::from(libc::ESRCH));
+    #[cfg(not(target_os = "macos"))]
+    let darwin = false;
+    windows || darwin
 }
 fn witness_inner(s: &mut Slot) -> ProcResult<StopObservation> {
     if s.native.is_none() && !s.launched {

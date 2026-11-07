@@ -46,6 +46,14 @@ pub enum LifecycleState {
     Lost,
     Historical,
 }
+/// Retained original instances, including known escapes, that a cold owner
+/// must account for before claiming the tracked scope exited.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrackedObligations {
+    pub members: Vec<ProcessIdentity>,
+    pub escaped: bool,
+}
 /// Store owns durable revision/state. This is the arena's last observed native
 /// state, never a claim that its transition was committed to the store.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -58,6 +66,9 @@ pub struct ProcessRecord {
     pub generation: GenerationId,
     pub root: ProcessIdentity,
     pub scope: ScopeIdentity,
+    /// Older records have no tracking history; absence grants no cold exit proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_obligations: Option<TrackedObligations>,
     pub guarantee: ContainmentGuarantee,
     pub entry: EntryMethod,
     pub state: LifecycleState,
@@ -106,51 +117,51 @@ pub enum ReservationParent {
 /// Runtime owns all resources. This is a revocable reference, not a second
 /// native owner; multiple same-generation references are legal.
 pub struct OwnedProcess {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) key: crate::runtime::Reference,
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub(crate) _private: (),
 }
 pub struct NativeProcessRuntime {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) inner: Arc<crate::runtime::Arena>,
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub(crate) _private: (),
 }
 pub struct PreparedStop {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) key: crate::runtime::Reference,
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) deadline: Instant,
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) nonce: u64,
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub(crate) _private: (),
 }
 pub struct StopTicket {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) key: crate::runtime::Reference,
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) attempt: u64,
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub(crate) _private: (),
 }
 pub struct PreparedLaunch {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) key: crate::runtime::Reference,
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub(crate) _private: (),
 }
 pub struct LaunchTicket {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) key: crate::runtime::Reference,
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub(crate) _private: (),
 }
 pub struct ExitWatch {
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     pub(crate) _watch: Arc<crate::runtime::notify::Watch>,
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     pub(crate) _private: (),
 }
 

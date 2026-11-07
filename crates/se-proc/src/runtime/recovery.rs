@@ -1,9 +1,9 @@
 use super::SlotEntry;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use super::{Slot, notify::Hub};
 use crate::support::*;
 use crate::*;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::{
     sync::{Arc, Mutex},
     time::Instant,
@@ -42,6 +42,8 @@ pub(super) fn plan(
                 RecoveryDisposition::ReleaseExitedScope
             } else if matches!(record.scope, ScopeIdentity::WindowsJob { .. }) {
                 RecoveryDisposition::VerifyExitedThenResume
+            } else if matches!(record.scope, ScopeIdentity::MacOsTracked { .. }) {
+                RecoveryDisposition::InspectTrackedMacOs
             } else {
                 RecoveryDisposition::ReattachLinuxScope
             }
@@ -53,9 +55,9 @@ pub(super) fn plan(
         disposition,
     })
 }
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct Silent;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl ExitSink for Silent {
     fn notify(&self, _notice: ExitNotice) {}
 }
@@ -102,10 +104,11 @@ pub(super) fn recover(
             parent: match &record.scope {
                 ScopeIdentity::WindowsJob { .. } => ReservationParent::Windows,
                 ScopeIdentity::LinuxTracked { .. } => ReservationParent::LinuxTracked,
+                ScopeIdentity::MacOsTracked { .. } => ReservationParent::MacOs,
                 _ => {
                     return Ok(unproved(
                         checked.source,
-                        "scope is outside the implemented wave-1 recovery path",
+                        "scope is outside the implemented tracked recovery path",
                     ));
                 }
             },
@@ -209,7 +212,7 @@ pub(super) fn recover(
                             generation,
                         ),
                     },
-                    record: Box::new(record.clone()),
+                    record: Box::new(s.record()?),
                 });
             }
             if let Some(checkpoint) = &s.checkpoint {
@@ -239,6 +242,7 @@ pub(super) fn recover(
                         parent: match empty.scope {
                             ScopeIdentity::LinuxPrepared { .. } => ReservationParent::LinuxTracked,
                             ScopeIdentity::WindowsJob { .. } => ReservationParent::Windows,
+                            ScopeIdentity::MacOsPrepared { .. } => ReservationParent::MacOs,
                             _ => {
                                 return Err(input(
                                     "failed preparation",
@@ -267,11 +271,11 @@ pub(super) fn recover(
             }),
         }
     }
-    #[cfg(target_os = "linux")]
-    cold_linux(runtime, checked, reservation, generation)
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    cold_unix_tracked(runtime, checked, reservation, generation)
 }
-#[cfg(target_os = "linux")]
-fn cold_linux(
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn cold_unix_tracked(
     runtime: &NativeProcessRuntime,
     checked: RecoveryPlan,
     reservation: LaunchReservation,
@@ -381,8 +385,8 @@ fn cold_linux(
         current.owner = runtime.inner.owner.clone();
         current.generation = generation;
         s.phase = current.state;
-        s.record = Some(current.clone());
-        Ok(current)
+        s.record = Some(current);
+        s.record()
     });
     match result {
         Ok(record) => Ok(RecoveryOutcome::Recovered {

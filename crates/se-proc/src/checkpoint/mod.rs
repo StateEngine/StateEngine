@@ -207,7 +207,7 @@ fn known_fields(
     Ok(())
 }
 
-#[cfg(any(target_os = "linux", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn validate_recovery(source: &RecoverySource) -> Result<(), CheckpointError> {
     match source {
         RecoverySource::Reservation(value) => validation::reservation(value, &value.lifecycle),
