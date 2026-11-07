@@ -10,11 +10,16 @@ use linux as os;
 mod windows;
 #[cfg(windows)]
 use windows as os;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+use macos as os;
 
 /// OS wall-clock birth converted to the public Time's Unix microsecond unit.
 /// Linux's boot epoch is whole seconds, so precision reports one
 /// second even when start ticks have a finer quantum. Windows FILETIME is
 /// rounded down to microseconds; its full 100ns identity remains unchanged.
+/// Darwin reports its native timeval birth directly, with microsecond precision.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ProcessBirthTime {
     unix_micros: i64,
@@ -53,6 +58,10 @@ fn exact(expected: &ProcessIdentity, deadline: Instant) -> ProcResult<()> {
     crate::platform::verify_live_identity(expected)?;
     bound(deadline)
 }
+#[cfg(target_os = "macos")]
+fn exact(expected: &ProcessIdentity, deadline: Instant) -> ProcResult<()> {
+    crate::macos_process::exact(expected, deadline)
+}
 /// Pins the selected native process for this read and rechecks its exact
 /// boot/start/image before and after conversion. No current wall-clock sample,
 /// assumed tick rate, or fabricated zero is used. Missing/unreadable/replaced
@@ -68,7 +77,7 @@ pub fn observe_process_birth(
             "positive native PID and absolute verified image required",
         ));
     }
-    #[cfg(any(target_os = "linux", windows))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         let pin = os::Pin::open(expected)?;
         bound(deadline)?;
@@ -80,7 +89,7 @@ pub fn observe_process_birth(
         bound(deadline)?;
         Ok(value)
     }
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     Err(failure(
         ProcErrorCode::UnsupportedPlatform,
         "native pinned birth-time conversion is not implemented on this platform",
