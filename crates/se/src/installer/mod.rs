@@ -1,6 +1,8 @@
 //! The one native installer holder prepares admitted paths before its script.
 mod args;
 mod manifest;
+mod replace;
+pub use replace::replace_installation;
 #[cfg(unix)]
 mod recovery;
 use args::Options;
@@ -110,8 +112,11 @@ pub fn check_files(args: &[OsString]) -> Result<i32> {
 }
 
 pub fn run(args: &[OsString]) -> Result<i32> {
-    let options = Options::parse(args)?;
     let claim = se_proc::NativeInstallationClaim::acquire().map_err(native)?;
+    run_claimed(args, &claim)
+}
+fn run_claimed(args: &[OsString], claim: &se_proc::NativeInstallationClaim) -> Result<i32> {
+    let options = Options::parse(args)?;
     let mut creation = se_proc::NativeDirectoryCreation::begin();
     let result = (|| {
         // Read and verify the complete archive before any program directories
@@ -135,7 +140,7 @@ pub fn run(args: &[OsString]) -> Result<i32> {
         se_proc::NativeStateFiles::open(files.root()).map_err(native)?;
         crate::route::identity::ensure_machine_identity(&options.home)?;
         #[cfg(windows)]
-        crate::runtime::helper_cleanup::retry(&files, &claim)?;
+        crate::runtime::helper_cleanup::retry(&files, claim)?;
         claim
             .run_child_with_created_directories(
                 &args[options.child],

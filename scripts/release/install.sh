@@ -75,6 +75,14 @@ plain_path "$partial"
 if [ "$recover" -eq 1 ]; then
     [ -d "$partial" ] || fail "partial installation is absent: $partial"
 else [ ! -e "$partial" ] || fail "partial installation at $partial; resume with: sh \"$bundle/install.sh\" --recover"; fi
+# A current archive can remove a proved older installation without asking the
+# old image to read newer data. Native owner, file custody and quiet-runtime
+# checks precede effects; the claims span removal and this fresh installer.
+plain_path "$record"
+if [ "$recover" -eq 0 ] && [ "$native_held" -eq 0 ] && [ -e "$record" ]; then
+    "$bundle/se" __install-replace "$data" || fail 'current-archive replacement did not complete; preserve the reported paths and resolve its refusal before retrying'
+    exit 0
+fi
 for destination in "$bin/se" "$assets" "$record"; do
     plain_path "$destination"
     if [ "$recover" -eq 1 ]; then

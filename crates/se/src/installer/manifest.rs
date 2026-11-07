@@ -77,6 +77,16 @@ fn checked_file(file: &Path, entry: &Entry) -> Result<()> {
     Ok(())
 }
 pub(super) fn prepare(creation: &mut NativeDirectoryCreation) -> Result<()> {
+    let directories = verify()?;
+    let (bin, assets) = program_paths()?;
+    creation.prepare(&bin).map_err(native)?;
+    creation.prepare(&assets).map_err(native)?;
+    for relative in directories {
+        creation.prepare(&assets.join(relative)).map_err(native)?;
+    }
+    Ok(())
+}
+pub(super) fn verify() -> Result<BTreeSet<PathBuf>> {
     let executable = std::env::current_exe()
         .map_err(|error| read_error(Path::new("archive executable"), error))?;
     let archive = executable
@@ -163,15 +173,9 @@ pub(super) fn prepare(creation: &mut NativeDirectoryCreation) -> Result<()> {
             }
         }
     }
-    let (bin, assets) = program_paths()?;
-    creation.prepare(&bin).map_err(native)?;
-    creation.prepare(&assets).map_err(native)?;
-    for relative in directories {
-        creation.prepare(&assets.join(relative)).map_err(native)?;
-    }
-    Ok(())
+    Ok(directories)
 }
-fn program_paths() -> Result<(PathBuf, PathBuf)> {
+pub(super) fn program_paths() -> Result<(PathBuf, PathBuf)> {
     #[cfg(windows)]
     {
         let root = path(

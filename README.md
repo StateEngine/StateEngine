@@ -215,13 +215,25 @@ containing `standalone-install.json`; it is the path selected during installatio
 which may differ from a custom data home used later. Removal keeps history,
 conversations, identity, credentials, configuration and repository files.
 
-To upgrade, uninstall the old version successfully before installing the new
-archive. Installing over an existing executable refuses. Start with `se up` or
-launch your saved agent after installing the replacement. For **multiple data
-homes**, first run `se --home "/original/path" down` for each active home, then
-uninstall using the installation home's original path; after upgrading, start
-each home using its original path. Do not substitute another home merely to get
-past a refusal.
+To upgrade, first run `se --home HOME down` for every running data home. As the
+same OS owner, run the current release archive's `install.sh` on Linux/macOS or
+`install.ps1` on Windows. For a custom installation data home, set `SE_HOME` to
+its original absolute path before running the installer. The installer can
+replace a stopped installation whose recorded files and native ownership still
+match, preserving history, conversations, identity, credentials, configuration
+and repository files. A live runtime or changed/foreign installation files cause
+a refusal with its reason; resolve that refusal before retrying. After successful
+installation, run `se --home HOME up` for each home.
+
+Older binaries refuse data written with a newer unsupported schema. If trying an
+older release leaves it unable to start or uninstall, run the current archive's
+installer again with the same installation data home; recovery does not require
+the older binary to open or alter the newer data. Ordinary compatible uninstall
+followed by installation remains an option: in your own terminal, run the installed
+`se --home INSTALL_HOME uninstall`, or on Windows the matching old release
+archive's `uninstall.ps1`, and wait for successful completion before installing.
+Use each home's original path throughout; an old Windows host keeps the pipe name
+chosen by its executable until restarted.
 
 ## Optional migration from the older Node implementation
 
