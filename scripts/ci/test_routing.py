@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import tempfile
@@ -13,6 +14,36 @@ import changes
 spec = importlib.util.spec_from_file_location("ci_check", Path(__file__).with_name("check.py"))
 check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(check)
+
+
+class Concurrency(unittest.TestCase):
+    def test_proof_runs_do_not_share_the_main_push_group(self):
+        workflow = Path(__file__).parents[2] / ".github/workflows/ci.yml"
+        group = next(line.strip().removeprefix("group: ")
+                     for line in workflow.read_text().splitlines()
+                     if line.startswith("  group: "))
+
+        def key(event, **overrides):
+            context = {"github.event_name": event, "github.repository": "owner/repo",
+                       "github.ref_name": "main", **overrides}
+
+            def expression(match):
+                # This group uses only context lookups and the Actions || fallback.
+                return next((context.get(name.strip(), "")
+                             for name in match[1].split("||")
+                             if context.get(name.strip(), "")), "")
+
+            return re.sub(r"\$\{\{(.*?)\}\}", expression, group)
+
+        events = ["push", "pull_request", "workflow_dispatch", "schedule"]
+        self.assertEqual(len({key(event) for event in events}), len(events))
+        # PR pushes still converge on one group, scoped to the source repository.
+        pr = {"github.head_ref": "feature", "github.ref_name": "1/merge",
+              "github.event.pull_request.head.repo.full_name": "contributor/repo"}
+        self.assertEqual(key("pull_request", **pr),
+                         key("pull_request", **{**pr, "github.ref_name": "2/merge"}))
+        self.assertNotEqual(key("pull_request", **pr), key("pull_request", **{
+            **pr, "github.event.pull_request.head.repo.full_name": "other/repo"}))
 
 
 class Routing(unittest.TestCase):
