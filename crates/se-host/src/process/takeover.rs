@@ -261,6 +261,11 @@ fn job_names(jobs: &[TakeoverJob]) -> String {
 }
 
 fn successor_failure(report: &TakeoverReport, failure: SeError) -> SeError {
+    // A retained successor waiting for its provider is a known pending launch,
+    // not lost stop/capture evidence or an unreadable takeover outcome.
+    if failure.code() == se_types::Code::LaunchReadinessTimeout {
+        return failure;
+    }
     error(
         "takeover incomplete",
         format!(
