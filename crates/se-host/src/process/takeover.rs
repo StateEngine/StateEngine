@@ -299,6 +299,10 @@ fn inventory(
     let mut command_bytes = 0_usize;
     let mut members = remaining.known_live.clone();
     #[cfg(target_os = "linux")]
+    let viewer = native
+        .window_viewer(process)
+        .map_err(|cause| error("takeover terminal inventory", cause))?;
+    #[cfg(target_os = "linux")]
     members.extend(
         se_proc::read_process_descendants(&observed.record.root, bound)
             .map_err(|cause| error("takeover descendant inventory", cause))?,
@@ -307,6 +311,10 @@ fn inventory(
     members.dedup();
     for member in &members {
         if member == &observed.record.root {
+            continue;
+        }
+        #[cfg(target_os = "linux")]
+        if viewer.as_ref() == Some(member) {
             continue;
         }
         let command = se_proc::read_process_command(member, bound).map_err(|cause| {

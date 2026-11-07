@@ -1297,7 +1297,10 @@ preparation expires before connection, revoke it and retain the owned window;
 status reports `setup-expired` and explains how to launch the agent again.
 Ordinary launch may replace only this revoked, never-activated window preparation,
 with exact-scope stop and outside exit proof. Running jobs require explicit
-`--override-live` consent. The replacement starts a new conversation using the
+`--override-live` consent. On Linux, the native owner retains its terminal
+viewer's PID, birth and image before the provider may execute; that exact
+viewer is harness infrastructure, not a user job. A recovered lifecycle without
+that observation gets no name-based exemption. The replacement starts a new conversation using the
 provider's retained onboarding; it does not claim to resume an unverified one.
 
 ProviderIoPlatform is genuine Unix/Windows native I/O polymorphism: open creates

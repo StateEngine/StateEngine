@@ -173,6 +173,7 @@ impl Terminal {
         arguments: &[*const libc::c_char],
         environment: &[*const libc::c_char],
         error_fd: i32,
+        authorization_fd: i32,
     ) -> i32 {
         // SAFETY: all descriptors and pointer arrays are prepared before fork;
         // this branch uses native async-signal-safe calls and never unwinds.
@@ -262,10 +263,88 @@ impl Terminal {
             if length == 0 {
                 return libc::EPROTO;
             }
+            // The private pre-exec channel identifies the viewer we created,
+            // rather than teaching later readers to trust an executable name.
+            let bytes = (viewer as u32).to_le_bytes();
+            let packet = [b'V', bytes[0], bytes[1], bytes[2], bytes[3]];
+            if libc::write(error_fd, packet.as_ptr().cast(), packet.len()) != packet.len() as isize
+            {
+                return libc::EIO;
+            }
+            // Keep the provider in this trusted helper until its viewer's
+            // PID, birth and image have been retained by the native owner.
+            let mut permit = 0u8;
+            loop {
+                let n = libc::read(authorization_fd, (&mut permit as *mut u8).cast(), 1);
+                if n == 1 && permit == 1 {
+                    break;
+                }
+                if n < 0 && *libc::__errno_location() == libc::EINTR {
+                    continue;
+                }
+                return libc::EIO;
+            }
             if libc::tcsetattr(0, libc::TCSANOW, &self.saved) < 0 {
                 return *libc::__errno_location();
             }
             0
         }
     }
+}
+
+/// Retain the native viewer before permitting the helper to exec user code.
+pub(super) fn retain_viewer(
+    child: &mut super::spawn::Child,
+    machine: &MachineId,
+    offset: usize,
+) -> ProcResult<bool> {
+    if child.viewer.is_some() {
+        return Ok(true);
+    }
+    let mut bytes = [0; 4];
+    bytes.copy_from_slice(&child.protocol[offset + 1..offset + 5]);
+    let pid = ProcessId(u32::from_le_bytes(bytes));
+    let ProcessRead::Present(viewer) = super::identity::read_process(machine.clone(), pid)? else {
+        return Err(input(
+            "terminal viewer",
+            "created viewer exited before its identity was retained",
+        ));
+    };
+    if child.viewer_image.as_ref() != Some(&viewer.identity.image) {
+        // The viewer may not have reached exec yet. Its parent
+        // cannot exec the provider or reap it until our permit.
+        return Ok(false);
+    }
+    if viewer.parent != Some(child.pid) {
+        return Err(input(
+            "terminal viewer",
+            "created viewer changed parent before authorization",
+        ));
+    }
+    let channel = child
+        .authorization
+        .as_ref()
+        .ok_or_else(|| input("terminal viewer", "authorization channel was released"))?;
+    // SAFETY: private retained socket and one-byte buffer; no
+    // signal or inherited executable name is used as authority.
+    if unsafe {
+        libc::send(
+            channel.as_raw_fd(),
+            b"\x01".as_ptr().cast(),
+            1,
+            libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT,
+        )
+    } != 1
+    {
+        return Err(native(
+            ProcErrorCode::LaunchFailed,
+            "authorize terminal viewer",
+            io::Error::last_os_error(),
+        ));
+    }
+    child.viewer = Some(viewer.identity);
+    if !child.deferred {
+        child.authorization = None;
+    }
+    Ok(true)
 }

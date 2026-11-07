@@ -18,6 +18,8 @@ pub(super) struct Child {
     pub authorization: Option<File>,
     pub pre_exec: Option<ProcessIdentity>,
     pub root: Option<ProcessIdentity>,
+    pub viewer: Option<ProcessIdentity>,
+    pub viewer_image: Option<std::path::PathBuf>,
     pub status: Option<ExitStatus>,
     pub protocol: Vec<u8>,
     pub authorized: bool,
@@ -102,6 +104,13 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
         Some(WindowSpec::UnixTerminalWithBackend { .. })
     );
     let terminal = super::terminal::Terminal::prepare(&spec)?;
+    let viewer_image = match &spec.window {
+        Some(
+            WindowSpec::UnixTerminal { executable, .. }
+            | WindowSpec::UnixTerminalWithBackend { executable, .. },
+        ) if terminal.is_some() => Some(executable.clone()),
+        _ => None,
+    };
     let terminal_arguments = terminal.as_ref().map(|window| window.arguments());
     let executable = cstring(spec.executable.as_os_str().as_bytes(), "executable")?;
     let cwd = cstring(spec.cwd.as_os_str().as_bytes(), "cwd")?;
@@ -266,7 +275,7 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
                 libc::_exit(126);
             }
             if let (Some(window), Some(arguments)) = (&terminal, &terminal_arguments) {
-                let number = window.start(arguments, &envp, error_fd);
+                let number = window.start(arguments, &envp, error_fd, authorization_fd);
                 if number != 0 {
                     die(number);
                 }
@@ -305,8 +314,10 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
         authorization: Some(send),
         pre_exec: None,
         root: None,
+        viewer: None,
+        viewer_image,
         status: None,
-        protocol: Vec::with_capacity(8),
+        protocol: Vec::with_capacity(11),
         authorized: false,
         deferred,
         window_payload: None,
@@ -355,7 +366,7 @@ impl Child {
                 io::Error::last_os_error(),
             ));
         }
-        if !self.deferred {
+        if !self.deferred && self.viewer_image.is_none() {
             self.authorization = None;
         }
         self.authorized = true;
@@ -386,7 +397,7 @@ impl Child {
                 }
                 return Err(native(ProcErrorCode::LaunchFailed, "read exec channel", e));
             }
-            if self.protocol.len() + n as usize > 8 {
+            if self.protocol.len() + n as usize > 11 {
                 return Err(input("exec channel", "oversized native reply"));
             }
             self.protocol.extend_from_slice(&data[..n as usize]);

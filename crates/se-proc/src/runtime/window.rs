@@ -5,6 +5,13 @@ use crate::support::*;
 use std::ffi::OsString;
 
 impl NativeProcessRuntime {
+    /// The exact viewer retained before the provider was allowed to execute.
+    /// Recovered custody without that observation does not invent a viewer.
+    pub fn window_viewer(&self, process: &OwnedProcess) -> ProcResult<Option<ProcessIdentity>> {
+        self.inner.apply(&process.key, true, |slot| {
+            Ok(slot.native()?.window_viewer())
+        })
+    }
     pub fn prepare_window_exec(
         &self,
         process: &OwnedProcess,

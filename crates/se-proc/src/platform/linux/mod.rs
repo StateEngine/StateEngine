@@ -293,6 +293,9 @@ impl Scope {
             .and_then(|c| c.root.clone().or_else(|| c.pre_exec.clone()))
             .or_else(|| self.recovered.clone())
     }
+    pub fn window_viewer(&self) -> Option<ProcessIdentity> {
+        self.child.as_ref().and_then(|child| child.viewer.clone())
+    }
     pub fn poll(&mut self, machine: &MachineId) -> ProcResult<Progress> {
         let child = self
             .child
@@ -304,7 +307,16 @@ impl Scope {
         {
             registration.rearm();
         }
-        let offset = usize::from(child.protocol.first() == Some(&b'R'));
+        let mut offset = usize::from(child.protocol.first() == Some(&b'R'));
+        if child.protocol.get(offset) == Some(&b'V') {
+            if child.protocol.len() < offset + 5 {
+                return Ok(Progress::Pending);
+            }
+            if !terminal::retain_viewer(child, machine, offset)? {
+                return Ok(Progress::Pending);
+            }
+            offset += 5;
+        }
         if child.protocol.get(offset) == Some(&b'E') {
             if child.protocol.len() < offset + 5 {
                 return Ok(Progress::Pending);
@@ -317,7 +329,7 @@ impl Scope {
                 io::Error::from_raw_os_error(i32::from_le_bytes(bytes)),
             ));
         }
-        if offset == 0 {
+        if child.protocol.first() != Some(&b'R') {
             if child.eof {
                 return Err(input(
                     "launch",
