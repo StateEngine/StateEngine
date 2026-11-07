@@ -20,15 +20,16 @@ fn live_member(
         _ => Ok(None),
     }
 }
-fn in_group(live: &LiveObservation, group: ProcessId) -> ProcResult<bool> {
+fn live_group(live: &LiveObservation) -> ProcResult<Option<ProcessId>> {
     let StartIdentity::Linux { start_ticks } = live.identity.start else {
         return Err(input("group continuity", "native Linux birth required"));
     };
-    Ok(identity::stat(live.identity.pid)?.is_some_and(|s| {
-        s.start == start_ticks
-            && s.group == Some(group)
-            && s.state != NativeState::ExitedAwaitingReap
-    }))
+    Ok(identity::stat(live.identity.pid)?
+        .filter(|s| s.start == start_ticks && s.state != NativeState::ExitedAwaitingReap)
+        .and_then(|s| s.group))
+}
+fn in_group(live: &LiveObservation, group: ProcessId) -> ProcResult<bool> {
+    Ok(live_group(live)? == Some(group))
 }
 
 // Linux exposes no process-group member list. Select by the kernel's group
@@ -182,10 +183,23 @@ impl Scope {
             }
         }
         for tracked in &self.tracked {
-            if let Some(member) = live_member(tracked, &root)?
-                && !live.contains(&member.identity)
-            {
-                self.escaped = true;
+            if let Some(member) = live_member(tracked, &root)? {
+                let Some(current_group) = live_group(&member)? else {
+                    continue;
+                };
+                // A census miss or an exec within the group is not an escape.
+                // Retain escape debt only after a same-birth live membership read.
+                if current_group != group {
+                    self.escaped = true;
+                }
+                if let Some(previous) = live.iter_mut().find(|previous| {
+                    previous.pid == member.identity.pid
+                        && previous.boot == member.identity.boot
+                        && previous.start == member.identity.start
+                }) {
+                    *previous = member.identity;
+                    continue;
+                }
                 if live.len() == self.max_members {
                     return Err(capacity("tracked group members", self.max_members as u64));
                 }
