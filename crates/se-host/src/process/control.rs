@@ -169,7 +169,11 @@ impl LaunchCoordinator {
                 return Err(se_core::scope::unreadable("cold stop custody","this host has no retained native reference; protected-record recovery is required before claiming an exit"));
             };
             if !release { self.interrupt_startup(&job,key,admission.clone(),deadline).await?; }
-            let mut work=tokio::time::timeout_at(tokio::time::Instant::from_std(deadline.at()),job.state.lock()).await.map_err(|_|se_core::scope::unreadable("stop preparation","the retained launch is still settling; retry the original stop key"))?;
+            let mut work=if release {
+                job.control_state(deadline).await?
+            } else {
+                tokio::time::timeout_at(tokio::time::Instant::from_std(deadline.at()),job.state.lock()).await.map_err(|_|se_core::scope::unreadable("stop preparation","the retained launch is still settling; retry the original stop key"))?
+            };
             row.target.session_id=Some(work.meta.session.clone());row.target.launch_id=Some(se_proc::session_launch_id(&work.meta.session).map_err(|e|error("stop launch identity",e))?);
             row.target.process = work.process_view.clone();
             if work.ownership_release.is_some(){self.fill_release(&mut row,&work,deadline).await?;return Ok(());}

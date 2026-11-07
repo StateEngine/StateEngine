@@ -153,17 +153,7 @@ impl LaunchCoordinator {
         let job = self.find_job(&plan.project.id, &plan.agent.id)?.ok_or_else(|| {
             error("takeover custody", "native inventory is unavailable, not empty; reconcile the recorded lifecycle before retrying; no process was stopped")
         })?;
-        let mut work = tokio::time::timeout_at(
-            tokio::time::Instant::from_std(deadline.at()),
-            job.state.lock(),
-        )
-        .await
-        .map_err(|_| {
-            error(
-                "takeover inspection",
-                "the existing lifecycle is busy; retry after it settles",
-            )
-        })?;
+        let mut work = job.control_state(deadline).await?;
         let expected = match &plan.control.processes[0].current.body {
             EventBody::ProcessRegistered { identity, .. }
             | EventBody::ProcessTransition { identity, .. } => &identity.record,

@@ -30,6 +30,47 @@ pub(super) struct Job {
     pub task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     pub fault: Mutex<Option<String>>,
 }
+impl Job {
+    /// Inspection and release do not interrupt startup. Leave time to return a
+    /// named refusal instead of spending the caller's IPC clock on its lock.
+    pub(super) async fn control_state(
+        &self,
+        deadline: &Deadline,
+    ) -> Result<tokio::sync::MutexGuard<'_, Work>> {
+        deadline.remaining()?;
+        if let Ok(work) = self.state.try_lock() {
+            return Ok(work);
+        }
+        let refused = || {
+            let pending = self.wake.awaiting_window.load(Ordering::Acquire);
+            SeError::new(se_types::Detail::LaunchFailed(
+                se_types::details::LaunchFailed {
+                    subject: "agent control".into(),
+                    reason: if pending {
+                        "This agent is still completing setup in its welcome or workspace trust window. No replacement or release was performed."
+                    } else {
+                        "This agent is busy finishing its launch or another control request. No replacement or release was performed."
+                    }.into(),
+                    next_step: if pending {
+                        "Finish setup in the existing window, or stop this agent explicitly to cancel the pending launch before retrying."
+                    } else {
+                        "Retry after the current operation finishes; stop this agent explicitly to cancel a pending launch."
+                    }.into(),
+                },
+            ))
+        };
+        if self.wake.awaiting_window.load(Ordering::Acquire) {
+            return Err(refused());
+        }
+        let bound = deadline.stage(std::time::Duration::from_secs(1))?;
+        tokio::time::timeout_at(
+            tokio::time::Instant::from_std(bound.at()),
+            self.state.lock(),
+        )
+        .await
+        .map_err(|_| refused())
+    }
+}
 impl LaunchCoordinator {
     /// Includes prepared launches and unresolved cleanup, not just providers
     /// currently running. The host's one empty-host timer may arm only at zero.
