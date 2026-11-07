@@ -21,7 +21,7 @@ impl LaunchCoordinator {
         if let Err(error) = self
             .store
             .commit(admission, deadline, None, move |kernel, cx| {
-                se_core::ops::process_commit::capture_verified(kernel, session, &owner, cx)
+                se_core::ops::process_commit::capture_verified(kernel, session, &owner, None, cx)
             })
             .await
         {
@@ -152,7 +152,7 @@ impl LaunchCoordinator {
         {
             capture
                 .catch_up_final(
-                    admission,
+                    admission.clone(),
                     transcript.conversation,
                     transcript.path,
                     work.meta.owner.clone(),
@@ -162,7 +162,7 @@ impl LaunchCoordinator {
         } else {
             capture
                 .catch_up(
-                    admission,
+                    admission.clone(),
                     transcript.conversation,
                     transcript.path,
                     deadline,
@@ -191,6 +191,29 @@ impl LaunchCoordinator {
         }
         if work.meta.provider == se_store::Provider::Codex {
             self.acknowledge_codex_capture(work, deadline).await?;
+        }
+        // An accepted final write can outlive its hook and precede the failure
+        // diagnostic. Replaying that write leaves the cursor unchanged, so
+        // acknowledge only a fresh pinned EOF observation of that failure.
+        if !work.session_retired && !work.native_already_reconciled {
+            let observed = capture
+                .unresolved_at_eof(admission.clone(), deadline)
+                .await?;
+            if let Some(observed) = observed {
+                let session = work.meta.session.clone();
+                let owner = work.meta.owner.clone();
+                self.store
+                    .commit(admission, deadline, None, move |kernel, cx| {
+                        se_core::ops::process_commit::capture_verified(
+                            kernel,
+                            session,
+                            &owner,
+                            Some(observed),
+                            cx,
+                        )
+                    })
+                    .await?;
+            }
         }
         Ok(())
     }

@@ -6,10 +6,12 @@ use se_types::{ErrorBody, SessionId};
 
 /// Record the trusted coordinator's EOF observation without inventing another
 /// turn or advancing the byte cursor. A retry can then clear an EOF failure.
+/// Live observations bind the exact offset and failure that were read back.
 pub fn capture_verified<R: Snapshot>(
     kernel: &Kernel,
     session: SessionId,
     owner: &se_types::HumanId,
+    observed: Option<(u64, se_types::EventId)>,
     cx: &mut Cx<'_, R>,
 ) -> Result<AtomicBatch> {
     let source = session_credential_id(&session, "capture-source")?;
@@ -64,6 +66,14 @@ pub fn capture_verified<R: Snapshot>(
             ));
         }
     };
+    if let Some((expected_offset, expected_failure)) = observed
+        && (expected_offset != offset || expected_failure != *after)
+    {
+        return Err(scope::unreadable(
+            "capture verification",
+            "the source cursor or retained failure changed after the native EOF observation; retry its current binding",
+        ));
+    }
     let mut batch = batch(
         kernel,
         "agent.launch",

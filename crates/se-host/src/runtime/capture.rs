@@ -15,6 +15,7 @@ mod drain;
 mod persistent;
 mod signal;
 mod source;
+mod verification;
 use sha2::Digest;
 struct BoundTranscript {
     binding: crate::TranscriptPin,
