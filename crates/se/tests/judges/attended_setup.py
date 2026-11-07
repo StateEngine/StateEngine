@@ -16,22 +16,27 @@ import subprocess
 import sys
 import time
 import urllib.request
+import uuid
 
 from mail_cli import Fixture
 
 
 def provider():
     se, home, *args = sys.argv[2:]
-    conversation = args[args.index("--session-id") + 1]
+    selectors = [flag for flag in ["--session-id", "--resume"] if flag in args]
+    assert len(selectors) == 1, "one native conversation selector is required"
+    conversation = args[args.index(selectors[0]) + 1]
     cwd = Path.cwd()
     # This judge uses short ASCII paths; refuse rather than approximate another slug.
     assert len(str(cwd)) < 180 and str(cwd).isascii()
     slug = "".join(c if c.isalnum() else "-" for c in str(cwd))
     path = Path(os.environ["HOME"]) / ".claude/projects" / slug / (conversation + ".jsonl")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"type": "user", "sessionId": conversation,
-                               "uuid": "attended-judge-task", "message": {
-                                   "role": "user", "content": "Native attended fixture"}}) + "\n")
+    # A resumed provider retains its existing transcript instead of truncating it.
+    with path.open("a") as transcript:
+        transcript.write(json.dumps({"type": "user", "sessionId": conversation,
+                                     "uuid": str(uuid.uuid4()), "message": {
+                                         "role": "user", "content": "Native attended fixture"}}) + "\n")
     request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).encode()
     ipc = subprocess.run([se, "--home", home, "mcp"], input=request + b"\n",
                          capture_output=True, timeout=20)
@@ -63,8 +68,9 @@ fn main(){let a:Vec<String>=std::env::args().collect();
 if a.get(1).map(String::as_str)==Some("--version"){println!("2.1.318 (Claude Code)");return;}
 if a.get(1).map(String::as_str)==Some("auth"){println!("{}",r#"{"loggedIn":true}"#);return;}
 if a.get(1).map(String::as_str)==Some("plugin"){return;}
-let i=a.iter().position(|x|x=="--session-id").unwrap();let c=&a[i+1];
-fs::write(format!("native-{c}"),std::process::id().to_string()).unwrap();
+let i=a.iter().position(|x|x=="--session-id"||x=="--resume").unwrap();let c=&a[i+1];
+fs::write(format!(".native-{c}"),std::process::id().to_string()).unwrap();
+fs::rename(format!(".native-{c}"),format!("native-{c}")).unwrap();
 while !std::path::Path::new(&format!("ready-{c}")).exists(){thread::sleep(Duration::from_millis(50));}
 let s=Command::new(PYTHON).args([HELPER,"--provider",SE,HOME]).args(&a[1..]).status().unwrap();
 assert!(s.success());loop{thread::sleep(Duration::from_secs(1));}}
@@ -105,16 +111,18 @@ assert!(s.success());loop{thread::sleep(Duration::from_secs(1));}}
                            f"{self.project}-{self.agent}-hold.json").read_text())
 
     def launch_window(self, fresh=False, release=False):
-        previous = set(self.repo.glob("native-*"))
+        previous = {path: path.read_text() for path in self.repo.glob("native-*")}
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             pending = pool.submit(self.call, "--project", self.project, "launch", self.agent,
                                   *(["--new"] if fresh else []))
             end = time.monotonic() + 40
             while time.monotonic() < end:
-                new = set(self.repo.glob("native-*")) - previous
+                new = [path for path in self.repo.glob("native-*")
+                       if path.read_text() != previous.get(path)]
                 if new:
                     record, = new
                     conversation = record.name.removeprefix("native-")
+                    self.conversation = conversation
                     pid = int(record.read_text())
                     self.processes.append((pid, identity(pid)[1]))
                     if release:
@@ -181,12 +189,14 @@ def main():
         for f in fixtures:
             f.ok("up")
         held.launch_window(release=True)
+        original_held_conversation = held.conversation
         check("production hook retains session.start result and persists human stop", held.mod("human")["retained"] and held.hold()["held"])
         held.ok("--project", held.project, "stop", held.agent)
         for f, new in [(fresh, False), (held, True)]:
             row = f.launch_window(fresh=new)
             check("live welcome remains starting after caller returns", row["session"]["state"] == "starting")
         prior = held.hold()
+        expired_fresh_conversation = fresh.conversation
         print("# waiting for the real ten-minute credential expiry; no clock/store edits", flush=True)
         end = time.monotonic() + 650
         while time.monotonic() < end:
@@ -218,7 +228,11 @@ def main():
               "replacement setup failed" in row["resume"]["reason"] and "--new" not in row["resume"]["argv"])
         for f in fixtures:
             row = f.launch_window(release=True)
-            check("ordinary reconnect activates a new conversation", row["session"]["recorded_state"] == "activated")
+            check("ordinary reconnect activates its selected conversation", row["session"]["recorded_state"] == "activated")
+        check("an unactivated fresh setup gets a new conversation",
+              fresh.conversation != expired_fresh_conversation)
+        check("prior verified conversation remains resumable after failed setup",
+              held.conversation == original_held_conversation)
         sent = fresh.mail("send", fresh.agent, "Attended expiry judge")
         wake = fresh.mod("wake")
         check("unheld successor offers real unread mail through production mod", sent["message_id"] in " ".join(wake["prompts"]))
