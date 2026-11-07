@@ -9,7 +9,7 @@ use std::{
 
 /// Platform rendezvous inputs are captured before launching the host with its
 /// minimal environment. Libraries receive these explicitly, never via env.
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub(crate) fn unix_socket_paths() -> Result<se_proc::native_ipc::UnixSocketPaths> {
     fn path(name: &str) -> Result<Option<PathBuf>> {
         std::env::var_os(name)
@@ -23,8 +23,16 @@ pub(crate) fn unix_socket_paths() -> Result<se_proc::native_ipc::UnixSocketPaths
             .transpose()
     }
     Ok(se_proc::native_ipc::UnixSocketPaths {
-        runtime_directory: path("XDG_RUNTIME_DIR")?,
-        temporary_directory: None,
+        runtime_directory: if cfg!(target_os = "linux") {
+            path("XDG_RUNTIME_DIR")?
+        } else {
+            None
+        },
+        temporary_directory: if cfg!(target_os = "macos") {
+            path("TMPDIR")?
+        } else {
+            None
+        },
     })
 }
 

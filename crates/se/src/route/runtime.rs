@@ -7,9 +7,7 @@ use crate::bootstrap::Bootstrap;
 #[cfg(any(target_os = "linux", windows))]
 use crate::config::Origin;
 use se_core::{ops::*, scope};
-use se_host::client::BlockingIpcClient;
-#[cfg(any(target_os = "linux", windows))]
-use se_host::client::lease::Deadline;
+use se_host::client::{BlockingIpcClient, lease::Deadline};
 #[cfg(any(target_os = "linux", windows))]
 use se_types::Read;
 use se_types::{Result, SeError};
