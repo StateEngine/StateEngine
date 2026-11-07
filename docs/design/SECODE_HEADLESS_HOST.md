@@ -1,6 +1,6 @@
 # Draft SE Code headless host path
 
-Add a managed SE Code subprocess harness. The standalone runtime stays the sole StateEngine owner: SE Code must not activate an embedded owner. Implementation needs approval and the qualifications below.
+Add a managed SE Code subprocess harness. The standalone runtime stays the sole StateEngine owner: SE Code must not activate an embedded owner. Runtime behavior remains subject to the qualifications below.
 
 ## Binary lookup and launch
 
@@ -28,10 +28,10 @@ Status/resume join engine records with authenticated active-execution, message/t
 
 Committed mail wakes the host; it offers a session-bound notice through authenticated SE Code service control, and SE Code's sole queue wakes the resident seat at a safe boundary, with original notice keys.
 
-## Fleet and desktop boundaries
+## Migration and desktop boundaries
 
 Migration supplies imported agent/session mappings and binary overrides. Fresh installs get bundle discovery and automatic service/session setup. Desktop and CLI share managed launch/stop operations, independent of runtime lifetime.
 
-**Qualification pending:** SE Code's `docs/resident-headless.md` defines client lifetime/shutdown; manual Node qualification remains on hold. External-host startup, keyed input acceptance, native-notice control and Windows cancellation need qualification. Separate Rust acceptance on fresh Linux/Windows must exercise launcher exit and runtime/reader death independently, later mail, durable results, zero initial-input replay, fenced takeover, native shutdown, resume and down/uninstall with no owned process remaining. Neither proof substitutes for the other; macOS remains separate.
+**Qualification pending:** SE Code's proposed resident CLI contract, not yet merged in its repository, defines client lifetime/shutdown. External-host startup, keyed input acceptance, native-notice control and Windows cancellation need qualification. Command-line and Rust host acceptance are independent. Fresh Linux/Windows acceptance must exercise launcher exit and runtime/reader death independently, later mail, durable results, zero initial-input replay, fenced takeover, native shutdown, resume and down/uninstall with no owned process remaining. macOS remains separate.
 
 Source seams: [launch planning](../../crates/se-core/src/ops/process_plan.rs), [stop planning](../../crates/se-core/src/ops/stop_plan.rs), [launch coordination](../../crates/se-host/src/process/launch.rs), [harness contract](../../crates/se-host/src/harness.rs), [runtime startup](../../crates/se/src/runtime/host.rs).
