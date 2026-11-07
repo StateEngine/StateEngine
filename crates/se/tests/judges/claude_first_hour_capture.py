@@ -2,7 +2,8 @@
 
 This is an isolated Linux protocol reproduction, not a real-provider first-hour
 run. The default delays one accepted metadata write across the hook budget;
---no-delay-commit runs the same source and reader without that fault.
+--delay-record reply isolates the final reply's write and EOF reconciliation.
+--no-delay-commit runs the larger source and reader without that fault.
 """
 import argparse
 import concurrent.futures
@@ -39,7 +40,7 @@ def history(f):
     return page['items']
 
 
-def run(f, gate=None):
+def run(f, gate=None, delay_record='metadata'):
     value = f.ok('--project', f.project, 'launch', f.agent, '--detach', '--task', 'Capture the first reply')
     assert value['state'] == 'running', value
     f.session = value['session_id']
@@ -83,6 +84,10 @@ def run(f, gate=None):
             records.append({'type': 'attachment', 'fixture_padding': 'q' * 129000})
         records.extend([{'type': kind} for kind in ('api-request', 'last-prompt', 'ai-title',
                           'mode', 'permission-mode', 'session-owner', 'atis-latch', 'tools-used')])
+    # The EOF case isolates the last reply's write rather than spending the
+    # hook budget traversing the larger first-turn metadata specimen.
+    if delay_record == 'reply':
+        records = []
     with transcript.open('a') as output:
         for record in records:
             record['sessionId'] = conversation
@@ -110,24 +115,32 @@ def run(f, gate=None):
             time.sleep(6)
             (gate / 'release').touch()
             result = pending.result()
+        until = time.monotonic() + 5
+        while not (gate / 'capture-write-returned').exists() and time.monotonic() < until:
+            time.sleep(.02)
         assert (gate / 'capture-write-returned').exists()
         assert not (gate / 'barrier-expired').exists(), 'barrier self-expired'
     else:
         result = hook(f, transcript, conversation, 'first-hook')
     rows = history(f)
     replies = [r for r in rows if r['payload']['role'] == 'assistant']
+    observed = f.ok('--project', f.project, 'agent', 'show', f.agent)
     until = time.monotonic() + 5
-    while not replies and time.monotonic() < until:
+    while (not replies or 'CaptureIncomplete' in json.dumps(observed)) and time.monotonic() < until:
         time.sleep(.25)
         rows = history(f)
         replies = [r for r in rows if r['payload']['role'] == 'assistant']
+        observed = f.ok('--project', f.project, 'agent', 'show', f.agent)
     (f.log_root / 'captured-turns.json').write_text(json.dumps(rows, indent=2))
-    observed = f.ok('--project', f.project, 'agent', 'show', f.agent)
     (f.log_root / 'before-stop-agent.json').write_text(json.dumps(observed, indent=2))
     if gate and not replies:
         assert b'commit-outcome-unknown' in result.stderr, result.stderr
         assert 'CaptureIncomplete' in json.dumps(observed), observed
     assert len(replies) == 1 and replies[0]['payload']['body']['text'] == ANSWER, result.stderr
+    assert 'CaptureIncomplete' not in json.dumps(observed), observed
+    preview = f.ok('--project', f.project, 'resume', '--preview', f.agent, '--budget', '65536')
+    assert 'CaptureIncomplete' not in json.dumps(preview), preview
+    (f.log_root / 'before-repeat-preview.json').write_text(json.dumps(preview, indent=2))
     original = replies[0]['event_id']
     again = hook(f, transcript, conversation, 'repeat-hook')
     replies = [r for r in history(f) if r['payload']['role'] == 'assistant']
@@ -143,6 +156,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--workspace', type=Path)
     parser.add_argument('--delay-commit', action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument('--delay-record', choices=('metadata', 'reply'), default='metadata')
     args = parser.parse_args()
     if sys.platform != 'linux':
         parser.error('this native write-boundary reproduction requires Linux')
@@ -160,7 +174,8 @@ def main():
                         '-O2', str(source), '-o', str(library)], check=True,
                        capture_output=True, timeout=30)
         f.env.update(LD_PRELOAD=str(library), CAPTURE_ORDER_GATE=str(gate),
-                     CAPTURE_ORDER_HOME=str(f.home), CAPTURE_ORDER_TURN='api-request-shape')
+                     CAPTURE_ORDER_HOME=str(f.home),
+                     CAPTURE_ORDER_TURN=ANSWER if args.delay_record == 'reply' else 'api-request-shape')
         log = (f.log_root / 'foreground.log').open('wb')
         foreground = subprocess.Popen([str(f.se), '--home', str(f.home), 'up', '--foreground', '--json'],
                                      env=f.env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
@@ -180,7 +195,7 @@ def main():
         (gate / 'host-pid').write_text(str(foreground.pid))
     print('1..1', flush=True)
     try:
-        run(f, gate)
+        run(f, gate, args.delay_record)
     except Exception:
         print('not ok 1 - first reply capture must finish after temporary writer delay', flush=True)
         raise
