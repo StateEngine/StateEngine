@@ -1418,7 +1418,11 @@ concurrent ordinary turn. Human stop/session end/revocation must prevent new
 offers and preserve hold; the host invalidates and closes its parked wait on
 that observed state. Claude's current fetch API has no caller AbortSignal, so
 immediate mod-side cancellation is unqualified; do not describe it as a passed
-capability. No new mail/reconnect/restart clears hold. The [mods API](https://code.claude.com/docs/en/plugins/mods/reference)
+capability. No new mail/reconnect/restart clears an existing hold. A never-activated
+setup that expires creates no new mail hold: its disconnected window remains
+unable to offer mail, and an Owner relaunch gets automatic mail unless the agent
+already had a human-stop, session-end or revocation hold. Those prior holds stay
+unchanged. The [mods API](https://code.claude.com/docs/en/plugins/mods/reference)
 limits an entire HTTP fetch to 30 seconds: use ≤25 s waits, **0.04/s renewal per
 attended session**, as updated in 70/80. One wait per session, own cap outside 64.
 The Linux spike proves this renewal and idle/busy delivery only, not stop or

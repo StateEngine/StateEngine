@@ -131,6 +131,12 @@ impl LaunchCoordinator {
         if !matches!(observed.root, ProcessObservation::Live(_)) {
             return Ok(false);
         }
+        let bells = self.store.mail_waits.bells.clone();
+        let session = work.meta.session.clone();
+        self.store
+            .pool
+            .run_owned(&deadline, move || bells.expire_setup(&session))
+            .await?;
         self.retire_session(work, ATTENDED_SETUP_EXPIRED, &deadline)
             .await?;
         work.setup_expired = true;

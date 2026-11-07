@@ -21,6 +21,7 @@ struct Entry {
     agent: AgentId,
     origin: String,
     hold: PathBuf,
+    expired_setup: bool,
     nonces: VecDeque<(String, Instant)>,
 }
 pub(crate) struct Authenticated {
@@ -81,6 +82,7 @@ impl Bells {
                     agent,
                     origin,
                     hold,
+                    expired_setup: false,
                     nonces: VecDeque::new(),
                 },
             );
@@ -93,11 +95,43 @@ impl Bells {
             .lock()
             .map_err(|_| invalid("unpoisoned bell bindings"))?
             .get(session)
-            .map(|entry| entry.hold.clone());
-        if let Some(hold) = hold {
+            .map(|entry| (entry.hold.clone(), entry.expired_setup));
+        if let Some((hold, false)) = hold {
             set_hold(&hold, true, Some("revocation"))?;
         }
         self.retire(session)
+    }
+    /// Only a never-activated setup past its credential deadline uses this.
+    /// Preserve the entire prior hold and identify this disconnected setup so
+    /// its mod cannot turn expiry or final closure into a new permanent hold.
+    pub(crate) fn expire_setup(&self, session: &SessionId) -> Result<()> {
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| invalid("unpoisoned bell bindings"))?;
+        let Some(entry) = entries.get_mut(session) else {
+            return Ok(());
+        };
+        let mut file = se_proc::OwnedFile::open(&entry.hold)
+            .map_err(|e| invalid(&e.to_string()))?
+            .ok_or_else(|| invalid("the original protected durable mail hold"))?;
+        let prior = file.read(1024).map_err(|e| invalid(&e.to_string()))?;
+        let mut value: serde_json::Value = serde_json::from_slice(&prior)
+            .map_err(|_| invalid("readable durable mail hold before setup expiry"))?;
+        if value
+            .get("held")
+            .and_then(serde_json::Value::as_bool)
+            .is_none()
+        {
+            return Err(invalid("an explicit prior durable hold state"));
+        }
+        value["expired_setup"] = serde_json::to_value(session)
+            .map_err(|_| invalid("an encodable expired setup identity"))?;
+        let bytes = serde_json::to_vec(&value).map_err(|_| invalid("an encodable durable hold"))?;
+        file.replace(Sha256::digest(&prior).into(), &bytes)
+            .map_err(|e| invalid(&e.to_string()))?;
+        entry.expired_setup = true;
+        Ok(())
     }
     pub(crate) fn retire(&self, session: &SessionId) -> Result<()> {
         self.entries
