@@ -16,6 +16,7 @@ pub(super) struct Terminal {
     arguments: Vec<CString>,
     deadline_ns: i128,
     saved: libc::termios,
+    retain_viewer: bool,
 }
 fn descriptor(value: i32, api: &str) -> ProcResult<File> {
     if value < 0 {
@@ -157,6 +158,12 @@ impl Terminal {
             arguments: arguments.into(),
             saved,
             deadline_ns,
+            // Codex starts its backend before the host polls native exec
+            // again; its deferred console keeps the existing permit protocol.
+            retain_viewer: !matches!(
+                spec.window,
+                Some(WindowSpec::UnixTerminalWithBackend { .. })
+            ),
         }))
     }
     pub fn arguments(&self) -> Vec<*const libc::c_char> {
@@ -263,26 +270,29 @@ impl Terminal {
             if length == 0 {
                 return libc::EPROTO;
             }
-            // The private pre-exec channel identifies the viewer we created,
-            // rather than teaching later readers to trust an executable name.
-            let bytes = (viewer as u32).to_le_bytes();
-            let packet = [b'V', bytes[0], bytes[1], bytes[2], bytes[3]];
-            if libc::write(error_fd, packet.as_ptr().cast(), packet.len()) != packet.len() as isize
-            {
-                return libc::EIO;
-            }
-            // Keep the provider in this trusted helper until its viewer's
-            // PID, birth and image have been retained by the native owner.
-            let mut permit = 0u8;
-            loop {
-                let n = libc::read(authorization_fd, (&mut permit as *mut u8).cast(), 1);
-                if n == 1 && permit == 1 {
-                    break;
+            if self.retain_viewer {
+                // The private pre-exec channel identifies the viewer we created,
+                // rather than teaching later readers to trust an executable name.
+                let bytes = (viewer as u32).to_le_bytes();
+                let packet = [b'V', bytes[0], bytes[1], bytes[2], bytes[3]];
+                if libc::write(error_fd, packet.as_ptr().cast(), packet.len())
+                    != packet.len() as isize
+                {
+                    return libc::EIO;
                 }
-                if n < 0 && *libc::__errno_location() == libc::EINTR {
-                    continue;
+                // Keep the provider in this trusted helper until its viewer's
+                // PID, birth and image have been retained by the native owner.
+                let mut permit = 0u8;
+                loop {
+                    let n = libc::read(authorization_fd, (&mut permit as *mut u8).cast(), 1);
+                    if n == 1 && permit == 1 {
+                        break;
+                    }
+                    if n < 0 && *libc::__errno_location() == libc::EINTR {
+                        continue;
+                    }
+                    return libc::EIO;
                 }
-                return libc::EIO;
             }
             if libc::tcsetattr(0, libc::TCSANOW, &self.saved) < 0 {
                 return *libc::__errno_location();

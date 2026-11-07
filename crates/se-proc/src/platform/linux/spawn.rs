@@ -105,10 +105,9 @@ pub(super) fn begin(spec: LaunchSpec) -> ProcResult<Child> {
     );
     let terminal = super::terminal::Terminal::prepare(&spec)?;
     let viewer_image = match &spec.window {
-        Some(
-            WindowSpec::UnixTerminal { executable, .. }
-            | WindowSpec::UnixTerminalWithBackend { executable, .. },
-        ) if terminal.is_some() => Some(executable.clone()),
+        Some(WindowSpec::UnixTerminal { executable, .. }) if terminal.is_some() => {
+            Some(executable.clone())
+        }
         _ => None,
     };
     let terminal_arguments = terminal.as_ref().map(|window| window.arguments());
