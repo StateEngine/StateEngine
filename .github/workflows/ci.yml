@@ -224,8 +224,9 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2]
-        # Runtime detachment is qualified by the VM; hosted runtime runs are nightly/manual.
-        mode: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["smoke", "full"]' || '["smoke"]') }}
+        # Hosted runners keep every step in a Windows job, so runtime detachment is qualified
+        # in the VM; the hosted runtime run is manual and diagnostic only.
+        mode: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '["smoke", "full"]' || '["smoke"]') }}
     runs-on: windows-2025
     timeout-minutes: 6
     steps:
