@@ -187,10 +187,13 @@ pub(crate) fn server(process: HANDLE, expected_pid: u32) -> Result<u32> {
     {
         return Err(last("query console driver server"));
     }
-    if bytes as usize != size_of::<usize>() || pid == 0 || pid == expected_pid as usize {
+    // This METHOD_NEITHER query writes the PID directly but can report zero
+    // bytes returned. Its synchronous success and the initialized PID, rather
+    // than the byte count, establish the result.
+    if pid == 0 || pid == expected_pid as usize {
         return Err(invalid(
             "query console driver server",
-            "invalid or incomplete console server identity",
+            "invalid console server identity",
         ));
     }
     if parameters(process, expected_pid)? != (parameters_before, width)
