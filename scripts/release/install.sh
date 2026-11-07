@@ -384,7 +384,7 @@ for name in $profiles; do
         (set -C; : > "$profile") || fail "login profile appeared during installation: $profile"
     fi
     profile_append_matches "$name" || fail "login profile changed; preserved: $profile"
-    dd if="$stage/path-block" bs=1 skip="$appended_bytes" >> "$profile" 2>/dev/null
+    dd if="$stage/path-block" bs=1 skip="$appended_bytes" conv=notrunc >> "$profile" 2>/dev/null
     flush "$profile" "$HOME"
     profile_append_matches "$name" && [ "$appended_bytes" -eq "$block_bytes" ] || fail "login profile append readback failed: $profile"
 done
