@@ -15,6 +15,10 @@ on:
         description: Source branch, tag or SHA for macOS (empty uses the workflow ref)
         type: string
         default: ''
+      nextest_filter:
+        description: Optional nextest filter for native macOS judges after compilation
+        type: string
+        default: ''
   schedule:
     - cron: '23 3 * * *'
 
@@ -259,6 +263,15 @@ jobs:
         run: |
           target="$(rustc --print host-tuple)"
           RUSTC_LOG=rustc_metadata::locator=info cargo test --target "$target" -p se-types --locked --no-run -vv
+      - name: Run requested native macOS judges
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.nextest_filter != '' }}
+        timeout-minutes: 3
+        env:
+          NEXTEST_FILTER: ${{ inputs.nextest_filter }}
+        run: |
+          target="$(rustc --print host-tuple)"
+          cargo nextest run --target "$target" --workspace --all-features --locked \
+            --profile ci --no-tests fail -E "$NEXTEST_FILTER"
       - name: Cache observation
         if: ${{ always() }}
         run: echo 'macOS compile cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
