@@ -256,9 +256,9 @@ impl NativeProcessRuntime {
                 ));
             }
             match s.native()?.poll(&self.inner.config.machine)? {
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 Progress::Pending => Ok(LaunchProgress::Pending),
-                #[cfg(target_os = "linux")]
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
                 Progress::Root(pre_exec) => {
                     let checkpoint = ScopeCheckpoint {
                         reservation: s.reservation.clone(),

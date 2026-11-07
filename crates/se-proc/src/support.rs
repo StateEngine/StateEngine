@@ -55,7 +55,6 @@ pub(crate) fn capacity(resource: &str, limit: u64) -> ProcError {
         },
     )
 }
-#[cfg(any(target_os = "linux", windows))]
 pub(crate) fn state(lifecycle: &LifecycleId, from: LifecycleState, operation: &str) -> ProcError {
     error(
         ProcErrorCode::IllegalTransition,
@@ -66,7 +65,6 @@ pub(crate) fn state(lifecycle: &LifecycleId, from: LifecycleState, operation: &s
         },
     )
 }
-#[cfg(any(target_os = "linux", windows))]
 pub(crate) fn unsupported(reason: &str) -> ProcError {
     error(
         ProcErrorCode::UnsupportedPlatform,
@@ -89,7 +87,6 @@ pub(crate) fn changed(expected: &ProcessIdentity, found: Option<&ProcessIdentity
     )
 }
 
-#[cfg(any(target_os = "linux", windows))]
 pub(crate) fn check_stop_deadline(deadline: std::time::Instant) -> ProcResult<()> {
     if std::time::Instant::now() >= deadline {
         return Err(error(

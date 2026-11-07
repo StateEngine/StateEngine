@@ -275,6 +275,10 @@ fn finish(result: se_types::Result<u8>, args: &[OsString]) -> std::process::Exit
 
 fn main() -> std::process::ExitCode {
     let args: Vec<_> = std::env::args_os().collect();
+    #[cfg(target_os = "macos")]
+    if let Some(result) = se_proc::process_attach_entry(&args) {
+        return std::process::ExitCode::from(if result.is_ok() { 0 } else { 126 });
+    }
     if let Err(error) = bootstrap::initialize_file_owner() {
         return finish(Err(error), &args);
     }

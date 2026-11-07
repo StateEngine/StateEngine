@@ -26,7 +26,7 @@ fn unreadable(reason: &str) -> ProcError {
     )
 }
 
-fn info(pid: ProcessId, deadline: Instant) -> ProcResult<Option<libc::proc_bsdinfo>> {
+pub(crate) fn info(pid: ProcessId, deadline: Instant) -> ProcResult<Option<libc::proc_bsdinfo>> {
     bound(deadline)?;
     // SAFETY: thread-local errno is cleared so a short/zero native result cannot
     // inherit an unrelated ESRCH and manufacture absence.
@@ -72,7 +72,7 @@ fn state(value: &libc::proc_bsdinfo) -> ProcResult<NativeState> {
     }
 }
 
-fn start(value: &libc::proc_bsdinfo) -> StartIdentity {
+pub(crate) fn start(value: &libc::proc_bsdinfo) -> StartIdentity {
     StartIdentity::MacOs {
         seconds: value.pbi_start_tvsec,
         // info() validated the native microsecond range before this conversion.
@@ -238,18 +238,5 @@ pub(crate) fn exact(expected: &ProcessIdentity, deadline: Instant) -> ProcResult
         ProcessRead::Absent { .. } | ProcessRead::ExitedRecord { .. } => {
             Err(changed(expected, None))
         }
-    }
-}
-
-impl NativeProcessRuntime {
-    pub fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
-        read_process(machine, pid)
-    }
-    pub fn read_process_until(
-        machine: MachineId,
-        pid: ProcessId,
-        deadline: Instant,
-    ) -> ProcResult<ProcessRead> {
-        read_process_until(machine, pid, deadline)
     }
 }

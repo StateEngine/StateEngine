@@ -47,15 +47,15 @@ impl NativeProcessRuntime {
     pub(super) fn native_request_stop(&self, prepared: PreparedStop) -> ProcResult<StopAttempt> {
         self.request_stop_mode(prepared, false)
     }
-    /// Linux's graceful signal consumes the same identity/generation-bound
+    /// Unix graceful signalling consumes the same identity/generation-bound
     /// single-use stop token as force, after the host's durable StopRequested.
     /// Scope exit still requires an independent witness; this is not release.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn request_termination(&self, prepared: PreparedStop) -> ProcResult<StopAttempt> {
         self.request_stop_mode(prepared, true)
     }
     fn request_stop_mode(&self, prepared: PreparedStop, graceful: bool) -> ProcResult<StopAttempt> {
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         let _ = graceful;
         let key = prepared.key;
         let (attempt, dispatch) = self.inner.apply(&key, true, |s| {
@@ -71,7 +71,7 @@ impl NativeProcessRuntime {
             } else {
                 s.stop_consumed = prepared.nonce;
                 match &mut s.native {
-                    #[cfg(target_os = "linux")]
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
                     Some(native) if graceful => native.terminate(prepared.deadline),
                     Some(native) => native.stop(prepared.deadline),
                     None if !s.launched => Ok(StopDispatch::NotNeeded),
