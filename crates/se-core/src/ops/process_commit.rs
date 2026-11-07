@@ -198,8 +198,9 @@ pub fn end_binding<R: Snapshot>(
     )
 }
 
-/// One observed native transition under its original control request. The
-/// lifecycle participates in the phase key so --all has independent CAS rows.
+/// One observed native transition under its original control request.
+/// Lifecycle and prior revision identify the CAS barrier, including a new stop
+/// attempt after StopUnproved under the same original control request.
 pub struct ProcessChange {
     pub request: IdempotencyKey,
     pub phase: &'static str,
@@ -214,7 +215,13 @@ pub fn advance<R: Snapshot>(
 ) -> Result<AtomicBatch> {
     let lifecycle = change.identity.record.clone();
     let containment = change.identity.containment.clone();
-    let key = phase_key(&change.request, &format!("{lifecycle}/{}", change.phase))?;
+    let key = phase_key(
+        &change.request,
+        &format!(
+            "{lifecycle}/{}/{}",
+            change.phase, change.previous.revision.value
+        ),
+    )?;
     let operation = if matches!(
         change.edge.1,
         ProcessState::StopRequested | ProcessState::StopUnproved
