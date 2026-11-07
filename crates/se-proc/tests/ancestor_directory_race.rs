@@ -2,6 +2,8 @@
 #![cfg(all(target_os = "linux", target_env = "gnu"))]
 use se_proc::{NativeStateFiles, StateFileErrorCode};
 use std::{error::Error, fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
+#[path = "../../test-support/directory.rs"]
+mod directory;
 type Check = Result<(), Box<dyn Error>>;
 #[test]
 #[ignore = "native NSS race child invoked by concurrent_directory_entries_reprove_authority"]
@@ -41,9 +43,7 @@ fn account_race_child() -> Check {
 }
 #[test]
 fn concurrent_directory_entries_reprove_authority() -> Check {
-    let root =
-        std::env::temp_dir().join(format!("se-ancestor-directory-race-{}", std::process::id()));
-    fs::DirBuilder::new().mode(0o700).create(&root)?;
+    let root = directory::private_directory()?;
     let library = root.join("race.so");
     fs::write(root.join("control"), b"0")?;
     let built = Command::new("cc")
@@ -66,4 +66,3 @@ fn concurrent_directory_entries_reprove_authority() -> Check {
     fs::remove_dir_all(root)?;
     Ok(())
 }
-use std::os::unix::fs::DirBuilderExt;
