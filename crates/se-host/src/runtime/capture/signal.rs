@@ -46,14 +46,29 @@ impl Capturing<'_> {
             }
             Err(error) => error,
         };
-        let receipt = match self.retain_failure(admission, failure.body.clone()).await {
+        let retained = self
+            .retain_failure(admission.clone(), failure.body.clone())
+            .await;
+        // Publish the diagnostic before waking the monitor: a successful
+        // readback must clear that failure, never race with a later stale one.
+        let continued = self.continue_capture(&admission);
+        let receipt = match retained {
             Ok(receipt) => receipt,
             // The diagnostic cannot replace the capture outcome, especially
             // its confirmed events and natural keys after a partial commit.
             // Keep the recording error as the secondary cause, without
             // claiming a capture.failed receipt that was not confirmed.
-            Err(cause) => return Err(failure.with_cause(cause)),
+            Err(cause) => {
+                let cause = match continued {
+                    Ok(()) => cause,
+                    Err(wake) => cause.with_cause(wake),
+                };
+                return Err(failure.with_cause(cause));
+            }
         };
+        if let Err(cause) = continued {
+            return Err(failure.with_cause(cause));
+        }
         let mut output = empty_capture(kind);
         output.output = se_core::ops::HookResult {
             stdout: String::new(),
@@ -73,6 +88,24 @@ impl Capturing<'_> {
             committed_events: receipt.1.events,
         });
         Ok(output)
+    }
+
+    fn continue_capture(&self, admission: &se_store::Admission) -> Result<()> {
+        let (se_store::Scope::Project(project), se_store::Actor::Agent(agent), Some(session)) =
+            (&admission.scope, &admission.actor, &admission.session)
+        else {
+            return Err(SeError::invalid(
+                "capture continuation",
+                "an admitted agent session",
+            ));
+        };
+        self.execution.custody.get().map_or(Ok(()), |custody| {
+            custody.notify_capture(&crate::SessionIdentity {
+                project: project.clone(),
+                agent: agent.clone(),
+                session: session.clone(),
+            })
+        })
     }
 
     async fn retain_failure(

@@ -4,6 +4,24 @@ use crate::{CustodyExecutor, HostFuture, client::lease::Deadline};
 use se_core::{ops::AnyOutput, ports::CustodyPlan};
 use se_store::Admission;
 impl CustodyExecutor for Arc<LaunchCoordinator> {
+    fn notify_capture(&self, session: &crate::SessionIdentity) -> se_types::Result<()> {
+        use std::sync::atomic::Ordering;
+        let jobs = self
+            .jobs
+            .0
+            .lock()
+            .map_err(|_| error("capture wake registry", "launch registry is poisoned"))?;
+        for job in jobs.values() {
+            if !job.settled.load(Ordering::Acquire)
+                && job.session == session.session
+                && job.target == (session.project.clone(), session.agent.clone())
+            {
+                job.capture_pending.store(true, Ordering::Release);
+                job.wake.event.notify_one();
+            }
+        }
+        Ok(())
+    }
     fn catch_up<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, ()> {
         Box::pin(async move { self.catch_up_live(deadline).await })
     }
