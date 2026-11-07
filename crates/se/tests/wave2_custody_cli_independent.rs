@@ -46,6 +46,7 @@ impl Case {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
         se_proc::initialize_file_creation_owner()?;
         let mut f = std::mem::ManuallyDrop::new(Fixture::new()?);
+        se_proc::NativeStateFiles::create(&f.home.join("user-home"))?;
         println!(
             "custody CLI fixture retained on failure: {}",
             f.home.display()

@@ -7,7 +7,11 @@ import subprocess
 import sys
 import time
 
-image, home = sys.argv[1:]
+image, home = sys.argv[1:3]
+budget = min(30, float(sys.argv[3]) / 1000 if len(sys.argv) > 3 else 30)
+if budget <= 0:
+    raise TimeoutError('public uninstall exceeded deadline before launch')
+deadline = time.monotonic() + budget
 env = {key: value for key, value in os.environ.items()
        if not key.startswith(('SE_', 'STATEENGINE_', 'CODEX_')) and key != 'CLAUDECODE'}
 args = [image, '--json', '--home', home, 'uninstall']
@@ -22,7 +26,6 @@ except FileNotFoundError:
     if child.poll() is None:
         raise
     birth = None
-deadline = time.monotonic() + 30
 data = bytearray()
 try:
     while True:

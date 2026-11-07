@@ -1,6 +1,12 @@
 use super::*;
 use std::os::unix::{fs::symlink, net::UnixListener};
 type Check<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+#[path = "../../../../../../test-support/directory.rs"]
+#[allow(
+    clippy::duplicate_mod,
+    reason = "Independent fixture modules also compile together in native unit tests."
+)]
+mod directory;
 struct Fixture {
     root: PathBuf,
     socket: PathBuf,
@@ -10,15 +16,7 @@ struct Fixture {
 }
 impl Fixture {
     fn new(alias: bool) -> Check<Self> {
-        let root = std::env::temp_dir().join(format!(
-            "e-{}",
-            se_types::hex_lower(&{
-                let mut nonce = [0u8; 4];
-                se_proc::fill_entropy(&mut nonce)?;
-                nonce
-            })
-        ));
-        se_proc::NativeStateFiles::create(&root)?;
+        let root = directory::private_directory()?;
         let listen = root.join("listen");
         se_proc::NativeStateFiles::create(&listen)?;
         let parent = private_parent(&listen)?;

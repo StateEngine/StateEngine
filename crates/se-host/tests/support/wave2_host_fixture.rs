@@ -272,17 +272,9 @@ pub async fn old_stop_unproved(f: &Fixture, writer: &SqliteClient) -> Check {
     Ok(())
 }
 
-/// Focused capture consumers use an explicit port without taking the legacy default.
+/// Bind and retain the actual fixture listener; no released port probe can race startup.
 pub fn configure_private_listener(host: &mut HostedRuntime) -> Check {
-    for port in 20000..=29999 {
-        if port != 20800
-            && let Ok(probe) = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
-        {
-            let mut configuration = se_core::config_policy::ConfigFile::default();
-            configuration.runtime.listen_port = Some(probe.local_addr()?.port());
-            host.configure(configuration)?;
-            return Ok(());
-        }
-    }
-    Err("no available explicit test listener port".into())
+    host.configure(se_core::config_policy::ConfigFile::default())?;
+    host.bind_loopback()?;
+    Ok(())
 }

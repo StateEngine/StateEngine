@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
-import tempfile
+from fixture_paths import private_runtime_directory
 import traceback
 
 from mail_cli import Fixture
@@ -29,7 +29,7 @@ else:
  runpy.run_path(TEMPLATE,run_name="__main__")
 '''.replace("TEMPLATE", repr(str(Path(__file__).with_name("mail_provider.py").resolve()))))
     f = Fixture(args.se, args.output / "case", provider_helper=helper)
-    runtime = Path(tempfile.mkdtemp(prefix="se-sr-"))
+    runtime = private_runtime_directory()
     f.env["XDG_RUNTIME_DIR"] = str(runtime)
     for name in ["CODEX_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]:
         path = args.output / name.lower()
