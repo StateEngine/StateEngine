@@ -119,7 +119,8 @@ impl LaunchCoordinator {
                         return;
                     }
                     Ok(_) => {
-                        if retry_at.is_none_or(|at| tokio::time::Instant::now() >= at)
+                        if !state.setup_expired
+                            && retry_at.is_none_or(|at| tokio::time::Instant::now() >= at)
                             && job.mail_pending.swap(false, Ordering::AcqRel)
                         {
                             let result = match deadline.stage(Duration::from_secs(10)) {

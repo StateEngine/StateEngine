@@ -208,6 +208,11 @@ pub fn launch<R: Snapshot>(
                             .into(),
                 }
             }
+            Read::Present { value } if super::agent_launch::expired_attended_setup(value) => {
+                Read::Absent {
+                    checked: "the previous window setup expired before connecting; start a new conversation using the existing provider onboarding".into(),
+                }
+            }
             Read::Present { value } => {
                 // Only an activated conversation is resumable. A revoked
                 // preparation is not silently replaced with a new conversation.

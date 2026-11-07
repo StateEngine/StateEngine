@@ -133,9 +133,10 @@ export function register(on) {
     held = saved.held !== false || await $.store.get(holdKey) === true;
     live = true;
     await $.command.register({ name: 'stateengine-mail-resume', description: 'Explicitly allow automatic StateEngine mail after stopping it' });
-    await next(e);
+    const result = await next(e);
     await status($, held ? 'held; use /stateengine-mail-resume to allow automatic mail again' : 'starting authenticated mail wait');
     if (!held) $.clock.after(0, () => poll($));
+    return result;
   });
   on('turn.start', async ($, e, next) => { working = true; return next(e); });
   on('turn.complete', async ($, e, next) => {

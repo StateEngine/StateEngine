@@ -40,6 +40,23 @@ fn headless() -> bool {
 fn no_override(value: &bool) -> bool {
     !value
 }
+/// A window that never connected may be replaced by an ordinary launch after
+/// its credentials were revoked. This is not an activated conversation.
+pub const ATTENDED_SETUP_EXPIRED: &str = "attended setup exceeded its activation deadline";
+pub fn expired_attended_setup(record: &se_store::ProjectionRecord) -> bool {
+    record.current.revision.value.get() == 2
+        && matches!(&record.current.body,
+        se_store::EventBody::SessionRevoked { reason: se_store::StoredText::Present(reason), .. }
+        if reason == ATTENDED_SETUP_EXPIRED)
+        && matches!(
+            &record.original.as_deref().unwrap_or(&record.current).body,
+            se_store::EventBody::SessionPrepared {
+                provider: se_store::Provider::Claude,
+                surface: Some(se_store::SessionSurface::Window),
+                ..
+            }
+        )
+}
 impl AgentLaunch {
     /// Route syntax is not request identity: CLI selectors and MCP IDs bind to
     /// the same admitted agent. Keep every other caller argument unchanged.

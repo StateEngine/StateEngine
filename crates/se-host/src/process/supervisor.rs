@@ -56,6 +56,16 @@ impl LaunchCoordinator {
                 .remaining()?
                 .saturating_sub(std::time::Duration::from_secs(8)),
         )?;
+        let attended = !plan.input.detach && plan.profile.provider == se_store::Provider::Claude;
+        let waiter = if attended {
+            deadline.stage(
+                deadline
+                    .remaining()?
+                    .saturating_sub(std::time::Duration::from_secs(2)),
+            )?
+        } else {
+            deadline.clone()
+        };
         let key = format!(
             "{:?}/{:?}/{}",
             admission.scope, admission.actor, plan.input.idempotency_key
@@ -153,6 +163,18 @@ impl LaunchCoordinator {
                         coordinator.monitor_protected(owned.clone()).await;
                     }
                     Err(original) => {
+                        match coordinator.retain_expired_window(&mut state).await {
+                            Ok(true) => {
+                                owned.ready.send_replace(Some(Err(coordinator.expired_window_error(&state).body)));
+                                drop(state);
+                                coordinator.monitor_protected(owned.clone()).await;
+                                return;
+                            }
+                            Ok(false) => (),
+                            Err(failure) => {
+                                state.cleanup_failure = Some(failure.body);
+                            }
+                        }
                         let cleanup = Deadline::idle().and_then(|value| value.stage(std::time::Duration::from_secs(6)));
                         let result = match cleanup { Ok(cleanup) => coordinator.cleanup_failed(&mut state, &cleanup).await, Err(error) => Err(error) };
                         let failure = match result {
@@ -177,17 +199,28 @@ impl LaunchCoordinator {
                 .map_err(|_| SeError::invalid("launch task", "unpoisoned retained task slot"))? =
                 Some(task);
         }
+        let waiting_since = std::time::Instant::now();
         let mut ready = job.ready.subscribe();
         loop {
             if let Some(result) = ready.borrow().clone() {
                 return result.map_err(|body| SeError { body, cause: None });
             }
             tokio::time::timeout_at(
-                tokio::time::Instant::from_std(deadline.at()),
+                tokio::time::Instant::from_std(waiter.at()),
                 ready.changed(),
             )
             .await
             .map_err(|_| {
+                if attended {
+                    let last_observed = if job.wake.awaiting_window.load(Ordering::Acquire) {
+                        "Complete Claude's welcome or workspace trust prompt in its window. StateEngine keeps waiting while that same process is alive."
+                    } else {
+                        "The window launch is still in progress under native supervision; inspect this agent's status."
+                    };
+                    return SeError::new(se_types::Detail::LaunchReadinessTimeout(se_types::details::LaunchReadinessTimeout {
+                        agent: job.target.1.clone(), waited_ms: waiting_since.elapsed().as_millis() as u64, last_observed: last_observed.into(),
+                    }));
+                }
                 se_core::scope::unreadable(
                     "launch request wait",
                     "the supervisor retains the original request; retry with the same key",

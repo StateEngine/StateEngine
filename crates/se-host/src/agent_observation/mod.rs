@@ -21,6 +21,7 @@ pub struct AgentObservationPlan {
     capture: Read<SourceEvidence>,
     control_failure: Option<String>,
     status_attention: bool,
+    setup_expired: bool,
 }
 impl AgentObservationPlan {
     pub fn with_status_attention(mut self) -> Self {
@@ -138,6 +139,37 @@ pub fn observe_agent(
             plan.row.resume.command = None;
             plan.row.resume.argv = None;
         }
+    }
+    let live = matches!(&plan.row.session.liveness, Read::Present { value } if value == "live");
+    if plan.setup_expired && plan.control_failure.is_none() {
+        if live {
+            plan.row.session.state = "setup-expired".into();
+        }
+        plan.row.resume.ready = false;
+        plan.row.resume.mode = "new".into();
+        plan.row.resume.reason = Some("Setup took longer than 10 minutes, so this window isn't connected to StateEngine. Finish Claude's welcome, then launch this agent again; completed onboarding is retained.".into());
+        let command = match &plan.command_home {
+            Some(home) => {
+                se_core::ops::AgentCommand::launch_in_home(&plan.row.id, home, &plan.project, false)
+            }
+            None => Some(se_core::ops::AgentCommand::launch(
+                &plan.row.id,
+                None,
+                Some(&plan.project),
+                false,
+            )),
+        }
+        .map(|command| command.with_detach(false));
+        plan.row.resume.command = command.as_ref().map(|command| command.command.clone());
+        plan.row.resume.argv = command.map(|command| command.argv);
+    } else if live
+        && plan.row.provider == se_core::config_policy::Provider::Claude
+        && plan.row.session.surface.as_deref() == Some("window")
+        && plan.row.session.recorded_state.as_deref() == Some("prepared")
+    {
+        plan.row.session.state = "starting".into();
+        plan.row.resume.reason = Some("Waiting for Claude to connect. Complete any welcome or workspace trust prompt in its window; StateEngine is still watching the same process.".into());
+        plan.row.resume.mode = "running".into();
     }
     let pending = approval::observe(&plan, deadline);
     Ok(AgentObservation {

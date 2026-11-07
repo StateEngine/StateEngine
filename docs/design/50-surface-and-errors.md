@@ -1025,7 +1025,7 @@ denied, not bypassed. The Claude example above keeps its on-request policy.
 | row`.provider` | `"claude"` \| `"codex"` | yes | saved provider |
 | row`.model` | string \| null | yes | saved model; null means the provider's default |
 | row`.profile` | string | yes | permission profile name |
-| row`.session.state` | `"never-launched"` \| `"starting"` \| `"running"` \| `"stopping"` \| `"stopped"` \| `"lost"` \| `"unknown"` | yes | `lost`: recorded as running but not found on re-read. `unknown`: the process identity was unreadable. |
+| row`.session.state` | `"never-launched"` \| `"starting"` \| `"setup-expired"` \| `"running"` \| `"stopping"` \| `"stopped"` \| `"lost"` \| `"unknown"` | yes | `starting`: the live window has not connected, and may need native onboarding. `setup-expired`: the original window is live but its never-activated StateEngine preparation expired; `resume.reason` explains ordinary relaunch recovery. `lost`: recorded as running but not found on re-read. `unknown`: the process identity was unreadable. |
 | row`.session.recorded_state` | `"prepared"` \| `"activated"` \| `"ended"` \| `"revoked"` \| null | yes | the immutable session projection; activation alone is not a fresh liveness observation |
 | row`.session.process_state` | `Read<string>` | yes | the matching lifecycle projection, including `stop-unproved`; absent, unreadable and unknown remain distinct. An unrelated newer session's process is never substituted. |
 | row`.session.liveness` | `Read<string>` | yes | fresh outside native observation (`live` or `exited`), or a named absent/unreadable/unknown result. A recorded PID or exited index alone is not a new native witness. |

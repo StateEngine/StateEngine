@@ -18,6 +18,8 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
     ) -> Result<LaunchResult> {
+        let expired_window = matches!(&plan.control.latest_session, se_types::Read::Present { value }
+            if se_core::ops::agent_launch::expired_attended_setup(value));
         if !plan.input.override_live && (plan.replayed || plan.control.processes.is_empty()) {
             return self.launch_prepared(plan, admission, deadline, None).await;
         }
@@ -27,7 +29,7 @@ impl LaunchCoordinator {
                 "multiple unreleased lifecycles; reconcile them before launch",
             ));
         }
-        if !plan.input.override_live {
+        if !plan.input.override_live && !expired_window {
             // No effect is allowed on the refusal path, including revocation.
             let jobs = self
                 .inspect_takeover(&plan, &admission, deadline, false)
@@ -194,6 +196,13 @@ impl LaunchCoordinator {
             witness: "not stopped".into(),
         };
         if stop {
+            if !plan.input.override_live && !inspected.is_empty() {
+                return Err(SeError::new(se_types::Detail::LaunchFailed(se_types::details::LaunchFailed {
+                    subject: plan.agent.name.clone(),
+                    reason: "Setup expired, but this window has running jobs. No process was stopped.".into(),
+                    next_step: "Wait for those jobs to finish, or use --override-live to explicitly stop this managed scope and reconnect.".into(),
+                })));
+            }
             work.stop_key = Some(se_core::ops::process_commit::phase_key(
                 &plan.input.idempotency_key,
                 "takeover-stop",

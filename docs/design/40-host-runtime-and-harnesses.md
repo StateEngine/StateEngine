@@ -1283,6 +1283,23 @@ ProviderInterrupt request evidence. LaunchCoordinator alone obtains native stop/
 exit witnesses. ProviderInterrupt.requested and provider completion are not scope
 absence. Stream/native ownership never moves merely on trait-object Drop.
 
+An attended Claude window may be waiting for the person to finish native welcome
+or workspace trust screens. The short caller/readiness clock never closes that
+window: the coordinator observes the same pinned process and honors explicit
+stop while waiting for its transcript. A pending caller gets an incomplete
+readiness result explaining the window prompt; status reports `starting`.
+Native setup and post-onboarding publication remain bounded; headless readiness
+keeps its original clock. A live but unresponsive window is still pending, not
+declared ready. Native exit or unreadable identity remains an actual failure.
+
+Section 70's ten-minute credential activation limit is unchanged. If an attended
+preparation expires before connection, revoke it and retain the owned window;
+status reports `setup-expired` and explains how to launch the agent again.
+Ordinary launch may replace only this revoked, never-activated window preparation,
+with exact-scope stop and outside exit proof. Running jobs require explicit
+`--override-live` consent. The replacement starts a new conversation using the
+provider's retained onboarding; it does not claim to resume an unverified one.
+
 ProviderIoPlatform is genuine Unix/Windows native I/O polymorphism: open creates
 explicit child Files and retained host transport; read yields bounded bytes or
 actual EOF; read failure retains any partial bytes and structured cause, write
