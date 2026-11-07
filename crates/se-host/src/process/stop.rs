@@ -420,19 +420,19 @@ impl LaunchCoordinator {
                 Err(failure) => work.stop_failure = Some(failure.body),
             }
         }
-        // Store admission and the graceful interval do not consume the native
-        // force interval. Both stages remain capped by the original deadline.
-        let force = deadline.stage(Duration::from_millis(500))?;
+        // Queue admission and identity-checked dispatch use the caller's clock.
+        // The force interval measures exit after dispatch, not time waiting for
+        // a worker on a slow or busy machine.
         let owner = work.process.clone().ok_or_else(|| {
             se_core::scope::unreadable("forced stop", "owned native reference is absent")
         })?;
         let native = self.native.clone();
         let generation = self.options.epoch.generation;
-        let at = force.at();
+        let at = deadline.at();
         let prepared = self
             .store
             .pool
-            .run_owned(&force, move || {
+            .run_owned(deadline, move || {
                 native
                     .prepare_stop(&owner, generation, at)
                     .map_err(|e| error("native stop preparation", e))
@@ -442,7 +442,7 @@ impl LaunchCoordinator {
         let attempt = self
             .store
             .pool
-            .run_owned(&force, move || {
+            .run_owned(deadline, move || {
                 native
                     .request_stop(prepared)
                     .map_err(|e| error("exact native stop", e))
@@ -458,6 +458,7 @@ impl LaunchCoordinator {
         } else if dispatch.is_ok() {
             work.stop_method = Some("forced".into());
         }
+        let force = deadline.stage(Duration::from_millis(500))?;
         let (ticket, result) = self.stop_observation(attempt.ticket, deadline).await?;
         self.finish_stop_wait(work, ticket, result, dispatch.map(|_| ()), force, deadline)
             .await
