@@ -11,6 +11,10 @@ on:
         type: choice
         default: all
         options: [all, macos]
+      target_ref:
+        description: Source branch, tag or SHA for macOS (empty uses the workflow ref)
+        type: string
+        default: ''
   schedule:
     - cron: '23 3 * * *'
 
@@ -230,7 +234,7 @@ jobs:
           mode: ${{ matrix.mode }}
 
   # macOS promotion remains open until the full-feature workspace compiles there.
-  # Nightly/manual only; dispatch job=macos compiles the selected branch in isolation.
+  # Dispatch from main with job=macos and target_ref to test branches with older workflows.
   macos:
     name: macOS portability (informational)
     if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
@@ -240,6 +244,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_ref || github.sha }}
       - uses: ./.github/actions/rust
       - uses: Swatinem/rust-cache@v2
         id: cache
