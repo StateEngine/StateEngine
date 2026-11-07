@@ -110,6 +110,8 @@ else:
                 if record["outside_rescue"] and not (f.home / "endpoint.json").exists():
                     # Follow the public already-down remedy before asking the
                     # successor to retire the original durable cleanup debt.
+                    if host_process:
+                        record["host_exit"] = host_process.wait(timeout=40)
                     f.ok("up")
                     f.ok("--project", f.project, "--key", "rescued-cleanup", "stop", f.agent)
                 if (f.home / "endpoint.json").exists() or record["outside_rescue"]:
