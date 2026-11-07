@@ -59,7 +59,10 @@ pub fn up(
 }
 /// The public CLI keeps its original process as the sole standalone host.
 #[cfg(any(target_os = "linux", windows))]
-pub fn foreground(cx: &Bootstrap, ready: &mut dyn FnMut(AnyOutput) -> Result<()>) -> Result<u8> {
+pub fn foreground(
+    cx: &Bootstrap,
+    ready: &mut (dyn FnMut(AnyOutput) -> Result<()> + Send),
+) -> Result<u8> {
     let setup = super::setup::inspect_phase(
         &cx.home,
         se_core::ops::receipt::timestamp(execute::now_us()?)?,
@@ -195,6 +198,7 @@ pub fn down<R: se_store::ReadStore>(
     files: &Files,
     reader: &R,
     input: RuntimeDown,
+    recover_cold: bool,
 ) -> Result<AnyOutput> {
     let options = execute::options();
     #[cfg(any(target_os = "linux", windows))]
@@ -206,7 +210,28 @@ pub fn down<R: se_store::ReadStore>(
                 down_live(files, reader, &endpoint, input, options)
             }
             se_host::EndpointRoute::Start { recovery } => {
-                let observed = already_down::observe(files, reader, &options);
+                let bound = Deadline::from_options(&options)?;
+                let observed = already_down::observe(files, reader, &options).and_then(|closed| {
+                    if let Some(output) = closed {
+                        return Ok(output);
+                    }
+                    if !recover_cold {
+                        return Err(scope::unreadable(
+                            "already-down native custody",
+                            "Unresolved owned process or session cleanup remains in this home. Run se down with this same --home to reconcile the retained custody, then retry se uninstall; this uninstall has not started a recovery host or changed durable history.",
+                        ));
+                    }
+                    // A failed launch can leave exact cleanup debt after its
+                    // host exits. Reuse startup's native reconciliation, then
+                    // the authenticated stop protocol within this one clock.
+                    let (endpoint, _) = start(cx, files, &bound, &mut |message| {
+                        use std::io::Write;
+                        writeln!(std::io::stderr().lock(), "{message}")
+                    })?;
+                    let mut options = options;
+                    options.timeout = bound.remaining()?;
+                    down_live(files, reader, &endpoint, input, options)
+                });
                 match (observed, recovery) {
                     (Ok(AnyOutput::RuntimeDown(mut report)), Some(retained)) => {
                         report.value.witness.detail.get_or_insert_default().push_str(&format!(
@@ -230,10 +255,13 @@ pub fn down<R: se_store::ReadStore>(
     }
     #[cfg(not(any(target_os = "linux", windows)))]
     {
-        let _ = cx;
+        let _ = (cx, recover_cold);
         let observed = execute::endpoint(files)?;
         if matches!(observed, se_types::Read::Absent { .. }) {
-            return already_down::observe(files, reader, &options);
+            return already_down::observe(files, reader, &options)?.ok_or_else(|| scope::unreadable(
+                "already-down native custody",
+                "Native cleanup remains unresolved; this platform cannot start its recovery host. Preserve the original home and use a supported native reconciliation route.",
+            ));
         }
         let endpoint = scope::require_present(
             observed,

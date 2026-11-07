@@ -54,6 +54,18 @@ async function request($, method = 'GET', body = '') {
 }
 async function hold($, reason) {
   held = true; epoch++; pending = [];
+  let expiryReadFailure;
+  let expiredSetup = false;
+  if (reason !== 'human-stop') {
+    try {
+      const saved = JSON.parse(await $.fs.read(config.hold_file));
+      expiredSetup = saved.expired_setup === config.session;
+    } catch (error) { expiryReadFailure = String(error.message).slice(0, 120); }
+  }
+  if (expiredSetup) {
+    await status($, 'not connected: setup took longer than 10 minutes; finish welcome, then relaunch this agent from the Owner terminal');
+    return;
+  }
   const results = await Promise.allSettled([
     $.store.set(holdKey, true), request($, 'POST', JSON.stringify({ hold: reason })),
   ]);
@@ -61,7 +73,8 @@ async function hold($, reason) {
     await status($, 'held locally; durable hold unavailable; keep automatic mail disabled');
     throw new Error('could not persist the automatic-mail hold');
   }
-  await status($, 'held after ' + reason + '; use /stateengine-mail-resume to allow automatic mail again');
+  await status($, 'held after ' + reason + '; use /stateengine-mail-resume to allow automatic mail again' +
+    (expiryReadFailure ? '; setup state unreadable: ' + expiryReadFailure : ''));
 }
 async function offer($) {
   if (!live || held || working || pending.length === 0) return;
@@ -133,9 +146,10 @@ export function register(on) {
     held = saved.held !== false || await $.store.get(holdKey) === true;
     live = true;
     await $.command.register({ name: 'stateengine-mail-resume', description: 'Explicitly allow automatic StateEngine mail after stopping it' });
-    await next(e);
+    const result = await next(e);
     await status($, held ? 'held; use /stateengine-mail-resume to allow automatic mail again' : 'starting authenticated mail wait');
     if (!held) $.clock.after(0, () => poll($));
+    return result;
   });
   on('turn.start', async ($, e, next) => { working = true; return next(e); });
   on('turn.complete', async ($, e, next) => {

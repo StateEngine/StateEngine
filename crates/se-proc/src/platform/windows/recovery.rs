@@ -34,8 +34,12 @@ fn departed(expected: &ProcessIdentity) -> ProcResult<RootWitness> {
             },
         });
     };
-    let actual = identity(expected.machine.clone(), expected.pid, &pin)?;
-    if actual.start != expected.start || actual.boot != expected.boot {
+    // Join this retained process object to the original birth before asking
+    // for its image. A signalled original object can prove exit even after
+    // Windows has made its executable unreadable; an image error alone cannot.
+    if birth(&pin)? != expected.start || expected.boot != BootIdentity::WindowsAbsoluteCreationClock
+    {
+        let actual = identity(expected.machine.clone(), expected.pid, &pin)?;
         return Ok(RootWitness::Identified {
             expected: expected.clone(),
             evidence: Box::new(ExitEvidence::Replaced { observed: actual }),
@@ -127,59 +131,73 @@ fn empty_job(scope: &ScopeIdentity) -> ProcResult<ScopeObservation> {
 }
 impl Driver {
     pub fn reconcile(&self, source: &RecoverySource) -> ProcResult<StopWitness> {
-        let (lifecycle, owner, scope, guarantee, root) = match source {
-            RecoverySource::Record(record) => (
-                &record.lifecycle,
-                &record.owner,
-                record.scope.clone(),
-                record.guarantee,
-                Some(&record.root),
-            ),
-            RecoverySource::Reservation(r) => (
-                &r.lifecycle,
-                &r.owner,
-                ScopeIdentity::WindowsJob {
-                    host: r.host,
-                    name: job_name(r)?,
-                },
-                ContainmentGuarantee::KernelScope {
-                    explicit_breakaway: true,
-                },
-                None,
-            ),
-            RecoverySource::Prepared(c) => (
-                &c.reservation.lifecycle,
-                &c.reservation.owner,
-                c.scope.clone(),
-                c.guarantee,
-                None,
-            ),
-            RecoverySource::RootPrepared(_) => {
-                return Err(input(
-                    "cold Windows recovery",
-                    "Windows never publishes a pre-exec RootCheckpoint",
-                ));
-            }
-        };
-        // The old owner must be outside-proved gone before name-only queries.
-        if !matches!(source, RecoverySource::Record(r) if r.state == LifecycleState::Exited) {
-            departed(owner)?;
-        }
-        let root = match root {
-            Some(root) => departed(root)?,
-            None if matches!(source, RecoverySource::Reservation(_)) => RootWitness::NoChildCreated,
-            None => RootWitness::UnpublishedScope,
-        };
-        let scope_exit = empty_job(&scope)?;
-        Ok(StopWitness {
-            lifecycle: lifecycle.clone(),
-            root,
-            scope,
-            scope_exit,
-            guarantee,
-            observed_at_unix_ns: now()?,
-        })
+        reconcile(source)
     }
+}
+
+/// Query-only cold proof for a protected unpublished Windows scope. The old
+/// owner must be gone and the exact private kill-on-close job empty or absent.
+/// No process is signalled and no store checkpoint is consumed.
+pub fn observe_prepared_scope_exit(checkpoint: &ScopeCheckpoint) -> ProcResult<StopWitness> {
+    let source = RecoverySource::Prepared(Box::new(checkpoint.clone()));
+    crate::checkpoint::validate_recovery(&source)
+        .map_err(|e| input("prepared exit observation", &e.to_string()))?;
+    reconcile(&source)
+}
+
+fn reconcile(source: &RecoverySource) -> ProcResult<StopWitness> {
+    let (lifecycle, owner, scope, guarantee, root) = match source {
+        RecoverySource::Record(record) => (
+            &record.lifecycle,
+            &record.owner,
+            record.scope.clone(),
+            record.guarantee,
+            Some(&record.root),
+        ),
+        RecoverySource::Reservation(r) => (
+            &r.lifecycle,
+            &r.owner,
+            ScopeIdentity::WindowsJob {
+                host: r.host,
+                name: job_name(r)?,
+            },
+            ContainmentGuarantee::KernelScope {
+                explicit_breakaway: true,
+            },
+            None,
+        ),
+        RecoverySource::Prepared(c) => (
+            &c.reservation.lifecycle,
+            &c.reservation.owner,
+            c.scope.clone(),
+            c.guarantee,
+            None,
+        ),
+        RecoverySource::RootPrepared(_) => {
+            return Err(input(
+                "cold Windows recovery",
+                "Windows never publishes a pre-exec RootCheckpoint",
+            ));
+        }
+    };
+    // The old owner must be outside-proved gone before name-only queries.
+    if !matches!(source, RecoverySource::Record(r) if r.state == LifecycleState::Exited) {
+        departed(owner)?;
+    }
+    let root = match root {
+        Some(root) => departed(root)?,
+        None if matches!(source, RecoverySource::Reservation(_)) => RootWitness::NoChildCreated,
+        None => RootWitness::UnpublishedScope,
+    };
+    let scope_exit = empty_job(&scope)?;
+    Ok(StopWitness {
+        lifecycle: lifecycle.clone(),
+        root,
+        scope,
+        scope_exit,
+        guarantee,
+        observed_at_unix_ns: now()?,
+    })
 }
 
 pub(crate) fn uncreated_scope(

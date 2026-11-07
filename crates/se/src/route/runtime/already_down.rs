@@ -10,7 +10,7 @@ pub(super) fn observe<R: ReadStore>(
     files: &Files,
     reader: &R,
     options: &ClientOptions,
-) -> Result<AnyOutput> {
+) -> Result<Option<AnyOutput>> {
     let bound = Deadline::from_options(options)?;
     let lock = scope::require_present(
         files
@@ -41,12 +41,6 @@ pub(super) fn observe<R: ReadStore>(
     let inventory = reader
         .owner_guard(files, budget)
         .map_err(|error| store_error(&error))?;
-    if !inventory.processes.is_empty() {
-        return Err(scope::unreadable(
-            "already-down native custody",
-            "Unresolved owned process or session cleanup remains in this home. Run se up to reconcile the retained custody, then se down; no process was declared stopped.",
-        ));
-    }
     match reader
         .runtime_owner()
         .map_err(|error| store_error(&error))?
@@ -62,7 +56,13 @@ pub(super) fn observe<R: ReadStore>(
         }
     }
     bound.remaining()?;
-    Ok(RuntimeStop {
+    if !inventory.processes.is_empty() {
+        // Exclusion and the original host's exit were observed. The caller
+        // must run normal native reconciliation and stop that recovery host;
+        // cleanup debt is neither absent nor an already-down success.
+        return Ok(None);
+    }
+    Ok(Some(RuntimeStop {
         complete: true,
         already_down: true,
         stops: Vec::new(),
@@ -73,5 +73,5 @@ pub(super) fn observe<R: ReadStore>(
             detail: Some("Already down; no host was running. No process was stopped.".into()),
         },
     }
-    .into())
+    .into()))
 }

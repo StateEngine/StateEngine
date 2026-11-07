@@ -31,6 +31,14 @@ pub fn read_process_until(
 }
 
 impl NativeProcessRuntime {
+    /// The exact native console server pinned through the original root's
+    /// kernel console connection. Unreadable or changed associations refuse.
+    #[cfg(windows)]
+    pub fn window_viewer(&self, process: &OwnedProcess) -> ProcResult<Option<ProcessIdentity>> {
+        self.inner
+            .apply(&process.key, true, |slot| slot.native()?.window_viewer())
+    }
+
     /// Read-only process query; no arena, watcher, random identity or runtime.
     pub fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<ProcessRead> {
         read_process(machine, pid)

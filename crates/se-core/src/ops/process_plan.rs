@@ -208,6 +208,11 @@ pub fn launch<R: Snapshot>(
                             .into(),
                 }
             }
+            Read::Present { value } if super::agent_launch::retryable_attended_setup(value) => {
+                Read::Absent {
+                    checked: "the expired window setup or its unactivated replacement needs a new connection using the existing provider onboarding".into(),
+                }
+            }
             Read::Present { value } => {
                 // Only an activated conversation is resumable. A revoked
                 // preparation is not silently replaced with a new conversation.

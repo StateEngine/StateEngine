@@ -68,7 +68,16 @@ impl LaunchCoordinator {
                     .await;
                 match result {
                     Ok(mut targets) => plan.targets.append(&mut targets),
-                    Err(error) => selection_failures.push(format!("project {project_id}: {error}")),
+                    Err(error) => {
+                        let cx = se_types::RenderCx {
+                            project: Some(&project_id),
+                            ..Default::default()
+                        };
+                        selection_failures.push(format!(
+                            "project {project_id}: {}",
+                            refusal_detail(&error, &cx)
+                        ));
+                    }
                 }
             }
         }
@@ -169,7 +178,11 @@ impl LaunchCoordinator {
                 return Err(se_core::scope::unreadable("cold stop custody","this host has no retained native reference; protected-record recovery is required before claiming an exit"));
             };
             if !release { self.interrupt_startup(&job,key,admission.clone(),deadline).await?; }
-            let mut work=tokio::time::timeout_at(tokio::time::Instant::from_std(deadline.at()),job.state.lock()).await.map_err(|_|se_core::scope::unreadable("stop preparation","the retained launch is still settling; retry the original stop key"))?;
+            let mut work=if release {
+                job.control_state(deadline).await?
+            } else {
+                tokio::time::timeout_at(tokio::time::Instant::from_std(deadline.at()),job.state.lock()).await.map_err(|_|se_core::scope::unreadable("stop preparation","the retained launch is still settling; retry the original stop key"))?
+            };
             row.target.session_id=Some(work.meta.session.clone());row.target.launch_id=Some(se_proc::session_launch_id(&work.meta.session).map_err(|e|error("stop launch identity",e))?);
             row.target.process = work.process_view.clone();
             if work.ownership_release.is_some(){self.fill_release(&mut row,&work,deadline).await?;return Ok(());}
@@ -200,7 +213,12 @@ impl LaunchCoordinator {
             fill_stopped(&mut row,&work,false)?;Ok(())
         }.await;
         if let Err(error) = result {
-            row.witness.detail = Some(error.to_string());
+            let cx = se_types::RenderCx {
+                project: Some(&row.target.project.id),
+                agent: Some(&row.target.agent.id),
+                commands: None,
+            };
+            row.witness.detail = Some(refusal_detail(&error, &cx));
             row.population_reason=Some("Native closure or retained cleanup is incomplete; an empty diagnostic list proves nothing.".into());
         }
         row
@@ -222,6 +240,14 @@ impl LaunchCoordinator {
                     .cmp(&(!b.settled.load(Ordering::Acquire), b.lifecycle.as_str()))
             })
             .cloned())
+    }
+}
+/// Receipt fields carry public failure text rather than an error envelope.
+/// Keep its recovery advice too, without exposing a private error cause chain.
+pub(super) fn refusal_detail(error: &SeError, cx: &se_types::RenderCx<'_>) -> String {
+    match error.body.remedy(cx) {
+        Ok(remedy) => format!("{error}\nNext: {}", remedy.text),
+        Err(render) => format!("{error}\nRecovery instructions could not be rendered: {render}"),
     }
 }
 fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {

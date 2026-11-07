@@ -19,11 +19,11 @@ pub(super) fn execute(
     }
     diagnostic("Uninstall: stop this home's runtime with ordinary se down; installation removal waits for verified shutdown.\n")
         .map_err(|e| scope::unreadable("uninstall shutdown diagnostic", &e.to_string()))?;
-    let stopped = route::execute::dispatch(
+    let stopped = route::execute::stop_for_uninstall(
         cx,
-        AnyOp::RuntimeDown(RuntimeDown {
+        RuntimeDown {
             idempotency_key: key.clone(),
-        }),
+        },
         diagnostic,
     )
     .map_err(|error| {

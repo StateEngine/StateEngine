@@ -20,6 +20,12 @@ impl LaunchCoordinator {
                 "only a new owned launch can bind its stdout transport",
             )
         })?;
+        let attended = request.mode == se_proc::LaunchMode::Window
+            && plan.profile.provider == se_store::Provider::Claude;
+        if attended {
+            work.attended_setup_deadline =
+                Some(self.window_activation_deadline(work, deadline).await?);
+        }
         work.record = Some(record.clone());
         let owner = work.process.clone().ok_or_else(|| {
             se_core::scope::unreadable("provider attach", "owned process is absent")
@@ -45,21 +51,48 @@ impl LaunchCoordinator {
                     .ok_or_else(|| error("Codex console", "prepared backend binding is absent"))?,
             }
         } else {
-            work.wake
-                .readiness(self.harness_for(plan.profile.provider)?.attach(
-                    HarnessAttach {
-                        request,
-                        process: attach_owner,
-                        record: record.clone(),
-                        transport,
-                        transcript: Read::Absent {
-                            checked: "transcript pin is published after session activation".into(),
-                        },
+            let wake = work.wake.clone();
+            let relaunch = self.window_command(work, true);
+            let attach = self.harness_for(plan.profile.provider)?.attach(
+                HarnessAttach {
+                    request,
+                    process: attach_owner,
+                    record: record.clone(),
+                    transport,
+                    transcript: Read::Absent {
+                        checked: "transcript pin is published after session activation".into(),
                     },
-                    &mut work.binding,
-                    call(self.store.generation, deadline)?,
-                ))
-                .await?
+                },
+                &mut work.binding,
+                call(self.store.generation, deadline)?,
+            );
+            if let Some(activation_deadline) = work.attended_setup_deadline {
+                wake.awaiting_window
+                    .store(true, std::sync::atomic::Ordering::Release);
+                let result = self
+                    .wait_window(
+                        owner.clone(),
+                        wake.clone(),
+                        activation_deadline,
+                        relaunch,
+                        attach,
+                    )
+                    .await;
+                wake.awaiting_window
+                    .store(false, std::sync::atomic::Ordering::Release);
+                result?.ok_or_else(|| self.expired_window_error(work))?
+            } else {
+                wake.readiness(attach).await?
+            }
+        };
+        // Only the human wait is outside the original short clock. All C3
+        // validation, first-use proofs and publication get a bounded call.
+        let publication;
+        let deadline = if attended {
+            publication = Deadline::idle()?.next_call()?;
+            &publication
+        } else {
+            deadline
         };
         if outcome.witness.identity.session != plan.session
             || outcome.witness.identity.project != plan.project.id

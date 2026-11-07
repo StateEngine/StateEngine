@@ -95,8 +95,15 @@ impl LaunchCoordinator {
                 .remove_project(project, &plan.input, admitted, &mut row, deadline)
                 .await
             {
-                row.remaining
-                    .push(obligation("project registration", &error.to_string(), None));
+                let cx = se_types::RenderCx {
+                    project: Some(&row.project.id),
+                    ..Default::default()
+                };
+                row.remaining.push(obligation(
+                    "project registration",
+                    &super::control::refusal_detail(&error, &cx),
+                    None,
+                ));
             }
             projects.push(row);
         }
@@ -123,7 +130,8 @@ impl LaunchCoordinator {
                     unobserved(
                         "unknown",
                         &format!(
-                            "Project results above remain committed; the final runtime observation failed: {error}"
+                            "Project results above remain committed; the final runtime observation failed: {}",
+                            super::control::refusal_detail(&error, &se_types::RenderCx::default())
                         ),
                     ),
                 )

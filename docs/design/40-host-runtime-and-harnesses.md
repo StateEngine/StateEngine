@@ -1283,6 +1283,29 @@ ProviderInterrupt request evidence. LaunchCoordinator alone obtains native stop/
 exit witnesses. ProviderInterrupt.requested and provider completion are not scope
 absence. Stream/native ownership never moves merely on trait-object Drop.
 
+An attended Claude window may be waiting for the person to finish native welcome
+or workspace trust screens. The short caller/readiness clock never closes that
+window: the coordinator observes the same pinned process and honors explicit
+stop while waiting for its transcript. A pending caller gets an incomplete
+readiness result explaining the window prompt; status reports `starting`.
+Native setup and post-onboarding publication remain bounded; headless readiness
+keeps its original clock. A live but unresponsive window is still pending, not
+declared ready. Native exit or unreadable identity remains an actual failure.
+
+Section 70's ten-minute credential activation limit is unchanged. If an attended
+preparation expires before connection, revoke it and retain the owned window;
+status reports `setup-expired` and explains how to launch the agent again.
+Ordinary launch may replace only this revoked, never-activated window preparation,
+with exact-scope stop and outside exit proof. Running jobs require explicit
+`--override-live` consent. On Linux, the native owner retains its terminal
+viewer's PID, birth and image before the provider may execute; that exact
+viewer is harness infrastructure, not a user job. A recovered lifecycle without
+that observation gets no name-based exemption. The replacement starts a new conversation using the
+provider's retained onboarding; it does not claim to resume an unverified one.
+If that replacement fails before activation, retain this ordinary-launch retry
+path with a distinct failure reason; do not relabel it as another ten-minute
+expiry. Native stop proof, live-job consent and existing mail holds still apply.
+
 ProviderIoPlatform is genuine Unix/Windows native I/O polymorphism: open creates
 explicit child Files and retained host transport; read yields bounded bytes or
 actual EOF; read failure retains any partial bytes and structured cause, write
@@ -1398,7 +1421,11 @@ concurrent ordinary turn. Human stop/session end/revocation must prevent new
 offers and preserve hold; the host invalidates and closes its parked wait on
 that observed state. Claude's current fetch API has no caller AbortSignal, so
 immediate mod-side cancellation is unqualified; do not describe it as a passed
-capability. No new mail/reconnect/restart clears hold. The [mods API](https://code.claude.com/docs/en/plugins/mods/reference)
+capability. No new mail/reconnect/restart clears an existing hold. A never-activated
+setup that expires creates no new mail hold: its disconnected window remains
+unable to offer mail, and an Owner relaunch gets automatic mail unless the agent
+already had a human-stop, session-end or revocation hold. Those prior holds stay
+unchanged. The [mods API](https://code.claude.com/docs/en/plugins/mods/reference)
 limits an entire HTTP fetch to 30 seconds: use ≤25 s waits, **0.04/s renewal per
 attended session**, as updated in 70/80. One wait per session, own cap outside 64.
 The Linux spike proves this renewal and idle/busy delivery only, not stop or

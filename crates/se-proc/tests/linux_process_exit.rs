@@ -4,6 +4,7 @@ use se_proc::{
     MachineId, ProcErrorCode, ProcessIdentity, ProcessRead, read_process, read_process_until,
 };
 use std::{
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Child, Command},
     time::{Duration, Instant},
@@ -61,13 +62,15 @@ fn native_executable_exit_requires_fresh_facts_and_keeps_the_original_bound() ->
         "{}",
         String::from_utf8_lossy(&compiled.stderr)
     );
-    for mode in ["exit", "recover", "persistent", "permission"] {
+    for mode in ["exit", "recover", "persistent", "permission", "exec"] {
         let ready = root.join(format!("{mode}.ready"));
         let release = root.join(format!("{mode}.release"));
+        let exec = root.join(format!("{mode}.exec"));
         let mut owned = OwnedChild {
             child: fixture_command("owned_exit_child")?
                 .env("SE_EXIT_READY", &ready)
                 .env("SE_EXIT_RELEASE", &release)
+                .env("SE_EXIT_EXEC", &exec)
                 .spawn()?,
             release: release.clone(),
         };
@@ -88,6 +91,7 @@ fn native_executable_exit_requires_fresh_facts_and_keeps_the_original_bound() ->
                 format!("/proc/{}/exe", owned.child.id()),
             )
             .env("SE_EXIT_RELEASE", &release)
+            .env("SE_EXIT_EXEC", &exec)
             .env("SE_EXIT_READ_MODE", mode)
             .output()?;
         assert!(
@@ -126,6 +130,11 @@ fn owned_exit_child() -> Check {
     std::fs::write(ready, b"ready")?;
     let deadline = Instant::now() + Duration::from_secs(10);
     while !release.exists() {
+        if let Some(exec) = std::env::var_os("SE_EXIT_EXEC")
+            && Path::new(&exec).exists()
+        {
+            return Err(Command::new("/bin/sleep").arg("5").exec().into());
+        }
         assert!(
             Instant::now() < deadline,
             "parent did not release owned fixture"
@@ -161,6 +170,18 @@ fn bounded_exit_observer() -> Check {
         "recover" => match observed {
             Ok(ProcessRead::Present(live)) => assert_eq!(live.identity, expected),
             other => return Err(format!("recovered exact child is not live: {other:?}").into()),
+        },
+        "exec" => match observed {
+            Ok(ProcessRead::Present(live)) => {
+                assert_eq!(live.identity.machine, expected.machine);
+                assert_eq!(live.identity.boot, expected.boot);
+                assert_eq!(live.identity.pid, expected.pid);
+                assert_eq!(live.identity.start, expected.start);
+                assert_eq!(live.identity.image, std::fs::canonicalize("/bin/sleep")?);
+            }
+            other => {
+                return Err(format!("same-birth exec was not freshly observed: {other:?}").into());
+            }
         },
         "persistent" | "permission" => {
             let error = match observed {

@@ -3,7 +3,9 @@
 pub(crate) mod acl;
 pub(crate) mod allocation;
 pub(crate) mod attributes;
+pub(crate) mod console;
 mod parent;
+mod process_query;
 pub(crate) use parent::parent;
 use std::{
     collections::BTreeMap,

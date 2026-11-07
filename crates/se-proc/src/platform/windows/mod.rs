@@ -1,6 +1,8 @@
+mod console;
 mod identity;
 mod notify;
 mod recovery;
+pub use recovery::observe_prepared_scope_exit;
 pub(crate) use recovery::uncreated_scope;
 mod security;
 mod spawn;
@@ -22,6 +24,8 @@ pub(crate) struct Driver {
 pub(crate) struct Scope {
     job: Handle,
     child: Option<spawn::Child>,
+    console_host: Option<console::ConsoleHost>,
+    window: bool,
     pub scope: ScopeIdentity,
     pub guarantee: ContainmentGuarantee,
     pub entry: EntryMethod,
@@ -121,6 +125,8 @@ impl Driver {
         let scope = Scope {
             job,
             child: None,
+            console_host: None,
+            window: spec.mode == LaunchMode::Window,
             scope: ScopeIdentity::WindowsJob {
                 host: reservation.host,
                 name,
@@ -374,6 +380,7 @@ impl Scope {
             child.pin.close()?;
         }
         self.child = None;
+        self.console_host = None;
         self.job.close()?;
         // The slot's final Drop closes this witnessed-empty job. No raw handle
         // is returned to another layer and no provider endpoint is closed here.

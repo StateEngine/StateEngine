@@ -1,29 +1,9 @@
 //! Query a retained process's creator without enumerating every process.
 //! Unsupported query APIs fall back to the existing Toolhelp walk at the caller.
+use super::process_query::query;
 use super::{Error, Result, invalid};
-use std::{ffi::c_void, io, mem::size_of, sync::OnceLock};
-use windows_sys::Win32::{
-    Foundation::*,
-    System::{LibraryLoader::*, Threading::PROCESS_BASIC_INFORMATION},
-};
-type Query = unsafe extern "system" fn(HANDLE, i32, *mut c_void, u32, *mut u32) -> NTSTATUS;
-fn query() -> Option<Query> {
-    static QUERY: OnceLock<Option<Query>> = OnceLock::new();
-    *QUERY.get_or_init(|| {
-        let name: Vec<u16> = "ntdll.dll".encode_utf16().chain(Some(0)).collect();
-        // SAFETY: terminated DLL name; ntdll is the process-lifetime native runtime.
-        let module = unsafe { GetModuleHandleW(name.as_ptr()) };
-        if module.is_null() {
-            return None;
-        }
-        // SAFETY: process-lifetime module and terminated ASCII export name.
-        let export =
-            unsafe { GetProcAddress(module, c"NtQueryInformationProcess".as_ptr().cast()) }?;
-        // SAFETY: this named NT export has the Query signature documented by
-        // winternl.h; runtime resolution preserves the legacy fallback if absent.
-        Some(unsafe { std::mem::transmute::<unsafe extern "system" fn() -> isize, Query>(export) })
-    })
-}
+use std::{io, mem::size_of};
+use windows_sys::Win32::{Foundation::*, System::Threading::PROCESS_BASIC_INFORMATION};
 /// None means this query is unavailable for the retained handle; it never means
 /// the creator is absent. The caller must use its complete Toolhelp fallback.
 pub(crate) fn parent(process: HANDLE, expected_pid: u32) -> Result<Option<u32>> {

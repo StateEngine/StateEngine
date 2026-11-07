@@ -11,6 +11,7 @@ use tokio::sync::Notify;
 pub(super) struct Wake {
     pub event: Arc<Notify>,
     startup_stop: AtomicBool,
+    pub awaiting_window: AtomicBool,
 }
 impl Wake {
     pub fn request_startup_stop(&self) {

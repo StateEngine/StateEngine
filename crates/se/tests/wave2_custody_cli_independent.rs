@@ -307,7 +307,7 @@ fn uninstall_refusal(unproved: bool) -> Check {
         "refusal must name unverified shutdown custody: {printed}"
     );
     assert!(
-        printed.contains("Run se up to reconcile") && printed.contains("then se down"),
+        printed.contains("Run se down") && printed.contains("then retry se uninstall"),
         "missing cold-runtime reconciliation remedy: {printed}"
     );
     assert_eq!(std::fs::read(&c.image)?, image);
@@ -319,6 +319,39 @@ fn uninstall_refusal(unproved: bool) -> Check {
     c.verify_retained(head)?;
     c.done()
 }
+/// Protects: initialized-home uninstall must preserve unresolved cold custody too.
+#[test]
+fn unmanaged_uninstall_refuses_cold_custody_without_history_change() -> Check {
+    let _serial = SERIAL.lock().map_err(|_| "fixture mutex")?;
+    let mut c = Case::new()?;
+    c.unproved()?;
+    c.drain()?;
+    std::fs::remove_file(c.f.options.state_directory.join("standalone-install.json"))?;
+    let head = c.retained_head()?;
+    let image = std::fs::read(&c.image)?;
+    let output = cli::uninstall(&c.image, &c.f)?;
+    let after = c.retained_head()?;
+    println!(
+        "unmanaged uninstall exit={:?}, head_before={:?}, head_after={:?}, output={}",
+        output.status.code(),
+        head,
+        after,
+        cli::printed(&output)
+    );
+    assert_eq!(std::fs::read(&c.image)?, image);
+    assert!(
+        !c.f.options
+            .state_directory
+            .join("standalone-install.json")
+            .try_exists()?
+    );
+    assert!(c.child.live()?, "refused cleanup displaced live custody");
+    c.child.finish()?;
+    assert!(!output.status.success(), "unresolved custody must refuse");
+    c.verify_retained(head)?;
+    c.done()
+}
+
 /// Protects: without a live engine to verify shutdown, public uninstall preserves live custody and all installation bytes.
 #[test]
 fn uninstall_refuses_live_custody_before_removing_files() -> Check {
@@ -459,7 +492,7 @@ fn observation(contradiction: bool) -> Check {
         assert_eq!(output.status.code(), Some(1));
         assert_eq!(cli::json(&output)?["code"], "state-conflict");
         assert!(
-            cli::printed(&output).contains("Run se up to reconcile"),
+            cli::printed(&output).contains("Run se down"),
             "pending exit lost its uninstall diagnosis: {}",
             cli::printed(&output)
         );

@@ -1,6 +1,7 @@
 //! Host-owned process supervisor. Requests await owned jobs; dropping a client
 //! never drops a native lifecycle, accepted write, provider drain or cleanup debt.
 mod attach;
+mod attended;
 mod capture;
 mod catch_up;
 mod codex_capture;

@@ -261,7 +261,7 @@ impl Harness for ClaudeHarness {
     ) -> HostFuture<'a, LaunchOutcome> {
         Box::pin(async move {
             if request.request.mode == se_proc::LaunchMode::Window {
-                return self.attach_attended(request, cx).await;
+                return self.attach_attended(request).await;
             }
             let provider = self
                 .probed

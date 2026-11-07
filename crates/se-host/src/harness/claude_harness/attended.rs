@@ -3,11 +3,7 @@
 use super::*;
 
 impl ClaudeHarness {
-    pub(super) async fn attach_attended(
-        &self,
-        request: HarnessAttach,
-        cx: CallContext,
-    ) -> Result<LaunchOutcome> {
+    pub(super) async fn attach_attended(&self, request: HarnessAttach) -> Result<LaunchOutcome> {
         let provider = self
             .probed
             .lock()
@@ -22,17 +18,12 @@ impl ClaudeHarness {
             &request.request,
             &conversation,
         )?;
-        let until = tokio::time::Instant::now() + cx.timeout;
         let mut source = None;
         let mut offset = 0;
         let mut pending = Vec::new();
         loop {
-            if tokio::time::Instant::now() >= until {
-                return Err(SeError::invalid(
-                    "Claude window readiness",
-                    "a provider-written transcript record for the selected conversation within the original launch deadline",
-                ));
-            }
+            // The coordinator watches the exact native instance and explicit
+            // stop requests. Reading welcome/trust screens is not a timeout.
             let path = transcript.clone();
             let wanted = conversation.clone();
             let (returned, position, tail, ready) =
@@ -95,10 +86,7 @@ impl ClaudeHarness {
             if ready {
                 break;
             }
-            tokio::time::sleep_until(
-                (tokio::time::Instant::now() + std::time::Duration::from_millis(25)).min(until),
-            )
-            .await;
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         let binding = Arc::new(Binding {
             bell_session: request.request.identity.session.clone(),

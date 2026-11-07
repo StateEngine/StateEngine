@@ -205,56 +205,61 @@ pub(crate) fn read_process(machine: MachineId, pid: ProcessId) -> ProcResult<Pro
             observed_at_unix_ns: now()?,
         });
     }
-    let image = match image {
+    let mut image = match image {
         Ok(image) => image,
         Err(cause) => return executable_failure(machine, pid, before.start, boot, cause),
     };
-    let final_image = match fs::read_link(format!("/proc/{}/exe", pid.0)) {
-        Ok(image) => image,
-        Err(cause) => return executable_failure(machine, pid, before.start, boot, cause),
-    };
-    let Some(final_stat) = stat(pid)? else {
-        return Ok(ProcessRead::Absent {
-            pid,
-            observed_at_unix_ns: now()?,
-        });
-    };
-    if final_stat.start != before.start {
-        return Err(input(
-            "process image",
-            "native birth changed during final image read",
-        ));
+    // A live group member may exec between image reads. Resample at most three
+    // times, retaining the original birth; no cached identity or renewed clock.
+    for _ in 0..3 {
+        let final_image = match fs::read_link(format!("/proc/{}/exe", pid.0)) {
+            Ok(image) => image,
+            Err(cause) => return executable_failure(machine, pid, before.start, boot, cause),
+        };
+        let Some(final_stat) = stat(pid)? else {
+            return Ok(ProcessRead::Absent {
+                pid,
+                observed_at_unix_ns: now()?,
+            });
+        };
+        if final_stat.start != before.start {
+            return Err(input(
+                "process image",
+                "native birth changed during final image read",
+            ));
+        }
+        if final_stat.state == NativeState::ExitedAwaitingReap {
+            return Ok(ProcessRead::ExitedRecord {
+                pid,
+                boot,
+                start,
+                state: final_stat.state,
+                status: ExitStatus::Unavailable {
+                    reason: ExitStatusUnavailable::NotOurChild,
+                },
+                observed_at_unix_ns: now()?,
+            });
+        }
+        if image == final_image {
+            return Ok(ProcessRead::Present(LiveObservation {
+                identity: ProcessIdentity {
+                    machine,
+                    boot,
+                    pid,
+                    start,
+                    image,
+                },
+                state: final_stat.state,
+                parent: Some(final_stat.parent),
+                observed_at_unix_ns: now()?,
+            }));
+        }
+        image = final_image;
     }
-    if final_stat.state == NativeState::ExitedAwaitingReap {
-        return Ok(ProcessRead::ExitedRecord {
-            pid,
-            boot,
-            start,
-            state: final_stat.state,
-            status: ExitStatus::Unavailable {
-                reason: ExitStatusUnavailable::NotOurChild,
-            },
-            observed_at_unix_ns: now()?,
-        });
-    }
-    if image != final_image {
-        return Err(input(
-            "process image",
-            "exec changed during identity read; retry observation",
-        ));
-    }
-    Ok(ProcessRead::Present(LiveObservation {
-        identity: ProcessIdentity {
-            machine,
-            boot,
-            pid,
-            start,
-            image,
-        },
-        state: after.state,
-        parent: Some(after.parent),
-        observed_at_unix_ns: now()?,
-    }))
+    Err(input(
+        "process image",
+        "exec changed during identity read; retry observation",
+    ))
 }
 fn executable_failure(
     _machine: MachineId,
