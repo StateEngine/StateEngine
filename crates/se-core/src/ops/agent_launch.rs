@@ -43,12 +43,20 @@ fn no_override(value: &bool) -> bool {
 /// A window that never connected may be replaced by an ordinary launch after
 /// its credentials were revoked. This is not an activated conversation.
 pub const ATTENDED_SETUP_EXPIRED: &str = "attended setup exceeded its activation deadline";
+pub const ATTENDED_RECONNECT_FAILED: &str =
+    "expired attended setup replacement failed before activation";
 pub fn expired_attended_setup(record: &se_store::ProjectionRecord) -> bool {
-    record.current.revision.value.get() == 2
-        && matches!(&record.current.body,
-        se_store::EventBody::SessionRevoked { reason: se_store::StoredText::Present(reason), .. }
-        if reason == ATTENDED_SETUP_EXPIRED)
-        && matches!(
+    attended_setup_reason(record) == Some(ATTENDED_SETUP_EXPIRED)
+}
+pub fn retryable_attended_setup(record: &se_store::ProjectionRecord) -> bool {
+    matches!(
+        attended_setup_reason(record),
+        Some(ATTENDED_SETUP_EXPIRED | ATTENDED_RECONNECT_FAILED)
+    )
+}
+fn attended_setup_reason(record: &se_store::ProjectionRecord) -> Option<&str> {
+    if record.current.revision.value.get() != 2
+        || !matches!(
             &record.original.as_deref().unwrap_or(&record.current).body,
             se_store::EventBody::SessionPrepared {
                 provider: se_store::Provider::Claude,
@@ -56,6 +64,16 @@ pub fn expired_attended_setup(record: &se_store::ProjectionRecord) -> bool {
                 ..
             }
         )
+    {
+        return None;
+    }
+    match &record.current.body {
+        se_store::EventBody::SessionRevoked {
+            reason: se_store::StoredText::Present(reason),
+            ..
+        } => Some(reason),
+        _ => None,
+    }
 }
 impl AgentLaunch {
     /// Route syntax is not request identity: CLI selectors and MCP IDs bind to

@@ -196,8 +196,18 @@ impl LaunchCoordinator {
         // Failed preparation loses both capabilities immediately, even when
         // native termination or file cleanup subsequently remains unproved.
         if !work.active && !work.session_retired {
-            self.retire_session(work, "launch preparation failed", deadline)
-                .await?;
+            let reconnecting = work.plan.as_ref().is_some_and(|plan| {
+                !plan.input.fresh
+                    && !plan.input.detach
+                    && matches!(&plan.control.latest_session, se_types::Read::Present { value }
+                        if se_core::ops::agent_launch::retryable_attended_setup(value))
+            });
+            let reason = if reconnecting {
+                se_core::ops::agent_launch::ATTENDED_RECONNECT_FAILED
+            } else {
+                "launch preparation failed"
+            };
+            self.retire_session(work, reason, deadline).await?;
         }
         if work.process.is_none() {
             let reservation = work.reservation.clone().ok_or_else(|| {

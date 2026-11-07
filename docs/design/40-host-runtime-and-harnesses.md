@@ -1302,6 +1302,9 @@ viewer's PID, birth and image before the provider may execute; that exact
 viewer is harness infrastructure, not a user job. A recovered lifecycle without
 that observation gets no name-based exemption. The replacement starts a new conversation using the
 provider's retained onboarding; it does not claim to resume an unverified one.
+If that replacement fails before activation, retain this ordinary-launch retry
+path with a distinct failure reason; do not relabel it as another ten-minute
+expiry. Native stop proof, live-job consent and existing mail holds still apply.
 
 ProviderIoPlatform is genuine Unix/Windows native I/O polymorphism: open creates
 explicit child Files and retained host transport; read yields bounded bytes or

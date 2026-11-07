@@ -19,7 +19,7 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<LaunchResult> {
         let expired_window = matches!(&plan.control.latest_session, se_types::Read::Present { value }
-            if se_core::ops::agent_launch::expired_attended_setup(value));
+            if se_core::ops::agent_launch::retryable_attended_setup(value));
         if !plan.input.override_live && (plan.replayed || plan.control.processes.is_empty()) {
             return self.launch_prepared(plan, admission, deadline, None).await;
         }

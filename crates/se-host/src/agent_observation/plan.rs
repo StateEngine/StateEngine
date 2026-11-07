@@ -31,6 +31,7 @@ pub fn prepare_agent_observation<S: Snapshot>(
                 control_failure: None,
                 status_attention: false,
                 setup_expired: false,
+                setup_retryable: false,
             })
         }
     }
@@ -55,6 +56,7 @@ fn prepare<S: Snapshot>(
             control_failure: None,
             status_attention: false,
             setup_expired: false,
+            setup_retryable: false,
         });
     };
     let head = scope::require_present(
@@ -152,6 +154,7 @@ fn prepare<S: Snapshot>(
         control_failure,
         status_attention: false,
         setup_expired: se_core::ops::agent_launch::expired_attended_setup(&head),
+        setup_retryable: se_core::ops::agent_launch::retryable_attended_setup(&head),
     })
 }
 fn capture_evidence<S: Snapshot>(

@@ -208,9 +208,9 @@ pub fn launch<R: Snapshot>(
                             .into(),
                 }
             }
-            Read::Present { value } if super::agent_launch::expired_attended_setup(value) => {
+            Read::Present { value } if super::agent_launch::retryable_attended_setup(value) => {
                 Read::Absent {
-                    checked: "the previous window setup expired before connecting; start a new conversation using the existing provider onboarding".into(),
+                    checked: "the expired window setup or its unactivated replacement needs a new connection using the existing provider onboarding".into(),
                 }
             }
             Read::Present { value } => {

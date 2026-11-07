@@ -22,6 +22,7 @@ pub struct AgentObservationPlan {
     control_failure: Option<String>,
     status_attention: bool,
     setup_expired: bool,
+    setup_retryable: bool,
 }
 impl AgentObservationPlan {
     pub fn with_status_attention(mut self) -> Self {
@@ -141,13 +142,22 @@ pub fn observe_agent(
         }
     }
     let live = matches!(&plan.row.session.liveness, Read::Present { value } if value == "live");
-    if plan.setup_expired && plan.control_failure.is_none() {
+    if plan.setup_retryable && plan.control_failure.is_none() {
         if live {
-            plan.row.session.state = "setup-expired".into();
+            plan.row.session.state = if plan.setup_expired {
+                "setup-expired"
+            } else {
+                "setup-failed"
+            }
+            .into();
         }
         plan.row.resume.ready = false;
         plan.row.resume.mode = "new".into();
-        plan.row.resume.reason = Some("Setup took longer than 10 minutes, so this window isn't connected to StateEngine. Finish Claude's welcome, then launch this agent again; completed onboarding is retained.".into());
+        plan.row.resume.reason = Some(if plan.setup_expired {
+            "Setup took longer than 10 minutes, so this window isn't connected to StateEngine. Finish Claude's welcome, then launch this agent again; completed onboarding is retained."
+        } else {
+            "The replacement setup failed before connecting to StateEngine. Launch this agent again to retry; completed onboarding and existing mail holds are retained."
+        }.into());
         let command = match &plan.command_home {
             Some(home) => {
                 se_core::ops::AgentCommand::launch_in_home(&plan.row.id, home, &plan.project, false)
