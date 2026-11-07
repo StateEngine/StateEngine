@@ -1,4 +1,4 @@
-// The installed production mod, with its provider API supplied by the judge.
+// Protects: installed mail hooks preserve results, expiry holds and actual mail wake.
 // HTTP authentication and durable holds still use the actual native host.
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';

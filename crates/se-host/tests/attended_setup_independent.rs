@@ -72,6 +72,7 @@ fn retired(
     Ok((h, plan))
 }
 
+/// Protects: ordinary launch retries only expired or failed unactivated window setup.
 #[test]
 fn ordinary_launch_retries_expired_and_failed_unactivated_window_setup() -> Check {
     for reason in [EXPIRED, FAILED] {
@@ -99,6 +100,7 @@ fn ordinary_launch_retries_expired_and_failed_unactivated_window_setup() -> Chec
     Ok(())
 }
 
+/// Protects: setup retry never replaces an activated, headless or unrelated session.
 #[test]
 fn retry_exception_never_includes_activated_headless_or_other_revocations() -> Check {
     for (reason, window, activated) in [
@@ -122,6 +124,7 @@ fn retry_exception_never_includes_activated_headless_or_other_revocations() -> C
     Ok(())
 }
 
+/// Protects: failed replacement stays retryable without claiming credential expiry.
 #[test]
 fn replacement_failure_remains_distinct_from_elapsed_credential_expiry() -> Check {
     let (h, plan) = retired(FAILED, true, false)?;

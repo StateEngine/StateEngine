@@ -1,4 +1,4 @@
-"""Linux CLI regression for attended expiry, durable holds and replacement retry.
+"""Protects: attended expiry preserves windows and prior holds with ordinary retry.
 
 Uses the real ten-minute clock, xterm/Xvfb and a native protocol double. No
 provider account, store edits, injected clock or production process is used.
@@ -159,6 +159,7 @@ assert!(s.success());loop{thread::sleep(Duration::from_secs(1));}}
 
 
 def main():
+    """Protects: real expiry, mail wake/hold separation and failed-replacement retry."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--se", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

@@ -50,6 +50,7 @@ async function fixture(prior) {
 }
 
 for (const held of [false, true]) {
+  // Protects: expiry/session-end never adds a hold or clears a prior human hold.
   test(`expired setup session-end preserves prior held=${held} without adding local or durable hold`, async () => {
     const prior = { held, reason: held ? 'human-stop' : null, expired_setup: session };
     const f = await fixture(prior);
@@ -62,6 +63,7 @@ for (const held of [false, true]) {
     } finally { await f.close(); }
   });
 }
+// Protects: an explicit human stop still disables mail after setup expiry.
 test('explicit human stop still holds an expired setup', async () => {
   const f = await fixture({ held: false, expired_setup: session });
   try {
@@ -70,6 +72,7 @@ test('explicit human stop still holds an expired setup', async () => {
     assert.deepEqual(f.writes, [true]);
   } finally { await f.close(); }
 });
+// Protects: only this exact expired setup can suppress a session-end hold.
 test('another session expiry cannot suppress the current session-end hold', async () => {
   const f = await fixture({ held: false, expired_setup: 'ses_ffffffff-ffff-7fff-8fff-ffffffffffff' });
   try {
