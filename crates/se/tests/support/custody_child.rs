@@ -77,6 +77,7 @@ pub fn identity(
         guarantee: p::ContainmentGuarantee::Uncontained {
             reason: p::UncontainedReason::NoDelegation,
         },
+        tracked_obligations: None,
         entry: p::EntryMethod::LinuxProcessGroup,
         state: p::LifecycleState::Running,
         ownership_release: None,

@@ -212,7 +212,7 @@ pub(super) fn recover(
                             generation,
                         ),
                     },
-                    record: Box::new(record.clone()),
+                    record: Box::new(s.record()?),
                 });
             }
             if let Some(checkpoint) = &s.checkpoint {
@@ -385,8 +385,8 @@ fn cold_unix_tracked(
         current.owner = runtime.inner.owner.clone();
         current.generation = generation;
         s.phase = current.state;
-        s.record = Some(current.clone());
-        Ok(current)
+        s.record = Some(current);
+        s.record()
     });
     match result {
         Ok(record) => Ok(RecoveryOutcome::Recovered {

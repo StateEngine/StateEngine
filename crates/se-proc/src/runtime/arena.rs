@@ -199,13 +199,28 @@ impl Slot {
         })
     }
     pub fn record(&self) -> ProcResult<ProcessRecord> {
-        self.record.clone().ok_or_else(|| {
-            state(
-                &self.reservation.lifecycle,
-                self.phase,
-                "read a root record before exec; use arena_snapshot",
-            )
-        })
+        self.record
+            .as_ref()
+            .map(|record| self.retained_record(record))
+            .ok_or_else(|| {
+                state(
+                    &self.reservation.lifecycle,
+                    self.phase,
+                    "read a root record before exec; use arena_snapshot",
+                )
+            })
+    }
+    fn retained_record(&self, record: &ProcessRecord) -> ProcessRecord {
+        let record = record.clone();
+        #[cfg(target_os = "macos")]
+        let record = {
+            let mut record = record;
+            if let Some(native) = &self.native {
+                record.tracked_obligations = Some(native.retained_obligations());
+            }
+            record
+        };
+        record
     }
     pub fn set_phase(&mut self, phase: LifecycleState) -> ProcResult<()> {
         let observed = now()?;
@@ -219,7 +234,10 @@ impl Slot {
     pub fn snapshot(&self) -> ArenaEntry {
         ArenaEntry {
             reservation: self.reservation.clone(),
-            record: self.record.clone(),
+            record: self
+                .record
+                .as_ref()
+                .map(|record| self.retained_record(record)),
             checkpoint: self.checkpoint.clone(),
             root_checkpoint: self.root_checkpoint.clone(),
             phase: self.phase,

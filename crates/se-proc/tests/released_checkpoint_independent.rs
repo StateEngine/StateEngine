@@ -111,6 +111,7 @@ fn fixture(mac: bool, stage: u8) -> Check<Checkpoint> {
                 generation,
                 root: child,
                 scope: tracked.clone(),
+                tracked_obligations: None,
                 guarantee,
                 entry: if mac {
                     EntryMethod::MacOsSpawn

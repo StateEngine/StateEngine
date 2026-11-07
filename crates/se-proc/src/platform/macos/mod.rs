@@ -158,10 +158,22 @@ impl Driver {
                 "record does not carry the implemented Darwin tracked-tree bound",
             ));
         }
+        let history = record.tracked_obligations.as_ref().ok_or_else(|| {
+            error(ProcErrorCode::RecoveryUnproved, ProcErrorDetail::Input {
+                field: "cold tracking history".into(),
+                reason: "record has no retained original members or escape history; retain custody as unproved".into(),
+            })
+        })?;
+        if history.members.len() > limits.max_diagnostic_members as usize {
+            return Err(capacity(
+                "retained tracked identities",
+                limits.max_diagnostic_members as u64,
+            ));
+        }
         Ok(Scope {
             child: None,
             recovered: Some(root.clone()),
-            tracked: vec![root.clone()],
+            tracked: history.members.clone(),
             group: Some(*process_group),
             registrations: Vec::new(),
             watch: watch::Watch::new(limits.max_diagnostic_members as usize)?,
@@ -170,7 +182,7 @@ impl Driver {
             entry: record.entry,
             max_members: limits.max_diagnostic_members as usize,
             max_bytes: limits.max_observation_bytes,
-            escaped: false,
+            escaped: history.escaped,
             exec_seen: false,
             executable: root.image.clone(),
         })
@@ -248,6 +260,12 @@ impl Driver {
 }
 
 impl Scope {
+    pub fn retained_obligations(&self) -> TrackedObligations {
+        TrackedObligations {
+            members: self.tracked.clone(),
+            escaped: self.escaped,
+        }
+    }
     fn drain_watch(&mut self) -> ProcResult<()> {
         let executed = self.watch.drain()?;
         if self

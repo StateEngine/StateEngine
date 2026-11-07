@@ -46,6 +46,14 @@ pub enum LifecycleState {
     Lost,
     Historical,
 }
+/// Retained original instances, including known escapes, that a cold owner
+/// must account for before claiming the tracked scope exited.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrackedObligations {
+    pub members: Vec<ProcessIdentity>,
+    pub escaped: bool,
+}
 /// Store owns durable revision/state. This is the arena's last observed native
 /// state, never a claim that its transition was committed to the store.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -58,6 +66,9 @@ pub struct ProcessRecord {
     pub generation: GenerationId,
     pub root: ProcessIdentity,
     pub scope: ScopeIdentity,
+    /// Older records have no tracking history; absence grants no cold exit proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_obligations: Option<TrackedObligations>,
     pub guarantee: ContainmentGuarantee,
     pub entry: EntryMethod,
     pub state: LifecycleState,

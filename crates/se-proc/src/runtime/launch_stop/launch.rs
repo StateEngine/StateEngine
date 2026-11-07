@@ -287,6 +287,7 @@ impl NativeProcessRuntime {
                         generation: s.generation,
                         root,
                         scope,
+                        tracked_obligations: None,
                         guarantee,
                         entry,
                         state: LifecycleState::Running,
@@ -295,8 +296,9 @@ impl NativeProcessRuntime {
                         observed_at_unix_ns: now()?,
                         argv_sha256: s.argv_sha256,
                     };
-                    s.record = Some(record.clone());
+                    s.record = Some(record);
                     s.set_phase(LifecycleState::Running)?;
+                    let record = s.record()?;
                     Ok(LaunchProgress::Started(Box::new(LaunchSuccess {
                         process: OwnedProcess {
                             key: ticket.key.clone(),
