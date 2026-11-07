@@ -168,8 +168,8 @@ pub(crate) fn server(process: HANDLE, expected_pid: u32) -> Result<u32> {
     let mut pid = 0_usize;
     let mut bytes = 0;
     // IOCTL_CONDRV_GET_SERVER_PID: FILE_DEVICE_CONSOLE, function 8,
-    // METHOD_NEITHER, FILE_ANY_ACCESS. Microsoft Console's condrv.h and WSL's
-    // ConsoleManager use a HANDLE-sized process-ID output for this query.
+    // METHOD_NEITHER, FILE_ANY_ACCESS. The output is a HANDLE-sized process ID,
+    // not a process handle; resolve and retain its native identity separately.
     // SAFETY: retained connection, no input, exact initialized synchronous
     // output; the kernel driver supplies the server, not user process metadata.
     if unsafe {
