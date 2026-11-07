@@ -32,7 +32,8 @@ mod macos {
             libc::proc_pidinfo(
                 i32::try_from(pid)?,
                 libc::PROC_PIDTBSDINFO,
-                0,
+                // Darwin searches the zombie table only when this argument is nonzero.
+                1,
                 (&mut value as *mut libc::proc_bsdinfo).cast(),
                 size,
             )
