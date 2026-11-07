@@ -70,7 +70,7 @@ pub(super) fn lookup(pid: ProcessId) -> ProcResult<Option<Handle>> {
     }
     Ok(Some(Handle(handle)))
 }
-fn birth(handle: &Handle) -> ProcResult<StartIdentity> {
+pub(super) fn birth(handle: &Handle) -> ProcResult<StartIdentity> {
     let creation_filetime = crate::windows_native::process_start(handle.0)
         .map_err(|e| native(ProcErrorCode::IdentityUnreadable, e.operation, e.source))?;
     Ok(StartIdentity::Windows { creation_filetime })

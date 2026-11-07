@@ -34,8 +34,12 @@ fn departed(expected: &ProcessIdentity) -> ProcResult<RootWitness> {
             },
         });
     };
-    let actual = identity(expected.machine.clone(), expected.pid, &pin)?;
-    if actual.start != expected.start || actual.boot != expected.boot {
+    // Join this retained process object to the original birth before asking
+    // for its image. A signalled original object can prove exit even after
+    // Windows has made its executable unreadable; an image error alone cannot.
+    if birth(&pin)? != expected.start || expected.boot != BootIdentity::WindowsAbsoluteCreationClock
+    {
+        let actual = identity(expected.machine.clone(), expected.pid, &pin)?;
         return Ok(RootWitness::Identified {
             expected: expected.clone(),
             evidence: Box::new(ExitEvidence::Replaced { observed: actual }),

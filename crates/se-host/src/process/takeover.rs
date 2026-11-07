@@ -303,7 +303,7 @@ fn inventory(
     let mut jobs = Vec::new();
     let mut command_bytes = 0_usize;
     let mut members = remaining.known_live.clone();
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     let viewer = native
         .window_viewer(process)
         .map_err(|cause| error("takeover terminal inventory", cause))?;
@@ -318,7 +318,7 @@ fn inventory(
         if member == &observed.record.root {
             continue;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", windows))]
         if viewer.as_ref() == Some(member) {
             continue;
         }
