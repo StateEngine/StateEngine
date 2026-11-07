@@ -257,7 +257,48 @@ fn failure(
     )
     .into()
 }
+/// Unknown samples never prove closure or renew the caller's original clock.
+pub fn wait_exit(pin: &Pin, deadline: Instant) -> Check {
+    let mut last_unknown = None;
+    let mut state = "not observed";
+    loop {
+        if Instant::now() >= deadline {
+            return Err(failure(
+                pin.identity.pid,
+                "wait for outside exit",
+                format!(
+                    "original deadline elapsed; last state={state}; last unreadable cause={last_unknown:?}"
+                ),
+            ));
+        }
+        match live(pin) {
+            Ok(false) if Instant::now() < deadline => {
+                if let Some(cause) = last_unknown {
+                    println!(
+                        "outside exit proved pid={}; retained earlier unknown: {cause}",
+                        pin.identity.pid.0
+                    );
+                }
+                return Ok(());
+            }
+            Ok(false) => state = "terminal/replaced only after deadline",
+            Ok(true) => state = "live",
+            Err(cause) => {
+                state = "unknown";
+                let cause = cause.to_string();
+                if last_unknown.as_ref() != Some(&cause) {
+                    eprintln!("outside exit unknown pid={}: {cause}", pin.identity.pid.0);
+                }
+                last_unknown = Some(cause);
+            }
+        }
+        std::thread::sleep(
+            Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
 pub fn cleanup(pin: &Pin) -> Check {
+    let deadline = until();
     if !live(pin)? {
         return Ok(());
     }
@@ -265,6 +306,13 @@ pub fn cleanup(pin: &Pin) -> Check {
         "exact native cleanup: {:?} argv={:?}",
         pin.identity, pin.argv
     );
+    if Instant::now() >= deadline {
+        return Err(failure(
+            pin.identity.pid,
+            "exact-owned cleanup",
+            "original deadline elapsed before signal",
+        ));
+    }
     // SAFETY: full original birth, boot, image and argv were just reread above.
     if unsafe { libc::kill(i32::try_from(pin.identity.pid.0)?, libc::SIGKILL) } != 0 {
         let e = std::io::Error::last_os_error();
@@ -276,5 +324,5 @@ pub fn cleanup(pin: &Pin) -> Check {
             ));
         }
     }
-    wait(|| Ok(!live(pin)?))
+    wait_exit(pin, deadline)
 }

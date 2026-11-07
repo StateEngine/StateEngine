@@ -83,8 +83,11 @@ fn joined(host: &mut Host) -> Check {
     Ok(())
 }
 fn closed(root: &Path, who: &str) -> Check {
+    closed_before(root, who, until())
+}
+fn closed_before(root: &Path, who: &str, deadline: Instant) -> Check {
     let pin = native::read_pin(root, who)?;
-    wait(|| Ok(!native::live(&pin)?))
+    native::wait_exit(&pin, deadline)
 }
 pub fn host_case(home: &Home, mode: &str, library: Option<&Path>) -> Check {
     let mut child = spawn_host(home, mode, library)?;
@@ -405,11 +408,12 @@ fn detached_host() -> Check {
         );
         json(root.join("record.json"), &described)?;
         if mode == "cold-root-exited" {
+            let deadline = until();
             fs::write(root.join("exit-root"), b"exit")?;
             phase(
                 &format!("case={mode} previous host outside root exit"),
                 pin.identity.pid,
-                || wait(|| Ok(!native::live(&pin)?)),
+                || native::wait_exit(&pin, deadline),
             )?;
         }
         std::process::exit(0);
@@ -537,14 +541,15 @@ fn escaped_stop(
     generation: GenerationId,
     root: &Path,
 ) -> Check<StopObservation> {
+    let deadline = until();
     let prepared = runtime
-        .prepare_stop(process, generation, until())
+        .prepare_stop(process, generation, deadline)
         .map_err(error)?;
     runtime
         .request_stop(prepared)
         .map_err(error)?
         .dispatch
         .map_err(error)?;
-    closed(root, "provider")?;
+    closed_before(root, "provider", deadline)?;
     Ok(runtime.witness_exit(process).map_err(error)?)
 }
