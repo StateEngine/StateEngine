@@ -230,18 +230,12 @@ fn same_root_custody(a: &RootWitness, b: &RootWitness) -> bool {
 }
 pub(in crate::runtime) fn witness(s: &mut Slot) -> ProcResult<StopObservation> {
     match witness_inner(s) {
-        // Windows can revoke image-query access during teardown before the
-        // retained process handle becomes signalled. Only exit observation is
+        // Image queries can become unavailable during teardown before native
+        // exit evidence becomes readable. Only exit observation is
         // retryable here: stateless reads and identity/control checks still
         // return their original unreadable error. No absence or live identity
         // is manufactured while waiting for independent native exit evidence.
-        Err(cause)
-            if cfg!(windows)
-                && cause.code == ProcErrorCode::IdentityUnreadable
-                && cause.native.as_ref().is_some_and(|failure| {
-                    failure.api == "QueryFullProcessImageNameW" && failure.code == Some(5)
-                }) =>
-        {
+        Err(cause) if pending_exit_image(&cause) => {
             if s.phase == LifecycleState::StopRequested {
                 s.set_phase(LifecycleState::StopUnproved)?;
             }
@@ -254,7 +248,7 @@ pub(in crate::runtime) fn witness(s: &mut Slot) -> ProcResult<StopObservation> {
                         known_live: Vec::new(),
                         extent: EnumerationExtent::Partial {
                             reason: format!(
-                                "Windows exit remains unproved while image access is unavailable: {cause:?}"
+                                "native exit remains unproved while image access is unavailable: {cause:?}"
                             ),
                             omitted: None,
                         },
@@ -266,6 +260,21 @@ pub(in crate::runtime) fn witness(s: &mut Slot) -> ProcResult<StopObservation> {
         }
         result => result,
     }
+}
+fn pending_exit_image(cause: &ProcError) -> bool {
+    if cause.code != ProcErrorCode::IdentityUnreadable {
+        return false;
+    }
+    let Some(failure) = &cause.native else {
+        return false;
+    };
+    let windows =
+        cfg!(windows) && failure.api == "QueryFullProcessImageNameW" && failure.code == Some(5);
+    #[cfg(target_os = "macos")]
+    let darwin = failure.api == "proc_pidpath" && failure.code == Some(i64::from(libc::ESRCH));
+    #[cfg(not(target_os = "macos"))]
+    let darwin = false;
+    windows || darwin
 }
 fn witness_inner(s: &mut Slot) -> ProcResult<StopObservation> {
     if s.native.is_none() && !s.launched {
