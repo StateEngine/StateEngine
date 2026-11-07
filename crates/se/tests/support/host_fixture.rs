@@ -168,8 +168,12 @@ pub(super) fn publish(f: &Fixture, name: &str, bytes: &[u8]) -> Check {
     Ok(())
 }
 pub(super) fn epoch(machine: MachineId) -> Result<HostEpoch, Box<dyn std::error::Error>> {
-    let native = se_proc::current_runtime_identity(machine.clone())
-        .map_err(|error| format!("native runtime identity: {error:?}"))?;
+    #[cfg(any(target_os = "linux", windows))]
+    let boot = se_proc::current_runtime_identity(machine.clone())
+        .map_err(|error| format!("native runtime identity: {error:?}"))?
+        .boot_id;
+    #[cfg(target_os = "macos")]
+    let boot = se_proc::observe_boot_id()?;
     let peer = se_proc::native_ipc::observe_ipc_self()?;
     let mut argv = Hasher::new();
     for arg in std::env::args_os() {
@@ -191,7 +195,7 @@ pub(super) fn epoch(machine: MachineId) -> Result<HostEpoch, Box<dyn std::error:
     Ok(HostEpoch {
         owner: ProcessInstance::from_observation(ProcessFields {
             machine,
-            boot: native.boot_id,
+            boot,
             pid: positive(peer.pid())?,
             started: peer.started().clone(),
             executable: peer.image().clone(),

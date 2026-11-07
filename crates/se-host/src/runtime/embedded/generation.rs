@@ -107,7 +107,9 @@ impl Generation {
             owner: self.self_ref.clone(),
             runtime: self.runtime.clone(),
             home: self.config.state_home.clone(),
+            #[cfg(any(target_os = "linux", windows))]
             helper_executable: self.config.helper_executable.clone(),
+            #[cfg(any(target_os = "linux", windows))]
             linux_delegation: self.config.linux_delegation.clone(),
             limits: self.config.limits.clone(),
             generation: self.negotiated.generation,

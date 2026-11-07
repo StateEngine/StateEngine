@@ -86,15 +86,19 @@ pub fn credential(
 }
 pub fn start(f: &Fixture) -> Result<HostStart, Box<dyn std::error::Error>> {
     let machine = MachineId::new("read-phase-native-consumer")?;
-    let native = se_proc::current_runtime_identity(machine.clone())
-        .map_err(|e| format!("native runtime identity: {e:?}"))?;
+    #[cfg(any(target_os = "linux", windows))]
+    let boot = se_proc::current_runtime_identity(machine.clone())
+        .map_err(|e| format!("native runtime identity: {e:?}"))?
+        .boot_id;
+    #[cfg(target_os = "macos")]
+    let boot = se_proc::observe_boot_id()?;
     let peer = se_proc::native_ipc::observe_ipc_self()?;
     Ok(HostStart {
         state_directory: f.options.state_directory.clone(),
         epoch: HostEpoch {
             owner: ProcessInstance::from_observation(ProcessFields {
                 machine,
-                boot: native.boot_id,
+                boot,
                 pid: positive(peer.pid())?,
                 started: peer.started().clone(),
                 executable: peer.image().clone(),
