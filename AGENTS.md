@@ -16,6 +16,9 @@ text and commit messages.
   paths, agent names and ids, internal message ids.
 - Keep diagnostics, evidence and reports out of the repo. They go in the PR or outside it.
 - Product code carries no operator defaults: no fixed agent names, hosts or drive paths.
+- Never name other products or companies, such as tools we studied or compete with. Describe
+  the behaviour in our own words. Providers the product integrates are the exception.
+- Don't copy code from other projects: a copy needs a license notice that names them.
 - Don't add or change license text.
 - Check your diff and message for all of this before you push. If something slipped through,
   tell the reviewer. Never force-push a shared branch or rewrite shared history to fix it
