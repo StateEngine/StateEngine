@@ -11,11 +11,14 @@ pub(super) fn select(plan: &LaunchPlan, configuration: &ConfigFile) -> Result<Op
     }
     #[cfg(windows)]
     if plan.profile.provider == se_store::Provider::Codex {
-        return Err(se_types::SeError::new(se_types::Detail::ProviderIncompatible(se_types::details::ProviderIncompatible {
-            subject: "codex".into(),
-            reason: "stock Codex 0.163 refuses its Windows private socket: socket directory is not private to the current user".into(),
-            next_step: "Use se launch AGENT --detach for headless Codex, or select Claude for an attended Windows console.".into(),
-        })));
+        return Err(se_types::SeError::new(
+            se_types::Detail::ProviderIncompatible(se_types::details::ProviderIncompatible {
+                subject: "codex".into(),
+                reason: "this build cannot open an attended Codex window on Windows".into(),
+                next_step:
+                    "For an attended Windows console, initialize a project with Claude Code.".into(),
+            }),
+        ));
     }
     #[cfg(windows)]
     {
