@@ -97,11 +97,14 @@ jobs:
         with:
           shared-key: hosted-debug-v1
       - name: Compile once per platform, including custom harness executables
-        # Target linker flags must not leak into host-side procedural macros.
         run: |
-          target="$(rustc --print host-tuple)"
+          target_args=()
+          # Match Windows Clippy's native build layout for cache reuse.
+          if [[ "$RUNNER_OS" != Windows ]]; then
+            target_args=(--target "$(rustc --print host-tuple)")
+          fi
           # Test the shipping defaults; all-feature linked-product judges need SE Code's native fixtures.
-          cargo nextest archive --target "$target" --workspace --locked --archive-file tests.tar.zst
+          cargo nextest archive "${target_args[@]}" --workspace --locked --archive-file tests.tar.zst
       - name: Check documentation examples and compile-fail API boundaries
         if: matrix.os == 'ubuntu-24.04'
         run: |
