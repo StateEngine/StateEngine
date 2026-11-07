@@ -218,7 +218,7 @@ pub fn down<R: se_store::ReadStore>(
                     if !recover_cold {
                         return Err(scope::unreadable(
                             "already-down native custody",
-                            "Unresolved owned process or session cleanup remains in this home. Run se down with this same --home to reconcile the retained custody, then retry se uninstall; installation removal has not started a recovery host or changed durable history.",
+                            "Unresolved owned process or session cleanup remains in this home. Run se down with this same --home to reconcile the retained custody, then retry se uninstall; this uninstall has not started a recovery host or changed durable history.",
                         ));
                     }
                     // A failed launch can leave exact cleanup debt after its

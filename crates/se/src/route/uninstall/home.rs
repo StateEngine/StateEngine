@@ -53,11 +53,11 @@ pub(super) fn execute(
     drop(files);
     diagnostic("No standalone installation record: stop this initialized home and retire only its runtime artifacts; retain the executable, PATH, state, configuration and identity.\n")
         .map_err(|e| scope::unreadable("initialized-home cleanup diagnostic", &e.to_string()))?;
-    let stopped = route::execute::dispatch(
+    let stopped = route::execute::stop_for_uninstall(
         cx,
-        AnyOp::RuntimeDown(RuntimeDown {
+        RuntimeDown {
             idempotency_key: input.idempotency_key.clone(),
-        }),
+        },
         diagnostic,
     );
     let mut issues = Vec::new();
