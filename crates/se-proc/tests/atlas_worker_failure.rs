@@ -340,8 +340,11 @@ mod linux {
         parent_death()?;
         println!("PASS parent death kills the contained child; exact adopted wait completed");
         {
-            let mut worker = spawn("abort", until())?;
-            let end = until();
+            // SIGABRT can wait for the machine's core collector under workspace
+            // load. Keep the exact signal/stderr/reap assertions, with a separate
+            // allowance for that OS exit work rather than the three-second probe clock.
+            let end = Instant::now() + Duration::from_secs(15);
+            let mut worker = spawn("abort", end)?;
             loop {
                 worker.wait_ready(end)?;
                 if let Some(status) = worker.try_reap()? {
