@@ -4,7 +4,7 @@ use std::{
     ptr,
 };
 
-pub(super) fn boot() -> Result<BootIdentity> {
+pub(crate) fn boot() -> Result<BootIdentity> {
     let mut mib = [libc::CTL_KERN, libc::KERN_BOOTTIME];
     // SAFETY: native POD output accepts an all-zero initialization.
     let mut time: libc::timeval = unsafe { zeroed() };
@@ -25,6 +25,9 @@ pub(super) fn boot() -> Result<BootIdentity> {
     }
     if size != size_of::<libc::timeval>() {
         return Err(refuse("read boot identity", "short native boot result"));
+    }
+    if time.tv_sec < 0 || !(0..1_000_000).contains(&time.tv_usec) {
+        return Err(refuse("read boot identity", "invalid native boot timeval"));
     }
     Ok(BootIdentity::MacOs {
         seconds: time.tv_sec,

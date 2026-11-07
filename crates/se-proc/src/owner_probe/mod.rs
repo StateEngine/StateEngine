@@ -7,7 +7,7 @@ use std::io;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
-mod macos;
+pub(crate) mod macos;
 /// Native Darwin boot fact for an owner lease. This observes KERN_BOOTTIME;
 /// it does not derive machine identity or grant owner authority.
 #[cfg(target_os = "macos")]
