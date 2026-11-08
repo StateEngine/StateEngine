@@ -92,6 +92,9 @@ pub fn capture_verified<R: Snapshot>(
     batch.admission = admission;
     for event in &mut batch.events {
         event.header.door = door;
+        // Carry the observation across the planning/submission gap so the
+        // writer can refuse an acknowledgement superseded by a newer failure.
+        event.header.cause = Some(after.clone());
     }
     Ok(batch)
 }
