@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise archive installation and real attended work from a fresh ordinary user.
 
-Run in that user's desktop terminal after installing and signing in to Claude Code
+Requires Python 3.12 or later. Run in that user's desktop terminal after signing in to Claude Code
 and Codex. Complete welcome, trust and edit prompts in the provider windows.
 Supply a new private output directory outside the source tree. Results include
 provider account details and conversation text and must not be published.
@@ -123,13 +123,28 @@ class Journey:
         return json.loads(Path(row['stdout']).read_text())
 
     def reply(self, provider, marker):
-        page = self.read_json(self.se_step(provider + '-reply-records',
-            ['--json', 'history', '--agent', 'main', '--kind', 'session.turn', '--limit', '100']))
-        return any(item.get('kind') == 'session.turn' and
+        cursor = None
+        seen = set()
+        while True:
+            arguments = ['--json', 'history', '--agent', 'main',
+                         '--kind', 'session.turn', '--limit', '100']
+            if cursor is not None:
+                arguments.extend(['--cursor', cursor])
+            page = self.read_json(self.se_step(provider + '-reply-records', arguments))
+            if any(item.get('kind') == 'session.turn' and
                    item.get('payload', {}).get('role') == 'assistant' and
                    item.get('payload', {}).get('body', {}).get('complete') is True and
                    marker in item.get('payload', {}).get('body', {}).get('text', '')
-                   for item in page['items'])
+                   for item in page['items']):
+                return True
+            cursor = page['next']
+            if cursor is None:
+                if not page['window']['complete']:
+                    raise RuntimeError('Reply history is incomplete; the task outcome cannot be determined.')
+                return False
+            if not isinstance(cursor, str) or cursor in seen:
+                raise RuntimeError('Reply history did not provide a new continuation cursor.')
+            seen.add(cursor)
 
     def await_task(self, provider, filename, marker, reopened=False):
         until = time.monotonic() + self.args.task_timeout_seconds
@@ -250,6 +265,8 @@ def main():
     parser.add_argument('--providers', nargs='+', choices=['claude', 'codex'], default=['claude', 'codex'])
     parser.add_argument('--task-timeout-seconds', type=int, default=300)
     args = parser.parse_args()
+    if sys.version_info < (3, 12):
+        parser.error('Use Python 3.12 or later to run the archive journey.')
     if platform.system() != 'Linux' or os.geteuid() == 0:
         parser.error('Run this journey on Linux as a fresh ordinary user, not root.')
     if not sys.stdin.isatty():
