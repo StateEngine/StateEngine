@@ -11,7 +11,7 @@ import urllib.request
 import uuid
 
 from engine import account_args, capacity, command
-from github_binding import POLICY_FILES
+from github_binding import POLICY_FILES, policy_paths
 
 NODE = "node-v22.23.4-linux-x64.tar.xz"
 
@@ -28,6 +28,11 @@ def stage(context, name, source, executable=False):
     with source.open("rb") as stream:
         return {"name": name, "sha256": hashlib.file_digest(stream, "sha256").hexdigest(),
                 "bytes": source.stat().st_size}
+
+
+def policy_files(repo, source):
+    paths = subprocess.check_output(["git", "-C", str(repo), "ls-tree", "-r", "--name-only", source], text=True).splitlines()
+    return sorted(policy_paths(paths))
 
 
 def build(args):
@@ -95,7 +100,7 @@ def build(args):
               "seccomp_sha256": hashlib.sha256(Path("/etc/stateengine-ci/seccomp.json").read_bytes()).hexdigest(),
               "policy": {path: hashlib.sha256(subprocess.check_output([
                   "git", "-C", str(args.repo), "show", args.trusted_source + ":" + path])).hexdigest()
-                         for path in POLICY_FILES}}
+                         for path in policy_files(args.repo, args.trusted_source)}}
     (args.output / "image.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report))
 

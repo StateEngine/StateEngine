@@ -230,8 +230,12 @@ class Routing(unittest.TestCase):
 
 class FinalStatus(unittest.TestCase):
     def jobs(self):
-        return {key: {"result": "success", "outputs": {"rust": "true"}}
-                for key in ["changes", "fmt", "clippy", "archive", "test"]}
+        value = {key: {"result": "success", "outputs": {}}
+                 for key in ["changes", "linux-route", "linux-box", "fmt", "clippy", "windows-clippy", "archive", "test"]}
+        value["changes"]["outputs"] = {"rust": "true", "windows": "true"}
+        value["linux-route"]["outputs"] = {"route": "hosted"}
+        value["linux-box"]["result"] = "skipped"
+        return value
 
     def test_success_and_explicit_prose_exemption(self):
         jobs = self.jobs()
@@ -242,7 +246,7 @@ class FinalStatus(unittest.TestCase):
         self.assertTrue(check.accepted(jobs))
 
     def test_failed_cancelled_and_unexplained_skips_refuse(self):
-        for key in self.jobs():
+        for key in {"changes", "fmt", "clippy", "windows-clippy", "archive", "test"}:
             for status in ["failure", "cancelled", "skipped"]:
                 with self.subTest(key=key, status=status):
                     jobs = self.jobs()
@@ -257,12 +261,46 @@ class FinalStatus(unittest.TestCase):
     def test_windows_exemption_still_requires_linux_clippy_and_tests(self):
         jobs = self.jobs()
         jobs["changes"]["outputs"]["windows"] = "false"
+        jobs["windows-clippy"]["result"] = "skipped"
         self.assertTrue(check.accepted(jobs))
         for name in ["fmt", "clippy", "archive", "test"]:
             with self.subTest(job=name):
                 missing = {key: dict(value) for key, value in jobs.items()}
                 missing[name]["result"] = "skipped"
                 self.assertFalse(check.accepted(missing))
+
+    def test_box_success_and_red_do_not_fall_through_to_hosted(self):
+        jobs = self.jobs()
+        jobs["linux-route"]["outputs"]["route"] = "box"
+        jobs["linux-box"] = {"result": "success", "outputs": {"status": "passed"}}
+        for name in ("fmt", "clippy", "archive", "test"):
+            jobs[name]["result"] = "skipped"
+        self.assertTrue(check.accepted(jobs))
+        jobs["linux-box"]["outputs"]["status"] = "failed"
+        for name in ("fmt", "clippy", "archive", "test"):
+            jobs[name]["result"] = "success"
+        self.assertFalse(check.accepted(jobs))
+
+    def test_unavailable_requires_complete_hosted_chain(self):
+        jobs = self.jobs()
+        jobs["linux-route"]["outputs"]["route"] = "box"
+        jobs["linux-box"] = {"result": "success", "outputs": {"status": "unavailable"}}
+        self.assertTrue(check.accepted(jobs))
+        for name in ("fmt", "clippy", "archive", "test"):
+            changed = json.loads(json.dumps(jobs))
+            changed[name]["result"] = "skipped"
+            self.assertFalse(check.accepted(changed))
+        jobs["linux-box"] = {"result": "failure", "outputs": {}}
+        self.assertTrue(check.accepted(jobs))
+        jobs["linux-box"]["result"] = "cancelled"
+        self.assertFalse(check.accepted(jobs))
+
+    def test_route_transport_failure_falls_back_but_unexplained_skip_does_not(self):
+        jobs = self.jobs()
+        jobs["linux-route"] = {"result": "failure", "outputs": {}}
+        self.assertTrue(check.accepted(jobs))
+        jobs["linux-route"]["result"] = "skipped"
+        self.assertFalse(check.accepted(jobs))
 
 
 if __name__ == "__main__":

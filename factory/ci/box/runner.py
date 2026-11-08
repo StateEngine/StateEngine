@@ -21,7 +21,7 @@ def run(job):
     # Only public dependency data enters a job's disposable writable home.
     shutil.copytree("/opt/cargo", "/home/ci/cargo", symlinks=True)
     os.environ.update(CARGO_HOME="/home/ci/cargo", CARGO_NET_OFFLINE="true",
-                      CARGO_BUILD_JOBS="2", CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="always",
+                      CARGO_BUILD_JOBS="8", CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="always",
                       CARGO_PROFILE_DEV_DEBUG="0", CARGO_PROFILE_TEST_DEBUG="0")
     if job == "fmt":
         return call(["cargo", "fmt", "--all", "--", "--check"], 180) or call(
@@ -30,6 +30,11 @@ def run(job):
         return call(["cargo", "clippy", "--workspace", "--all-targets", "--all-features", "--locked", "--", "-D", "warnings"], 720)
     if job == "archive":
         target = subprocess.check_output(["rustc", "--print", "host-tuple"], text=True).strip()
+        cache = Path("/work/dependencies.tar.gz")
+        if cache.exists():
+            with tarfile.open(cache, "r:gz") as archive:
+                archive.extractall(ROOT, filter="data")
+            cache.unlink()
         (ROOT / "target/cargo-timings").mkdir(parents=True, exist_ok=True)
         code = call(["strace", "-f", "-qq", "-ttt", "-s", "4096", "-e", "trace=execve,execveat,exit_group",
                      "-o", "target/cargo-timings/linker-processes.trace", "cargo", "nextest", "archive",
@@ -39,7 +44,7 @@ def run(job):
         partition = job[-1]
         filters = subprocess.check_output(["python3", "scripts/ci/custom.py", "filter"], cwd=ROOT, text=True).strip()
         code = call(["cargo", "nextest", "run", "--archive-file", "tests.tar.zst", "--extract-to", ".",
-                     "--workspace-remap", str(ROOT), "--profile", "ci", "--partition", "slice:" + partition + "/2", "-E", filters], 360)
+                     "--workspace-remap", str(ROOT), "--profile", "ci", "--test-threads", "4", "--partition", "slice:" + partition + "/2", "-E", filters], 360)
         custom = call(["python3", "scripts/ci/custom.py", "run"], 1080) if partition == "1" else 0
         return int(bool(code or custom))
     raise RuntimeError("unknown fixed job")

@@ -5,12 +5,19 @@ import hashlib
 import json
 import re
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 REPOSITORY = "StateEngine/StateEngine"
 POLICY_FILES = (".github/workflows/ci.yml", ".github/actions/rust/action.yml", ".github/actions/test/action.yml")
+
+
+def policy_paths(paths):
+    return {p for p in paths if p in POLICY_FILES or p in
+            {"Cargo.lock", ".config/nextest.toml", ".cargo/config.toml", "rust-toolchain.toml"} or
+            p.endswith("Cargo.toml") or p.startswith(("scripts/ci/", "factory/ci/box/"))}
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -26,12 +33,18 @@ class GitHub:
         self.headers = {"Authorization": "Bearer " + token.stdout.strip(),
                         "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
 
-    def get(self, path, limit=16 * 1024**2, raw=False):
+    def get(self, path, limit=16 * 1024**2, raw=False, timeout=45):
+        end = time.monotonic() + timeout
+        def remaining():
+            value = end - time.monotonic()
+            if value <= 0:
+                raise TimeoutError("repository read deadline expired")
+            return value
         request = urllib.request.Request("https://api.github.com/repos/" + REPOSITORY + "/" + path,
                                          headers=self.headers)
         try:
             try:
-                response = urllib.request.build_opener(NoRedirect).open(request, timeout=45)
+                response = urllib.request.build_opener(NoRedirect).open(request, timeout=remaining())
             except urllib.error.HTTPError as error:
                 if error.code not in (301, 302, 303, 307, 308):
                     raise RuntimeError(f"repository read refused: HTTP {error.code}") from None
@@ -41,9 +54,10 @@ class GitHub:
                 if target.scheme != "https" or not allowed or target.username or target.password or target.port not in (None, 443):
                     raise RuntimeError("repository download redirect refused") from None
                 # Signed download URLs receive no repository credential and are never logged.
-                response = urllib.request.build_opener(NoRedirect).open(error.headers["Location"], timeout=45)
+                response = urllib.request.build_opener(NoRedirect).open(error.headers["Location"], timeout=remaining())
             with response:
                 data = response.read(limit + 1)
+            remaining()
             if len(data) > limit:
                 raise RuntimeError("repository response exceeds the bounded input size")
             return data if raw else json.loads(data)
