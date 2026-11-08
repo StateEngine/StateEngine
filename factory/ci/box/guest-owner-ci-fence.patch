@@ -1,0 +1,20 @@
+--- a/guest_owner.py
++++ b/guest_owner.py
+@@ -281,6 +281,17 @@
+             if value['phase'] != 'admitted' or value['generation'] != generation or self.roots[value['guest']] != root or value['memory_gib'] != memory_gib:
+                 raise RuntimeError('This guest and RAM require an explicit admitted reservation')
+             self.empty(self.snapshot())
++            # Locks disappear on controller death; persistent CI custody must also close.
++            import subprocess
++            try:
++                query = subprocess.run(["sudo", "-n", "-u", "stateengine-ci",
++                                        "/usr/local/libexec/stateengine-ci-idle"],
++                                       capture_output=True, text=True, timeout=30, close_fds=True)
++                proof = json.loads(query.stdout) if query.returncode == 0 else None
++            except (OSError, subprocess.SubprocessError, ValueError):
++                proof = None
++            if proof != {"schema": "stateengine-ci-idle/v1", "idle": True} or proof["idle"] is not True:
++                raise RuntimeError("CI custody unavailable or nonempty; reconcile before guest startup")
+             available = available_memory()
+             if available < (memory_gib + 34) * 1024**3:
+                 raise RuntimeError('Guest allocation would leave fewer than 34 GiB available')

@@ -59,9 +59,56 @@ jobs:
         id: detect
         run: python scripts/ci/changes.py
 
-  fmt:
+  linux-route:
     needs: changes
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    outputs:
+      route: ${{ steps.route.outputs.route }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Select box or bounded hosted fallback
+        id: route
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOX_CI_ENABLED: ${{ vars.BOX_CI_ENABLED }}
+          BOX_CI_APP_ID: ${{ vars.BOX_CI_APP_ID }}
+          BOX_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python scripts/ci/box.py route
+
+  linux-box:
+    needs: [changes, linux-route]
+    if: ${{ !cancelled() && needs.linux-route.result == 'success' && needs.linux-route.outputs.route == 'box' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 27
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    outputs:
+      status: ${{ steps.box.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Read the exact App-owned result (25-minute infrastructure bound)
+        id: box
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOX_CI_APP_ID: ${{ vars.BOX_CI_APP_ID }}
+          BOX_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python scripts/ci/box.py wait
+
+  fmt:
+    needs: [changes, linux-route, linux-box]
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && (needs.linux-route.outputs.route != 'box' || needs.linux-box.outputs.status == 'unavailable' || (needs.linux-box.result == 'failure' && needs.linux-box.outputs.status == '')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -75,12 +122,8 @@ jobs:
 
   clippy:
     needs: [changes, fmt]
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
-    strategy:
-      fail-fast: true
-      matrix:
-        os: ${{ fromJSON(needs.changes.outputs.windows == 'false' && '["ubuntu-24.04"]' || '["ubuntu-24.04", "windows-2025"]') }}
-    runs-on: ${{ matrix.os }}
+    if: ${{ always() && !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +134,27 @@ jobs:
         id: cache
         with:
           shared-key: hosted-debug-v1
-      - name: Strict Clippy (native target, including Windows MSVC)
+      - name: Strict Linux Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Cache observation
+        if: ${{ always() }}
+        run: echo 'Clippy cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
+
+  windows-clippy:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' }}
+    runs-on: windows-2025
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/rust
+      - uses: Swatinem/rust-cache@v2
+        id: cache
+        with:
+          shared-key: hosted-debug-v1
+      - name: Strict Windows MSVC Clippy
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Cache observation
         if: ${{ always() }}
@@ -99,7 +162,7 @@ jobs:
 
   archive:
     needs: [changes, fmt]
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.changes.outputs.rust != 'false' && needs.fmt.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -150,7 +213,7 @@ jobs:
 
   test:
     needs: archive
-    if: ${{ !cancelled() && needs.archive.result == 'success' }}
+    if: ${{ always() && !cancelled() && needs.archive.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -170,8 +233,8 @@ jobs:
   # Promotion also waits for all Windows smoke cases to pass.
   windows-archive:
     name: Windows archive (informational)
-    needs: [changes, fmt, clippy]
-    if: ${{ !cancelled() && !github.event.pull_request.draft && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.clippy.result == 'success' }}
+    needs: [changes, windows-clippy]
+    if: ${{ always() && !cancelled() && !github.event.pull_request.draft && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.windows-clippy.result == 'success' }}
     runs-on: windows-2025
     timeout-minutes: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 45 || 15 }}
     steps:
@@ -219,8 +282,8 @@ jobs:
   # changes still require native VM qualification before merge.
   windows-test:
     name: Windows ${{ matrix.mode == 'full' && 'runtime' || 'smoke' }} (informational, shard ${{ matrix.shard }})
-    needs: [changes, fmt, clippy, windows-archive]
-    if: ${{ !cancelled() && !github.event.pull_request.draft && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.fmt.result == 'success' && needs.clippy.result == 'success' }}
+    needs: [changes, windows-clippy, windows-archive]
+    if: ${{ always() && !cancelled() && !github.event.pull_request.draft && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.windows-clippy.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -283,7 +346,7 @@ jobs:
   check:
     name: check
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') }}
-    needs: [changes, fmt, clippy, archive, test]
+    needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test]
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:

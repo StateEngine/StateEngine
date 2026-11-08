@@ -11,6 +11,7 @@ import time
 import uuid
 
 ACCOUNT = "stateengine-ci"
+ENGINE_DOOR = "/usr/local/libexec/stateengine-ci-engine"
 GIB = 1024 ** 3
 
 
@@ -18,12 +19,18 @@ def account_args(*args):
     user = pwd.getpwnam(ACCOUNT)
     if user.pw_uid == 0 or user.pw_dir != "/var/lib/stateengine-ci":
         raise RuntimeError("dedicated account identity differs")
-    return ["sudo", "-n", "-u", ACCOUNT, "env", "-i", "PATH=/usr/bin:/bin",
+    prefix = [] if os.getuid() == user.pw_uid else ["sudo", "-n", "-u", ACCOUNT]
+    return [*prefix, "env", "-i", "PATH=/usr/bin:/bin",
             "HOME=" + user.pw_dir, "LANG=C.UTF-8", f"XDG_RUNTIME_DIR=/run/user/{user.pw_uid}",
             f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{user.pw_uid}/bus", *args]
 
 
 def engine_args(*args):
+    # The dedicated controller gets only this fixed root-owned worker-engine door.
+    if pwd.getpwuid(os.getuid()).pw_name == "stateengine-ci-controller":
+        return ["sudo", "-n", "-u", ACCOUNT, ENGINE_DOOR, *args]
+    if args[:1] == ("--stateengine-create-transaction",):
+        return account_args(ENGINE_DOOR, *args)
     return account_args("podman", *args)
 
 
@@ -45,7 +52,7 @@ def capacity(memory):
 
 
 class Container:
-    def __init__(self, image, memory=18 * GIB, cpus=12, pids=512, work=12 * GIB, deadline=900):
+    def __init__(self, image, memory=18 * GIB, cpus=12, pids=512, work=12 * GIB, deadline=900, journal=None):
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
             raise ValueError("immutable image ID required")
         if (type(cpus) is not int or not 1 <= cpus <= 12 or type(pids) is not int or
@@ -62,6 +69,7 @@ class Container:
                          "cpu.max": f"{cpus * 100000} 100000"}
         self.name = "se-ci-" + uuid.uuid4().hex
         self.id = None
+        self.journal = journal
         self.deadline = deadline
         self.storage = {"/work": work, "/home": 3 * GIB, "/t": GIB,
                         "/tmp": 2 * GIB, "/run": 16 * 1024**2}
@@ -78,12 +86,17 @@ class Container:
         for path, size in (("/work", work), ("/home", 3 * GIB), ("/t", GIB),
                            ("/tmp", 2 * GIB), ("/run", 16 * 1024**2)):
             args += ["--tmpfs", f"{path}:rw,nosuid,nodev,mode=1777,size={size}"]
+        if self.journal:
+            self.journal.intent(self.name)
         try:
-            raw = command(*args, image, "hold").decode().strip()
+            raw = (self.journal.create(self.name, [*args, image, "hold"]) if self.journal else
+                   command(*args, image, "hold").decode().strip())
             if not re.fullmatch(r"[a-f0-9]{64}", raw):
                 raise RuntimeError("engine returned an invalid container identity")
             self.id = raw
             command("start", self.id)
+            if self.journal:
+                self.journal.observe(self.name, self.inspect())
             command("exec", self.id, "mkdir", "--parents", "--mode=700", "--", "/home/ci", "/t/j")
             command("exec", self.id, "chmod", "0700", "--", "/home/ci", "/t/j")
             directories = command("exec", self.id, "stat", "--format=%u:%g:%a", "/home/ci", "/t/j")
@@ -152,10 +165,22 @@ class Container:
         if self.id is None:
             return
         identity = self.id
-        self.inspect()
+        outside = self.inspect()
+        if self.journal:
+            self.journal.observe(self.name, outside)
         command("rm", "--force", "--time=5", identity)
         observed = subprocess.run(engine_args("container", "exists", identity), capture_output=True,
                                   timeout=30, close_fds=True)
         if observed.returncode != 1:
             raise RuntimeError("owned container removal is unproved")
+        if self.journal:
+            end = time.monotonic() + 15
+            while True:
+                try:
+                    self.journal.closed(self.name)
+                    break
+                except RuntimeError:
+                    if time.monotonic() >= end:
+                        raise
+                    time.sleep(.1)
         self.id = None
