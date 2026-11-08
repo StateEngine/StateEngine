@@ -14,7 +14,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -24,6 +25,48 @@ from engine import ACCOUNT, ENGINE_DOOR, command, engine_args
 
 HELPER = Path(__file__).with_name("idle.py")
 IDLE_PROOF = {"schema": "stateengine-ci-idle/v1", "idle": True}
+
+# Realistic synthetic provisioning records (the provisioned uids and paths). No
+# test may require administrator provisioning or skip a control, so the
+# dedicated accounts and the caller identity are supplied by the fixtures.
+CI_ACCOUNT = SimpleNamespace(pw_name="stateengine-ci", pw_passwd="x", pw_uid=1004, pw_gid=1004,
+                             pw_gecos="", pw_dir="/var/lib/stateengine-ci", pw_shell="/usr/sbin/nologin")
+CI_CONTROLLER = SimpleNamespace(pw_name="stateengine-ci-controller", pw_passwd="x", pw_uid=997, pw_gid=997,
+                                pw_gecos="", pw_dir="/var/lib/stateengine-ci", pw_shell="/usr/sbin/nologin")
+CALLER_UID = 1000
+
+
+@contextmanager
+def synthetic_host(caller=CALLER_UID):
+    """Synthetic passwd records and caller identity for the dedicated accounts.
+
+    engine.py and custody.py resolve the dedicated account and the calling uid
+    through the shared pwd/os module globals; this replaces only those lookups
+    with the provisioned records so argument construction runs unchanged on a
+    clean host. subprocess stays the caller's stub; no engine command is run.
+    """
+    by_name = {CI_ACCOUNT.pw_name: CI_ACCOUNT, CI_CONTROLLER.pw_name: CI_CONTROLLER}
+    by_uid = {record.pw_uid: record for record in (CI_ACCOUNT, CI_CONTROLLER)}
+    caller_record = SimpleNamespace(pw_name="ordinary", pw_passwd="x", pw_uid=caller, pw_gid=caller,
+                                    pw_gecos="", pw_dir="/home/ordinary", pw_shell="/bin/bash")
+
+    def getpwnam(name):
+        try:
+            return by_name[name]
+        except KeyError:
+            raise KeyError(f"no such name: {name!r}") from None
+
+    def getpwuid(uid):
+        if uid in by_uid:
+            return by_uid[uid]
+        if uid == caller:
+            return caller_record
+        raise KeyError(f"no such uid: {uid!r}")
+
+    with patch.object(engine.pwd, "getpwnam", side_effect=getpwnam), \
+            patch.object(engine.pwd, "getpwuid", side_effect=getpwuid), \
+            patch.object(engine.os, "getuid", return_value=caller):
+        yield
 
 
 class InstalledHelperConsumer(unittest.TestCase):
@@ -48,6 +91,7 @@ class InstalledHelperConsumer(unittest.TestCase):
         try:
             with patch("subprocess.run", side_effect=fake_run), \
                     patch("custody.read_records", return_value=[]), \
+                    synthetic_host(), \
                     redirect_stdout(io.StringIO()) as out:
                 sys.argv = [str(HELPER)]
                 runpy.run_path(str(HELPER), run_name="__main__")
@@ -119,20 +163,20 @@ class EngineContract(unittest.TestCase):
         return calls[0]["argv"]
 
     def test_worker_branch_keeps_the_conservative_wrapped_environment(self):
-        if os.getuid() == 0:
-            self.skipTest("worker sudo prefix is only exercised as a non-root caller")
-        argv = self.run_command_from(self.private.name)
+        # The synthetic caller is an ordinary non-provisioned uid, so the sudo
+        # prefix is exercised on any host, including root and clean hosts.
+        with synthetic_host():
+            argv = self.run_command_from(self.private.name)
         self.assertEqual(argv[:4], ["sudo", "-n", "-u", ACCOUNT])
         self.assertEqual(argv[4], "env")
         self.assertEqual(argv[5], "-i")
-        self.assertIn(f"HOME=/var/lib/stateengine-ci", argv)
-        self.assertTrue(any(a.startswith("XDG_RUNTIME_DIR=/run/user/") for a in argv))
-        self.assertTrue(any(a.startswith("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/") for a in argv))
+        self.assertIn(f"HOME={CI_ACCOUNT.pw_dir}", argv)
+        self.assertIn(f"XDG_RUNTIME_DIR=/run/user/{CI_ACCOUNT.pw_uid}", argv)
+        self.assertIn(f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{CI_ACCOUNT.pw_uid}/bus", argv)
         self.assertEqual(argv[-4:], ["podman", "ps", "--all", "--format=json"])
 
     def test_controller_branch_still_names_the_fixed_engine_door(self):
-        controller = engine.pwd.getpwnam("stateengine-ci-controller")
-        with patch.object(engine.pwd, "getpwuid", return_value=controller):
+        with synthetic_host(caller=CI_CONTROLLER.pw_uid):
             self.assertEqual(engine_args("ps", "--all", "--format=json"),
                              ["sudo", "-n", "-u", ACCOUNT, ENGINE_DOOR, "ps", "--all", "--format=json"])
 
