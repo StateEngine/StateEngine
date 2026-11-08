@@ -206,3 +206,46 @@ fn cursor_progress_after_planning_refuses_the_stale_eof_commit() -> Check {
     assert_eq!(error.code, StoreErrorCode::SourceChanged);
     capture.close()
 }
+
+#[test]
+fn legacy_unbound_acknowledgement_can_verify_a_healthy_cursor() -> Check {
+    let mut capture = Capture::new()?;
+    capture.eof()?;
+    let scope = capture.scope();
+    let mut read = capture.direct.snapshot(scope.clone())?;
+    let mut verified = process_commit::capture_verified(
+        &Capture::kernel()?,
+        capture.session.clone(),
+        &capture.fixture.owner,
+        None,
+        &mut Cx {
+            read: &mut read,
+            admission: &scope.admission,
+        },
+    )?;
+    read.close()?;
+    // This is the acknowledgement shape emitted before causal binding existed.
+    for event in &mut verified.events {
+        event.header.cause = None;
+    }
+    capture.direct.append(verified, &*capture.lease)?;
+    assert!(matches!(
+        capture.outcome()?.body,
+        EventBody::CaptureVerified { .. }
+    ));
+    capture.close()
+}
+
+#[test]
+fn legacy_unbound_acknowledgement_preserves_a_retained_failure() -> Check {
+    let mut capture = Capture::new()?;
+    let failure = capture.fail("temporary write uncertainty")?;
+    capture.eof()?;
+    let mut verified = capture.verify(failure.clone())?;
+    for event in &mut verified.events {
+        event.header.cause = None;
+    }
+    assert!(capture.direct.append(verified, &*capture.lease).is_err());
+    assert_eq!(capture.outcome()?.header.event, failure);
+    capture.close()
+}
