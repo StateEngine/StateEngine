@@ -178,7 +178,7 @@ fn check(from: u32, obstruct: bool) -> Check {
     });
     outcome?;
     let after = reader.info()?;
-    assert_eq!(after.schema_version, if obstruct { from } else { 6 });
+    assert_eq!(after.schema_version, if obstruct { from } else { 7 });
     assert_eq!(after.id, before.id);
     // Startup may append runtime ownership; the backup must bind the old head.
     backup_is_original(&f, from, u64::try_from(before_sequence)?)?;
@@ -280,7 +280,7 @@ fn channel_schema_upgrade_preserves_schema_five_mail_and_original_backup() -> Ch
         assert!(report.transport_closed && report.endpoint_retired);
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
-    assert_eq!(reader.info()?.schema_version, 6);
+    assert_eq!(reader.info()?.schema_version, 7);
     backup_is_original(&f, 5, u64::try_from(head)?)?;
     let db = rusqlite::Connection::open_with_flags(
         f.options.state_directory.join("state.db"),
