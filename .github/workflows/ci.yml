@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: [main]
   workflow_dispatch:
@@ -170,7 +171,7 @@ jobs:
   windows-archive:
     name: Windows archive (informational)
     needs: [changes, fmt, clippy]
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.clippy.result == 'success' }}
+    if: ${{ !cancelled() && !github.event.pull_request.draft && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.clippy.result == 'success' }}
     runs-on: windows-2025
     timeout-minutes: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 45 || 15 }}
     steps:
@@ -219,7 +220,7 @@ jobs:
   windows-test:
     name: Windows ${{ matrix.mode == 'full' && 'runtime' || 'smoke' }} (informational, shard ${{ matrix.shard }})
     needs: [changes, fmt, clippy, windows-archive]
-    if: ${{ !cancelled() && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.fmt.result == 'success' && needs.clippy.result == 'success' }}
+    if: ${{ !cancelled() && !github.event.pull_request.draft && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.fmt.result == 'success' && needs.clippy.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
