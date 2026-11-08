@@ -16,6 +16,9 @@ use fixture::*;
 #[cfg(any(target_os = "linux", windows))]
 use std::io::Write;
 #[cfg(any(target_os = "linux", windows))]
+#[path = "support/installation_account.rs"]
+mod installation_account;
+#[cfg(any(target_os = "linux", windows))]
 #[path = "support/runtime_host.rs"]
 mod runtime_host;
 #[cfg(any(target_os = "linux", windows))]
@@ -110,6 +113,7 @@ fn pre_init_command_names_setup_and_resolved_home() -> Check {
 #[cfg(any(target_os = "linux", windows))]
 #[test]
 fn uninstall_verifies_live_host_shutdown_before_removing_files() -> Check {
+    installation_account::require()?;
     let _serial = RUNTIME
         .lock()
         .map_err(|_| "runtime fixture mutex poisoned")?;

@@ -10,6 +10,7 @@ ADD rust.tar /opt/rust/
 ADD node.tar.xz /opt/node/
 COPY cargo-nextest /opt/rust/bin/cargo-nextest
 COPY probe.py runner.py /opt/box/
+RUN mkdir -p /etc/stateengine-test-accounts && printf '%s\n' '{"schema":"stateengine-test-account/v1","identity":"1000","profile":"/home/ci"}' > /etc/stateengine-test-accounts/1000.json
 ADD main.tar /opt/bootstrap/
 ENV PATH=/opt/rust/bin:/opt/node/node-v22.23.4-linux-x64/bin:/usr/bin:/bin HOME=/home/ci CARGO_HOME=/opt/cargo
 USER 1000:1000

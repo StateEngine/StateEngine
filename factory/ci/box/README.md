@@ -4,6 +4,13 @@ These maintainer tools run Linux checks in a disposable rootless Podman containe
 They do not register a GitHub runner, dispatch workflows, or update the required
 `check` status. Windows and macOS jobs continue through their existing workflows.
 
+Installation fixtures take the product's real account-wide lock. Nextest serializes
+them in `installation-custody`; they refuse outside an administrator-registered
+dedicated test account. The container image registers only its disposable user.
+For a VM test user, run `scripts/ci/installation_account.py provision --identity
+NATIVE_UID_OR_SID --profile NATIVE_PROFILE` as administrator, then run the tests as
+that user. Never register an ordinary developer account or override the product lock.
+
 Run `provision.py` as administrator to prepare the locked, dedicated account and
 its root-owned seccomp policy. Run `build.py --help` for the trusted image builder.
 Its source must already be merged on local `main`; it fetches public dependencies
