@@ -49,6 +49,11 @@ pub struct ExecutionContext {
 /// (native effects plus their FULL commits) for one admitted caller. Installed
 /// through `HostedRuntime::install_custody`; absent, custody plans refuse.
 pub trait CustodyExecutor: Send + Sync {
+    /// A failed native hook leaves its cursor with the existing session monitor.
+    /// This wake supplies no transcript, capture authority or completion proof.
+    fn notify_capture(&self, _session: &crate::SessionIdentity) -> se_types::Result<()> {
+        Ok(())
+    }
     /// One finite live-work sweep, under the host's original timer budget.
     fn catch_up<'a>(&'a self, _deadline: &'a Deadline) -> crate::HostFuture<'a, ()> {
         Box::pin(async {

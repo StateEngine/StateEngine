@@ -402,11 +402,13 @@ impl LaunchCoordinator {
             })),
             intent: [0; 32],
             target: (work.meta.project.id.clone(), work.meta.agent.id.clone()),
+            session: work.meta.session.clone(),
             lifecycle: work.meta.lifecycle.clone(),
             state: AsyncMutex::new(work),
             ready: watch::channel(None).0,
             settled: AtomicBool::new(false),
             mail_pending: AtomicBool::new(true),
+            capture_pending: AtomicBool::new(false),
             wake,
             task: Mutex::new(None),
         });

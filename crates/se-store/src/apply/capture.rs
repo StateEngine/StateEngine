@@ -404,6 +404,32 @@ pub(super) fn apply(
                     "final capture verification differs from the committed session/source cursor",
                 ));
             }
+            // A failure can arrive at the same byte offset after EOF planning.
+            // Compare its identity inside this writer transaction, not only in
+            // the planning snapshot. Legacy unbound acknowledgements may verify
+            // a healthy cursor, but cannot clear a retained failure.
+            let (cursor, failure): (Vec<u8>, Option<Vec<u8>>) = c.query_row(
+                "SELECT e.event_id,(SELECT f.event_id FROM events f INDEXED BY events_session_seq
+                 WHERE f.project_id=c.project_id AND f.session_id=c.session_id
+                 AND f.seq>c.last_seq AND f.kind='capture.failed' ORDER BY f.seq DESC LIMIT 1)
+                 FROM capture_sources c JOIN events e ON e.seq=c.last_seq
+                 WHERE c.project_id=? AND c.source_id=?",
+                crate::sql_value::sql_params![p, source.as_bytes().as_slice()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            ).map_err(sql)?;
+            let unchanged = match &h.cause {
+                Some(observed) => {
+                    let observed = key(c, "event", observed.as_str(), &scope, false)?;
+                    observed == *failure.as_ref().unwrap_or(&cursor)
+                }
+                None => failure.is_none(),
+            };
+            if !unchanged {
+                return Err(fail(
+                    StoreErrorCode::SourceChanged,
+                    "capture failure changed after the EOF observation; retry its current binding",
+                ));
+            }
             codec::aux(c, seq, facts)?;
         }
         CaptureFailed {

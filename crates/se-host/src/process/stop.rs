@@ -43,6 +43,7 @@ impl LaunchCoordinator {
                 {
                     return;
                 }
+                let mut capture_pending = job.capture_pending.swap(false, Ordering::AcqRel);
                 if let Some(binding) = state
                     .binding
                     .as_ref()
@@ -52,13 +53,7 @@ impl LaunchCoordinator {
                         Ok(true) => {
                             state.mail.idle = true;
                             job.mail_pending.store(true, Ordering::Release);
-                            let result = match deadline.stage(Duration::from_secs(10)) {
-                                Ok(bound) => self.capture_progress(&mut state, &bound).await,
-                                Err(error) => Err(error),
-                            };
-                            if let Err(error) = result {
-                                state.cleanup_failure = Some(error.body);
-                            }
+                            capture_pending = true;
                         }
                         Ok(false) => (),
                         Err(error) => {
@@ -80,13 +75,17 @@ impl LaunchCoordinator {
                     }
                     if changed {
                         job.mail_pending.store(true, Ordering::Release);
-                        let result = match deadline.stage(Duration::from_secs(10)) {
-                            Ok(bound) => self.capture_progress(&mut state, &bound).await,
-                            Err(error) => Err(error),
-                        };
-                        if let Err(error) = result {
-                            state.cleanup_failure = Some(error.body);
-                        }
+                        capture_pending = true;
+                    }
+                }
+                // Hook retries and native completions share one capture window.
+                if capture_pending {
+                    let result = match deadline.stage(Duration::from_secs(10)) {
+                        Ok(bound) => self.capture_progress(&mut state, &bound).await,
+                        Err(error) => Err(error),
+                    };
+                    if let Err(error) = result {
+                        state.cleanup_failure = Some(error.body);
                     }
                 }
                 // Capture and mail each have a bounded maintenance window.
