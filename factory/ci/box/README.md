@@ -86,7 +86,7 @@ These steps are an explicit maintainer deployment, not a script invoked by a can
    Grant existing guest-controller users only the argument-free idle door. Sudoers must
    spell the idle command with `""` to prohibit arguments; no worker shell or generic
    Python/env/sudo delegation is granted to the new controller.
-4. With both guests stopped, apply `guest-owner-ci-fence.patch` to the shared
+4. With both guests stopped, apply `guest-owner-ci-fence.patch` to
    the administrator-selected shared `guest_owner.py` using `patch --fuzz=0 --dry-run` first, then
    `patch --fuzz=0`; both deployed VM controllers already call its `before_boot`.
    Review the complete resulting file, restart any old lifecycle controller before its
@@ -105,7 +105,8 @@ These steps are an explicit maintainer deployment, not a script invoked by a can
    Install the immutable image report and dependency snapshot root-owned, not writable
    by either account. Fill `/etc/stateengine-ci/dispatch.json` from `dispatch.example.json`
    with the numeric repository/workflow/App/installation IDs, pinned report/cache paths
-   and SHA256, both absolute guest lock paths and the absolute shared publisher state path. `config_at` refuses incomplete old shadow reports. Install the service unit
+   and SHA256, both absolute guest lock paths and the absolute shared publisher state
+   path. `config_at` refuses incomplete old shadow reports. Install the service unit
    without enabling or starting it. Set repository variables `BOX_CI_APP_ID` and
    `BOX_CI_ENABLED=false`. Branch protection continues to require only `check`.
 7. After review, publish the workflow, deploy the approved controller and run the real

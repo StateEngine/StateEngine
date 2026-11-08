@@ -1,0 +1,26 @@
+[Unit]
+Description=StateEngine bounded Linux CI controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=stateengine-ci-controller
+Group=stateengine-ci-controller
+UMask=0077
+StateDirectory=stateengine-ci-controller
+StateDirectoryMode=0700
+WorkingDirectory=/usr/local/lib/stateengine-box-ci/factory/ci/box
+LoadCredential=app-key.pem:/etc/stateengine-ci/app-key.pem
+ExecStart=/usr/bin/python3 -I /usr/local/lib/stateengine-box-ci/factory/ci/box/dispatch.py --config /etc/stateengine-ci/dispatch.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=read-only
+# The only setuid door is sudo's explicitly delegated locked-worker engine command.
+# Worker containers independently drop every capability and set NoNewPrivs.
+
+[Install]
+WantedBy=multi-user.target

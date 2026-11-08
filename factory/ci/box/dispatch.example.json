@@ -1,0 +1,13 @@
+{
+  "repository_id": 0,
+  "workflow_id": 0,
+  "app_id": 0,
+  "installation_id": 0,
+  "image_report": "/etc/stateengine-ci/image-approved.json",
+  "cache": "/etc/stateengine-ci/dependencies.tar.gz",
+  "cache_sha256": "REPLACE_WITH_APPROVED_SHA256",
+  "state": "/var/lib/stateengine-ci-controller",
+  "vm_locks": ["REPLACE_WITH_ABSOLUTE_GUEST_LOCK_PATH_1", "REPLACE_WITH_ABSOLUTE_GUEST_LOCK_PATH_2"],
+  "ci_lock": "REPLACE_WITH_EXISTING_SHADOW_LOCK",
+  "guest_state": "REPLACE_WITH_ABSOLUTE_GUEST_PUBLISHER_STATE_PATH"
+}
