@@ -139,6 +139,10 @@ fn serve(
     guard: &mut Option<se_proc::RuntimeBootstrap>,
     ready: &mut (dyn FnMut(&se_host::HostedListener) -> Result<()> + Send),
 ) -> Result<u8> {
+    let mut phases = super::startup_log::StartupLog::success_phases(&home);
+    if let Some(log) = &mut phases {
+        log.note("Host process preparation started");
+    }
     let initialized = se_host::initialize_host_process()?;
     let config = crate::config::load::<se_core::config_policy::ConfigFile>(
         &configuration,
@@ -162,6 +166,9 @@ fn serve(
     {
         return Err(invalid("the native bootstrap's unchanged process identity"));
     }
+    if let Some(log) = &mut phases {
+        log.note("Native host executable verification started");
+    }
     let peer = se_proc::native_ipc::observe_ipc_self().map_err(|e| {
         se_core::scope::unreadable("native host self", &e.to_string()).with_cause(e)
     })?;
@@ -180,6 +187,9 @@ fn serve(
         .map_err(|e| {
             se_core::scope::unreadable("native host epoch", &e.to_string()).with_cause(e)
         })?;
+    if let Some(log) = &mut phases {
+        log.note("Native host executable verification finished");
+    }
     // The same native image was just verified against the bootstrap and peer;
     // no PATH/cwd lookup may select a different helper for owned agent custody.
     let helper_executable = epoch.owner.fields().executable.clone();
@@ -196,6 +206,9 @@ fn serve(
     let serve = || {
         engine.block_on(async {
         let bound = deadline(Duration::from_secs(30))?;
+        if let Some(log) = &mut phases {
+            log.note("Host state preparation started");
+        }
         let mut host = se_host::HostedRuntime::prepare(
             initialized,
             se_host::HostStart {
@@ -227,6 +240,9 @@ fn serve(
             &bound,
         )
         .await?;
+        if let Some(log) = &mut phases {
+            log.note("Host state preparation finished");
+        }
         let restored=host.restore_transcripts(&bound).await?;
         if !restored.unavailable.is_empty() {eprintln!("capture recovery: {} binding(s) unavailable; their original cursors remain protected",restored.unavailable.len());}
         host.configure_file(config.value, configuration)?;
@@ -251,6 +267,9 @@ fn serve(
         // Install the native event source before publishing readiness, so a
         // Ctrl-C sent as soon as ready is printed cannot escape the drain path.
         let interrupt = if guard.is_none() { Some(super::interrupt::listen()?) } else { None };
+        if let Some(log) = &mut phases {
+            log.note("Listener publication and ownership commit started");
+        }
         let listener = match guard.take() {
             Some(bootstrap) => host.listen_bootstrap(
                 engine.handle().clone(),
@@ -260,6 +279,10 @@ fn serve(
             ).await?,
             None => host.listen(engine.handle().clone(), &bound).await?,
         };
+        if let Some(log) = &mut phases {
+            log.note("Listener published and ownership committed");
+            log.export_success();
+        }
         let announced = ready(&listener);
         if let Err(error) = announced {
             let stop = host.local_stop();

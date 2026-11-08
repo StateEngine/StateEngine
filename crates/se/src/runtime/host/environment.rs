@@ -10,6 +10,9 @@ pub(super) fn prepare(files: &se_proc::NativeStateFiles) -> Result<se_proc::Envi
             .with_cause(error)
     })?;
     let mut entries = se_host::provider_environment();
+    if super::startup_log::StartupLog::success_enabled() {
+        entries.push(("SE_STARTUP_LOG".into(), "1".into()));
+    }
     // The host launches either provider. Each child is filtered again through
     // its own provider allowlist, so Codex login/config does not reach Claude.
     for (name, value) in se_host::codex_input::provider_environment() {
