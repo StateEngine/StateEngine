@@ -68,6 +68,9 @@ pub fn from_matches_with_key(
                 ))
             })
     };
+    if matches!(meta.name, "remote.list" | "remote.watch" | "remote.send") {
+        return super::remote::decode(meta.name, m, key);
+    }
     let op =
         match meta.name {
             name if name.starts_with("atlas.") => atlas::decode(name, m, common.json)?,

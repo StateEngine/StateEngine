@@ -32,6 +32,7 @@ pub(super) fn checks<R: ReadStore>(
         let subject = match &entry.identity.principal {
             Actor::Agent(agent) => format!("agent {agent}"),
             Actor::Human(human) => format!("owner {human}"),
+            Actor::Remote(principal) => format!("remote device {principal}"),
         };
         let mut row = check(
             &format!("runtime.launch.{}", entry.identity.record),

@@ -62,6 +62,8 @@ pub enum RecordKind {
 pub enum AtlasPrincipal {
     Agent(AgentId),
     Human(HumanId),
+    /// Attribution only: remote grants do not authorize Atlas queries.
+    Remote(crate::remote::RemotePrincipalId),
 }
 
 #[derive(

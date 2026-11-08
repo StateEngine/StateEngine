@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 uuid.workspace = true
+subtle = "=2.6.1"
 
 [dev-dependencies]
 se-proc = { path = "../se-proc" }

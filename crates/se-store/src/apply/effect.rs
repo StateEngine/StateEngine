@@ -168,6 +168,7 @@ fn authorize(
     principal: Option<&[u8]>,
 ) -> StoreResult<()> {
     let own = match (&h.actor, principal) {
+        (Actor::Remote(_), _) => false,
         (Actor::Agent(_), Some(a)) => principal_key(c, &h.actor, scope)? == a,
         (Actor::Agent(_), None) => false,
         (Actor::Human(_), _) => super::project::is_owner(c, h, p)?,

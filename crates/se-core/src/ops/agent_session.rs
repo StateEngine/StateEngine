@@ -5,11 +5,12 @@ use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{EventBody, Snapshot};
 use se_types::{AgentId, Read, Result};
 mod recorded;
+pub use recorded::process_from_record;
 
 type Views = (SessionView, ConversationView, ResumeCommand);
 pub(super) fn read<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views> {
     Ok(read_inner(agent, cx).unwrap_or_else(|error| {
-        let mut session = empty_session();
+        let mut session = unobserved_session();
         session.liveness = Read::Unreadable {
             source: "recorded agent session".into(),
             reason: error.to_string(),
@@ -32,7 +33,7 @@ pub(super) fn read<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<V
         )
     }))
 }
-fn empty_session() -> SessionView {
+pub fn unobserved_session() -> SessionView {
     SessionView {
         state: "unknown".into(),
         recorded_state: None,
@@ -54,7 +55,7 @@ fn empty_session() -> SessionView {
     }
 }
 fn read_inner<R: Snapshot>(agent: &AgentId, cx: &mut Cx<'_, R>) -> Result<Views> {
-    let mut session = empty_session();
+    let mut session = unobserved_session();
     let latest = cx
         .read
         .latest_session(agent.clone())

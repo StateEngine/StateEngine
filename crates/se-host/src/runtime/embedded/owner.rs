@@ -127,6 +127,16 @@ async fn run_owner(
             return;
         }
     };
+    #[cfg(feature = "remote")]
+    let remote_start = match support::deadline(SHUTDOWN_BUDGET) {
+        Ok(deadline) => host.restore_remote_listener(&deadline).await,
+        Err(error) => Err(error),
+    };
+    #[cfg(not(feature = "remote"))]
+    let remote_start: core::Result<()> = Ok(());
+    if remote_start.is_err() {
+        stop.request();
+    }
     // Undelivered, or delivered but never claimed, the dropped
     // stop ends this generation instead of serving unreachably.
     let mail_owner = retained_owner.clone();
@@ -135,13 +145,14 @@ async fn run_owner(
     let mail = retained_owner
         .upgrade()
         .filter(|owner| {
-            owner
-                .negotiated
-                .features
-                .contains(&api::Feature::NativeMail)
+            remote_start.is_ok()
+                && owner
+                    .negotiated
+                    .features
+                    .contains(&api::Feature::NativeMail)
         })
         .map(|_| tokio::spawn(super::mail::drive(mail_owner, mail_router)));
-    let _ = ready.send(Ok((router, stop)));
+    let _ = ready.send(remote_start.map(|()| (router, stop)));
     let exit = host.serve(listener).await;
     if let Some(owner) = retained_owner.upgrade() {
         owner
@@ -301,6 +312,8 @@ async fn take_ownership(
         }
     }
     let stop = host.local_stop();
+    #[cfg(feature = "remote")]
+    host.prepare_remote_listener(&deadline).await?;
     let listener = host.listen(inputs.runtime, &deadline).await?;
     let router = host.router()?;
     let _ = router_fence.set(std::sync::Arc::clone(&router.fenced));

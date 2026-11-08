@@ -29,12 +29,14 @@ impl Actor {
         match self {
             Self::Human(x) => x.as_str(),
             Self::Agent(x) => x.as_str(),
+            Self::Remote(x) => x.as_str(),
         }
     }
     pub(crate) fn kind(&self) -> &str {
         match self {
             Self::Human(_) => "human",
             Self::Agent(_) => "agent",
+            Self::Remote(_) => "remote",
         }
     }
 }
@@ -51,7 +53,21 @@ pub(crate) fn canonical(wire: &str) -> Option<Vec<u8>> {
     let (prefix, suffix) = wire.split_once('_')?;
     if !matches!(
         prefix,
-        "prj" | "ag" | "hu" | "ses" | "msg" | "dec" | "ev" | "lch" | "obs" | "store" | "life"
+        "prj"
+            | "ag"
+            | "hu"
+            | "ses"
+            | "msg"
+            | "dec"
+            | "ev"
+            | "lch"
+            | "obs"
+            | "store"
+            | "life"
+            | "rgr"
+            | "rinv"
+            | "rdev"
+            | "rpr"
     ) {
         return None;
     }
@@ -120,6 +136,7 @@ pub(crate) fn wire(db: &Connection, kind: &str, bytes: &[u8], scope: &[u8]) -> S
             "event" => "ev_",
             "store" => "store_",
             "lifecycle" => "life_",
+            "remote" => "rpr_",
             _ => return Err(invalid("unknown identity kind")),
         };
         return Ok(format!("{prefix}{id}"));
@@ -169,6 +186,22 @@ pub(crate) fn actor(db: &Connection, bytes: &[u8], scope: &[u8]) -> StoreResult<
                 .try_into()
                 .map_err(invalid)?,
         ));
+    }
+    if crate::connection::info(db)?.schema_version >= 5 {
+        let remote: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM remote_grants WHERE principal_id=?)",
+                [bytes],
+                |r| r.get(0),
+            )
+            .map_err(sql)?;
+        if remote {
+            return Ok(Actor::Remote(
+                wire(db, "remote", bytes, &[0])?
+                    .try_into()
+                    .map_err(invalid)?,
+            ));
+        }
     }
     Ok(Actor::Agent(decode_agent(
         db,

@@ -284,8 +284,8 @@ try {
     $copies = @(@{from = (Join-Path $bundle 'se.exe'); to = $binary})
     foreach ($path in $archiveFiles) {
         $relative = $path.Substring($bundle.Length + 1).Replace('\', '/')
-        if ($relative -in @('manifest.json', 'build.json', 'NOTICE.txt', 'notices.tar', 'uninstall.ps1') -or $relative.StartsWith('notices/')) {
-            $destination = Join-Path $assets $relative
+        if ($relative -in @('manifest.json', 'build.json', 'NOTICE.txt', 'notices.tar', 'uninstall.ps1') -or $relative.StartsWith('notices/') -or $relative.StartsWith('remote-images/')) {
+            $destination = if ($relative.StartsWith('remote-images/')) { Join-Path $bin $relative } else { Join-Path $assets $relative }
             $copies += @{from = $path; to = $destination}
             $files += @{path = $destination; sha256 = Get-Digest $path}
         }

@@ -178,6 +178,12 @@ fn project<S: Snapshot>(output: &mut StatusOutput, cx: &mut Cx<'_, S>) -> Result
         })
         .map_err(|e| store_error(&e))?;
     match &cx.admission.actor {
+        Actor::Remote(_) => {
+            return Err(se_types::SeError::invalid(
+                "local status",
+                "local human or agent authority",
+            ));
+        }
         Actor::Human(_) => output.inbox.owner_unread = Some(unread),
         Actor::Agent(agent) => {
             output.inbox.self_unread = Some(unread);

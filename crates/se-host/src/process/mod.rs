@@ -21,6 +21,8 @@ mod owned;
 mod reactor;
 mod recovery;
 mod release;
+#[cfg(feature = "remote")]
+mod remote_live;
 mod remove;
 mod remove_receipt;
 mod requests;

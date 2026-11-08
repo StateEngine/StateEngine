@@ -2,6 +2,27 @@
 
 This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked calls derive from one synchronous core registry, with async custody execution in the host. The reconciled rows contain **58 operations and 24 MCP tools (19 core, 5 optional Atlas)**; the registry currently registers 47 operations and 21 tools, and the generated command inventory at the end of this document lists the unbuilt rows as planned; a test fails when that inventory drifts from the registry or the design tables. A crate cannot introduce an unlisted public operation. This document is a design contract, not a running implementation or journey verdict. The Node repository keeps its private factory engine; no fleet cutover/import or CLI-only factory adaptation is part of this build.
 
+## Remote machine connections
+
+The optional remote adapter exposes `remote.list`, `remote.watch` and
+`remote.send` through CLI and MCP. Both use the source host's shared machine
+connection and preserve its admitted calling agent. Narrow remote authority
+never becomes a local human or agent principal.
+
+| Operation | CLI | MCP | Authority/effect |
+| --- | --- | --- | --- |
+| `remote.list` | `remote list --host NAME` | `stateengine_remote_list` | Current machine session and admitted source; bounded discovery |
+| `remote.watch` | `remote watch --host NAME` | `stateengine_remote_watch` | Same authority; scoped bounded replay without inbox marks |
+| `remote.send` | `remote send --host NAME` | `stateengine_remote_send` | Exact target/session, stable origin and original request key; ordinary native mail |
+| Machine setup | `remote add DESTINATION --name NAME` | None | Native owner IPC; system SSH discovers, stages, authorizes and verifies the destination |
+| Transport removal | `remote disconnect/forget --name NAME` | None | Native owner IPC; closes only source transport, preserving destination hosts and agents |
+| Session administration | `remote disable/grants/revoke` | None | Native owner IPC; never exposed to agents or the remote wire |
+
+[Remote design](design/45-remote-clients.md) and [contract](design/47-r0-contract.md)
+define the complete boundary. The implementation's qualification status is
+separate from these contracts. UI integration and its performance measurements
+remain separate from the native CLI and MCP consumers.
+
 ## Journeys and row conventions
 
 | ID | Outcome, with Claude and Codex on Windows, macOS and Linux |

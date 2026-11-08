@@ -45,4 +45,24 @@ impl OwnerPresence {
             && !self.provider_marker_present
             && self.outside_agent_tree
     }
+    #[cfg(feature = "runtime")]
+    pub(crate) fn refusal_reason(&self, peer_owner: &str) -> String {
+        let cause = if !self.stdout_console {
+            "stdout is redirected, captured or otherwise not attached to a console/TTY"
+        } else if !self.stdin_console {
+            "stdin is redirected or otherwise not attached to a console/TTY"
+        } else if self.os_owner.is_empty() || self.os_owner != peer_owner {
+            "the observed CLI owner does not match the independent native peer owner"
+        } else {
+            "the CLI has a session/provider marker or is inside an agent tree"
+        };
+        format!(
+            "{cause}; stdin_console={}, stdout_console={}, session_present={}, provider_marker_present={}, outside_agent_tree={}",
+            self.stdin_console,
+            self.stdout_console,
+            self.session_present,
+            self.provider_marker_present,
+            self.outside_agent_tree,
+        )
+    }
 }

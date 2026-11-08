@@ -173,6 +173,8 @@ impl LaunchCoordinator {
             return Err(error);
         }
         work.binding = Some(binding);
+        #[cfg(feature = "remote")]
+        self.attach_remote_live(work);
         self.capture_progress(work, deadline).await?;
         Ok(())
     }

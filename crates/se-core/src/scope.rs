@@ -20,6 +20,10 @@ pub fn working_agent(
     op: &str,
 ) -> Result<AgentId> {
     match (&admission.actor, owner_agent) {
+        (Actor::Remote(_), _) => Err(SeError::invalid(
+            "local operation",
+            "local human or agent authority",
+        )),
         (Actor::Agent(agent), None) => Ok(agent.clone()),
         (Actor::Agent(agent), Some(selected)) if agent == selected => Ok(agent.clone()),
         (Actor::Agent(_), Some(_)) => Err(SeError::new(Detail::OwnerRequired(
@@ -206,6 +210,7 @@ pub fn actor_id(actor: &Actor) -> String {
     match actor {
         Actor::Human(id) => id.to_string(),
         Actor::Agent(id) => id.to_string(),
+        Actor::Remote(id) => id.to_string(),
     }
 }
 /// The reader supplies recovery for its own source. This helper can run after

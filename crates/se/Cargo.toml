@@ -6,6 +6,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+remote = ["se-host/remote"]
+
 [dependencies]
 se-host = { path = "../se-host" }
 se-store = { path = "../se-store" }

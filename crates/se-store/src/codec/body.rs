@@ -12,6 +12,12 @@ pub(crate) fn body(
         "channel.recorded" => ChannelRecorded {
             change: field(&facts(c, seq)?, "change")?,
         },
+        "remote.security" => RemoteSecurity {
+            transition: field(&facts(c, seq)?, "transition")?,
+        },
+        "remote.message_attributed" => RemoteMessageAttributed {
+            record: field(&facts(c, seq)?, "record")?,
+        },
         "runtime.owner" | "runtime.handover" | "backup.recorded" | "turn.erased"
         | "message.erased" | "erasure.requested" | "erasure.completed" | "recovery.recorded" => {
             super::maintenance::body(c, seq, kind)?

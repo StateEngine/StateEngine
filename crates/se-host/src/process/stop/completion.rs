@@ -180,6 +180,10 @@ impl LaunchCoordinator {
         if work.meta.provider == se_store::Provider::SeCode {
             self.secode.retire(&work.meta.session)?;
         }
+        #[cfg(feature = "remote")]
+        {
+            work.remote_live = None;
+        }
         work.process = None;
         Ok(())
     }

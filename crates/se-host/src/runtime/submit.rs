@@ -22,6 +22,47 @@ pub(super) async fn measured(
     identity: &WriteIdentity,
     deadline: &Deadline,
 ) -> Result<(CommitReceipt, se_core::ops::HostPhaseSpan, u64)> {
+    let fault = context.ownership_fault.clone();
+    let submitted = identity.clone();
+    measured_with(context, batch, identity, deadline, move |writer, batch| {
+        writer.submit(batch).map_err(|error| {
+            fault.observe_writer(&error);
+            submitted.store_error(&error)
+        })
+    })
+    .await
+}
+#[cfg(feature = "remote")]
+pub(crate) async fn remote(
+    context: &ExecutionContext,
+    batch: AtomicBatch,
+    identity: &WriteIdentity,
+    deadline: &Deadline,
+    permit: crate::remote::auth::AdmissionPermit,
+) -> Result<CommitReceipt> {
+    let fault = context.ownership_fault.clone();
+    let submitted = identity.clone();
+    measured_with(context, batch, identity, deadline, move |writer, batch| {
+        permit.submit_with(writer, batch, |error| {
+            fault.observe_writer(error);
+            submitted.store_error(error)
+        })
+    })
+    .await
+    .map(|value| value.0)
+}
+async fn measured_with(
+    context: &ExecutionContext,
+    batch: AtomicBatch,
+    identity: &WriteIdentity,
+    deadline: &Deadline,
+    enqueue: impl FnOnce(
+        &se_store::SqliteClient,
+        AtomicBatch,
+    ) -> Result<<se_store::SqliteClient as WriterClient>::Completion>
+    + Send
+    + 'static,
+) -> Result<(CommitReceipt, se_core::ops::HostPhaseSpan, u64)> {
     // submit performs finite bounded queue admission and serialization.
     // Preserve the returned waiter even if native work uses the final
     // part of the budget; the original request identity is unchanged.
@@ -41,7 +82,8 @@ pub(super) async fn measured(
             submit_deadline.remaining()?;
             let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
             pending.register(&submitted)?;
-            match writer.submit(batch) {
+            mail_waits.fence_remote(&revocations)?;
+            match enqueue(&writer, batch) {
                 Ok(completion) => {
                     // Install the observer before returning from submission:
                     // a cancelled connection can drop this worker's result.
@@ -69,7 +111,8 @@ pub(super) async fn measured(
                         };
                         let notified = if receipt.is_ok() {
                             mail_waits
-                                .committed(&recipients)
+                                .remote_fence_committed(&revocations)
+                                .and_then(|()| mail_waits.committed(&recipients))
                                 .and_then(|()| mail_waits.revoked(&revocations))
                                 .and_then(|()| {
                                     custody
@@ -83,9 +126,13 @@ pub(super) async fn measured(
                     }))
                 }
                 Err(error) => {
-                    fault.observe_writer(&error);
                     pending.failed_attempt(&submitted)?;
-                    Err(submitted.store_error(&error))
+                    Err(se_core::store_error::retain_write_identity(
+                        error,
+                        submitted.operation,
+                        submitted.key.as_ref(),
+                        &submitted.natural_events,
+                    ))
                 }
             }
         })

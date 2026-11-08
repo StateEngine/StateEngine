@@ -1,5 +1,7 @@
 # 95. Work breakdown — assembled plan
 
+The separate [remote program](45-remote-clients.md) and [contract](47-r0-contract.md) deliver connect/reuse with native agent identity and mail, then actual cross-machine replies, then independent agent/link revocation. These outcomes do not add a fleet service, compatibility layer or new gate framework to the local alpha plan.
+
 Status: reconciled 2026-10-30 after the operator declined the first version and two whole-design reviews
 (Opus and Sol) plus two outside reviews found cross-section contradictions and scope no journey
 needed. The operator approved wave 1 on 2026-10-31 after two more outside reviews (Astra 6, Opus 5.5),

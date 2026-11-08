@@ -24,6 +24,12 @@ impl SqliteSnapshot {
             _ => return Ok(self.absent("control target agent")),
         };
         match &self.scope.visibility {
+            Visibility::None => {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "no local control authority",
+                ));
+            }
             Visibility::Owner => {}
             Visibility::SelfOnly(actor) | Visibility::SharedProject(actor) if *actor == target => {}
             Visibility::SelfOnly(creator) | Visibility::SharedProject(creator) => {

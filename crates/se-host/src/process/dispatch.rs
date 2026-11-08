@@ -29,6 +29,12 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
     ) -> HostFuture<'a, AnyOutput> {
         Box::pin(async move { self.observe_secode_output(output, deadline).await })
     }
+
+    #[cfg(feature = "remote")]
+    fn refresh_remote<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, ()> {
+        Box::pin(async move { self.refresh_remote_sources(deadline).await })
+    }
+
     fn catch_up<'a>(&'a self, deadline: &'a Deadline) -> HostFuture<'a, ()> {
         Box::pin(async move { self.catch_up_live(deadline).await })
     }

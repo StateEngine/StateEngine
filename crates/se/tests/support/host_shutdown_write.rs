@@ -184,6 +184,7 @@ fn run(serial: bool) -> Check {
             let mut probe = std::pin::pin!(router.execute_call(
                 se_host::RoutedCall {
                     admitted: se_host::HostedCall {
+                        remote_credential: None,
                         input: se_host::HostedInput::Operation(se_core::ops::AnyOp::MetaVersion(
                             se_core::ops::MetaVersion {}
                         )),

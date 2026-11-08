@@ -1,5 +1,7 @@
 # 95. Work breakdown — se-host
 
+The separate [remote program](45-remote-clients.md) delivers three ordered outcomes: one-command SSH connect/reuse with native agent identity and mail, real return-mailbox replies, then independent agent and link revocation. [47](47-r0-contract.md) requires real consumer and process-boundary review of each complete outcome; a unit test or receipt alone is insufficient.
+
 Round-2 planning input for the project maintainer, 2026-10-30; assembled base `f25ca90`.
 **No code, tests or build permission. The operator approves the full design before
 implementation.** The accepted [section 40](40-host-runtime-and-harnesses.md)

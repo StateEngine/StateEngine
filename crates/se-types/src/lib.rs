@@ -10,6 +10,7 @@ mod id;
 mod process;
 mod read;
 mod receipt;
+pub mod remote;
 mod sensitive;
 mod surface;
 mod work_message;

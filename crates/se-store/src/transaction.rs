@@ -398,9 +398,11 @@ impl Engine {
                 ));
             }
         }
+        crate::remote::validate_batch(&self.db, &batch, info, recorded)?;
         if let Some(retained) = idempotency::lookup(&self.db, &batch, info)? {
             return Ok(retained);
         }
+        crate::remote::validate_new_batch(&self.db, &batch)?;
         if batch.expected_incarnation != info.incarnation
             || batch.admission.generation != self.identity.generation
         {
@@ -565,6 +567,7 @@ fn security<T>(b: &EventBody<T>) -> bool {
     matches!(
         b,
         ChannelRecorded { .. }
+            | RemoteSecurity { .. }
             | CredentialIssued { .. }
             | CredentialActivated { .. }
             | CredentialRevoked { .. }

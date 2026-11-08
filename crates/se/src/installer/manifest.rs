@@ -81,12 +81,15 @@ pub(super) fn prepare(creation: &mut NativeDirectoryCreation) -> Result<()> {
     let (bin, assets) = program_paths()?;
     creation.prepare(&bin).map_err(native)?;
     creation.prepare(&assets).map_err(native)?;
-    for relative in directories {
-        creation.prepare(&assets.join(relative)).map_err(native)?;
+    for (remote_image, relative) in directories {
+        let directory = if remote_image { &bin } else { &assets };
+        creation
+            .prepare(&directory.join(relative))
+            .map_err(native)?;
     }
     Ok(())
 }
-pub(super) fn verify() -> Result<BTreeSet<PathBuf>> {
+pub(super) fn verify() -> Result<BTreeSet<(bool, PathBuf)>> {
     let executable = std::env::current_exe()
         .map_err(|error| read_error(Path::new("archive executable"), error))?;
     let archive = executable
@@ -162,13 +165,14 @@ pub(super) fn verify() -> Result<BTreeSet<PathBuf>> {
             return Err(invalid("an archive payload of at most 4 GiB"));
         }
         checked_file(&archive.join(name), entry)?;
-        if name.starts_with("notices/") {
+        let remote_image = name.starts_with("remote-images/");
+        if name.starts_with("notices/") || remote_image {
             let mut parent = Path::new(name).parent();
             while let Some(value) = parent {
                 if value.as_os_str().is_empty() {
                     break;
                 }
-                directories.insert(value.to_owned());
+                directories.insert((remote_image, value.to_owned()));
                 parent = value.parent();
             }
         }

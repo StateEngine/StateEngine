@@ -126,6 +126,11 @@ done
 if [ "$recover" -eq 0 ]; then profile_metadata; fi
 # The inventory contains only safe relative names, so this list needs no path splitting.
 asset_files='manifest.json build.json NOTICE.txt notices.tar uninstall.sh'
+remote_files=$(sed -n 's/^[0-9a-f]\{64\}  \(remote-images\/[^ ]*\)$/\1/p' "$bundle/SHA256SUMS")
+asset_files="$asset_files $remote_files"
+asset_destination() {
+    case "$1" in remote-images/*) printf '%s/%s' "$bin" "$1" ;; *) printf '%s/%s' "$assets" "$1" ;; esac
+}
 # Native preparation rejects unsafe existing homes, creates absent homes with
 # the same protection as init, and retains the account-wide installation claim.
 if [ "$native_held" -eq 0 ]; then
@@ -335,7 +340,7 @@ fi
     printf ',\n  "files": [\n    {"path": '; json_string "$bin/se"; printf ', "sha256": "%s"}' "$checksum"
     for relative in $asset_files; do
         checksum=$(file_digest "$bundle/$relative")
-        printf ',\n    {"path": '; json_string "$assets/$relative"; printf ', "sha256": "%s"}' "$checksum"
+        printf ',\n    {"path": '; json_string "$(asset_destination "$relative")"; printf ', "sha256": "%s"}' "$checksum"
     done
     if [ -n "$fish_file" ]; then
         checksum=$(file_digest "$stage/fish-config")
@@ -378,7 +383,9 @@ remove_stale_temps "$bin" .se-publish-
 remove_stale_temps "$data" .se-publish-
 if [ -n "$fish_file" ]; then remove_stale_temps "$(dirname "$fish_file")" .se-publish-; fi
 for relative in $asset_files; do
-    publish_file "$bundle/$relative" "$assets/$relative" 644
+    mode=644
+    case "$relative" in remote-images/*) mode=755 ;; esac
+    publish_file "$bundle/$relative" "$(asset_destination "$relative")" "$mode"
 done
 publish_file "$bundle/se" "$bin/se" 755
 if [ -n "$fish_file" ]; then
@@ -396,10 +403,10 @@ for name in $profiles; do
     flush "$profile" "$HOME"
     profile_append_matches "$name" && [ "$appended_bytes" -eq "$block_bytes" ] || fail "login profile append readback failed: $profile"
 done
-for relative in $asset_files; do cmp -s "$assets/$relative" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done
+for relative in $asset_files; do cmp -s "$(asset_destination "$relative")" "$bundle/$relative" || fail "installed asset readback failed: $relative"; done
 cmp -s "$bin/se" "$bundle/se" || fail 'installed binary readback failed'
 set -- "$bundle/se" __install-files-check "$bin/se"
-for relative in $asset_files; do set -- "$@" "$assets/$relative"; done
+for relative in $asset_files; do set -- "$@" "$(asset_destination "$relative")"; done
 "$@" || fail 'native installed-file ownership readback failed'
 publish_file "$stage/install.json" "$record" 600
 cmp -s "$record" "$stage/install.json" || fail 'ownership record readback failed'

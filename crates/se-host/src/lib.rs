@@ -16,6 +16,7 @@ mod acp_transport_independent;
 mod agent_observation;
 pub mod channels;
 pub mod client;
+pub mod remote;
 #[cfg(feature = "runtime")]
 pub use agent_observation::{
     AgentObservation, AgentObservationPlan, observe_agent, prepare_agent_observation,

@@ -141,7 +141,37 @@ impl HostedRuntime {
             )
             .await
             {
-                Event::LocalStop | Event::IdleExpired => break ended(self, listener, None),
+                Event::LocalStop => break ended(self, listener, None),
+                Event::IdleExpired => {
+                    #[cfg(feature = "remote")]
+                    {
+                        if self.execution.mail_waits.remote().is_some() {
+                            // Explicit source-client use retains the existing host,
+                            // rather than killing a human watch at native-agent idle.
+                            timers.idle = Box::pin(std::future::pending());
+                            continue;
+                        }
+                        if let Some(control) = self
+                            .execution
+                            .mail_waits
+                            .remote_control()
+                            .filter(|control| control.active())
+                        {
+                            let control = control.clone();
+                            let activity = activity.clone();
+                            timers.idle = Box::pin(async move {
+                                control.wait_disabled().await;
+                                if let Some(mut activity) = activity {
+                                    idle_expiry(&mut activity).await;
+                                } else {
+                                    std::future::pending::<()>().await
+                                }
+                            });
+                            continue;
+                        }
+                    }
+                    break ended(self, listener, None);
+                }
                 Event::OwnershipFault => {
                     break ended(
                         self,
@@ -491,7 +521,30 @@ async fn connection(
                 .await?;
             continue;
         }
+        #[cfg(feature = "remote")]
+        if let Some(call) = exchange.take_owner_call() {
+            let result = crate::remote::control::execute(&router, call, &deadline).await;
+            connection = exchange.reply_owner(result, &deadline).await?;
+            continue;
+        }
         let output = match exchange.take_call() {
+            Ok(call)
+                if matches!(
+                    &call.admitted.input,
+                    HostedInput::Operation(se_core::ops::AnyOp::RemoteWatch(_))
+                ) =>
+            {
+                // Unlike writes, a watch owns no commit. Retire its in-flight
+                // page as soon as this CLI disconnects, preserving consumed
+                // cursors and leaving the target agent untouched.
+                tokio::select! {biased;
+                    closed = exchange.wait_for_peer_close() => {
+                        closed?;
+                        return Ok(ConnectionEnd::Closed);
+                    }
+                    output = router.execute_call(call, &deadline) => output,
+                }
+            }
             Ok(call) => router.execute_call(call, &deadline).await,
             Err(error) => Err(error),
         };

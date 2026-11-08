@@ -29,6 +29,40 @@ impl AgentObservationPlan {
         self.status_attention = true;
         self
     }
+    /// Scoped remote metadata already passed the grant-filtered read port.
+    #[cfg(feature = "remote")]
+    pub(crate) fn remote(
+        project: ProjectId,
+        row: AgentRow,
+        process: Read<ProcessIdentityRecord>,
+        session: Option<&se_store::ProjectionRecord>,
+    ) -> Self {
+        let identity = row
+            .session
+            .session_id
+            .clone()
+            .map(|session| crate::SessionIdentity {
+                project: project.clone(),
+                agent: row.id.clone(),
+                session,
+            });
+        Self {
+            project,
+            command_home: None,
+            identity,
+            row,
+            process,
+            capture: Read::Absent {
+                checked: "remote list does not request private transcript custody".into(),
+            },
+            control_failure: None,
+            status_attention: false,
+            setup_expired: session.is_some_and(se_core::ops::agent_launch::expired_attended_setup),
+            setup_retryable: session
+                .is_some_and(se_core::ops::agent_launch::retryable_attended_setup),
+        }
+    }
+
     /// Presentation context only; native observation authority is unchanged.
     pub fn with_command_home(mut self, home: &std::path::Path) -> Self {
         self.command_home = Some(home.to_owned());

@@ -60,6 +60,8 @@ mod history_import;
 #[cfg(feature = "listener")]
 pub(crate) mod mail;
 #[cfg(feature = "listener")]
+mod remote;
+#[cfg(feature = "listener")]
 pub use mail::MailRecipient;
 #[cfg(feature = "listener")]
 pub(crate) mod store;

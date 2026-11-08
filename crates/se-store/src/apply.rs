@@ -173,6 +173,17 @@ pub(crate) fn apply(
     };
     match body {
         ChannelRecorded { change } => channel::apply(c, header, change, seq, revision, facts)?,
+        RemoteSecurity { transition } => {
+            crate::remote::apply(c, header, transition, seq, revision)?;
+            codec::aux(c, seq, facts)?;
+        }
+        RemoteMessageAttributed { record } => {
+            let p = project_id(c, &header.scope, false)?;
+            let message = key(c, "message", record.message.as_str(), &s, false)?;
+            let grant = key(c, "remote-grant", record.grant.as_str(), &[0], false)?;
+            c.execute("INSERT INTO remote_message_attribution(event_seq,project_id,message_id,grant_id,facts) VALUES(?,?,?,?,?)",rusqlite::params![seq,p,message,grant,codec::encode(&record)?]).map_err(sql)?;
+            codec::aux(c, seq, facts)?;
+        }
         b @ (ProcessRegistered { .. } | ProcessTransition { .. }) => {
             process::apply(c, header, b, seq, revision, lease)?
         }

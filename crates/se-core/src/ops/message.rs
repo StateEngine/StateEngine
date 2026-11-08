@@ -83,7 +83,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
         if let Some(actor) = actor {
             let selector = match actor {
                 Actor::Human(_) => original.unwrap_or("owner").to_owned(),
-                Actor::Agent(_) => scope::actor_id(actor),
+                Actor::Agent(_) | Actor::Remote(_) => scope::actor_id(actor),
             };
             full_command.extend([flag.into(), selector]);
         }
@@ -142,6 +142,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
     let next = page.next().cloned();
     let mut items = Vec::with_capacity(page.items().len());
     for record in page.into_items() {
+        let from = receipt::mail_sender_ref(cx.read, &record)?;
         let event = scope::require_present(
             cx.read
                 .event(record.event.clone())
@@ -203,7 +204,7 @@ pub fn list<R: Snapshot>(input: MessageList, cx: &mut Cx<'_, R>) -> Result<Messa
             channel_reply: channel_reply(cx.read, &record.message)?,
             id: record.message,
             event_id: record.event,
-            from: receipt::actor_ref(cx.read, &record.sender)?,
+            from,
             to: if record.work.is_some() {
                 receipt::floor_ref()
             } else {
@@ -292,7 +293,7 @@ fn scope_denied<R: Snapshot>(cx: &Cx<'_, R>, filter: &str) -> SeError {
                 agent: agent.clone(),
             }))
         }
-        Actor::Human(_) => SeError::invalid("mail filters", filter),
+        Actor::Human(_) | Actor::Remote(_) => SeError::invalid("mail filters", filter),
     }
 }
 

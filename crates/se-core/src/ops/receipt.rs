@@ -49,6 +49,13 @@ pub(crate) fn floor_ref() -> ActorRef {
     }
 }
 pub fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<ActorRef> {
+    if let Actor::Remote(id) = actor {
+        return Ok(ActorRef {
+            kind: "remote".into(),
+            id: id.to_string(),
+            name: format!("Remote device {id}"),
+        });
+    }
     let record = scope::require_present(
         read.principal(actor.clone()).map_err(|e| store_error(&e))?,
         "receipt principal",
@@ -69,11 +76,59 @@ pub fn actor_ref<R: Snapshot>(read: &mut R, actor: &Actor) -> Result<ActorRef> {
         kind: match actor {
             Actor::Human(_) => "owner",
             Actor::Agent(_) => "agent",
+            Actor::Remote(_) => "remote",
         }
         .into(),
         id: scope::actor_id(actor),
         name,
     })
+}
+/// Instruction standing belongs to this exact admitted message and recipient;
+/// the sender remains its real remote principal, never a local Owner/Core actor.
+pub fn mail_sender_ref<R: Snapshot>(
+    read: &mut R,
+    message: &se_store::MessageRecord,
+) -> Result<ActorRef> {
+    if let Actor::Remote(principal) = &message.sender {
+        let attribution = read
+            .remote_message_attribution(message.message.clone())
+            .map_err(|error| store_error(&error))?
+            .ok_or_else(|| {
+                scope::unreadable(
+                    "mail sender provenance",
+                    "the remote message has no verified original source",
+                )
+            })?;
+        if attribution.principal != *principal {
+            return Err(scope::unreadable(
+                "mail sender provenance",
+                "source principal differs from the committed sender",
+            ));
+        }
+        return Ok(match attribution.source {
+            Some(source) => ActorRef {
+                kind: "remote_agent".into(),
+                id: format!(
+                    "{}/{}/{}",
+                    source.host.0.hex(),
+                    source.project,
+                    source.agent
+                ),
+                name: format!(
+                    "Remote agent {} (project {}, machine {})",
+                    source.agent,
+                    source.project,
+                    source.host.0.hex()
+                ),
+            },
+            None => ActorRef {
+                kind: "remote_owner".into(),
+                id: principal.to_string(),
+                name: format!("Remote machine owner {principal}"),
+            },
+        });
+    }
+    actor_ref(read, &message.sender)
 }
 pub fn named_agent<R: Snapshot>(read: &mut R, agent: &AgentId) -> Result<Named<AgentId>> {
     let actor = actor_ref(read, &Actor::Agent(agent.clone()))?;
@@ -238,6 +293,7 @@ pub fn message<R: Snapshot>(
         "message notification",
         "Inspect the original message with its original key; do not send another message.",
     )?;
+    let from = mail_sender_ref(cx.read, &record)?;
     let notification = notification(cx.read, record.quiet, record.notifications)?;
     Ok(MessageOutput {
         state: commit_state(&output.commit),
@@ -248,7 +304,7 @@ pub fn message<R: Snapshot>(
             id: project,
             name: project_name,
         },
-        from: actor_ref(cx.read, &event.header.actor)?,
+        from,
         to: match &recipient {
             Some(recipient) => actor_ref(cx.read, recipient)?,
             None => floor_ref(),

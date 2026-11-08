@@ -106,6 +106,8 @@ impl LaunchCoordinator {
             ));
         }
         work.binding = Some(outcome.binding);
+        #[cfg(feature = "remote")]
+        self.attach_remote_live(work);
         if let Some(binding) = work
             .binding
             .as_ref()

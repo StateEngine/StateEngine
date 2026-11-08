@@ -44,6 +44,8 @@ def native_binary(path, windows, target=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build", type=Path, required=True, help="native build-output directory")
+    parser.add_argument("--remote-build", type=Path, action="append", default=[],
+                        help="same-source native build for another supported destination (repeat for every other target)")
     parser.add_argument("--out", type=Path, required=True, help="archive output directory")
     args = parser.parse_args()
     build = args.build.resolve()
@@ -81,6 +83,37 @@ def main():
         if digest(build / name) != checksum:
             raise ValueError(f"build checksum mismatch: {name}")
     native_binary(build / binary, windows, metadata["target"])
+    companions = {}
+    for directory in args.remote_build:
+        directory = directory.resolve()
+        companion = json.loads((directory / "build.json").read_text())
+        target = companion.get("target")
+        if target not in inputs["targets"] or target == metadata["target"] or target in companions:
+            raise ValueError("remote builds must name distinct supported destination platforms")
+        for key in ("schema", "variant", "trust", "source_commit", "version", "inputs_sha256", "cargo_lock_sha256", "features", "release_assets"):
+            if companion.get(key) != metadata.get(key):
+                raise ValueError(f"remote build differs in {key}")
+        executable = "se.exe" if target.endswith("windows-msvc") else "se"
+        inventory = companion["files"]
+        actual = set()
+        for path in directory.rglob("*"):
+            if path.is_symlink():
+                raise ValueError("remote build contains a link")
+            if path.is_file():
+                actual.add(path.relative_to(directory).as_posix())
+        if actual != set(inventory) | {"build.json"} or executable not in inventory:
+            raise ValueError("remote build differs from its exact inventory")
+        for name, checksum in inventory.items():
+            path = PurePosixPath(name)
+            if (not re.fullmatch(r"[A-Za-z0-9_./+-]+", name) or path.is_absolute() or ".." in path.parts
+                    or (name != executable and not name.startswith("notices/"))):
+                raise ValueError("unexpected remote payload path")
+            if digest(directory / name) != checksum:
+                raise ValueError("remote build checksum mismatch")
+        native_binary(directory / executable, executable == "se.exe", target)
+        companions[target] = (directory, companion, executable)
+    if "remote" in inputs["features"] and set(companions) != set(inputs["targets"]) - {metadata["target"]}:
+        raise ValueError("remote-enabled archives require same-source native builds for every other supported target")
     args.out.mkdir(parents=True, exist_ok=True)
     stem = f'stateengine-{metadata["version"]}-{metadata["target"]}-unsigned'
     archive = args.out / (stem + (".zip" if windows else ".tar.gz"))
@@ -95,6 +128,10 @@ def main():
             target = root / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(build / name, target)
+        for target, (directory, _, executable) in companions.items():
+            payload = root / "remote-images" / target / executable
+            payload.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(directory / executable, payload)
         # Preserve every original notice byte in one deterministic installed
         # file, rather than paying a durable publication for each small notice.
         with tarfile.open(root / "notices.tar", "x") as notices:
@@ -109,6 +146,18 @@ def main():
                 info.mode = 0o644
                 with source.open("rb") as stream:
                     notices.addfile(info, stream)
+            for target, (directory, companion, _) in sorted(companions.items()):
+                for name in sorted(companion["files"]):
+                    if not name.startswith("notices/"):
+                        continue
+                    source = directory / name
+                    info = notices.gettarinfo(str(source), f"remote/{target}/{name}")
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = ""
+                    info.mtime = metadata["source_timestamp"]
+                    info.mode = 0o644
+                    with source.open("rb") as stream:
+                        notices.addfile(info, stream)
         for script in ("install", "uninstall"):
             name = script + (".ps1" if windows else ".sh")
             shutil.copyfile(SCRIPTS / name, root / name)
@@ -154,7 +203,7 @@ def main():
                         info.uid = info.gid = 0
                         info.uname = info.gname = ""
                         info.mtime = epoch
-                        info.mode = 0o755 if path.is_dir() or path.name in (binary, "install.sh", "uninstall.sh") else 0o644
+                        info.mode = 0o755 if path.is_dir() or path.name in (binary, "install.sh", "uninstall.sh") or "remote-images" in path.parts else 0o644
                         if path.is_file():
                             with path.open("rb") as stream:
                                 output.addfile(info, stream)

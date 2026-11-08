@@ -60,8 +60,93 @@ fn native_error(e: StateFileError) -> Box<StoreError> {
         retry: se_types::Retry::Never,
     })
 }
+fn file_refusal(code: StoreErrorCode, cause: &str) -> Box<StoreError> {
+    Box::new(StoreError {
+        code,
+        cause: cause.into(),
+        detail: StoreDetail::None,
+        remedy: se_types::Remedy {
+            text: "Preserve native backup custody and reread".into(),
+            command: None,
+        },
+        retry: se_types::Retry::Never,
+    })
+}
 pub struct Files(pub NativeStateFiles);
 impl StateFiles for Files {
+    fn list_owned(&self, directory: &Path, maximum: usize) -> StoreResult<Vec<PathBuf>> {
+        let paths = self.0.list_owned(directory).map_err(native_error)?;
+        if maximum == 0 || paths.len() > maximum {
+            return Err(file_refusal(
+                StoreErrorCode::ReadBudgetTooSmall,
+                "native backup inventory exceeds its bound",
+            ));
+        }
+        Ok(paths)
+    }
+    fn prepare_directory(&self, path: &Path) -> StoreResult<()> {
+        self.0.prepare_directory(path).map_err(native_error)
+    }
+    fn replace_owned(
+        &self,
+        path: &Path,
+        expected: Option<[u8; 32]>,
+        bytes: &[u8],
+    ) -> StoreResult<()> {
+        self.0.readback(path).map_err(native_error)?;
+        match (
+            se_proc::OwnedFile::open(path).map_err(native_error)?,
+            expected,
+        ) {
+            (Some(file), Some(digest)) => file.replace(digest, bytes).map_err(native_error)?,
+            (None, None) => {
+                let parent = path.parent().ok_or_else(|| {
+                    file_refusal(
+                        StoreErrorCode::LocationUnsafe,
+                        "backup manifest has no parent",
+                    )
+                })?;
+                let mut staged = self.0.create_staging(parent).map_err(native_error)?;
+                staged
+                    .file
+                    .write_all(bytes)
+                    .and_then(|()| staged.file.sync_all())
+                    .map_err(|error| {
+                        file_refusal(StoreErrorCode::Unreadable, &error.to_string())
+                    })?;
+                drop(staged.file);
+                self.0
+                    .publish_no_replace(&staged.path, path)
+                    .map_err(native_error)?;
+            }
+            _ => {
+                return Err(file_refusal(
+                    StoreErrorCode::SourceChanged,
+                    "backup manifest presence differs",
+                ));
+            }
+        }
+        if self.0.readback(path).map_err(native_error)?.is_none() {
+            return Err(file_refusal(
+                StoreErrorCode::SourceChanged,
+                "published backup manifest is absent",
+            ));
+        }
+        Ok(())
+    }
+    fn remove_owned(&self, path: &Path, expected: [u8; 32]) -> StoreResult<()> {
+        self.0.readback(path).map_err(native_error)?;
+        if let Some(file) = se_proc::OwnedFile::open(path).map_err(native_error)? {
+            file.remove(expected).map_err(native_error)?;
+        }
+        if self.0.readback(path).map_err(native_error)?.is_some() {
+            return Err(file_refusal(
+                StoreErrorCode::SourceChanged,
+                "retired backup file remains present",
+            ));
+        }
+        Ok(())
+    }
     fn retire_empty_staging(&self, staged: ProtectedStaging) -> StoreResult<std::fs::File> {
         self.0
             .retire_empty_staging(se_proc::ProtectedStateStaging {

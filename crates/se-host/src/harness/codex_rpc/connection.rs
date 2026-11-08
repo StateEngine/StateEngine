@@ -29,6 +29,8 @@ impl CodexHarness {
             input: tokio::sync::Mutex::new(()),
             tasks: Mutex::new(vec![]),
             attended,
+            #[cfg(feature = "remote")]
+            live: Default::default(),
         });
         let mut tasks = vec![tokio::spawn(rpc::read(
             Arc::downgrade(&binding),

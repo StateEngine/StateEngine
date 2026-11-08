@@ -1,5 +1,7 @@
 # 95 — Work breakdown: packaging and release
 
+Remote-capable native artifacts must include a matching image for each advertised bootstrap target, use existing installer ownership rules, and preserve incompatible incumbents. The [remote contract](47-r0-contract.md) requires native Linux and Windows journeys plus active-link memory and visible-clock measurements. Disabled remote mode opens no listener or background connection. No macOS combination is qualified by a different platform’s run.
+
 Reconciliation draft, 2026-10-30; branch base is main `3536238`. No implementation,
 tests, signing, installer changes or publication are performed by this contribution.
 Build units describe the Rust product release; the Node engine remains the private

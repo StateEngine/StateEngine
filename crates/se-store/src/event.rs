@@ -143,6 +143,11 @@ pub struct ProcessIdentityRecord {
     pub custody: NativeCustody,
     pub containment: ContainmentFact,
 }
+impl ProcessState {
+    pub fn as_str(self) -> &'static str {
+        crate::codec::process::name(self)
+    }
+}
 /// Durable native checkpoint fact, not a claim about current PID liveness.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum RootIdentityState {

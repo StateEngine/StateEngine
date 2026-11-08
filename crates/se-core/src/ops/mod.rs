@@ -5,6 +5,11 @@ pub mod atlas;
 pub mod atlas_hook;
 pub use atlas::*;
 pub use atlas_hook::{AtlasAugment, AtlasHookOutput, AtlasHookTarget};
+pub mod remote;
+pub use remote::{
+    RemoteListCall, RemoteListOutput, RemotePrepareSendCall, RemoteSendCall, RemoteSendOutput,
+    RemoteSendPreparation, RemoteWatchCall, RemoteWatchOutput,
+};
 pub mod continuity;
 pub use continuity::{Resume, ResumeOutput, SessionContextOutput, SessionContextRequest};
 pub mod agent;
@@ -23,6 +28,8 @@ pub use project_remove::{ProjectRemove, RemoveResult};
 pub mod agent_config;
 pub mod agent_config_receipt;
 mod agent_session;
+pub use agent_session::{process_from_record, unobserved_session};
+pub use cli::parse_remote_target;
 pub mod agent_status;
 mod cli;
 pub(crate) use cli::command_name;
@@ -192,6 +199,10 @@ ops! {
     AtlasImpact => AtlasImpact, AtlasImpactOutput, ("atlas.impact",leaf(&["atlas","impact"]),tool("stateengine_atlas_impact","Atlas impact","What could this change affect? Follow bounded code and file dependencies with linked records; for example depth=1 callers or depth=2 tests."),Either,false,Never,Read,Project,Host,"se.impact",Impact,&["J3"]);
     AtlasChanges => AtlasChanges, AtlasChangesOutput, ("atlas.changes",leaf(&["atlas","changes"]),tool("stateengine_atlas_changes","Atlas changes","What changed since this observed baseline? Read code changes and honest attribution; use an Atlas cursor, observed commit, or observation time."),Either,false,Never,Read,Project,Host,"se.code-changes",CodeChanges,&["J3"]);
     AtlasOutline => AtlasOutline, AtlasOutlineOutput, ("atlas.outline",leaf(&["atlas","outline"]),tool("stateengine_atlas_outline","Atlas outline","What is in this file, and what records mention it? Read declarations with source positions and linked decisions or messages."),Either,false,Never,Read,Project,Host,"se.outline",Outline,&["J3"]);
+    RemotePrepareSend => RemotePrepareSendCall, RemoteSendPreparation, ("remote.prepare_send",CliExposure::None{reason:"Internal protected source IPC prepares CLI pending output; no remote capability or public tool."},no_mcp("MCP has only a final send result, never early pending output."),Either,false,Never,Read,Home,Host,"stateengine.remote-send-preparation",RemoteSend,&[]);
+    RemoteList => RemoteListCall, RemoteListOutput, ("remote.list",leaf(&["remote","list"]),tool("stateengine_remote_list","List remote agents","List agents on a configured remote machine. Empty targets discover its allowed agents; explicit targets narrow the selection."),Either,false,Never,Read,Home,Host,"stateengine.remote-list",RemoteList,&[]);
+    RemoteWatch => RemoteWatchCall, RemoteWatchOutput, ("remote.watch",leaf(&["remote","watch"]),tool("stateengine_remote_watch","Watch remote agents","Wait up to30000 ms for a bounded page on this source session's retained subscription. Supply returned cursors for continuation; provisional live items are not durable receipts. Disconnect never stops an agent."),Either,false,Never,Read,Home,Host,"stateengine.remote-watch",RemoteWatch,&[]);
+    RemoteSend => RemoteSendCall, RemoteSendOutput, ("remote.send",leaf(&["remote","send"]),tool("stateengine_remote_send","Send remote direct mail","Commit one keyed direct message to an exact remote target and expected session through this source agent's configured grant. Retry an uncertain exchange with the same key/body/target/session; committed does not mean delivered, read or acted."),Either,false,Never,Write,Home,Host,"stateengine.remote-send",RemoteSend,&[]);
     MetaVersion => MetaVersion, VersionOutput, ("meta.version",CliExposure::RootFlag { flag:"version" },no_mcp("Installed CLI metadata is not an agent task."),Either,true,Never,Read,None,None,"se.version",Version,&["J1"]);
     MetaHelp => MetaHelp, HelpOutput, ("meta.help",leaf(&["help"]),no_mcp("MCP descriptions derive from the same catalogue."),Either,true,Never,Read,None,None,"se.help",Help,&["J1"]);
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
@@ -235,6 +246,15 @@ ops! {
     DecisionSupersede => DecisionSupersede, DecisionReceipt, ("decision.supersede",leaf(&["decision","supersede"]),no_mcp("Only an independently verified owner terminal can supersede a decision."),Owner,false,Always,Write,Project,HostForWrites,"se.decision-receipt",DecisionReceipt,&["E3","J4"]);
 }
 impl AnyOp {
+    pub fn is_remote(&self) -> bool {
+        matches!(
+            self,
+            Self::RemotePrepareSend(_)
+                | Self::RemoteList(_)
+                | Self::RemoteWatch(_)
+                | Self::RemoteSend(_)
+        )
+    }
     /// Shared per-operation/per-key classification for CLI and host admission.
     pub fn requires_human_terminal(&self) -> Result<bool> {
         if matches!(self, Self::AgentStop(input) if input.release) {
@@ -258,6 +278,7 @@ impl AnyOp {
         match self {
             Self::ProjectInit(v) => Some(&v.idempotency_key),
             Self::ImportNode(v) => Some(&v.idempotency_key),
+            Self::RemoteSend(v) => Some(&v.request.idempotency_key),
             Self::MessageSend(v) => Some(&v.idempotency_key),
             Self::WorkingStateSet(v) => Some(&v.idempotency_key),
             Self::RuntimeUp(v) => Some(&v.idempotency_key),
@@ -281,6 +302,13 @@ impl AnyOp {
         read: &mut dyn FnMut(String, &str, usize) -> Result<String>,
     ) -> Result<()> {
         match self {
+            Self::RemoteSend(v) => {
+                v.request.body = se_types::Body::new(read(
+                    v.request.body.as_str().to_owned(),
+                    "body",
+                    se_types::MESSAGE_BODY_MAX_BYTES,
+                )?)?;
+            }
             Self::MessageSend(v) => {
                 v.body = read(v.body.clone(), "body", se_types::MESSAGE_BODY_MAX_BYTES)?
             }
@@ -303,6 +331,13 @@ impl AnyOp {
 impl AnyOutput {
     pub fn exit_code(&self) -> u8 {
         match self {
+            Self::RemoteSend(v) => match v.value.receipt {
+                se_types::Receipt::Committed { .. } | se_types::Receipt::Replayed { .. } => 0,
+                se_types::Receipt::Refused { .. } => 1,
+                se_types::Receipt::Pending { .. } => 2,
+            },
+            Self::RemoteList(v) if !v.value.agents.window().complete() => 2,
+            Self::RemoteWatch(v) if !v.value.complete || v.value.reset_required => 2,
             // Native Claude framing has its own availability exit. Explicit
             // JSON callers must still observe a failed or unconfirmed capture.
             Self::HookClaude(v) => v.value.failure.as_ref().map_or_else(

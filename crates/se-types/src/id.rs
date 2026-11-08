@@ -41,7 +41,7 @@ macro_rules! ids {
                 let value=value.into();
                 validate_opaque(&value,512,stringify!($name))?;
                 if value.starts_with("selp-") { return Err(SeError::invalid(stringify!($name),"a public ID, never a bearer credential")); }
-                if known_id_prefix(&value).is_some() { return value.parse(); }
+                if strict_remote_kind(IdKind::$name) || known_id_prefix(&value).is_some() { return value.parse(); }
                 if !legacy_matches(IdKind::$name,&value) {
                     return Err(SeError::invalid(stringify!($name),"this kind's documented legacy grammar"));
                 }
@@ -53,7 +53,7 @@ macro_rules! ids {
                 let value=value.into();
                 validate_opaque(&value,512,stringify!($name))?;
                 if value.starts_with("selp-") { return Err(SeError::invalid(stringify!($name),"a public ID, never a bearer credential")); }
-                if known_id_prefix(&value).is_some() { return value.parse(); }
+                if strict_remote_kind(IdKind::$name) || known_id_prefix(&value).is_some() { return value.parse(); }
                 if !registry.contains(IdKind::$name,&value)? {
                     return Err(SeError::invalid(stringify!($name),"an exact kind/project/source registration"));
                 }
@@ -83,10 +83,19 @@ macro_rules! ids {
             fn json_schema(_: &mut SchemaGenerator)->Schema {json_schema!({"type":"string","minLength":1,"maxLength":512,"anyOf":[{"pattern":format!("^{}[0-9a-f]{{8}}-[0-9a-f]{{4}}-7[0-9a-f]{{3}}-[89ab][0-9a-f]{{3}}-[0-9a-f]{{12}}$",Self::PREFIX)},{"pattern":legacy_pattern(IdKind::$name)}]})}
         }
     )+
-        fn known_id_prefix(value:&str)->Option<&'static str>{["cred_",$($prefix),+].into_iter().find(|prefix|value.starts_with(prefix))}
+        // Preserve the historical local namespace: new remote kinds must not reserve
+        // project spellings that existing stores already accept.
+        fn known_id_prefix(value:&str)->Option<&'static str>{["cred_","prj_","ag_","hu_","ses_","msg_","dec_","ev_","lch_","obs_","store_","life_","aroot_","aidx_"].into_iter().find(|prefix|value.starts_with(prefix))}
     };
 }
-ids!(ProjectId=>"prj_",AgentId=>"ag_",HumanId=>"hu_",SessionId=>"ses_",MessageId=>"msg_",DecisionId=>"dec_",EventId=>"ev_",LaunchId=>"lch_",ObservationId=>"obs_",StoreId=>"store_",LifecycleId=>"life_",AtlasRootId=>"aroot_",IndexEpochId=>"aidx_");
+ids!(ProjectId=>"prj_",AgentId=>"ag_",HumanId=>"hu_",SessionId=>"ses_",MessageId=>"msg_",DecisionId=>"dec_",EventId=>"ev_",LaunchId=>"lch_",ObservationId=>"obs_",StoreId=>"store_",LifecycleId=>"life_",AtlasRootId=>"aroot_",IndexEpochId=>"aidx_",RemoteGrantId=>"rgr_",RemoteDeviceId=>"rdev_",RemotePrincipalId=>"rpr_");
+
+fn strict_remote_kind(kind: IdKind) -> bool {
+    matches!(
+        kind,
+        IdKind::RemoteGrantId | IdKind::RemoteDeviceId | IdKind::RemotePrincipalId
+    )
+}
 
 /// An already-authorized registry snapshot scoped to the import project/source.
 /// Implemented by the store/import boundary, never a global or a name heuristic.
@@ -184,7 +193,12 @@ fn legacy_matches(kind: IdKind, value: &str) -> bool {
         IdKind::ObservationId => value
             .strip_prefix("semantic-observation:")
             .is_some_and(|s| hex(s, Some(64))),
-        IdKind::StoreId | IdKind::AtlasRootId | IdKind::IndexEpochId => false,
+        IdKind::StoreId
+        | IdKind::AtlasRootId
+        | IdKind::IndexEpochId
+        | IdKind::RemoteGrantId
+        | IdKind::RemoteDeviceId
+        | IdKind::RemotePrincipalId => false,
     }
 }
 fn legacy_pattern(kind: IdKind) -> &'static str {
@@ -207,7 +221,12 @@ fn legacy_pattern(kind: IdKind) -> &'static str {
             r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
         }
         IdKind::ObservationId => r"^semantic-observation:[0-9a-f]{64}$",
-        IdKind::StoreId | IdKind::AtlasRootId | IdKind::IndexEpochId => r"^$",
+        IdKind::StoreId
+        | IdKind::AtlasRootId
+        | IdKind::IndexEpochId
+        | IdKind::RemoteGrantId
+        | IdKind::RemoteDeviceId
+        | IdKind::RemotePrincipalId => r"^$",
     }
 }
 

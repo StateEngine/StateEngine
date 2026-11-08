@@ -48,6 +48,16 @@ pub fn up(
             (endpoint, process, recovery)
         }
     };
+    #[cfg(feature = "remote")]
+    if let Some(notice) = se_host::remote::startup_notice(files, &cx.home)? {
+        diagnostic(&notice).map_err(|error| {
+            scope::unreadable(
+                "remote access security notice",
+                "The host started, but its remote device invalidation notice could not be printed",
+            )
+            .with_cause(error)
+        })?;
+    }
     Ok(RuntimeStart {
         state: "running".into(),
         process,

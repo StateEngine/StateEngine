@@ -262,13 +262,16 @@ impl StateFiles for Files {
     fn prepare_directory(&self, path: &Path) -> StoreResult<()> {
         if path != self.0.root().join("backups")
             && path != self.0.root().join("staging")
+            && path != self.0.root().join("remote-keys")
+            && path != self.0.root().join("remote-bindings")
+            && path != self.0.root().join("remote-sessions")
             && !(self.1 == FilePolicy::Host && path == self.0.root().join("transcripts"))
         {
             return Err(self.1.fail(
                 StoreErrorCode::LocationUnsafe,
                 match self.1 {
-                    FilePolicy::Direct => "only the fixed state backups/staging directories may be prepared",
-                    FilePolicy::Host => "only the fixed state backups/staging/transcripts directories may be prepared",
+                    FilePolicy::Direct => "only the fixed state backups/staging/remote-keys/remote-bindings/remote-sessions directories may be prepared",
+                    FilePolicy::Host => "only the fixed state backups/staging/transcripts/remote-keys/remote-bindings/remote-sessions directories may be prepared",
                 },
             ));
         }

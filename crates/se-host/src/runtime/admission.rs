@@ -22,6 +22,8 @@ use zeroize::Zeroizing;
 mod channel;
 mod codex;
 mod http;
+#[cfg(feature = "remote")]
+mod remote;
 
 /// Whether a still-prepared credential may be used: only for read-only tool
 /// discovery during its launch, never for an operation.
@@ -99,6 +101,83 @@ impl AdmissionContext {
             owner_key: Some(Sha256::from_bytes(Hasher::digest(key.expose()).into())),
         })
     }
+    /// One native caller check shared by ordinary operations and the closed
+    /// remote Owner controls. The latter still require actual human presence.
+    fn caller(
+        &self,
+        phase: &se_store::ReadPhase,
+        peer: &PeerProof,
+        connection: &PresentedAuthority,
+        override_authority: Option<&PresentedAuthority>,
+        grant: &ConnectionGrant,
+        presence: Option<&crate::client::presence::OwnerPresence>,
+    ) -> Result<(Admission, HumanTerminal)> {
+        Ok(match override_authority {
+            Some(PresentedAuthority::Session(secret)) => (
+                self.session(phase, secret)?,
+                HumanTerminal::Refused {
+                    reason: "session authority cannot become an owner terminal".into(),
+                },
+            ),
+            Some(_) => {
+                return Err(SeError::invalid(
+                    "per-call authority",
+                    "a valid session override; OwnerProof is one-use handshake-only and Launch uses activation",
+                ));
+            }
+            None => match connection {
+                PresentedAuthority::Session(secret) => (
+                    self.session(phase, secret)?,
+                    HumanTerminal::Refused {
+                        reason: "session authority cannot become an owner terminal".into(),
+                    },
+                ),
+                PresentedAuthority::OwnerProof { .. } => {
+                    let key = self.machine_key()?;
+                    let current = Sha256::from_bytes(Hasher::digest(key.expose()).into());
+                    if grant.owner_key != Some(current) {
+                        return Err(SeError::invalid(
+                            "owner connection",
+                            "the same current protected machine credential",
+                        ));
+                    }
+                    // This rechecks current owner/ancestry against a complete
+                    // protected inventory for every request, not just connect.
+                    self.owner_peer(phase, peer)?;
+                    let peer_owner = match peer.native().principal() {
+                        se_proc::native_ipc::IpcPrincipal::Unix { uid } => uid.to_string(),
+                        se_proc::native_ipc::IpcPrincipal::Windows { sid } => sid.clone(),
+                    };
+                    let terminal = match presence {
+                        Some(observed) if observed.passes(&peer_owner) => {
+                            HumanTerminal::OutsideAgentTree
+                        }
+                        Some(observed) => HumanTerminal::Refused {
+                            reason: observed.refusal_reason(&peer_owner),
+                        },
+                        None => HumanTerminal::Refused {
+                            reason: "the native CLI's human-presence observation is absent".into(),
+                        },
+                    };
+                    (
+                        Admission {
+                            scope: Scope::Registry,
+                            actor: Actor::Human(self.owner.clone()),
+                            session: None,
+                            generation: self.generation.get(),
+                        },
+                        terminal,
+                    )
+                }
+                PresentedAuthority::Launch(_) => {
+                    return Err(SeError::invalid(
+                        "launch authority",
+                        "the dedicated activation route",
+                    ));
+                }
+            },
+        })
+    }
     pub fn operation(
         &self,
         peer: &PeerProof,
@@ -122,66 +201,14 @@ impl AdmissionContext {
             if let Some(selection) = &selections {
                 selection.validate()?;
             }
-            let (mut admission, terminal) = match override_authority {
-                Some(PresentedAuthority::Session(secret)) => (
-                    self.session(&phase, secret)?,
-                    HumanTerminal::Refused {
-                        reason: "session authority cannot become an owner terminal".into(),
-                    },
-                ),
-                Some(_) => {
-                    return Err(SeError::invalid(
-                        "per-call authority",
-                        "a valid session override; OwnerProof is one-use handshake-only and Launch uses activation",
-                    ));
-                }
-                None => match connection {
-                    PresentedAuthority::Session(secret) => (
-                        self.session(&phase, secret)?,
-                        HumanTerminal::Refused {
-                            reason: "session authority cannot become an owner terminal".into(),
-                        },
-                    ),
-                    PresentedAuthority::OwnerProof { .. } => {
-                        let key = self.machine_key()?;
-                        let current = Sha256::from_bytes(Hasher::digest(key.expose()).into());
-                        if grant.owner_key != Some(current) {
-                            return Err(SeError::invalid(
-                                "owner connection",
-                                "the same current protected machine credential",
-                            ));
-                        }
-                        // This rechecks current owner/ancestry against a complete
-                        // protected inventory for every request, not just connect.
-                        self.owner_peer(&phase, peer)?;
-                        let peer_owner = match peer.native().principal() {
-                            se_proc::native_ipc::IpcPrincipal::Unix { uid } => uid.to_string(),
-                            se_proc::native_ipc::IpcPrincipal::Windows { sid } => sid.clone(),
-                        };
-                        let terminal = match metadata.presence.as_ref() {
-                        Some(observed) if observed.passes(&peer_owner) => HumanTerminal::OutsideAgentTree,
-                        _ => HumanTerminal::Refused {
-                            reason: "human presence requires the native CLI's stdin/stdout consoles, no session/provider markers, and matching independent peer owner/ancestry checks".into(),
-                        },
-                    };
-                        (
-                            Admission {
-                                scope: Scope::Registry,
-                                actor: Actor::Human(self.owner.clone()),
-                                session: None,
-                                generation: self.generation.get(),
-                            },
-                            terminal,
-                        )
-                    }
-                    PresentedAuthority::Launch(_) => {
-                        return Err(SeError::invalid(
-                            "launch authority",
-                            "the dedicated activation route",
-                        ));
-                    }
-                },
-            };
+            let (mut admission, terminal) = self.caller(
+                &phase,
+                peer,
+                connection,
+                override_authority,
+                grant,
+                metadata.presence.as_ref(),
+            )?;
             if let Some(project) = selections.as_ref().and_then(|value| value.project.as_ref()) {
                 match (&admission.actor, &admission.scope) {
                     (Actor::Agent(_), Scope::Project(bound)) if bound != project => {
@@ -205,7 +232,16 @@ impl AdmissionContext {
             } else {
                 se_store::Door::Mcp
             };
+            let remote_credential = if operation.is_remote() {
+                match override_authority.unwrap_or(connection) {
+                    PresentedAuthority::Session(secret) => Some(remote_credential(&phase, secret)?),
+                    _ => None,
+                }
+            } else {
+                None
+            };
             Ok(HostedCall {
+                remote_credential,
                 input: HostedInput::Operation(operation),
                 kernel: self.kernel(facts)?,
                 admission,
@@ -226,7 +262,12 @@ impl AdmissionContext {
             se_core::admission::authorize(operation.meta(), &admission)?;
             let mut facts = allocate_facts()?;
             facts.door = se_store::Door::Mcp;
+            let remote_credential = operation
+                .is_remote()
+                .then(|| remote_credential(&phase, secret))
+                .transpose()?;
             Ok(HostedCall {
+                remote_credential,
                 input: HostedInput::Operation(operation),
                 kernel: self.kernel(facts)?,
                 admission,
@@ -507,5 +548,21 @@ impl HostedRuntime {
             generation: self.generation(),
             state_directory: self.state_directory.clone(),
         }
+    }
+}
+
+fn remote_credential(
+    phase: &se_store::ReadPhase,
+    secret: &se_types::Secret,
+) -> Result<(se_store::RecordId, [u8; 32])> {
+    let hash: [u8; 32] = Hasher::digest(secret.expose()).into();
+    match phase.credential(hash).map_err(|e| store_error(&e))? {
+        Read::Present { value } if value.state == se_store::CredentialState::Active => {
+            Ok((value.credential, hash))
+        }
+        _ => Err(SeError::invalid(
+            "remote source credential",
+            "the exact already-admitted active credential",
+        )),
     }
 }

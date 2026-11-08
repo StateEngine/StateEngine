@@ -1,5 +1,7 @@
 # 40 — Host runtime and harnesses
 
+The [remote runtime](45-remote-clients.md) belongs to the existing native host. Its agents, projects, CLI and MCP share one authenticated SSH link per destination machine. Reconnect restores that link before catch-up; disconnect and forget close transport without stopping the remote host, providers or conversation. An incompatible incumbent is preserved. Disabled remote mode allocates no network tasks, timers or maximum buffers.
+
 Design candidate, not runtime implementation or qualification. Owner: host-runtime maintainer.
 Round-2 reconciliation base: assembled rust-se `f25ca90`. Verification tier: kernel boundary design;
 compiling declarations here, journey/black-box checks owned by reviewers.

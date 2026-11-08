@@ -51,6 +51,8 @@ pub struct AdmittedExchange {
     pub(super) request_id: u64,
     call: Option<Result<RoutedCall>>,
     pub(super) channels: Option<crate::channels::ChannelRequest>,
+    #[cfg(feature = "remote")]
+    owner: Option<crate::remote::OwnerCall>,
     admission: Option<se_core::ops::HostPhaseSpan>,
     admitted_at: Instant,
 }
@@ -193,7 +195,14 @@ impl HostedRouter {
                 } else {
                     route(&context, &connection, wire)
                 };
+                #[cfg(feature = "remote")]
+                let mut owner = None;
                 let (call, channels) = match call {
+                    #[cfg(feature = "remote")]
+                    Ok(RouteChoice::Owner(call)) => {
+                        owner = Some(call);
+                        (None, None)
+                    }
                     Ok(RouteChoice::Channels(input)) => (None, Some(input)),
                     Ok(RouteChoice::Core(call)) => (Some(Ok(*call)), None),
                     Err(error) => (Some(Err(error)), None),
@@ -203,6 +212,8 @@ impl HostedRouter {
                     request_id,
                     call,
                     channels,
+                    #[cfg(feature = "remote")]
+                    owner,
                     admission: None,
                     admitted_at,
                 }))
@@ -215,6 +226,46 @@ impl HostedRouter {
     }
 }
 impl AdmittedExchange {
+    pub(super) async fn wait_for_peer_close(&self) -> Result<()> {
+        self.connection.connection.wait_for_peer_close().await
+    }
+
+    #[cfg(feature = "remote")]
+    pub(crate) fn take_owner_call(&mut self) -> Option<crate::remote::OwnerCall> {
+        self.owner.take()
+    }
+    #[cfg(feature = "remote")]
+    pub(crate) async fn reply_owner(
+        mut self,
+        result: Result<OperationOutput>,
+        deadline: &Deadline,
+    ) -> Result<HostedConnection> {
+        let result = match result {
+            Ok(value) => IpcResult::Output(Box::new(value)),
+            Err(error) => IpcResult::Error(envelope(&error)?),
+        };
+        let mut response = IpcResponse {
+            version: se_types::API_VERSION,
+            request_id: self.request_id,
+            generation: self.connection.connection.negotiated().generation,
+            result,
+        };
+        if let Err(error) = crate::client::wire::encode_response(
+            &response,
+            self.connection
+                .connection
+                .negotiated()
+                .maximum_reply_bytes
+                .get() as usize,
+        ) {
+            response.result = IpcResult::Error(envelope(&error)?);
+        }
+        self.connection
+            .connection
+            .reply(&response, deadline)
+            .await?;
+        Ok(self.connection)
+    }
     pub fn take_call(&mut self) -> Result<RoutedCall> {
         let mut call = self
             .call
@@ -329,6 +380,8 @@ impl AdmittedExchange {
     }
 }
 enum RouteChoice {
+    #[cfg(feature = "remote")]
+    Owner(crate::remote::OwnerCall),
     Core(Box<RoutedCall>),
     Channels(crate::channels::ChannelRequest),
 }
@@ -338,6 +391,28 @@ fn route(
     wire: crate::IpcEnvelope,
 ) -> Result<RouteChoice> {
     let (raw, hook) = match wire.request {
+        #[cfg(feature = "remote")]
+        IpcRequest::RemoteOwner(input) => {
+            input.validate()?;
+            if wire.cli_selections.is_some() {
+                return Err(SeError::invalid(
+                    "remote Owner scope",
+                    "registry control without local project selection",
+                ));
+            }
+            let owner = context.remote_owner(
+                connection.connection.peer(),
+                connection.connection.connection_authority(),
+                wire.authority.as_ref(),
+                &connection.grant,
+                wire.presence.as_ref(),
+                input.requires_terminal(),
+            )?;
+            return Ok(RouteChoice::Owner(crate::remote::OwnerCall {
+                owner,
+                input: *input,
+            }));
+        }
         IpcRequest::Channels(input) => {
             context.channel_owner(
                 connection.connection.peer(),

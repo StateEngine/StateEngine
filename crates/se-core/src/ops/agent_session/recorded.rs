@@ -47,19 +47,22 @@ pub(super) fn apply<R: Snapshot>(
             }
         },
     };
-    session.process_state = match process {
-        Read::Present { value } => projection(agent, id, expected.as_ref(), value, session)?,
-        other => other.map(|_| String::new()),
-    };
+    match process {
+        Read::Present { value } => {
+            process_from_record(agent, id, expected.as_ref(), value, session)?;
+        }
+        other => session.process_state = other.map(|_| String::new()),
+    }
     Ok(())
 }
-fn projection(
+/// Construct recorded facts from an already scoped immutable projection, without reads.
+pub fn process_from_record(
     agent: &AgentId,
     id: &SessionId,
     expected: Option<&se_types::LifecycleId>,
     record: ProjectionRecord,
     session: &mut SessionView,
-) -> Result<Read<String>> {
+) -> Result<Read<se_store::ProcessIdentityRecord>> {
     let (identity, state) = match &record.current.body {
         EventBody::ProcessRegistered { identity, initial } => (identity, *initial),
         EventBody::ProcessTransition {
@@ -88,6 +91,7 @@ fn projection(
         ));
     }
     if identity.session.as_ref() != Some(id) {
+        session.process_state = Read::Absent { checked: "The latest recorded process belongs to a different session; it was not substituted for this one".into() };
         return Ok(Read::Absent { checked: "The latest recorded process belongs to a different session; it was not substituted for this one".into() });
     }
     if let Some(bytes) = identity.record.canonical_bytes()? {
@@ -136,5 +140,8 @@ fn projection(
             ),
         },
     };
-    Ok(Read::Present { value: name.into() })
+    session.process_state = Read::Present { value: name.into() };
+    Ok(Read::Present {
+        value: identity.as_ref().clone(),
+    })
 }

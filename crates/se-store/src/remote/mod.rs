@@ -1,0 +1,47 @@
+//! Closed remote-security transitions over the existing authoritative writer.
+mod apply;
+mod changes;
+mod model;
+mod position;
+mod receipt;
+pub use position::{position_from_payload, position_payload};
+pub use receipt::RemoteMessageReceipt;
+mod read;
+pub(crate) use read::grant as grant_at;
+mod target;
+pub use changes::{Change, ChangeKind, ChangePage, ChangeRequest};
+mod validate;
+pub(crate) use apply::{apply, revision};
+pub use model::*;
+pub use target::TargetFacts;
+pub(crate) use validate::{validate_batch, validate_new_batch};
+
+use crate::{error::*, *};
+use rusqlite::{Connection, OptionalExtension};
+use serde::de::DeserializeOwned;
+
+fn key(value: &str) -> StoreResult<Vec<u8>> {
+    crate::identity::canonical(value)
+        .ok_or_else(|| invalid("remote identities require canonical UUIDv7"))
+}
+fn decode<T: DeserializeOwned>(value: String) -> StoreResult<T> {
+    serde_json::from_str(&value).map_err(invalid)
+}
+fn encode<T: serde::Serialize>(value: &T) -> StoreResult<String> {
+    crate::codec::encode(value)
+}
+fn ready(info: &StoreInfo) -> StoreResult<()> {
+    if info.state != StoreState::Ready || info.schema_version < 7 {
+        return Err(fail(
+            StoreErrorCode::NotReady,
+            "remote security requires a ready schema-7 store",
+        ));
+    }
+    Ok(())
+}
+fn denied() -> Box<StoreError> {
+    fail(
+        StoreErrorCode::ScopeMismatch,
+        "remote authority is absent, expired, revoked or outside the requested scope",
+    )
+}

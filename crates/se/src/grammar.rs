@@ -7,6 +7,9 @@ use se_core::ops::{self, AnyOp, CommonArgs};
 use se_types::{Detail, IdempotencyKey, SeError, details};
 use std::ffi::{OsStr, OsString};
 
+#[path = "grammar/remote_failure.rs"]
+mod remote_failure;
+
 pub struct Invocation {
     pub operation: AnyOp,
     pub common: CommonArgs,
@@ -15,6 +18,11 @@ pub struct Invocation {
 pub struct Failure {
     pub error: Box<SeError>,
     pub json: bool,
+    pub remote: Option<RemoteFailure>,
+}
+
+pub struct RemoteFailure {
+    pub key: Option<IdempotencyKey>,
 }
 
 /// Includes argv[0]. Compatibility refuses before clap or any state consumer.
@@ -52,6 +60,7 @@ pub fn parse(args: Vec<OsString>) -> std::result::Result<Invocation, Failure> {
     parse().map_err(|error| Failure {
         error: Box::new(error),
         json,
+        remote: remote_failure::classify(&args),
     })
 }
 
@@ -65,7 +74,7 @@ fn has_flag(args: &[OsString], names: &[&str]) -> bool {
         .any(|arg| names.iter().any(|name| arg.as_os_str() == OsStr::new(name)))
 }
 
-fn help_grammar(command: Command) -> Command {
+pub(crate) fn help_grammar(command: Command) -> Command {
     command
         .mut_args(|arg| arg.required(false))
         .mut_subcommands(help_grammar)
@@ -75,7 +84,7 @@ fn context(error: &clap::Error, kind: ContextKind) -> String {
     error.get(kind).map(ToString::to_string).unwrap_or_default()
 }
 
-fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
+pub(crate) fn usage_error(error: clap::Error, args: &[OsString]) -> SeError {
     let argument = ops::diagnostic_word(&context(&error, ContextKind::InvalidArg)).to_owned();
     let command = error_command(args);
     let flag = argument.split_whitespace().next().unwrap_or_default();

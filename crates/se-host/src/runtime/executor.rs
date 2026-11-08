@@ -58,6 +58,11 @@ pub fn execute(
         } else {
             deadline
         };
+        if let HostedInput::Operation(operation) = &admitted.input
+            && operation.is_remote()
+        {
+            return super::remote::execute(&context, admitted, &deadline).await;
+        }
         let reader = context.reads.clone();
         let generation = context.generation;
         if admitted.admission.generation != generation.get() {
@@ -235,6 +240,7 @@ fn plan(
         HostedInput::Capture(_) => "hook.claude",
     };
     let HostedCall {
+        remote_credential: _,
         input,
         kernel,
         admission,
