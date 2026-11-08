@@ -142,7 +142,7 @@ pub(super) fn route_temporary_files(
 
 #[cfg(target_os = "linux")]
 pub(super) fn resolve_command(command: &str) -> Result<PathBuf> {
-    let found = find_command(command)?.ok_or_else(|| {
+    let found = find_command(command, None)?.ok_or_else(|| {
         se_core::scope::unreadable(
             "provider executable",
             "configured command was not found in absolute PATH entries",
@@ -178,7 +178,7 @@ pub(super) fn resolve_provider_command(
         error.body = error.body.with_remedy(help.clone());
         error
     };
-    match find_command(command) {
+    match find_command(command, Some(provider)) {
         Ok(Some(path)) => Ok(path),
         Ok(None) => Err(with_help(se_types::SeError::new(
             se_types::Detail::ProviderCliNotFound(se_types::details::ProviderCliNotFound {
@@ -190,10 +190,10 @@ pub(super) fn resolve_provider_command(
     }
 }
 
-fn find_command(command: &str) -> Result<Option<PathBuf>> {
+fn find_command(command: &str, provider: Option<se_types::Provider>) -> Result<Option<PathBuf>> {
     let path = PathBuf::from(command);
     if path.is_absolute() {
-        return native_executable(&path).map_err(|e| error("provider executable", e));
+        return native_executable(&path, provider).map_err(|e| error("provider executable", e));
     }
     if path.components().count() != 1 {
         return Err(se_types::SeError::invalid(
@@ -212,7 +212,7 @@ fn find_command(command: &str) -> Result<Option<PathBuf>> {
         if !directory.is_absolute() {
             continue;
         }
-        match native_executable(&directory.join(command)) {
+        match native_executable(&directory.join(command), provider) {
             Ok(Some(candidate)) => {
                 // Multicall launchers select the provider through argv[0].
                 // Image identity is still observed by the native process arena.
@@ -230,24 +230,28 @@ fn find_command(command: &str) -> Result<Option<PathBuf>> {
 }
 // Match native Windows executable lookup without invoking a command shell or
 // treating an npm batch shim as an executable process image.
-fn native_executable(path: &std::path::Path) -> std::io::Result<Option<PathBuf>> {
-    match std::fs::metadata(path) {
-        Ok(metadata) if metadata.is_file() => return Ok(Some(path.to_path_buf())),
-        Ok(_) => (),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-        Err(error) => return Err(error),
-    }
+#[cfg(windows)]
+#[path = "windows_executable.rs"]
+mod windows_executable;
+
+fn native_executable(
+    path: &std::path::Path,
+    provider: Option<se_types::Provider>,
+) -> std::io::Result<Option<PathBuf>> {
     #[cfg(windows)]
-    if path.extension().is_none() {
-        let executable = path.with_extension("exe");
-        match std::fs::metadata(&executable) {
-            Ok(metadata) if metadata.is_file() => return Ok(Some(executable)),
-            Ok(_) => (),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(error),
+    {
+        windows_executable::resolve(path, provider)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = provider;
+        match std::fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => Ok(Some(path.to_path_buf())),
+            Ok(_) => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
         }
     }
-    Ok(None)
 }
 pub(super) fn view(
     root: &se_proc::ProcessIdentity,
