@@ -1,5 +1,14 @@
 use super::*;
 
+fn remove_remote_schema(db: &rusqlite::Connection) -> Check {
+    db.execute_batch(
+        "DROP TABLE remote_message_attribution; DROP TABLE remote_grant_targets;
+         DROP TABLE remote_grants; DROP INDEX session_data_agent_seq;
+         DROP INDEX mark_data_message_seq; DROP INDEX work_mark_recipient_seq",
+    )?;
+    Ok(())
+}
+
 /// Protects: 49 — schema-five Atlas homes keep ordinary mail usable before channel migration.
 #[test]
 fn schema_five_mail_read_and_reply_do_not_query_absent_channel_tables() -> Check {
@@ -18,6 +27,7 @@ fn schema_five_mail_read_and_reply_do_not_query_absent_channel_tables() -> Check
     )?;
     writer.close()?;
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    remove_remote_schema(&db)?;
     db.execute_batch("DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; PRAGMA user_version=5")?;
     drop(db);
     let mut writer = present(SqliteFactory::open_direct(&f.options, &*lease)?)?;
@@ -84,12 +94,14 @@ fn schema_six_remote_upgrade_preserves_paired_channels_and_mail() -> Check {
     drop(lease);
     // Recreate the landed schema-six boundary, with its real data retained.
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
-    db.execute_batch("DROP TABLE remote_message_attribution; DROP TABLE remote_grant_targets; DROP TABLE remote_grants; DROP TABLE remote_invitations; DROP INDEX session_data_agent_seq; DROP INDEX mark_data_message_seq; DROP INDEX work_mark_recipient_seq; PRAGMA user_version=6")?;
+    remove_remote_schema(&db)?;
+    db.execute_batch("PRAGMA user_version=6")?;
     drop(db);
-    let lease = Lease::acquire(
+    let lease = Lease::acquire_with_backup_ports(
         &f.options.state_directory,
         LeaseMode::Host,
         Some(f.store.clone()),
+        true,
     )?;
     let host = present(SqliteFactory::open_host(&f.options, &*lease)?)?;
     assert_eq!(host.info()?.schema_version, 7);

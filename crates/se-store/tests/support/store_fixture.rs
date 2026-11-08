@@ -74,79 +74,6 @@ fn file_refusal(code: StoreErrorCode, cause: &str) -> Box<StoreError> {
 }
 pub struct Files(pub NativeStateFiles);
 impl StateFiles for Files {
-    fn list_owned(&self, directory: &Path, maximum: usize) -> StoreResult<Vec<PathBuf>> {
-        let paths = self.0.list_owned(directory).map_err(native_error)?;
-        if maximum == 0 || paths.len() > maximum {
-            return Err(file_refusal(
-                StoreErrorCode::ReadBudgetTooSmall,
-                "native backup inventory exceeds its bound",
-            ));
-        }
-        Ok(paths)
-    }
-    fn prepare_directory(&self, path: &Path) -> StoreResult<()> {
-        self.0.prepare_directory(path).map_err(native_error)
-    }
-    fn replace_owned(
-        &self,
-        path: &Path,
-        expected: Option<[u8; 32]>,
-        bytes: &[u8],
-    ) -> StoreResult<()> {
-        self.0.readback(path).map_err(native_error)?;
-        match (
-            se_proc::OwnedFile::open(path).map_err(native_error)?,
-            expected,
-        ) {
-            (Some(file), Some(digest)) => file.replace(digest, bytes).map_err(native_error)?,
-            (None, None) => {
-                let parent = path.parent().ok_or_else(|| {
-                    file_refusal(
-                        StoreErrorCode::LocationUnsafe,
-                        "backup manifest has no parent",
-                    )
-                })?;
-                let mut staged = self.0.create_staging(parent).map_err(native_error)?;
-                staged
-                    .file
-                    .write_all(bytes)
-                    .and_then(|()| staged.file.sync_all())
-                    .map_err(|error| {
-                        file_refusal(StoreErrorCode::Unreadable, &error.to_string())
-                    })?;
-                drop(staged.file);
-                self.0
-                    .publish_no_replace(&staged.path, path)
-                    .map_err(native_error)?;
-            }
-            _ => {
-                return Err(file_refusal(
-                    StoreErrorCode::SourceChanged,
-                    "backup manifest presence differs",
-                ));
-            }
-        }
-        if self.0.readback(path).map_err(native_error)?.is_none() {
-            return Err(file_refusal(
-                StoreErrorCode::SourceChanged,
-                "published backup manifest is absent",
-            ));
-        }
-        Ok(())
-    }
-    fn remove_owned(&self, path: &Path, expected: [u8; 32]) -> StoreResult<()> {
-        self.0.readback(path).map_err(native_error)?;
-        if let Some(file) = se_proc::OwnedFile::open(path).map_err(native_error)? {
-            file.remove(expected).map_err(native_error)?;
-        }
-        if self.0.readback(path).map_err(native_error)?.is_some() {
-            return Err(file_refusal(
-                StoreErrorCode::SourceChanged,
-                "retired backup file remains present",
-            ));
-        }
-        Ok(())
-    }
     fn retire_empty_staging(&self, staged: ProtectedStaging) -> StoreResult<std::fs::File> {
         self.0
             .retire_empty_staging(se_proc::ProtectedStateStaging {
@@ -176,9 +103,99 @@ impl StateFiles for Files {
             .map_err(native_error)
     }
 }
+struct BackupFiles(Files);
+impl StateFiles for BackupFiles {
+    fn list_owned(&self, directory: &Path, maximum: usize) -> StoreResult<Vec<PathBuf>> {
+        let paths = self.0.0.list_owned(directory).map_err(native_error)?;
+        if maximum == 0 || paths.len() > maximum {
+            return Err(file_refusal(
+                StoreErrorCode::ReadBudgetTooSmall,
+                "native backup inventory exceeds its bound",
+            ));
+        }
+        Ok(paths)
+    }
+    fn prepare_directory(&self, path: &Path) -> StoreResult<()> {
+        self.0.0.prepare_directory(path).map_err(native_error)
+    }
+    fn replace_owned(
+        &self,
+        path: &Path,
+        expected: Option<[u8; 32]>,
+        bytes: &[u8],
+    ) -> StoreResult<()> {
+        self.0.0.readback(path).map_err(native_error)?;
+        match (
+            se_proc::OwnedFile::open(path).map_err(native_error)?,
+            expected,
+        ) {
+            (Some(file), Some(digest)) => file.replace(digest, bytes).map_err(native_error)?,
+            (None, None) => {
+                let parent = path.parent().ok_or_else(|| {
+                    file_refusal(
+                        StoreErrorCode::LocationUnsafe,
+                        "backup manifest has no parent",
+                    )
+                })?;
+                let mut staged = self.0.0.create_staging(parent).map_err(native_error)?;
+                staged
+                    .file
+                    .write_all(bytes)
+                    .and_then(|()| staged.file.sync_all())
+                    .map_err(|error| {
+                        file_refusal(StoreErrorCode::Unreadable, &error.to_string())
+                    })?;
+                drop(staged.file);
+                self.0
+                    .0
+                    .publish_no_replace(&staged.path, path)
+                    .map_err(native_error)?;
+            }
+            _ => {
+                return Err(file_refusal(
+                    StoreErrorCode::SourceChanged,
+                    "backup manifest presence differs",
+                ));
+            }
+        }
+        if self.0.0.readback(path).map_err(native_error)?.is_none() {
+            return Err(file_refusal(
+                StoreErrorCode::SourceChanged,
+                "published backup manifest is absent",
+            ));
+        }
+        Ok(())
+    }
+    fn remove_owned(&self, path: &Path, expected: [u8; 32]) -> StoreResult<()> {
+        self.0.0.readback(path).map_err(native_error)?;
+        if let Some(file) = se_proc::OwnedFile::open(path).map_err(native_error)? {
+            file.remove(expected).map_err(native_error)?;
+        }
+        if self.0.0.readback(path).map_err(native_error)?.is_some() {
+            return Err(file_refusal(
+                StoreErrorCode::SourceChanged,
+                "retired backup file remains present",
+            ));
+        }
+        Ok(())
+    }
+    fn retire_empty_staging(&self, staged: ProtectedStaging) -> StoreResult<fs::File> {
+        self.0.retire_empty_staging(staged)
+    }
+    fn create_staging(&self, directory: &Path) -> StoreResult<ProtectedStaging> {
+        self.0.create_staging(directory)
+    }
+    fn readback(&self, path: &Path) -> StoreResult<Read<fs::File>> {
+        self.0.readback(path)
+    }
+    fn publish_no_replace(&self, stage: &Path, target: &Path) -> StoreResult<()> {
+        self.0.publish_no_replace(stage, target)
+    }
+}
 /// Real protected filesystem plus a retained native file lock, not a custody double.
 pub struct Lease {
     pub files: Files,
+    backup_files: Option<BackupFiles>,
     pub identity: Mutex<LeaseIdentity>,
     _lock: fs::File,
 }
@@ -202,7 +219,10 @@ impl RuntimeLease for Lease {
             .clone())
     }
     fn files(&self) -> &dyn StateFiles {
-        &self.files
+        match &self.backup_files {
+            Some(files) => files,
+            None => &self.files,
+        }
     }
 }
 impl Lease {
@@ -211,7 +231,20 @@ impl Lease {
         mode: LeaseMode,
         store: Option<StoreId>,
     ) -> Result<Arc<Self>, Box<dyn Error>> {
+        Self::acquire_with_backup_ports(root, mode, store, false)
+    }
+    pub fn acquire_with_backup_ports(
+        root: &Path,
+        mode: LeaseMode,
+        store: Option<StoreId>,
+        backup_ports: bool,
+    ) -> Result<Arc<Self>, Box<dyn Error>> {
         let files = Files(NativeStateFiles::open(root)?);
+        let backup_files = if backup_ports {
+            Some(BackupFiles(Files(NativeStateFiles::open(root)?)))
+        } else {
+            None
+        };
         let path = root.join("runtime.lock");
         if files.0.readback(&path)?.is_none() {
             let mut stage = files.0.create_staging(root)?;
@@ -229,6 +262,7 @@ impl Lease {
         }
         Ok(Arc::new(Self {
             files,
+            backup_files,
             identity: Mutex::new(LeaseIdentity {
                 store,
                 generation: 1,

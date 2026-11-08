@@ -6,9 +6,19 @@ use se_store::*;
 use std::fs;
 use support::*;
 
+fn remove_remote_schema(db: &rusqlite::Connection) -> Check {
+    db.execute_batch(
+        "DROP TABLE remote_message_attribution; DROP TABLE remote_grant_targets;
+         DROP TABLE remote_grants; DROP INDEX session_data_agent_seq;
+         DROP INDEX mark_data_message_seq; DROP INDEX work_mark_recipient_seq",
+    )?;
+    Ok(())
+}
+
 fn schema_one(f: &Fixture, obstruct: bool) -> Check {
     seed(f)?;
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    remove_remote_schema(&db)?;
     for name in [
         "cursor_data_cursor",
         "process_data_principal",
@@ -45,6 +55,7 @@ fn schema_four(f: &Fixture) -> Check {
     writer.close()?;
     drop(lease);
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    remove_remote_schema(&db)?;
     db.execute_batch(
         "DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; DROP TABLE atlas_resume_deliveries; DROP TABLE atlas_resume_cursors;
         DROP TABLE atlas_resume_roots; PRAGMA user_version=4",
@@ -240,6 +251,7 @@ fn channel_schema_upgrade_preserves_schema_five_mail_and_original_backup() -> Ch
     writer.close()?;
     drop(lease);
     let db = rusqlite::Connection::open(f.options.state_directory.join("state.db"))?;
+    remove_remote_schema(&db)?;
     db.execute_batch("DROP TABLE channel_actions; DROP TABLE channel_outbox; DROP TABLE channel_updates; DROP TABLE channel_connections; PRAGMA user_version=5")?;
     db.execute("INSERT INTO atlas_resume_roots(project_id,root,epoch,active) SELECT project_id,'original-root','original-epoch',1 FROM projects LIMIT 1", [])?;
     let head: i64 = db.query_row("SELECT MAX(seq) FROM events", [], |row| row.get(0))?;
