@@ -14,6 +14,16 @@ runs:
   using: composite
   steps:
     - uses: ./.github/actions/rust
+    - name: Register the disposable runner account for installation tests
+      shell: bash
+      run: |
+        if [[ "$RUNNER_OS" == Windows ]]; then
+          python scripts/ci/installation_account.py provision
+        else
+          identity="$(id -u)"
+          profile="$(python3 -c 'import os,pwd; print(pwd.getpwuid(os.geteuid()).pw_dir)')"
+          sudo python3 scripts/ci/installation_account.py provision --identity "$identity" --profile "$profile"
+        fi
     - uses: actions/download-artifact@v4
       with:
         name: tests-${{ inputs.os }}

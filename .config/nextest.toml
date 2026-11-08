@@ -6,3 +6,9 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 
 [profile.ci.junit]
 path = "junit.xml"
+[test-groups.installation-custody]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = 'package(=se) & ((binary(=runtime_refusals) & test(=uninstall_verifies_live_host_shutdown_before_removing_files)) | binary(=wave2_custody_cli_independent))'
+test-group = 'installation-custody'

@@ -26,6 +26,8 @@ mod control;
     reason = "Shared real writer helpers serve several consumers."
 )]
 mod host;
+#[path = "support/installation_account.rs"]
+mod installation_account;
 #[path = "support/custody_child.rs"]
 mod native;
 
@@ -44,6 +46,7 @@ struct Case {
 }
 impl Case {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        installation_account::require()?;
         se_proc::initialize_file_creation_owner()?;
         let mut f = std::mem::ManuallyDrop::new(Fixture::new()?);
         se_proc::NativeStateFiles::create(&f.home.join("user-home"))?;
