@@ -1,4 +1,4 @@
-//! Human-readable failure diagnostics, never runtime authority or a launch frame.
+//! Startup diagnostics, never runtime authority or a launch frame.
 use se_types::{Remedy, SeError};
 use std::{
     io::Write,
@@ -13,6 +13,7 @@ pub(crate) struct StartupLog {
     entries: String,
     phase: String,
     started: Instant,
+    export_success: bool,
 }
 impl StartupLog {
     pub(crate) fn new(home: &Path) -> Self {
@@ -21,14 +22,55 @@ impl StartupLog {
             entries: String::new(),
             phase: String::new(),
             started: Instant::now(),
+            export_success: Self::success_enabled(),
+        }
+    }
+    /// Success timing is explicitly selected, including in the detached child.
+    pub(crate) fn success_enabled() -> bool {
+        std::env::var_os("SE_STARTUP_LOG").as_deref() == Some(std::ffi::OsStr::new("1"))
+    }
+    pub(crate) fn success_phases(home: &Path) -> Option<Self> {
+        Self::success_enabled().then(|| Self::new(home))
+    }
+    pub(crate) fn export_success(&self) {
+        if !self.export_success {
+            return;
+        }
+        match self.save() {
+            Ok((path, cleanup_failure)) => {
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Runtime startup timings: {}",
+                    path.display()
+                );
+                if let Some(reason) = cleanup_failure {
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
+                        "Startup timing log retention incomplete: {reason}"
+                    );
+                }
+            }
+            Err(reason) => {
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Startup timing log unavailable: {reason}"
+                );
+            }
         }
     }
     pub(crate) fn note(&mut self, stage: &str) {
         self.phase = stage.to_owned();
-        self.entries.push_str(&format!(
-            "{} ms: {stage}\n",
-            self.started.elapsed().as_millis()
-        ));
+        if self.export_success {
+            self.entries.push_str(&format!(
+                "{:.3} ms: {stage}\n",
+                self.started.elapsed().as_secs_f64() * 1000.0
+            ));
+        } else {
+            self.entries.push_str(&format!(
+                "{} ms: {stage}\n",
+                self.started.elapsed().as_millis()
+            ));
+        }
     }
     pub(crate) fn elapsed_ms(&self) -> u64 {
         self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
@@ -64,8 +106,8 @@ impl StartupLog {
             "Startup refused"
         };
         self.note(&format!("{outcome}: {}", error.body.message()));
-        // Successful startup pays no diagnostic file creation or durability
-        // barriers. Only a refusal publishes the finite observed phase trace.
+        // Refusals always publish their finite observed phase trace; success
+        // publication is separate and explicitly opted in.
         let diagnostic = match self.save() {
             Ok((path, cleanup_failure)) => {
                 let mut diagnostic = format!(

@@ -51,6 +51,7 @@ pub fn start_with_origin(
     match result {
         Ok(started) => {
             log.note("Runtime ownership committed and ready");
+            log.export_success();
             Ok(started)
         }
         Err(mut failure) => {
@@ -128,6 +129,9 @@ fn start_recorded(
             );
             arguments
         };
+        log.note("Preparing protected runtime temporary storage");
+        let environment = super::environment::prepare(&files)?;
+        log.note("Protected runtime temporary storage ready");
         let spec = se_proc::RuntimeLaunchSpec {
             machine,
             startup_nonce: nonce,
@@ -137,7 +141,7 @@ fn start_recorded(
             arguments,
             // Native bootstrap passes only this fixed block. SQLite retains
             // file-backed temporary storage within the protected state home.
-            environment: super::environment::prepare(&files)?,
+            environment,
             deadline: bound.at(),
         };
         Ok((files, spec, instance, generation))
