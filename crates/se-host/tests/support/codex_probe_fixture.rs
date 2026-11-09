@@ -97,7 +97,7 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new() -> Check<Self> {
-        let root = fs::canonicalize(directory::private_directory()?)?;
+        let root = se_proc::canonicalize_path(directory::private_directory()?)?;
         #[cfg(not(windows))]
         let image = root.join("native-provider");
         #[cfg(windows)]
@@ -118,6 +118,11 @@ impl Fixture {
             )
             .into());
         }
+        #[cfg(windows)]
+        assert!(
+            se_proc::native_ipc::ExecutableStamp::observe(&image)?.is_some(),
+            "the native fixture must use a directly reusable image path"
+        );
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .max_blocking_threads(2)
