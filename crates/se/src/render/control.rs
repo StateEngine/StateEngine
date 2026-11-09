@@ -1,9 +1,56 @@
 //! Human output preserves achieved native effects and every named obligation.
 use super::write;
-use se_core::ops::{LaunchResult, RemoveResult, project_remove::RemovalWitness};
+use se_core::ops::{
+    LaunchPendingState, LaunchReply, LaunchResult, RemoveResult, agent_launch::TakeoverReport,
+    project_remove::RemovalWitness,
+};
 use std::io::{self, Write};
 
-pub fn launch(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
+pub fn launch(value: &LaunchReply, out: &mut impl Write) -> io::Result<()> {
+    let value = match value {
+        LaunchReply::Running(value) => return running(value, out),
+        LaunchReply::Pending(value) => value,
+    };
+    let state = match value.state {
+        LaunchPendingState::Starting => "starting",
+        LaunchPendingState::SetupNeeded => "setup needed",
+    };
+    writeln!(
+        out,
+        "Agent {}: {state} ({}, window)",
+        value.agent.name,
+        super::labels::provider(value.provider)
+    )?;
+    writeln!(
+        out,
+        "The original launch is still retained; it has not activated yet."
+    )?;
+    if matches!(value.state, LaunchPendingState::SetupNeeded) {
+        writeln!(
+            out,
+            "Complete the welcome or workspace trust prompt in the existing window."
+        )?;
+    }
+    if let Some(takeover) = &value.takeover {
+        stopped_previous(takeover, out)?;
+    }
+    if let Some(command) = &value.retry_command {
+        writeln!(out, "Check launch: {}", command.command)?;
+    } else {
+        writeln!(
+            out,
+            "Repeat the original launch arguments with --key {} to check this same request.",
+            value.idempotency_key
+        )?;
+    }
+    writeln!(
+        out,
+        "Lifecycle: {}; request key: {}",
+        value.lifecycle_id, value.idempotency_key
+    )
+}
+
+fn running(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
     writeln!(
         out,
         "Agent {}: {} ({}, {})",
@@ -19,23 +66,7 @@ pub fn launch(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
     )?;
     writeln!(out, "Containment: {}", value.containment)?;
     if let Some(takeover) = &value.takeover {
-        writeln!(
-            out,
-            "Previous session stopped: {} ({})",
-            takeover.previous_session, takeover.scope
-        )?;
-        writeln!(out, "Jobs stopped: {}", takeover.jobs_stopped.len())?;
-        for job in &takeover.jobs_stopped {
-            writeln!(out, "  PID {}: {}", job.pid, job.command)?;
-        }
-        for job in &takeover.jobs_remaining {
-            writeln!(
-                out,
-                "Job still live outside stopped scope: PID {}: {}",
-                job.pid, job.command
-            )?;
-        }
-        writeln!(out, "Stop witness: {}", takeover.witness)?;
+        stopped_previous(takeover, out)?;
     }
     if let Some(reason) = &value.containment_cause {
         writeln!(
@@ -67,6 +98,27 @@ pub fn launch(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
         value.event_id, value.idempotency_key
     )
 }
+fn stopped_previous(takeover: &TakeoverReport, out: &mut impl Write) -> io::Result<()> {
+    writeln!(
+        out,
+        "Previous session stopped: {} ({})",
+        takeover.previous_session, takeover.scope
+    )?;
+    writeln!(out, "Jobs stopped: {}", takeover.jobs_stopped.len())?;
+    for job in &takeover.jobs_stopped {
+        writeln!(out, "  PID {}: {}", job.pid, job.command)?;
+    }
+    for job in &takeover.jobs_remaining {
+        writeln!(
+            out,
+            "Job still live outside stopped scope: PID {}: {}",
+            job.pid, job.command
+        )?;
+    }
+    writeln!(out, "Stop witness: {}", takeover.witness)?;
+    Ok(())
+}
+
 fn removal_witness(value: &RemovalWitness, out: &mut impl Write) -> io::Result<()> {
     write!(out, "  {}", value.state)?;
     if let Some(method) = &value.method {

@@ -17,7 +17,7 @@ pub mod remove_commit;
 pub mod session_commit;
 pub mod session_reference;
 pub mod stop_plan;
-pub use agent_launch::{AgentLaunch, LaunchResult};
+pub use agent_launch::{AgentLaunch, LaunchPending, LaunchPendingState, LaunchReply, LaunchResult};
 pub use agent_stop::{AgentStop, StopResult};
 pub use project_remove::{ProjectRemove, RemoveResult};
 pub mod agent_config;
@@ -202,7 +202,7 @@ ops! {
     Resume => Resume, ResumeOutput, ("continuity.resume",leaf(&["resume"]),tool("stateengine_resume","Restore your context","Restore your own working state, unread mail, governing decisions and recent captured turns; omissions name explicit full reads. This read acknowledges nothing."),Either,false,Never,Read,Project,None,"se.resume",Resume,&["J3","J4"]);
     SessionContext => SessionContextRequest, SessionContextOutput, ("session.context",CliExposure::Leaf{path:&["session","context"],hidden:true,select:Selector::Always},no_mcp("Harness/SE Code context uses the verified bound session; model tools use stateengine_resume."),Session,false,Never,Read,Session,None,"secode.session-context",SessionContext,&["J2","J3"]);
     AgentList => AgentList, AgentPage, ("agent.list",leaf(&["agent","list"]),no_mcp("Owner overview; bound agents use status for their own saved identity."),Owner,false,Never,Read,Project,None,"se.agent-page",AgentPage,&["J2","J3"]);
-    AgentLaunch => AgentLaunch, LaunchResult, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Launch your own saved agent or a directly created agent you currently control; readiness and process custody are witnessed."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
+    AgentLaunch => AgentLaunch, LaunchReply, ("agent.launch",leaf(&["launch"]),tool("stateengine_agent_launch","Launch an agent","Launch your own saved agent or a directly created agent you currently control; an attended launch can return retained starting/setup-needed state with same-key retry arguments before activation proves running."),Either,false,Never,Custody,Project,HostAutoStart,"se.launch",Launch,&["J2","J3"]);
     AgentStop => AgentStop, StopResult, ("agent.stop",leaf(&["stop"]),tool("stateengine_agent_stop","Stop an agent","Stop your own agent or a directly created agent you currently control; returns the command that resumes its saved conversation."),Either,false,Never,Custody,ProjectOrAll,HostAutoStart,"se.stop",Stop,&["J3","J5"]);
     ProjectRemove => ProjectRemove, RemoveResult, ("project.remove",leaf(&["remove"]),no_mcp("Project removal requires the verified owner at a human terminal."),Owner,false,Always,Custody,ProjectOrAll,HostAutoStart,"se.remove",Remove,&["J5"]);
     AgentShow => AgentShow, AgentStatusOutput, ("agent.show",leaf(&["agent","show"]),no_mcp("This owner CLI read inspects saved agent metadata."),Owner,false,Never,Read,Project,None,"se.agent-status",AgentStatus,&["E3","J2"]);

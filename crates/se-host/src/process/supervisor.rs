@@ -3,7 +3,9 @@
 use super::launch::Work;
 use super::*;
 use crate::client::lease::Deadline;
-use se_core::ops::{LaunchResult, agent_launch::LaunchPlan};
+use se_core::ops::{
+    LaunchPending, LaunchPendingState, LaunchReply, LaunchResult, agent_launch::LaunchPlan,
+};
 use se_store::Admission;
 use se_types::{ErrorBody, Result, SeError};
 use sha2::{Digest, Sha256};
@@ -23,6 +25,9 @@ pub(super) struct Job {
     pub target: (se_types::ProjectId, se_types::AgentId),
     pub session: se_types::SessionId,
     pub lifecycle: se_types::LifecycleId,
+    /// Immutable metadata shared with Work; pending replies never wait on its lock.
+    pub plan: Option<Arc<LaunchPlan>>,
+    pub takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
     pub state: AsyncMutex<Work>,
     pub ready: watch::Sender<Option<std::result::Result<LaunchResult, ErrorBody>>>,
     pub settled: AtomicBool,
@@ -85,7 +90,7 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
         takeover: Option<se_core::ops::agent_launch::TakeoverReport>,
-    ) -> Result<LaunchResult> {
+    ) -> Result<LaunchReply> {
         if self.stopping.load(Ordering::Acquire) {
             return Err(se_core::scope::unreadable(
                 "launch admission",
@@ -173,14 +178,17 @@ impl LaunchCoordinator {
                 }
                 let target = (plan.project.id.clone(), plan.agent.id.clone());
                 let lifecycle = plan.lifecycle.clone();
-                let mut work = Work::new(plan, admission);
-                work.takeover = takeover;
+                let plan = Arc::new(plan);
+                let mut work = Work::new(plan.clone(), admission);
+                work.takeover = takeover.clone();
                 let wake = work.wake.clone();
                 let job = Arc::new(Job {
                     intent,
                     target,
                     session: work.meta.session.clone(),
                     lifecycle,
+                    plan: Some(plan),
+                    takeover,
                     state: AsyncMutex::new(work),
                     ready: watch::channel(None).0,
                     settled: AtomicBool::new(false),
@@ -248,34 +256,51 @@ impl LaunchCoordinator {
                 .map_err(|_| SeError::invalid("launch task", "unpoisoned retained task slot"))? =
                 Some(task);
         }
-        let waiting_since = std::time::Instant::now();
         let mut ready = job.ready.subscribe();
         loop {
             if let Some(result) = ready.borrow().clone() {
-                return result.map_err(|body| SeError { body, cause: None });
+                return result
+                    .map(LaunchReply::from)
+                    .map_err(|body| SeError { body, cause: None });
             }
-            tokio::time::timeout_at(
+            match tokio::time::timeout_at(
                 tokio::time::Instant::from_std(waiter.at()),
                 ready.changed(),
             )
             .await
-            .map_err(|_| {
-                if attended {
-                    let last_observed = if job.wake.awaiting_window.load(Ordering::Acquire) {
-                        "Complete Claude's welcome or workspace trust prompt in its window. StateEngine keeps waiting while that same process is alive."
+            {
+                Ok(changed) => changed.map_err(|e| error("launch supervisor result", e))?,
+                Err(_) if attended => {
+                    // Completion can race the waiter; never hide an already known failure.
+                    if let Some(result) = ready.borrow().clone() {
+                        return result
+                            .map(LaunchReply::from)
+                            .map_err(|body| SeError { body, cause: None });
+                    }
+                    deadline.remaining()?;
+                    job.wake.require_startup()?;
+                    let state = if job.wake.awaiting_window.load(Ordering::Acquire) {
+                        LaunchPendingState::SetupNeeded
                     } else {
-                        "The window launch is still in progress under native supervision; inspect this agent's status."
+                        LaunchPendingState::Starting
                     };
-                    return SeError::new(se_types::Detail::LaunchReadinessTimeout(se_types::details::LaunchReadinessTimeout {
-                        agent: job.target.1.clone(), waited_ms: waiting_since.elapsed().as_millis() as u64, last_observed: last_observed.into(),
-                    }));
+                    return Ok(LaunchReply::Pending(Box::new(LaunchPending::new(
+                        job.plan.as_deref().ok_or_else(|| error(
+                            "launch pending metadata",
+                            "the original launch plan is unavailable; inspect the retained lifecycle",
+                        ))?,
+                        state,
+                        &self.options.home,
+                        job.takeover.clone(),
+                    ))));
                 }
-                se_core::scope::unreadable(
-                    "launch request wait",
-                    "the supervisor retains the original request; retry with the same key",
-                )
-            })?
-            .map_err(|e| error("launch supervisor result", e))?;
+                Err(_) => {
+                    return Err(se_core::scope::unreadable(
+                        "launch request wait",
+                        "the supervisor retains the original request; retry with the same key",
+                    ));
+                }
+            }
         }
     }
 }

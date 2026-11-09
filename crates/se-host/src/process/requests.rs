@@ -149,6 +149,10 @@ impl LaunchCoordinator {
                 let result = job.await;
                 let retry = match &result {
                     Ok(AnyOutput::AgentStop(output)) => !output.value.complete,
+                    // Rejoin the original successor job, retaining any achieved stop report.
+                    Ok(AnyOutput::AgentLaunch(output)) => {
+                        matches!(&output.value, se_core::ops::LaunchReply::Pending(_))
+                    }
                     Err(_) => true,
                     _ => false,
                 };

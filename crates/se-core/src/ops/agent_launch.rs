@@ -11,6 +11,8 @@ use se_types::{
     ProviderSessionId, Read, Result, SessionId,
 };
 use serde::{Deserialize, Serialize};
+mod pending;
+pub use pending::{LaunchPending, LaunchPendingState, LaunchReply};
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
