@@ -31,6 +31,41 @@ pub fn read_process_until(
 }
 
 impl NativeProcessRuntime {
+    /// Observe the retained process within the caller's original bound. An
+    /// inaccessible image during native teardown is not proof of process exit.
+    pub fn observe_until(
+        &self,
+        process: &OwnedProcess,
+        deadline: std::time::Instant,
+    ) -> ProcResult<OwnedObservation> {
+        if std::time::Instant::now() >= deadline {
+            return Err(crate::support::input(
+                "owned process observation",
+                "original deadline elapsed",
+            ));
+        }
+        loop {
+            let original = match self.observe(process) {
+                Ok(observed) => return Ok(observed),
+                Err(error)
+                    if cfg!(windows)
+                        && error.code == ProcErrorCode::IdentityUnreadable
+                        && error.native.as_ref().is_some_and(|failure| {
+                            failure.api == "QueryFullProcessImageNameW" && failure.code == Some(5)
+                        }) =>
+                {
+                    error
+                }
+                Err(error) => return Err(error),
+            };
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(original);
+            }
+            std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+        }
+    }
+
     /// The exact native console server pinned through the original root's
     /// kernel console connection. Unreadable or changed associations refuse.
     #[cfg(windows)]
