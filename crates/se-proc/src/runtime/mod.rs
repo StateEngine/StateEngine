@@ -45,7 +45,11 @@ impl NativeProcessRuntime {
             ));
         }
         loop {
-            let original = match self.observe(process) {
+            #[cfg(all(test, windows))]
+            let observed = owned_observation_tests::sample(self, process);
+            #[cfg(not(all(test, windows)))]
+            let observed = self.observe(process);
+            let original = match observed {
                 Ok(observed) => return Ok(observed),
                 Err(error)
                     if cfg!(windows)
@@ -63,6 +67,9 @@ impl NativeProcessRuntime {
                 return Err(original);
             }
             std::thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+            if std::time::Instant::now() >= deadline {
+                return Err(original);
+            }
         }
     }
 
@@ -90,3 +97,6 @@ impl NativeProcessRuntime {
 
 #[cfg(windows)]
 mod stdio;
+
+#[cfg(all(test, windows))]
+mod owned_observation_tests;
