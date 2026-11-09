@@ -244,14 +244,15 @@ impl Harness for CodexHarness {
         request: ProbeRequest,
         cx: CallContext,
     ) -> HostFuture<'a, ProviderVersion> {
-        Box::pin(self.qualify(request, cx, false))
+        Box::pin(self.qualify(request, cx, None))
     }
     fn probe_direct<'a>(
         &'a self,
         request: ProbeRequest,
+        stamp: Option<se_proc::native_ipc::ExecutableStamp>,
         cx: CallContext,
     ) -> HostFuture<'a, ProviderVersion> {
-        Box::pin(self.qualify(request, cx, true))
+        Box::pin(self.qualify(request, cx, stamp))
     }
     fn configuration<'a>(
         &'a self,

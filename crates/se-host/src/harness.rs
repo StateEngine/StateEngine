@@ -201,6 +201,7 @@ pub trait Harness: Send + Sync {
     fn probe_direct<'a>(
         &'a self,
         request: ProbeRequest,
+        _stamp: Option<se_proc::native_ipc::ExecutableStamp>,
         cx: CallContext,
     ) -> HostFuture<'a, ProviderVersion> {
         self.probe(request, cx)

@@ -28,14 +28,18 @@ impl CodexHarness {
         &self,
         request: ProbeRequest,
         cx: CallContext,
-        reuse: bool,
+        stamp: Option<ExecutableStamp>,
     ) -> Result<ProviderVersion> {
         let deadline = Deadline::idle()?.stage(cx.timeout)?;
-        let stamp = if reuse {
-            self.image_stamp(&request.command, &deadline).await?
-        } else {
-            None
-        };
+        if stamp
+            .as_ref()
+            .is_some_and(|stamp| stamp.path() != request.command)
+        {
+            return Err(SeError::invalid(
+                "Codex qualification image",
+                "the resolved invocation's own file stamp",
+            ));
+        }
         let cached = {
             let qualified = self.probed.lock().map_err(|_| poisoned())?;
             qualified
@@ -47,9 +51,12 @@ impl CodexHarness {
                 })
                 .map(|entry| entry.version.clone())
         };
-        let mut found = match cached {
-            Some(version) => version,
-            None => probe::probe(&request.command, deadline.remaining()?).await?,
+        let (mut found, reused) = match cached {
+            Some(version) => (version, true),
+            None => (
+                probe::probe(&request.command, deadline.remaining()?).await?,
+                false,
+            ),
         };
         #[cfg(windows)]
         {
@@ -79,7 +86,10 @@ impl CodexHarness {
             })?;
             *self.windows_shell.lock().map_err(|_| poisoned())? = Some(shell);
         }
-        if stamp.is_some() && self.image_stamp(&request.command, &deadline).await? != stamp {
+        if stamp.is_some()
+            && (!reused || cfg!(windows))
+            && self.image_stamp(&request.command, &deadline).await? != stamp
+        {
             return Err(incompatible(
                 "Codex executable changed during version qualification",
                 "Retry the launch with the current executable.",

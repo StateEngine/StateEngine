@@ -14,6 +14,9 @@ pub struct ExecutableStamp {
     image: image::ImageKey,
 }
 impl ExecutableStamp {
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
     /// Aliases and scripts deliberately have no reusable qualification key.
     /// Every observation opens and reads the image; unreadability is an error.
     pub fn observe(path: &Path) -> IpcNativeResult<Option<Self>> {

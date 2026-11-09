@@ -65,11 +65,21 @@ impl LaunchCoordinator {
             .provider_command(provider)
             .to_owned();
         let configuration_file = self.configuration_file.clone();
-        let executable = self
+        let (executable, qualification) = self
             .store
             .pool
             .run_owned(deadline, move || {
-                resolve_provider_command(&command, provider, configuration_file.as_deref())
+                let command =
+                    resolve_provider_command(&command, provider, configuration_file.as_deref())?;
+                // Reuse this existing filesystem job instead of adding queue
+                // round trips to the warm qualification path.
+                let qualification = if provider == se_types::Provider::Codex {
+                    se_proc::native_ipc::ExecutableStamp::observe(&command)
+                        .map_err(|e| error("Codex qualification image", e))?
+                } else {
+                    None
+                };
+                Ok((command, qualification))
             })
             .await?;
         #[cfg(unix)]
@@ -118,6 +128,7 @@ impl LaunchCoordinator {
                     kind: harness.kind(),
                     command: executable.clone(),
                 },
+                qualification,
                 call(self.store.generation, deadline)?,
             )
             .await?;
