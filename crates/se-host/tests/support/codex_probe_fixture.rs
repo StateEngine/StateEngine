@@ -4,9 +4,10 @@
     reason = "The version and launch integration binaries use different fixture methods."
 )]
 use se_core::config_policy::ConfigFile;
+#[cfg(unix)]
+use se_host::UnixProviderIo;
 use se_host::{
     BlockingPool, CallContext, CodexHarness, Harness, HarnessKind, ProbeRequest, ProviderVersion,
-    UnixProviderIo,
 };
 use std::{
     fs,
@@ -28,6 +29,67 @@ pub fn context() -> Check<CallContext> {
         Duration::from_secs(5),
     ))
 }
+/// The version probe path never opens provider IO. On Windows the production
+/// port needs a live process runtime reservation, so the native judge binds
+/// this refusing stand-in: any IO attempt fails the test loudly.
+#[cfg(windows)]
+struct VersionOnlyIo;
+#[cfg(windows)]
+impl VersionOnlyIo {
+    fn refuse(&self, operation: &str) -> se_types::SeError {
+        se_types::SeError::new(se_types::Detail::StateConflict(
+            se_types::details::StateConflict {
+                subject: "version-only native judge fixture".into(),
+                reason: format!(
+                    "provider {operation} is refused: this fixture exercises version qualification only"
+                ),
+                next_step: "No provider attach is attempted by the native version reuse judges."
+                    .into(),
+            },
+        ))
+    }
+}
+#[cfg(windows)]
+impl se_host::ProviderIoPlatform for VersionOnlyIo {
+    fn open(
+        &self,
+        _owner: &se_proc::OwnedProcess,
+        _identity: &se_host::SessionIdentity,
+    ) -> se_types::Result<se_host::ProviderIo> {
+        Err(self.refuse("open"))
+    }
+    fn read<'a>(
+        &'a self,
+        _transport: &'a se_host::ProviderTransport,
+        _stream: se_host::ProviderStream,
+        _maximum_bytes: std::num::NonZeroU32,
+        _cx: se_host::CallContext,
+    ) -> se_host::HostFuture<'a, se_host::StreamRead> {
+        Box::pin(async { Err(self.refuse("read")) })
+    }
+    fn write<'a>(
+        &'a self,
+        _transport: &'a se_host::ProviderTransport,
+        _bytes: Vec<u8>,
+        _cx: se_host::CallContext,
+    ) -> se_host::HostFuture<'a, se_host::StreamWrite> {
+        Box::pin(async { Err(self.refuse("write")) })
+    }
+    fn finish_input<'a>(
+        &'a self,
+        _transport: &'a se_host::ProviderTransport,
+        _cx: se_host::CallContext,
+    ) -> se_host::HostFuture<'a, ()> {
+        Box::pin(async { Err(self.refuse("finish input")) })
+    }
+    fn close<'a>(
+        &'a self,
+        _transport: &'a se_host::ProviderTransport,
+        _cx: se_host::CallContext,
+    ) -> se_host::HostFuture<'a, ()> {
+        Box::pin(async { Err(self.refuse("close")) })
+    }
+}
 pub struct Fixture {
     pub root: PathBuf,
     pub image: PathBuf,
@@ -36,7 +98,10 @@ pub struct Fixture {
 impl Fixture {
     pub fn new() -> Check<Self> {
         let root = fs::canonicalize(directory::private_directory()?)?;
+        #[cfg(not(windows))]
         let image = root.join("native-provider");
+        #[cfg(windows)]
+        let image = root.join("native-provider.exe");
         let source = root.join("provider.rs");
         fs::write(&source, include_str!("codex_version_native.rs"))?;
         let output =
@@ -64,8 +129,12 @@ impl Fixture {
         })
     }
     pub fn harness(&self) -> CodexHarness {
+        #[cfg(unix)]
+        let io: Arc<dyn se_host::ProviderIoPlatform> = Arc::new(UnixProviderIo);
+        #[cfg(windows)]
+        let io: Arc<dyn se_host::ProviderIoPlatform> = Arc::new(VersionOnlyIo);
         CodexHarness::new(
-            Arc::new(UnixProviderIo),
+            io,
             BlockingPool::new(self.runtime.handle().clone()),
             self.root.clone(),
             self.root.clone(),
