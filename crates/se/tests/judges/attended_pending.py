@@ -253,6 +253,30 @@ def run(options):
         assert active["process"]["pid"] == pid and active["conversation_id"] == conversation
         assert native_markers(f) == before
         check("disconnected launch activates the original lifecycle after real readiness")
+        ok, child = create(f, "cli", "Failed pending", str(uuid.uuid4()))
+        assert ok, child
+        agent, key, task = child["agent"]["id"], str(uuid.uuid4()), "Keep startup failure truthful"
+        first, (conversation, pid) = delayed(f, "cli", agent, key, task)
+        pending(first, f.project, agent, key, task)
+        birth, before = identity(pid)[1], native_markers(f)
+        (f.repo / ("fail-" + conversation)).touch()
+        until = time.monotonic() + 30
+        while True:
+            ok, failure = f.request("mcp", agent, key, task)
+            if not ok:
+                break
+            assert time.monotonic() < until, "exited provider kept returning healthy pending"
+            pending(failure, f.project, agent, key, task)
+        assert "launch" in json.dumps(failure).lower(), failure
+        try:
+            observed_state, observed_birth = identity(pid)
+            assert observed_birth != birth or observed_state in ("Z", "X"), failure
+        except FileNotFoundError:
+            pass
+        ok, repeated = f.request("cli", agent, key, task)
+        assert not ok and repeated["code"] == failure["code"], (failure, repeated)
+        assert native_markers(f) == before
+        check("known native startup failure stays failed across original-key CLI/MCP retries")
         # Exercise the human renderer on a separate retained request; JSON/MCP
         # cannot prove the plain output avoids invented process/event lines.
         ok, child = create(f, "cli", "Plain pending", str(uuid.uuid4()))
