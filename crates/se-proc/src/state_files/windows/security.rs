@@ -124,6 +124,23 @@ pub(in crate::state_files) fn tighten_owner_only(
 ) -> Result<()> {
     permission_repair::require_existing_access(file, path, directory)?;
     let descriptor = descriptor(path, directory)?;
+    set_protected_dacl(file, path, descriptor, "tighten pinned DACL")
+}
+
+/// Finish the fixed descriptor on a verified newly published private file.
+/// The caller retains its identity/content/owner-checked WRITE_DAC handle;
+/// this does not acquire or repair an incumbent or a profile directory.
+pub(in crate::state_files) fn finish_private_replacement(file: &File, path: &Path) -> Result<()> {
+    let descriptor = descriptor_for(path, false, Layout::UserPrivate)?;
+    set_protected_dacl(file, path, descriptor, "finish private replacement DACL")
+}
+
+fn set_protected_dacl(
+    file: &File,
+    path: &Path,
+    descriptor: Allocation,
+    operation: &'static str,
+) -> Result<()> {
     // SAFETY: retained WRITE_DAC handle and native self-relative descriptor.
     // NtSetSecurityObject changes this one pinned object; unlike SetSecurityInfo
     // it does not run Win32's recursive propagation of inheritable directory ACEs.
@@ -138,7 +155,7 @@ pub(in crate::state_files) fn tighten_owner_only(
         // SAFETY: pure conversion of the native status returned above.
         let code = unsafe { windows_sys::Win32::Foundation::RtlNtStatusToDosError(status) };
         return Err(io_error(
-            "tighten pinned DACL",
+            operation,
             path,
             std::io::Error::from_raw_os_error(code as i32),
         ));

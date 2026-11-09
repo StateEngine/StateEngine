@@ -430,7 +430,12 @@ impl Pin {
             ));
         }
         self.check_parent()?;
-        let observed = open(&self.physical, false, 0, false)?;
+        let access = if self.layout == security::Layout::UserPrivate {
+            WRITE_DAC
+        } else {
+            0
+        };
+        let observed = open(&self.physical, false, access, false)?;
         let wanted: [u8; 32] = Sha256::digest(bytes).into();
         if metadata(&observed, &self.path, false, false)? != stage_identity
             || digest(&observed, &self.path)? != wanted
@@ -442,6 +447,10 @@ impl Pin {
         }
         security::verify_owner(&observed, &self.path)?;
         if self.layout == security::Layout::UserPrivate {
+            // Replacement merges the incumbent DACL into our staged object.
+            // Finish only this identity/content/owner-verified new output;
+            // the held original and its recovery sibling stay untouched.
+            security::finish_private_replacement(&observed, &self.path)?;
             security::verify_for(&observed, &self.path, true, self.layout)?;
         }
         // The backup is the still-held original object, not a new path claim.
