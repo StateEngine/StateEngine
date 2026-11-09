@@ -3,7 +3,7 @@
 use super::*;
 use crate::client::lease::Deadline;
 use se_core::ops::{
-    AnyOutput, LaunchResult,
+    AnyOutput, LaunchReply,
     agent_launch::{LaunchPlan, TakeoverJob, TakeoverReport},
 };
 use se_store::{Admission, EventBody};
@@ -17,7 +17,7 @@ impl LaunchCoordinator {
         plan: LaunchPlan,
         admission: Admission,
         deadline: &Deadline,
-    ) -> Result<LaunchResult> {
+    ) -> Result<LaunchReply> {
         let expired_window = matches!(&plan.control.latest_session, se_types::Read::Present { value }
             if se_core::ops::agent_launch::retryable_attended_setup(value));
         if !plan.input.override_live && (plan.replayed || plan.control.processes.is_empty()) {

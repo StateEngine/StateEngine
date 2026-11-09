@@ -78,9 +78,9 @@ pub(super) struct Work {
     pub files: Vec<(PathBuf, [u8; 32])>,
 }
 impl Work {
-    pub fn new(plan: LaunchPlan, admission: Admission) -> Self {
+    pub fn new(plan: Arc<LaunchPlan>, admission: Admission) -> Self {
         let mut work = Self::recovered(LifecycleMetadata::from_launch(&plan), admission);
-        work.plan = Some(Arc::new(plan));
+        work.plan = Some(plan);
         work.committed = false;
         work.cleanup_files_known = true;
         work

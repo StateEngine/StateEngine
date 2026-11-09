@@ -76,12 +76,13 @@ impl LaunchCoordinator {
             let native = self.native.clone();
             let process = process.clone();
             let check = Deadline::idle()?.stage(Duration::from_secs(2))?;
+            let observed_until = check.at();
             let observed = self
                 .store
                 .pool
                 .run_owned(&check, move || {
                     native
-                        .observe(&process)
+                        .observe_until(&process, observed_until)
                         .map_err(|e| error("window setup process", e))
                 })
                 .await?;

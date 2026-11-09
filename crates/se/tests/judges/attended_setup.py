@@ -71,7 +71,9 @@ if a.get(1).map(String::as_str)==Some("plugin"){return;}
 let i=a.iter().position(|x|x=="--session-id"||x=="--resume").unwrap();let c=&a[i+1];
 fs::write(format!(".native-{c}"),std::process::id().to_string()).unwrap();
 fs::rename(format!(".native-{c}"),format!("native-{c}")).unwrap();
-while !std::path::Path::new(&format!("ready-{c}")).exists(){thread::sleep(Duration::from_millis(50));}
+while !std::path::Path::new(&format!("ready-{c}")).exists(){
+if std::path::Path::new(&format!("fail-{c}")).exists(){std::process::exit(23);}
+thread::sleep(Duration::from_millis(50));}
 let s=Command::new(PYTHON).args([HELPER,"--provider",SE,HOME]).args(&a[1..]).status().unwrap();
 assert!(s.success());loop{thread::sleep(Duration::from_secs(1));}}
 '''.replace("PYTHON", json.dumps(sys.executable)).replace(
@@ -138,7 +140,12 @@ assert!(s.success());loop{thread::sleep(Duration::from_secs(1));}}
         if release:
             assert result.returncode == 0, (result.stdout, result.stderr)
         else:
-            assert result.returncode != 0 and b"launch-readiness-timeout" in result.stdout, result.stdout
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            reply = json.loads(result.stdout)
+            assert reply["state"] in ("starting", "setup-needed"), reply
+            assert reply["session_id"] and reply["lifecycle_id"], reply
+            for field in ("event_id", "conversation_id", "process", "containment"):
+                assert field not in reply, ("pending is not activation proof", field, reply)
         row = self.row()
         self.session = row["session"]["session_id"]
         return row

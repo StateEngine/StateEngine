@@ -111,7 +111,7 @@ RuntimeUp => RuntimeUp, RuntimeStart;
 RuntimeDown => RuntimeDown, RuntimeStop;
 Uninstall => Uninstall, UninstallOutput;
 AgentCreate => AgentCreate, AgentReceipt;
-AgentLaunch => AgentLaunch, LaunchResult;
+AgentLaunch => AgentLaunch, LaunchReply;
 AgentStop => AgentStop, StopResult;
 ProjectRemove => ProjectRemove, RemoveResult;
 AgentShow => AgentShow, AgentStatusOutput;
@@ -121,4 +121,10 @@ ConfigSet => ConfigSet, AgentConfigReceipt;
 DecisionShow => DecisionShow, DecisionOutput;
 DecisionList => DecisionList, DecisionPage;
 Decision => DecisionPropose, DecisionReceipt;
+}
+
+impl From<LaunchResult> for AnyOutput {
+    fn from(value: LaunchResult) -> Self {
+        Self::from(LaunchReply::from(value))
+    }
 }
