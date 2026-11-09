@@ -58,12 +58,16 @@ def state(value):
     return str(value.get("state", "")).lower().replace("_", "-")
 
 
-def pending(value, project, agent, key):
+def pending(value, project, agent, key, task, override=False):
     assert state(value) in ("starting", "setup-needed"), value
     assert value["idempotency_key"] == key, value
     assert value["project"]["id"] == project and value["agent"]["id"] == agent, value
     assert value["session_id"] and value["lifecycle_id"], value
-    assert value["provider"] == "claude" and value["surface"] == "window", value
+    assert value["provider"] == "claude", value
+    retry = value["retry"]
+    assert retry["target_agent_id"] == agent and retry["idempotency_key"] == key, value
+    assert retry["task"] == task and retry["detach"] is False, value
+    assert retry.get("override_live", False) == override, value
     # These are activation/native facts, not required metadata for a pending job.
     for name in ("event_id", "conversation_id", "process", "containment"):
         assert name not in value, ("pending invented an unproved fact", name, value)
@@ -166,7 +170,7 @@ def run(options):
             agent, key, task = child["agent"]["id"], str(uuid.uuid4()), "Retain this launch request"
             started = time.monotonic()
             first, (conversation, pid) = delayed(f, door, agent, key, task)
-            pending(first, f.project, agent, key)
+            pending(first, f.project, agent, key, task)
             assert time.monotonic() - started < 35, "pending response exhausted its bounded waiter"
             assert first["session_id"] != parent_session, "pending substituted the caller's old session"
             assert identity(pid)[0] not in ("Z", "X"), "pending reply abandoned the live provider"
@@ -175,7 +179,7 @@ def run(options):
             before = native_markers(f)
             ok, again = f.request(opposite, agent, key, task)
             assert ok, again
-            pending(again, f.project, agent, key)
+            pending(again, f.project, agent, key, task)
             for field in ("idempotency_key", "session_id", "lifecycle_id", "project", "agent"):
                 assert again[field] == first[field], (field, first, again)
             assert native_markers(f) == before, "opposite-door retry spawned another provider"
@@ -194,7 +198,7 @@ def run(options):
                 if state(active) == "running":
                     break
                 assert time.monotonic() < until, active
-                pending(active, f.project, agent, key)
+                pending(active, f.project, agent, key, task)
             assert active["session_id"] == first["session_id"]
             assert active["lifecycle_id"] == first["lifecycle_id"]
             assert active["idempotency_key"] == key and active["conversation_id"] == conversation
@@ -214,7 +218,7 @@ def run(options):
                 replacement_key = str(uuid.uuid4())
                 replacement, (_, replacement_pid) = delayed(
                     f, "cli", agent, replacement_key, task, override=True)
-                pending(replacement, f.project, agent, replacement_key)
+                pending(replacement, f.project, agent, replacement_key, task, override=True)
                 assert replacement["session_id"] != active["session_id"], replacement
                 assert replacement["lifecycle_id"] != active["lifecycle_id"], replacement
                 report = replacement["takeover"]
@@ -238,7 +242,7 @@ def run(options):
         before = native_markers(f)
         ok, retained = f.request("cli", agent, key, task)
         assert ok, retained
-        pending(retained, f.project, agent, key)
+        pending(retained, f.project, agent, key, task)
         assert native_markers(f) == before
         check("disconnected MCP waiter retains its one provider for original-key CLI retry")
         (f.repo / ("ready-" + conversation)).touch()
