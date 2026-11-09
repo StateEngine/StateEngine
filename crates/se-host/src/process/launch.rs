@@ -113,7 +113,7 @@ impl LaunchCoordinator {
             }
         };
         harness
-            .probe(
+            .probe_direct(
                 ProbeRequest {
                     kind: harness.kind(),
                     command: executable.clone(),

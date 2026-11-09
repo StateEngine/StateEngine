@@ -8,6 +8,7 @@ mod console;
 mod location;
 mod mail;
 mod probe;
+mod qualification;
 mod recovery;
 mod rpc;
 pub use rpc::RequestFailure;
@@ -43,7 +44,7 @@ pub struct CodexHarness {
     mcp_port: u16,
     configuration: ConfigFile,
     atlas_helper: Option<PathBuf>,
-    probed: Mutex<Option<ProviderVersion>>,
+    probed: Mutex<Option<qualification::Qualified>>,
     #[cfg(windows)]
     windows_shell: Mutex<Option<PathBuf>>,
 }
@@ -243,52 +244,14 @@ impl Harness for CodexHarness {
         request: ProbeRequest,
         cx: CallContext,
     ) -> HostFuture<'a, ProviderVersion> {
-        Box::pin(async move {
-            #[cfg(windows)]
-            let until = std::time::Instant::now() + cx.timeout;
-            let mut found = probe::probe(&request.command, cx.timeout).await?;
-            #[cfg(windows)]
-            {
-                let environment = input::provider_environment();
-                let deadline = crate::client::lease::Deadline::idle()?
-                    .stage(until.saturating_duration_since(std::time::Instant::now()))?;
-                let candidates = self
-                    .pool
-                    .run_owned(&deadline, move || windows_shell::candidates(&environment))
-                    .await?;
-                let mut selected = None;
-                for shell in candidates {
-                    if windows_shell::probe(
-                        &shell,
-                        &self.pool,
-                        &context(
-                            cx.generation,
-                            until.saturating_duration_since(std::time::Instant::now()),
-                        ),
-                    )
-                    .await?
-                    {
-                        selected = Some(shell);
-                        break;
-                    }
-                }
-                let shell = selected.ok_or_else(|| {
-                    incompatible(
-                        "no standard unpackaged PowerShell candidate qualifies",
-                        "Install the PowerShell MSI and retry; the sandbox will not be widened.",
-                    )
-                })?;
-                *self.windows_shell.lock().map_err(|_| poisoned())? = Some(shell);
-            }
-            found.protocol = if cfg!(unix) {
-                "app-server/private-unix-websocket"
-            } else {
-                "app-server/stdio-json-lines"
-            }
-            .into();
-            *self.probed.lock().map_err(|_| poisoned())? = Some(found.clone());
-            Ok(found)
-        })
+        Box::pin(self.qualify(request, cx, false))
+    }
+    fn probe_direct<'a>(
+        &'a self,
+        request: ProbeRequest,
+        cx: CallContext,
+    ) -> HostFuture<'a, ProviderVersion> {
+        Box::pin(self.qualify(request, cx, true))
     }
     fn configuration<'a>(
         &'a self,
