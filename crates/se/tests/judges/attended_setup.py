@@ -138,7 +138,12 @@ assert!(s.success());loop{thread::sleep(Duration::from_secs(1));}}
         if release:
             assert result.returncode == 0, (result.stdout, result.stderr)
         else:
-            assert result.returncode != 0 and b"launch-readiness-timeout" in result.stdout, result.stdout
+            assert result.returncode == 0, (result.stdout, result.stderr)
+            reply = json.loads(result.stdout)
+            assert reply["state"] in ("starting", "setup-needed"), reply
+            assert reply["session_id"] and reply["lifecycle_id"], reply
+            for field in ("event_id", "conversation_id", "process", "containment"):
+                assert field not in reply, ("pending is not activation proof", field, reply)
         row = self.row()
         self.session = row["session"]["session_id"]
         return row
