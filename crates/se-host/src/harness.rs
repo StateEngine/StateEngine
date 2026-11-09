@@ -196,6 +196,16 @@ pub trait Harness: Send + Sync {
         request: ProbeRequest,
         cx: CallContext,
     ) -> HostFuture<'a, ProviderVersion>;
+    /// A final selected invocation may reuse immutable executable qualification.
+    /// Alias-image discovery calls `probe` instead and always remains fresh.
+    fn probe_direct<'a>(
+        &'a self,
+        request: ProbeRequest,
+        _stamp: Option<se_proc::native_ipc::ExecutableStamp>,
+        cx: CallContext,
+    ) -> HostFuture<'a, ProviderVersion> {
+        self.probe(request, cx)
+    }
     fn configuration<'a>(
         &'a self,
         request: &'a HarnessRequest,

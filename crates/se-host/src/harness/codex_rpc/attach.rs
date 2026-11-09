@@ -14,7 +14,8 @@ impl CodexHarness {
             .probed
             .lock()
             .map_err(|_| poisoned())?
-            .clone()
+            .as_ref()
+            .map(|qualified| qualified.version.clone())
             .ok_or_else(|| {
                 SeError::invalid("Codex attach", "an actual successful executable probe")
             })?;
