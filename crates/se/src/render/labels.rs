@@ -27,6 +27,7 @@ pub(super) fn provider(value: Provider) -> &'static str {
     match value {
         Provider::Claude => "Claude Code",
         Provider::Codex => "Codex",
+        Provider::SeCode => "SE Code",
     }
 }
 

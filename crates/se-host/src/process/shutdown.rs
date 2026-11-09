@@ -50,6 +50,7 @@ impl LaunchCoordinator {
                 Err(reason) => report.pending.push(reason),
             }
         }
+        report.pending.extend(self.shutdown_secode(deadline).await?);
         let native = self.native.clone();
         match self
             .store

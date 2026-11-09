@@ -3,7 +3,7 @@
 use super::{AgentRow, AgentShow, AgentStatusOutput};
 use crate::{commit::Cx, scope, store_error::store_error};
 use se_store::{Actor, EventBody, Snapshot};
-use se_types::{Read, Result, SeError};
+use se_types::{Read, Result};
 
 /// Saved agents in this finite principal page. Native lifecycle facts remain
 /// explicitly unknown; reading this page never starts or resumes a process.
@@ -185,14 +185,35 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
     let provider = match profile.provider {
         se_store::Provider::Claude => se_types::Provider::Claude,
         se_store::Provider::Codex => se_types::Provider::Codex,
-        se_store::Provider::SeCode => {
-            return Err(SeError::invalid(
-                "provider",
-                "a standalone Claude or Codex identity",
-            ));
-        }
+        se_store::Provider::SeCode => se_types::Provider::SeCode,
     };
-    let (session, conversation, resume) = super::agent_session::read(&agent, cx)?;
+    let (session, conversation, mut resume) = super::agent_session::read(&agent, cx)?;
+    if provider == se_types::Provider::SeCode {
+        resume.ready = false;
+        resume.mode = "compatible-service-required".into();
+        resume.reason = Some(super::AgentCommand::SECODE_RESUME_UNAVAILABLE.into());
+        resume.command = None;
+        resume.argv = None;
+    }
+    let secode_binding = if provider == se_types::Provider::SeCode {
+        Some(retained_secode_binding(session.session_id.as_ref(), cx)?)
+    } else {
+        None
+    };
+    let secode_runtime = secode_binding.as_ref().map(|binding| match binding {
+        Read::Absent { checked } if session.session_id.is_none() => Read::Absent {
+            checked: checked.clone(),
+        },
+        Read::Unknown { what } => Read::Unknown { what: what.clone() },
+        Read::Unreadable { source, reason, error } => Read::Unreadable {
+            source: source.clone(),
+            reason: reason.clone(),
+            error: error.clone(),
+        },
+        _ => Read::Unknown {
+            what: "Current service and execution observations require the owning runtime; retained custody is shown separately.".into(),
+        },
+    });
     let unread = cx
         .read
         .message_count(se_store::MessageQuery {
@@ -206,6 +227,8 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
     Ok(AgentStatusOutput {
         agent: Read::Present {
             value: AgentRow {
+                secode_binding,
+                secode_runtime,
                 id: agent,
                 name,
                 role,
@@ -220,4 +243,65 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
             },
         },
     })
+}
+
+fn retained_secode_binding<R: Snapshot>(
+    session: Option<&se_types::SessionId>,
+    cx: &mut Cx<'_, R>,
+) -> Result<Read<super::SecodeBindingView>> {
+    let Some(session) = session else {
+        return Ok(Read::Absent {
+            checked: "this agent has no saved session".into(),
+        });
+    };
+    let source = super::process_commit::session_credential_id(session, "capture-source")?;
+    let record = match cx
+        .read
+        .capture_source(source)
+        .map_err(|error| store_error(&error))?
+    {
+        Read::Present { value } => value,
+        Read::Absent { checked } => return Ok(Read::Absent { checked }),
+        Read::Unreadable {
+            source,
+            reason,
+            error,
+        } => {
+            return Ok(Read::Unreadable {
+                source,
+                reason,
+                error,
+            });
+        }
+        Read::Unknown { what } => return Ok(Read::Unknown { what }),
+    };
+    let EventBody::CaptureSource {
+        session: found,
+        native_ref,
+        incarnation,
+        ..
+    } = &record.original.as_deref().unwrap_or(&record.current).body
+    else {
+        return Ok(Read::Unreadable {
+            source: "retained SE Code binding".into(),
+            reason: "the source has no original binding".into(),
+            error: None,
+        });
+    };
+    Ok(
+        match serde_json::from_slice::<super::SecodeBindingView>(incarnation) {
+            Ok(binding)
+                if found == session
+                    && binding.schema == "se.secode-binding/v1"
+                    && binding.session_id == *native_ref =>
+            {
+                Read::Present { value: binding }
+            }
+            _ => Read::Unreadable {
+                source: "retained SE Code binding".into(),
+                reason: "the original source is not a matching managed service binding".into(),
+                error: None,
+            },
+        },
+    )
 }

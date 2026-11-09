@@ -35,6 +35,11 @@ pub fn reserve<R: Snapshot>(
                     super::super::session_reference::CODEX_PENDING,
                     plan.session
                 ),
+                _ if plan.profile.provider == se_store::Provider::SeCode => format!(
+                    "{}{}",
+                    super::super::session_reference::SECODE_PENDING,
+                    plan.session
+                ),
                 _ => plan.session.as_str()[se_types::SessionId::PREFIX.len()..].into(),
             },
             consent: if plan.capture {
@@ -79,11 +84,10 @@ pub fn reserve<R: Snapshot>(
             "stop or reconcile the target's owned lifecycle before launching again",
         ));
     }
+    super::super::process_plan::require_managed_control(&current)?;
     for old in current.sessions {
-        let (session, provider) = match &old.current.body {
-            EventBody::SessionPrepared {
-                session, provider, ..
-            } => (session, *provider),
+        let session = match &old.current.body {
+            EventBody::SessionPrepared { session, .. } => session,
             _ => {
                 return Err(se_types::SeError::invalid(
                     "launch target",
@@ -91,16 +95,7 @@ pub fn reserve<R: Snapshot>(
                 ));
             }
         };
-        if !matches!(
-            provider,
-            se_store::Provider::Claude | se_store::Provider::Codex
-        ) {
-            return Err(se_types::SeError::invalid(
-                "launch preparation",
-                "reconcile the existing provider preparation before changing provider",
-            ));
-        }
-        // Managed Claude/Codex preparations have exactly these two capabilities;
+        // Managed preparations have exactly these two capabilities;
         // missing or independently changed credentials refuse the whole batch.
         for purpose in ["session", "http"] {
             bodies.push(EventBody::CredentialRevoked {
@@ -195,14 +190,14 @@ pub fn activate<R: Snapshot>(
         capture,
         credentials,
     } = activation;
-    if (plan.capture && capture.is_none())
+    if ((plan.capture || plan.profile.provider == se_store::Provider::SeCode) && capture.is_none())
         || (!plan.capture
             && capture.is_some()
-            && plan.profile.provider != se_store::Provider::Codex)
+            && plan.profile.provider == se_store::Provider::Claude)
     {
         return Err(se_types::SeError::invalid(
             "capture activation",
-            "a trusted native transcript pin exactly when capture was consented",
+            "a trusted conversation binding for SE Code, or a native transcript pin when capture was consented",
         ));
     }
     let containment = identity.containment.clone();

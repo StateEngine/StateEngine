@@ -14,6 +14,8 @@ mod files;
 pub use files::*;
 mod agent;
 pub use agent::*;
+mod secode;
+pub use secode::*;
 mod config;
 pub use config::*;
 mod status;

@@ -245,12 +245,7 @@ pub fn set<R: Snapshot>(
                     let provider = match profile.provider {
                         se_store::Provider::Claude => crate::config_policy::Provider::Claude,
                         se_store::Provider::Codex => crate::config_policy::Provider::Codex,
-                        se_store::Provider::SeCode => {
-                            return Err(SeError::invalid(
-                                "provider",
-                                "a standalone Claude or Codex agent",
-                            ));
-                        }
+                        se_store::Provider::SeCode => crate::config_policy::Provider::SeCode,
                     };
                     let resolved = configuration.resolve_profile(&input.value, provider, false)?;
                     profile.permission = match resolved.sandbox {

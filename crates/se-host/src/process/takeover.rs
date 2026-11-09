@@ -18,6 +18,12 @@ impl LaunchCoordinator {
         admission: Admission,
         deadline: &Deadline,
     ) -> Result<LaunchReply> {
+        // Unsupported managed providers refuse before takeover can retire an
+        // incumbent.
+        self.harness_for(plan.profile.provider)?;
+        if plan.profile.provider == se_store::Provider::SeCode {
+            self.preflight_secode(&plan, deadline).await?;
+        }
         let expired_window = matches!(&plan.control.latest_session, se_types::Read::Present { value }
             if se_core::ops::agent_launch::retryable_attended_setup(value));
         if !plan.input.override_live && (plan.replayed || plan.control.processes.is_empty()) {

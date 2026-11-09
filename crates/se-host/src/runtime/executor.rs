@@ -115,6 +115,9 @@ pub fn execute(
                         })
                         .await?;
                 }
+                if let Some(custody) = context.custody.get() {
+                    output = custody.observe_output(output, &deadline).await?;
+                }
                 Ok(ExecutedCall {
                     host_phases,
                     output,

@@ -112,8 +112,15 @@ impl LaunchCoordinator {
         deadline: &Deadline,
         capture: &crate::runtime::CaptureHandle,
     ) -> Result<()> {
+        if work.meta.provider == se_store::Provider::SeCode && work.active && !work.process_retired
+        {
+            self.deny_secode_approvals(work, deadline).await?;
+        }
         if work.capture_flushed || !work.meta.capture || !work.activated {
             return Ok(());
+        }
+        if work.meta.provider == se_store::Provider::SeCode {
+            return self.capture_secode(work, deadline).await;
         }
         if work.transcript.is_none() {
             let identity = crate::SessionIdentity {

@@ -29,9 +29,26 @@ fn open_shared(
     create: bool,
     share_write: bool,
 ) -> Result<File> {
+    open_shared_with_layout(
+        path,
+        directory,
+        access,
+        create,
+        share_write,
+        security::Layout::State,
+    )
+}
+fn open_shared_with_layout(
+    path: &Path,
+    directory: bool,
+    access: u32,
+    create: bool,
+    share_write: bool,
+    layout: security::Layout,
+) -> Result<File> {
     let name = wide(path)?;
     let descriptor = if create {
-        Some(security::descriptor(path, false)?)
+        Some(security::descriptor_for(path, false, layout)?)
     } else {
         None
     };
@@ -98,6 +115,7 @@ pub(in crate::state_files) struct Pin {
     file: File,
     identity: Identity,
     claim: bool,
+    layout: security::Layout,
 }
 impl Pin {
     pub(in crate::state_files) fn open(path: &Path) -> Result<Option<Self>> {
@@ -120,7 +138,16 @@ impl Pin {
             file,
             identity,
             claim: false,
+            layout: security::Layout::State,
         };
+        pin.check()?;
+        Ok(Some(pin))
+    }
+    pub(in crate::state_files) fn open_profile(path: &Path) -> Result<Option<Self>> {
+        let Some(mut pin) = Self::open(path)? else {
+            return Ok(None);
+        };
+        pin.layout = security::Layout::UserPrivate;
         pin.check()?;
         Ok(Some(pin))
     }
@@ -162,6 +189,7 @@ impl Pin {
             file,
             identity,
             claim: true,
+            layout: security::Layout::State,
         };
         pin.check()?;
         Ok(pin)
@@ -206,6 +234,14 @@ impl Pin {
         if current.identity != self.parent.identity {
             return Err(changed("installation parent identity changed", &self.path));
         }
+        if self.layout == security::Layout::UserPrivate {
+            let path = self
+                .path
+                .parent()
+                .ok_or_else(|| unsafe_path("profile parent missing", &self.path))?;
+            security::verify_for(current.file()?, path, false, self.layout)?;
+            security::verify_for(self.parent.file()?, path, false, self.layout)?;
+        }
         Ok(())
     }
     pub(in crate::state_files) fn check(&self) -> Result<()> {
@@ -221,7 +257,12 @@ impl Pin {
         {
             return Err(changed("installation file identity changed", &self.path));
         }
-        security::verify_owner(&current, &self.path)
+        security::verify_owner(&current, &self.path)?;
+        if self.layout == security::Layout::UserPrivate {
+            security::verify_for(&current, &self.path, true, self.layout)?;
+            security::verify_for(&self.file, &self.path, true, self.layout)?;
+        }
+        Ok(())
     }
     pub(in crate::state_files) fn mutation_guard(&self) -> Result<File> {
         self.check()?;
@@ -325,7 +366,10 @@ impl Pin {
         let backup_path = self
             .physical
             .with_file_name(format!(".se-edit-backup-{suffix}"));
-        let mut stage = open(&stage_path, false, 0, true)?;
+        let mut stage = open_shared_with_layout(&stage_path, false, 0, true, true, self.layout)?;
+        if self.layout == security::Layout::UserPrivate {
+            security::verify_for(&stage, &stage_path, true, self.layout)?;
+        }
         let stage_identity = metadata(&stage, &stage_path, false, false)?;
         let prepared = (|| {
             stage
@@ -397,6 +441,9 @@ impl Pin {
             ));
         }
         security::verify_owner(&observed, &self.path)?;
+        if self.layout == security::Layout::UserPrivate {
+            security::verify_for(&observed, &self.path, true, self.layout)?;
+        }
         // The backup is the still-held original object, not a new path claim.
         let backup = open(&backup_path, false, 0, false)?;
         if metadata(&backup, &backup_path, false, false)? != self.identity {

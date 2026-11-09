@@ -1,9 +1,10 @@
-//! Codex allocates a fresh thread only after C1. Its committed source binding
-//! supplies the actual reference; a pending preparation is never a vendor ID.
+//! Providers that allocate a conversation after C1 publish its actual reference
+//! through the committed source binding. A preparation is never a vendor ID.
 use crate::{scope, store_error::store_error};
 use se_store::{EventBody, ProjectionRecord, Snapshot};
 use se_types::{ProviderSessionId, Read, Result};
 pub const CODEX_PENDING: &str = "se-codex-pending:";
+pub const SECODE_PENDING: &str = "se-secode-pending:";
 
 pub fn read<R: Snapshot>(
     read: &mut R,
@@ -15,6 +16,7 @@ pub fn read<R: Snapshot>(
         provider,
         native_ref,
         consent,
+        surface,
         ..
     } = &first.body
     else {
@@ -23,7 +25,17 @@ pub fn read<R: Snapshot>(
             "the original session preparation is unavailable",
         ));
     };
-    if *provider != se_store::Provider::Codex || !native_ref.starts_with(CODEX_PENDING) {
+    let pending = match provider {
+        se_store::Provider::Codex if native_ref.starts_with(CODEX_PENDING) => Some("Codex"),
+        se_store::Provider::SeCode
+            if *surface == Some(se_store::SessionSurface::Headless)
+                && native_ref.starts_with(SECODE_PENDING) =>
+        {
+            Some("SE Code")
+        }
+        _ => None,
+    };
+    let Some(provider) = pending else {
         return if native_ref.is_empty() {
             Ok(Read::Absent {
                 checked: "no provider reference was recorded in this historical session".into(),
@@ -33,7 +45,8 @@ pub fn read<R: Snapshot>(
                 value: ProviderSessionId::new(native_ref.clone())?,
             })
         };
-    }
+    };
+    let subject = format!("actual {provider} thread binding");
     let id = super::process_commit::session_credential_id(session, "capture-source")?;
     let source = match read.capture_source(id).map_err(|e| store_error(&e))? {
         Read::Absent { .. }
@@ -43,13 +56,14 @@ pub fn read<R: Snapshot>(
             ) =>
         {
             return Ok(Read::Absent {
-                checked: "this Codex preparation never acquired an activated provider thread"
-                    .into(),
+                checked: format!(
+                    "this {provider} preparation never acquired an activated provider thread"
+                ),
             });
         }
         other => scope::require_present(
             other,
-            "actual Codex thread binding",
+            &subject,
             "Restore the original committed source binding; a C1 placeholder cannot resume a conversation.",
         )?,
     };
@@ -63,14 +77,15 @@ pub fn read<R: Snapshot>(
         } if *found == id
             && bound == session
             && captured == consent
-            && !actual.starts_with(CODEX_PENDING) =>
+            && !actual.starts_with(CODEX_PENDING)
+            && !actual.starts_with(SECODE_PENDING) =>
         {
             Ok(Read::Present {
                 value: ProviderSessionId::new(actual.clone())?,
             })
         }
         _ => Err(scope::unreadable(
-            "actual Codex thread binding",
+            &subject,
             "the source identity, session, consent or actual provider reference differs",
         )),
     }

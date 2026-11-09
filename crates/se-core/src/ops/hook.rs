@@ -405,9 +405,7 @@ pub fn committed<R: Snapshot>(
             "resumed native item",
             scope::COMMITTED_READ_RECOVERY,
         )?;
-        if !matches!(then.provider, Provider::Claude | Provider::Codex)
-            || original.header.event != event.header.event
-        {
+        if original.header.event != event.header.event {
             return Err(scope::unreadable(
                 "captured turn",
                 "receipt differs from the bound native conversation item",

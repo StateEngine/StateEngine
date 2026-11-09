@@ -3,7 +3,7 @@
 use super::codex_rpc::incompatible;
 use crate::{HarnessRequest, ProviderInvocation};
 use se_core::config_policy::{Approval, EffectiveSandbox, ResolvedProfile};
-use se_proc::{LaunchMode, NetworkPolicy, WritePolicy};
+use se_proc::{NetworkPolicy, WritePolicy};
 use se_types::{Body, ProviderSessionId, Read, Result, SeError};
 use serde_json::{Value, json};
 use std::{ffi::OsString, path::Path};
@@ -61,7 +61,7 @@ fn validate(launch: &CodexLaunch<'_>) -> Result<()> {
             "the exact resolved saved Codex profile",
         ));
     }
-    if request.mode == LaunchMode::Headless && resolved.approval != Approval::Never {
+    if request.mode.is_headless() && resolved.approval != Approval::Never {
         return Err(incompatible(
             "the saved approval policy needs an attended decision UI",
             "Launch in a supported window or select a named profile with approval='never'.",

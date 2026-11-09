@@ -13,7 +13,7 @@ use std::{
 use windows_sys::Win32::{Foundation::*, Security::*, Storage::FileSystem::*};
 
 pub(crate) mod security;
-use security::descriptor;
+use security::{Layout, descriptor};
 fn validate_component(value: &std::ffi::OsStr, path: &Path) -> Result<()> {
     let units: Vec<_> = value.encode_wide().collect();
     if units.contains(&(b':' as u16))
@@ -103,6 +103,11 @@ fn metadata(file: &File, path: &Path, directory: bool, check_security: bool) -> 
         index: id.index,
     })
 }
+fn metadata_for(file: &File, path: &Path, directory: bool, layout: Layout) -> Result<Identity> {
+    let identity = metadata(file, path, directory, false)?;
+    security::verify_for(file, path, !directory, layout)?;
+    Ok(identity)
+}
 fn open(path: &Path, directory: bool, create: bool, write: bool) -> Result<File> {
     open_access(path, directory, create, write, 0)
 }
@@ -113,9 +118,19 @@ fn open_access(
     write: bool,
     extra_access: u32,
 ) -> Result<File> {
+    open_with_layout(path, directory, create, write, extra_access, Layout::State)
+}
+fn open_with_layout(
+    path: &Path,
+    directory: bool,
+    create: bool,
+    write: bool,
+    extra_access: u32,
+    layout: Layout,
+) -> Result<File> {
     let data = wide(path)?;
     let descriptor = if create {
-        Some(descriptor(path, directory)?)
+        Some(security::descriptor_for(path, directory, layout)?)
     } else {
         None
     };
@@ -158,6 +173,14 @@ fn open_access(
     Ok(unsafe { File::from_raw_handle(raw) })
 }
 fn walk(path: &Path, create: bool, private_from: Option<&Path>) -> Result<File> {
+    walk_for(path, create, private_from, Layout::State)
+}
+fn walk_for(
+    path: &Path,
+    create: bool,
+    private_from: Option<&Path>,
+    layout: Layout,
+) -> Result<File> {
     if !path.is_absolute() {
         return Err(unsafe_path("absolute state directory required", path));
     }
@@ -204,7 +227,7 @@ fn walk(path: &Path, create: bool, private_from: Option<&Path>) -> Result<File> 
         // descendant receive full protection checks, never an inherited-DACL guess.
         let file = if prefix == path || private_from.is_some_and(|root| prefix.starts_with(root)) {
             let file = open(&prefix, true, false, true)?;
-            metadata(&file, &prefix, true, true)?;
+            metadata_for(&file, &prefix, true, layout)?;
             file
         } else {
             let data = wide(&prefix)?;
@@ -268,8 +291,12 @@ pub(super) struct Directory {
     file: File,
     identity: Identity,
     resolved_root: PathBuf,
+    layout: Layout,
 }
 impl Directory {
+    pub fn identity(&self, file: &File, path: &Path) -> Result<Identity> {
+        metadata_for(file, path, false, self.layout)
+    }
     pub fn available_bytes(&self, path: &Path) -> Result<u64> {
         let root = wide(&self.resolved_root)?;
         let mut available = 0;
@@ -289,8 +316,14 @@ impl Directory {
         Ok(available)
     }
     pub fn open(path: &Path) -> Result<Self> {
-        let file = walk(path, false, None)?;
-        let identity = metadata(&file, path, true, true)?;
+        Self::open_with_layout(path, Layout::State)
+    }
+    pub fn open_profile(path: &Path) -> Result<Self> {
+        Self::open_with_layout(path, Layout::UserPrivate)
+    }
+    fn open_with_layout(path: &Path, layout: Layout) -> Result<Self> {
+        let file = walk_for(path, false, None, layout)?;
+        let identity = metadata_for(&file, path, true, layout)?;
         let mut buffer = vec![0u16; 32768];
         // SAFETY: retained directory handle, writable UTF-16 buffer and explicit
         // capacity. Resolve once from the pinned object, not a caller pathname.
@@ -316,18 +349,19 @@ impl Directory {
             file,
             identity,
             resolved_root,
+            layout,
         })
     }
     pub fn check_name(&self, path: &Path) -> Result<()> {
-        let found = walk(path, false, None)?;
-        if metadata(&found, path, true, true)? != self.identity {
+        let found = walk_for(path, false, None, self.layout)?;
+        if metadata_for(&found, path, true, self.layout)? != self.identity {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
                 "held state directory was replaced",
                 path,
             ));
         }
-        metadata(&self.file, path, true, true)?;
+        metadata_for(&self.file, path, true, self.layout)?;
         Ok(())
     }
     fn absolute(&self, path: &Path, root: &Path) -> Result<PathBuf> {
@@ -344,11 +378,12 @@ impl Directory {
     }
     fn parent(&self, path: &Path, root: &Path) -> Result<File> {
         let path = self.absolute(path, root)?;
-        walk(
+        walk_for(
             path.parent()
                 .ok_or_else(|| unsafe_path("file parent missing", &path))?,
             false,
             Some(&self.resolved_root),
+            self.layout,
         )
     }
     pub fn prepare_directory(&self, path: &Path, root: &Path) -> Result<()> {
@@ -360,7 +395,7 @@ impl Directory {
     fn prepare_directory_impl(&self, path: &Path, root: &Path, exclusive: bool) -> Result<()> {
         let parent = self.parent(path, root)?;
         let absolute = self.absolute(path, root)?;
-        let descriptor = descriptor(path, true)?;
+        let descriptor = security::descriptor_for(path, true, self.layout)?;
         let attributes = SECURITY_ATTRIBUTES {
             nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
@@ -381,14 +416,14 @@ impl Directory {
             }
         }
         let file = open(&absolute, true, false, true)?;
-        let before = metadata(&file, path, true, true)?;
+        let before = metadata_for(&file, path, true, self.layout)?;
         file.sync_all()
             .map_err(|e| io_error("flush protected child directory", path, e))?;
         parent
             .sync_all()
             .map_err(|e| io_error("flush protected child parent", path, e))?;
         let outside = open(&absolute, true, false, true)?;
-        if metadata(&outside, path, true, true)? != before {
+        if metadata_for(&outside, path, true, self.layout)? != before {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
                 "prepared directory changed on readback",
@@ -399,8 +434,15 @@ impl Directory {
     }
     pub fn create_staging_at(&self, path: &Path, root: &Path) -> Result<File> {
         let parent = self.parent(path, root)?;
-        let file = open(&self.absolute(path, root)?, false, true, true)?;
-        metadata(&file, path, false, true)?;
+        let file = open_with_layout(
+            &self.absolute(path, root)?,
+            false,
+            true,
+            true,
+            0,
+            self.layout,
+        )?;
+        metadata_for(&file, path, false, self.layout)?;
         parent
             .sync_all()
             .map_err(|e| io_error("flush staging parent", path, e))?;
@@ -409,7 +451,7 @@ impl Directory {
     pub fn retire_empty_staging(&self, path: &Path, file: &File, root: &Path) -> Result<()> {
         let parent = self.parent(path, root)?;
         let physical = self.absolute(path, root)?;
-        let held = metadata(file, path, false, true)?;
+        let held = metadata_for(file, path, false, self.layout)?;
         // Use a separate native open, never DuplicateHandle: POSIX disposition
         // unlinks the name when its deletion handle closes. The original
         // writable file must survive that close for anonymous staging.
@@ -418,7 +460,7 @@ impl Directory {
                 error.operation = "open empty staging deletion handle";
                 error
             })?;
-        if metadata(&retiring, path, false, true)? != held {
+        if metadata_for(&retiring, path, false, self.layout)? != held {
             return Err(unsafe_path("empty staging name changed", path));
         }
         // Both opens share deletion; the original CREATE_NEW handle still
@@ -461,7 +503,7 @@ impl Directory {
     pub fn open_for_publication(&self, path: &Path, root: &Path) -> Result<File> {
         let _parent = self.parent(path, root)?;
         let file = open(&self.absolute(path, root)?, false, false, true)?;
-        metadata(&file, path, false, true)?;
+        metadata_for(&file, path, false, self.layout)?;
         Ok(file)
     }
     pub fn readback(&self, path: &Path, root: &Path) -> Result<Option<File>> {
@@ -487,7 +529,7 @@ impl Directory {
             }
             Err(e) => return Err(e),
         };
-        metadata(&file, path, false, true)?;
+        metadata_for(&file, path, false, self.layout)?;
         Ok(Some(file))
     }
     pub fn publish(

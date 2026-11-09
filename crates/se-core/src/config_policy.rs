@@ -80,6 +80,10 @@ pub struct ProviderConfig {
     pub model: String,
     #[serde(default = "default_profile")]
     pub profile: String,
+    /// SE Code copies provider configuration into a new private service profile.
+    /// The seed is never used as the managed service's database or write target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed_profile: Option<String>,
 }
 fn default_profile() -> String {
     "default".into()
@@ -91,12 +95,15 @@ pub struct Providers {
     pub claude: ProviderConfig,
     #[serde(default = "default_codex")]
     pub codex: ProviderConfig,
+    #[serde(default = "default_secode")]
+    pub secode: ProviderConfig,
 }
 fn default_claude() -> ProviderConfig {
     ProviderConfig {
         command: None,
         model: String::new(),
         profile: default_profile(),
+        seed_profile: None,
     }
 }
 fn default_codex() -> ProviderConfig {
@@ -104,6 +111,15 @@ fn default_codex() -> ProviderConfig {
         command: None,
         model: String::new(),
         profile: default_profile(),
+        seed_profile: None,
+    }
+}
+fn default_secode() -> ProviderConfig {
+    ProviderConfig {
+        command: None,
+        model: String::new(),
+        profile: default_profile(),
+        seed_profile: None,
     }
 }
 impl Default for Providers {
@@ -111,6 +127,7 @@ impl Default for Providers {
         Self {
             claude: default_claude(),
             codex: default_codex(),
+            secode: default_secode(),
         }
     }
 }
@@ -273,7 +290,19 @@ impl ConfigFile {
         for (name, provider) in [
             ("claude", &self.providers.claude),
             ("codex", &self.providers.codex),
+            ("secode", &self.providers.secode),
         ] {
+            if let Some(seed) = &provider.seed_profile
+                && (name != "secode"
+                    || seed.len() > 4096
+                    || seed.chars().any(char::is_control)
+                    || !std::path::Path::new(seed).is_absolute())
+            {
+                return Err(invalid(
+                    "providers.secode.seed_profile",
+                    "an absolute SE Code provider-configuration seed, only for SE Code",
+                ));
+            }
             if provider.command.as_ref().is_some_and(|command| {
                 command.is_empty() || command.len() > 4096 || command.contains('\0')
             }) {
@@ -298,6 +327,7 @@ impl ConfigFile {
         match provider {
             Provider::Claude => &self.providers.claude,
             Provider::Codex => &self.providers.codex,
+            Provider::SeCode => &self.providers.secode,
         }
     }
     pub fn provider_command(&self, provider: Provider) -> &str {
@@ -307,6 +337,7 @@ impl ConfigFile {
             .unwrap_or(match provider {
                 Provider::Claude => "claude",
                 Provider::Codex => "codex",
+                Provider::SeCode => "secode",
             })
     }
     pub fn resolve_profile(
@@ -324,13 +355,13 @@ impl ConfigFile {
                 .get(name)
                 .ok_or_else(|| invalid("profile", "saved named profile is absent"))?
         };
-        let approval = profile
-            .approval
-            .unwrap_or(if provider == Provider::Codex && detached {
+        let approval = profile.approval.unwrap_or(
+            if matches!(provider, Provider::Codex | Provider::SeCode) && detached {
                 Approval::Never
             } else {
                 Approval::OnRequest
-            });
+            },
+        );
         Ok(ResolvedProfile {
             name: name.into(),
             sandbox: if profile.bypass {
@@ -383,7 +414,8 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
     let (human_only, agent_record) = match parts.as_slice() {
         ["default_project"] | ["launch", "provider" | "terminal"] | ["atlas", "enabled" | "hooks"] => (false, false),
         ["runtime", "listen_port" | "blocking_jobs"] | ["capture", "enabled"] => (true, false),
-        ["providers", "claude" | "codex", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
+        ["providers", "claude" | "codex" | "secode", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
+        ["providers", "secode", "seed_profile"] => (true, false),
         ["profiles", name, "sandbox" | "network" | "approval" | "bypass" | "git_write"] if !name.is_empty() => (true, false),
         _ => return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField { op: "config".into(), field: key.into(), next_step: "Use se help config for available commands; saved agent fields are model, profile and can-create.".into() }))),
     };

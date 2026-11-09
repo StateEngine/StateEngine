@@ -77,6 +77,9 @@ fn running(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
     }
     write::profile(&value.permission_profile, out)?;
     writeln!(out, "Conversation: {}", value.conversation_id)?;
+    if let Some(binding) = &value.secode_binding {
+        super::read::secode::launch(binding, out)?;
+    }
     if let Some(command) = &value.resume.command {
         writeln!(out, "Resume: {command}")?;
     }

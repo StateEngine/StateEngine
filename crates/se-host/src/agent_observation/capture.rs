@@ -3,6 +3,24 @@ use super::*;
 use sha2::{Digest, Sha256};
 
 pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Result<()> {
+    if plan.row.provider == se_types::Provider::SeCode {
+        // This provider's canonical source is authenticated HTTP, not a file.
+        // Current service facts are joined by the owning runtime separately.
+        plan.row.resume.ready = false;
+        plan.row.resume.mode = "compatible-service-required".into();
+        let mut reason = se_core::ops::AgentCommand::SECODE_RESUME_UNAVAILABLE.to_owned();
+        if let Read::Unreadable {
+            reason: failure, ..
+        } = &plan.capture
+        {
+            reason.push_str(&format!(" Capture is unverified: {failure}"));
+        }
+        plan.row.resume.reason = Some(reason);
+        plan.row.resume.command = None;
+        plan.row.resume.argv = None;
+        plan.row.conversation.state = "retained".into();
+        return Ok(());
+    }
     let target = plan
         .identity
         .as_ref()

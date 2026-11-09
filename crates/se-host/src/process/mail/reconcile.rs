@@ -30,6 +30,29 @@ impl LaunchCoordinator {
                 .await?;
                 flight.observed = true;
             }
+        }
+        // Preserve the attempted offer before an authenticated read can fail.
+        // A lost response must leave durable unknown delivery, never no offer.
+        if work.secode.is_some() && work.mail.flight.is_some() {
+            self.reconcile_secode_notice(work, deadline).await?;
+        }
+        self.reconcile_captured_mail(work, target, deadline).await
+    }
+
+    /// Captured canonical input can settle delivery even after cancellation.
+    /// This reads committed capture only and never offers provider input.
+    pub(super) async fn reconcile_captured_mail(
+        &self,
+        work: &mut owned::Work,
+        target: &core::MailTarget,
+        deadline: &Deadline,
+    ) -> Result<()> {
+        let previous = work
+            .mail
+            .flight
+            .as_ref()
+            .map(|flight| flight.reservation.notice_id.clone());
+        if let Some(flight) = work.mail.flight.as_mut() {
             // Only a witnessed zero-byte failure permits a fresh attempt on a
             // later commit/retry wake. Uncertain acceptance retains this flight.
             if flight
@@ -114,6 +137,12 @@ impl LaunchCoordinator {
                 }
                 work.mail.flight = None;
             }
+        }
+        if let Some(notice) = previous
+            && work.mail.flight.is_none()
+            && work.secode.is_some()
+        {
+            self.retire_secode_notice(work, &notice, deadline).await?;
         }
         self.settle_mail(target, deadline).await
     }

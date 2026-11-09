@@ -239,6 +239,9 @@ impl Scope {
     pub fn terminate(&mut self, deadline: std::time::Instant) -> ProcResult<StopDispatch> {
         self.signal(deadline, libc::SIGTERM)
     }
+    pub fn interrupt(&mut self, deadline: std::time::Instant) -> ProcResult<StopDispatch> {
+        self.signal(deadline, libc::SIGINT)
+    }
     fn signal(
         &mut self,
         deadline: std::time::Instant,

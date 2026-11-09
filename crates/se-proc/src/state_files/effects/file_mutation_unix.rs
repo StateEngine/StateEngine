@@ -204,6 +204,9 @@ impl Pin {
                 .metadata()
                 .map_err(|e| io_error("read original profile security", &self.path, e))?;
             metadata::copy(&self.file, &stage, &self.path)?;
+            if self.private {
+                super::super::metadata(&stage, &stage_path, false)?;
+            }
             stage
                 .sync_all()
                 .map_err(|e| io_error("sync staged profile", &stage_path, e))?;
@@ -254,6 +257,9 @@ impl Pin {
                 || digest(&observed, &self.path)? != <[u8; 32]>::from(Sha256::digest(bytes))
             {
                 return Err(changed("profile replacement readback differs", &self.path));
+            }
+            if self.private {
+                super::super::metadata(&observed, &self.path, false)?;
             }
             // SAFETY: the displaced entry's exact identity and digest were checked
             // after atomic exchange; unlink only that held original name.

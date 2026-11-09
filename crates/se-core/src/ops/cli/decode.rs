@@ -161,7 +161,7 @@ pub fn from_matches_with_key(
                 provider: text(m, "provider")
                     .map(|v| {
                         serde_json::from_value(serde_json::Value::String(v))
-                            .map_err(|_| SeError::invalid("provider", "claude or codex"))
+                            .map_err(|_| SeError::invalid("provider", "claude, codex or secode"))
                     })
                     .transpose()?,
                 model: text(m, "model"),
@@ -297,7 +297,7 @@ pub fn from_matches_with_key(
                 provider: text(m, "provider")
                     .map(|value| {
                         serde_json::from_value(serde_json::Value::String(value))
-                            .map_err(|_| SeError::invalid("provider", "claude or codex"))
+                            .map_err(|_| SeError::invalid("provider", "claude, codex or secode"))
                     })
                     .transpose()?,
                 model: text(m, "model"),

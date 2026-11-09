@@ -8,6 +8,8 @@ use std::{
 };
 pub(crate) mod effects;
 mod permissions;
+mod profile;
+pub use profile::NativeProfileFiles;
 pub(crate) mod source;
 pub use permissions::{
     PermissionKind, PermissionProtection, PermissionRepairPin, PermissionRepairWitness,
@@ -265,7 +267,7 @@ impl NativeStateFiles {
         source
             .sync_all()
             .map_err(|e| io_error("sync staged data", staged, e))?;
-        let before = os::identity(&source, staged)?;
+        let before = self.directory.identity(&source, staged)?;
         self.directory
             .publish(staged, destination, &self.root, &source)?;
         let published = self
@@ -278,7 +280,7 @@ impl NativeStateFiles {
                     destination,
                 )
             })?;
-        if os::identity(&published, destination)? != before {
+        if self.directory.identity(&published, destination)? != before {
             return Err(failure(
                 StateFileErrorCode::SourceChanged,
                 "publication identity changed",

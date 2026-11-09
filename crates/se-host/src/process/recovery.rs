@@ -183,6 +183,11 @@ impl LaunchCoordinator {
             if let Err(error) = self.restore_cleanup(&mut work, deadline).await {
                 work.cleanup_failure = Some(error.body);
             }
+            if work.meta.provider == se_store::Provider::SeCode
+                && let Err(error) = self.restore_secode_work(&mut work, deadline).await
+            {
+                work.cleanup_failure = Some(error.body);
+            }
             match outcome {
                 Ok(RecoveryOutcome::Recovered { process, record }) => {
                     let process = Arc::new(process);

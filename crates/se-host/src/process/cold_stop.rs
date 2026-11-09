@@ -74,6 +74,11 @@ impl LaunchCoordinator {
             return Ok(Some(job));
         }
         self.restore_capture_status(&mut work, deadline).await?;
+        if work.meta.provider == se_store::Provider::SeCode
+            && !(work.session_retired && work.capture_flushed)
+        {
+            self.restore_secode_work(&mut work, deadline).await?;
+        }
         let source = super::recovery::recovery_source(checkpoint, &row)?;
         let native = self.native.clone();
         let generation = self.options.epoch.generation;

@@ -78,6 +78,7 @@ pub fn create<R: Snapshot>(
     let defaults = match provider {
         Provider::Claude => &configuration.providers.claude,
         Provider::Codex => &configuration.providers.codex,
+        Provider::SeCode => &configuration.providers.secode,
     };
     let permission = match configuration
         .resolve_profile(&defaults.profile, provider, false)?
@@ -111,6 +112,7 @@ pub fn create<R: Snapshot>(
                 provider: match provider {
                     Provider::Claude => se_store::Provider::Claude,
                     Provider::Codex => se_store::Provider::Codex,
+                    Provider::SeCode => se_store::Provider::SeCode,
                 },
                 model,
                 permission,
@@ -190,12 +192,7 @@ pub fn committed<R: Snapshot>(
     let provider = match profile.provider {
         se_store::Provider::Claude => Provider::Claude,
         se_store::Provider::Codex => Provider::Codex,
-        se_store::Provider::SeCode => {
-            return Err(scope::unreadable(
-                "agent creation provider",
-                "unexpected provider in a managed agent identity",
-            ));
-        }
+        se_store::Provider::SeCode => Provider::SeCode,
     };
     Ok(super::AgentReceipt {
         commit,

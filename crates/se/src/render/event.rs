@@ -183,6 +183,7 @@ fn summary_fields(kind: &str) -> &'static [(&'static str, &'static str)] {
         "transcript.event" => &[
             ("Provider event", "/metadata/kind"),
             ("Type", "/metadata/subtype"),
+            ("Message", "/metadata/message"),
             ("Count", "/metadata/count"),
         ],
         "capture.suppressed" => &[("Count", "/count"), ("Reason", "/reason")],

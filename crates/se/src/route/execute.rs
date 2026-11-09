@@ -205,6 +205,7 @@ fn dispatch_with_cold_recovery(
                 });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
         let mut output = super::session_observation::finish(prepared, &cx.home)?;
+        let mut service_observation = None;
         if let AnyOutput::ProjectStatus(status) = &mut output
             && status.value.runtime.state == "running"
             && !cx.selections.status_all
@@ -222,14 +223,20 @@ fn dispatch_with_cold_recovery(
                 &selections,
                 diagnostic,
             );
-            status.value.atlas = match observed {
-                Ok(AnyOutput::ProjectStatus(live)) => live.value.atlas,
+            status.value.atlas = match &observed {
+                Ok(AnyOutput::ProjectStatus(live)) => live.value.atlas.clone(),
                 Ok(_) => se_core::ops::status::atlas_view(Err(scope::unreadable(
                     "Atlas status",
                     "the host returned a different operation family",
                 ))),
-                Err(error) => se_core::ops::status::atlas_view(Err(error)),
+                Err(error) => se_core::ops::status::atlas_view(Err(se_types::SeError::from(
+                    error.body.clone(),
+                ))),
             };
+            service_observation = Some(observed);
+        }
+        if let Some(live) = service_observation {
+            output = super::session_observation::merge_secode(output, live)?;
         }
         return super::status::finish(cx, &reader, output, &caller.admission);
     }
@@ -242,6 +249,7 @@ fn dispatch_with_cold_recovery(
         RuntimeNeed::Host | RuntimeNeed::HostAutoStart
     );
     if op.meta().effect == Effect::Read && !host_required {
+        let observation_op = op.clone();
         let observed = se_types::UnixMicros::new(u64::try_from(now_us()?).map_err(|_| {
             SeError::invalid("read observation clock", "nonnegative Unix microseconds")
         })?)?;
@@ -269,7 +277,31 @@ fn dispatch_with_cold_recovery(
             )
         });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
-        let output = super::session_observation::finish(prepared, &cx.home)?;
+        let mut output = super::session_observation::finish(prepared, &cx.home)?;
+        if super::session_observation::has_secode(&output) {
+            let live = match endpoint(&files) {
+                Ok(Read::Present { .. }) => Some(super::hosted::forward(
+                    cx,
+                    &files,
+                    &reader,
+                    &caller,
+                    observation_op,
+                    &selections,
+                    diagnostic,
+                )),
+                Ok(Read::Absent { .. }) => None,
+                Ok(Read::Unreadable { source, reason, .. }) => {
+                    Some(Err(scope::unreadable(&source, &reason)))
+                }
+                Ok(Read::Unknown { what }) => {
+                    Some(Err(scope::unreadable("runtime endpoint", &what)))
+                }
+                Err(error) => Some(Err(error)),
+            };
+            if let Some(live) = live {
+                output = super::session_observation::merge_secode(output, live)?;
+            }
+        }
         return super::status::finish(cx, &reader, output, &caller.admission);
     }
     // End the finite auth/selection pin before stdin, IPC, writer or custody work.

@@ -277,11 +277,14 @@ fn empty_row(target: ControlAgent, home: &std::path::Path) -> AgentStopResult {
         &target.target.project.id,
         false,
     )
+    .filter(|_| target.target.provider != se_types::Provider::SeCode)
     .map(|command| command.with_detach(!window));
     AgentStopResult {
         resume: StopResume {
             state: "unavailable".into(),
-            reason: Some(if resume.is_none() {
+            reason: Some(if target.target.provider == se_types::Provider::SeCode {
+                se_core::ops::AgentCommand::SECODE_RESUME_UNAVAILABLE.into()
+            } else if resume.is_none() {
                 se_core::ops::AgentCommand::HOME_UNAVAILABLE.into()
             } else {
                 "No original conversation has been proven by this stop.".into()
@@ -393,7 +396,7 @@ pub(super) fn fill_stopped(
         row.result = "capture-incomplete".into();
         row.resume.state = "capture-incomplete".into();
         row.resume.reason = Some(format!(
-            "Native exit is witnessed; capture failed: {}. Restore the original transcript and retry stop to capture its pending records, then resume the saved conversation; --new remains available for a fresh conversation.",
+            "Native exit is witnessed; capture failed: {}. Restore the original capture source and retry stop to capture its pending records. Conversation retention does not establish resume readiness.",
             failure.message()
         ));
         row.resume.conversation_id = None;
@@ -402,6 +405,17 @@ pub(super) fn fill_stopped(
         return Ok(());
     }
     row.resume.model = work.meta.model.clone();
+    if work.meta.provider == se_store::Provider::SeCode {
+        row.resume.state = "compatible-service-required".into();
+        row.resume.reason = Some(se_core::ops::AgentCommand::SECODE_RESUME_UNAVAILABLE.into());
+        row.resume.conversation_id = match &work.meta.conversation {
+            se_types::Read::Present { value } => Some(value.to_string()),
+            _ => None,
+        };
+        row.resume.argv.clear();
+        row.resume.command.clear();
+        return Ok(());
+    }
     match (&work.meta.conversation, work.activated) {
         (se_types::Read::Present { value }, true) if !row.resume.argv.is_empty() => {
             row.resume.state = "ready".into();

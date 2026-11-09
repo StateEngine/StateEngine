@@ -1,5 +1,7 @@
 mod console;
 mod identity;
+mod interrupt;
+pub use interrupt::{CONSOLE_INTERRUPT_ENTRY, console_interrupt_entry};
 mod notify;
 mod recovery;
 pub use recovery::observe_prepared_scope_exit;
@@ -30,6 +32,8 @@ pub(crate) struct Scope {
     pub guarantee: ContainmentGuarantee,
     pub entry: EntryMethod,
     max_members: usize,
+    console_interrupt: bool,
+    interrupt_helper: Option<spawn::Child>,
     _notification: notify::Registration,
 }
 const LIMITS: JOB_OBJECT_LIMIT = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
@@ -136,6 +140,8 @@ impl Driver {
             },
             entry: EntryMethod::WindowsJobList,
             max_members: limits.max_diagnostic_members as usize,
+            console_interrupt: spec.mode == LaunchMode::HeadlessConsole,
+            interrupt_helper: None,
             _notification: notification,
         };
         security::verify_job(&scope.job)?;
@@ -381,6 +387,10 @@ impl Scope {
         }
         self.child = None;
         self.console_host = None;
+        if let Some(helper) = &mut self.interrupt_helper {
+            helper.pin.close()?;
+        }
+        self.interrupt_helper = None;
         self.job.close()?;
         // The slot's final Drop closes this witnessed-empty job. No raw handle
         // is returned to another layer and no provider endpoint is closed here.

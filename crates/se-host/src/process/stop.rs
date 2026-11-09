@@ -38,6 +38,25 @@ impl LaunchCoordinator {
                     state.cleanup_failure = Some(error.body);
                     return;
                 }
+                if state.meta.provider == se_store::Provider::SeCode
+                    && !state.active
+                    && !state.activated
+                {
+                    let result = match deadline.stage(Duration::from_secs(20)) {
+                        Ok(bound) => self.cleanup_failed(&mut state, &bound).await,
+                        Err(error) => Err(error),
+                    };
+                    match result {
+                        Ok(()) => {
+                            if !job.settled.swap(true, Ordering::AcqRel) {
+                                self.activity
+                                    .send_modify(|count| *count = count.saturating_sub(1));
+                            }
+                        }
+                        Err(error) => state.cleanup_failure = Some(error.body),
+                    }
+                    return;
+                }
                 if state.recover_provider
                     && !self.recover_control(&mut state, &job, &deadline).await
                 {
@@ -72,6 +91,28 @@ impl LaunchCoordinator {
                     match activity {
                         Ok(turn) => state.mail.idle = turn.is_none(),
                         Err(error) => state.cleanup_failure = Some(error.body),
+                    }
+                    if changed {
+                        job.mail_pending.store(true, Ordering::Release);
+                        capture_pending = true;
+                    }
+                }
+                if let Some(binding) = state
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| binding.secode.as_ref())
+                {
+                    let changed = binding.completion.take();
+                    let failure = binding
+                        .diagnostics
+                        .lock()
+                        .map_err(|_| error("SE Code stream state", "poisoned diagnostics"))
+                        .and_then(|diagnostics| match &diagnostics.failure {
+                            Some(body) => Err(se_types::SeError::from(body.clone())),
+                            None => Ok(()),
+                        });
+                    if let Err(error) = failure {
+                        state.cleanup_failure = Some(error.body);
                     }
                     if changed {
                         job.mail_pending.store(true, Ordering::Release);
@@ -357,6 +398,9 @@ impl LaunchCoordinator {
                 .await
             {
                 Ok(interrupt) if interrupt.requested => {
+                    if binding.secode.is_some() {
+                        self.interrupt_secode_client(work, &graceful).await?;
+                    }
                     // Codex's WebSocket close ends this client's transport,
                     // not its persistent app-server listener. Ask the exact
                     // owned Linux scope to terminate before the force interval.
@@ -571,6 +615,10 @@ impl LaunchCoordinator {
                 return Err(error);
             }
         }
+        // A stopped resident client cannot emit another wake. Settle only
+        // notices proved by the final canonical capture before ending its
+        // recipient session; uncertain admissions remain retained and unread.
+        self.reconcile_stopped_secode_mail(work, deadline).await?;
         let reason = match &work.capture_failure {
             Some(error) => format!(
                 "{reason}; capture incomplete ({}); restore the original transcript and retry stop to reconcile its retained cursor before resuming",

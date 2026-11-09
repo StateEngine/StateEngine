@@ -17,6 +17,9 @@ pub struct Record {
     pub schema: String,
     pub kind: String,
     pub subtype: Option<String>,
+    /// Canonical provider system text, including execution failures.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
     pub position: Position,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub count: Option<u64>,
@@ -46,6 +49,7 @@ impl Record {
                 .is_some_and(|(a, b)| a.len() != b.len()),
             kind: k,
             subtype: sub,
+            message: None,
             queued_input: None,
             captured_tool: None,
             count: None,

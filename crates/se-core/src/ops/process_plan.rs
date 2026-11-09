@@ -24,6 +24,29 @@ fn imported_reference(reference: Read<ProviderSessionId>) -> Result<Read<Provide
     Ok(reference)
 }
 
+pub(crate) fn require_managed_control(control: &se_store::ControlTarget) -> Result<()> {
+    for record in &control.sessions {
+        let EventBody::SessionPrepared {
+            provider, surface, ..
+        } = &record.original.as_deref().unwrap_or(&record.current).body
+        else {
+            return Err(scope::unreadable(
+                "managed session control",
+                "the original active session preparation is unavailable",
+            ));
+        };
+        if *provider == se_store::Provider::SeCode
+            && *surface != Some(se_store::SessionSurface::Headless)
+        {
+            return Err(SeError::invalid(
+                "managed session control",
+                "stop the embedded SE Code session through its owning SE Code service first",
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub fn target<R: Snapshot>(
     selected: Option<&AgentId>,
     selector: Option<&str>,
@@ -77,6 +100,7 @@ pub fn launch<R: Snapshot>(
             ));
         }
     };
+    require_managed_control(&control)?;
     let saved = scope::require_present(
         control.profile.clone(),
         "saved launch profile",
@@ -91,13 +115,14 @@ pub fn launch<R: Snapshot>(
     let provider = match profile.provider {
         se_store::Provider::Claude => Provider::Claude,
         se_store::Provider::Codex => Provider::Codex,
-        se_store::Provider::SeCode => {
-            return Err(SeError::invalid(
-                "launch provider",
-                "a managed standalone provider",
-            ));
-        }
+        se_store::Provider::SeCode => Provider::SeCode,
     };
+    if provider == Provider::SeCode && !input.detach {
+        return Err(SeError::invalid(
+            "SE Code launch mode",
+            "headless launch with --detach",
+        ));
+    }
     if input
         .owner_provider
         .is_some_and(|selected| selected != provider)
