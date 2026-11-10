@@ -9,32 +9,55 @@ use std::io::{self, Write};
 type Dispatch<'a> =
     dyn FnMut(&Bootstrap, AnyOp, &mut dyn FnMut(&str) -> io::Result<()>) -> Result<AnyOutput> + 'a;
 #[derive(Serialize)]
-struct SendStatus<'a> {
+struct SendStatus<'a, T> {
     schema: &'static str,
     status: &'static str,
     #[serde(flatten)]
-    binding: &'a RemoteSendPreparation,
+    binding: &'a T,
 }
-fn pending(p: &RemoteSendPreparation, json: bool, out: &mut impl Write) -> io::Result<()> {
+fn pending<T: Serialize>(
+    schema: &'static str,
+    binding: &T,
+    description: std::fmt::Arguments<'_>,
+    json: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
     if json {
         serde_json::to_writer(
             &mut *out,
             &SendStatus {
-                schema: "stateengine.remote-send-status/v1",
+                schema,
                 status: "local_pending",
-                binding: p,
+                binding,
             },
         )
         .map_err(io::Error::other)?;
         writeln!(out)?;
     } else {
-        writeln!(
-            out,
-            "Pending remote send {} to {}/{} session {} (host {:?}, grant {}); no durable receipt yet",
-            p.idempotency_key, p.target.project, p.target.agent, p.session, p.host, p.grant
-        )?;
+        writeln!(out, "Pending {description}; no durable receipt yet")?;
     }
     out.flush()
+}
+/// This is presentation only. Native mail retains its ordinary admission,
+/// transaction, notification completion and final receipt/error renderer.
+pub(crate) fn pending_native(
+    cx: &Bootstrap,
+    input: &se_core::ops::MessageSend,
+    json: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let binding = serde_json::json!({
+        "idempotency_key":input.idempotency_key,
+        "project_selector":cx.project,"recipient_selector":input.to,
+        "body_bytes":input.body.len(),
+    });
+    pending(
+        "stateengine.send-status/v1",
+        &binding,
+        format_args!("send {} to {}", input.idempotency_key, input.to),
+        json,
+        out,
+    )
 }
 fn error(
     error: &SeError,
@@ -177,7 +200,16 @@ pub(crate) fn run(
                 host: p.host,
                 grant: p.grant.clone(),
             }));
-            pending(&p, json, stderr)?;
+            pending(
+                "stateengine.remote-send-status/v1",
+                &p,
+                format_args!(
+                    "remote send {} to {}/{} session {} (host {:?}, grant {})",
+                    p.idempotency_key, p.target.project, p.target.agent, p.session, p.host, p.grant
+                ),
+                json,
+                stderr,
+            )?;
             match dispatch(cx, AnyOp::RemoteSend(input), &mut diagnostic) {
                 Ok(AnyOutput::RemoteSend(v)) => {
                     if let se_types::Receipt::Refused { error: body } = &v.value.receipt {

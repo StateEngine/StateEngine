@@ -165,6 +165,9 @@ pub fn run(
             &mut dispatch,
         );
     }
+    if let AnyOp::MessageSend(input) = &operation {
+        remote::pending_native(&context, input, common.json, &mut stderr)?;
+    }
     #[cfg(any(target_os = "linux", windows))]
     if matches!(&operation, AnyOp::RuntimeUp(input) if input.foreground) {
         // The Windows host loop uses its own bounded stack. Do not hold a
