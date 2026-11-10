@@ -12,7 +12,8 @@ LABELS = {
     "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
            "persistent processes after 2 seat(s)", "embedded A/B"),
-    "B4": ("standalone RSS one session",),
+    "B4": ("standalone RSS one session", "W5 post-task RSS journey 2",
+           "W5 post-task RSS journey 3", "W5 post-task RSS journey 5"),
     "B5": ("idle no session", "idle one session"),
     "B6": ("idle no session", "idle one session"),
     "B7": ("CLI --version", "CLI contextual read verbs"),
@@ -61,7 +62,8 @@ def budget_numbers(budget, row):
         "B9": ("writes", "samples", "p95", "ceiling_ms"), "FULL": (),
     }
     return {path: value for path, value in raw.items()
-            if any(part in path for part in selectors[budget])}
+            if any(part in path for part in selectors[budget])
+            and (budget not in {"B2", "B7", "B9"} or path.endswith(("_ms", ".ms")))}
 
 
 def summarize(run, directory):
