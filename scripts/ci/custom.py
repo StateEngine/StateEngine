@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import tomllib
-from input_judges import nightly_features, unavailable
+from input_judges import unavailable
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,7 +50,7 @@ def run():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=["filter", "run"])
-    parser.add_argument("--all-features", action="store_true", default=nightly_features())
+    parser.add_argument("--all-features", action="store_true")
     args = parser.parse_args()
     if args.action == "filter":
         print(filterset(args.all_features))

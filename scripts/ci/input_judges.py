@@ -5,11 +5,6 @@ from pathlib import Path
 import sys
 
 
-def nightly_features():
-    return (os.environ.get("GITHUB_REF") == "refs/heads/main"
-            and os.environ.get("GITHUB_EVENT_NAME") in {"schedule", "workflow_dispatch"})
-
-
 def requirements():
     # These tests remain compiled. Only their external fixture producers are optional.
     groups = [
