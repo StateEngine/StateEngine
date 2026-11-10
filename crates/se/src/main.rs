@@ -2,6 +2,8 @@ mod atlas_hook;
 mod bootstrap;
 mod compat;
 mod config;
+#[cfg(any(target_os = "linux", windows))]
+mod foreground;
 mod grammar;
 mod hook;
 mod installation_error;
@@ -174,31 +176,10 @@ pub fn run(
         // main-thread stream lock while that loop prints startup or shutdown.
         drop(stdout);
         drop(stderr);
-        let mut stdout = io::stdout();
-        let mut stderr = io::stderr();
-        let result = route::foreground(&context, &mut |output| {
-            render::output(&output, common.json, common.quiet, &mut stdout)
-                .map(|_| ())
-                .map_err(|error| {
-                    se_core::scope::unreadable("foreground startup output", &error.to_string())
-                        .with_cause(error)
-                })?;
-            stdout.flush().map_err(|error| {
-                se_core::scope::unreadable("foreground startup output", &error.to_string())
-                    .with_cause(error)
-            })
-        });
-        return match result {
-            Ok(code) => Ok(code),
-            Err(error) => render::error::write(
-                &error,
-                &RenderCx::default(),
-                common.json,
-                &mut stdout,
-                &mut stderr,
-            ),
-        };
+        return foreground::run(&context, common.json, common.quiet);
     }
+    #[cfg(windows)]
+    let foreground_fallback = matches!(&operation, AnyOp::RuntimeUp(_));
     let atlas_presentation = operation.atlas_options().cloned();
     let result = {
         let mut diagnostic = |message: &str| {
@@ -208,6 +189,21 @@ pub fn run(
         dispatch(&context, operation, &mut diagnostic)
             .map_err(|error| route::setup::with_recovery_remedy(error, &context.home))
     };
+    #[cfg(windows)]
+    if foreground_fallback
+        && result
+            .as_ref()
+            .is_err_and(|error| error.code() == se_types::Code::JobBreakawayRefused)
+    {
+        writeln!(
+            stderr,
+            "Windows prevented detached startup; starting in the foreground. Keep this terminal open; use se down with the same home from another terminal to stop the host."
+        )?;
+        stderr.flush()?;
+        drop(stdout);
+        drop(stderr);
+        return foreground::run(&context, common.json, common.quiet);
+    }
     let setup_remedy = route::setup::InitRemedy {
         home: &context.home,
         workspace: &context.cwd,

@@ -12,6 +12,56 @@ pub(in crate::bootstrap) fn spawn(
     spec: &RuntimeLaunchSpec,
     mut frame: Frame,
 ) -> ProcResult<Created> {
+    let mut created = spawn_attempt(spec, &mut frame, false)?;
+    let process = created
+        .native
+        .process
+        .as_ref()
+        .ok_or_else(|| input("runtime creation", "native custody absent"))?;
+    if let Err(error) = broker::outside_job(process.as_raw_handle()) {
+        if error.code != ProcErrorCode::BreakawayDenied
+            || created.detachment != RuntimeDetachment::WindowsBreakaway
+            || created.error.is_some()
+        {
+            created.error.get_or_insert(error);
+            return Ok(created);
+        }
+        // No frame or authorization has been sent. Retire this exact child
+        // before trying another native parent, retaining custody on any failure.
+        if let Err(error) = abort(&mut created.native, None)
+            .and_then(|()| join_uncommitted(&created.native, spec.deadline))
+        {
+            created.error = Some(error);
+            return Ok(created);
+        }
+        drop(created);
+        return spawn_attempt(spec, &mut frame, true);
+    }
+    Ok(created)
+}
+
+fn join_uncommitted(child: &Child, deadline: Instant) -> ProcResult<()> {
+    let process = child
+        .process
+        .as_ref()
+        .ok_or_else(|| input("runtime retry", "uncommitted native custody absent"))?;
+    loop {
+        // SAFETY: only the retained handle returned by this startup is queried.
+        match unsafe { WaitForSingleObject(process.as_raw_handle(), 0) } {
+            WAIT_OBJECT_0 => return Ok(()),
+            WAIT_TIMEOUT => check(deadline)?,
+            _ => return Err(last("join undetached runtime before broker retry")),
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn spawn_attempt(
+    spec: &RuntimeLaunchSpec,
+    frame: &mut Frame,
+    require_broker: bool,
+) -> ProcResult<Created> {
+    check(spec.deadline)?;
     let image = crate::windows_native::open_image(&spec.executable, false).map_err(|e| {
         let mut error = fail("pin runtime executable", e.source);
         error.detail = Box::new(ProcErrorDetail::Executable {
@@ -35,18 +85,26 @@ pub(in crate::bootstrap) fn spawn(
         ready.as_raw_handle(),
         diagnostic_writer.as_raw_handle(),
     ];
-    let (attempt, detachment, broker_context) = match create(spec, &mut frame, &sources, None) {
-        Ok(attempt) => (attempt, RuntimeDetachment::WindowsBreakaway, None),
-        Err(error) if error.code == ProcErrorCode::BreakawayDenied => {
+    let direct = if require_broker {
+        None
+    } else {
+        match create(spec, frame, &sources, None) {
+            Ok(attempt) => Some(attempt),
+            Err(error) if error.code == ProcErrorCode::BreakawayDenied => None,
+            Err(error) => return Err(error),
+        }
+    };
+    let (attempt, detachment, broker_context) = match direct {
+        Some(attempt) => (attempt, RuntimeDetachment::WindowsBreakaway, None),
+        None => {
             let broker = broker::Broker::find(&spec.machine, spec.deadline)?;
             frame.broker = Some(broker.identity.clone());
             (
-                create(spec, &mut frame, &sources, Some(&broker))?,
+                create(spec, frame, &sources, Some(&broker))?,
                 RuntimeDetachment::WindowsBroker,
                 Some(broker.context.clone()),
             )
         }
-        Err(error) => return Err(error),
     };
     let Attempt {
         process,
