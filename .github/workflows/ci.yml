@@ -62,8 +62,7 @@ jobs:
         run: python -I scripts/ci/changes.py
 
   linux-route:
-    permissions:
-      actions: read
+    permissions: {}
     needs: changes
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
     runs-on: ubuntu-24.04
@@ -71,59 +70,21 @@ jobs:
     outputs:
       route: ${{ steps.route.outputs.route }}
     steps:
-      - name: Select an available Linux runner
+      - name: Select the configured Linux runner
         id: route
         uses: actions/github-script@v7
         env:
           BOX_ENABLED: ${{ vars.LINUX_CI_RUNNER != '' }}
         with:
           script: |
-            let route = 'hosted';
             const pr = context.payload.pull_request;
-            if (process.env.BOX_ENABLED === 'true' && context.eventName === 'pull_request'
-                && pr?.draft === false && pr.head.repo.full_name === process.env.GITHUB_REPOSITORY
-                && Number(process.env.GITHUB_RUN_ATTEMPT) === 1) {
-              try {
-                const repo = context.repo;
-                const options = {headers: {'X-GitHub-Api-Version': '2026-03-10'}, request: {timeout: 10000}};
-                const {data: active} = await github.request('GET /repos/{owner}/{repo}/actions/concurrency_groups', {
-                  ...repo, ...options, per_page: 100
-                });
-                if (active.total_count !== active.concurrency_groups.length) {
-                  throw new Error('Active workflow observation is incomplete');
-                }
-                const groups = active.concurrency_groups.filter(g => g.group_name.startsWith('ci-'));
-                const members = await Promise.all(groups.map(async group => {
-                  try {
-                    const {data} = await github.request('GET /repos/{owner}/{repo}/actions/concurrency_groups/{group}', {
-                      ...repo, ...options, group: group.group_name
-                    });
-                    if (data.total_count !== data.group_members.length) throw new Error('Incomplete group');
-                    return data.group_members;
-                  } catch (error) {
-                    if (error.status === 404) return []; // The workflow released its group.
-                    throw error;
-                  }
-                }));
-                const runs = [...new Set(members.flat().map(m => m.run_id))];
-                if (!runs.includes(context.runId)) throw new Error('Current workflow lease is absent');
-                const peers = runs.filter(id => id !== context.runId);
-                const released = await Promise.all(peers.map(async id => {
-                  const {data} = await github.rest.actions.listJobsForWorkflowRun({
-                    ...repo, run_id: id, filter: 'latest', per_page: 100,
-                    request: {timeout: 10000}
-                  });
-                  if (!Array.isArray(data.jobs) || !Number.isSafeInteger(data.total_count)
-                      || data.total_count !== data.jobs.length) return false;
-                  const box = data.jobs.filter(j => j.name === 'linux-box');
-                  // A route still running, or awaiting box-job creation, is a
-                  // potential holder too. Concurrent decisions both overflow.
-                  return box.length === 1 && box[0].status === 'completed';
-                }));
-                if (released.every(Boolean)) route = 'box';
-              } catch {
-                core.warning('Runner availability is unknown; using hosted Linux checks');
-              }
+            const sameOrigin = context.eventName !== 'pull_request' ||
+              (pr?.head?.repo?.full_name === process.env.GITHUB_REPOSITORY && pr.head.repo.fork === false);
+            const route = process.env.BOX_ENABLED === 'true' && sameOrigin ? 'box' : 'hosted';
+            if (route === 'box') {
+              core.info('Box selected: busy work queues here; GitHub expires an unstarted job after 24 hours.');
+            } else {
+              core.info('Hosted selected: box disabled by maintainer or source is from a fork.');
             }
             core.setOutput('route', route);
 
@@ -138,8 +99,9 @@ jobs:
     timeout-minutes: 60
     outputs:
       status: ${{ steps.box.outputs.status }}
+      windows: ${{ steps.box.outputs.windows }}
     steps:
-      - name: Run the full Linux chain in isolated containers
+      - name: Run Linux checks and Windows-target Clippy in one isolated container
         id: box
         run: stateengine-ci linux
 
@@ -178,8 +140,8 @@ jobs:
         run: echo 'Clippy cache exact hit = ${{ steps.cache.outputs.cache-hit }}' >> "$GITHUB_STEP_SUMMARY"
 
   windows-clippy:
-    needs: changes
-    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' }}
+    needs: [changes, linux-route, linux-box]
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.linux-box.outputs.status != 'failed' && !(needs.linux-route.outputs.route == 'box' && needs.linux-route.result == 'success' && needs.linux-box.result == 'success' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed') }}
     runs-on: windows-2025
     timeout-minutes: 12
     steps:
@@ -270,8 +232,8 @@ jobs:
   # The nightly run on main also warms the native Windows build cache.
   windows-archive:
     name: Windows archive (informational)
-    needs: [changes, windows-clippy]
-    if: ${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.windows-clippy.result == 'success' }}
+    needs: [changes, linux-box, windows-clippy]
+    if: ${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
     runs-on: windows-2025
     timeout-minutes: 45
     steps:
@@ -319,8 +281,8 @@ jobs:
   # changes still require native VM qualification before merge.
   windows-test:
     name: Windows ${{ matrix.mode == 'full' && 'runtime' || 'smoke' }} (informational, shard ${{ matrix.shard }})
-    needs: [changes, windows-clippy, windows-archive]
-    if: ${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && needs.windows-clippy.result == 'success' }}
+    needs: [changes, linux-box, windows-clippy, windows-archive]
+    if: ${{ always() && !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && needs.changes.outputs.rust != 'false' && needs.changes.outputs.windows != 'false' && (needs.windows-clippy.result == 'success' || (needs.windows-clippy.result == 'skipped' && needs.linux-box.outputs.status == 'passed' && needs.linux-box.outputs.windows == 'passed')) }}
     strategy:
       fail-fast: false
       matrix:
