@@ -25,7 +25,8 @@ if (request.command === 'run_script_step') {
   if (!match) throw Error('unsupported CI script; no host execution occurred');
   request.operation = match[1];
 }
-request.context = Object.fromEntries(['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT']
+request.context = Object.fromEntries(['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT',
+  'GITHUB_EVENT_NAME', 'GITHUB_REF']
   .map(name => [name, process.env[name]]));
 async function execute() {
   let child, canceled = false, overflow = false;

@@ -62,7 +62,10 @@ def counts(name, output, code):
 
 
 class Cohort:
-    def __init__(self, report, journal, source, cache, output, canceled):
+    def __init__(self, report, journal, source, cache, output, canceled, *, all_features=False):
+        if type(all_features) is not bool:
+            raise ValueError("feature coverage must be an explicit boolean")
+        self.all_features = all_features
         self.report, self.journal, self.source = report, journal, source
         self.cache, self.output, self.canceled = cache, output, canceled
         self.containers, self.outcomes, self.active = [], {}, set()
@@ -106,7 +109,8 @@ class Cohort:
                 raise Canceled("run canceled during stage admission")
             if name == "archive":
                 self.transfer(box, self.cache, "/work/dependencies.tar.gz", folder / "cache.log")
-            result = execute(box, ["python3", "/opt/box/runner.py", "run", name],
+            features = ["--all-features"] if self.all_features else []
+            result = execute(box, ["python3", "/opt/box/runner.py", *features, "run", name],
                              folder / "job.log", canceled=self.canceled)
             observed_failure(result)
             if self.canceled.is_set():
