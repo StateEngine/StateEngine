@@ -45,6 +45,36 @@ def capacity():
     return available
 
 
+def box_load():
+    """Count driver trees rather than counting every compiler child as a build."""
+    parents, drivers, unreadable = {}, set(), []
+    for path in Path("/proc").iterdir():
+        if not path.name.isdecimal():
+            continue
+        try:
+            text = (path / "stat").read_text()
+            fields = text.rsplit(")", 1)[1].split()
+            pid = int(path.name)
+            parents[pid] = int(fields[1])
+            if text.split("(", 1)[1].rsplit(")", 1)[0] in {"cargo", "cargo-clippy", "cargo-nextest", "rustc"}:
+                drivers.add(pid)
+        except (FileNotFoundError, ProcessLookupError):
+            pass
+        except (OSError, ValueError, IndexError):
+            unreadable.append(int(path.name))
+    roots = []
+    for pid in drivers:
+        parent, seen = parents.get(pid), {pid}
+        while parent in parents and parent not in seen and parent not in drivers:
+            seen.add(parent)
+            parent = parents[parent]
+        if parent not in drivers:
+            roots.append(pid)
+    return {"observed_at": time.time(), "load_average": list(os.getloadavg()),
+            "concurrent_builds_observed": len(roots), "driver_pids": sorted(roots), "unreadable_pids": unreadable,
+            "scope": "Cargo/Rust driver trees, including test commands; sequential /proc census, not an atomic or all-language count"}
+
+
 def command(argv, log, env, timeout):
     with log.open("ab") as output:
         result = subprocess.run([str(arg) for arg in argv], stdin=subprocess.DEVNULL,
@@ -72,6 +102,7 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
     capacity()
     selection, surface, name = (invocation[key] for key in ("selection", "surface", "output"))
     invocation["state"] = "running"
+    invocation["box_load"] = {"before": box_load()}
     checkpoint(Path(config["state"]), directory, run)
     argv = [config["node"], judge / "journeys/run.mjs", "--implementation", "rust",
             "--distribution", "standalone", "--product", descriptor,
@@ -92,6 +123,7 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
         invocation.update(state="timed-out", error="judge deadline; inspect fixture and native custody")
         raise RuntimeError(invocation["error"]) from None
     finally:
+        invocation["box_load"]["after"] = box_load()
         checkpoint(Path(config["state"]), directory, run)
 
 

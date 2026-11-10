@@ -83,3 +83,10 @@ when other probes are missing; missing coverage is named separately and prevents
 whole-budget pass. Raw samples stay in the original judge receipts. Budget misses
 never change journey cells. Missing embedded B1/B2, handover B8, FULL-write and
 Codex-budget probes are named gaps.
+
+Each invocation records load averages and observed concurrent Cargo/Rust driver
+trees before and after the judge, beside its budget probes. Test commands count
+as drivers; child compilers do not count as additional builds. The census names
+its sequential observation and language limits and retains unreadable PIDs, so
+an incomplete census is not an assertion that the box was idle. Endpoint snapshots
+provide load context, not a claim about contention during every individual sample.

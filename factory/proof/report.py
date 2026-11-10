@@ -193,6 +193,7 @@ def summarize(run, directory):
                 numeric = budget_numbers(budget, row)
                 slots[budget].append({"output": entry["output"], "surface": entry["surface"],
                     "label": row["label"], "numbers": numeric,
+                    "box_load": entry.get("box_load"),
                     "sample_state": "observed" if numeric else row.get("state", "unavailable"),
                     "probe_result": "NOT MEASURED" if not numeric or row.get("state") == "unavailable" else
                                     "PASS" if row.get("passed") is True else "MISS" if row.get("passed") is False else "NOT MEASURED",
