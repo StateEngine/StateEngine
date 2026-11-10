@@ -31,7 +31,7 @@ fn protected_session_pin_custody_refuses_drift_and_never_overwrites() -> Check {
     let session = SessionId::from_parts(1_700_000_000_001, [17; 10])?;
     let other = SessionId::from_parts(1_700_000_000_002, [18; 10])?;
     let suffix = se_types::hex_lower(&se_proc::random_secret()?.expose()[..16]);
-    let root = std::env::temp_dir().join(format!("5e-session-pin-{suffix}"));
+    let root = std::env::temp_dir().join(format!("se-session-pin-{suffix}"));
     println!("pin fixture (retained on failure): {}", root.display());
     let files = NativeStateFiles::create(&root)?;
     // Unissued synthetic tokens test custody, not provider authentication.

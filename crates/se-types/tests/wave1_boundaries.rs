@@ -43,9 +43,9 @@ fn typed_ids_keep_canonical_bytes_and_legacy_spelling_distinct() -> Check {
         AtlasRootId,
         IndexEpochId
     );
-    let legacy = AgentId::from_legacy("agt-341f-psm3-hjsg")?;
+    let legacy = AgentId::from_legacy("agt-0000-0000-0000")?;
     assert_eq!(legacy.canonical_bytes()?, None);
-    assert_eq!(serde_json::to_value(&legacy)?, "agt-341f-psm3-hjsg");
+    assert_eq!(serde_json::to_value(&legacy)?, "agt-0000-0000-0000");
     assert_eq!(
         MessageId::from_legacy("msg-deadbeef")?.canonical_bytes()?,
         None
@@ -58,7 +58,7 @@ fn typed_ids_keep_canonical_bytes_and_legacy_spelling_distinct() -> Check {
         serde_json::from_value::<AgentId>(json!("hu_0192f3b5-0000-7000-8000-000000000001"))
             .is_err()
     );
-    assert!(serde_json::from_value::<ProjectId>(json!("agt-341f-psm3-hjsg")).is_err());
+    assert!(serde_json::from_value::<ProjectId>(json!("agt-0000-0000-0000")).is_err());
     Ok(())
 }
 

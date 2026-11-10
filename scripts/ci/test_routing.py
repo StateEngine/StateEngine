@@ -75,7 +75,7 @@ class Routing(unittest.TestCase):
         self.git("add", ".")
         self.git("commit", "-qm", "fixture change")
         return {"before": self.base, "after": self.git("rev-parse", "HEAD"),
-                "ref": "refs/heads/seat-5c/ci-pilot"}
+                "ref": "refs/heads/fixture/ci-pilot"}
 
     def test_proved_prose_diff_skips(self):
         self.assertFalse(changes.affected(self.event(), "push"))

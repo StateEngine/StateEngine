@@ -172,7 +172,7 @@ fn provider_stdio_child() -> Check {
 fn windows_provider_streams_keep_real_io_and_cancellation_custody() -> Check {
     let nonce: [u8; 16] = random_secret()?.expose()[..16].try_into()?;
     let root: PathBuf =
-        std::env::temp_dir().join(format!("5e-native-streams-{}", se_types::hex_lower(&nonce)));
+        std::env::temp_dir().join(format!("se-native-streams-{}", se_types::hex_lower(&nonce)));
     fs::create_dir(&root)?;
     let root = fs::canonicalize(root)?;
     eprintln!("provider stream fixture: {}", root.display());
