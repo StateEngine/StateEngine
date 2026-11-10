@@ -4,8 +4,8 @@ use se_types::{EventId, IdempotencyKey, MessageId, SessionId};
 use serde::{Deserialize, Serialize};
 
 pub use se_store::channel::{
-    BotIdentity, ChannelId, ChannelPolicy, ChannelTarget, CredentialId, CredentialRef,
-    PhoneIdentity, ReceiptId,
+    BotIdentity, ChannelId, ChannelPolicy, ChannelTarget, Connector, CredentialId, CredentialRef,
+    ExternalId, PhoneIdentity, ReceiptId, ReceiveCursor,
 };
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -71,6 +71,7 @@ pub enum CredentialRemoval {
 #[serde(deny_unknown_fields)]
 pub struct ChannelSnapshot {
     pub id: ChannelId,
+    pub connector: Connector,
     pub revision: u64,
     pub target: ChannelTarget,
     pub bot: BotIdentity,
@@ -83,7 +84,9 @@ pub struct ChannelSnapshot {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConnectTelegram {
+pub struct ConnectChannel {
+    #[serde(default, skip_serializing_if = "Connector::is_telegram")]
+    pub connector: Connector,
     pub credential: CredentialRef,
     pub target: ChannelTarget,
     #[serde(default)]
@@ -132,11 +135,10 @@ pub enum NoticeFact {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum TelegramOutput {
+pub enum ProviderOutput {
     Queued,
-    Sending,
     Sent {
-        provider_message: i64,
+        provider_message: ExternalId,
         at_us: i64,
     },
     Unknown {
@@ -154,7 +156,10 @@ pub enum TelegramOutput {
 pub struct ReplyFact {
     pub message: MessageId,
     pub committed: CommittedFact,
-    pub telegram: TelegramOutput,
+    #[serde(alias = "telegram")]
+    pub delivery: ProviderOutput,
+    #[serde(default)]
+    pub provider_messages: Vec<ExternalId>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -207,7 +212,8 @@ pub enum ChannelRequest {
     CredentialCatalog,
     Capabilities,
     Targets(ChannelTargets),
-    ConnectTelegram(ConnectTelegram),
+    #[serde(alias = "connect_telegram")]
+    Connect(ConnectChannel),
     Inspect(InspectChannels),
     ConfirmPairing(ConfirmPairing),
     RestartPairing(ChannelControl),
@@ -266,10 +272,11 @@ pub struct ResumePresentation {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputRejection {
-    pub update: i64,
+    pub update: ExternalId,
     pub reason: se_store::channel::Rejection,
     pub at_us: i64,
-    pub telegram: TelegramOutput,
+    #[serde(alias = "telegram")]
+    pub delivery: ProviderOutput,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

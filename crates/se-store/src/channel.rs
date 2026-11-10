@@ -1,6 +1,8 @@
 //! Non-secret channel facts stored atomically with ordinary mail.
+mod external;
 mod ids;
 mod resume;
+pub use external::{Connector, ExternalId, ReceiveCursor};
 pub use ids::{ActionId, ChannelId, CredentialId, OutputId, ReceiptId};
 pub use resume::{ResumeAction, ResumeTarget};
 use se_types::{AgentId, HumanId, MessageId, ProjectId, StoreId};
@@ -39,15 +41,15 @@ pub enum ChannelPolicy {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BotIdentity {
-    pub id: i64,
+    pub id: ExternalId,
     pub username: String,
     pub display_name: String,
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhoneIdentity {
-    pub subject: i64,
-    pub private_chat: i64,
+    pub subject: ExternalId,
+    pub private_chat: ExternalId,
     pub display_name: String,
     pub username: Option<String>,
 }
@@ -71,6 +73,8 @@ pub enum Pairing {
 #[serde(deny_unknown_fields)]
 pub struct Connection {
     pub id: ChannelId,
+    #[serde(default)]
+    pub connector: Connector,
     pub owner: HumanId,
     pub credential: CredentialRef,
     pub target: ChannelTarget,
@@ -115,8 +119,16 @@ pub enum Change {
     UpdateHandled {
         connection: ChannelId,
         binding_revision: u64,
-        update: i64,
+        update: ExternalId,
+        #[serde(default)]
+        cursor: Option<ReceiveCursor>,
         disposition: Disposition,
+    },
+    CursorAdvanced {
+        connection: ChannelId,
+        binding_revision: u64,
+        update: ExternalId,
+        cursor: ReceiveCursor,
     },
     ResumeOffered {
         action: ResumeAction,
@@ -124,8 +136,8 @@ pub enum Change {
     ResumeConfirmed {
         connection: ChannelId,
         action: ActionId,
-        subject: i64,
-        private_chat: i64,
+        subject: ExternalId,
+        private_chat: ExternalId,
     },
     ResumeReleased {
         connection: ChannelId,
@@ -166,6 +178,7 @@ impl Change {
             | Self::Disconnected { connection, .. }
             | Self::CredentialRemoved { connection, .. }
             | Self::UpdateHandled { connection, .. }
+            | Self::CursorAdvanced { connection, .. }
             | Self::ResumeConfirmed { connection, .. }
             | Self::ResumeReleased { connection, .. }
             | Self::ResumeFailed { connection, .. }
@@ -180,8 +193,8 @@ impl Change {
 pub enum Disposition {
     RejectedPaired {
         reason: Rejection,
-        subject: i64,
-        private_chat: i64,
+        subject: ExternalId,
+        private_chat: ExternalId,
     },
     Action {
         action: ActionId,
@@ -189,8 +202,8 @@ pub enum Disposition {
     Saved {
         receipt: ReceiptId,
         message: MessageId,
-        subject: i64,
-        private_chat: i64,
+        subject: ExternalId,
+        private_chat: ExternalId,
     },
     Rejected {
         reason: Rejection,
@@ -209,8 +222,12 @@ pub enum Rejection {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum OutputOutcome {
+    PartSent {
+        part: u16,
+        provider_message: ExternalId,
+    },
     Sent {
-        provider_message: i64,
+        provider_message: ExternalId,
     },
     Unknown,
     /// Only when transport proves no message was released (e.g. Telegram 429).
@@ -241,10 +258,11 @@ pub struct Outbound {
     pub original: Option<MessageId>,
     pub reply: Option<MessageId>,
     pub state: String,
-    pub provider_message: Option<i64>,
+    pub provider_message: Option<ExternalId>,
+    pub provider_messages: Vec<ExternalId>,
     pub retry_at_us: Option<i64>,
     pub rejection: Option<Rejection>,
-    pub provider_update: Option<i64>,
+    pub provider_update: Option<ExternalId>,
     pub failure: Option<se_types::MessagingChannelError>,
 }
 #[derive(Clone, Debug)]
@@ -269,11 +287,11 @@ pub struct Version {
 
 #[derive(Clone, Debug)]
 pub struct RejectedInput {
-    pub update: i64,
+    pub update: ExternalId,
     pub reason: Rejection,
     pub at_us: i64,
     pub output_state: String,
-    pub provider_message: Option<i64>,
+    pub provider_message: Option<ExternalId>,
     pub output_at_us: i64,
     pub failure: Option<se_types::MessagingChannelError>,
 }

@@ -9,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn state(f: &Fixture) -> Result<channel::Connection, Box<dyn std::error::Error>> {
     Ok(channel::Connection {
+        connector: Connector::Telegram,
         id: ChannelId::new("chn-11111111111111111111111111111111")?,
         owner: f.owner.clone(),
         credential: CredentialRef {
@@ -23,7 +24,7 @@ fn state(f: &Fixture) -> Result<channel::Connection, Box<dyn std::error::Error>>
             selection_revision: 1,
         },
         bot: BotIdentity {
-            id: 23,
+            id: 23.into(),
             username: "demo_bot".into(),
             display_name: "Demo".into(),
         },
@@ -81,8 +82,8 @@ fn paired_with(
                 expected: 1,
                 digest: [7; 32],
                 phone: PhoneIdentity {
-                    subject: 42,
-                    private_chat: 42,
+                    subject: 42.into(),
+                    private_chat: 42.into(),
                     display_name: "Phone".into(),
                     username: None,
                 },
@@ -122,14 +123,15 @@ fn saved(
     let mut metadata = change(
         f,
         Change::UpdateHandled {
+            cursor: None,
             connection: state.id.clone(),
             binding_revision: state.revision,
-            update,
+            update: update.into(),
             disposition: Disposition::Saved {
                 receipt: ReceiptId::new(format!("chr-{update:032x}"))?,
                 message: id,
-                subject: 42,
-                private_chat: 42,
+                subject: 42.into(),
+                private_chat: 42.into(),
             },
         },
         "unused",
@@ -156,7 +158,10 @@ fn saved_receipt_is_atomic_with_mail_and_duplicate_keeps_one_message() -> Check 
     let receipt = view.channel_saved(&s.id, 0)?;
     assert_eq!(receipt.items.len(), 1);
     assert_eq!(receipt.items[0].message, id.clone());
-    assert_eq!(view.channel_offset(&s.id)?, Some(101));
+    assert_eq!(
+        view.channel_cursor(&s.id)?,
+        Some(ReceiveCursor::new("100".into())?)
+    );
     assert!(matches!(view.message(id)?, Read::Present { .. }));
     view.close()?;
     // A second key for the same provider update must roll its new mail back.
@@ -197,7 +202,7 @@ fn stale_revoked_input_rolls_back_mail_and_does_not_advance_offset() -> Check {
     assert!(writer.append(pending, &*lease).is_err());
     let mut view = writer.snapshot(f.scoped(Visibility::Owner))?;
     assert!(matches!(view.message(candidate)?, Read::Absent { .. }));
-    assert_eq!(view.channel_offset(&s.id)?, None);
+    assert_eq!(view.channel_cursor(&s.id)?, None);
     view.close()?;
     writer.close()?;
     Ok(())

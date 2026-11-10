@@ -62,7 +62,11 @@ impl SqliteSnapshot {
             .map(|s| serde_json::from_str(&s).map_err(invalid))
             .collect()
     }
-    pub(super) fn read_update_handled(&self, id: &ChannelId, update: i64) -> StoreResult<bool> {
+    pub(super) fn read_update_handled(
+        &self,
+        id: &ChannelId,
+        update: &crate::channel::ExternalId,
+    ) -> StoreResult<bool> {
         self.require_channel(id)?;
         self.db
             .query_row(
@@ -254,22 +258,21 @@ impl SqliteSnapshot {
     ) -> StoreResult<ChannelRows<Outbound>> {
         self.read_outputs(id, after, None, None)
     }
-    pub(super) fn read_channel_offset(&self, id: &ChannelId) -> StoreResult<Option<i64>> {
+    pub(super) fn read_channel_cursor(
+        &self,
+        id: &ChannelId,
+    ) -> StoreResult<Option<crate::channel::ReceiveCursor>> {
         let state = self.require_channel(id)?;
-        let max: Option<i64> = self
-            .db
+        self.db
             .query_row(
-                "SELECT max(update_id) FROM channel_updates WHERE bot_id=?",
-                [state.bot.id],
-                |r| crate::sql_value::value(r, 0),
+                "SELECT cursor FROM channel_receive WHERE connector=? AND bot_id=?",
+                rusqlite::params![state.connector.as_str(), state.bot.id],
+                |r| r.get(0),
             )
-            .map_err(|e| self.read_sql(e))?;
-        max.map(|v| {
-            v.checked_add(1)
-                .ok_or_else(|| invalid("provider offset exhausted"))
-        })
-        .transpose()
+            .optional()
+            .map_err(|e| self.read_sql(e))
     }
+
     pub(crate) fn require_channel(
         &self,
         id: &ChannelId,

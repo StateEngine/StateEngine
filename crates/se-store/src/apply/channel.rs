@@ -96,6 +96,7 @@ pub(crate) fn apply(
         return codec::aux(c, seq, facts);
     }
     if let Change::UpdateHandled { .. }
+    | Change::CursorAdvanced { .. }
     | Change::DelayQueued { .. }
     | Change::OutputStarted { .. }
     | Change::OutputFinished { .. } = &change
@@ -250,7 +251,7 @@ pub(crate) fn apply(
     let owner = key(c, "human", state.owner.as_str(), &[0], false)?;
     let json = codec::encode(&state)?;
     if matches!(change, Change::Connected { .. }) {
-        c.execute("INSERT INTO channel_connections(id,project_id,owner_id,bot_id,credential_id,credential_revision,revision,active,credential_removed,state_json,last_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![state.id.as_str(), project, owner, state.bot.id, state.credential.id.as_str(),state.credential.revision,rev,1,false,json,seq]).map_err(sql)?;
+        c.execute("INSERT INTO channel_connections(id,project_id,owner_id,connector,bot_id,credential_id,credential_revision,revision,active,credential_removed,state_json,last_seq) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",crate::sql_value::sql_params![state.id.as_str(), project, owner, state.connector.as_str(), state.bot.id, state.credential.id.as_str(),state.credential.revision,rev,1,false,json,seq]).map_err(sql)?;
     } else {
         c.execute("UPDATE channel_connections SET revision=?,active=?,credential_removed=?,state_json=?,last_seq=? WHERE id=?",crate::sql_value::sql_params![rev,!matches!(state.pairing, Pairing::Revoked),state.credential_removed,json,seq,state.id.as_str()]).map_err(sql)?;
     }
@@ -264,14 +265,8 @@ fn validate(state: &ChannelConnection) -> StoreResult<()> {
     if !positive(state.credential.revision)
         || !positive(state.target.selection_revision)
         || state.credential.owner != state.owner
-        || state.bot.id <= 0
         || state.bot.username.is_empty()
         || state.bot.username.len() > 64
-        || !state
-            .bot
-            .username
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
         || state.bot.display_name.len() > 256
     {
         return Err(invalid("channel identity/credential/selection bounds"));
@@ -288,12 +283,11 @@ fn validate(state: &ChannelConnection) -> StoreResult<()> {
     Ok(())
 }
 fn validate_phone(phone: &crate::channel::PhoneIdentity) -> StoreResult<()> {
-    if phone.subject <= 0
-        || phone.private_chat != phone.subject
-        || phone.display_name.len() > 256
-        || phone.username.as_ref().is_some_and(|s| {
-            s.len() > 64 || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        })
+    if phone.display_name.len() > 256
+        || phone
+            .username
+            .as_ref()
+            .is_some_and(|s| s.len() > 64 || s.chars().any(char::is_control))
     {
         return Err(invalid("private phone identity bounds"));
     }

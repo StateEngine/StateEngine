@@ -439,7 +439,7 @@ pub trait Snapshot {
     fn channel_update_handled(
         &mut self,
         _id: &channel::ChannelId,
-        _update: i64,
+        _update: &crate::channel::ExternalId,
     ) -> StoreResult<bool> {
         crate::error::later("provider update disposition")
     }
@@ -529,7 +529,10 @@ pub trait Snapshot {
     ) -> StoreResult<channel::ChannelRows<channel::Outbound>> {
         crate::error::later("channel outbox")
     }
-    fn channel_offset(&mut self, _id: &channel::ChannelId) -> StoreResult<Option<i64>> {
+    fn channel_cursor(
+        &mut self,
+        _id: &channel::ChannelId,
+    ) -> StoreResult<Option<crate::channel::ReceiveCursor>> {
         crate::error::later("channel offset")
     }
     fn info(&self) -> StoreInfo;

@@ -44,8 +44,8 @@ fn setup(
             conversation: None,
             configuration: [8; 32],
         },
-        subject: 42,
-        private_chat: 42,
+        subject: 42.into(),
+        private_chat: 42.into(),
         expires_at_us: i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_micros())?
             + 300000000,
         state: "offered".into(),
@@ -73,8 +73,8 @@ fn confirm(
         Change::ResumeConfirmed {
             connection: s.id.clone(),
             action: a.id.clone(),
-            subject: 42,
-            private_chat: 42,
+            subject: 42.into(),
+            private_chat: 42.into(),
         },
         "resume-confirm",
     )
@@ -128,8 +128,8 @@ fn paired_confirmation_recovers_and_is_consumed_only_with_same_transaction_prepa
                     Change::ResumeConfirmed {
                         connection: s.id.clone(),
                         action: a.id.clone(),
-                        subject: 43,
-                        private_chat: 43
+                        subject: 43.into(),
+                        private_chat: 43.into()
                     },
                     "wrong-phone"
                 )?,

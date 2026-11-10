@@ -6,6 +6,7 @@ mod callback;
 mod control;
 #[cfg(feature = "listener")]
 mod delay;
+mod descriptor;
 #[cfg(feature = "listener")]
 mod ingress;
 #[cfg(feature = "listener")]
@@ -23,6 +24,7 @@ mod service;
 #[cfg(feature = "listener")]
 mod status;
 mod types;
+pub use descriptor::{ActionButton, ConnectorDescriptor, SetupField};
 mod validation;
 #[cfg(feature = "listener")]
 pub use control::{Connected, Disconnected, PairingTicket};
@@ -40,7 +42,9 @@ mod transport;
 pub use credentials::NativeChannelCredentials;
 pub use error::{ChannelError, ChannelResult};
 #[cfg(feature = "listener")]
-pub use telegram::{Incoming, IncomingContent, Telegram};
+pub use telegram::Telegram;
 #[cfg(feature = "listener")]
-pub use transport::{ChannelTransport, TransportFuture};
+pub use transport::{
+    ChannelReceiver, ChannelTransport, Incoming, IncomingContent, TransportFuture,
+};
 pub use types::*;

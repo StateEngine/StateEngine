@@ -121,9 +121,9 @@ fn roundtrip(lose_response: bool, long_reply: bool) -> Check {
         let channels=host.channels()?;
         let vault=NativeChannelCredentials::open(&f.options.state_directory,f.store.clone(),f.owner.clone())?;
         let credential=vault.provision(&mut &b"123456:dummy_invalid_provider_token_123456"[..])?;
-        let input=ConnectTelegram{credential,target:ChannelTarget{project:f.project.clone(),agent:f.a.clone(),selection_revision:1},policy:ChannelPolicy::SaveOnly,key:IdempotencyKey::new("fixture-channel-connect")?};
-        let connected=channels.connect_telegram(input.clone(),&bound()?).await?;
-        let replay=channels.connect_telegram(input,&bound()?).await?;
+        let input=ConnectChannel{ connector: Connector::Telegram,credential,target:ChannelTarget{project:f.project.clone(),agent:f.a.clone(),selection_revision:1},policy:ChannelPolicy::SaveOnly,key:IdempotencyKey::new("fixture-channel-connect")?};
+        let connected=channels.connect_channel(input.clone(),&bound()?).await?;
+        let replay=channels.connect_channel(input,&bound()?).await?;
         assert_eq!(connected.receipt.events,replay.receipt.events);
         let id=connected.connection.id.clone();
         let uri=std::str::from_utf8(connected.ticket.expose_link())?;
@@ -151,7 +151,7 @@ fn roundtrip(lose_response: bool, long_reply: bool) -> Check {
                 provider.push(3, "x".repeat(se_store::channel::MAX_TEXT_BYTES + 1))?;
                 let rejected = wait_for(&channels, &id, |p| p.recent_rejections.as_ref()
                     .is_some_and(|r| r.items.first().is_some_and(|failure|
-                        matches!(failure.telegram, TelegramOutput::Sent { .. })))).await?;
+                        matches!(failure.delivery, ProviderOutput::Sent { .. })))).await?;
                 assert_eq!(rejected.receipts.len(), 1);
                 assert_eq!(rejected.recent_rejections.as_ref().and_then(|r| r.items.first())
                     .map(|r| r.reason), Some(se_store::channel::Rejection::TooLarge));
@@ -191,9 +191,9 @@ fn roundtrip(lose_response: bool, long_reply: bool) -> Check {
                 let done = wait_for(&channels, &id, |p| p.receipts.first()
                     .and_then(|r| r.replies.first()).is_some_and(|r| {
                         if long_reply {
-                            matches!(&r.telegram, TelegramOutput::Failed { code } if code == "message_too_large")
-                        } else if lose_response { matches!(r.telegram, TelegramOutput::Unknown { .. }) }
-                        else { matches!(r.telegram, TelegramOutput::Sent { .. }) }
+                            matches!(&r.delivery, ProviderOutput::Failed { code } if code == "message_too_large")
+                        } else if lose_response { matches!(r.delivery, ProviderOutput::Unknown { .. }) }
+                        else { matches!(r.delivery, ProviderOutput::Sent { .. }) }
                     })).await?;
                 let receipt = done.receipts.first().ok_or("completed receipt absent")?;
                 assert!(receipt.read.is_some());

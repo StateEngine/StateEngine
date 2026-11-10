@@ -27,10 +27,10 @@ impl crate::HostedRuntime {
         );
         let service = Arc::new(Channels::new(
             self.execution.clone(),
-            match &self.channel_transport {
+            vec![match &self.channel_transport {
                 Some(transport) => transport.clone(),
                 None => Arc::new(Telegram::new().map_err(channel_error)?),
-            },
+            }],
             self.configuration.clone(),
             self.owner.clone(),
             credentials,
@@ -53,29 +53,19 @@ struct Receiver {
 impl Channels {
     async fn maintain(&self, id: ChannelId) -> Result<()> {
         let bound = super::service::deadline(Duration::from_secs(30))?;
-        if let Err(error) = self.queue_delays(id.clone(), &bound).await {
-            self.set_health(
-                id.clone(),
-                ConnectionHealth::Unavailable {
-                    code: error.code().as_str().into(),
-                },
-            )?;
-        }
-        if let Err(error) = self.run_resumes(id.clone(), &bound).await {
-            self.set_health(
-                id.clone(),
-                ConnectionHealth::Unavailable {
-                    code: error.code().as_str().into(),
-                },
-            )?;
-        }
-        if let Err(error) = self.flush_output(id.clone(), &bound).await {
-            self.set_health(
-                id,
-                ConnectionHealth::Unavailable {
-                    code: error.code().as_str().into(),
-                },
-            )?;
+        for result in [
+            self.queue_delays(id.clone(), &bound).await,
+            self.run_resumes(id.clone(), &bound).await,
+            self.flush_output(id.clone(), &bound).await,
+        ] {
+            if let Err(error) = result {
+                self.set_health(
+                    id.clone(),
+                    ConnectionHealth::Unavailable {
+                        code: error.code().as_str().into(),
+                    },
+                )?;
+            }
         }
         Ok(())
     }
@@ -195,28 +185,34 @@ impl Channels {
                 let id = state.id.clone();
                 let task = tokio::spawn(async move {
                     let mut backoff = Duration::from_secs(1);
+                    let mut receiver = None;
                     let mut output_timer = tokio::time::interval(Duration::from_secs(1));
                     output_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     loop {
                         let deadline = super::service::deadline(Duration::from_secs(30))?;
-                        let poll = service.poll_once(id.clone(), &deadline);
-                        tokio::pin!(poll);
-                        let result = loop {
-                            tokio::select! {
-                                result=&mut poll=>break result,
-                                _=signal.changed()=>return Ok(()),
-                                _=output_timer.tick()=>{service.maintain(id.clone()).await?;},
+                        let result = {
+                            let poll = service.receive_once(id.clone(), &mut receiver, &deadline);
+                            tokio::pin!(poll);
+                            loop {
+                                tokio::select! {
+                                    result=&mut poll=>break result,
+                                    _=signal.changed()=>return Ok(()),
+                                    _=output_timer.tick()=>{service.maintain(id.clone()).await?;},
+                                }
                             }
                         };
-                        if result.is_ok() {
+                        if let Ok(received) = result {
                             if *signal.borrow() {
                                 break;
                             }
                             service.maintain(id.clone()).await?;
                             backoff = Duration::from_secs(1);
-                            tokio::select! {_=tokio::time::sleep(Duration::from_secs(1))=>{},_=signal.changed()=>break};
+                            if !received {
+                                tokio::select! {_=tokio::time::sleep(Duration::from_secs(1))=>{},_=signal.changed()=>break};
+                            }
                             continue;
                         }
+                        receiver = None;
                         let retry_at = service
                             .health
                             .lock()
@@ -245,6 +241,10 @@ impl Channels {
                                 ConnectionHealth::Unavailable { code: error.into() },
                             )?;
                         }
+                        let jitter = se_proc::random_secret()
+                            .map_err(|_| channel_error(ChannelError::ReceiverNotRunning))?;
+                        let delay = delay
+                            .saturating_add(Duration::from_millis(u64::from(jitter.expose()[0])));
                         tokio::select! {_=tokio::time::sleep(delay)=>{},_=signal.changed()=>break};
                         backoff = (backoff * 2).min(Duration::from_secs(60));
                     }

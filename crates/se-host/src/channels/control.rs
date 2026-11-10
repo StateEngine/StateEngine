@@ -30,86 +30,70 @@ pub struct Disconnected {
     pub credential_removal: CredentialRemoval,
 }
 impl Channels {
-    pub async fn connect_telegram(
+    pub async fn connect_channel(
         &self,
-        input: ConnectTelegram,
+        input: ConnectChannel,
         deadline: &Deadline,
     ) -> Result<Connected> {
         let request = intent("channel.connect", input.key.clone(), &input)?;
-        if let Some(receipt) = self
-            .replay(input.target.project.clone(), request.clone(), deadline)
+        let project = input.target.project.clone();
+        let receipt = match self
+            .replay(project.clone(), request.clone(), deadline)
             .await?
         {
-            let Change::Connected { connection } = self
-                .committed_change(input.target.project, &receipt, deadline)
+            Some(receipt) => receipt,
+            None => {
+                self.validate_resume_consent(&input, deadline).await?;
+                let resume_configuration = self.resume_configuration(&input.policy)?;
+                if input.credential.owner != self.owner {
+                    return Err(channel_error(ChannelError::CredentialScopeMismatch));
+                }
+                let token = self.token(input.credential.clone(), deadline).await?;
+                let bot = self
+                    .transport(input.connector)?
+                    .identity(&token)
+                    .await
+                    .map_err(channel_error)?;
+                deadline.remaining()?;
+                let random = se_proc::random_secret()
+                    .map_err(|_| channel_error(ChannelError::CredentialStoreUnavailable))?;
+                let id = ChannelId::new(format!(
+                    "chn-{}",
+                    se_types::hex_lower(&random.expose()[..16])
+                ))
+                .map_err(|_| channel_error(ChannelError::InvalidInput))?;
+                let token = self.challenge(&id, 1)?;
+                let connection = Connection {
+                    id,
+                    connector: input.connector,
+                    owner: self.owner.clone(),
+                    credential: input.credential,
+                    target: input.target,
+                    bot,
+                    policy: input.policy,
+                    pairing: Pairing::Challenge {
+                        digest: Sha256::digest(token.expose()).into(),
+                        expires_at_us: now()?
+                            .checked_add(600_000_000)
+                            .ok_or_else(|| channel_error(ChannelError::InvalidInput))?,
+                    },
+                    revision: 1,
+                    credential_removed: false,
+                    resume_configuration,
+                };
+                self.change(
+                    connection.target.project.clone(),
+                    request,
+                    Change::Connected {
+                        connection: connection.clone(),
+                    },
+                    deadline,
+                )
                 .await?
-            else {
-                return Err(channel_error(ChannelError::IdempotencyConflict));
-            };
-            return Ok(Connected {
-                ticket: self.ticket(&connection)?,
-                connection,
-                receipt,
-            });
-        }
-        self.validate_resume_consent(&input, deadline).await?;
-        let resume_configuration = self.resume_configuration(&input.policy)?;
-        if input.credential.owner != self.owner {
-            return Err(channel_error(ChannelError::CredentialScopeMismatch));
-        }
-        let credential = input.credential.clone();
-        let credentials = self.credentials.clone();
-        let token = self
-            .context
-            .blocking
-            .run(crate::BlockingClass::Foreground, deadline, move || {
-                credentials.resolve(&credential).map_err(channel_error)
-            })
-            .await?;
-        let bot = self
-            .telegram
-            .identity(&token)
-            .await
-            .map_err(channel_error)?;
-        deadline.remaining()?;
-        let random = se_proc::random_secret()
-            .map_err(|_| channel_error(ChannelError::CredentialStoreUnavailable))?;
-        let id = ChannelId::new(format!(
-            "chn-{}",
-            se_types::hex_lower(&random.expose()[..16])
-        ))
-        .map_err(|_| channel_error(ChannelError::InvalidInput))?;
-        let token = self.challenge(&id, 1)?;
-        let connection = Connection {
-            id,
-            owner: self.owner.clone(),
-            credential: input.credential,
-            target: input.target,
-            bot,
-            policy: input.policy,
-            pairing: Pairing::Challenge {
-                digest: Sha256::digest(token.expose()).into(),
-                expires_at_us: now()?
-                    .checked_add(600_000_000)
-                    .ok_or_else(|| channel_error(ChannelError::InvalidInput))?,
-            },
-            revision: 1,
-            credential_removed: false,
-            resume_configuration,
+            }
         };
-        let receipt = self
-            .change(
-                connection.target.project.clone(),
-                request,
-                Change::Connected {
-                    connection: connection.clone(),
-                },
-                deadline,
-            )
-            .await?;
-        let Change::Connected { connection } = self
-            .committed_change(connection.target.project, &receipt, deadline)
-            .await?
+        let Change::Connected { connection } =
+            self.committed_change(project, &receipt, deadline).await?
         else {
             return Err(channel_error(ChannelError::IdempotencyConflict));
         };
@@ -292,10 +276,10 @@ impl Channels {
         let challenge = self.challenge(&state.id, revision)?;
         let challenge = std::str::from_utf8(challenge.expose())
             .map_err(|_| channel_error(ChannelError::InvalidInput))?;
-        let link = Secret::new(
-            format!("https://t.me/{}?start={challenge}", state.bot.username).into_bytes(),
-        )
-        .map_err(|_| channel_error(ChannelError::InvalidInput))?;
+        let link = self
+            .transport(state.connector)?
+            .pairing_link(&state.bot, challenge)
+            .map_err(channel_error)?;
         Ok(PairingTicket {
             connection: state.id.clone(),
             revision,

@@ -13,13 +13,17 @@ fn schema_objects(
             row.get(0)?,
             row.get(1)?,
             sql.replace("\"session_data\"", "session_data")
-                .replace("\"turn_data\"", "turn_data"),
+                .replace("\"turn_data\"", "turn_data")
+                .replace("\"channel_connections\"", "channel_connections")
+                .replace("\"channel_updates\"", "channel_updates")
+                .replace("\"channel_outbox\"", "channel_outbox"),
         ))
     })?
     .collect()
 }
 
 fn restore_schema_six(db: &rusqlite::Connection) -> Check {
+    db.execute_batch("PRAGMA foreign_keys=OFF")?;
     let historical = rusqlite::Connection::open_in_memory()?;
     for sql in [
         include_str!("../../migrations/001.sql"),
@@ -33,22 +37,47 @@ fn restore_schema_six(db: &rusqlite::Connection) -> Check {
     }
     db.execute_batch(
         "DROP TABLE remote_message_attribution;
-         DROP TABLE remote_grants; DROP INDEX session_data_agent_seq;
+         DROP TABLE remote_grants; DROP TABLE channel_receive; DROP INDEX session_data_agent_seq;
          DROP INDEX mark_data_message_seq; DROP INDEX work_mark_recipient_seq",
     )?;
     // Schema eight widened these constraints. Preserve the rows while restoring
     // the actual pre-upgrade tables, indices and immutable-history triggers.
-    for table in ["session_data", "turn_data"] {
+    for table in [
+        "session_data",
+        "turn_data",
+        "channel_connections",
+        "channel_updates",
+        "channel_outbox",
+    ] {
         let sql: String = historical.query_row(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name=?1",
             [table],
             |row| row.get(0),
         )?;
-        let prefix = format!("CREATE TABLE {table}(");
+        let prefix = format!("CREATE TABLE {table}");
         assert!(sql.starts_with(&prefix));
-        db.execute_batch(&sql.replacen(&prefix, &format!("CREATE TABLE {table}_old("), 1))?;
+        db.execute_batch(&sql.replacen(&prefix, &format!("CREATE TABLE {table}_old"), 1))?;
+        let columns = historical
+            .prepare(&format!("PRAGMA table_info({table})"))?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let names = columns.join(",");
+        let select = columns
+            .iter()
+            .map(|name| {
+                if table.starts_with("channel_")
+                    && ["bot_id", "update_id", "provider_update", "provider_message"]
+                        .contains(&name.as_str())
+                {
+                    format!("CAST({name} AS INTEGER)")
+                } else {
+                    name.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         db.execute_batch(&format!(
-            "INSERT INTO {table}_old SELECT * FROM {table};
+            "INSERT INTO {table}_old({names}) SELECT {select} FROM {table};
              DROP TABLE {table}; ALTER TABLE {table}_old RENAME TO {table}"
         ))?;
         let mut objects = historical.prepare(
@@ -60,7 +89,7 @@ fn restore_schema_six(db: &rusqlite::Connection) -> Check {
         }
     }
     assert_eq!(schema_objects(db)?, schema_objects(&historical)?);
-    db.execute_batch("PRAGMA user_version=6")?;
+    db.execute_batch("PRAGMA user_version=6; PRAGMA foreign_keys=ON")?;
     Ok(())
 }
 

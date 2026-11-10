@@ -23,7 +23,7 @@ pub struct Channels {
     pub(super) store_id: se_types::StoreId,
     pub(super) credentials: Arc<NativeChannelCredentials>,
     pub(super) pairing_key: Arc<Secret>,
-    pub(super) telegram: Arc<dyn ChannelTransport>,
+    pub(crate) transports: Vec<Arc<dyn ChannelTransport>>,
     pub(super) fenced: Arc<AtomicBool>,
     pub(super) changed: tokio::sync::Notify,
     pub(super) output_gates: std::sync::Mutex<
@@ -36,7 +36,7 @@ pub struct Channels {
 impl Channels {
     pub(crate) fn new(
         context: ExecutionContext,
-        telegram: Arc<dyn ChannelTransport>,
+        transports: Vec<Arc<dyn ChannelTransport>>,
         configuration: Option<se_core::config_policy::ConfigFile>,
         owner: HumanId,
         credentials: Arc<NativeChannelCredentials>,
@@ -67,7 +67,7 @@ impl Channels {
             store_id,
             credentials,
             pairing_key: Arc::new(pairing_key),
-            telegram,
+            transports,
             fenced,
             changed: tokio::sync::Notify::new(),
             output_gates: std::sync::Mutex::default(),
@@ -75,6 +75,26 @@ impl Channels {
             health_version: std::sync::atomic::AtomicU64::new(0),
             receiver_running: AtomicBool::new(false),
         })
+    }
+    pub(super) fn transport(&self, connector: Connector) -> Result<Arc<dyn ChannelTransport>> {
+        self.transports
+            .iter()
+            .find(|transport| transport.descriptor().connector == connector)
+            .cloned()
+            .ok_or_else(|| channel_error(ChannelError::Unsupported))
+    }
+    pub(super) async fn token(
+        &self,
+        reference: CredentialRef,
+        deadline: &Deadline,
+    ) -> Result<Secret> {
+        let credentials = self.credentials.clone();
+        self.context
+            .blocking
+            .run(crate::BlockingClass::Foreground, deadline, move || {
+                credentials.resolve(&reference).map_err(channel_error)
+            })
+            .await
     }
     pub fn supports_resume(&self) -> bool {
         self.configuration.is_some() && self.context.custody.get().is_some()
@@ -249,16 +269,22 @@ impl Channels {
 }
 pub(super) fn intent(
     operation: &'static str,
-    key: IdempotencyKey,
+    key: impl Into<Option<IdempotencyKey>>,
     value: &impl serde::Serialize,
 ) -> Result<RequestIdentity> {
     let bytes = serde_json::to_vec(value).map_err(|_| channel_error(ChannelError::InvalidInput))?;
+    let sha256: [u8; 32] = Sha256::digest(bytes).into();
+    let key = match key.into() {
+        Some(key) => key,
+        None => IdempotencyKey::new(se_types::hex_lower(&sha256))
+            .map_err(|_| channel_error(ChannelError::InvalidInput))?,
+    };
     Ok(RequestIdentity {
         key,
         intent: IntentDigest {
             operation,
             codec_version: 1,
-            sha256: Sha256::digest(bytes).into(),
+            sha256,
         },
     })
 }
