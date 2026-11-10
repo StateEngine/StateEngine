@@ -383,8 +383,8 @@ impl Connection {
                     return terminal.map_or(Ok(()), |body| Err(SeError::from(body)));
                 }
             } else {
-                for frame in frames.feed(&bytes)? {
-                    self.receive(frame).await?;
+                for frame in frames.feed(&bytes) {
+                    self.receive(frame?).await?;
                 }
                 if let Some(terminal) = terminal {
                     frames.eof()?;

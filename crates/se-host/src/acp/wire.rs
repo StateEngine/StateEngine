@@ -21,7 +21,8 @@ pub(super) enum Envelope {
 #[derive(Default)]
 pub(super) struct Frames(Vec<u8>);
 impl Frames {
-    pub fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Envelope>> {
+    // Preserve completed frames even when the same read ends with invalid output.
+    pub fn feed(&mut self, bytes: &[u8]) -> Vec<Result<Envelope>> {
         let mut result = Vec::new();
         for byte in bytes {
             if *byte == b'\n' {
@@ -29,21 +30,28 @@ impl Frames {
                     self.0.pop();
                 }
                 if self.0.is_empty() {
-                    return Err(failure("ACP frame", "empty protocol frame"));
+                    result.push(Err(failure("ACP frame", "empty protocol frame")));
+                    break;
                 }
-                result.push(decode(&self.0)?);
+                let decoded = decode(&self.0);
                 self.0.clear();
+                let failed = decoded.is_err();
+                result.push(decoded);
+                if failed {
+                    break;
+                }
             } else {
                 if self.0.len() == MAX_FRAME {
-                    return Err(failure(
+                    result.push(Err(failure(
                         "ACP frame",
-                        "one-MiB frame bound exceeded; no prefix accepted",
-                    ));
+                        "one-MiB frame bound exceeded; incomplete frame not accepted",
+                    )));
+                    break;
                 }
                 self.0.push(*byte);
             }
         }
-        Ok(result)
+        result
     }
     pub fn eof(&self) -> Result<()> {
         if self.0.is_empty() {
