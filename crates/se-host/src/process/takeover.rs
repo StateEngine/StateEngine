@@ -27,12 +27,8 @@ impl LaunchCoordinator {
         if !plan.replayed {
             self.require_force_selection(&plan)?;
         }
-        let active_session = plan
-            .control
-            .sessions
-            .iter()
-            .any(|session| matches!(session.current.body, EventBody::SessionActivated { .. }));
-        if plan.replayed || (plan.control.processes.is_empty() && !active_session) {
+        if plan.replayed || (plan.control.processes.is_empty() && plan.control.sessions.is_empty())
+        {
             self.preflight_relaunch(&mut plan, &admission, deadline)
                 .await?;
             return self.launch_prepared(plan, admission, deadline, None).await;
