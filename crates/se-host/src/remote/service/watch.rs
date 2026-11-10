@@ -1,6 +1,9 @@
 use super::*;
 use se_types::{Cursor, Omission, OmissionReason};
 use std::collections::BTreeMap;
+#[cfg(test)]
+#[path = "../../../tests/support/watch_batch_independent.rs"]
+mod batch_independent;
 mod manifest;
 mod start;
 #[derive(Clone, Default)]
