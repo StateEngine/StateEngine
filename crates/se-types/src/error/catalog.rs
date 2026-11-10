@@ -42,6 +42,7 @@ codes! {
     ImportSourceActive => ("import-source-active", Refused) { path: String, pid: Option<u32> } => "the old StateEngine is still running on {path}", "stop it with the old `se down`, then retry";
     IntegrationFailed => ("integration-failed", Refused) { subject: String, reason: String, next_step: String } => "Integration {subject}: {reason}", "{next_step}";
     JobBreakawayRefused => ("job-breakaway-refused", Refused) { parent: String } => "Windows refused job breakaway for a detached process launched by {parent}", "Open Windows Terminal or PowerShell directly from Start using this Windows account, then rerun the command there; an IDE, CI runner or runas terminal can inherit a job that forbids detached launches";
+    LaunchConfirmationRequired => ("launch-confirmation-required", Conflict) { subject: String, reason: String, lifecycles: Vec<LifecycleId>, sessions: Vec<SessionId>, next_step: String } => "Launch {subject}: {reason}", "{next_step}";
     LaunchFailed => ("launch-failed", Refused) { subject: String, reason: String, next_step: String } => "Launch {subject}: {reason}", "{next_step}";
     ListenerUnavailable => ("listener-unavailable", Refused) { subject: String, reason: String, next_step: String } => "Listener {subject}: {reason}", "{next_step}";
     ProjectRemoved => ("project-removed", Refused) { project: ProjectId, at: UnixMicros } => "project {project} was removed at {at}", "re-adopt: → `se init --repo {root}`";

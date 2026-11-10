@@ -9,6 +9,7 @@ mod codex_capture;
 mod cold_stop;
 mod control;
 mod dispatch;
+mod embedded_stop;
 mod events;
 mod files;
 mod git_workspace;

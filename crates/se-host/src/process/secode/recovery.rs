@@ -10,10 +10,11 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<Vec<String>> {
         let home = self.options.home.clone();
+        let custody_deadline = deadline.clone();
         let inventory = match self
             .store
             .pool
-            .run_owned(deadline, move || inventory(&home))
+            .run_owned(deadline, move || inventory(&home, &custody_deadline))
             .await
         {
             Ok(inventory) => inventory,
@@ -410,7 +411,10 @@ pub(super) fn recovery_source(source: &CheckpointSource) -> se_proc::RecoverySou
         CheckpointSource::Process(v) => se_proc::RecoverySource::Record(Box::new(v.clone())),
     }
 }
-pub(super) fn inventory(home: &std::path::Path) -> Result<Vec<(PathBuf, Journal, [u8; 32])>> {
+pub(super) fn inventory(
+    home: &std::path::Path,
+    deadline: &Deadline,
+) -> Result<Vec<(PathBuf, Journal, [u8; 32])>> {
     let root = home.join("secode");
     match std::fs::symlink_metadata(&root) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -443,7 +447,7 @@ pub(super) fn inventory(home: &std::path::Path) -> Result<Vec<(PathBuf, Journal,
                 "unrecognized retained entry; preserve it for owner reconciliation",
             ));
         }
-        let (journal, digest) = Journal::read_with_digest(&path)?
+        let (journal, digest) = Journal::read_with_digest(&path, deadline)?
             .ok_or_else(|| error("SE Code custody inventory", "listed journal disappeared"))?;
         if Journal::path(home, &journal.project, &journal.agent) != path
             || Journal::profile(home, &journal.project, &journal.agent)

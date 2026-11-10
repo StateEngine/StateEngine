@@ -221,7 +221,8 @@ pub fn down<R: se_store::ReadStore>(
             }
             se_host::EndpointRoute::Start { recovery } => {
                 let bound = Deadline::from_options(&options)?;
-                let auxiliary = se_host::LaunchCoordinator::secode_recovery_required(&cx.home);
+                let auxiliary =
+                    se_host::LaunchCoordinator::secode_recovery_required(&cx.home, &bound);
                 let observed = already_down::observe(files, reader, &options).and_then(|closed| {
                     if let Some(output) = closed
                         && matches!(&auxiliary, Ok(false))
