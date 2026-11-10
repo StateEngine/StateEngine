@@ -416,7 +416,10 @@ fn input_command(name: &str, c: Command) -> Command {
         "config.get" => c
             .arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile or agent.<AGENT>.can-create; example: se config get agent.main.model"))
             .arg(toggle("origin").help("Report where the value comes from")),
-        "config.list" => c.arg(toggle("origin").help("Report where the settings come from")),
+        "config.list" => c
+            .arg(toggle("origin").help("Report where the settings come from"))
+            .arg(value("limit").default_value("100").help("Maximum settings rows in this page"))
+            .arg(value("cursor").help("Cursor from a previous page of this same read")),
         "config.set" => {
             c.arg(positional("setting_key", 1, true).help("Saved agent setting: agent.<AGENT>.model, agent.<AGENT>.profile or agent.<AGENT>.can-create. Edit permission profiles directly in your state home's config.toml."))
                 .arg(positional("setting_value", 2, true).help("Model string or null for the default, an existing named permission profile, or true/false for can-create"))

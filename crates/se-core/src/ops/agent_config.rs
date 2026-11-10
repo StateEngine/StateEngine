@@ -13,11 +13,11 @@ use se_store::{
     Snapshot,
 };
 use se_types::{
-    AgentId, IdempotencyKey, Omission, Page, Read, Result, SeError, Sequence, Source, StopReason,
-    WindowFields,
+    AgentId, Cursor, IdempotencyKey, Omission, OmissionReason, Page, Read, Result, SeError,
+    Sequence, Source, StopReason, WindowFields,
 };
 use serde_json::{Value, json};
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 
 #[derive(Clone, Copy)]
 pub(crate) enum Field {
@@ -141,10 +141,13 @@ pub fn get<R: Snapshot>(input: ConfigGet, cx: &mut Cx<'_, R>) -> Result<super::C
         origin: input.origin.then_some(origin),
     })
 }
-/// Complete static window over the closed config.toml key set. Every row is
+/// Bounded static pages over the closed config.toml key set. Every row is
 /// the effective typed setting; only Option fields can be absent. `--origin`
 /// reports the adapter-resolved file-level origin on every row and refuses
-/// when the bound adapter carries none instead of inventing one.
+/// when the bound adapter carries none instead of inventing one. A page is
+/// bounded by the requested row limit and the wire byte budget; the returned
+/// cursor continues the list, so a valid large configuration lists completely
+/// across pages instead of refusing the whole file.
 pub fn list(
     configuration: &ConfigFile,
     origin: Option<&str>,
@@ -264,33 +267,107 @@ pub fn list(
         "capture.enabled",
         present(json!(configuration.capture.enabled)),
     );
-    let bytes = serde_json::to_vec(&rows)
-        .map_err(|cause| scope::unreadable("configuration page encoding", &cause.to_string()))?
-        .len() as u64;
+    // The row set is static, so the cursor is a plain row count: the rows
+    // before it are the pages the caller already received.
+    let offset = cursor_offset(input.cursor.as_ref())?;
+    let total = rows.len() as u64;
+    if offset > total {
+        return Err(SeError::invalid(
+            "cursor",
+            "a config list cursor within the row set; it names a row past the end",
+        ));
+    }
+    // Exact per-row wire sizes: serde_json writes a Vec as `[a,b,c]`, so a
+    // page's bytes are the two brackets, the row sizes, and one comma per gap.
+    let sizes: Vec<u64> = rows
+        .iter()
+        .map(|row| {
+            serde_json::to_vec(row)
+                .map(|bytes| bytes.len() as u64)
+                .map_err(|cause| {
+                    scope::unreadable("configuration row encoding", &cause.to_string())
+                })
+        })
+        .collect::<Result<Vec<u64>>>()?;
+    const PAGE_MAX_BYTES: u32 = 192 * 1024;
+    let limit = u64::from(input.limit);
+    let mut end = offset;
+    let mut bytes: u64 = 2;
+    while end < total && end - offset < limit {
+        let next = bytes
+            .checked_add(if end == offset { 0 } else { 1 })
+            .and_then(|sum| sum.checked_add(sizes[end as usize]))
+            .ok_or_else(|| SeError::invalid("configuration page", "a nonoverflowing byte count"))?;
+        if next > u64::from(PAGE_MAX_BYTES) {
+            break;
+        }
+        bytes = next;
+        end += 1;
+    }
+    if end == offset && offset < total {
+        return Err(SeError::invalid(
+            "configuration row",
+            "a single row within the 192 KiB page byte budget",
+        ));
+    }
+    let stop = if end == total {
+        StopReason::Exhausted
+    } else if end - offset == limit {
+        StopReason::ItemLimit
+    } else {
+        StopReason::ByteLimit
+    };
+    let omitted_after = match stop {
+        StopReason::Exhausted => Omission::None,
+        other => Omission::Known {
+            count: NonZeroU64::new(total - end).ok_or_else(|| {
+                SeError::invalid("configuration page", "a nonempty remainder past the page")
+            })?,
+            reason: if other == StopReason::ItemLimit {
+                OmissionReason::Limit
+            } else {
+                OmissionReason::Budget
+            },
+        },
+    };
+    let end_cursor = Cursor::new(format!("config-list/v1/{end}"))?;
     let fields = WindowFields {
         source: Source::Configuration {
             location: origin
                 .clone()
-                .unwrap_or_else(|| "unbound configuration policy".into()),
+                .unwrap_or_else(|| "effective configuration".into()),
         },
-        from: Sequence::ZERO,
-        to: Sequence::new(rows.len() as u64)?,
-        start_cursor: None,
-        end_cursor: None,
-        returned: rows.len() as u64,
-        limit: NonZeroU32::new(rows.len() as u32)
+        from: Sequence::new(offset)?,
+        to: Sequence::new(end)?,
+        start_cursor: input.cursor.clone(),
+        end_cursor: Some(end_cursor.clone()),
+        returned: end - offset,
+        limit: NonZeroU32::new(u32::from(input.limit))
             .ok_or_else(|| SeError::invalid("configuration page", "at least one setting row"))?,
         bytes,
-        max_bytes: NonZeroU32::new(192 * 1024)
+        max_bytes: NonZeroU32::new(PAGE_MAX_BYTES)
             .ok_or_else(|| SeError::invalid("configuration page", "a nonzero byte budget"))?,
         omitted_before: Omission::None,
-        omitted_after: Omission::None,
+        omitted_after,
         unreadable: 0,
-        stop_reason: StopReason::Exhausted,
+        stop_reason: stop,
     };
+    let next = (stop != StopReason::Exhausted).then_some(end_cursor);
+    let items = rows[offset as usize..end as usize].to_vec();
     Ok(super::ConfigPageOutput {
-        page: Page::new(rows, se_types::Window::new(fields)?, None)?,
+        page: Page::new(items, se_types::Window::new(fields)?, next)?,
     })
+}
+fn cursor_offset(cursor: Option<&Cursor>) -> Result<u64> {
+    let Some(cursor) = cursor else {
+        return Ok(0);
+    };
+    let rest = cursor
+        .as_str()
+        .strip_prefix("config-list/v1/")
+        .ok_or_else(|| SeError::invalid("cursor", "a config list cursor"))?;
+    rest.parse()
+        .map_err(|_| SeError::invalid("cursor", "a config list cursor"))
 }
 fn present(value: Value) -> Read<Value> {
     Read::Present { value }
@@ -481,6 +558,7 @@ pub fn set<R: Snapshot>(
 )]
 mod list_tests {
     use super::*;
+    use crate::config_policy::Profile;
 
     fn value<'a>(page: &'a super::super::ConfigPageOutput, key: &'a str) -> &'a Read<Value> {
         &page
@@ -494,7 +572,15 @@ mod list_tests {
 
     #[test]
     fn list_reports_the_closed_key_set_in_stable_order() -> Result<()> {
-        let page = list(&ConfigFile::default(), None, ConfigList { origin: false })?;
+        let page = list(
+            &ConfigFile::default(),
+            None,
+            ConfigList {
+                origin: false,
+                limit: 100,
+                cursor: None,
+            },
+        )?;
         let keys: Vec<&str> = page
             .page
             .items()
@@ -550,7 +636,15 @@ mod list_tests {
         default_profile.approval = Some(Approval::Untrusted);
         default_profile.sandbox = Sandbox::ReadOnly;
         default_profile.network = true;
-        let page = list(&configuration, None, ConfigList { origin: false })?;
+        let page = list(
+            &configuration,
+            None,
+            ConfigList {
+                origin: false,
+                limit: 100,
+                cursor: None,
+            },
+        )?;
         assert_eq!(
             value(&page, "launch.provider"),
             &Read::Present {
@@ -616,12 +710,320 @@ mod list_tests {
         let page = list(
             &configuration,
             Some("config.toml /home/owner/.stateengine/config.toml"),
-            ConfigList { origin: true },
+            ConfigList {
+                origin: true,
+                limit: 100,
+                cursor: None,
+            },
         )?;
         assert!(page.page.items().iter().all(|row| {
             row.origin.as_deref() == Some("config.toml /home/owner/.stateengine/config.toml")
         }));
-        assert!(list(&configuration, None, ConfigList { origin: true }).is_err());
+        assert!(
+            list(
+                &configuration,
+                None,
+                ConfigList {
+                    origin: true,
+                    limit: 100,
+                    cursor: None,
+                },
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn list_pages_a_large_configuration_to_completion() -> Result<()> {
+        let mut configuration = ConfigFile::default();
+        for index in 0..600 {
+            configuration
+                .profiles
+                .insert(format!("profile-{index:03}"), Profile::default());
+        }
+        let mut expected: Vec<String> = [
+            "default_project",
+            "launch.provider",
+            "launch.terminal",
+            "runtime.listen_port",
+            "runtime.blocking_jobs",
+            "providers.claude.command",
+            "providers.claude.model",
+            "providers.claude.profile",
+            "providers.codex.command",
+            "providers.codex.model",
+            "providers.codex.profile",
+            "providers.secode.command",
+            "providers.secode.model",
+            "providers.secode.profile",
+            "providers.secode.seed_profile",
+        ]
+        .iter()
+        .map(|key| (*key).to_string())
+        .collect();
+        for name in configuration.profiles.keys() {
+            for field in ["sandbox", "network", "approval", "bypass", "git_write"] {
+                expected.push(format!("profiles.{name}.{field}"));
+            }
+        }
+        for key in ["atlas.enabled", "atlas.hooks", "capture.enabled"] {
+            expected.push((*key).to_string());
+        }
+        let mut collected: Vec<String> = Vec::new();
+        let mut cursor = None;
+        let mut pages = 0;
+        loop {
+            let page = list(
+                &configuration,
+                None,
+                ConfigList {
+                    origin: false,
+                    limit: 100,
+                    cursor: cursor.clone(),
+                },
+            )?;
+            let fields = page.page.window().fields().expect("producer window");
+            assert!(fields.bytes <= 192 * 1024, "page within the byte budget");
+            assert_eq!(fields.returned, page.page.items().len() as u64);
+            for row in page.page.items() {
+                collected.push(row.key.clone());
+            }
+            pages += 1;
+            if page.page.window().complete() {
+                assert!(page.page.next().is_none());
+                assert_eq!(fields.stop_reason, StopReason::Exhausted);
+                break;
+            }
+            assert_eq!(fields.stop_reason, StopReason::ItemLimit);
+            assert_eq!(
+                page.page.window().omitted().reason,
+                Some(OmissionReason::Limit)
+            );
+            assert_eq!(
+                page.page.window().omitted().count,
+                Some(expected.len() as u64 - collected.len() as u64)
+            );
+            // A bounded page is not a failure: the owner CLI stays exit 0.
+            assert_eq!(page.page.window().exit_code(false), 0);
+            cursor = Some(page.page.next().cloned().expect("continuation cursor"));
+        }
+        assert_eq!(pages, 31);
+        assert_eq!(collected, expected);
+        Ok(())
+    }
+
+    #[test]
+    fn list_continues_from_a_cursor_without_overlap_or_gap() -> Result<()> {
+        let mut configuration = ConfigFile::default();
+        for index in 0..300 {
+            configuration
+                .profiles
+                .insert(format!("profile-{index:03}"), Profile::default());
+        }
+        let first = list(
+            &configuration,
+            None,
+            ConfigList {
+                origin: false,
+                limit: 100,
+                cursor: None,
+            },
+        )?;
+        let next = first.page.next().cloned().expect("continuation cursor");
+        let last = first
+            .page
+            .items()
+            .last()
+            .expect("first page rows")
+            .key
+            .clone();
+        let second = list(
+            &configuration,
+            None,
+            ConfigList {
+                origin: false,
+                limit: 100,
+                cursor: Some(next),
+            },
+        )?;
+        let second_fields = second.page.window().fields().expect("producer window");
+        assert_eq!(second_fields.from.get(), first_fields_to(first));
+        assert_ne!(
+            second.page.items().first().expect("second page rows").key,
+            last
+        );
+        assert!(
+            second.page.items().iter().all(|row| row.key != last),
+            "no row repeats across the boundary"
+        );
+        Ok(())
+    }
+    fn first_fields_to(page: super::super::ConfigPageOutput) -> u64 {
+        page.page
+            .window()
+            .fields()
+            .expect("producer window")
+            .to
+            .get()
+    }
+
+    #[test]
+    fn list_stops_a_page_at_the_byte_budget() -> Result<()> {
+        let mut configuration = ConfigFile::default();
+        for index in 0..300 {
+            configuration
+                .profiles
+                .insert(format!("profile-{index:03}"), Profile::default());
+        }
+        let origin = format!("config.toml {}", "x".repeat(4000));
+        let first = list(
+            &configuration,
+            Some(&origin),
+            ConfigList {
+                origin: true,
+                limit: 500,
+                cursor: None,
+            },
+        )?;
+        let fields = first.page.window().fields().expect("producer window");
+        assert_eq!(fields.stop_reason, StopReason::ByteLimit);
+        assert!(fields.bytes <= 192 * 1024, "budgeted page");
+        assert_eq!(
+            first.page.window().omitted().reason,
+            Some(OmissionReason::Budget)
+        );
+        assert_eq!(first.page.window().exit_code(false), 0);
+        let mut cursor = first.page.next().cloned().expect("budget continuation");
+        let mut seen = first.page.items().len();
+        loop {
+            let page = list(
+                &configuration,
+                Some(&origin),
+                ConfigList {
+                    origin: true,
+                    limit: 500,
+                    cursor: Some(cursor),
+                },
+            )?;
+            seen += page.page.items().len();
+            if page.page.window().complete() {
+                assert!(page.page.next().is_none());
+                break;
+            }
+            cursor = page.page.next().cloned().expect("continuation cursor");
+        }
+        assert_eq!(seen, 18 + 5 * 301);
+        Ok(())
+    }
+
+    #[test]
+    fn list_end_cursor_yields_an_empty_complete_page() -> Result<()> {
+        let configuration = ConfigFile::default();
+        let total = list(
+            &ConfigFile::default(),
+            None,
+            ConfigList {
+                origin: false,
+                limit: 100,
+                cursor: None,
+            },
+        )?
+        .page
+        .window()
+        .fields()
+        .expect("producer window")
+        .to
+        .get();
+        let page = list(
+            &configuration,
+            None,
+            ConfigList {
+                origin: false,
+                limit: 100,
+                cursor: Some(Cursor::new(format!("config-list/v1/{total}")).expect("end cursor")),
+            },
+        )?;
+        assert!(page.page.window().complete());
+        assert_eq!(page.page.items().len(), 0);
+        assert!(page.page.next().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn list_refuses_bad_and_past_end_cursors() -> Result<()> {
+        let configuration = ConfigFile::default();
+        for cursor in [
+            "config-list/v1/x",
+            "other/v1/1",
+            "config-list/v1/",
+            "config-list/v1/999999",
+        ] {
+            let page = list(
+                &configuration,
+                None,
+                ConfigList {
+                    origin: false,
+                    limit: 100,
+                    cursor: Some(Cursor::new(cursor).expect("cursor")),
+                },
+            );
+            assert!(page.is_err(), "cursor {cursor} must refuse");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn list_refuses_limits_outside_the_supported_range() -> Result<()> {
+        let configuration = ConfigFile::default();
+        for limit in [0u16, 501] {
+            let page = list(
+                &configuration,
+                None,
+                ConfigList {
+                    origin: false,
+                    limit,
+                    cursor: None,
+                },
+            );
+            assert!(page.is_err(), "limit {limit} must refuse");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn list_names_the_effective_configuration_without_an_origin() -> Result<()> {
+        let configuration = ConfigFile::default();
+        let page = list(
+            &configuration,
+            None,
+            ConfigList {
+                origin: false,
+                limit: 100,
+                cursor: None,
+            },
+        )?;
+        assert_eq!(
+            page.page.window().fields().expect("producer window").source,
+            Source::Configuration {
+                location: "effective configuration".into()
+            }
+        );
+        let page = list(
+            &configuration,
+            Some("config.toml /home/owner/config.toml"),
+            ConfigList {
+                origin: true,
+                limit: 100,
+                cursor: None,
+            },
+        )?;
+        assert_eq!(
+            page.page.window().fields().expect("producer window").source,
+            Source::Configuration {
+                location: "config.toml /home/owner/config.toml".into()
+            }
+        );
         Ok(())
     }
 }
