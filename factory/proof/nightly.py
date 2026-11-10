@@ -56,7 +56,8 @@ def box_load():
             fields = text.rsplit(")", 1)[1].split()
             pid = int(path.name)
             parents[pid] = int(fields[1])
-            if text.split("(", 1)[1].rsplit(")", 1)[0] in {"cargo", "cargo-clippy", "cargo-nextest", "rustc"}:
+            if fields[0] not in {"Z", "X", "x"} and text.split("(", 1)[1].rsplit(")", 1)[0] in {
+                    "cargo", "cargo-clippy", "cargo-nextest", "rustc"}:
                 drivers.add(pid)
         except (FileNotFoundError, ProcessLookupError):
             pass
