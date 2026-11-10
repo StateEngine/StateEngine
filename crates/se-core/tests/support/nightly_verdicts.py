@@ -197,10 +197,12 @@ class Controls(unittest.TestCase):
         try:
             deadline=time.monotonic()+2
             while time.monotonic()<deadline:
-                fields=Path(f'/proc/{child.pid}/stat').read_text().rsplit(')',1)[1].split()
+                observed=Path(f'/proc/{child.pid}/stat').read_text()
+                fields=observed.rsplit(')',1)[1].split()
                 if fields[0]=='Z': break
                 time.sleep(.001)
             self.assertEqual(fields[0],'Z','owned fixture did not reach its exited state')
+            self.assertEqual(observed.split('(',1)[1].rsplit(')',1)[0],'cargo','owned driver name was not witnessed')
             context=nightly.box_load()
             self.assertNotIn(child.pid,context['driver_pids'],'an exited zombie cannot be an active concurrent build')
         finally:
