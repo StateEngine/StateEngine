@@ -261,6 +261,11 @@ component that outgrows its line has to fix that or negotiate within the total (
 | **Hard total budget** | **30.0 MB** | Unchanged |
 
 ### 3.2 Standalone memory (B4: 40 MB)
+
+The component allocations below are superseded design-time estimates, retained
+for historical context. They are not current whole-host RSS measurements or a
+current margin against B4; native post-task observations judge the ceiling.
+
 | Component | Allocation | Baseline / basis |
 | --- | ---: | --- |
 | `se` code pages and system libraries, excluding Atlas grammars | 30.0 MB | Provisional allocation: the native public-consumer host showed 29.2 MB file-backed immediately after up, with preceding SSD noise 0.47 MB/s at 0.44% busy and NVMe 40.66 MB/s at 24.00%; attribution and quiet joined qualification remain outstanding |
@@ -271,9 +276,8 @@ component that outgrows its line has to fix that or negotiate within the total (
 | Optional Atlas anonymous: queries and single-file updates when enabled | 13.0 MB | One closed-when-idle connection plus one parser; measured Linux ordinary-file profiles in 60 §9 |
 | Shared Atlas grammar/parser file pages | 5.5 MB | One 5,473,485-byte reservation across all roots/grammars; separately reported from anonymous memory |
 | Allocator slack | 1.0 MB | |
-| **Estimated spend at two jobs** | **61.6 MB** | Eight jobs with idle cache targets increase this estimate to 67.9 MB before additional connection overhead |
-| Estimated excess at two jobs | 21.6 MB | Eight jobs exceed B4 by 27.9 MB before additional connection overhead; configuration does not relax B4 |
-| **Hard total budget** | **40.0 MB** | One live session after a real task; the component estimates above exceed this ceiling and remain unqualified |
+| Historical estimated spend at two jobs (superseded) | 61.6 MB | Historical eight-job estimate: 67.9 MB before additional connection overhead; neither value measures current RSS |
+| **Hard total budget** | **40.0 MB** | One live session after a real task; current native measurements judge this ceiling |
 
 The shipped finite-work default is two jobs for standalone and embedded hosts;
 more cores do not raise it. An explicit `runtime.blocking_jobs` in 2–8 is capped

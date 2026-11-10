@@ -905,9 +905,10 @@ extent and 49-byte declaration span without source bodies. Host RSS samples reac
 43,552,768 bytes, with 6,320,128 anonymous bytes; this uses a Claude protocol fixture,
 not a real-agent B4 qualification. Preceding SSD noise was 0.47/1.34 MB/s at 0.44/0.96
 percent busy, versus NVMe 40.66/69.40 MB/s at 24.00/50.62 percent busy. The former 5 MB code-page
-estimate understates these native mappings; section 80 now reserves 30 MB provisionally
-for non-grammar code/libraries. The standalone B4 ceiling is 40 MB; those component
-estimates exceed it. Quiet joined and real-agent qualification still remain outstanding.
+estimate understates these native mappings. Section 80 retains superseded design-time
+allocations of 30 MB for non-grammar code/libraries and 64 MB for the total as historical
+context, not current RSS measurements. The standalone B4 ceiling is 40 MB; current
+native post-task observations judge it.
 
 These are finite reservations, not measurements of the whole owner. Admission over
 one share stays deferred; no per-root parser/tree/cache pool and no silent borrowing
