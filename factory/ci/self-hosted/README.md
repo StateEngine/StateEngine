@@ -72,6 +72,12 @@ or queued until the operator selects hosted; known test red never becomes fallba
 success. Required Windows Clippy and the sole `check` status are unchanged.
 The workflow must allow hosted fmt/Clippy/archive/tests when `linux-route` emits
 `hosted` even with the box selector set, and place `check` on hosted for that route.
+That final job checks out the event's trusted base revision for a pull request
+(the selected main revision otherwise), never the candidate's status consumer,
+and invokes it with isolated Python. It uses no candidate local actions or Python
+startup imports. The maintainer owns this workflow invocation and reviews any
+change to it along with the paired adapter; the required status is not a claim
+that arbitrary replacement workflow definitions have been authenticated.
 
 Before activation, independently exercise a real required check, a genuine test
 failure, workflow/container rejection, cancellation with a surviving container,

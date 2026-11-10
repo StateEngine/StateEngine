@@ -131,8 +131,8 @@ def prepare(request, config, report, context):
     changed = changed_policy(repository, source, token, report["policy"])
     directory = Path(config["state"]) / uuid.uuid4().hex
     directory.mkdir(mode=0o700)
-    # Policy drift permits only fixed metadata operations. Candidate bytes are
-    # neither downloaded nor executed on this machine until policy is approved.
+    # Policy drift permits only fixed metadata operations. No candidate archive
+    # is downloaded or unpacked on this machine until policy is approved.
     if not changed:
         with (directory / "source.tar.gz").open("xb") as output:
             output.write(fetch(repository, "tarball/" + source, token, raw=True))
