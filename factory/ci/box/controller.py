@@ -78,6 +78,7 @@ def run(args):
                 journal.reconcile()
             result["success"] = status == "passed"
     except Exception as error:
+        result["success"] = False
         result["error"] = type(error).__name__ + ": " + str(error)
     finally:
         write(args.output / "result.json", result)
