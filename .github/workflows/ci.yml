@@ -182,11 +182,11 @@ jobs:
             sudo apt-get install --yes --no-install-recommends strace
           fi
           mkdir -p target/cargo-timings
-          # Test the shipping defaults; all-feature linked-product judges need SE Code's native fixtures.
+          # PRs retain default features; scheduled/manual main runs cover all features.
           # Process-only tracing measures native linker lifetimes without changing compiler flags.
           strace -f -qq -ttt -s 4096 -e trace=execve,execveat,exit_group \
             -o target/cargo-timings/linker-processes.trace \
-            cargo nextest archive --timings --target "$target" --workspace --locked --archive-file tests.tar.zst
+            cargo nextest archive --timings --target "$target" --workspace ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '--all-features' || '' }} --locked --archive-file tests.tar.zst
       - name: Retain compilation and linker timings
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
@@ -198,7 +198,7 @@ jobs:
       - name: Check documentation examples and compile-fail API boundaries
         run: |
           target="$(rustc --print host-tuple)"
-          cargo test --target "$target" --workspace --locked --doc
+          cargo test --target "$target" --workspace ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '--all-features' || '' }} --locked --doc
       - uses: actions/upload-artifact@v4
         with:
           name: tests-ubuntu-24.04
