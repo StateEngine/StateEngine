@@ -5,7 +5,7 @@ import os
 import re
 from pathlib import Path
 
-from report import publish, read
+from report import exit_status, publish, read, summarize
 
 
 def save(path, value):
@@ -40,7 +40,9 @@ def latest(state, directory, record, status):
 
 def checkpoint(state, directory, record):
     save(directory / "run.json", record)
-    unavailable = {"state": "partial", "complete": False, "outcome": "UNKNOWN", "producer_state": record["state"]}
+    interrupted = record["state"] == "interrupted"
+    unavailable = {"state": "interrupted" if interrupted else "partial", "complete": False,
+                   "outcome": "INTERRUPTED" if interrupted else "UNKNOWN", "producer_state": record["state"]}
     # Point at this attempt before any reporting or product operation can fail.
     # Even an unwritable report is unavailable tonight, never yesterday's pass.
     latest(state, directory, record, unavailable)
@@ -116,9 +118,13 @@ def service_exit(config):
             record["started_at"] = datetime.fromisoformat(origin).astimezone(timezone.utc).isoformat()
         record["errors"].append("service ended before a readable owned attempt record: " + str(record_error))
     result = os.environ["SERVICE_RESULT"]
-    if result != "success" or record.get("state") != "finished":
+    code, status = os.environ.get("EXIT_CODE", "unknown"), os.environ.get("EXIT_STATUS", "unknown")
+    record["service_exit"] = {"result": result, "code": code, "status": status}
+    expected = exit_status(summarize(record, directory))
+    completed = (record.get("state") == "finished" and code == "exited" and status == str(expected)
+                 and result == ("success" if expected == 0 else "exit-code"))
+    if not completed:
         record["state"] = "interrupted"
-        record["errors"].append("service=" + result + " exit=" + os.environ.get("EXIT_CODE", "unknown") +
-                                ":" + os.environ.get("EXIT_STATUS", "unknown"))
+        record["errors"].append("service=" + result + " exit=" + code + ":" + status)
     checkpoint(state, directory, record)
     return 0

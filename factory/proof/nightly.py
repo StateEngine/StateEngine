@@ -10,7 +10,7 @@ import subprocess
 import sys
 import time
 
-from report import publish
+from report import exit_status, publish
 from lifecycle import begin, checkpoint, save, service_exit
 
 GIB = 1024**3
@@ -76,6 +76,8 @@ def invoke(config, run, directory, judge, descriptor, archive, env, invocation, 
     argv = [config["node"], judge / "journeys/run.mjs", "--implementation", "rust",
             "--distribution", "standalone", "--product", descriptor,
             "--surface", surface, "--auth-home", config["auth_home"], "--out", directory / name]
+    if surface in config.get("credential_sources", {}):
+        argv += ["--credential-source", config["credential_sources"][surface]]
     if selection == "first-hour":
         argv += ["--only", selection, "--archive", archive]
     elif selection != "wave-2":
@@ -153,7 +155,7 @@ def run_nightly(config, prepared_build=None):
             report = checkpoint(state, directory, record)
         # Artifacts remain available even when every prerequisite failed.
         print(directory / "report.md", flush=True)
-        return 0 if report["status"]["outcome"] == "PASS" and report["status"]["complete"] else 1
+        return exit_status(report)
 
 
 def main():

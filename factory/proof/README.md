@@ -39,7 +39,10 @@ The configuration names absolute `state`, `product_git`, `judge_git`, `node` and
 
 Python 3.11 or later and the judge's Node 24 or later are required. The native CLIs
 must already be installed and signed in. Only the independent
-judge reads the login files to make private copies without refresh tokens; it
+judge reads the login files to make private copies without refresh tokens; an optional
+`credential_sources` object maps a provider to an absolute plain credential file
+passed as `--credential-source`, for account profiles outside the usual login layout.
+The judge refuses source symlinks and
 checks the original inode and digest and removes the private copies after closure.
 No native provider command uses the normal login home. Source and artifact trees
 are retained, without credentials; cleanup of old evidence is a separate operator
@@ -63,15 +66,20 @@ assembler verifies its inventory and hashes.
 
 The original five journeys and the five sequential stock Codex first-hour checks
 have different meanings, especially row four. They are separate scoped grids.
-Windows and macOS are `NOT RUN` until native receipts exist. A cell is PASS only when its whole judge invocation exited zero, its complete
-receipt matches the declared scope, cleanup is clean and its qualification is
-supported. Missing/crashed surfaces stay UNKNOWN in the planned scope; they never
-drop out behind another surface's passing rows. NOT RUN is reserved for a
-platform or journey outside the plan. Tonight's raw row-level behavior remains in
-the original receipts even when an invocation cannot qualify those rows.
+Windows and macOS are `NOT RUN` until native receipts exist. A journey cell is PASS
+when its behavior passed and its cleanup is clean in a matching scoped receipt.
+A completed judge exit of one can reflect budget misses; it does not turn passed
+journeys red. Missing/crashed surfaces stay UNKNOWN in the planned scope, or
+INTERRUPTED when that attempt was interrupted. They never drop out behind another
+surface's passing rows. NOT RUN is reserved for a platform or journey outside the
+plan. Completed observed rows remain visible even if later work is interrupted.
+The overall attempt separately records completion, judge failures and interruption.
+Service finalization retains the manager's exit facts and recognizes the producer's
+expected completed-verdict exit; an unexpected exit still marks interruption.
 
-An observed zero remains zero. Failed probes retain their numbers and FAIL verdict;
-partial budgets are UNQUALIFIED, and missing probes remain NOT MEASURED. No partial
-numeric observation is a whole-budget pass. The budget file retains all numeric samples and the judge's limits and
-probe verdicts, without deriving a new verdict from a partial budget. Missing
-embedded B1/B2, handover B8, FULL-write and Codex-budget probes are named gaps.
+An observed zero remains zero. Budget measurements retain numbers, limits and
+probe verdicts, using PASS, MISS or NOT MEASURED. A witnessed miss remains a miss
+when other probes are missing; missing coverage is named separately and prevents a
+whole-budget pass. Raw samples stay in the original judge receipts. Budget misses
+never change journey cells. Missing embedded B1/B2, handover B8, FULL-write and
+Codex-budget probes are named gaps.
