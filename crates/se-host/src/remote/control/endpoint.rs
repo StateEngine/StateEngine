@@ -35,6 +35,77 @@ impl Control {
             return Ok(self.enabled(current.address));
         }
         let listener = listener::ClientListener::bind(address)?;
+        let publisher = self.publisher(router, deadline).await?;
+        let service = Arc::new(service::Service::new(
+            router.clone(),
+            self.security.store.clone(),
+            publisher,
+            self.cipher.clone(),
+            self.security.host(),
+        ));
+        let endpoint = Arc::new(listener::ClientEndpoint {
+            security: self.security.clone(),
+            key: self.key.clone(),
+            cipher: self.cipher.clone(),
+            service,
+            blocking: router.execution.blocking.clone(),
+        });
+        let address = listener.address();
+        let (shutdown, stop) = watch::channel(false);
+        let task = router
+            .execution
+            .blocking
+            .handle()
+            .spawn(listener.serve(endpoint, stop));
+        *running = Some(Running {
+            address,
+            shutdown,
+            task: Some(task),
+            closed: false,
+        });
+        Ok(self.enabled(address))
+    }
+    pub(crate) async fn local_watch(
+        router: &crate::HostedRouter,
+        admission: se_store::Admission,
+        input: RemoteWatch,
+        wait_ms: u32,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<RemoteWatchBatch> {
+        let owner = auth::VerifiedLocalOwner::from_machine(&admission)?;
+        let (control, _) = Self::prepare(router, owner, true, deadline).await?;
+        let publisher = control.publisher(router, deadline).await?;
+        let service = service::Service::new(
+            router.clone(),
+            control.security.store.clone(),
+            publisher,
+            control.cipher.clone(),
+            control.security.host(),
+        );
+        let result = control
+            .local_watches
+            .read_local(&admission, service, input, wait_ms, deadline)
+            .await?;
+        router.check_open()?;
+        Ok(result)
+    }
+
+    async fn publisher(
+        &self,
+        router: &crate::HostedRouter,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<Arc<publish::LivePublisher>> {
+        let _setup = self.live_setup.lock().await;
+        router.check_open()?;
+        if self.closing.load(Ordering::Acquire) {
+            return Err(SeError::invalid(
+                "client view",
+                "a host before its shutdown fence",
+            ));
+        }
+        if let Some(publisher) = self.live()? {
+            return Ok(publisher);
+        }
         let publisher = publish::LivePublisher::new(self.security.instance())?;
         *self
             .live
@@ -64,34 +135,7 @@ impl Control {
                 "a host before shutdown",
             ));
         }
-        let service = Arc::new(service::Service::new(
-            router.clone(),
-            self.security.store.clone(),
-            publisher,
-            self.cipher.clone(),
-            self.security.host(),
-        ));
-        let endpoint = Arc::new(listener::ClientEndpoint {
-            security: self.security.clone(),
-            key: self.key.clone(),
-            cipher: self.cipher.clone(),
-            service,
-            blocking: router.execution.blocking.clone(),
-        });
-        let address = listener.address();
-        let (shutdown, stop) = watch::channel(false);
-        let task = router
-            .execution
-            .blocking
-            .handle()
-            .spawn(listener.serve(endpoint, stop));
-        *running = Some(Running {
-            address,
-            shutdown,
-            task: Some(task),
-            closed: false,
-        });
-        Ok(self.enabled(address))
+        Ok(publisher)
     }
     fn enabled(&self, address: std::net::SocketAddr) -> serde_json::Value {
         serde_json::json!({"state":"enabled","address":address,"host":self.security.host(),"instance":self.security.instance(),"generation":self.security.generation,"security_notice":self.startup.notice()})

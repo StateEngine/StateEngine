@@ -194,48 +194,89 @@ pub(crate) fn run(
                 Err(e) => error(&e, json, Some(&p), stderr),
             }
         }
-        AnyOp::RemoteWatch(mut input) => loop {
-            let follow = input.follow;
-            let output = dispatch(cx, AnyOp::RemoteWatch(input.clone()), &mut diagnostic);
-            match output {
-                Ok(AnyOutput::RemoteWatch(v)) => {
-                    let reset = v.value.reset_required;
-                    if reset {
-                        input.request.cursors.clear();
-                    }
-                    for cursor in &v.value.cursors {
-                        if let Some(saved) = input
-                            .request
-                            .cursors
-                            .iter_mut()
-                            .find(|saved| saved.target == cursor.target)
-                        {
-                            *saved = cursor.clone();
-                        } else {
-                            input.request.cursors.push(cursor.clone());
-                        }
-                    }
-                    let code =
-                        crate::render::output(&AnyOutput::RemoteWatch(v), json, quiet, stdout)?;
-                    stdout.flush()?;
-                    if !follow || input.wait_ms == 0 || reset {
-                        return Ok(code);
-                    }
-                }
-                Ok(_) => {
-                    return error(
-                        &SeError::invalid("remote watch", "the typed watch batch"),
-                        json,
-                        None,
-                        stderr,
-                    );
-                }
-                Err(e) => return error(&e, json, None, stderr),
-            }
-        },
+        AnyOp::RemoteWatch(input) => watch(
+            cx,
+            se_core::ops::ClientWatchCall {
+                request: input.request,
+                wait_ms: input.wait_ms,
+                follow: input.follow,
+            },
+            Some(input.host),
+            json,
+            quiet,
+            stdout,
+            stderr,
+            dispatch,
+        ),
+        AnyOp::ClientWatch(input) => watch(cx, input, None, json, quiet, stdout, stderr, dispatch),
         operation => match dispatch(cx, operation, &mut diagnostic) {
             Ok(output) => crate::render::output(&output, json, quiet, stdout),
             Err(e) => error(&e, json, None, stderr),
         },
+    }
+}
+
+fn watch(
+    cx: &Bootstrap,
+    mut input: se_core::ops::ClientWatchCall,
+    host: Option<String>,
+    json: bool,
+    quiet: bool,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    dispatch: &mut Dispatch<'_>,
+) -> io::Result<u8> {
+    let mut diagnostic = |_: &str| {
+        Err(io::Error::other(
+            "client watch requires typed status/errors",
+        ))
+    };
+    loop {
+        let follow = input.follow;
+        let operation = match &host {
+            Some(host) => AnyOp::RemoteWatch(RemoteWatchCall {
+                host: host.clone(),
+                request: input.request.clone(),
+                wait_ms: input.wait_ms,
+                follow: input.follow,
+            }),
+            None => AnyOp::ClientWatch(input.clone()),
+        };
+        let output = dispatch(cx, operation, &mut diagnostic);
+        match output {
+            Ok(AnyOutput::RemoteWatch(v)) => {
+                let reset = v.value.reset_required;
+                if reset {
+                    input.request.cursors.clear();
+                }
+                for cursor in &v.value.cursors {
+                    if let Some(saved) = input
+                        .request
+                        .cursors
+                        .iter_mut()
+                        .find(|saved| saved.target == cursor.target)
+                    {
+                        *saved = cursor.clone();
+                    } else {
+                        input.request.cursors.push(cursor.clone());
+                    }
+                }
+                let code = crate::render::output(&AnyOutput::RemoteWatch(v), json, quiet, stdout)?;
+                stdout.flush()?;
+                if !follow || input.wait_ms == 0 || reset {
+                    return Ok(code);
+                }
+            }
+            Ok(_) => {
+                return self::error(
+                    &SeError::invalid("remote watch", "the typed watch batch"),
+                    json,
+                    None,
+                    None,
+                    stderr,
+                );
+            }
+            Err(e) => return self::error(&e, json, None, None, stderr),
+        }
     }
 }

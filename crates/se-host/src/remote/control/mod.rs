@@ -31,6 +31,8 @@ pub(crate) struct Control {
     files: Arc<dyn se_store::StateFiles>,
     startup: startup::Fence,
     live: RwLock<Option<Arc<publish::LivePublisher>>>,
+    local_watches: broker::watch::Watches,
+    live_setup: Mutex<()>,
     running: Mutex<Option<Running>>,
     closing: AtomicBool,
     configure: Mutex<()>,
@@ -151,6 +153,8 @@ impl Control {
             files,
             startup,
             live: RwLock::new(None),
+            local_watches: broker::watch::Watches::default(),
+            live_setup: Mutex::new(()),
             running: Mutex::new(None),
             closing: AtomicBool::new(false),
             configure: Mutex::new(()),
@@ -161,6 +165,9 @@ impl Control {
         self.stop_listener().await
     }
     async fn stop_listener(&self) -> Result<()> {
+        let mut running = self.running.lock().await;
+        let _setup = self.live_setup.lock().await;
+        self.local_watches.close()?;
         let (publisher, mut failure) = match self.live.write() {
             Ok(mut live) => (live.take(), None),
             Err(poisoned) => (
@@ -176,7 +183,6 @@ impl Control {
         {
             failure = Some(error);
         }
-        let mut running = self.running.lock().await;
         if let Some(listener) = running.as_mut() {
             listener.shutdown.send_replace(true);
             if let Some(task) = listener.task.as_mut() {

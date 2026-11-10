@@ -2,7 +2,7 @@ use super::*;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
 #[derive(Default)]
-pub(super) struct Watches {
+pub(crate) struct Watches {
     entries: Mutex<BTreeMap<String, Arc<Entry>>>,
 }
 struct Entry {
@@ -29,7 +29,7 @@ impl Entry {
     }
 }
 impl Watches {
-    pub(super) fn close(&self) -> Result<()> {
+    pub(crate) fn close(&self) -> Result<()> {
         self.entries.lock().map_err(|_| poisoned())?.clear();
         Ok(())
     }
@@ -58,7 +58,6 @@ impl Watches {
         wait_ms: u32,
         deadline: &crate::client::lease::Deadline,
     ) -> Result<RemoteWatchBatch> {
-        self.remove_fenced()?;
         let key = serde_json::to_string(&(
             device.host,
             &device.grant,
@@ -67,6 +66,55 @@ impl Watches {
             &request.visible,
         ))
         .map_err(|_| poisoned())?;
+        self.read_with(
+            key,
+            source,
+            request,
+            wait_ms,
+            deadline,
+            move |context, request| Box::pin(async move { client.watch(context, request).await }),
+        )
+        .await
+    }
+
+    #[cfg(feature = "remote")]
+    pub(crate) async fn read_local(
+        &self,
+        admission: &se_store::Admission,
+        service: service::Service,
+        request: RemoteWatch,
+        wait_ms: u32,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<RemoteWatchBatch> {
+        let key = serde_json::to_string(&serde_json::json!({
+            "native_owner":admission.actor,"generation":admission.generation,
+            "targets":request.targets,"visible":request.visible,
+        }))
+        .map_err(|_| poisoned())?;
+        let admission = admission.clone();
+        self.read_with(key, None, request, wait_ms, deadline, move |_, request| {
+            Box::pin(async move { service.watch_local(admission, request) })
+        })
+        .await
+    }
+
+    async fn read_with<F>(
+        &self,
+        key: String,
+        source: Option<&VerifiedSourceSession>,
+        request: RemoteWatch,
+        wait_ms: u32,
+        deadline: &crate::client::lease::Deadline,
+        open: F,
+    ) -> Result<RemoteWatchBatch>
+    where
+        F: FnOnce(
+                RemoteCallContext,
+                RemoteWatch,
+            ) -> RemoteFuture<'static, Box<dyn RemoteWatchStream>>
+            + Send,
+    {
+        self.remove_fenced()?;
         let entry = {
             let mut entries = self.entries.lock().map_err(|_| poisoned())?;
             if !entries.contains_key(&key) {
@@ -134,7 +182,7 @@ impl Watches {
         if state.stream.is_none() {
             let mut resumed = request.clone();
             resumed.cursors = state.cursors.clone();
-            state.stream = Some(client.watch(entry.context(), resumed).await?);
+            state.stream = Some(open(entry.context(), resumed).await?);
             state.request = request.clone();
         }
         entry.context().check_current()?;

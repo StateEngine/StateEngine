@@ -28,6 +28,15 @@ impl Service {
             cursors,
         }
     }
+    pub(crate) fn watch_local(
+        self,
+        admission: se_store::Admission,
+        input: RemoteWatch,
+    ) -> Result<Box<dyn RemoteWatchStream>> {
+        self.router.check_open()?;
+        let request = view_request::ViewRequest::local(admission, input)?;
+        Ok(Box::new(watch::Watch::from_request(self, request)?))
+    }
     async fn blocking<T: Send + 'static>(
         &self,
         work: impl FnOnce() -> Result<T> + Send + 'static,

@@ -205,6 +205,12 @@ impl HostedRouter {
             .as_ref()
             .map(super::memory::MemoryReclaim::after_work);
         self.check_open()?;
+        if matches!(
+            &call.admitted.input,
+            HostedInput::Operation(se_core::ops::AnyOp::ClientWatch(_))
+        ) {
+            return super::local_client::watch(self, call.admitted, deadline).await;
+        }
         let Some(hook) = call.hook else {
             return execute(
                 self.execution.clone(),

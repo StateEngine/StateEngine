@@ -293,7 +293,7 @@ fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> 
 fn input_command(name: &str, c: Command) -> Command {
     let c = match name {
         name if name.starts_with("atlas.") => atlas::command(name, c),
-        "remote.list" | "remote.watch" | "remote.send" => remote_command(name, c),
+        "remote.list" | "remote.watch" | "remote.send" | "client.watch" => remote_command(name, c),
         "meta.help" => c
             .arg(
                 Arg::new("path")
