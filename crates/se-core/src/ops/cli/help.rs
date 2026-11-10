@@ -27,6 +27,7 @@ pub(super) fn command(name: &str) -> Option<&'static str> {
         "remote.watch" => "Read one bounded live/durable page; disconnect never stops work",
         "remote.send" => "Send keyed direct mail to an exact remote agent session",
         "meta.help" => "Explain a command and its options",
+        "meta.guide" => "List guide topics or read one named topic",
         "meta.schema" => "Show registered operation input and output schemas",
         #[cfg(feature = "import")]
         "store.import_node" => "Import retained history without changing its source files",

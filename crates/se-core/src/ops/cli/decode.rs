@@ -139,6 +139,9 @@ pub fn from_matches_with_key(
                 flag(m, "all")
             },
         }),
+        "meta.guide" => AnyOp::MetaGuide(MetaGuide {
+            topic: text(m, "topic"),
+        }),
         "meta.schema" => AnyOp::MetaSchema(MetaSchema { op: text(m, "op") }),
         "project.status" => AnyOp::ProjectStatus(ProjectStatus {
             all: if path.is_empty() {

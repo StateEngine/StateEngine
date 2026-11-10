@@ -39,7 +39,9 @@ pub(crate) use cli::command_name;
 pub mod doctor;
 pub use doctor::{Diagnosis, DoctorInspect, DoctorRepair, RepairOutput};
 pub mod event;
+mod guide;
 pub mod history;
+pub use guide::{GuideOutput, GuideTopicSummary, MetaGuide};
 pub use history::{HistoryList, HistoryPage};
 pub mod identity;
 pub use identity::{
@@ -206,6 +208,7 @@ ops! {
     RemoteSend => RemoteSendCall, RemoteSendOutput, ("remote.send",leaf(&["remote","send"]),tool("stateengine_remote_send","Send remote direct mail","Commit one keyed direct message to an exact remote target and expected session through this source agent's configured grant. Retry an uncertain exchange with the same key/body/target/session; committed does not mean delivered, read or acted."),Either,false,Never,Write,Home,Host,"stateengine.remote-send",RemoteSend,&[]);
     MetaVersion => MetaVersion, VersionOutput, ("meta.version",CliExposure::RootFlag { flag:"version" },no_mcp("Installed CLI metadata is not an agent task."),Either,true,Never,Read,None,None,"se.version",Version,&["J1"]);
     MetaHelp => MetaHelp, HelpOutput, ("meta.help",leaf(&["help"]),no_mcp("MCP descriptions derive from the same catalogue."),Either,true,Never,Read,None,None,"se.help",Help,&["J1"]);
+    MetaGuide => MetaGuide, GuideOutput, ("meta.guide",leaf(&["guide"]),tool("stateengine_help","Help guide","List short guide topics, or read one exact topic by name. Omit topic for the index."),Either,true,Never,Read,None,None,"se.guide",Guide,&["J1","J2","J3","J4","J5"]);
     MetaSchema => MetaSchema, SchemaCatalogue, ("meta.schema",leaf(&["schema"]),no_mcp("MCP tools/list exposes the generated schemas."),Either,true,Never,Read,None,None,"se.schema-catalogue",Schema,&["J1"]);
     IdentityWhoami => IdentityWhoami, PrincipalOutput, ("identity.whoami",CliExposure::None {reason:"terminal actor is already known; session introspection is an agent tool"},tool("stateengine_whoami","Identity","Who you are in StateEngine: your project, agent identity, session and what you are allowed to do."),Session,false,Never,Read,Session,None,"se.principal",Principal,&["J2","J3","J4"]);
     #[cfg(feature = "import")]
@@ -486,6 +489,7 @@ const _: () = {
             assert!(
                 equal(row.name, "meta.version")
                     || equal(row.name, "meta.help")
+                    || equal(row.name, "meta.guide")
                     || equal(row.name, "meta.schema"),
                 "only installed metadata is anonymous"
             );
