@@ -1,6 +1,6 @@
 # Product operation allowlist
 
-This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked calls derive from one synchronous core registry, with async custody execution in the host. The reconciled rows contain **58 operations and 24 MCP tools (19 core, 5 optional Atlas)**; executable counts are generated from the registry; a crate cannot introduce an unlisted public operation. This document is a design contract, not a running implementation or journey verdict. The Node repository keeps its private factory engine; no fleet cutover/import or CLI-only factory adaptation is part of this build.
+This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked calls derive from one synchronous core registry, with async custody execution in the host. The reconciled rows contain **58 operations and 24 MCP tools (19 core, 5 optional Atlas)**; the registry currently registers 46 operations and 20 tools, and the generated command inventory at the end of this document lists the unbuilt rows as planned; a test fails when that inventory drifts from the registry or the design tables. A crate cannot introduce an unlisted public operation. This document is a design contract, not a running implementation or journey verdict. The Node repository keeps its private factory engine; no fleet cutover/import or CLI-only factory adaptation is part of this build.
 
 ## Journeys and row conventions
 
@@ -201,3 +201,68 @@ This table is compatibility metadata, **not executable aliases**. Recognized old
 | MCP `stateengine_agent_rename`; `stateengine_tools` call proxy | owner CLI `agent rename AGENT NAME`; native tools/list and direct allowed tool calls, respectively |
 
 The CLI retains replacement hints only for commands with a supported replacement above. Other obsolete inputs go through the current generated grammar and receive its ordinary unknown-command or unknown-flag refusal with current help, before opening state. No catalog of obsolete operator commands is compiled into the CLI. No old MCP tool is advertised, and no unlisted command/tool, legacy actor/root flag, environment switch or Node module name grants another operation.
+
+## Generated command inventory
+
+This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
+
+<!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
+Registered: 46 operations (40 core, 6 Atlas), 20 MCP tools (15 core, 5 Atlas). Planned: 14 operations, 5 MCP tools.
+
+| Operation | CLI | MCP tool | Auth | Effect |
+| --- | --- | --- | --- | --- |
+| `atlas.augment` | none — Private native provider augmentation only. | none | session | read |
+| `atlas.find` | atlas find | `stateengine_atlas_find` | either | read |
+| `atlas.refs` | atlas refs | `stateengine_atlas_refs` | either | read |
+| `atlas.impact` | atlas impact | `stateengine_atlas_impact` | either | read |
+| `atlas.changes` | atlas changes | `stateengine_atlas_changes` | either | read |
+| `atlas.outline` | atlas outline | `stateengine_atlas_outline` | either | read |
+| `meta.version` | --version | none | either | read |
+| `meta.help` | help | none | either | read |
+| `meta.schema` | schema | none | either | read |
+| `store.import_node` | import | none | owner | custody |
+| `project.init` | init | none | owner | write |
+| `project.move` | project move | none | owner | write |
+| `doctor.inspect` | doctor | none | owner | read |
+| `doctor.repair` | doctor --fix | none | owner | write |
+| `project.status` | status | `stateengine_status` | either | read |
+| `history.event_read` | history --event | `stateengine_event_read` | either | read |
+| `history.list` | history | none | either | read |
+| `message.send` | msg send | `stateengine_msg_send` | either | write |
+| `message.read` | msg read | `stateengine_msg_read` | either | write |
+| `message.ack` | msg ack | `stateengine_msg_ack` | either | write |
+| `message.dismiss` | msg dismiss | `stateengine_msg_dismiss` | either | write |
+| `message.list` | msg list | `stateengine_msg_list` | either | read |
+| `message.inbox` | msg inbox | none | either | read |
+| `working_state.get` | working-state | `stateengine_working_state_get` | either | read |
+| `working_state.set` | working-state set | `stateengine_working_state_set` | either | write |
+| `hook.claude` | hook claude (hidden) | none | session | custody |
+| `runtime.up` | up | none | owner | custody |
+| `runtime.down` | down | none | owner | custody |
+| `installation.uninstall` | uninstall | none | owner | custody |
+| `agent.create` | agent add | `stateengine_agent_create` | either | write |
+| `continuity.resume` | resume | `stateengine_resume` | either | read |
+| `session.context` | session context (hidden) | none | session | read |
+| `agent.list` | agent list | none | owner | read |
+| `agent.launch` | launch | `stateengine_agent_launch` | either | custody |
+| `agent.stop` | stop | `stateengine_agent_stop` | either | custody |
+| `project.remove` | remove | none | owner | custody |
+| `agent.show` | agent show | none | owner | read |
+| `config.get` | config get | none | owner | read |
+| `config.set` | config set | none | owner | write |
+| `decision.list` | decision list | `stateengine_decision_list` | either | read |
+| `decision.show` | decision show | none | either | read |
+| `decision.propose` | decide | `stateengine_decision_propose` | either | write |
+| `decision.ratify` | decision ratify | none | owner | write |
+| `decision.reject` | decision reject | none | owner | write |
+| `decision.retract` | decision retract | none | owner | write |
+| `decision.supersede` | decision supersede | none | owner | write |
+
+Planned operations (design tables, not yet registered): `agent.rename`, `agent.wake`, `config.list`, `credential.rotate`, `doctor.bundle`, `history.search`, `identity.whoami`, `mcp.serve`, `mcp.token`, `session.begin`, `session.end`, `session.turn`, `store.forget`, `store.restore`
+
+Planned MCP tools: `stateengine_agent_status`, `stateengine_agent_wake`, `stateengine_search`, `stateengine_session_turn`, `stateengine_whoami`
+
+Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `project.move` (CLI `project move`)
+
+Registered MCP tools not named in the design tables: `stateengine_working_state_get`
+<!-- END GENERATED: ops-inventory -->
