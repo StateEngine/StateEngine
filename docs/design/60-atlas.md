@@ -507,7 +507,7 @@ Network/synced roots without reliable identity/events degrade with no polling fa
 ### 4.1 Cold child and atomic epoch discovery
 
 80's approved cold-full-index window has a **64,000,000-byte child peak cap** and
-is reported separately; **B4's 64,000,000-byte steady-state measurement is outside
+is reported separately; **B4's 40,000,000-byte steady-state measurement is outside
 that window**. No aggregate_ceiling_bytes exists: it falsely implied another cold
 aggregate limit. Host allocation still targets its steady share; defer cold work
 for machine pressure, never merely because parent+child exceeds 64 MB. Only first
@@ -906,8 +906,8 @@ extent and 49-byte declaration span without source bodies. Host RSS samples reac
 not a real-agent B4 qualification. Preceding SSD noise was 0.47/1.34 MB/s at 0.44/0.96
 percent busy, versus NVMe 40.66/69.40 MB/s at 24.00/50.62 percent busy. The former 5 MB code-page
 estimate understates these native mappings; section 80 now reserves 30 MB provisionally
-for non-grammar code/libraries and 64 MB for the standalone total. Quiet joined and
-real-agent qualification still remain outstanding.
+for non-grammar code/libraries. The standalone B4 ceiling is 40 MB; those component
+estimates exceed it. Quiet joined and real-agent qualification still remain outstanding.
 
 These are finite reservations, not measurements of the whole owner. Admission over
 one share stays deferred; no per-root parser/tree/cache pool and no silent borrowing

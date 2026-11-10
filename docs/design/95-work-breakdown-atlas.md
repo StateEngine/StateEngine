@@ -358,7 +358,7 @@ contracts; optional Atlas must not delay or disable those core paths.
 **Witness:** clean native public CLI/MCP runs on all three OSes with both harnesses;
 standalone actual indexing/edit/query/resume/remove plus embedded feature-unavailable A/B
 through first bind and real core work. Observe the complete attributed process set,
-<=25,000,000-byte steady host after a real task, separate <=64,000,000-byte cold
+<=40,000,000-byte steady host after a real task, separate <=64,000,000-byte cold
 peak/reap, admitted-save <=200 ms and query p95 <=50 ms. Use section 80's external
 idle method, not endpoint-only/self-reported zeros; Atlas contributes zero settled
 work/timers. Keep every failed/slow sample. A missing probe/observer is unavailable,
