@@ -9,7 +9,11 @@ pub(super) fn output(value: &GuideOutput, out: &mut impl Write) -> io::Result<()
                 writeln!(out, "{} — {}\n  {}", topic.name, topic.title, topic.summary)?;
             }
             writeln!(out, "\nRead one topic: se guide TOPIC")?;
-            writeln!(out, "Command options: se help COMMAND")
+            writeln!(out, "Command options: se help COMMAND")?;
+            writeln!(
+                out,
+                "MCP: stateengine_help (omit topic for the index; set topic to read one)"
+            )
         }
         GuideOutput::Topic { title, body, .. } => writeln!(out, "{title}\n\n{body}"),
     }
