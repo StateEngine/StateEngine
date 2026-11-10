@@ -2,7 +2,7 @@
 
 The managed SE Code subprocess harness keeps the standalone runtime as the sole StateEngine owner: SE Code must not activate an embedded owner.
 
-Linux headless services are enabled. Windows headless SE Code launch and resume refuse with `feature-unavailable` before takeover, bootstrap or service creation because private profile-directory protection is not yet qualified. Run headless SE Code on Linux, or use a Claude or Codex agent on Windows. Retained process reconciliation and cleanup remain available; refusing new launches must not discard existing custody.
+This Windows follow-up removes the temporary headless launch refusal so the shared nightly journey can exercise the existing service path. Private profile-directory protection remains required. The preserved `PermissionDenied` failure must be resolved before this follow-up is ready; enabling admission alone does not qualify Windows. Retained process reconciliation and cleanup remain available.
 
 **No real-model request has run on any platform yet.** The Linux attempt stopped at the supported account importer before submitting a request. Real-model qualification belongs to the Windows follow-up once the importer accepts the account; the shared nightly journey will judge Windows enablement. Synthetic service replies prove protocol behavior, not model execution. macOS runtime remains unqualified.
 
@@ -36,6 +36,6 @@ Committed mail wakes the host; it offers a session-bound notice through authenti
 
 Migration supplies imported agent/session mappings and binary overrides. Fresh installs get bundle discovery and automatic service/session setup. Desktop and CLI share managed launch/stop operations, independent of runtime lifetime.
 
-**Qualification bounds:** Linux managed-service consumers have exercised synthetic loopback replies. Windows profile initialization failed with `PermissionDenied`; this does not establish the underlying directory-protection cause, and Windows remains disabled. Before enabling it, the shared nightly journey must exercise launcher exit and runtime/reader death independently, later mail, durable results, zero initial-input replay, fenced takeover, native shutdown, resume and down/uninstall with no owned process remaining. Real-model execution remains unproved on every platform.
+**Qualification bounds:** Linux managed-service consumers have exercised synthetic loopback replies. Windows profile initialization failed with `PermissionDenied`; this does not establish the underlying directory-protection cause, and this Windows follow-up remains unqualified. Before enabling it, the shared nightly journey must exercise launcher exit and runtime/reader death independently, later mail, durable results, zero initial-input replay, fenced takeover, native shutdown, resume and down/uninstall with no owned process remaining. Real-model execution remains unproved on every platform.
 
 Source seams: [launch planning](../../crates/se-core/src/ops/process_plan.rs), [stop planning](../../crates/se-core/src/ops/stop_plan.rs), [launch coordination](../../crates/se-host/src/process/launch.rs), [harness contract](../../crates/se-host/src/harness.rs), [runtime startup](../../crates/se/src/runtime/host.rs).

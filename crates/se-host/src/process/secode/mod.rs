@@ -164,15 +164,6 @@ impl LaunchCoordinator {
         deadline: &Deadline,
     ) -> Result<()> {
         use crate::Harness;
-        if cfg!(windows) {
-            return Err(se_types::SeError::new(se_types::Detail::FeatureUnavailable(
-                se_types::details::FeatureUnavailable {
-                    subject: "headless SE Code services on Windows".into(),
-                    reason: "private profile-directory protection is not yet qualified".into(),
-                    next_step: "Run headless SE Code on Linux. On Windows, use a Claude or Codex agent; for a new project, run se init --provider codex after signing in to Codex.".into(),
-                },
-            )));
-        }
         if !plan.input.detach {
             return Err(crate::harness::secode_process::incompatible(
                 "managed SE Code currently requires --detach for its owned headless launch",
