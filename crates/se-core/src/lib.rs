@@ -12,6 +12,7 @@ pub mod store_error;
 
 pub mod config_policy;
 pub mod registry;
+pub mod remote;
 
 pub mod ops;
 

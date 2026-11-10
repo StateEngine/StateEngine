@@ -272,3 +272,40 @@ not automatically retried or relabelled as passes; retain the original failure a
 - **Committed evidence packets** or per-slice reports; the commit message is the record.
 - **A guard per incident.** A found bug gets one regression test, or a product change that removes the
   cause instead.
+
+
+## 7. Remote consumer qualification
+
+The approved [contract](47-r0-contract.md) requires real system SSH from Linux
+and the Windows VM, with independent design and process-boundary review. Reuse
+existing consumer tools; add no gate service, census or fleet rollout. Reviewers
+own acceptance tests; author runs support implementation and diagnosis.
+
+First prove one-command setup, compatible reuse and concurrent real agents
+sharing one destination link through default Claude/Codex CLI and MCP. Verify
+actual source identity, ordinary mailbox delivery, unchanged process births and
+native leases, reconnect, disconnect and forget. Test authentication, changed or
+unknown host keys, command injection, occupied ports, wrong environment identity
+and interrupted protected publication. A failed or incompatible connection must
+preserve the incumbent host and agents. Credentials never travel to an unverified
+forwarded listener or appear in output, arguments, provider environments or logs.
+
+Subsequent outcomes prove actual reply_to delivery to the originating agent’s
+mailbox, lost-reply recovery and deduplication, original-key retries across source
+sessions, distinct-agent key isolation and durable per-agent/link admission and
+queued-output fences. Revoking one agent leaves others working; reconnect and
+restart cannot undo revocation. Ended sessions cannot impersonate successors.
+
+Views retain explicit gaps, omitted/unknown/unreadable states, cursor scope and
+source provenance. Listing/observing does not read-mark mail. Provider work,
+mailboxes and files are witnessed outside the writer. Snapshot/replay races,
+slow readers and bounded backpressure must preserve local writer/provider use.
+
+Report all four visible clocks and active-link/workload memory under
+[80 §7](80-performance-budgets.md#7-proposed-client-interaction-budgets), using
+matched local/remote content, order, form, agent, profile and load. Keep all
+failures, cold setup, provider inference, durable acceptance and blackhole
+recovery costs distinct. Test rolling inactivity expiry through real consumers;
+pings/refusals do not renew a session and a failed renewal cannot extend it.
+Native Linux evidence cannot qualify Windows or macOS. Real use remains the
+final product judgment; a fast receipt cannot replace a working journey.

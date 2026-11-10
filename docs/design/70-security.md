@@ -1,5 +1,7 @@
 # 70 — Security
 
+The [remote contract](47-r0-contract.md) uses normal system SSH authentication and host-key verification. Application credentials stay on its protected control pipe; the native host authorizes the exact forwarded connection before private operations. A saved machine session never becomes an agent identity. Protected source admission supplies immutable actual caller attribution, with no sender override or human fallback. Secrets stay out of user-facing output, arguments, logs and provider environments. Disconnect never transfers provider custody.
+
 Status: reconciled design, 2026-10-30, round-2 base assembled rust-se `f25ca90`. Builds on 00 §5.2 (logging), §5.4 (paths),
 §5.5 (environment); OPS.md's `Auth` column is the authority table this section implements.
 

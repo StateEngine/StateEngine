@@ -158,6 +158,7 @@ fn retained_router_and_capture_refuse_after_drain_without_retaining_the_lease() 
             Ok(RoutedCall {
                 hook: None,
                 admitted: HostedCall {
+                    remote_credential: None,
                     input: HostedInput::Operation(se_core::ops::AnyOp::WorkingStateGet(
                         Default::default(),
                     )),

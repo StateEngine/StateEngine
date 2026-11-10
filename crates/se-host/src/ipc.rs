@@ -139,6 +139,8 @@ pub struct OperationOutput {
 }
 pub enum IpcRequest {
     Channels(crate::channels::ChannelRequest),
+    #[cfg(feature = "remote")]
+    RemoteOwner(Box<crate::remote::OwnerInput>),
     Operation(RawOperation),
     Hook(ClaudeHookInput),
 }

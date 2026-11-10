@@ -67,7 +67,27 @@ fn exchange(
             .key
             .as_ref()
             .map(|key| (operation.name.clone(), key.clone())),
+        _ => None,
+    };
+    let output = exchange_output(endpoint, credential, call, options)?;
+    decode(output, expected).map_err(|error| uncertain(keyed.as_ref(), error))
+}
+fn exchange_output(
+    endpoint: &EndpointRecord,
+    credential: ClientCredential,
+    call: IpcEnvelope,
+    options: &ClientOptions,
+) -> Result<OperationOutput> {
+    let keyed = match &call.request {
+        IpcRequest::Operation(operation) => operation
+            .key
+            .as_ref()
+            .map(|key| (operation.name.clone(), key.clone())),
         IpcRequest::Hook(_) | IpcRequest::Channels(_) => None,
+        #[cfg(feature = "remote")]
+        IpcRequest::RemoteOwner(input) => input
+            .key()
+            .map(|key| ("remote authority control".into(), key.clone())),
     };
     let started = Instant::now();
     let mut connection = BlockingIpcClient::connect_authenticated(
@@ -106,7 +126,47 @@ fn exchange(
                 error
             }
         })?;
-    decode(output, expected).map_err(|error| uncertain(keyed.as_ref(), error))
+    Ok(output)
+}
+
+#[cfg(feature = "remote")]
+pub(crate) fn forward_owner(
+    endpoint: &EndpointRecord,
+    credential: ClientCredential,
+    input: se_host::remote::OwnerInput,
+    observation: &se_proc::OwnerObservation,
+    options: &ClientOptions,
+) -> Result<OperationOutput> {
+    input.validate()?;
+    if !matches!(&credential, ClientCredential::Machine(_)) {
+        return Err(invalid(
+            "native human machine admission for remote authority control",
+        ));
+    }
+    let key = input
+        .key()
+        .map(|key| ("remote authority control".into(), key.clone()));
+    let output = exchange_output(
+        endpoint,
+        credential,
+        IpcEnvelope {
+            version: se_types::API_VERSION,
+            request_id: 1,
+            generation: endpoint.generation,
+            authority: None,
+            presence: Some(OwnerPresence::from_observation(observation)),
+            cli_selections: None,
+            request: IpcRequest::RemoteOwner(Box::new(input)),
+        },
+        options,
+    )?;
+    if output.schema != "stateengine.remote-control/v1" {
+        return Err(uncertain(
+            key.as_ref(),
+            invalid("the closed remote Owner control response"),
+        ));
+    }
+    Ok(output)
 }
 
 /// The complete closed input, including its original request key, is unchanged.
@@ -162,6 +222,8 @@ fn call_operation(call: &IpcEnvelope) -> &str {
         IpcRequest::Operation(op) => &op.name,
         IpcRequest::Hook(_) => "hook.claude",
         IpcRequest::Channels(_) => "native.channels",
+        #[cfg(feature = "remote")]
+        IpcRequest::RemoteOwner(_) => "remote authority control",
     }
 }
 fn invalid(expected: &str) -> SeError {
@@ -195,6 +257,9 @@ pub(crate) fn uncertain(
                 remedy.text
             );
             unknown.body = unknown.body.with_remedy(remedy);
+            if operation.starts_with("remote.") || operation == "remote authority control" {
+                unknown.body = unknown.body.with_retry(se_types::Retry::AfterReread);
+            }
             unknown.with_cause(error)
         }
         None => error,

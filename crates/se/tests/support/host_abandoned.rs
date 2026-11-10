@@ -7,6 +7,7 @@ pub async fn check(f: &Fixture, session: &SessionId, runtime: &se_host::HostedRu
     let call = |request: &str| -> Result<se_host::RoutedCall, Box<dyn std::error::Error>> {
         Ok(se_host::RoutedCall {
             admitted: se_host::HostedCall {
+                remote_credential: None,
                 input: se_host::HostedInput::Operation(se_core::ops::AnyOp::MessageSend(
                     se_core::ops::MessageSend {
                         quiet: false,

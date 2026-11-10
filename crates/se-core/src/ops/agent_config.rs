@@ -106,7 +106,7 @@ pub struct AgentConfigThen {
 fn agent<R: Snapshot>(selector: &str, cx: &mut Cx<'_, R>) -> Result<AgentId> {
     match scope::selected_actor(cx, selector)? {
         Actor::Agent(agent) => Ok(agent),
-        Actor::Human(_) => Err(SeError::invalid(
+        Actor::Human(_) | Actor::Remote(_) => Err(SeError::invalid(
             "agent selector",
             "a saved agent, not the owner",
         )),

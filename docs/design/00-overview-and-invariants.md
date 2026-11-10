@@ -1,5 +1,7 @@
 # 00 — Overview and invariants
 
+The approved optional [remote design](45-remote-clients.md) shares one machine connection while preserving each agent’s verified identity and mailbox. [47](47-r0-contract.md) defines its trust and acceptance boundaries. Remote transport never owns provider custody, changes a permission profile, or turns an agent session into local Owner authority.
+
 Status: deep design, reconciled 2026-10-30 against the operator's decisions and both whole-design reviews.
 The sections describe one system; where they disagreed they were corrected, not ranked. Siblings:
 10 types and host API, 20 data model, 30 process ownership, 40 host runtime and harnesses,

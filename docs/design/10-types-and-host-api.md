@@ -1,5 +1,7 @@
 # 10. Foundation and linked API index
 
+[45](45-remote-clients.md) and [47](47-r0-contract.md) define the native machine-session, stable agent-address and closed remote-operation interfaces. Machine authentication is separate from immutable source-session attribution. CLI and MCP share the source broker; no caller-selected sender or human-authority fallback is permitted. This optional adapter does not widen the embedded host API.
+
 Design, 2026-10-30. This chapter indexes the actual declarations and assigns their
 contracts to the sections below. Source listings are not copied into this index.
 The Rust repository is the shipped product; the Node repository keeps its private

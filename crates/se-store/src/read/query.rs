@@ -148,6 +148,8 @@ pub(super) fn event_size(e: &StoredEvent) -> StoreResult<u64> {
 }
 pub(super) fn kind_name(k: EventKind) -> &'static str {
     match k {
+        EventKind::RemoteSecurity => "remote.security",
+        EventKind::RemoteMessageAttributed => "remote.message_attributed",
         EventKind::ProjectRegistered => "project.registered",
         EventKind::ProjectUpdated => "project.updated",
         EventKind::ProjectMoved => "project.moved",

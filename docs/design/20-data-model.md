@@ -1,5 +1,7 @@
 # 20 — Authoritative data, SQLite and recovery
 
+The approved [remote contract](47-r0-contract.md) adds durable machine-session authority and credential digests, plus source attribution committed atomically beside ordinary mail. Application secrets remain outside the database in protected native custody. Stable authenticated origins namespace mutation keys. Later outcomes add reply routing and independent agent/link revocation. Unreleased fixture schemas require no legacy pairing migration.
+
 Status: design for review, not permission to implement. The S1 and import/write spikes are external measurements; this chapter contains the storage contract and compile-only declarations, with no executable backend or migration.
 
 ## Purpose and ownership

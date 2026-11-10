@@ -81,6 +81,36 @@ impl Capturing<'_> {
                 let Some((mut capture, replayed)) = next else {
                     return Ok((last.unwrap_or_else(|| empty_capture(hook.kind)), true));
                 };
+                #[cfg(feature = "remote")]
+                if !replayed
+                    && let Some(control) = self.execution.mail_waits.remote_control()
+                    && let Ok(Some(publisher)) = control.live()
+                {
+                    let target = match (&admission.scope, &admission.actor) {
+                        (se_store::Scope::Project(project), se_store::Actor::Agent(agent)) => {
+                            Some(crate::remote::RemoteTarget {
+                                project: project.clone(),
+                                agent: agent.clone(),
+                            })
+                        }
+                        _ => None,
+                    };
+                    let role = match capture.request.role {
+                        se_store::Role::User => Some(crate::remote::RemoteTurnRole::User),
+                        se_store::Role::Assistant => Some(crate::remote::RemoteTurnRole::Assistant),
+                        se_store::Role::Tool => Some(crate::remote::RemoteTurnRole::Tool),
+                        _ => None,
+                    };
+                    if let (Some(target), Some(role)) = (target, role) {
+                        publisher.complete_existing(
+                            &target,
+                            session,
+                            &capture.request.vendor_turn,
+                            role,
+                            capture.request.text.as_str(),
+                        );
+                    }
+                }
                 capture.request.recovery_owner = self.recovery_owner.clone();
                 if commits.len() >= 128 {
                     return Ok((
@@ -104,6 +134,7 @@ impl Capturing<'_> {
                     self.execution.clone(),
                     ExecutionCall {
                         admitted: HostedCall {
+                            remote_credential: None,
                             input: HostedInput::Capture(Box::new(capture)),
                             kernel: se_core::dispatch::Kernel::read_only(),
                             admission: admission.clone(),

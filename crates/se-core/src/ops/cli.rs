@@ -1,7 +1,10 @@
 //! Clap consumes the operation catalogue; no filesystem or ambient configuration is read here.
 use super::*;
+mod remote;
 use crate::registry::{CliExposure, Scope};
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use remote::command as remote_command;
+pub use remote::parse_remote_target;
 use se_types::{Cursor, Detail, IdempotencyKey, Result, SeError, details};
 use std::path::PathBuf;
 
@@ -289,6 +292,7 @@ fn insert(command: Command, path: &[&'static str], name: &str, hidden: bool) -> 
 fn input_command(name: &str, c: Command) -> Command {
     let c = match name {
         name if name.starts_with("atlas.") => atlas::command(name, c),
+        "remote.list" | "remote.watch" | "remote.send" => remote_command(name, c),
         "meta.help" => c
             .arg(
                 Arg::new("path")

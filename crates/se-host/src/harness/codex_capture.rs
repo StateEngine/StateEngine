@@ -19,7 +19,7 @@ fn id<'a>(value: &'a Value, name: &str) -> Result<&'a str> {
         .filter(|s| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))
         .ok_or_else(|| invalid("a bounded actual thread, turn or item ID"))
 }
-fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>> {
+pub(crate) fn item(item: &Value, turn: &str, native: bool) -> Result<Option<Completed>> {
     let item_id = id(item, "id")?;
     let kind = item
         .get("type")

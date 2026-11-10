@@ -120,6 +120,8 @@ impl Binding {
         self.completion.nudge();
     }
     pub(super) fn observe(&self, method: String, params: Value) -> Result<()> {
+        #[cfg(feature = "remote")]
+        self.observe_live(&method, &params);
         if self
             .state
             .lock()

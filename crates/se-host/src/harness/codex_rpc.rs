@@ -12,6 +12,8 @@ mod qualification;
 mod recovery;
 mod rpc;
 pub use rpc::RequestFailure;
+#[cfg(feature = "remote")]
+mod live;
 mod state;
 pub use state::IgnoredNotifications;
 mod transport;
@@ -61,6 +63,8 @@ pub struct Binding {
     input: tokio::sync::Mutex<()>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     attended: bool,
+    #[cfg(feature = "remote")]
+    pub(crate) live: std::sync::Mutex<Option<crate::remote::publish::LiveSource>>,
 }
 impl CodexHarness {
     pub fn new(

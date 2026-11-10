@@ -10,6 +10,9 @@ mod ipc;
 mod mcp;
 mod mcp_stdio;
 mod private_entry;
+mod remote;
+#[cfg(feature = "remote")]
+mod remote_owner;
 mod render;
 mod route;
 mod runtime;
@@ -31,12 +34,24 @@ pub fn run(
         &mut dyn FnMut(&str) -> io::Result<()>,
     ) -> se_types::Result<AnyOutput>,
 ) -> io::Result<u8> {
+    #[cfg(feature = "remote")]
+    if let Some(result) = remote_owner::entry(&args) {
+        return result;
+    }
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
     let original_args = args.clone();
     let invocation = match grammar::parse(args) {
         Ok(invocation) => invocation,
         Err(failure) => {
+            if let Some(remote) = failure.remote {
+                return remote::parse_refusal(
+                    &failure.error,
+                    failure.json,
+                    remote.key.as_ref(),
+                    &mut stderr,
+                );
+            }
             return render::error::write(
                 &failure.error,
                 &RenderCx::default(),
@@ -53,6 +68,10 @@ pub fn run(
     let common = invocation.common;
     let retry_invocation = route::startup_retry::Invocation::new(original_args, &common);
     let mut operation = invocation.operation;
+    #[cfg(feature = "remote")]
+    if let Some(output) = remote_owner::help(&operation) {
+        return render::output(&output, common.json, common.quiet, &mut stdout);
+    }
     match metadata_output(&operation) {
         Ok(Some(output)) => return render::output(&output, common.json, common.quiet, &mut stdout),
         Ok(None) => (),
@@ -77,6 +96,9 @@ pub fn run(
         .resolve_stdin(&mut bootstrap::text_input)
         .and_then(|()| operation.validate())
     {
+        if operation.is_remote() {
+            return remote::refusal(&error, &operation, common.json, &mut stderr);
+        }
         return render::error::write(
             &error,
             &RenderCx::default(),
@@ -103,6 +125,9 @@ pub fn run(
     }) {
         Ok(context) => context,
         Err(error) => {
+            if operation.is_remote() {
+                return remote::refusal(&error, &operation, common.json, &mut stderr);
+            }
             return render::error::write(
                 &error,
                 &RenderCx::default(),
@@ -121,11 +146,24 @@ pub fn run(
     };
     context.selections = common.selections;
     context.retry_invocation = Some(retry_invocation);
-    if context.legacy_environment_present {
+    // Remote structured stderr is reserved for keyed status/error records.
+    // Legacy variables never contribute input or authority to these calls.
+    if context.legacy_environment_present && !(operation.is_remote() && common.json) {
         writeln!(
             stderr,
             "warning[w-legacy-env-present]: legacy STATEENGINE_* variables are present and ignored"
         )?;
+    }
+    if operation.is_remote() {
+        return remote::run(
+            &context,
+            operation,
+            common.json,
+            common.quiet,
+            &mut stdout,
+            &mut stderr,
+            &mut dispatch,
+        );
     }
     #[cfg(any(target_os = "linux", windows))]
     if matches!(&operation, AnyOp::RuntimeUp(input) if input.foreground) {

@@ -5,6 +5,8 @@ use super::*;
 /// SessionTurn is `session.turn`; general settings have no storage event kind.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EventKind {
+    RemoteSecurity,
+    RemoteMessageAttributed,
     ProjectRegistered,
     ProjectUpdated,
     ProjectMoved,
@@ -67,6 +69,12 @@ pub enum EventKind {
 pub enum EventBody<T> {
     ChannelRecorded {
         change: crate::channel::Change,
+    },
+    RemoteSecurity {
+        transition: crate::remote::SecurityTransition,
+    },
+    RemoteMessageAttributed {
+        record: crate::remote::MessageAttribution,
     },
     ProjectRegistered {
         project: ProjectId,

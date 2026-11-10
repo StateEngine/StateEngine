@@ -61,12 +61,42 @@ impl Bootstrap {
         json: bool,
         operation: &se_core::ops::AnyOp,
     ) -> Result<Self> {
+        Self::resolve_mode(
+            home,
+            project,
+            no_color,
+            json,
+            matches!(
+                operation,
+                se_core::ops::AnyOp::DoctorInspect(_) | se_core::ops::AnyOp::DoctorRepair(_)
+            ),
+        )
+    }
+    #[cfg(feature = "remote")]
+    pub(crate) fn resolve_remote_owner(
+        home: Option<PathBuf>,
+        no_color: bool,
+        json: bool,
+    ) -> Result<Self> {
+        if std::env::var_os("SE_SESSION").is_some() {
+            return Err(SeError::new(Detail::OwnerRequired(
+                details::OwnerRequired {
+                    op: "remote authority control".into(),
+                },
+            )));
+        }
+        Self::resolve_mode(home, None, no_color, json, false)
+    }
+    fn resolve_mode(
+        home: Option<PathBuf>,
+        project: Option<String>,
+        no_color: bool,
+        json: bool,
+        recovery: bool,
+    ) -> Result<Self> {
         let home = state_home(home)?;
         check_home_directory(&home)?;
-        let config = if matches!(
-            operation,
-            se_core::ops::AnyOp::DoctorInspect(_) | se_core::ops::AnyOp::DoctorRepair(_)
-        ) {
+        let config = if recovery {
             // Doctor uses explicit named repairs, not runtime configuration.
             // In particular, root recovery must not read config through the
             // loose directory before its metadata-only tightening.

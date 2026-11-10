@@ -1,5 +1,7 @@
 # 50 — Surface, output contracts, errors and configuration
 
+The [native remote surface](47-r0-contract.md) starts with `se remote add <ssh-alias> --name <machine>` and bounded list/watch/send through the shared CLI/MCP broker. Setup requires no invitation, port, fingerprint or console paste. Structured output is explicit; ordinary output names the machine and actual sender. Refusals preserve their reason and original mutation key. Replies and independent agent/link revocation follow as separate outcomes.
+
 Deep design, 2026-10-30. Defines the `se` CLI, MCP tools, synchronous core dispatcher, JSON families, errors and configuration. [OPS.md](../OPS.md) lists the admitted operation rows; the source registry generates CLI, MCP and linked exposure from them. Counts come from those rows, with no phantom tools for disabled Atlas. Rust is the shipped product; the Node engine remains private factory software, with no factory cutover or import in this plan.
 
 Crates: types and errors live in `se-types`; the registry, `Op` impls and dispatcher in `se-core` (`se_core::ops`); clap and renderers in the `se` binary; MCP framing in `se-host`. Nothing in `se-core` depends on clap at runtime except through the `clap::Args` derive on input structs (feature `cli`, on by default; SE Code builds with `default-features = false` and gets no clap).

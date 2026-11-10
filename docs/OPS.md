@@ -2,6 +2,27 @@
 
 This is the shipped Rust product's operation inventory. CLI, MCP, IPC and linked calls derive from one synchronous core registry, with async custody execution in the host. The reconciled rows contain **58 operations and 24 MCP tools (19 core, 5 optional Atlas)**; the registry currently registers 47 operations and 21 tools, and the generated command inventory at the end of this document lists the unbuilt rows as planned; a test fails when that inventory drifts from the registry or the design tables. A crate cannot introduce an unlisted public operation. This document is a design contract, not a running implementation or journey verdict. The Node repository keeps its private factory engine; no fleet cutover/import or CLI-only factory adaptation is part of this build.
 
+## Remote machine connections
+
+The optional remote adapter exposes `remote.list`, `remote.watch` and
+`remote.send` through CLI and MCP. Both use the source host's shared machine
+connection and preserve its admitted calling agent. Narrow remote authority
+never becomes a local human or agent principal.
+
+| Operation | CLI | MCP | Authority/effect |
+| --- | --- | --- | --- |
+| `remote.list` | `remote list --host NAME` | `stateengine_remote_list` | Current machine session and admitted source; bounded discovery |
+| `remote.watch` | `remote watch --host NAME` | `stateengine_remote_watch` | Same authority; scoped bounded replay without inbox marks |
+| `remote.send` | `remote send --host NAME` | `stateengine_remote_send` | Exact target/session, stable origin and original request key; ordinary native mail |
+| Machine setup | `remote add DESTINATION --name NAME` | None | Native owner IPC; system SSH discovers, stages, authorizes and verifies the destination |
+| Transport removal | `remote disconnect/forget --name NAME` | None | Native owner IPC; closes only source transport, preserving destination hosts and agents |
+| Session administration | `remote disable/grants/revoke` | None | Native owner IPC; never exposed to agents or the remote wire |
+
+[Remote design](design/45-remote-clients.md) and [contract](design/47-r0-contract.md)
+define the complete boundary. The implementation's qualification status is
+separate from these contracts. UI integration and its performance measurements
+remain separate from the native CLI and MCP consumers.
+
 ## Journeys and row conventions
 
 | ID | Outcome, with Claude and Codex on Windows, macOS and Linux |
@@ -207,7 +228,7 @@ The CLI retains replacement hints only for commands with a supported replacement
 This block is generated from the `ops!` registry in `crates/se-core/src/ops/mod.rs` and the design tables above; `cargo test` fails when it drifts from either source. Regenerate with `SE_OPS_INVENTORY_UPDATE=1 cargo test -p se-core --test ops_inventory_drift`.
 
 <!-- BEGIN GENERATED: ops-inventory (do not edit between the markers) -->
-Registered: 47 operations (41 core, 6 Atlas), 21 MCP tools (16 core, 5 Atlas). Planned: 13 operations, 4 MCP tools.
+Registered: 51 operations (45 core, 6 Atlas), 24 MCP tools (19 core, 5 Atlas). Planned: 13 operations, 4 MCP tools.
 
 | Operation | CLI | MCP tool | Auth | Effect |
 | --- | --- | --- | --- | --- |
@@ -217,6 +238,10 @@ Registered: 47 operations (41 core, 6 Atlas), 21 MCP tools (16 core, 5 Atlas). P
 | `atlas.impact` | atlas impact | `stateengine_atlas_impact` | either | read |
 | `atlas.changes` | atlas changes | `stateengine_atlas_changes` | either | read |
 | `atlas.outline` | atlas outline | `stateengine_atlas_outline` | either | read |
+| `remote.prepare_send` | none — Internal protected source IPC prepares CLI pending output; no remote capability or public tool. | none | either | read |
+| `remote.list` | remote list | `stateengine_remote_list` | either | read |
+| `remote.watch` | remote watch | `stateengine_remote_watch` | either | read |
+| `remote.send` | remote send | `stateengine_remote_send` | either | write |
 | `meta.version` | --version | none | either | read |
 | `meta.help` | help | none | either | read |
 | `meta.schema` | schema | none | either | read |
@@ -263,7 +288,7 @@ Planned operations (design tables, not yet registered): `agent.rename`, `agent.w
 
 Planned MCP tools: `stateengine_agent_status`, `stateengine_agent_wake`, `stateengine_search`, `stateengine_session_turn`
 
-Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `project.move` (CLI `project move`)
+Registered without a design-table row: `atlas.augment` (no CLI or MCP exposure), `remote.prepare_send` (no CLI or MCP exposure), `project.move` (CLI `project move`)
 
 Registered MCP tools not named in the design tables: `stateengine_working_state_get`
 <!-- END GENERATED: ops-inventory -->

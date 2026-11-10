@@ -64,6 +64,9 @@ impl Family {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HumanKind {
+    RemoteList,
+    RemoteWatch,
+    RemoteSend,
     Version,
     Help,
     Schema,

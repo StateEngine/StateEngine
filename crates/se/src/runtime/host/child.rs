@@ -270,6 +270,8 @@ fn serve(
         if let Some(log) = &mut phases {
             log.note("Listener publication and ownership commit started");
         }
+        #[cfg(feature="remote")]
+        host.prepare_remote_listener(&bound).await?;
         let listener = match guard.take() {
             Some(bootstrap) => host.listen_bootstrap(
                 engine.handle().clone(),
@@ -283,6 +285,9 @@ fn serve(
             log.note("Listener published and ownership committed");
             log.export_success();
         }
+        #[cfg(feature="remote")]
+        let announced=host.restore_remote_listener(&bound).await.and_then(|()|ready(&listener));
+        #[cfg(not(feature="remote"))]
         let announced = ready(&listener);
         if let Err(error) = announced {
             let stop = host.local_stop();

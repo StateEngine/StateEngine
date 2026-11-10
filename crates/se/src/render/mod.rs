@@ -10,6 +10,7 @@ mod labels;
 #[cfg(test)]
 mod mail_state_tests;
 mod read;
+mod remote;
 mod stop;
 mod transcript;
 mod write;
@@ -67,6 +68,15 @@ pub fn output(value: &AnyOutput, json: bool, quiet: bool, out: &mut impl Write) 
             return Ok(value.exit_code());
         }
         match (value.human_kind(), value) {
+            (HumanKind::RemoteList, AnyOutput::RemoteList(value)) => {
+                remote::list(&value.value, out)?
+            }
+            (HumanKind::RemoteWatch, AnyOutput::RemoteWatch(value)) => {
+                remote::watch(&value.value, out)?
+            }
+            (HumanKind::RemoteSend, AnyOutput::RemoteSend(value)) => {
+                remote::send(&value.value, out)?
+            }
             (HumanKind::Resume, AnyOutput::Resume(value)) => continuity::resume(&value.value, out)?,
             (HumanKind::SessionContext, AnyOutput::SessionContext(value)) => {
                 write!(out, "{}", value.value.assembled_model_input)?

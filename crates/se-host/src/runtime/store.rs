@@ -137,6 +137,7 @@ impl Store {
             .run_owned(deadline, move || {
                 let record_write = record_feed.before_scoped_write(&batch.admission.scope)?;
                 pending.register(&submitted)?;
+                mail_waits.fence_remote(&revocations)?;
                 match writer.submit(batch) {
                     Ok(completion) => Ok(runtime.spawn(async move {
                         let receipt = completion.await;
@@ -161,7 +162,8 @@ impl Store {
                         };
                         let notified = if receipt.is_ok() {
                             mail_waits
-                                .committed(&recipients)
+                                .remote_fence_committed(&revocations)
+                                .and_then(|()| mail_waits.committed(&recipients))
                                 .and_then(|()| mail_waits.revoked(&revocations))
                         } else {
                             Ok(())

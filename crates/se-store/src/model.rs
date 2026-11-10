@@ -51,6 +51,7 @@ pub enum Expected {
 pub enum Actor {
     Human(HumanId),
     Agent(AgentId),
+    Remote(se_types::remote::RemotePrincipalId),
 }
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
@@ -86,6 +87,8 @@ pub struct Admission {
 }
 #[derive(Clone, Debug)]
 pub enum Visibility {
+    /// Delegated devices have no authority on the ordinary local read port.
+    None,
     Owner,
     SelfOnly(AgentId),
     SharedProject(AgentId),

@@ -179,6 +179,12 @@ pub fn observe_snapshot<S: Snapshot>(
                 },
             )?);
             match &admission.actor {
+                Actor::Remote(_) => {
+                    return Err(se_types::SeError::invalid(
+                        "local status",
+                        "local human or agent authority",
+                    ));
+                }
                 Actor::Human(_) => output.inbox.owner_unread = Some(unread),
                 Actor::Agent(agent) => {
                     output.inbox.self_unread = Some(unread);

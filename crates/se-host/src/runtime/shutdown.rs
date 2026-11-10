@@ -39,6 +39,49 @@ impl HostServeExit {
         trace("storage-drain-start", started, true);
         let mut errors: Vec<_> = self.failure.take().into_iter().collect();
         let mut pending: Vec<_> = errors.iter().map(ToString::to_string).collect();
+        #[cfg(feature = "remote")]
+        let remote_closed = match self.runtime.execution.mail_waits.remote_control() {
+            Some(control) => match close_remote(&work_deadline, control.close()).await {
+                Ok(()) => true,
+                Err(error) => {
+                    pending.push(error.to_string());
+                    errors.push(error);
+                    false
+                }
+            },
+            None => true,
+        };
+        #[cfg(not(feature = "remote"))]
+        let remote_closed = true;
+        let source_closed = match self.runtime.execution.mail_waits.remote() {
+            Some(broker) => match close_remote(&work_deadline, broker.close()).await {
+                Ok(()) => true,
+                Err(error) => {
+                    pending.push(error.to_string());
+                    errors.push(error);
+                    false
+                }
+            },
+            None => true,
+        };
+        #[cfg(feature = "remote")]
+        let forwards_closed = match close_remote(
+            &work_deadline,
+            self.runtime.execution.mail_waits.forwards().close(),
+        )
+        .await
+        {
+            Ok(()) => true,
+            Err(error) => {
+                pending.push(error.to_string());
+                errors.push(error);
+                false
+            }
+        };
+        #[cfg(not(feature = "remote"))]
+        let forwards_closed = true;
+        let remote_closed = remote_closed && source_closed && forwards_closed;
+
         let before = match facts::before(&self.runtime, &work_deadline).await {
             Ok(value) => Some(value),
             Err(error) => {
@@ -132,7 +175,11 @@ impl HostServeExit {
         if ownership_failed {
             pending.push("Writer or shared native collector failed; retain the exact lease, writer and native custody until controlled application restart.".into());
         }
-        let drained = if agents_stopped && before.is_some() && !ownership_failed && collector_joined
+        let drained = if agents_stopped
+            && before.is_some()
+            && !ownership_failed
+            && collector_joined
+            && remote_closed
         {
             Some(self.runtime.drain_storage(&work_deadline).await)
         } else {
@@ -142,7 +189,7 @@ impl HostServeExit {
             None => Read::Unreadable {
                 source: "host storage drain".into(),
                 reason:
-                    "native custody shutdown or resume preservation is incomplete; the host retains its lease and writer"
+                    "native custody, remote transport closure or resume preservation is incomplete; the host retains its lease and writer"
                         .into(),
                 error: None,
             },
@@ -238,7 +285,7 @@ impl HostServeExit {
         }
         let pool = self.runtime.blocking_pool();
         let (closed, retired) = self.listener.finish_transport(&pool).await;
-        let transport_closed = closed.is_ok();
+        let transport_closed = closed.is_ok() && remote_closed;
         let endpoint_retired = retired.is_ok();
         #[cfg(windows)]
         trace(
@@ -290,6 +337,13 @@ impl HostServeExit {
         }
     }
 }
+async fn close_remote(
+    bound: &Deadline,
+    close: impl std::future::Future<Output = Result<()>>,
+) -> Result<()> {
+    tokio::time::timeout(bound.remaining()?,close).await.map_err(|_|SeError::invalid("remote transport closure","joined native tasks within the original drain clock; retain writer and lease before retrying cleanup"))?
+}
+
 /// Private Windows host diagnostics contain only fixed stages and measured time.
 #[cfg(windows)]
 pub(crate) fn trace(stage: &str, started: std::time::Instant, succeeded: bool) {

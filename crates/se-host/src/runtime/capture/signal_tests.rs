@@ -117,6 +117,7 @@ fn scenario(case: &'static str) -> Check {
                 admission.session = Some(session.clone());
                 let call = || RoutedCall {
                     admitted: HostedCall {
+                        remote_credential:None,
                         input: HostedInput::Operation(AnyOp::HookClaude(HookClaude {
                             event: HookEvent::Stop,
                         })),

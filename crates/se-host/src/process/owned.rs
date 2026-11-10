@@ -47,6 +47,8 @@ pub(super) struct Work {
     pub process_view: Option<se_core::ops::ProcessView>,
     pub binding: Option<crate::HarnessBinding>,
     pub secode: Option<super::secode::Prepared>,
+    #[cfg(feature = "remote")]
+    pub remote_live: Option<crate::remote::publish::LiveSource>,
     pub mail: super::mail::State,
     pub wake: Arc<events::Wake>,
     pub committed: bool,
@@ -104,6 +106,8 @@ impl Work {
             process_view: None,
             binding: None,
             secode: None,
+            #[cfg(feature = "remote")]
+            remote_live: None,
             mail: super::mail::State::default(),
             wake: Arc::new(events::Wake::default()),
             committed: true,

@@ -195,6 +195,10 @@ impl LaunchCoordinator {
         work.released = true;
         work.active = false;
         work.binding = None;
+        #[cfg(feature = "remote")]
+        {
+            work.remote_live = None;
+        }
         work.process = None;
         self.fill_release(row, work, deadline).await
     }

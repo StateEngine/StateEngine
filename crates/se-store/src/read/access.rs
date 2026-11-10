@@ -69,6 +69,12 @@ impl SqliteSnapshot {
                 && self.scope.admission.session.is_none());
         }
         Ok(match &self.scope.visibility {
+            Visibility::None => {
+                return Err(fail(
+                    StoreErrorCode::ScopeMismatch,
+                    "no local read authority",
+                ));
+            }
             Visibility::Owner | Visibility::SharedProject(_) => true,
             Visibility::SelfOnly(a) => {
                 let who = Actor::Agent(a.clone());

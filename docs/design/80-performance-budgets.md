@@ -734,3 +734,89 @@ Windows/Linux standalone; embedded/handover/forget/signing; optional Atlas and
 native Mac qualification. Size comes from section 95's generated total, not a
 second allocation or a promised calendar. The alpha release is not complete at the earlier
 Windows/Linux milestone.
+
+## 7. Proposed client interaction budgets
+
+**Approved design; implementation and qualification are separate.** The native CLI interpretation and paired-delta ceilings are recorded in [47](47-r0-contract.md). This
+section owns the targets for [45 — persistent host clients](45-remote-clients.md).
+Existing B1–B9 and FULL budgets and their retained failures do not change.
+External measurements are retained outside this repository; they do not qualify StateEngine behavior.
+
+| Interaction, p95 in ms | LAN (RTT ≤5 ms) | Relay (RTT ≤80 ms) | Exact proving boundary |
+| --- | ---: | ---: | --- |
+| Attach to current screen | 300 | 700 | Already paired, warm installed client: connect begins → authorized current agent view and pending state painted; include SSH/session authentication/snapshot; current view ≤64 KiB |
+| Send to visible local echo | 50 | 50 | User submits → pending bubble painted in the actual SE Code UI; no host acceptance implied; rejected sends become failed |
+| Host live event to client render | 75 | 150 | Attributed provider notification or transcript-change signal at host → same item painted; includes observation/decode and network/render, excludes later capture COMMIT only because visibly provisional |
+| Dropped-link reconnect to live | 400 | 900 | Known link restored/close detected → authenticated stream caught up to high-water and a new event painted; ≤128 small events /256 KiB behind; includes SSH recovery/session authentication/reconciliation |
+
+All four absolute ceilings remain necessary; they are not derived StateEngine
+measurements or sufficient proof that remote feels local. The primary bar is matched local-versus-remote behavior: the same
+scenario, actual agent, selected view, content, order and form. Proposed additional p95 ceilings
+for **paired remote-minus-local elapsed time**:
+
+| Clock | LAN delta, ms | Relay delta, ms |
+| --- | ---: | ---: |
+| Attach to current view | 50 | 250 |
+| Submit to visible pending echo | 5 | 5 |
+| Host live item to visible output | 20 | 100 |
+| Detected restored link to caught-up/new live item | 75 | 300 |
+
+These limits do not relax the absolute table. [47 §6](47-r0-contract.md#6-four-visible-clocks)
+defines the terminal-boundary comparison and
+keeps pending echo separate from durable acceptance and key reconciliation. The SSH-forward route is
+reported separately against **LAN** absolute/delta ceilings; an expensive
+forward is a failed target, not a reason to use relay allowances. R1 still measures actual UI paint and
+requires final product judgment in real use: "it feels instant" and its display
+does not give away the remote location. No remote-only artifact or different
+content/order/form can pass merely because the clocks fit. Test both after a real task and under
+eight-agent mixed NORMAL/FULL traffic. Durably accepted send/approval latency is
+reported separately against existing storage budgets; current 599 ms p95 means
+that clock cannot be promised here. A live-event implementation that still waits
+on that COMMIT fails the live row; optimistic echo cannot pass it.
+
+Use 100 matched local/remote pairs per interaction/route, include first connection in the warm
+installed-client cohort, nearest-rank p50/p95/p99 and maximum, all failures and
+counts for each mode and paired delta (also report difference of mode p95s).
+Match payload/current-view high-water, task/profile/model, client source/render
+path and load; interleave or alternate local/remote pairs and retain the raw
+order and each sample's load. No local-first cohort that confounds load drift
+with transport cost. For live events, observing the same producer item in
+both consumers additionally gives paired per-item deltas. Report OS/hardware
+differences without subtracting an estimated correction. Cold app launch/assets, first machine setup/provider start/inference, silent
+blackhole detection (up to25 s), backlog above the stated bound and host process
+re-adoption are separately reported, never hidden or called this reconnect
+number. Large backlogs render the bounded current screen first and visibly page
+history. Sample the real client; timing packet receipt alone does not prove
+render. Synchronize monotonic clocks for the one-way host row with measured
+uncertainty ≤2 ms, or report a conservative producer→render upper bound. Report
+actual RTT, jitter/loss/throughput, payload sizes and load; synthetic delay is not
+a production relay measurement.
+
+The shared live ring remains bounded at 2 MiB; active links retain bounded
+256 KiB output queues, parsers and snapshot pages. There is no fixed enrolled
+machine/agent quota. Measure active link count, workload, SSH process memory and
+application transport overhead explicitly. The two-client/one-live-agent
+incremental resident target remains 8 MB against the same host without remote
+mode, including host transport growth and any persistent SE helper process.
+Report the user's system SSH forward separately from that 8 MB target, one
+forward per machine link. That measurement cohort is not an enrollment limit. Larger workloads
+require measured allocations rather than maximum buffers per enrolled agent.
+Disabled remote mode adds no socket, network task, idle timer or resident buffer;
+existing B1/B4/B5/B6 remain its regression checks. Connected-mode keepalive cost
+is reported separately, including its explicit 15 s ping timer.
+
+R0's thin `se remote list/watch/send` is the first transport consumer and has no
+SE Code build dependency. Its protocol timings/readbacks prove remote behavior,
+not the UI paint/optimistic-echo rows above; SE Code must prove those in R1.
+The CLI calls the same optional se-host-owned client runtime/codec as the desktop
+and source-agent broker. Charge its executable/cold-start and memory cost rather
+than hiding another network implementation: planning ceiling ≤12 MB for one
+active CLI watch with the bounded current page, with the explicit CLI process and its host-owned shared SSH process accounted separately. Local non-remote CLI reads retain B7, including
+any binary-size/security-check effect of the optional client dependency graph.
+A source-agent broker uses the existing host and one authenticated, multiplexed
+connection per destination machine, shared across its agents, projects, CLI and
+MCP. SSH forwarding is owned by that host and charged to active-link memory and
+wakeups; it never becomes a per-agent/per-project helper. The coalesced rolling
+application-session lease update is at most one FULL write/day/active session,
+separately counted with current traffic. There is no per-frame write, budget
+exemption or claim that durable response became faster.

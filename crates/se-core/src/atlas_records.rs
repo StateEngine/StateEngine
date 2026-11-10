@@ -104,6 +104,12 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         let expected = match viewer {
             AtlasPrincipal::Agent(id) => Actor::Agent(id.clone()),
             AtlasPrincipal::Human(id) => Actor::Human(id.clone()),
+            AtlasPrincipal::Remote(_) => {
+                return Err(SeError::invalid(
+                    "Atlas record viewer",
+                    "an admitted local Owner or agent; remote grants cover list, watch and send only",
+                ));
+            }
         };
         if self.admission.scope != Scope::Project(project.clone())
             || self.admission.actor != expected
@@ -231,6 +237,18 @@ impl<'a, R: Snapshot> RecordAccess<'a, R> {
         let principal = match &source.header.actor {
             Actor::Agent(id) => AtlasPrincipal::Agent(id.clone()),
             Actor::Human(id) => AtlasPrincipal::Human(id.clone()),
+            Actor::Remote(id) => {
+                return Ok(Read::Present {
+                    value: Document {
+                        actor: Some(AtlasActor {
+                            principal: AtlasPrincipal::Remote(id.clone()),
+                            name: format!("Remote device {id}"),
+                        }),
+                        at,
+                        body,
+                    },
+                });
+            }
         };
         let actor = match visible(self.read.principal(source.header.actor.clone()))? {
             Read::Present { value } => {

@@ -14,7 +14,14 @@ use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 pub(crate) mod bell;
 
 pub(crate) struct Waits {
+    #[cfg(feature = "remote")]
+    pub(crate) remote_activity: crate::remote::activity::Activity,
     pub(crate) bells: Arc<bell::Bells>,
+    #[cfg(feature = "remote")]
+    remote_control: std::sync::OnceLock<Arc<crate::remote::control::Control>>,
+    #[cfg(feature = "remote")]
+    forwards: std::sync::OnceLock<Arc<crate::remote::ssh::Forwards>>,
+    remote: std::sync::OnceLock<Arc<crate::remote::broker::RemoteBroker>>,
     maximum: usize,
     sessions: Mutex<BTreeMap<(ProjectId, SessionId), Arc<Signal>>>,
     // Cancelled predecessors may still be encoding/closing their connection.
@@ -41,9 +48,75 @@ struct Wait {
     _permit: OwnedSemaphorePermit,
 }
 impl Waits {
+    #[cfg(feature = "remote")]
+    pub(crate) fn forwards(&self) -> Arc<crate::remote::ssh::Forwards> {
+        self.forwards
+            .get_or_init(|| Arc::new(crate::remote::ssh::Forwards::default()))
+            .clone()
+    }
+    #[cfg(feature = "remote")]
+    pub(crate) fn remote_control(&self) -> Option<&Arc<crate::remote::control::Control>> {
+        self.remote_control.get()
+    }
+    #[cfg(feature = "remote")]
+    pub(crate) fn install_remote_control(
+        &self,
+        control: Arc<crate::remote::control::Control>,
+    ) -> Result<()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(SeError::invalid("remote control", "an open owning host"));
+        }
+        // A losing first-use initializer discards only its own key/public caches.
+        let _ = self.remote_control.set(control);
+        Ok(())
+    }
+
+    pub(crate) fn remote(&self) -> Option<&Arc<crate::remote::broker::RemoteBroker>> {
+        self.remote.get()
+    }
+    pub(crate) fn install_remote(
+        &self,
+        broker: Arc<crate::remote::broker::RemoteBroker>,
+    ) -> Result<()> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(SeError::invalid(
+                "remote source broker",
+                "an open source host before its shutdown fence",
+            ));
+        }
+        self.remote.set(broker).map_err(|_| {
+            SeError::invalid(
+                "remote source broker",
+                "one explicit installation before serving",
+            )
+        })
+    }
+    pub(crate) fn remote_fence_committed(
+        &self,
+        changes: &crate::runtime::mail::Revocations,
+    ) -> Result<()> {
+        if let Some(broker) = self.remote.get() {
+            broker.fence_committed(changes)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn fence_remote(&self, changes: &crate::runtime::mail::Revocations) -> Result<()> {
+        if let Some(broker) = self.remote.get() {
+            broker.fence(changes)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(maximum: usize) -> Arc<Self> {
         Arc::new(Self {
+            #[cfg(feature = "remote")]
+            remote_activity: crate::remote::activity::Activity::new(),
             bells: bell::Bells::new(maximum),
+            #[cfg(feature = "remote")]
+            remote_control: std::sync::OnceLock::new(),
+            #[cfg(feature = "remote")]
+            forwards: std::sync::OnceLock::new(),
+            remote: std::sync::OnceLock::new(),
             maximum,
             sessions: Mutex::new(BTreeMap::new()),
             retained: Arc::new(Semaphore::new(maximum.saturating_mul(2))),
@@ -94,6 +167,14 @@ impl Waits {
         })
     }
     pub(crate) fn committed(&self, recipients: &[crate::runtime::MailRecipient]) -> Result<()> {
+        // Every successful completion, including quiet mail and captures, wakes
+        // remote replay. The existing completion observer survives cancellation.
+        #[cfg(feature = "remote")]
+        if let Some(control) = self.remote_control.get()
+            && let Some(publisher) = control.live()?
+        {
+            publisher.committed();
+        }
         if recipients.is_empty() {
             return Ok(());
         }
@@ -146,6 +227,10 @@ impl Waits {
     }
     pub(crate) fn close(&self) -> Result<()> {
         self.closed.store(true, Ordering::Release);
+        #[cfg(feature = "remote")]
+        if let Some(control) = self.remote_control.get() {
+            control.request_close();
+        }
         for signal in self.sessions.lock().map_err(|_| poisoned())?.values() {
             signal.cancelled.store(true, Ordering::Release);
             signal.changed.notify_one();

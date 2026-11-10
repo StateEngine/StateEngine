@@ -26,6 +26,7 @@ mod read;
 mod read_phase;
 mod read_phase_pool;
 mod read_slots;
+pub mod remote;
 mod sql_value;
 mod staging;
 mod transaction;

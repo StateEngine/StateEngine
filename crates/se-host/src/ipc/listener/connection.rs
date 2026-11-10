@@ -11,6 +11,52 @@ pub struct IpcConnection {
     pub(super) _connection_slot: tokio::sync::OwnedSemaphorePermit,
 }
 impl IpcConnection {
+    /// Only while a cancellable read owns the outstanding request. A caller
+    /// cannot pipeline another frame before its response; EOF retires the read.
+    pub(crate) async fn wait_for_peer_close(&self) -> Result<()> {
+        let stream = self
+            .stream
+            .as_ref()
+            .ok_or_else(|| SeError::invalid("IPC channel", "an admitted outstanding read"))?;
+        let mut byte = [0];
+        loop {
+            if let Err(error) = stream.readable().await {
+                match error.kind() {
+                    std::io::ErrorKind::Interrupted => continue,
+                    std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::NotConnected => return Ok(()),
+                    _ => return Err(wire::io_failure("wait IPC peer close", error)),
+                }
+            }
+            match stream.try_read(&mut byte) {
+                Ok(0) => return Ok(()),
+                Ok(_) => {
+                    return Err(SeError::invalid(
+                        "IPC request",
+                        "one outstanding operation per connection; await its response",
+                    ));
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::BrokenPipe
+                            | std::io::ErrorKind::ConnectionReset
+                            | std::io::ErrorKind::NotConnected
+                    ) =>
+                {
+                    return Ok(());
+                }
+                Err(error) => return Err(wire::io_failure("read IPC peer close", error)),
+            }
+        }
+    }
+
     pub fn connection_authority(&self) -> &PresentedAuthority {
         &self.authority
     }

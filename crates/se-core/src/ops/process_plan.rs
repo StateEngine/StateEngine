@@ -61,13 +61,17 @@ pub fn target<R: Snapshot>(
         }
         return match scope::selected_actor(cx, selector)? {
             Actor::Agent(agent) => Ok(agent),
-            Actor::Human(_) => Err(SeError::invalid("launch target", "a saved agent")),
+            Actor::Human(_) | Actor::Remote(_) => {
+                Err(SeError::invalid("launch target", "a saved agent"))
+            }
         };
     }
     match (selected, &cx.admission.actor) {
         (Some(agent), _) => Ok(agent.clone()),
         (None, Actor::Agent(agent)) => Ok(agent.clone()),
-        (None, Actor::Human(_)) => Err(SeError::invalid("agent selector", "--agent AGENT")),
+        (None, Actor::Human(_) | Actor::Remote(_)) => {
+            Err(SeError::invalid("agent selector", "--agent AGENT"))
+        }
     }
 }
 pub fn launch<R: Snapshot>(

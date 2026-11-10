@@ -235,6 +235,40 @@ archive's `uninstall.ps1`, and wait for successful completion before installing.
 Use each home's original path throughout; an old Windows host keeps the pipe name
 chosen by its executable until restarted.
 
+## Connect to another machine
+
+From your own terminal, use an SSH destination that already works with your
+normal SSH configuration and host-key verification:
+
+```sh
+se remote add my-server --name build
+se remote list --host build
+se remote watch --host build --target PROJECT_ID/AGENT_ID
+```
+
+The first command stages the matching native executable and starts or reuses
+your remote host. A compatible running host and its agents keep running.
+If the saved host has shut down while idle, the next remote operation starts
+it again over SSH and waits for that cold startup.
+Use the project, agent and current session IDs from `remote list` when sending:
+
+```sh
+se remote send --host build --target PROJECT_ID/AGENT_ID --session SESSION_ID --key request-1 "Check the failing test"
+```
+
+Reuse the same key and request when retrying an uncertain send. Launched agents
+use the configured MCP remote tools, which preserve their own sending identity.
+Agent sandboxes keep their existing permissions; a sandboxed CLI that cannot
+prove native ownership directs the agent to MCP.
+
+`se remote disconnect --name build` closes the connection while the remote
+host and agents continue. Run `remote add` again to reconnect. `remote forget
+--name build` also removes the saved local connection. Neither command stops
+remote work. Ordinary return-mail routing and independent agent revocation
+are planned separately.
+
+Attach, pending echo, live output and reconnect timings are not yet measured.
+
 ## Optional migration from the older Node implementation
 
 New users can skip this section. `se import --help` lists the migration options.
@@ -312,8 +346,15 @@ For example, on Linux x86_64, choose new output paths outside the source tree:
 ```sh
 rustup component add rust-docs
 python3 scripts/release/build.py --target x86_64-unknown-linux-gnu --out /absolute/path/new-build
-python3 scripts/release/assemble.py --build /absolute/path/new-build --out /absolute/path/new-archive
+python3 scripts/release/assemble.py --build /absolute/path/new-build \
+  --remote-build /absolute/path/windows-build \
+  --remote-build /absolute/path/macos-arm-build \
+  --remote-build /absolute/path/macos-intel-build \
+  --out /absolute/path/new-archive
 ```
 
+Build each companion on its matching native platform from the same commit and
+release inputs. Remote-enabled archives include every supported destination's
+executable and notices; assembly refuses missing or mismatched companion builds.
 Use the matching target from the platform table for other native builds. Building
 or cross-checking a target does not qualify its runtime behavior on that OS.

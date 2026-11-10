@@ -13,6 +13,12 @@ pub enum HumanTerminal {
 /// Check principal, session and scope binding. Kernel::plan separately applies
 /// the operation's presence policy to the verified HumanTerminal observation.
 pub fn authorize(meta: &OpMeta, admission: &Admission) -> Result<()> {
+    if matches!(admission.actor, Actor::Remote(_)) {
+        return Err(SeError::invalid(
+            "delegated authority",
+            "the closed remote list/watch/send exposure, never local Owner or session operations",
+        ));
+    }
     match (&admission.actor, meta.auth) {
         (Actor::Agent(_), Auth::Owner) => {
             return Err(SeError::new(Detail::OwnerRequired(
@@ -70,6 +76,7 @@ pub fn read_scope(admission: &Admission) -> se_store::ReadScope {
     let visibility = match &admission.actor {
         Actor::Human(_) => se_store::Visibility::Owner,
         Actor::Agent(agent) => se_store::Visibility::SelfOnly(agent.clone()),
+        Actor::Remote(_) => se_store::Visibility::None,
     };
     se_store::ReadScope {
         admission: admission.clone(),
@@ -133,7 +140,7 @@ pub fn authorize_file_owner(
             details::HumanTerminalRequired {
                 op: op.into(),
                 reason: format!(
-                    "stdin_console={}, stdout_console={}; stdin and stdout must both be consoles/TTYs",
+                    "stdin_console={}, stdout_console={}; stdin or stdout is redirected, captured or otherwise not attached to a console/TTY; both must remain attached to the terminal",
                     observed.stdin_console, observed.stdout_console
                 ),
             },

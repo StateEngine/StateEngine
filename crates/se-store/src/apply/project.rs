@@ -34,7 +34,7 @@ pub(super) fn owner(c: &Connection, p: &[u8]) -> StoreResult<Option<String>> {
 pub(super) fn is_owner(c: &Connection, h: &EventHeader, p: &[u8]) -> StoreResult<bool> {
     Ok(match &h.actor {
         Actor::Human(human) => owner(c, p)?.as_deref() == Some(human.as_str()),
-        Actor::Agent(_) => false,
+        Actor::Agent(_) | Actor::Remote(_) => false,
     })
 }
 /// Each live fact that must be gone before a tombstone, with its remedy.

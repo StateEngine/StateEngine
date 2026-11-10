@@ -109,6 +109,12 @@ where
     let viewer = match &admission.actor {
         Actor::Agent(agent) => AtlasPrincipal::Agent(agent.clone()),
         Actor::Human(human) => AtlasPrincipal::Human(human.clone()),
+        Actor::Remote(_) => {
+            return Err(SeError::invalid(
+                "Atlas query principal",
+                "an admitted local Owner or agent; remote grants cover list, watch and send only",
+            ));
+        }
     };
     let expected_root = root.clone();
     controller.with_reader(root, |cache, source| {
@@ -288,6 +294,12 @@ fn with_prepared_owner_reader<R: Snapshot, T>(
     let viewer = match &admission.actor {
         Actor::Agent(id) => AtlasPrincipal::Agent(id.clone()),
         Actor::Human(id) => AtlasPrincipal::Human(id.clone()),
+        Actor::Remote(_) => {
+            return Err(SeError::invalid(
+                "Atlas query principal",
+                "an admitted local Owner or agent; remote grants cover list, watch and send only",
+            ));
+        }
     };
     let mut query = Some(query);
     let mut output = None;

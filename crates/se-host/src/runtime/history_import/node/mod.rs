@@ -247,6 +247,7 @@ fn actor_id(actor: &Actor) -> &str {
     match actor {
         Actor::Human(id) => id.as_str(),
         Actor::Agent(id) => id.as_str(),
+        Actor::Remote(id) => id.as_str(),
     }
 }
 

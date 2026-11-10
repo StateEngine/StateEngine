@@ -7,6 +7,7 @@
 /// cannot name them.
 pub(super) fn group(name: &str) -> Option<&'static str> {
     Some(match name {
+        "remote" => "List, watch and message agents through an Owner-configured remote binding",
         "msg" => "Send and read direct or shared project messages",
         "working-state" => "Read or save an agent's working notes",
         "agent" => "Create and inspect saved agents",
@@ -23,6 +24,9 @@ pub(super) fn group(name: &str) -> Option<&'static str> {
 /// root entry (status, up, down, ...) takes its summary here.
 pub(super) fn command(name: &str) -> Option<&'static str> {
     Some(match name {
+        "remote.list" => "List the agents allowed by a saved remote binding",
+        "remote.watch" => "Read one bounded live/durable page; disconnect never stops work",
+        "remote.send" => "Send keyed direct mail to an exact remote agent session",
         "meta.help" => "Explain a command and its options",
         "meta.schema" => "Show registered operation input and output schemas",
         "store.import_node" => "Import retained history without changing its source files",

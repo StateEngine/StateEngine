@@ -98,8 +98,13 @@ impl HostedRuntime {
             match self.auto_start.then(|| self.activity.take()).flatten() {
                 Some(mut activity) => {
                     let channels = channels.clone();
+                    #[cfg(feature = "remote")]
+                    let waits = self.execution.mail_waits.clone();
                     Box::pin(async move {
-                        crate::channels::runtime::idle(&mut activity, channels).await
+                        #[cfg(feature = "remote")]
+                        crate::remote::activity::idle(waits, &mut activity, channels).await;
+                        #[cfg(not(feature = "remote"))]
+                        crate::channels::runtime::idle(&mut activity, channels).await;
                     })
                 }
                 None => Box::pin(std::future::pending()),
@@ -141,7 +146,8 @@ impl HostedRuntime {
             )
             .await
             {
-                Event::LocalStop | Event::IdleExpired => break ended(self, listener, None),
+                Event::LocalStop => break ended(self, listener, None),
+                Event::IdleExpired => break ended(self, listener, None),
                 Event::OwnershipFault => {
                     break ended(
                         self,
@@ -491,7 +497,30 @@ async fn connection(
                 .await?;
             continue;
         }
+        #[cfg(feature = "remote")]
+        if let Some(call) = exchange.take_owner_call() {
+            let result = crate::remote::control::execute(&router, call, &deadline).await;
+            connection = exchange.reply_owner(result, &deadline).await?;
+            continue;
+        }
         let output = match exchange.take_call() {
+            Ok(call)
+                if matches!(
+                    &call.admitted.input,
+                    HostedInput::Operation(se_core::ops::AnyOp::RemoteWatch(_))
+                ) =>
+            {
+                // Unlike writes, a watch owns no commit. Retire its in-flight
+                // page as soon as this CLI disconnects, preserving consumed
+                // cursors and leaving the target agent untouched.
+                tokio::select! {biased;
+                    closed = exchange.wait_for_peer_close() => {
+                        closed?;
+                        return Ok(ConnectionEnd::Closed);
+                    }
+                    output = router.execute_call(call, &deadline) => output,
+                }
+            }
             Ok(call) => router.execute_call(call, &deadline).await,
             Err(error) => Err(error),
         };

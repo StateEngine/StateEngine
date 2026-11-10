@@ -380,6 +380,15 @@ impl Kernel {
             AnyOp::AtlasOutline(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
                 crate::ops::AtlasRead::Outline(input),
             ))),
+            AnyOp::RemotePrepareSend(_)
+            | AnyOp::RemoteList(_)
+            | AnyOp::RemoteWatch(_)
+            | AnyOp::RemoteSend(_) => {
+                return Err(SeError::invalid(
+                    "remote execution",
+                    "the protected source host broker; no direct store or Owner fallback",
+                ));
+            }
             AnyOp::Resume(input) => OpStep::Complete(
                 crate::ops::continuity::resume_at_home(
                     input,

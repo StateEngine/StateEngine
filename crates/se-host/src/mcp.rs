@@ -242,6 +242,31 @@ async fn call(
             if let se_core::ops::AnyOp::Resume(input) = operation {
                 return resume::call(backend, capability, id, input).await;
             }
+            if operation.is_remote() {
+                let id_bytes = serde_json::to_vec(&id)
+                    .map(|b| b.len())
+                    .unwrap_or(usize::MAX);
+                let available = backend
+                    .response_limit()
+                    .saturating_sub(id_bytes)
+                    .saturating_sub(8192)
+                    / 3;
+                let budget = match &mut operation {
+                    se_core::ops::AnyOp::RemoteList(input) => Some(&mut input.request.budget),
+                    se_core::ops::AnyOp::RemoteWatch(input) => Some(&mut input.request.budget),
+                    _ => None,
+                };
+                if let Some(budget) = budget {
+                    if available < 1024 {
+                        return rpc_error(
+                            id,
+                            -32603,
+                            "MCP envelope leaves insufficient remote page budget",
+                        );
+                    }
+                    *budget = (*budget).min(available.min(65536) as u32);
+                }
+            }
             if let se_core::ops::AnyOp::MessageRead(input) = &mut operation {
                 // A JSON value contributes one structured copy and at most two
                 // encoded copies inside the text string. Reserve fixed space

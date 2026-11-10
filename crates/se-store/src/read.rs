@@ -21,6 +21,7 @@ mod history;
 mod import;
 mod mail;
 mod mail_legacy;
+mod mail_sender;
 mod message;
 mod message_count;
 mod notification;
@@ -56,6 +57,14 @@ impl SqliteSnapshot {
         reader.read_phase()?.into_snapshot(scope)
     }
     pub(crate) fn from_phase(phase: ReadPhase, scope: ReadScope) -> StoreResult<Self> {
+        if matches!(scope.admission.actor, Actor::Remote(_))
+            || matches!(scope.visibility, Visibility::None)
+        {
+            return Err(fail(
+                StoreErrorCode::ScopeMismatch,
+                "delegated clients require the closed grant-filtered remote read port",
+            ));
+        }
         if phase.info.state != StoreState::Ready {
             return Err(fail(StoreErrorCode::NotReady, "store is in maintenance"));
         }
@@ -429,6 +438,12 @@ impl Snapshot for SqliteSnapshot {
                 value: self.message_at(s, v, d, r, x, None)?,
             }),
         }
+    }
+    fn remote_message_attribution(
+        &mut self,
+        id: se_types::MessageId,
+    ) -> StoreResult<Option<se_types::remote::RemoteAttribution>> {
+        self.read_remote_message_attribution(id)
     }
     fn messages(
         &mut self,

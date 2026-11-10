@@ -21,6 +21,8 @@ pub struct TrustedCapture {
     pub facts: se_core::ops::hook::CaptureFacts,
 }
 pub struct HostedCall {
+    /// Exact active credential observed by native/session admission; never wire-selected.
+    pub remote_credential: Option<(se_store::RecordId, [u8; 32])>,
     pub input: HostedInput,
     pub kernel: Kernel,
     pub admission: Admission,
@@ -63,6 +65,17 @@ pub trait CustodyExecutor: Send + Sync {
     ) -> crate::HostFuture<'a, se_core::ops::AnyOutput> {
         Box::pin(async move { Ok(output) })
     }
+
+    #[cfg(feature = "remote")]
+    fn refresh_remote<'a>(&'a self, _deadline: &'a Deadline) -> crate::HostFuture<'a, ()> {
+        Box::pin(async {
+            Err(se_types::SeError::invalid(
+                "remote publisher",
+                "a native coordinator supporting attributed provider observations",
+            ))
+        })
+    }
+
     /// One finite live-work sweep, under the host's original timer budget.
     fn catch_up<'a>(&'a self, _deadline: &'a Deadline) -> crate::HostFuture<'a, ()> {
         Box::pin(async {

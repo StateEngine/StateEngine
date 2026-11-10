@@ -111,6 +111,7 @@ fn selected<S: Snapshot>(cx: &mut Cx<'_, S>, id: MessageId) -> Result<MessageRec
     )
 }
 fn row<S: Snapshot>(cx: &mut Cx<'_, S>, record: MessageRecord) -> Result<MessageRow> {
+    let from = receipt::mail_sender_ref(cx.read, &record)?;
     let StoredText::Present(body) = record.body else {
         return Err(scope::unreadable(
             "message body",
@@ -134,7 +135,7 @@ fn row<S: Snapshot>(cx: &mut Cx<'_, S>, record: MessageRecord) -> Result<Message
         channel_reply: super::message::channel_reply(cx.read, &record.message)?,
         id: record.message,
         event_id: record.event,
-        from: receipt::actor_ref(cx.read, &record.sender)?,
+        from,
         to: if record.work.is_some() {
             receipt::floor_ref()
         } else {

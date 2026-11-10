@@ -592,6 +592,18 @@ pub trait Snapshot {
     /// included, with its original preparation; absent if it never had one.
     fn latest_session(&mut self, agent: AgentId) -> StoreResult<Read<ProjectionRecord>>;
     fn message(&mut self, id: MessageId) -> StoreResult<Read<MessageRecord>>;
+    /// Read the verified original source of this visible addressed message.
+    /// Local mail returns None; missing remote provenance refuses. Later revoke
+    /// cannot erase the identity under which an existing message committed.
+    fn remote_message_attribution(
+        &mut self,
+        _id: MessageId,
+    ) -> StoreResult<Option<se_types::remote::RemoteAttribution>> {
+        Err(crate::error::fail(
+            StoreErrorCode::Unreadable,
+            "remote mail provenance reader is unavailable",
+        ))
+    }
     fn messages(
         &mut self,
         query: MessageQuery,
