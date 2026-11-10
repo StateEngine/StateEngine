@@ -65,7 +65,7 @@ pub struct Connection {
     diagnostics: Mutex<Diagnostics>,
     events: mpsc::Sender<Incoming>,
     changed: tokio::sync::watch::Sender<u64>,
-    writer: tokio::sync::Mutex<()>,
+    writer: Arc<tokio::sync::Mutex<()>>,
     writes: tokio::sync::Mutex<JoinSet<()>>,
     readers: tokio::sync::Mutex<JoinSet<()>>,
 }
@@ -86,7 +86,7 @@ impl Connection {
             diagnostics: Mutex::new(Diagnostics::default()),
             events,
             changed: tokio::sync::watch::channel(0).0,
-            writer: tokio::sync::Mutex::new(()),
+            writer: Arc::new(tokio::sync::Mutex::new(())),
             writes: tokio::sync::Mutex::new(JoinSet::new()),
             readers: tokio::sync::Mutex::new(JoinSet::new()),
         });
@@ -284,8 +284,21 @@ impl Connection {
             self.fail(error.body.clone())?;
             return Err(error);
         }
+        // The accepted task already owns its position in the stream. Taking
+        // this lock inside a spawned task lets scheduler order splice a later
+        // cancel or prompt ahead of an earlier accepted frame.
+        let serial = tokio::time::timeout_at(until, self.writer.clone().lock_owned())
+            .await
+            .map_err(|_| {
+                failure(
+                    "ACP write queue",
+                    "deadline before native write; original request retained",
+                )
+            })?;
+        self.require_open()?;
         let owned = Arc::clone(self);
         jobs.spawn(async move {
+            let _serial = serial;
             let result = owned.write(bytes, until).await;
             if let Err(error) = &result {
                 let _ = owned.fail(error.body.clone());
@@ -309,14 +322,6 @@ impl Connection {
             })?
     }
     async fn write(&self, bytes: Vec<u8>, until: Instant) -> Result<()> {
-        let _serial = tokio::time::timeout_at(until, self.writer.lock())
-            .await
-            .map_err(|_| {
-                failure(
-                    "ACP write queue",
-                    "deadline before native write; connection must reconcile its originals",
-                )
-            })?;
         self.require_open()?;
         let expected = u32::try_from(bytes.len())
             .map_err(|_| failure("ACP write", "frame exceeds native byte count"))?;
