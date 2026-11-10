@@ -132,7 +132,18 @@ impl LaunchCoordinator {
         work.meta.conversation = Read::Present {
             value: outcome.witness.conversation.clone(),
         };
-        let native_pin = if plan.capture && plan.profile.provider != se_store::Provider::SeCode {
+        if let Some(binding) = work
+            .binding
+            .as_ref()
+            .and_then(|binding| binding.acp.as_ref())
+        {
+            binding.session.arm(&work.wake.event)?;
+        }
+        let native_pin = if plan.capture
+            && !matches!(
+                plan.profile.provider,
+                se_store::Provider::SeCode | se_store::Provider::Acp
+            ) {
             let binding = work
                 .binding
                 .as_ref()
@@ -395,6 +406,22 @@ impl LaunchCoordinator {
         } else {
             capture
         };
+        let capture = if plan.profile.provider == se_store::Provider::Acp {
+            let source = process_commit::credential_id(&plan, "capture-source")?;
+            work.capture_source = Some(source);
+            Some(process_commit::CaptureActivation {
+                source,
+                native_ref: outcome.witness.conversation.to_string(),
+                incarnation: crate::harness::acp::bound(
+                    work.binding
+                        .as_ref()
+                        .ok_or_else(|| error("ACP capture", "binding absent"))?,
+                )?
+                .source()?,
+            })
+        } else {
+            capture
+        };
         let receipt = self
             .store
             .commit(work.admission.clone(), deadline, None, move |kernel, cx| {
@@ -436,6 +463,16 @@ impl LaunchCoordinator {
                 )
                 .await?;
         }
+        if plan.profile.provider == se_store::Provider::Acp {
+            self.acp
+                .start_initial(
+                    work.binding
+                        .as_ref()
+                        .ok_or_else(|| error("ACP initial task", "retained binding absent"))?,
+                    call(self.store.generation, deadline)?,
+                )
+                .await?;
+        }
         let resume = se_core::ops::AgentCommand::launch_in_home(
             &plan.agent.id,
             &self.options.home,
@@ -445,6 +482,21 @@ impl LaunchCoordinator {
         .filter(|_| plan.profile.provider != se_store::Provider::SeCode)
         .map(|command| command.with_detach(plan.input.detach));
         Ok(LaunchResult {
+            harness_policy_notice: if plan.profile.provider == se_store::Provider::Acp {
+                Some(
+                    crate::harness::acp::bound(
+                        work.binding
+                            .as_ref()
+                            .ok_or_else(|| error("ACP launch status", "binding absent"))?,
+                    )?
+                    .session
+                    .observe()?
+                    .policy_notice
+                    .into(),
+                )
+            } else {
+                None
+            },
             secode_binding: secode_binding.map(|value| Read::Present { value }),
             takeover: work.takeover.clone(),
             idempotency_key: plan.input.idempotency_key.clone(),
@@ -459,6 +511,7 @@ impl LaunchCoordinator {
                 se_store::Provider::Codex => se_types::Provider::Codex,
                 se_store::Provider::Claude => se_types::Provider::Claude,
                 se_store::Provider::SeCode => se_types::Provider::SeCode,
+                se_store::Provider::Acp => se_types::Provider::Acp,
             },
             model: work.meta.model.clone(),
             permission_profile: plan.resolved.clone(),

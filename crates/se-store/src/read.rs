@@ -13,6 +13,7 @@ mod capture;
 mod channel;
 mod continuity;
 mod control;
+mod conversation;
 mod cursor;
 mod decision;
 mod decision_heads;
@@ -730,6 +731,15 @@ impl Snapshot for SqliteSnapshot {
     }
     fn turns(&mut self, _agent: AgentId, _budget: ReadBudget) -> StoreResult<Page<StoredEvent>> {
         self.read_turns(_agent, _budget)
+    }
+    fn conversation_turns(
+        &mut self,
+        agent: AgentId,
+        provider: Provider,
+        native_ref: &str,
+        budget: ReadBudget,
+    ) -> StoreResult<Page<StoredEvent>> {
+        self.read_conversation_turns(agent, provider, native_ref, budget)
     }
     fn capture_source(&mut self, _source: RecordId) -> StoreResult<Read<ProjectionRecord>> {
         self.read_capture_source(_source)

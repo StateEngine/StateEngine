@@ -656,6 +656,16 @@ pub trait Snapshot {
         vendor: &str,
     ) -> StoreResult<Read<StoredEvent>>;
     fn turns(&mut self, agent: AgentId, budget: ReadBudget) -> StoreResult<Page<StoredEvent>>;
+    /// Complete chat candidates for one captured native conversation and agent.
+    fn conversation_turns(
+        &mut self,
+        _agent: AgentId,
+        _provider: Provider,
+        _native_ref: &str,
+        _budget: ReadBudget,
+    ) -> StoreResult<Page<StoredEvent>> {
+        crate::error::later("captured conversation turns")
+    }
     /// The newest turns after `since`, oldest first; older turns the bound
     /// left out are counted exactly in the window's omitted-before.
     fn recent_turns(

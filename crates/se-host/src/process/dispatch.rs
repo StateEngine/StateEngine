@@ -27,7 +27,9 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
         output: AnyOutput,
         deadline: &'a Deadline,
     ) -> HostFuture<'a, AnyOutput> {
-        Box::pin(async move { self.observe_secode_output(output, deadline).await })
+        Box::pin(async move {
+            self.observe_acp_output(self.observe_secode_output(output, deadline).await?)
+        })
     }
 
     #[cfg(feature = "remote")]
@@ -64,6 +66,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
             Provider::Claude => [Provider::Claude, Provider::Codex, Provider::SeCode],
             Provider::Codex => [Provider::Codex, Provider::Claude, Provider::SeCode],
             Provider::SeCode => [Provider::SeCode, Provider::Claude, Provider::Codex],
+            Provider::Acp => [Provider::Claude, Provider::Codex, Provider::SeCode],
         };
         providers
             .map(|provider| {
@@ -73,6 +76,7 @@ impl CustodyExecutor for Arc<LaunchCoordinator> {
                         Provider::Claude => se_store::Provider::Claude,
                         Provider::Codex => se_store::Provider::Codex,
                         Provider::SeCode => se_store::Provider::SeCode,
+                        Provider::Acp => se_store::Provider::Acp,
                     },
                 )
             })

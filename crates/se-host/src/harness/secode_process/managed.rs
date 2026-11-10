@@ -76,6 +76,7 @@ impl SecodeHarness {
         HarnessBinding {
             claude: None,
             codex: None,
+            acp: None,
             secode: Some(Arc::new(Binding {
                 managed,
                 completion: stream::Completion::default(),
@@ -259,6 +260,7 @@ impl Harness for SecodeHarness {
             *retained = Some(HarnessBinding {
                 claude: None,
                 codex: None,
+                acp: None,
                 secode: Some(binding.clone()),
                 _private: (),
             });

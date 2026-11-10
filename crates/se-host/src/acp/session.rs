@@ -2,7 +2,7 @@
 //! update pump. Replayed history never enters the new-turn capture queue.
 mod events;
 use super::{
-    Connection, Incoming, Message, failure,
+    Connection, Incoming, Message, OfferFailure, failure,
     permission::{Permission, PermissionPolicy, PermissionRefusal, PermissionView},
     turn::{CapturedMessage, CompletedTurn, Turn, text},
 };
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, Ordering},
     },
 };
@@ -28,6 +28,7 @@ pub struct Session {
     pump: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     closing: AtomicBool,
     policy: PermissionPolicy,
+    owner_wake: OnceLock<Arc<tokio::sync::Notify>>,
 }
 #[derive(Clone)]
 pub struct Observation {
@@ -81,12 +82,31 @@ impl Session {
             pump: tokio::sync::Mutex::new(None),
             closing: AtomicBool::new(false),
             policy,
+            owner_wake: OnceLock::new(),
         });
         let owned = session.clone();
         *session.pump.lock().await = Some(tokio::spawn(async move {
             owned.consume(receiver).await;
         }));
         session
+    }
+    /// Coalesce terminal/permission/failure updates into the native owner's wake.
+    pub fn arm(&self, wake: &Arc<tokio::sync::Notify>) -> Result<()> {
+        if self.owner_wake.set(wake.clone()).is_err()
+            && self
+                .owner_wake
+                .get()
+                .is_none_or(|old| !Arc::ptr_eq(old, wake))
+        {
+            return Err(failure("ACP wake", "the original native owner differs"));
+        }
+        self.notify_owner();
+        Ok(())
+    }
+    fn notify_owner(&self) {
+        if let Some(wake) = self.owner_wake.get() {
+            wake.notify_one();
+        }
     }
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
@@ -168,11 +188,14 @@ impl Session {
             {
                 return Err(failure(
                     "ACP MCP",
-                    "agent lacks required authenticated HTTP MCP capability",
+                    "The agent did not advertise authenticated HTTP MCP support. Configure providers.acp.command and acp.arguments to an ACP v1 agent with HTTP MCP support, then retry launch.",
                 ));
             }
-            valid_id(required_mode)?;
-            state.required_mode = Some(required_mode.into());
+            state.required_mode = if required_mode.is_empty() {
+                None
+            } else {
+                Some(valid_id(required_mode)?.into())
+            };
             state.opening = true;
             match previous {
                 Some((id, expected)) => {
@@ -185,7 +208,7 @@ impl Session {
                         state.opening = false;
                         return Err(failure(
                             "ACP resume",
-                            "agent cannot load the retained conversation; no new session created",
+                            "The agent does not advertise loadSession. Use --new to start a separate conversation, or configure an agent that can load the saved conversation. No new input was offered.",
                         ));
                     }
                     valid_id(id)?;
@@ -215,10 +238,22 @@ impl Session {
     /// Offers one input once. The request ID proves neither durable provider
     /// acceptance nor canonical capture; keep its original key on uncertainty.
     pub async fn prompt(&self, key: String, text: String, cx: CallContext) -> Result<u64> {
+        self.prompt_tracked(key, text, cx)
+            .await
+            .map_err(|e| e.error)
+    }
+    /// A definite zero-byte failure releases this key for the caller's retained
+    /// mail offer. Partial or unobserved writes retain the original intent.
+    pub async fn prompt_tracked(
+        &self,
+        key: String,
+        text: String,
+        cx: CallContext,
+    ) -> std::result::Result<u64, OfferFailure> {
         let until = super::connection::until(&cx)?;
         let _input = tokio::time::timeout_at(until, self.input.lock())
             .await
-            .map_err(|_| failure("ACP input queue", "original admission deadline expired"))?;
+            .map_err(|_| failure("ACP input queue", "The admission wait expired before writing. Inspect status, let the current input settle, then retry this retained offer."))?;
         let id = {
             let mut state = self.lock()?;
             ready(&state)?;
@@ -229,21 +264,24 @@ impl Session {
             {
                 return Err(failure(
                     "ACP input",
-                    "prior input, capture or permission remains unsettled",
-                ));
+                    "Prior input, capture or permission remains unsettled. Inspect status and resolve any permission request; retry this retained offer after capture settles. No new bytes were written.",
+                ).into());
             }
-            if state.used_keys.contains(&key) || state.used_keys.len() >= 4096 {
+            if state.used_keys.contains(&key) {
                 return Err(failure(
                     "ACP input",
-                    "original input key already owned or connection input budget exhausted; no replay offered",
-                ));
+                    "The original input key is already owned. Inspect status and captured history for its outcome; do not replay it. Offer a new task only after the original input settles.",
+                ).into());
+            }
+            if state.used_keys.len() >= 4096 {
+                return Err(failure("ACP input", "The connection's 4096-input budget is exhausted. Stop the agent normally, then launch it again to resume the saved conversation on a fresh connection.").into());
             }
             let id = state
                 .conversation
                 .clone()
-                .ok_or_else(|| failure("ACP input", "no loaded conversation"))?;
+                .ok_or_else(|| failure("ACP input", "No loaded conversation exists. Launch the agent and wait for readiness before offering this input."))?;
             let turn = Turn::new(key.clone(), text.clone())?;
-            state.used_keys.insert(key);
+            state.used_keys.insert(key.clone());
             state.active = Some(turn);
             state.permission_refusal = None;
             state.cancelling = false;
@@ -251,26 +289,47 @@ impl Session {
             id
         };
         self.signal();
-        // Publish input intent before crossing stdio. The active entry survives
-        // any caller timeout, cancelled wait, response error or broken stream.
-        let offered = self
-            .connection
-            .offer(
-                "session/prompt",
-                json!({"sessionId":id,"prompt":[{"type":"text","text":text}]}),
-                remaining(&cx, until)?,
-            )
-            .await;
+        // Publish intent before stdio; only a witnessed zero-byte outcome can
+        // release it. Dropped caller waits leave that intent intact.
+        let offered = match remaining(&cx, until) {
+            Ok(cx) => {
+                self.connection
+                    .offer_tracked(
+                        "session/prompt",
+                        json!({"sessionId":id,"prompt":[{"type":"text","text":text}]}),
+                        cx,
+                    )
+                    .await
+            }
+            Err(error) => Err(error.into()),
+        };
         match offered {
             Ok(id) => {
-                if let Some(turn) = self.lock()?.active.as_mut() {
+                let mut state = self.lock().map_err(OfferFailure::uncertain)?;
+                if let Some(turn) = state.active.as_mut() {
                     turn.request = Some(id);
                 }
                 Ok(id)
             }
-            Err(error) => {
-                self.fail(error.body.clone())?;
-                Err(error)
+            Err(offer_error) => {
+                let mut state = self.lock().map_err(OfferFailure::uncertain)?;
+                if offer_error.completed_bytes == Some(0) {
+                    if state
+                        .active
+                        .as_ref()
+                        .is_some_and(|turn| turn.input_key == key)
+                    {
+                        state.active = None;
+                        state.used_keys.remove(&key);
+                    }
+                } else {
+                    state
+                        .failure
+                        .get_or_insert_with(|| offer_error.error.body.clone());
+                }
+                drop(state);
+                self.signal();
+                Err(offer_error)
             }
         }
     }
@@ -342,6 +401,14 @@ impl Session {
     }
     /// Called after outside canonical readback, never merely after a write.
     pub fn acknowledge(&self, request: u64) -> Result<()> {
+        self.remove_completed(request)
+    }
+    /// The caller has the owner’s explicit capture opt-out. No persisted reply
+    /// or delivery witness is claimed when releasing this in-memory payload.
+    pub fn discard_after_capture_opt_out(&self, request: u64) -> Result<()> {
+        self.remove_completed(request)
+    }
+    fn remove_completed(&self, request: u64) -> Result<()> {
         let mut state = self.lock()?;
         if state.completed.first().is_none_or(|v| v.request != request) {
             return Err(failure(
@@ -423,6 +490,7 @@ impl Session {
     }
     fn fail(&self, body: ErrorBody) -> Result<()> {
         self.lock()?.failure.get_or_insert(body);
+        self.notify_owner();
         self.signal();
         Ok(())
     }

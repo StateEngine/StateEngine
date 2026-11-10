@@ -35,6 +35,11 @@ pub fn reserve<R: Snapshot>(
                     super::super::session_reference::CODEX_PENDING,
                     plan.session
                 ),
+                _ if plan.profile.provider == se_store::Provider::Acp => format!(
+                    "{}{}",
+                    super::super::session_reference::ACP_PENDING,
+                    plan.session
+                ),
                 _ if plan.profile.provider == se_store::Provider::SeCode => format!(
                     "{}{}",
                     super::super::session_reference::SECODE_PENDING,

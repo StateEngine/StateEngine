@@ -28,6 +28,7 @@ pub(super) fn provider(value: Provider) -> &'static str {
         Provider::Claude => "Claude Code",
         Provider::Codex => "Codex",
         Provider::SeCode => "SE Code",
+        Provider::Acp => "ACP harness",
     }
 }
 
@@ -52,6 +53,7 @@ pub(super) fn stored_provider(value: &str) -> &str {
         Ok(se_store::Provider::Claude) => provider(Provider::Claude),
         Ok(se_store::Provider::Codex) => provider(Provider::Codex),
         Ok(se_store::Provider::SeCode) => "SE Code",
+        Ok(se_store::Provider::Acp) => "ACP harness",
         Err(_) => value,
     }
 }

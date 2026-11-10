@@ -532,10 +532,43 @@ async fn session_complete_turn_survives_protocol_eof_and_drains_before_close() -
     eventually(|| f.connection.diagnostics().is_ok_and(|v| v.stdout_terminal)).await?;
     f.session.drain(&cx()?).await?;
     assert_eq!(f.session.completed(id)?.messages[0].text, "final answer");
+    let terminal = f.connection.diagnostics()?;
+    assert!(terminal.stdout_terminal && terminal.stdout_complete);
     assert!(
-        f.session.observe()?.failure.is_some(),
-        "EOF is reported as transport terminal"
+        f.session.observe()?.failure.is_none(),
+        "clean complete EOF after a finished turn is a normal end"
     );
+    f.stop().await
+}
+
+#[tokio::test]
+async fn session_eof_with_input_in_flight_keeps_the_original_input_failed() -> Check {
+    let mut f = Fixture::ready(PermissionPolicy::Refuse).await?;
+    let id = f.prompt("unfinished-eof").await?;
+    f.update(chunk("agent_message_chunk", "incomplete prefix"))?;
+    f.settle().await?;
+    f.io.output
+        .send(StreamRead::Eof)
+        .map_err(|_| "stdout closed")?;
+    eventually(|| f.connection.diagnostics().is_ok_and(|v| v.stdout_terminal)).await?;
+    let terminal = f.connection.diagnostics()?;
+    assert!(
+        terminal.stdout_complete,
+        "framing completed even though the turn did not"
+    );
+    assert!(f.session.observe()?.failure.is_some());
+    assert_eq!(
+        f.session.observe()?.active_input.as_deref(),
+        Some("unfinished-eof")
+    );
+    assert!(
+        f.session.completed(id).is_err(),
+        "a prefix cannot become a completed turn"
+    );
+    assert!(f.session.drain(&cx()?).await.is_err());
+    let writes = f.writes()?.len();
+    assert!(f.prompt("replacement-after-eof").await.is_err());
+    assert_eq!(f.writes()?.len(), writes);
     f.stop().await
 }
 

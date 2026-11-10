@@ -186,6 +186,7 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
         se_store::Provider::Claude => se_types::Provider::Claude,
         se_store::Provider::Codex => se_types::Provider::Codex,
         se_store::Provider::SeCode => se_types::Provider::SeCode,
+        se_store::Provider::Acp => se_types::Provider::Acp,
     };
     let (session, conversation, mut resume) = super::agent_session::read(&agent, cx)?;
     if provider == se_types::Provider::SeCode {
@@ -227,6 +228,11 @@ pub fn show<R: Snapshot>(input: AgentShow, cx: &mut Cx<'_, R>) -> Result<AgentSt
     Ok(AgentStatusOutput {
         agent: Read::Present {
             value: AgentRow {
+                acp_runtime: (provider == se_types::Provider::Acp).then(|| Read::Unknown {
+                    what: "The native protocol connection has not been observed".into(),
+                }),
+                harness_policy_notice: (provider == se_types::Provider::Acp)
+                    .then(|| se_types::ACP_NO_SANDBOX_NOTICE.into()),
                 secode_binding,
                 secode_runtime,
                 id: agent,

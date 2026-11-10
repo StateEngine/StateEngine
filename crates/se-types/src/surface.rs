@@ -2,6 +2,8 @@
 use crate::{EventId, IdempotencyKey};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+pub const ACP_NO_SANDBOX_NOTICE: &str =
+    "This harness provides no execution sandbox in protocol mode.";
 mod agent;
 mod decision;
 pub use agent::*;
@@ -19,6 +21,7 @@ pub enum Provider {
     Claude,
     Codex,
     SeCode,
+    Acp,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "lowercase")]

@@ -4,6 +4,7 @@ use se_store::{Provider, RecordId};
 use se_types::{Result, SeError, SessionId};
 use sha2::{Digest, Sha256};
 
+pub(crate) mod acp;
 pub(crate) mod claude;
 pub(crate) mod codex;
 #[cfg(test)]

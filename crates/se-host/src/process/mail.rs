@@ -84,7 +84,10 @@ impl LaunchCoordinator {
             || work.session_retired
             || work.stop_key.is_some()
             || work.binding.as_ref().is_none_or(|binding| {
-                binding.claude.is_none() && binding.codex.is_none() && binding.secode.is_none()
+                binding.claude.is_none()
+                    && binding.codex.is_none()
+                    && binding.secode.is_none()
+                    && binding.acp.is_none()
             })
         {
             return Ok(());
@@ -217,6 +220,25 @@ impl LaunchCoordinator {
                     event_id,
                 })
                 .map_err(|error| (error, None))
+        } else if work.meta.provider == se_store::Provider::Acp {
+            self.acp
+                .offer_mail(
+                    binding,
+                    &expected_conversation,
+                    &text,
+                    &format!(
+                        "acp-notice-{}:{}",
+                        se_types::hex_lower(descriptor.as_bytes()),
+                        se_types::hex_lower(attempt.as_bytes())
+                    ),
+                    call,
+                )
+                .await
+                .map(|bytes| se_store::mail::OfferReport::TransportWritten {
+                    transport: se_store::mail::MailTransport::Stdio,
+                    bytes,
+                })
+                .map_err(|failure| (failure.error, failure.completed_bytes))
         } else if codex {
             self.codex
                 .offer_mail(

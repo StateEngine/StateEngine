@@ -167,6 +167,7 @@ pub(super) fn resolve<R: Snapshot>(
         se_store::Provider::Claude => "claude",
         se_store::Provider::Codex => "codex",
         se_store::Provider::SeCode => "secode",
+        se_store::Provider::Acp => "acp",
     }
     .into();
     Ok(Identity {

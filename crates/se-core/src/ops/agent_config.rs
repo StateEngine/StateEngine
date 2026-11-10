@@ -247,6 +247,7 @@ pub fn set<R: Snapshot>(
                         se_store::Provider::Claude => crate::config_policy::Provider::Claude,
                         se_store::Provider::Codex => crate::config_policy::Provider::Codex,
                         se_store::Provider::SeCode => crate::config_policy::Provider::SeCode,
+                        se_store::Provider::Acp => crate::config_policy::Provider::Acp,
                     };
                     let resolved = configuration.resolve_profile(&input.value, provider, false)?;
                     profile.permission = match resolved.sandbox {

@@ -120,10 +120,11 @@ pub fn launch<R: Snapshot>(
         se_store::Provider::Claude => Provider::Claude,
         se_store::Provider::Codex => Provider::Codex,
         se_store::Provider::SeCode => Provider::SeCode,
+        se_store::Provider::Acp => Provider::Acp,
     };
-    if provider == Provider::SeCode && !input.detach {
+    if matches!(provider, Provider::SeCode | Provider::Acp) && !input.detach {
         return Err(SeError::invalid(
-            "SE Code launch mode",
+            "protocol launch mode",
             "headless launch with --detach",
         ));
     }

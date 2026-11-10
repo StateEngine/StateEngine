@@ -189,6 +189,11 @@ pub(super) fn resolve_provider_command(
             "Claude Code",
             "https://code.claude.com/docs/en/setup",
         ),
+        se_types::Provider::Acp => (
+            "acp",
+            "ACP harness",
+            "the selected harness installation instructions",
+        ),
         se_types::Provider::SeCode => {
             ("secode", "SE Code", "the SE Code installation instructions")
         }
@@ -197,10 +202,17 @@ pub(super) fn resolve_provider_command(
         Some(path) => format!("configuration file {}", path.display()),
         None => "the host application's provider configuration".into(),
     };
-    let help = se_types::Remedy {
-        text: format!(
+    let text = if provider == se_types::Provider::Acp {
+        format!(
+            "Configured protocol command: {command:?}. In {destination}, set [providers.acp].command to the native executable's absolute path. For a script-installed agent, set command to its native interpreter's absolute path and put the agent script's absolute path first in [acp].arguments, followed by its documented protocol arguments. Script shims are not native images. Restart this home's runtime with the same configuration selection, then retry launch."
+        )
+    } else {
+        format!(
             "Configured {title} command: {command:?}. Install {title} using {install}, or set command to its native executable's absolute path under [providers.{name}] in {destination}. Restart this home's runtime from your owner terminal with the same configuration selection after changing PATH or configuration, then retry the launch."
-        ),
+        )
+    };
+    let help = se_types::Remedy {
+        text,
         command: Some(se_types::Cmd::Manual),
     };
     let with_help = |mut error: se_types::SeError| {

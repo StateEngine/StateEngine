@@ -67,3 +67,7 @@ pub use session::*;
 
 #[cfg(feature = "secode")]
 pub mod linked;
+
+#[cfg(all(test, feature = "listener"))]
+#[path = "../tests/support/acp_correction_independent.rs"]
+mod acp_correction_independent;

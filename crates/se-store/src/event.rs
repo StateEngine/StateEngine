@@ -23,6 +23,7 @@ pub enum Provider {
     Claude,
     Codex,
     SeCode,
+    Acp,
 }
 /// The surface chosen by the session's actual launch/bind path, never a liveness fact.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]

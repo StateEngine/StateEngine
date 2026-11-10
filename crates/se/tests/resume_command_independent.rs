@@ -121,6 +121,7 @@ fn human_launch_stop_hint_preserves_the_receipt_home_project_and_agent() -> Chec
     let home = Path::new("/private/Selected home");
     let resume = AgentCommand::launch_in_home(&f.a, home, &f.project, false).ok_or("command")?;
     let value = LaunchResult {
+        harness_policy_notice: None,
         secode_binding: None,
         takeover: None,
         idempotency_key: request("render-launch")?.key,

@@ -261,6 +261,7 @@ pub(super) fn resume(
                     Provider::Claude => "claude",
                     Provider::Codex => "codex",
                     Provider::SeCode => "secode",
+                    Provider::Acp => "acp",
                 };
                 let reference = (!native_ref.is_empty()).then(|| native_ref.clone());
                 let unsupported = if native_ref.is_empty() {

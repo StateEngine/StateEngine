@@ -1,0 +1,348 @@
+//! Configured ACP executables use the same native launch lifecycle as stock harnesses.
+use super::*;
+use crate::acp::{CapturedMessage, Connection, PermissionPolicy, Session};
+use se_core::config_policy::{ConfigFile, Provider, ResolvedProfile};
+use se_types::{Result, SeError};
+use serde_json::json;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU64, Ordering},
+};
+mod capture;
+mod environment;
+mod mail;
+
+pub struct AcpHarness {
+    io: Arc<dyn ProviderIoPlatform>,
+    configuration: ConfigFile,
+    mcp_port: u16,
+}
+pub struct Binding {
+    pub session: Arc<Session>,
+    pub identity: SessionIdentity,
+    initial: Mutex<Option<(String, String)>>,
+    incarnation: Mutex<Option<Vec<u8>>>,
+    capture_offset: AtomicU64,
+    cwd: String,
+}
+fn error(reason: impl std::fmt::Display) -> SeError {
+    se_core::scope::unreadable("ACP binding", &reason.to_string())
+}
+impl AcpHarness {
+    pub fn new(io: Arc<dyn ProviderIoPlatform>, configuration: ConfigFile, mcp_port: u16) -> Self {
+        Self {
+            io,
+            configuration,
+            mcp_port,
+        }
+    }
+    fn resolved(&self, request: &HarnessRequest) -> Result<ResolvedProfile> {
+        Self::validate_launch(
+            &self.configuration,
+            &request.profile.named_profile,
+            request.profile.model.as_deref(),
+        )
+    }
+    pub(crate) fn validate_launch(
+        configuration: &ConfigFile,
+        named_profile: &str,
+        model: Option<&str>,
+    ) -> Result<ResolvedProfile> {
+        let profile = configuration.resolve_profile(named_profile, Provider::Acp, true)?;
+        if !profile.bypass || !profile.network {
+            return Err(SeError::invalid(
+                "ACP permission profile",
+                "This harness provides no execution sandbox or protocol network restriction. Select an explicitly named profile with bypass = true and network = true to opt into unsandboxed execution with network access.",
+            ));
+        }
+        let configured_model = configuration
+            .acp
+            .arguments
+            .iter()
+            .any(|v| v.contains("{model}"));
+        if model.is_some() && !configured_model {
+            return Err(error(
+                "The selected model requires a {model} placeholder in acp.arguments. Add that placeholder in the agent's documented model argument, then retry launch.",
+            ));
+        }
+        if configured_model && model.is_none() {
+            return Err(error(
+                "acp.arguments requires a selected saved model. Select a model for this agent, or remove the {model} argument to use the protocol agent's default model.",
+            ));
+        }
+        Ok(profile)
+    }
+    pub(crate) async fn start_initial(
+        &self,
+        binding: &HarnessBinding,
+        cx: CallContext,
+    ) -> Result<()> {
+        let binding = bound(binding)?;
+        let initial = binding
+            .initial
+            .lock()
+            .map_err(|_| error("input state poisoned"))?
+            .take();
+        if let Some((key, text)) = initial {
+            // Taking the original key precedes stdio. An uncertain offer is never repeated.
+            binding.session.prompt(key, text, cx).await?;
+        }
+        Ok(())
+    }
+}
+pub(crate) fn bound(binding: &HarnessBinding) -> Result<&Arc<Binding>> {
+    binding
+        .acp
+        .as_ref()
+        .ok_or_else(|| error("the original protocol binding is absent"))
+}
+impl Harness for AcpHarness {
+    fn kind(&self) -> HarnessKind {
+        HarnessKind::Acp
+    }
+    fn probe<'a>(
+        &'a self,
+        request: ProbeRequest,
+        _cx: CallContext,
+    ) -> HostFuture<'a, ProviderVersion> {
+        Box::pin(async move {
+            if request.kind != HarnessKind::Acp || !request.command.is_absolute() {
+                return Err(error("the configured absolute executable is required"));
+            }
+            // The actual in-custody initialize exchange qualifies the protocol before input.
+            Ok(ProviderVersion {
+                kind: HarnessKind::Acp,
+                executable: NativePath::from_local(request.command)?,
+                version: "executable version not queried".into(),
+                protocol: "ACP v1 required".into(),
+            })
+        })
+    }
+    fn configuration<'a>(
+        &'a self,
+        request: &'a HarnessRequest,
+        _cx: CallContext,
+    ) -> HostFuture<'a, ConfigPlan> {
+        Box::pin(async move {
+            self.resolved(request)?;
+            Ok(ConfigPlan {
+                edits: Vec::new(),
+                ephemeral_files: Vec::new(),
+            })
+        })
+    }
+    fn invocation<'a>(
+        &'a self,
+        request: &'a HarnessRequest,
+        _cx: CallContext,
+    ) -> HostFuture<'a, ProviderInvocation> {
+        Box::pin(async move {
+            self.resolved(request)?;
+            let settings = &self.configuration.acp;
+            let model = request.profile.model.as_deref();
+            let arguments = settings
+                .arguments
+                .iter()
+                .map(|v| v.replace("{model}", model.unwrap_or_default()).into())
+                .collect();
+            let mut environment = environment::inherited();
+            // Provider-specific account/configuration stays with the provider. Forward only
+            // the additional names explicitly selected by the human configuration.
+            for key in &settings.environment {
+                if let Some(value) = std::env::var_os(key) {
+                    environment
+                        .retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case(key));
+                    environment.push((key.into(), value));
+                }
+            }
+            environment
+                .retain(|(name, _)| !name.to_string_lossy().eq_ignore_ascii_case("SE_SESSION"));
+            environment.push((
+                "SE_SESSION".into(),
+                String::from_utf8(request.launch_credential.expose().to_vec())
+                    .map_err(|_| error("launch capability is not UTF-8"))?
+                    .into(),
+            ));
+            Ok(ProviderInvocation {
+                executable: request.executable.clone(),
+                arguments,
+                environment: se_proc::Environment {
+                    entries: environment,
+                },
+            })
+        })
+    }
+    fn attach<'a>(
+        &'a self,
+        attach: HarnessAttach,
+        retained: &'a mut Option<HarnessBinding>,
+        cx: CallContext,
+    ) -> HostFuture<'a, LaunchOutcome> {
+        Box::pin(async move {
+            let request = attach.request;
+            let resolved = self.resolved(&request)?;
+            let (connection, incoming) =
+                Connection::open(self.io.clone(), attach.transport, cx.generation).await;
+            let session = Session::retain(
+                connection,
+                incoming,
+                PermissionPolicy::from_saved_approval(resolved.approval),
+            )
+            .await;
+            let binding = Arc::new(Binding {
+                session,
+                identity: request.identity.clone(),
+                initial: Mutex::new(Some((
+                    request.key.as_str().into(),
+                    request.initial_input.as_str().into(),
+                ))),
+                incarnation: Mutex::new(None),
+                capture_offset: AtomicU64::new(0),
+                cwd: request
+                    .cwd
+                    .to_local()?
+                    .to_str()
+                    .ok_or_else(|| error("protocol cwd is not UTF-8"))?
+                    .into(),
+            });
+            let wrap = || HarnessBinding {
+                claude: None,
+                codex: None,
+                secode: None,
+                acp: Some(binding.clone()),
+                _private: (),
+            };
+            *retained = Some(wrap());
+            let until = tokio::time::Instant::now() + cx.timeout;
+            let remaining = || CallContext {
+                generation: cx.generation,
+                timeout: until.saturating_duration_since(tokio::time::Instant::now()),
+                cancellation: cx.cancellation.clone(),
+            };
+            binding.session.initialize(remaining()).await?;
+            let bearer = String::from_utf8(request.mcp_bearer.expose().to_vec())
+                .map_err(|_| error("MCP capability is not UTF-8"))?;
+            let proof = String::from_utf8(request.launch_credential.expose().to_vec())
+                .map_err(|_| error("launch capability is not UTF-8"))?;
+            let servers = vec![json!({
+                "type": "http",
+                "name": "stateengine",
+                "url": format!("http://127.0.0.1:{}/mcp", self.mcp_port),
+                "headers": [
+                    {"name": "Authorization", "value": format!("Bearer {bearer}")},
+                    {"name": "X-StateEngine-Session-Proof", "value": proof}
+                ]
+            })];
+            let replay: Option<(&str, Vec<CapturedMessage>)> = match &request.resume {
+                Read::Present { value } => Some((
+                    value.as_str(),
+                    request.replay.clone().ok_or_else(|| {
+                        error("complete committed replay is required before resuming")
+                    })?,
+                )),
+                Read::Absent { .. } => None,
+                Read::Unreadable { reason, .. } => return Err(error(reason)),
+                Read::Unknown { what } => return Err(error(what)),
+            };
+            let conversation = binding
+                .session
+                .open(
+                    request
+                        .cwd
+                        .to_local()?
+                        .to_str()
+                        .ok_or_else(|| error("protocol cwd is not UTF-8"))?,
+                    servers,
+                    replay,
+                    &self.configuration.acp.mode,
+                    remaining(),
+                )
+                .await?;
+            let conversation = ProviderSessionId::new(conversation)?;
+            let incarnation = serde_json::to_vec(&json!({
+                "schema": "se.acp-completed-source/v1",
+                "project": request.identity.project,
+                "agent": request.identity.agent,
+                "session": request.identity.session,
+                "conversation": conversation,
+                "lifecycle": attach.record.lifecycle,
+                "root": attach.record.root,
+                "owner": attach.record.owner
+            }))
+            .map_err(error)?;
+            *binding
+                .incarnation
+                .lock()
+                .map_err(|_| error("source state poisoned"))? = Some(incarnation);
+            Ok(LaunchOutcome {
+                witness: BindingWitness {
+                    identity: request.identity,
+                    conversation,
+                    lifecycle: attach.record.lifecycle.clone(),
+                    provider: ProviderVersion {
+                        kind: HarnessKind::Acp,
+                        executable: request.executable,
+                        version: "agent version not queried".into(),
+                        protocol: "ACP v1 (initialize witnessed)".into(),
+                    },
+                },
+                binding: wrap(),
+            })
+        })
+    }
+    fn graceful_stop<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: CallContext,
+    ) -> HostFuture<'a, ProviderInterrupt> {
+        Box::pin(async move {
+            let session = &bound(binding)?.session;
+            let observation = session.observe()?;
+            let conversation = ProviderSessionId::new(
+                observation
+                    .conversation
+                    .ok_or_else(|| error("conversation identity is unavailable"))?,
+            )?;
+            let until = tokio::time::Instant::now() + cx.timeout;
+            session
+                .cancel(CallContext {
+                    generation: cx.generation,
+                    timeout: cx.timeout,
+                    cancellation: cx.cancellation.clone(),
+                })
+                .await?;
+            session
+                .finish_input(CallContext {
+                    timeout: until.saturating_duration_since(tokio::time::Instant::now()),
+                    ..cx
+                })
+                .await?;
+            Ok(ProviderInterrupt {
+                conversation,
+                requested: true,
+                vendor_event: Read::Absent {
+                    checked: "native exit is witnessed separately from protocol cancellation"
+                        .into(),
+                },
+            })
+        })
+    }
+    fn close_binding<'a>(
+        &'a self,
+        binding: &'a HarnessBinding,
+        cx: CallContext,
+    ) -> HostFuture<'a, ()> {
+        Box::pin(async move {
+            let session = &bound(binding)?.session;
+            let until = tokio::time::Instant::now() + cx.timeout;
+            let drained = session.drain(&cx).await;
+            session
+                .close(CallContext {
+                    timeout: until.saturating_duration_since(tokio::time::Instant::now()),
+                    ..cx
+                })
+                .await?;
+            drained
+        })
+    }
+}

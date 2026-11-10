@@ -52,8 +52,9 @@ impl CommonArgs {
                 agent: text(m, "agent"),
                 launch_provider: text(m, "provider")
                     .map(|value| {
-                        serde_json::from_value(serde_json::Value::String(value))
-                            .map_err(|_| SeError::invalid("provider", "claude, codex or secode"))
+                        serde_json::from_value(serde_json::Value::String(value)).map_err(|_| {
+                            SeError::invalid("provider", "claude, codex, secode or acp")
+                        })
                     })
                     .transpose()?,
                 ..CliSelections::default()
@@ -311,8 +312,8 @@ fn input_command(name: &str, c: Command) -> Command {
             .arg(value("agent").default_value("main").help("Name for your first saved agent"))
             .arg(
                 value("provider")
-                    .value_parser(["claude", "codex", "secode"])
-                    .help("Provider for the first agent: claude, codex or secode"),
+                    .value_parser(["claude", "codex", "secode", "acp"])
+                    .help("Provider for the first agent: claude, codex, secode or acp"),
             )
             .arg(value("model").help("Model for the first agent"))
             .arg(toggle("launch").hide(true))
@@ -330,7 +331,7 @@ fn input_command(name: &str, c: Command) -> Command {
         "agent.launch" => c
             .arg(positional("agent", 1, true).help("Saved agent name or ID to start or resume"))
             .arg(toggle("new").help("Start a fresh provider conversation instead of resuming the saved one"))
-            .arg(value("provider").help("Override the saved provider for this launch: claude, codex or secode"))
+            .arg(value("provider").help("Override the saved provider for this launch: claude, codex, secode or acp"))
             .arg(value("model").help("Override the saved model for this launch"))
             .arg(value("task").help("Task text handed to the agent for this launch"))
             .arg(toggle("detach").help("Run headless instead of in a window"))
@@ -426,7 +427,7 @@ fn input_command(name: &str, c: Command) -> Command {
         }
         "agent.create" => c
             .arg(positional("name", 1, true).help("Name for the new saved agent"))
-            .arg(value("provider").value_parser(["claude", "codex", "secode"]).help("Provider for the new agent: claude, codex or secode"))
+            .arg(value("provider").value_parser(["claude", "codex", "secode", "acp"]).help("Provider for the new agent: claude, codex, secode or acp"))
             .arg(value("model").help("Model for the new agent")),
         "decision.list" => c
             .arg(value("id").help("One decision ID"))

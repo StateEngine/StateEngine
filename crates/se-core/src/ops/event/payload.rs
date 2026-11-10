@@ -65,7 +65,7 @@ pub(super) fn public<R: Snapshot>(
                 other => Some(scope::require_present(other, "turn provider reference", "Restore the original actual provider binding.")?),
             };
             let native_ref = reference.as_ref().map(|reference| reference.as_str());
-            let provider = match provider { se_store::Provider::Claude => "claude", se_store::Provider::Codex => "codex", se_store::Provider::SeCode => "secode" };
+            let provider = match provider { se_store::Provider::Claude => "claude", se_store::Provider::Codex => "codex", se_store::Provider::SeCode => "secode", se_store::Provider::Acp => "acp" };
             let role = match role {
                 se_store::Role::User => "user", se_store::Role::Assistant => "assistant",
                 _ => return Err(scope::unreadable("turn role", "the public capture family requires an actual user or assistant turn")),

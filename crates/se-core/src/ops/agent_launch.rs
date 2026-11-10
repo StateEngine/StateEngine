@@ -133,6 +133,8 @@ pub struct SavedConversationAge {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct LaunchResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_policy_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secode_binding: Option<Read<super::SecodeBindingView>>,
     pub idempotency_key: IdempotencyKey,
     pub event_id: EventId,

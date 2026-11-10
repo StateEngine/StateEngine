@@ -271,6 +271,7 @@ fn add_resume(into: &mut Vec<ImportResume>, facts: Vec<node::ResumeFact>) {
             Provider::Claude => "claude",
             Provider::Codex => "codex",
             Provider::SeCode => "secode",
+            Provider::Acp => "acp",
         };
         let state = if fact.unsupported {
             "unsupported"

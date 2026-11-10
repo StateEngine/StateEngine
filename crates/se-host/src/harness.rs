@@ -19,6 +19,8 @@ pub mod codex_rpc;
 #[cfg(feature = "listener")]
 pub use codex_rpc::CodexHarness;
 
+#[cfg(feature = "listener")]
+pub mod acp;
 pub mod codex_capture;
 #[cfg(feature = "secode")]
 pub(crate) mod secode;
@@ -67,6 +69,9 @@ pub struct HarnessRequest {
     /// resumed provider transcript stays under the slug of the root where it
     /// was written, so the transcript watch probes these before cwd.
     pub transcript_roots: Vec<NativePath>,
+    /// Complete canonical text projection for protocol resume, never a recent window.
+    #[cfg(feature = "listener")]
+    pub replay: Option<Vec<crate::acp::CapturedMessage>>,
     pub initial_input: Body,
     /// The `sec1.` pin capability hooks resolve through `SE_SESSION`.
     pub launch_credential: Secret,
@@ -172,6 +177,8 @@ pub struct HarnessBinding {
     pub(crate) codex: Option<std::sync::Arc<codex_rpc::Binding>>,
     #[cfg(feature = "listener")]
     pub(crate) secode: Option<std::sync::Arc<secode_process::Binding>>,
+    #[cfg(feature = "listener")]
+    pub(crate) acp: Option<std::sync::Arc<acp::Binding>>,
     pub(crate) _private: (),
 }
 #[derive(Clone, Debug)]

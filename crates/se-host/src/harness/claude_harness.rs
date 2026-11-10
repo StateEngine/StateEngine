@@ -294,6 +294,7 @@ impl Harness for ClaudeHarness {
                 claude: Some(Arc::clone(&binding)),
                 codex: None,
                 secode: None,
+                acp: None,
                 _private: (),
             });
             let mut pending =
@@ -322,6 +323,7 @@ impl Harness for ClaudeHarness {
                     claude: Some(binding),
                     codex: None,
                     secode: None,
+                    acp: None,
                     _private: (),
                 },
             })

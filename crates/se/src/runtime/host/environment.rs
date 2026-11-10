@@ -3,7 +3,10 @@
 //! authority never crosses this environment boundary.
 use super::*;
 
-pub(super) fn prepare(files: &se_proc::NativeStateFiles) -> Result<se_proc::Environment> {
+pub(super) fn prepare(
+    files: &se_proc::NativeStateFiles,
+    configuration: &std::path::Path,
+) -> Result<se_proc::Environment> {
     let temporary = files.root().join("tmp");
     files.prepare_directory(&temporary).map_err(|error| {
         se_core::scope::unreadable("protected host temporary directory", &error.to_string())
@@ -13,7 +16,7 @@ pub(super) fn prepare(files: &se_proc::NativeStateFiles) -> Result<se_proc::Envi
     if super::startup_log::StartupLog::success_enabled() {
         entries.push(("SE_STARTUP_LOG".into(), "1".into()));
     }
-    // The host launches either provider. Each child is filtered again through
+    // The host launches configured providers. Each child is filtered again through
     // its own provider allowlist, so Codex login/config does not reach Claude.
     for (name, value) in se_host::codex_input::provider_environment() {
         if !entries
@@ -21,6 +24,19 @@ pub(super) fn prepare(files: &se_proc::NativeStateFiles) -> Result<se_proc::Envi
             .any(|(existing, _)| existing.eq_ignore_ascii_case(&name))
         {
             entries.push((name, value));
+        }
+    }
+    // The detached host must retain human-selected protocol context too;
+    // each protocol child still receives only its neutral and configured names.
+    let selected = crate::config::load::<se_core::config_policy::ConfigFile>(
+        configuration,
+        configuration != files.root().join("config.toml"),
+    )?;
+    selected.value.validate()?;
+    for name in &selected.value.acp.environment {
+        if let Some(value) = std::env::var_os(name) {
+            entries.retain(|(old, _)| !old.eq_ignore_ascii_case(std::ffi::OsStr::new(name)));
+            entries.push((name.into(), value));
         }
     }
     entries.retain(|(name, _)| {

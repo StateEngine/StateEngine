@@ -44,6 +44,7 @@ fn init_policy_matches_its_first_launch_for_both_providers_and_explicit_approval
                 Provider::Claude => "claude",
                 Provider::Codex => "codex",
                 Provider::SeCode => "secode",
+                Provider::Acp => "acp",
             };
             let args = [
                 "--home",

@@ -1,5 +1,6 @@
 //! Host-owned process supervisor. Requests await owned jobs; dropping a client
 //! never drops a native lifecycle, accepted write, provider drain or cleanup debt.
+mod acp;
 mod attach;
 mod attended;
 mod capture;
@@ -75,6 +76,7 @@ pub struct LaunchCoordinator {
     harness: Arc<ClaudeHarness>,
     codex: Arc<CodexHarness>,
     secode: Arc<crate::harness::secode_process::SecodeHarness>,
+    acp: Arc<crate::harness::acp::AcpHarness>,
     secode_services: secode::Services,
     options: ProcessConfiguration,
     configuration_file: Option<PathBuf>,
@@ -229,6 +231,11 @@ impl LaunchCoordinator {
             options.home.clone(),
             maximum,
         ));
+        let acp = Arc::new(crate::harness::acp::AcpHarness::new(
+            io.clone(),
+            options.configuration.clone(),
+            options.http_port,
+        ));
         Ok(Arc::new(Self {
             kind: host_runtime.kind,
             native,
@@ -236,6 +243,7 @@ impl LaunchCoordinator {
             harness,
             codex,
             secode,
+            acp,
             secode_services: secode::Services::default(),
             store: store::Store {
                 record_feed: context.atlas.records.clone(),
@@ -269,6 +277,7 @@ impl LaunchCoordinator {
             se_store::Provider::Claude => Ok(self.harness.as_ref()),
             se_store::Provider::Codex => Ok(self.codex.as_ref()),
             se_store::Provider::SeCode => Ok(self.secode.as_ref()),
+            se_store::Provider::Acp => Ok(self.acp.as_ref()),
         }
     }
 }

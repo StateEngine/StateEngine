@@ -136,6 +136,38 @@ impl LaunchCoordinator {
                         capture_pending = true;
                     }
                 }
+                if let Some(binding) = state
+                    .binding
+                    .as_ref()
+                    .and_then(|binding| binding.acp.as_ref())
+                    .cloned()
+                {
+                    match binding.session.observe() {
+                        Ok(observed) => {
+                            state.mail.idle =
+                                observed.active_input.is_none() && !observed.cancelling;
+                            if !observed.completed.is_empty() {
+                                if state.meta.capture {
+                                    capture_pending = true;
+                                } else {
+                                    for request in &observed.completed {
+                                        if let Err(error) =
+                                            binding.session.discard_after_capture_opt_out(*request)
+                                        {
+                                            state.cleanup_failure = Some(error.body);
+                                            break;
+                                        }
+                                    }
+                                }
+                                job.mail_pending.store(true, Ordering::Release);
+                            }
+                            if let Some(failure) = observed.failure {
+                                state.cleanup_failure = Some(failure);
+                            }
+                        }
+                        Err(error) => state.cleanup_failure = Some(error.body),
+                    }
+                }
                 // Hook retries and native completions share one capture window.
                 if capture_pending {
                     let result = match deadline.stage(Duration::from_secs(10)) {
