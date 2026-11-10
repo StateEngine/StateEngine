@@ -481,3 +481,60 @@ async fn a_complete_reply_in_an_earlier_read_survives_bad_stdout() -> Check {
     );
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_or_invalid_envelopes_keep_the_preceding_complete_reply() -> Check {
+    for suffix in [
+        b"\n".as_slice(),
+        b"{\"jsonrpc\":\"1.0\",\"id\":1,\"result\":{}}\n",
+        b"{\"jsonrpc\":\"2.0\",\"id\":999,\"result\":{}}\n",
+    ] {
+        let mut f = Fixture::new(vec![]).await?;
+        let id = f
+            .connection
+            .offer("initialize", json!({}), second()?)
+            .await?;
+        let mut bytes = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"result":{}}))?;
+        bytes.push(b'\n');
+        bytes.extend_from_slice(suffix);
+        f.stdout(bytes)?;
+        f.failed().await?;
+        let reply = f.events.try_recv().ok();
+        f.stop().await?;
+        assert!(
+            matches!(reply.map(|r|r.message), Some(Message::Response {id:seen,outcome:Ok(_),..}) if seen==id)
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn oversized_input_and_output_are_refused_without_write_or_replay() -> Check {
+    let mut f = Fixture::new(vec![]).await?;
+    let outgoing = f
+        .connection
+        .offer(
+            "initialize",
+            json!({"data":"x".repeat(1024*1024)}),
+            second()?,
+        )
+        .await;
+    assert!(outgoing.is_err());
+    assert!(f.attempts()?.is_empty());
+    for _ in 0..16 {
+        f.stdout(vec![b'x'; 65536])?;
+    }
+    f.stdout(vec![b'x'])?;
+    f.failed().await?;
+    let diagnostics = f.connection.diagnostics()?;
+    assert!(!diagnostics.stdout_complete);
+    assert!(f.events.try_recv().is_err());
+    assert!(
+        f.connection
+            .notify("session/cancel", json!({}), second()?)
+            .await
+            .is_err()
+    );
+    assert!(f.attempts()?.is_empty());
+    f.stop().await
+}
