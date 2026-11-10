@@ -185,6 +185,12 @@ class MetadataSelection(unittest.TestCase):
                 def run(*argv):
                     if argv[:3] == ("git", "status", "--porcelain"):
                         return ""
+                    # Source archives have no Git database. These fixed release
+                    # facts are outside this metadata/feature-selection check.
+                    if argv == ("git", "rev-parse", "HEAD"):
+                        return "1" * 40
+                    if argv == ("git", "show", "-s", "--format=%ct", "HEAD"):
+                        return "1700000000"
                     if argv[0] == "rustc" and argv[-1] == "-vV":
                         return "host: " + target
                     if argv[0] == "cargo" and "metadata" in argv:
