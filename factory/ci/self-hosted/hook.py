@@ -4,6 +4,7 @@ import base64
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import re
 import signal
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,7 +34,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def fetch(repository, path, token, raw=False):
+def fetch_once(repository, path, token, raw=False):
     url = "https://api.github.com/repos/" + repository + "/" + path
     request = urllib.request.Request(url, headers={"Authorization": "Bearer " + token,
         "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"})
@@ -48,9 +50,25 @@ def fetch(repository, path, token, raw=False):
         response = urllib.request.build_opener(NoRedirect).open(target.geturl(), timeout=30)
     with response:
         data = response.read(64 * 1024**2 + 1)
+        declared = response.headers.get("Content-Length")
     if len(data) > 64 * 1024**2:
         raise RuntimeError("repository response exceeds bound")
+    if declared is not None and len(data) < int(declared):
+        raise http.client.IncompleteRead(data, int(declared) - len(data))
     return data if raw else json.loads(data)
+
+
+def fetch(repository, path, token, raw=False):
+    for attempt in range(3):
+        try:
+            return fetch_once(repository, path, token, raw)
+        except http.client.IncompleteRead:
+            if attempt == 2:
+                raise RuntimeError("repository response ended early after three attempts") from None
+            # Repeat the complete idempotent GET; partial bytes never become a
+            # source archive or a successful metadata observation.
+            print("Short repository response; retrying GET", file=sys.stderr, flush=True)
+            time.sleep(0.25 * (2**attempt))
 
 
 def config_at():
