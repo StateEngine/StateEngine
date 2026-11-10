@@ -45,51 +45,40 @@ defaults:
 jobs:
   changes:
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.job != 'macos' }}
-    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
-    container:
-      image: ${{ vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
-      env:
-        CI_SOURCE_TOKEN: ${{ github.token }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 3
     outputs:
-      rust: ${{ steps.detect.outputs.rust || steps.detect-hosted.outputs.rust }}
-      windows: ${{ steps.detect.outputs.windows || steps.detect-hosted.outputs.windows }}
+      rust: ${{ steps.detect.outputs.rust }}
+      windows: ${{ steps.detect.outputs.windows }}
     steps:
       - uses: actions/checkout@v4
-        if: ${{ runner.environment != 'self-hosted' }}
         with:
+          # Candidate policy cannot exempt its own checks.
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
           fetch-depth: 0
           persist-credentials: false
       - name: Detect changes (unresolved diffs run everything)
-        if: ${{ runner.environment != 'self-hosted' }}
-        id: detect-hosted
-        run: python scripts/ci/changes.py
-
-      - name: Check every platform conservatively on the box
-        if: ${{ runner.environment == 'self-hosted' }}
         id: detect
-        run: stateengine-ci changes
+        run: python -I scripts/ci/changes.py
 
   linux-route:
     needs: changes
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' }}
-    runs-on: ${{ fromJSON(vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
-    container:
-      image: ${{ vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
-      env:
-        CI_SOURCE_TOKEN: ${{ github.token }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 3
     outputs:
-      route: ${{ steps.route.outputs.route || steps.route-hosted.outputs.route }}
+      route: ${{ steps.route.outputs.route }}
     steps:
-      - name: Select the complete hosted Linux path
-        if: ${{ runner.environment != 'self-hosted' }}
-        id: route-hosted
-        run: echo 'route=hosted' >> "$GITHUB_OUTPUT"
-      - name: Select the registered box runner
-        if: ${{ runner.environment == 'self-hosted' }}
+      - name: Select the configured Linux runner
         id: route
-        run: stateengine-ci route
+        env:
+          BOX_ENABLED: ${{ vars.LINUX_CI_RUNNER != '' }}
+        run: |
+          if [ "$BOX_ENABLED" = true ]; then
+            echo 'route=box' >> "$GITHUB_OUTPUT"
+          else
+            echo 'route=hosted' >> "$GITHUB_OUTPUT"
+          fi
 
   linux-box:
     needs: [changes, linux-route]
@@ -109,7 +98,7 @@ jobs:
 
   fmt:
     needs: [changes, linux-route, linux-box]
-    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && (vars.LINUX_CI_RUNNER == '' || needs.linux-route.outputs.route == 'hosted') && (needs.linux-route.outputs.route != 'box' || needs.linux-box.outputs.status == 'unavailable' || (needs.linux-box.result == 'failure' && needs.linux-box.outputs.status == '')) }}
+    if: ${{ always() && !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.rust != 'false' && (needs.linux-route.outputs.route == 'hosted' || (needs.linux-route.outputs.route == '' && needs.linux-route.result == 'failure') || (needs.linux-route.outputs.route == 'box' && (needs.linux-box.outputs.status == 'unavailable' || (needs.linux-box.result == 'failure' && needs.linux-box.outputs.status != 'failed')))) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
@@ -348,26 +337,15 @@ jobs:
     name: check
     if: ${{ always() && !(github.event_name == 'workflow_dispatch' && inputs.job == 'macos') }}
     needs: [changes, linux-route, linux-box, fmt, clippy, windows-clippy, archive, test]
-    runs-on: ${{ fromJSON(needs.linux-route.outputs.route == 'hosted' && '"ubuntu-24.04"' || vars.LINUX_CI_RUNNER || '"ubuntu-24.04"') }}
-    container:
-      image: ${{ needs.linux-route.outputs.route != 'hosted' && vars.LINUX_CI_RUNNER != '' && 'stateengine-ci-approved' || '' }}
-      env:
-        CI_SOURCE_TOKEN: ${{ github.token }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
       - uses: actions/checkout@v4
-        if: ${{ runner.environment != 'self-hosted' }}
         with:
           # The candidate cannot replace the final consumer of job outcomes.
           ref: ${{ github.event.pull_request.base.sha || 'main' }}
           persist-credentials: false
       - name: Require all applicable jobs
-        if: ${{ runner.environment != 'self-hosted' }}
         env:
           RESULTS: ${{ toJSON(needs) }}
         run: python -I scripts/ci/check.py
-      - name: Require all applicable jobs on the box
-        if: ${{ runner.environment == 'self-hosted' }}
-        env:
-          RESULTS: ${{ toJSON(needs) }}
-        run: stateengine-ci check
