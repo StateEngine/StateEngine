@@ -66,6 +66,35 @@ def budget_numbers(budget, row):
             and (budget not in {"B2", "B7", "B9"} or path.endswith(("_ms", ".ms")) or ".p95_ms." in path)}
 
 
+
+def probe_result(budget, row, limits, numeric):
+    if not numeric or row.get("state") == "unavailable":
+        return "NOT MEASURED"
+    if budget not in {"B5", "B6"}:
+        return "PASS" if row.get("passed") is True else "MISS" if row.get("passed") is False else "NOT MEASURED"
+    if not isinstance(limits, dict):
+        return "NOT MEASURED"
+    if budget == "B5":
+        value = row.get("cpu_percent_one_core")
+        ceiling = limits.get("idle_cpu_percent_exclusive")
+    else:
+        wakeups = row.get("wakeups")
+        if not isinstance(wakeups, dict) or wakeups.get("state") != "measured":
+            return "NOT MEASURED"
+        value = wakeups.get("absolute_rate_for_budget")
+        if value is None:
+            value = wakeups.get("per_second")
+        ceiling = limits.get("idle_one_session_wakeups_per_second" if row["label"] == "idle one session"
+                             else "idle_no_session_wakeups_per_second")
+    if any(type(x) not in (int, float) or not math.isfinite(x) or x < 0 for x in (value, ceiling)):
+        return "NOT MEASURED"
+    cleanup = row.get("cleanup_errors", [])
+    if not isinstance(cleanup, list):
+        return "NOT MEASURED"
+    within_limit = value < ceiling if budget == "B5" else value <= ceiling
+    return "PASS" if within_limit and not cleanup else "MISS"
+
+
 def invocation(inv, directory, run=None):
     mode, expected = SELECTIONS.get(inv.get("selection"), ("unsupported", set(range(1, 6))))
     entry = {**inv, "mode": mode, "expected": sorted(expected), "results": [],
@@ -207,8 +236,7 @@ def summarize(run, directory):
                     "label": row["label"], "numbers": numeric,
                     "box_load": entry.get("box_load"),
                     "sample_state": "observed" if numeric else row.get("state", "unavailable"),
-                    "probe_result": "NOT MEASURED" if not numeric or row.get("state") == "unavailable" else
-                                    "PASS" if row.get("passed") is True else "MISS" if row.get("passed") is False else "NOT MEASURED",
+                    "probe_result": probe_result(budget, row, measured.get("limits"), numeric),
                     "invocation_outcome": entry["outcome"], "reason": row.get("reason"), "limits": measured.get("limits")})
     gaps = [f"{key}: {label}" for key, labels in LABELS.items() for label in labels
             if not any(row["label"] == label and row["numbers"] for row in slots[key])]

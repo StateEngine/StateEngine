@@ -39,7 +39,8 @@ def fixture(root, code=1, measurements=None, surface='claude', selection='wave-2
                else 'Five behavior checks only; synthetic controls',
                'budgets': {'passed': all(m['passed'] for m in measurements),
                            'required': [m['label'] for m in measurements]}}
-    budgets = {'profile': 'rust', 'measurements': measurements, 'limits': {'contextual_reads_ms': 20}}
+    budgets = {'profile': 'rust', 'measurements': measurements, 'limits': {'contextual_reads_ms': 20, 'idle_cpu_percent_exclusive': 0.1,
+        'idle_no_session_wakeups_per_second': 1, 'idle_one_session_wakeups_per_second': 2}}
     write(root / 'probe/results.json', receipt)
     write(root / 'probe/budgets.json', budgets)
     run = {'started_at': '2026-01-01T00:00:00+00:00', 'state': 'finished', 'errors': [], 'invocations': [invocation]}
@@ -82,7 +83,8 @@ class Controls(unittest.TestCase):
         self.assertTrue(all(row['state'] == 'NOT MEASURED' for row in value['budgets']))
 
     def test_zero_is_observed_but_boolean_missing_and_nonfinite_are_not(self):
-        samples = [{'label': label, 'passed': True, 'idle': {'cpu_percent_one_core': 0, 'wakeups': 0}}
+        samples = [{'label': label, 'passed': True, 'cpu_percent_one_core': 0,
+                    'wakeups': {'state': 'measured', 'per_second': 0}}
                    for label in ['idle no session', 'idle one session']]
         fixture(self.root, 0, samples)
         value = report.publish(self.root)
@@ -91,11 +93,81 @@ class Controls(unittest.TestCase):
         self.assertEqual(list(budget(value, 'B5')['probes'][0]['numbers'].values()), [0])
         for bad in [True, None, float('nan')]:
             for row in samples:
-                row['idle']['cpu_percent_one_core'] = bad
+                row['cpu_percent_one_core'] = bad
             fixture(self.root, 0, samples)
             value = report.publish(self.root)
             self.assertEqual(budget(value, 'B5')['state'], 'NOT MEASURED')
             self.assertEqual(budget(value, 'B6')['state'], 'PASS')
+
+    def idle_rows(self, cpu=0.02, wakeups=0.5, passed=False):
+        return [{'label': label, 'passed': passed, 'cpu_percent_one_core': cpu,
+                 'wakeups': {'state': 'measured', 'per_second': wakeups}, 'cleanup_errors': []}
+                for label in ['idle no session', 'idle one session']]
+
+    def publish_idle(self, samples, limits=None):
+        _, _, values = fixture(self.root, 1, samples)
+        if limits is not None:
+            values['limits'] = limits
+            write(self.root / 'probe/budgets.json', values)
+        return report.publish(self.root)
+
+    def test_idle_cpu_and_wakeup_misses_do_not_change_each_others_verdict(self):
+        for cpu, wakeups, expected in [(0.02649, 1.1833, ('PASS', 'MISS')),
+                                      (0.2, 0.5, ('MISS', 'PASS'))]:
+            for prior_passed in [True, False]:
+                with self.subTest(cpu=cpu, prior_passed=prior_passed):
+                    value = self.publish_idle(self.idle_rows(cpu, wakeups, prior_passed))
+                    self.assertEqual((budget(value, 'B5')['state'], budget(value, 'B6')['state']), expected)
+        value = self.publish_idle(self.idle_rows(0.02649, 1.1833)[:1])
+        self.assertEqual(budget(value, 'B5')['probes'][0]['probe_result'], 'PASS')
+        self.assertEqual(budget(value, 'B5')['state'], 'NOT MEASURED')
+        self.assertEqual(budget(value, 'B6')['state'], 'MISS')
+
+    def test_idle_cpu_boundary_is_strict_and_wakeup_boundaries_are_inclusive(self):
+        for cpu, expected in [(0, 'PASS'), (0.09999, 'PASS'), (0.1, 'MISS')]:
+            self.assertEqual(budget(self.publish_idle(self.idle_rows(cpu)), 'B5')['state'], expected)
+        for wakeups, expected in [(0, 'PASS'), (1, 'PASS'), (1.00001, 'MISS')]:
+            self.assertEqual(budget(self.publish_idle(self.idle_rows(wakeups=wakeups)), 'B6')['state'], expected)
+        for wakeups, expected in [(2, 'PASS'), (2.00001, 'MISS')]:
+            rows = self.idle_rows(); rows[1]['wakeups']['per_second'] = wakeups
+            self.assertEqual(budget(self.publish_idle(rows), 'B6')['state'], expected)
+        rows = self.idle_rows()
+        rows[0]['wakeups'].update(per_second=-1.2, absolute_rate_for_budget=1.2)
+        self.assertEqual(budget(self.publish_idle(rows), 'B6')['state'], 'MISS')
+
+    def test_idle_unknown_values_and_limits_cannot_borrow_endpoint_numbers(self):
+        for invalid in [None, True, -1, float('nan'), float('inf')]:
+            with self.subTest(value=invalid):
+                rows = self.idle_rows(passed=True)
+                for row in rows:
+                    row['runs'] = [{'endpoints': {'cpu_percent_one_core': 0,
+                        'wakeups': {'state': 'measured', 'per_second': 0}}}]
+                    row['cpu_percent_one_core'] = invalid
+                value = self.publish_idle(rows)
+                self.assertEqual(budget(value, 'B5')['state'], 'NOT MEASURED')
+                self.assertEqual(budget(value, 'B6')['state'], 'PASS')
+                rows = self.idle_rows(passed=True)
+                for row in rows: row['wakeups']['per_second'] = invalid
+                self.assertEqual(budget(self.publish_idle(rows), 'B6')['state'], 'NOT MEASURED')
+        for limits in [{}, [], {'idle_cpu_percent_exclusive': True},
+                       {'idle_cpu_percent_exclusive': None}, {'idle_cpu_percent_exclusive': -1}]:
+            value = self.publish_idle(self.idle_rows(passed=True), limits)
+            self.assertEqual(budget(value, 'B5')['state'], 'NOT MEASURED')
+            self.assertEqual(budget(value, 'B6')['state'], 'NOT MEASURED')
+        rows = self.idle_rows(passed=True)
+        for row in rows: row['wakeups']['state'] = 'unavailable'
+        self.assertEqual(budget(self.publish_idle(rows), 'B6')['state'], 'NOT MEASURED')
+
+    def test_idle_cleanup_failure_is_retained_for_each_measured_budget(self):
+        rows = self.idle_rows(passed=True)
+        rows[0]['cleanup_errors'] = ['synthetic retained fixture']
+        value = self.publish_idle(rows)
+        self.assertEqual(budget(value, 'B5')['state'], 'MISS')
+        self.assertEqual(budget(value, 'B6')['state'], 'MISS')
+        rows[0]['cleanup_errors'] = {'state': 'unknown'}
+        value = self.publish_idle(rows)
+        self.assertEqual(budget(value, 'B5')['state'], 'NOT MEASURED')
+        self.assertEqual(budget(value, 'B6')['state'], 'NOT MEASURED')
 
     def test_cleanup_failure_changes_its_own_journey(self):
         run, receipt, _ = fixture(self.root)
