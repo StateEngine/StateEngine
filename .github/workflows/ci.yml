@@ -113,7 +113,8 @@ jobs:
                     ...repo, run_id: id, filter: 'latest', per_page: 100,
                     request: {timeout: 10000}
                   });
-                  if (data.total_count > 100) return false;
+                  if (!Array.isArray(data.jobs) || !Number.isSafeInteger(data.total_count)
+                      || data.total_count !== data.jobs.length) return false;
                   const box = data.jobs.filter(j => j.name === 'linux-box');
                   // A route still running, or awaiting box-job creation, is a
                   // potential holder too. Concurrent decisions both overflow.
