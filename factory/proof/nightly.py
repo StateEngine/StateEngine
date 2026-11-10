@@ -172,7 +172,7 @@ def run_nightly(config, prepared_build=None, native_only=False):
             metadata = json.loads((build / "build.json").read_text())
             if metadata.get("source_commit") != record["product"]["commit"]:
                 raise RuntimeError("prepared release does not match tonight's pinned product source")
-            command([sys.executable, source / "scripts/release/assemble.py", "--build", build,
+            command([sys.executable, source / "scripts/release/assemble.py", "--native-only", "--build", build,
                      "--out", directory / "archive"], directory / "assemble.log", env, remaining(deadline, 300))
             archive, = (directory / "archive").glob("*.tar.gz")
             # Extraction is of the trusted assembler's exact pinned output.
