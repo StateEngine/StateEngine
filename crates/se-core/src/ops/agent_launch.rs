@@ -94,6 +94,22 @@ fn attended_setup_reason(record: &se_store::ProjectionRecord) -> Option<&str> {
     }
 }
 impl AgentLaunch {
+    /// A busy target is inventoried before this launch-mode refusal. The host
+    /// rechecks it before any preflight or native replacement can take effect.
+    pub fn require_launch_mode(&self, provider: se_store::Provider) -> Result<()> {
+        if matches!(
+            provider,
+            se_store::Provider::SeCode | se_store::Provider::Acp
+        ) && !self.detach
+        {
+            return Err(se_types::SeError::invalid(
+                "protocol launch mode",
+                "headless launch with --detach, or --force for a forced headless relaunch",
+            ));
+        }
+        Ok(())
+    }
+
     /// Route syntax is not request identity: CLI selectors and MCP IDs bind to
     /// the same admitted agent. Keep every other caller argument unchanged.
     pub fn intent(&self, selected: &AgentId) -> Result<serde_json::Value> {

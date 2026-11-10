@@ -140,6 +140,7 @@ impl LaunchCoordinator {
         admission: &Admission,
         deadline: &Deadline,
     ) -> Result<()> {
+        plan.input.require_launch_mode(plan.profile.provider)?;
         if plan.replayed {
             return Ok(());
         }

@@ -98,15 +98,11 @@ pub fn launch<R: Snapshot>(
         se_store::Provider::SeCode => Provider::SeCode,
         se_store::Provider::Acp => Provider::Acp,
     };
-    if matches!(provider, Provider::SeCode | Provider::Acp) && !input.detach {
-        if input.override_live {
-            input.detach = true;
-        } else {
-            return Err(SeError::invalid(
-                "protocol launch mode",
-                "headless launch with --detach, or --force for a forced headless relaunch",
-            ));
-        }
+    if matches!(provider, Provider::SeCode | Provider::Acp) && input.override_live {
+        input.detach = true;
+    }
+    if control.processes.is_empty() && control.sessions.is_empty() {
+        input.require_launch_mode(profile.provider)?;
     }
     if input
         .owner_provider
