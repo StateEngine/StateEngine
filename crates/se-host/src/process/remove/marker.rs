@@ -1,22 +1,32 @@
 //! The product-owned marker inside the user's repository:
 //! `.git/stateengine/project-<id>`, written by `se init` under the common Git
-//! directory. Removal deletes that exact file, then the `stateengine` folder
-//! only if it is empty; every other byte of the repository is untouched.
+//! directory. Deletion depends on what the marker entry is, not only where it
+//! sits: the exact path must resolve without following any link, its final
+//! entry must be a regular file, and its content must be exactly the
+//! identity record this product wrote for this project. Only then is the file
+//! deleted, and the `stateengine` folder is removed only if it is empty and
+//! itself a real directory. A linked repository or ancestor, a foreign file
+//! at that name, or unreadable content is left untouched, and the removal
+//! reports the marker as remaining with the plain reason so the
+//! registration stays for a retry.
 use se_types::{Result, SeError, details};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
 
 const STDOUT_BOUND: usize = 4096;
+/// No identity record this product writes comes close to this; anything
+/// larger at the marker path is foreign content by definition.
+const MARKER_BOUND: usize = 64 * 1024;
 
 /// Achieved marker effects, reported verbatim in the removal receipt.
 #[derive(Debug)]
 pub(super) enum MarkerRemoval {
-    /// The marker file was deleted and the state folder, now empty, was
-    /// deleted with it, or a concurrent change removed it first and the
-    /// readback proved the folder gone either way.
+    /// The marker file was deleted by this removal and the state folder,
+    /// now empty, was deleted with it.
     Removed { marker: PathBuf, folder: PathBuf },
     /// The marker file was deleted; the state folder still holds other
     /// content and stays.
@@ -27,19 +37,30 @@ pub(super) enum MarkerRemoval {
         marker: PathBuf,
         folder: Option<PathBuf>,
     },
+    /// The entry at the exact marker path is not the identity record this
+    /// product wrote for this project: a link in the path, a non-file
+    /// entry, or foreign or unreadable content. The entry and its folder
+    /// were left untouched; `reason` is the plain-word cause.
+    Left {
+        marker: PathBuf,
+        reason: &'static str,
+    },
 }
 
-/// Delete the project's marker with exact-path deletes only. Absent,
-/// unreadable and failed are kept distinct: a marker that provably does not
-/// exist is reported as absent, while any state that cannot be resolved is an
-/// error the caller must surface, never a silent skip.
+/// Delete the project's marker when — and only when — the entry at the exact
+/// path is the identity record this product wrote for this project.
 ///
-/// Repository discovery and common-directory resolution mirror the init
-/// write path (`se` route `git_state`/`git_identity`): a `.git` entry at the
-/// registered root or any ancestor up to the filesystem root, then Git's own
-/// `rev-parse --git-common-dir` from the registered root. A registered
-/// subfolder or linked worktree therefore resolves to the same repository
-/// that init recorded, and no deletion follows a directory link.
+/// Deletion is decided by identity, not location: every component of the
+/// resolved marker path must be a real entry, so the open cannot follow a
+/// link anywhere from the marker up to the filesystem root; the final entry
+/// must be a regular file; and its bytes must be the v1 record naming this
+/// project. A registered root replaced by a directory link, a linked
+/// ancestor, a foreign file at the marker name, or an unreadable entry
+/// leaves every byte untouched and reports the marker as left. Repository
+/// discovery and common-directory resolution still mirror the init write
+/// path (`se` route `git_state`/`git_identity`), so a registered subfolder
+/// or linked worktree resolves to the same repository location init
+/// recorded.
 pub(super) fn remove(root: &Path, project_id: &str) -> Result<MarkerRemoval> {
     // Discovery exactly as init's observation performs it. No git state
     // anywhere in the tree is the same observation init used to decide that
@@ -59,124 +80,176 @@ pub(super) fn remove(root: &Path, project_id: &str) -> Result<MarkerRemoval> {
     };
     // Resolution exactly as init's write path performs it.
     let common = common_dir(root, &state)?;
-    // Custody before any delete: an exact filename does not establish
-    // custody of its parent. The resolved common directory must be a real
-    // directory; a link or file in its place points the delete outside the
-    // repository, so the removal refuses instead of following it.
-    let common_meta = fs::symlink_metadata(&common).map_err(|e| {
-        se_core::scope::unreadable(
-            "git identity marker",
-            &format!(
-                "the common Git directory {} is unreadable: {e}",
-                common.display()
-            ),
-        )
-    })?;
-    if !common_meta.file_type().is_dir() {
-        return Err(refusal(
-            "git identity marker",
-            &format!(
-                "the common Git directory {} is not a directory (a {} stands in its place)",
-                common.display(),
-                entry_kind(&common_meta)
-            ),
-            "Restore the repository's real .git directory and retry the removal, or delete the marker file from its real location yourself.",
-        ));
-    }
     let folder = common.join("stateengine");
     let marker = folder.join(format!("project-{project_id}"));
-    match fs::symlink_metadata(&folder) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(MarkerRemoval::Absent {
-                marker,
-                folder: None,
-            });
-        }
-        Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(refusal(
-                "git identity marker",
-                &format!(
-                    "the state folder {} is a symbolic link; its target is outside removal custody",
-                    folder.display()
-                ),
-                "Point the state folder back at the repository's own .git/stateengine directory and retry the removal, or delete the marker file from its real location yourself.",
-            ));
-        }
-        Ok(meta) if !meta.file_type().is_dir() => {
-            // A file where the state folder belongs: init's write could not
-            // have placed a marker inside it, so absence is definite and the
-            // entry stays, named in the receipt.
-            return Ok(MarkerRemoval::Absent {
-                marker,
-                folder: Some(folder),
-            });
-        }
-        Ok(_) => {}
-        Err(error) => {
-            return Err(se_core::scope::unreadable(
-                "git state folder",
-                &format!(
-                    "the state folder {} is unreadable: {error}",
-                    folder.display()
-                ),
-            ));
-        }
-    }
-    match fs::remove_file(&marker) {
-        Ok(()) => match fs::remove_dir(&folder) {
-            Ok(()) => Ok(MarkerRemoval::Removed { marker, folder }),
-            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-                Ok(MarkerRemoval::RemovedMarkerKeptFolder { marker, folder })
-            }
+    match marker_identity(&marker, project_id) {
+        Identity::Recorded => match fs::remove_file(&marker) {
+            Ok(()) => match retire_folder(&folder)? {
+                Folder::Gone => Ok(MarkerRemoval::Removed { marker, folder }),
+                Folder::Kept => Ok(MarkerRemoval::RemovedMarkerKeptFolder { marker, folder }),
+            },
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match fs::symlink_metadata(&folder) {
-                    // The folder vanished between the two deletes; read it back
-                    // before claiming it removed.
-                    Err(absent) if absent.kind() == std::io::ErrorKind::NotFound => {
-                        Ok(MarkerRemoval::Removed { marker, folder })
-                    }
-                    _ => Err(se_core::scope::unreadable(
-                        "git state folder",
-                        "the folder could not be read back after the marker delete; re-run the removal",
-                    )),
+                // A concurrent change removed the entry first; read the
+                // folder back before claiming anything about it.
+                match retire_folder(&folder)? {
+                    Folder::Gone => Ok(MarkerRemoval::Absent {
+                        marker,
+                        folder: None,
+                    }),
+                    Folder::Kept => Ok(MarkerRemoval::Absent {
+                        marker,
+                        folder: Some(folder),
+                    }),
                 }
             }
             Err(error) => Err(se_core::scope::unreadable(
-                "git state folder",
-                &error.to_string(),
+                "git identity marker",
+                &format!("the marker could not be deleted: {error}"),
             )),
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            // No marker to delete. An empty state folder left by an earlier
-            // failed marker write is cleared by the same rule; a folder with
-            // other content stays and is named.
-            match fs::remove_dir(&folder) {
-                Ok(()) => Ok(MarkerRemoval::Absent {
-                    marker,
-                    folder: None,
-                }),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    Ok(MarkerRemoval::Absent {
-                        marker,
-                        folder: None,
-                    })
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
-                    Ok(MarkerRemoval::Absent {
-                        marker,
-                        folder: Some(folder),
-                    })
-                }
-                Err(error) => Err(se_core::scope::unreadable(
-                    "git state folder",
-                    &error.to_string(),
-                )),
+        Identity::Absent => match retire_folder(&folder)? {
+            Folder::Gone => Ok(MarkerRemoval::Absent {
+                marker,
+                folder: None,
+            }),
+            Folder::Kept => Ok(MarkerRemoval::Absent {
+                marker,
+                folder: Some(folder),
+            }),
+        },
+        Identity::Left(reason) => Ok(MarkerRemoval::Left { marker, reason }),
+    }
+}
+
+/// The marker's identity: is the entry at the exact path the record this
+/// product wrote for this project?
+#[derive(Debug)]
+enum Identity {
+    /// A regular file, with no link anywhere in its path, holding exactly
+    /// the v1 identity record for this project.
+    Recorded,
+    /// No entry at the exact path.
+    Absent,
+    /// The entry exists but is not this product's record; the carried text
+    /// is the plain-word reason, kept verbatim for the receipt.
+    Left(&'static str),
+}
+
+fn marker_identity(marker: &Path, project_id: &str) -> Identity {
+    // The open must not be able to follow a link: check every component of
+    // the resolved path, from the marker up to the filesystem root, before
+    // opening anything. A linked registered root, a linked ancestor, a
+    // linked .git or state folder all land here and stop.
+    let mut entry = Some(marker);
+    while let Some(path) = entry {
+        match fs::symlink_metadata(path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Identity::Left(if path == marker {
+                    "the marker entry is a link, and removal never follows a link"
+                } else {
+                    "a link stands in the directory path above the marker, and removal never follows a link"
+                });
             }
+            Ok(meta) if path == marker && !meta.file_type().is_file() => {
+                return Identity::Left("the marker entry is not a regular file");
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Identity::Absent,
+            Err(_) => return Identity::Left("the marker entry is unreadable"),
         }
+        entry = path.parent();
+    }
+    // Every component is a real entry, so the open follows no link.
+    let bytes = match read_bounded(marker) {
+        ReadBound::Bytes(bytes) => bytes,
+        ReadBound::Oversized => {
+            return Identity::Left(
+                "the marker file is larger than any identity record this product writes",
+            );
+        }
+        ReadBound::Unreadable => return Identity::Left("the marker file is unreadable"),
+    };
+    if is_identity_record(&bytes, project_id) {
+        Identity::Recorded
+    } else {
+        Identity::Left(
+            "the marker content is not the identity record this product recorded for this project",
+        )
+    }
+}
+
+enum ReadBound {
+    Bytes(Vec<u8>),
+    Oversized,
+    Unreadable,
+}
+
+fn read_bounded(marker: &Path) -> ReadBound {
+    let file = match fs::File::open(marker) {
+        Ok(file) => file,
+        Err(_) => return ReadBound::Unreadable,
+    };
+    let mut bytes = Vec::new();
+    match file.take(MARKER_BOUND as u64 + 1).read_to_end(&mut bytes) {
+        Ok(_) if bytes.len() > MARKER_BOUND => ReadBound::Oversized,
+        Ok(_) => ReadBound::Bytes(bytes),
+        Err(_) => ReadBound::Unreadable,
+    }
+}
+
+/// True only for the exact record shape `se init` writes: v, project, head,
+/// branch and ts — no more, no less. A hand-written or foreign file at the
+/// marker name is never this product's record.
+fn is_identity_record(bytes: &[u8], project_id: &str) -> bool {
+    let record: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(record) => record,
+        Err(_) => return false,
+    };
+    let fields = match record.as_object() {
+        Some(fields) if fields.len() == 5 => fields,
+        _ => return false,
+    };
+    fields.get("v").and_then(serde_json::Value::as_u64) == Some(1)
+        && fields.get("project").and_then(serde_json::Value::as_str) == Some(project_id)
+        && fields
+            .get("head")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|head| {
+                matches!(head.len(), 40 | 64) && head.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+        && fields
+            .get("branch")
+            .is_some_and(|branch| branch.is_null() || branch.is_string())
+        && fields
+            .get("ts")
+            .and_then(serde_json::Value::as_u64)
+            .is_some()
+}
+
+enum Folder {
+    Gone,
+    Kept,
+}
+
+/// Remove the state folder only if it is empty and itself a real directory;
+/// a link or a folder with other content stays, named in the receipt.
+fn retire_folder(folder: &Path) -> Result<Folder> {
+    match fs::symlink_metadata(folder) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Folder::Gone),
         Err(error) => Err(se_core::scope::unreadable(
-            "git identity marker",
-            &error.to_string(),
+            "git state folder",
+            &format!("the state folder is unreadable: {error}"),
         )),
+        Ok(meta) if !meta.file_type().is_dir() => Ok(Folder::Kept),
+        Ok(_) => match fs::remove_dir(folder) {
+            Ok(()) => Ok(Folder::Gone),
+            Err(error) if error.kind() == std::io::ErrorKind::DirectoryNotEmpty => Ok(Folder::Kept),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Folder::Gone),
+            Err(error) => Err(se_core::scope::unreadable(
+                "git state folder",
+                &format!("the empty state folder could not be removed: {error}"),
+            )),
+        },
     }
 }
 /// The init-side discovery, mirrored: the first `.git` entry (directory,
@@ -203,16 +276,6 @@ fn locate_git_state(root: &Path) -> Result<Option<PathBuf>> {
         candidate = path.parent();
     }
     Ok(None)
-}
-fn entry_kind(meta: &fs::Metadata) -> &'static str {
-    let kind = meta.file_type();
-    if kind.is_symlink() {
-        "symbolic link"
-    } else if kind.is_file() {
-        "file"
-    } else {
-        "special entry"
-    }
 }
 fn refusal(subject: &str, reason: &str, next_step: &str) -> SeError {
     SeError::new(se_types::Detail::RepoInvalid(details::RepoInvalid {
@@ -386,15 +449,84 @@ mod tests {
             .join("stateengine")
             .join(format!("project-{project_id}"))
     }
+    /// Seed the exact record shape `se init` writes, so the identity check
+    /// accepts it.
     fn seed(dir: &Path, project_id: &str, extra: Option<&str>) -> PathBuf {
         let marker = marker_path(dir, project_id);
         fs::create_dir_all(marker.parent().expect("marker parent")).expect("state folder");
-        fs::write(&marker, b"{\"v\":1}").expect("marker");
+        let record = serde_json::json!({
+            "v": 1,
+            "project": project_id,
+            "head": "a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0",
+            "branch": "main",
+            "ts": 1,
+        });
+        fs::write(&marker, serde_json::to_vec(&record).expect("record")).expect("marker");
         if let Some(name) = extra {
             fs::write(marker.parent().expect("state folder").join(name), b"other")
                 .expect("extra state");
         }
         marker
+    }
+    fn outside_of(dir: &Path) -> PathBuf {
+        let outside = dir.with_file_name(format!(
+            "{}-outside",
+            dir.file_name().expect("name").to_string_lossy()
+        ));
+        fs::create_dir_all(&outside).expect("outside dir");
+        outside
+    }
+    fn copy_tree(source: &Path, target: &Path) {
+        fs::create_dir_all(target).expect("copy dir");
+        for entry in fs::read_dir(source).expect("read dir").flatten() {
+            let from = entry.path();
+            let to = target.join(entry.file_name());
+            if from.is_dir() && !from.is_symlink() {
+                copy_tree(&from, &to);
+            } else {
+                fs::copy(&from, &to).expect("copy file");
+            }
+        }
+    }
+    fn read_tree(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut out = std::collections::BTreeMap::new();
+        fn walk(dir: &Path, root: &Path, out: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in fs::read_dir(dir).expect("read dir").flatten() {
+                let path = entry.path();
+                let relative = path.strip_prefix(root).expect("relative");
+                if path.is_symlink() {
+                    out.insert(relative.to_path_buf(), Vec::new());
+                } else if path.is_dir() {
+                    walk(&path, root, out);
+                } else {
+                    out.insert(relative.to_path_buf(), fs::read(&path).expect("bytes"));
+                }
+            }
+        }
+        walk(root, root, &mut out);
+        out
+    }
+    /// The registered root replaced by a directory link to a copied tree;
+    /// `foreign` replaces the copy's marker bytes when `Some`. Returns the
+    /// registered root (now the link) and its outside parent.
+    #[cfg(unix)]
+    fn linked_ancestor_fixture(project_id: &str, foreign: Option<&[u8]>) -> (PathBuf, PathBuf) {
+        let dir = fixture(&format!("ancestor-{project_id}"), true);
+        seed(&dir, project_id, None);
+        let outside = outside_of(&dir);
+        let original = outside.join("original-repository");
+        let target = outside.join("foreign-repository");
+        fs::rename(&dir, &original).expect("retain the original repository");
+        copy_tree(&original, &target);
+        if let Some(bytes) = foreign {
+            let marker = target
+                .join(".git")
+                .join("stateengine")
+                .join(format!("project-{project_id}"));
+            fs::write(&marker, bytes).expect("foreign marker");
+        }
+        std::os::unix::fs::symlink(&target, &dir).expect("registered root link");
+        (dir, outside)
     }
     #[test]
     fn marker_and_empty_folder_are_removed() {
@@ -549,84 +681,213 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&dir);
     }
-    #[cfg(unix)]
     #[test]
-    fn symlinked_state_folder_refuses_before_any_delete() {
-        let dir = fixture("state-link", true);
-        let marker = seed(&dir, "pid-i", None);
-        let outside = dir.with_file_name(format!(
-            "{}-outside",
-            dir.file_name().expect("name").to_string_lossy()
-        ));
-        fs::create_dir_all(&outside).expect("outside dir");
-        let moved = outside.join("stateengine");
-        fs::rename(marker.parent().expect("state folder"), &moved).expect("move state out");
-        std::os::unix::fs::symlink(&moved, dir.join(".git/stateengine")).expect("state link");
-        let outcome = remove(&dir, "pid-i");
-        assert!(
-            outcome.is_err(),
-            "symlinked state folder must refuse, got {outcome:?}"
+    fn directory_at_marker_path_is_left_untouched() {
+        let dir = fixture("dir-marker", true);
+        let marker = seed(&dir, "pid-m", None);
+        fs::remove_file(&marker).expect("clear marker slot");
+        fs::create_dir_all(&marker).expect("directory at marker path");
+        fs::write(marker.join("user.bin"), b"do not recurse").expect("user file");
+        let outcome = remove(&dir, "pid-m").expect("marker removal");
+        let MarkerRemoval::Left { reason, .. } = outcome else {
+            panic!("expected the directory left untouched, got {outcome:?}");
+        };
+        assert_eq!(reason, "the marker entry is not a regular file");
+        assert_eq!(
+            fs::read(marker.join("user.bin")).expect("user file"),
+            b"do not recurse"
         );
-        assert!(
-            marker.exists(),
-            "the external marker target must be preserved"
-        );
-        assert!(fs::read(&marker).expect("external marker") == b"{\"v\":1}");
         let _ = fs::remove_dir_all(&dir);
-        let _ = fs::remove_dir_all(&outside);
+    }
+    #[test]
+    fn foreign_content_at_marker_path_is_left_untouched() {
+        let dir = fixture("foreign", true);
+        let marker = seed(&dir, "pid-n", None);
+        let foreign = b"never the recorded identity";
+        fs::write(&marker, foreign).expect("replace content");
+        let outcome = remove(&dir, "pid-n").expect("marker removal");
+        let MarkerRemoval::Left { reason, .. } = outcome else {
+            panic!("expected the foreign file left untouched, got {outcome:?}");
+        };
+        assert_eq!(
+            reason,
+            "the marker content is not the identity record this product recorded for this project"
+        );
+        assert_eq!(fs::read(&marker).expect("marker bytes"), foreign);
+        let _ = fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn oversized_file_at_marker_path_is_left_untouched() {
+        let dir = fixture("oversized", true);
+        let marker = seed(&dir, "pid-o", None);
+        let big = vec![0u8; MARKER_BOUND + 1];
+        fs::write(&marker, &big).expect("oversized file");
+        let outcome = remove(&dir, "pid-o").expect("marker removal");
+        let MarkerRemoval::Left { reason, .. } = outcome else {
+            panic!("expected the oversized file left untouched, got {outcome:?}");
+        };
+        assert_eq!(
+            reason,
+            "the marker file is larger than any identity record this product writes"
+        );
+        assert_eq!(fs::read(&marker).expect("oversized file"), big);
+        let _ = fs::remove_dir_all(&dir);
     }
     #[cfg(unix)]
     #[test]
-    fn marker_symlink_target_is_preserved() {
+    fn marker_link_is_left_untouched() {
         let dir = fixture("marker-link", true);
         let marker = seed(&dir, "pid-k", None);
-        let outside = dir.with_file_name(format!(
-            "{}-outside",
-            dir.file_name().expect("name").to_string_lossy()
-        ));
-        fs::create_dir_all(&outside).expect("outside dir");
+        let outside = outside_of(&dir);
         let target = outside.join("victim.json");
         fs::write(&target, b"{\"keep\":1}").expect("victim");
         fs::remove_file(&marker).expect("clear marker slot");
         std::os::unix::fs::symlink(&target, &marker).expect("marker link");
         let outcome = remove(&dir, "pid-k").expect("marker removal");
-        let MarkerRemoval::Removed {
-            marker: gone,
-            folder,
+        let MarkerRemoval::Left {
+            marker: left,
+            reason,
         } = outcome
         else {
-            panic!("expected the link removed with its empty folder, got {outcome:?}");
+            panic!("expected the link left untouched, got {outcome:?}");
         };
-        assert_eq!(gone, marker);
-        assert!(!gone.exists());
-        assert!(!folder.exists());
-        assert!(target.exists(), "the link target must be preserved");
+        assert_eq!(left, marker);
+        assert_eq!(
+            reason,
+            "the marker entry is a link, and removal never follows a link"
+        );
+        assert!(left.is_symlink(), "the link itself must stay");
+        assert!(
+            dir.join(".git/stateengine").is_dir(),
+            "the state folder must stay"
+        );
         assert_eq!(fs::read(&target).expect("victim"), b"{\"keep\":1}");
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&outside);
     }
     #[cfg(unix)]
     #[test]
-    fn symlinked_git_dir_refuses_before_any_delete() {
-        let dir = fixture("git-link", true);
-        let marker = seed(&dir, "pid-j", None);
-        let outside = dir.with_file_name(format!(
-            "{}-outside",
-            dir.file_name().expect("name").to_string_lossy()
-        ));
-        fs::create_dir_all(&outside).expect("outside dir");
-        fs::rename(dir.join(".git"), outside.join("gitdir")).expect("move .git out");
-        std::os::unix::fs::symlink(outside.join("gitdir"), dir.join(".git")).expect(".git link");
-        let outcome = remove(&dir, "pid-j");
-        assert!(
-            outcome.is_err(),
-            "symlinked .git must refuse, got {outcome:?}"
+    fn symlinked_state_folder_is_left_untouched() {
+        let dir = fixture("state-link", true);
+        let marker = seed(&dir, "pid-i", None);
+        let outside = outside_of(&dir);
+        let moved = outside.join("stateengine");
+        fs::rename(marker.parent().expect("state folder"), &moved).expect("move state out");
+        std::os::unix::fs::symlink(&moved, dir.join(".git/stateengine")).expect("state link");
+        let before = fs::read(&marker).expect("external marker");
+        let outcome = remove(&dir, "pid-i").expect("marker removal");
+        let MarkerRemoval::Left {
+            marker: left,
+            reason,
+        } = outcome
+        else {
+            panic!("expected the linked folder left untouched, got {outcome:?}");
+        };
+        assert_eq!(left, marker);
+        assert_eq!(
+            reason,
+            "a link stands in the directory path above the marker, and removal never follows a link"
         );
-        assert!(
-            marker.exists(),
-            "the external marker target must be preserved"
+        assert!(dir.join(".git/stateengine").is_symlink());
+        assert_eq!(
+            fs::read(&marker).expect("external marker"),
+            before,
+            "the external target must be preserved byte for byte"
         );
         let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_git_dir_is_left_untouched() {
+        let dir = fixture("git-link", true);
+        let marker = seed(&dir, "pid-j", None);
+        let outside = outside_of(&dir);
+        fs::rename(dir.join(".git"), outside.join("gitdir")).expect("move .git out");
+        std::os::unix::fs::symlink(outside.join("gitdir"), dir.join(".git")).expect(".git link");
+        let before = fs::read(&marker).expect("external marker");
+        let outcome = remove(&dir, "pid-j").expect("marker removal");
+        let MarkerRemoval::Left { reason, .. } = outcome else {
+            panic!("expected the linked .git left untouched, got {outcome:?}");
+        };
+        assert_eq!(
+            reason,
+            "a link stands in the directory path above the marker, and removal never follows a link"
+        );
+        assert_eq!(
+            fs::read(&marker).expect("external marker"),
+            before,
+            "the external marker must be preserved byte for byte"
+        );
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn linked_ancestor_with_foreign_marker_is_left_untouched() {
+        let (dir, outside) = linked_ancestor_fixture(
+            "pid-l",
+            Some(b"foreign user bytes; never the recorded identity"),
+        );
+        let target = outside.join("foreign-repository");
+        let marker = dir.join(".git").join("stateengine").join("project-pid-l");
+        let target_before = read_tree(&target);
+        let original_before = read_tree(&outside.join("original-repository"));
+        let outcome = remove(&dir, "pid-l").expect("marker removal");
+        let MarkerRemoval::Left {
+            marker: left,
+            reason,
+        } = outcome
+        else {
+            panic!("expected the linked ancestor left untouched, got {outcome:?}");
+        };
+        assert_eq!(left, marker);
+        assert_eq!(
+            reason,
+            "a link stands in the directory path above the marker, and removal never follows a link"
+        );
+        assert!(dir.is_symlink(), "the registered root link must stay");
+        assert_eq!(
+            read_tree(&target),
+            target_before,
+            "the external tree must stay byte for byte"
+        );
+        assert_eq!(
+            read_tree(&outside.join("original-repository")),
+            original_before,
+            "the retained original must stay byte for byte"
+        );
+        let _ = fs::remove_file(&dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn linked_ancestor_with_recorded_identity_is_left_untouched() {
+        let (dir, outside) = linked_ancestor_fixture("pid-p", None);
+        let target = outside.join("foreign-repository");
+        let foreign_marker = target
+            .join(".git")
+            .join("stateengine")
+            .join("project-pid-p");
+        assert!(
+            foreign_marker.exists(),
+            "the copy carries the recorded identity"
+        );
+        let target_before = read_tree(&target);
+        let outcome = remove(&dir, "pid-p").expect("marker removal");
+        let MarkerRemoval::Left { reason, .. } = outcome else {
+            panic!("a link in the path must win over matching content, got {outcome:?}");
+        };
+        assert_eq!(
+            reason,
+            "a link stands in the directory path above the marker, and removal never follows a link"
+        );
+        assert_eq!(
+            read_tree(&target),
+            target_before,
+            "the external tree must stay byte for byte"
+        );
+        let _ = fs::remove_file(&dir);
         let _ = fs::remove_dir_all(&outside);
     }
 }

@@ -313,9 +313,11 @@ impl LaunchCoordinator {
             });
         }
         // The marker is product-owned state inside the user's repository:
-        // exact-path delete only, and the state folder only if empty. An
-        // unwitnessed delete keeps the registration so the owner retries
-        // with the original removal key.
+        // it is deleted only when the entry at the exact path is the
+        // identity record this product wrote for this project, and the
+        // state folder only if empty. Anything else is left untouched and
+        // the registration stays so the owner retries the original removal
+        // key.
         match super::marker::remove(&root, &project.id.to_string()) {
             Ok(super::marker::MarkerRemoval::Removed { marker, folder }) => {
                 row.removed.push(RemovedItem {
@@ -352,6 +354,20 @@ impl LaunchCoordinator {
                             .into(),
                     });
                 }
+            }
+            Ok(super::marker::MarkerRemoval::Left { marker, reason }) => {
+                // Deletion depends on what the marker entry is: a link in
+                // the path, a foreign or unreadable file at the name, or a
+                // non-file entry stays untouched, and the plain reason is
+                // the receipt.
+                row.remaining.push(obligation(
+                    "git identity marker",
+                    &format!(
+                        "Marker left in place: {reason}. The entry at {} and its state folder were not touched. Restore the recorded identity, or clear the entry, then retry the original removal key.",
+                        marker.display()
+                    ),
+                    None,
+                ));
             }
             Err(error) => {
                 let cx = se_types::RenderCx {
