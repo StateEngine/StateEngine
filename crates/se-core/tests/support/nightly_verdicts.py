@@ -210,7 +210,7 @@ class Controls(unittest.TestCase):
 
     def test_cli_report_replays_actual_reader_and_credential_option_is_forwarded(self):
         fixture(self.root)
-        completed = subprocess.run([sys.executable, str(args.source/'nightly.py'), '--report', str(self.root)],
+        completed = subprocess.run([sys.executable, '-B', str(args.source/'nightly.py'), '--report', str(self.root)],
                                    capture_output=True, text=True, timeout=10)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertEqual(linux_cells(json.loads((self.root/'report.json').read_text()))[1], 'PASS')
