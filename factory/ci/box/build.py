@@ -44,6 +44,15 @@ def build(args):
     version = subprocess.check_output([str(args.toolchain / "bin/rustc"), "--version"], text=True)
     if not version.startswith("rustc 1.97.1 "):
         raise ValueError("public Rust 1.97.1 toolchain directory required")
+    version = subprocess.check_output([str(args.xwin), "--version"], text=True)
+    if version.strip() != "cargo-xwin 0.23.1":
+        raise ValueError("public cargo-xwin 0.23.1 executable required")
+    sdk = args.windows_sdk.resolve(strict=True)
+    if not all((sdk / name).exists() for name in ("DONE", "crt", "sdk")):
+        raise ValueError("completed public Windows SDK cache required")
+    for path in sdk.rglob("*"):
+        if not path.resolve(strict=True).is_relative_to(sdk) or not (path.is_file() or path.is_dir()):
+            raise ValueError("Windows SDK cache contains a foreign or special entry")
     args.output.mkdir(mode=0o700, parents=True, exist_ok=False)
     public = args.output / "inputs"
     public.mkdir()
@@ -63,6 +72,8 @@ def build(args):
             raise RuntimeError("public Node checksum mismatch")
     with tarfile.open(public / "rust.tar", "w") as archive:
         archive.add(args.toolchain, arcname=".")
+    with tarfile.open(public / "windows-sdk.tar", "w") as archive:
+        archive.add(sdk, arcname=".")
     with (public / "main.tar").open("xb") as dest:
         subprocess.run(["git", "-C", str(args.repo), "archive", "--format=tar", args.trusted_source],
                        stdout=dest, check=True, close_fds=True)
@@ -70,9 +81,9 @@ def build(args):
     subprocess.run(account_args("mkdir", "-m", "700", str(context)), check=True, close_fds=True)
     source = Path(__file__).resolve().parent
     inputs = [(name, source / name) for name in ("Containerfile", "probe.py", "runner.py")]
-    inputs += [(name, public / name) for name in ("rust.tar", "node.tar.xz", "main.tar")]
-    inputs += [("cargo-nextest", args.nextest)]
-    manifest = [stage(context, name, path, name == "cargo-nextest") for name, path in inputs]
+    inputs += [(name, public / name) for name in ("rust.tar", "node.tar.xz", "windows-sdk.tar", "main.tar")]
+    inputs += [("cargo-nextest", args.nextest), ("cargo-xwin", args.xwin)]
+    manifest = [stage(context, name, path, name in {"cargo-nextest", "cargo-xwin"}) for name, path in inputs]
     (args.output / "inputs.json").write_text(json.dumps(manifest, indent=2))
     # The build runs trusted packages only. The outer scope bounds aggregate
     # tasks too; candidate jobs have independent native admission below this cap.
@@ -84,7 +95,7 @@ def build(args):
                 "-p", "MemorySwapMax=0", "-p", "CPUQuota=200%", "podman", "build", "--http-proxy=false",
                 "--memory=4g", "--memory-swap=4g", "--cpu-period=100000", "--cpu-quota=200000",
                 "--tag=localhost/stateengine-shadow:prepared", str(context)), stdout=out, stderr=err,
-                timeout=1800, close_fds=True)
+                cwd=context, timeout=1800, close_fds=True)
         except BaseException:
             subprocess.run(account_args("systemctl", "--user", "stop", unit + ".scope"),
                            stdout=err, stderr=err, timeout=30, close_fds=True, check=True)
@@ -111,5 +122,7 @@ if __name__ == "__main__":
     parser.add_argument("--trusted-source", required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
     parser.add_argument("--nextest", type=Path, required=True)
+    parser.add_argument("--xwin", type=Path, required=True)
+    parser.add_argument("--windows-sdk", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     build(parser.parse_args())

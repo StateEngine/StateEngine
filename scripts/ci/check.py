@@ -13,12 +13,18 @@ def accepted(jobs):
         return all(j["result"] == "skipped" for n, j in jobs.items() if n != "changes")
     if outputs.get("rust") != "true":
         return False
-    windows = jobs["windows-clippy"]["result"]
-    if windows != ("skipped" if outputs.get("windows") == "false" else "success"):
-        return False
     routing, box = jobs["linux-route"], jobs["linux-box"]
     route = routing.get("outputs", {}).get("route", "")
     status = box.get("outputs", {}).get("status", "")
+    windows = jobs["windows-clippy"]["result"]
+    box_windows = (route == "box" and routing["result"] == "success" and
+                   box["result"] == "success" and status == "passed" and
+                   box.get("outputs", {}).get("windows") == "passed")
+    if outputs.get("windows") == "false":
+        if windows != "skipped":
+            return False
+    elif windows != "success" and not (windows == "skipped" and box_windows):
+        return False
     linux = [jobs[n]["result"] for n in ("fmt", "clippy", "archive", "test")]
     if route == "box" and routing["result"] == "success":
         if status == "failed":

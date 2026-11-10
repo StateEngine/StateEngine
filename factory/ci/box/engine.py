@@ -56,7 +56,7 @@ class Container:
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
             raise ValueError("immutable image ID required")
         if (type(cpus) is not int or not 1 <= cpus <= 12 or type(pids) is not int or
-                not 16 <= pids <= 512 or not 1 <= deadline <= 900 or
+                not 16 <= pids <= 512 or not 1 <= deadline <= 1800 or
                 not 1024**2 <= work <= 12 * GIB):
             raise ValueError("job resource limits exceed the admitted bounds")
         capacity(memory)

@@ -1,15 +1,15 @@
 """Fixed, bounded Linux cohort; only child outcomes supply authoritative stage results."""
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 import re
 import threading
 
 from engine import Container, capacity
-from transport import execute, export, WorkloadFailure
+from transport import execute, WorkloadFailure
 
 GIB = 1024**3
-LIMITS = {"fmt": (2, 2), "clippy": (6, 8), "archive": (12, 8),
-          "test-1": (10, 8), "test-2": (10, 8)}
+JOBS = ("fmt", "clippy", "archive", "test-1", "test-2", "windows-clippy")
+MEMORY = 18 * GIB
+CPUS = 8
+DEADLINE = 1800
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -41,6 +41,8 @@ def counts(name, output, code):
         found = re.findall(r"^Ran (\d+) tests? in .*", text, re.M)
         if len(found) == 1 and "\nOK\n" in text:
             row["checks"] = int(found[0])
+    elif name == "windows-clippy":
+        row["checks"] = int(code == 0)
     elif name == "archive":
         row["docs"] = sum(int(n) for n in re.findall(r"^test result: ok\. (\d+) passed;", text, re.M))
     elif name.startswith("test-"):
@@ -65,6 +67,7 @@ class Cohort:
         self.cache, self.output, self.canceled = cache, output, canceled
         self.containers, self.outcomes, self.active = [], {}, set()
         self.lock = threading.Lock()
+        self.box = None
 
     def stop(self):
         with self.lock:
@@ -73,46 +76,41 @@ class Cohort:
             container.close()
 
     def stage(self, name):
+        if name not in JOBS:
+            raise ValueError("unknown fixed CI stage")
         if self.canceled.is_set():
             raise Canceled("run canceled before stage")
         folder = self.output / name
         folder.mkdir()
-        memory, cpus = LIMITS[name]
-        box = None
         with self.lock:
             self.active.add(name)
         try:
-            box = Tracked(self.report["image"], memory=memory*GIB, cpus=cpus, deadline=900,
-                          journal=self.journal)
-            with self.lock:
-                self.containers.append(box)
+            if self.box is None:
+                box = Tracked(self.report["image"], memory=MEMORY, cpus=CPUS,
+                              deadline=DEADLINE, journal=self.journal)
+                with self.lock:
+                    self.containers.append(box)
+                    self.box = box
+                if box.proof["seccomp_profile_sha256"] != self.report["seccomp_sha256"]:
+                    raise RuntimeError("approved seccomp identity differs")
+                with self.source.open("rb") as source:
+                    result = execute(box, ["python3", "/opt/box/runner.py", "source"],
+                                     folder / "source.log", stdin=source, canceled=self.canceled)
+                observed_failure(result)
+                if not result["success"]:
+                    raise RuntimeError("source transfer unavailable")
+            box = self.box
             if self.canceled.is_set():
-                raise Canceled("run canceled during container admission")
-            if box.proof["seccomp_profile_sha256"] != self.report["seccomp_sha256"]:
-                raise RuntimeError("approved seccomp identity differs")
-            with self.source.open("rb") as source:
-                result = execute(box, ["python3", "/opt/box/runner.py", "source"],
-                                 folder / "source.log", stdin=source, canceled=self.canceled)
+                raise Canceled("run canceled during stage admission")
+            if name == "archive":
+                self.transfer(box, self.cache, "/work/dependencies.tar.gz", folder / "cache.log")
+            result = execute(box, ["python3", "/opt/box/runner.py", "run", name],
+                             folder / "job.log", canceled=self.canceled)
             observed_failure(result)
             if self.canceled.is_set():
-                raise Canceled("run canceled during source transfer")
-            if not result["success"]:
-                row = dict(exit=1, tests=0, custom=0, docs=0, checks=0)
-            else:
-                if name == "archive":
-                    self.transfer(box, self.cache, "/work/dependencies.tar.gz", folder / "cache.log")
-                elif name.startswith("test-"):
-                    self.transfer(box, self.output / "archive/tests.tar.zst",
-                                  "/work/source/tests.tar.zst", folder / "archive.log")
-                result = execute(box, ["python3", "/opt/box/runner.py", "run", name],
-                                 folder / "job.log", canceled=self.canceled)
-                observed_failure(result)
-                if self.canceled.is_set():
-                    raise Canceled("run canceled during workload execution")
-                row = counts(name, (folder / "job.log").read_text(errors="replace"),
-                             0 if result["success"] else 1)
-                if row["exit"] == 0 and name == "archive":
-                    export(box, "archive", folder / "tests.tar.zst")
+                raise Canceled("run canceled during workload execution")
+            row = counts(name, (folder / "job.log").read_text(errors="replace"),
+                         0 if result["success"] else 1)
             with self.lock:
                 self.outcomes[name] = row
             return row["exit"] == 0
@@ -121,12 +119,10 @@ class Cohort:
                 self.outcomes[name] = dict(exit=1, tests=0, custom=0, docs=0, checks=0)
             raise
         finally:
-            try:
-                if box:
-                    box.close()
-            finally:
-                with self.lock:
-                    self.active.discard(name)
+            # One fresh container retains the compiled target until every stage
+            # finishes. stop() remains the single outside custody join.
+            with self.lock:
+                self.active.discard(name)
 
     def transfer(self, box, path, destination, log):
         # Fixed destination, controller-selected opaque source. Never unpack on the host.
@@ -137,28 +133,20 @@ class Cohort:
         if not result["success"]:
             raise RuntimeError("bounded opaque input transfer unavailable")
 
-    def parallel(self, names):
-        capacity(sum(LIMITS[n][0] for n in names)*GIB) if len(names) == 1 else self.combined(names)
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(self.stage, n) for n in names]
-            return all([f.result() for f in futures])
-
     @staticmethod
     def combined(names):
-        # Individual admission still runs in Container; reserve the complete cohort first.
-        available = int(next(line.split()[1] for line in Path("/proc/meminfo").read_text().splitlines()
-                             if line.startswith("MemAvailable:"))) * 1024
-        if available < (34 + sum(LIMITS[n][0] for n in names))*GIB:
-            raise RuntimeError("combined CI cohort reserve unavailable")
+        # Retain the existing caller's admission API; stages now share one cap.
+        capacity(MEMORY)
 
     def run(self):
-        status = "unavailable"
+        passed = {}
         try:
-            if not self.stage("fmt"):
-                return "failed", self.outcomes
-            if not self.parallel(("clippy", "archive")):
-                return "failed", self.outcomes
-            status = "passed" if self.parallel(("test-1", "test-2")) else "failed"
+            for name in JOBS:
+                if name != "fmt" and not passed.get("fmt"):
+                    continue
+                if name.startswith("test-") and not passed.get("archive"):
+                    continue
+                passed[name] = self.stage(name)
         finally:
             self.stop()
-        return status, self.outcomes
+        return ("passed" if set(passed) == set(JOBS) and all(passed.values()) else "failed"), self.outcomes

@@ -21,16 +21,18 @@ Run `canary.py check --image IMAGE_ID --output NEW_DIRECTORY` to exercise the ac
 machine boundary. A reviewer must independently run the canaries before a PR
 shadow. Failed attempts remain in their original output directories.
 
-Run `controller.py --help` for the shadow entrypoint. Supply the existing hosted
+Run `controller.py --help` for the shadow entrypoint, including its approved
+dependency snapshot. Supply the existing hosted
 run, attempt, PR number, actual checkout merge SHA, approved image report, and an
 executable credential helper. The helper prints a repository read token; it runs
 only in the outside controller. Forks, stale attempts, moved PRs and changed
 workflow/tool definitions refuse. A new approved image is needed when dependencies
 or CI policy change. Missing dependencies fail offline without adding network access.
 
-Jobs run serially, each in its own namespace and private cache, using the hosted
-commands, shipping features, two test partitions and CI profile. The single archive
-is passed as bounded opaque bytes between containers. Logs, binding and outcomes
+Jobs run serially in one fresh container and private cache, using the hosted
+commands, shipping features, two test partitions and CI profile. Compiled tests
+stay in place, followed by Windows MSVC-target Clippy against the prepared public
+SDK. No test archive is exported between stages. Logs, binding and outcomes
 remain outside; candidate output cannot authorize success. Output overflow,
 deadline or cancellation fails and removes the exact owned container. Conmon
 enforces the job deadline if the controller disappears; a later run refuses while
@@ -55,8 +57,8 @@ and smoke run only on the nightly schedule and on manual runs.
 
 The controller has no inbound port, runner registration, candidate host command or
 worker-mounted credential. It uses the same networkless rootless container engine,
-eight Cargo workers, four test threads per shard and two concurrent containers
-(maximum summed caps 20 GiB/16 CPUs). The nextest installation group remains serial.
+eight Cargo workers, four test threads per shard and one container
+(maximum cap 18 GiB/8 CPUs, with a 30-minute outside deadline). The nextest installation group remains serial.
 Dependency archives are maintainer-approved compiled dependencies, with every
 workspace crate removed; they are streamed and unpacked only inside the container.
 The hosted polling minutes remain billable and must be included in cost comparisons.

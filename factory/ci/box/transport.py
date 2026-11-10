@@ -144,7 +144,7 @@ def export(container, kind, output):
             except subprocess.TimeoutExpired:
                 raise WorkloadFailure("artifact export deadline exceeded") from None
             if code:
-                raise WorkloadFailure(f"artifact export refused (exit {code}); output remains unaccepted")
+                raise RuntimeError(f"infrastructure artifact export refused (exit {code}); output remains unaccepted")
         return {"bytes": total, "sha256": digest.hexdigest()}
     except BaseException as error:
         failure = error
