@@ -23,13 +23,34 @@ fn require_link_free(path: &std::path::Path) -> Check {
 #[test]
 fn saved_policy_and_refused_preparation_preserve_native_custody() -> Check {
     let root = directory::private_directory()?;
+    let source = std::path::Path::new(env!("CARGO_BIN_EXE_se"));
+    let image = if source.metadata()?.len() > 512 * 1024 * 1024 {
+        // Remove debug symbols from an owned copy, never the build image or
+        // the native regular-image proof bound used by the running host.
+        let image = root.join("se");
+        std::fs::copy(source, &image)?;
+        let stripped = std::process::Command::new("strip")
+            .arg("--strip-debug")
+            .arg(&image)
+            .output()?;
+        assert!(
+            stripped.status.success(),
+            "owned debug image preparation failed: {}",
+            String::from_utf8_lossy(&stripped.stderr)
+        );
+        image
+    } else {
+        source.to_path_buf()
+    };
     let output = std::process::Command::new("python3")
         .env("PYTHONDONTWRITEBYTECODE", "1")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/judges/secode_headless_policy.py"
         ))
-        .args(["--se", env!("CARGO_BIN_EXE_se"), "--capabilities"])
+        .arg("--se")
+        .arg(image)
+        .arg("--capabilities")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/judges/secode_headless_capabilities.json"
