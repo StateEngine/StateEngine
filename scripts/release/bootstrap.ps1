@@ -56,6 +56,18 @@ function Get-DerElement {
     [pscustomobject]@{ Tag = $tag; Content = $off; Length = $len; End = $off + $len }
 }
 
+function Get-RsaUnsignedInteger {
+    param([byte[]]$Bytes, $Element)
+    $start = $Element.Content
+    if ([int]$Bytes[$start] -band 0x80) { throw 'negative RSA integer' }
+    if ($Element.Length -gt 1 -and $Bytes[$start] -eq 0) {
+        if (([int]$Bytes[$start + 1] -band 0x80) -eq 0) { throw 'non-minimal RSA integer' }
+        # DER adds a sign byte; RSAParameters expects only the unsigned magnitude.
+        $start++
+    }
+    return ,([byte[]]@($Bytes[$start .. ($Element.End - 1)]))
+}
+
 function Get-RsaPublicKey {
     param([byte[]]$Spki)
     $outer = Get-DerElement $Spki 0
@@ -79,8 +91,8 @@ function Get-RsaPublicKey {
     if ($exponent.Tag -ne 0x02 -or $exponent.Length -lt 1) { throw 'not an RSA document' }
     if ($exponent.End -ne $inner.End) { throw 'trailing bytes in the RSA key' }
     $parameters = New-Object System.Security.Cryptography.RSAParameters
-    $parameters.Modulus = [byte[]]@($Spki[$modulus.Content .. ($modulus.End - 1)])
-    $parameters.Exponent = [byte[]]@($Spki[$exponent.Content .. ($exponent.End - 1)])
+    $parameters.Modulus = Get-RsaUnsignedInteger $Spki $modulus
+    $parameters.Exponent = Get-RsaUnsignedInteger $Spki $exponent
     $rsa = [System.Security.Cryptography.RSA]::Create()
     $rsa.ImportParameters($parameters)
     return $rsa
