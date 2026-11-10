@@ -73,6 +73,7 @@ impl Control {
         deadline: &crate::client::lease::Deadline,
     ) -> Result<RemoteWatchBatch> {
         let owner = auth::VerifiedLocalOwner::from_machine(&admission)?;
+        let _work = router.execution.mail_waits.remote_work()?;
         let (control, _) = Self::prepare(router, owner, true, deadline).await?;
         let publisher = control.publisher(router, deadline).await?;
         let service = service::Service::new(

@@ -20,7 +20,7 @@ struct State {
     durable_revision: Option<u64>,
 }
 pub(super) struct Watch {
-    _work: super::super::activity::Work,
+    _work: Option<super::super::activity::Work>,
     service: Service,
     state: Option<State>,
 }
@@ -39,7 +39,11 @@ impl Watch {
             return Err(SeError::invalid("watch", "an authorized watch request"));
         };
         let input = input.clone();
-        let work = service.router.execution.mail_waits.remote_work()?;
+        // Remote wire subscriptions stay open until cancellation. A local view
+        // cache survives individual IPC calls, so only those calls own activity.
+        let work = matches!(&request, view_request::ViewRequest::Remote(_))
+            .then(|| service.router.execution.mail_waits.remote_work())
+            .transpose()?;
         Ok(Self {
             _work: work,
             service,
