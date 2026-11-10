@@ -96,7 +96,9 @@ pub(super) async fn run(
             "SSH authorization changed the requested channel",
         ));
     }
-    response.result.map_err(Into::into)
+    response
+        .result
+        .map_err(|error| error.with_far_origin().into())
 }
 async fn exchange(
     config: &super::ForwardConfig,
