@@ -7,8 +7,8 @@
 # this platform, verifies its published checksum and its signature, and hands
 # off to the SE Code installer (secode update --from). It keeps no state of
 # its own, so running it twice is safe: the second run re-verifies and
-# updates the installation. It needs only curl, tar and openssl. No compiler
-# and no Node are required.
+# updates the installation. It needs only curl, tar, openssl and awk. No
+# compiler and no Node are required.
 #
 # The one-liner installs signed releases only: the index must name
 # trust "signed:<scheme>", each package entry must carry a signature URL,
@@ -45,6 +45,7 @@ esac
 command -v curl >/dev/null 2>&1 || fail 'curl is not installed; install curl for your system and rerun the one-liner'
 command -v tar >/dev/null 2>&1 || fail 'tar is not installed; install tar for your system and rerun the one-liner'
 command -v openssl >/dev/null 2>&1 || fail 'openssl is not installed; install openssl for your system and rerun the one-liner'
+command -v awk >/dev/null 2>&1 || fail 'awk is not installed; install awk for your system and rerun the one-liner'
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/se-one-line.XXXXXX") || fail 'cannot create a temporary directory'
 trap 'rm -rf "$work"' EXIT INT TERM
@@ -130,13 +131,226 @@ extra=$(find "$work" -mindepth 1 -maxdepth 1 -type d | sed -n '2p')
 # from older packages. When both are present the native manifest is the
 # package's; a present manifest whose schema is wrong is a refusal, never a
 # fallback to the other file.
+#
+# Recognition holds the manifest JSON contract, not a text pattern: the file
+# is exactly one JSON document, compact or indented, its root is an object,
+# and the root "schema" string equals the expected schema. A malformed
+# document, a non-object root, or a schema token nested below the root is a
+# refusal. The check below is a strict POSIX awk parser, because this route
+# may run on a machine with no Node and no Python, and it bounds nesting at
+# the same order as PowerShell 5.1's ConvertFrom-Json.
+json_manifest_schema_is() {
+    # $1 = manifest path, $2 = expected root schema
+    awk -v expected="$2" '
+{
+    lines[NR] = $0
+    linelen[NR] = length($0)
+}
+END {
+    nl = NR
+    li = 1
+    ci = 1
+    err = 0
+    rootkind = ""
+    roothas = 0
+    rootschema = ""
+    mark = sprintf("%c", 1)
+    skip_ws()
+    if (cur() != "") parse_value(1, 1)
+    if (!err) {
+        skip_ws()
+        if (cur() != "") err = 1
+        else if (rootkind != "object") err = 1
+        else if (!roothas) err = 1
+        else if (rootschema != expected) err = 1
+    }
+    exit err ? 1 : 0
+}
+function cur(   c) {
+    if (li > nl) return ""
+    if (ci > linelen[li]) return "\n"
+    return substr(lines[li], ci, 1)
+}
+function advance() {
+    if (li > nl) return
+    ci++
+    if (ci > linelen[li]) { li++; ci = 1 }
+}
+function saved() {
+    svli = li
+    svc = ci
+}
+function restore() {
+    li = svli
+    ci = svc
+}
+function peek(k,   i, c, s) {
+    s = ""
+    for (i = 1; i <= k; i++) {
+        c = cur()
+        if (c == "") return s
+        s = s c
+        advance()
+    }
+    return s
+}
+function skip_ws(   c) {
+    for (;;) {
+        c = cur()
+        if (c == " " || c == "\t" || c == "\n" || c == "\r") {
+            advance()
+            continue
+        }
+        break
+    }
+}
+function hex2dec(h,   i, v) {
+    v = 0
+    for (i = 1; i <= 4; i++)
+        v = v * 16 + index("0123456789abcdef", tolower(substr(h, i, 1))) - 1
+    return v
+}
+function parse_value(d, isroot,   c) {
+    if (err) return
+    if (d > 1026) { err = 1; return }
+    skip_ws()
+    c = cur()
+    if (c == "{") parse_object(d, isroot)
+    else if (c == "[") { if (isroot) rootkind = "array"; parse_array(d) }
+    else if (c == "\"") { if (isroot) rootkind = "string"; parse_string() }
+    else if (c == "-" || (c >= "0" && c <= "9")) { if (isroot) rootkind = "number"; parse_number() }
+    else if (c == "t") { if (isroot) rootkind = "literal"; advance(); if (peek(3) != "rue") err = 1 }
+    else if (c == "f") { if (isroot) rootkind = "literal"; advance(); if (peek(4) != "alse") err = 1 }
+    else if (c == "n") { if (isroot) rootkind = "literal"; advance(); if (peek(3) != "ull") err = 1 }
+    else err = 1
+}
+function parse_number(   c) {
+    c = cur()
+    if (c == "-") advance()
+    c = cur()
+    if (c == "0") advance()
+    else if (c >= "1" && c <= "9") {
+        while (cur() >= "0" && cur() <= "9") advance()
+    } else { err = 1; return }
+    if (cur() == ".") {
+        advance()
+        if (!(cur() >= "0" && cur() <= "9")) { err = 1; return }
+        while (cur() >= "0" && cur() <= "9") advance()
+    }
+    if (cur() == "e" || cur() == "E") {
+        advance()
+        if (cur() == "+" || cur() == "-") advance()
+        if (!(cur() >= "0" && cur() <= "9")) { err = 1; return }
+        while (cur() >= "0" && cur() <= "9") advance()
+    }
+}
+function parse_object(d, isroot,   c, key) {
+    if (err) return
+    advance()
+    for (;;) {
+        skip_ws()
+        c = cur()
+        if (c == "}") {
+            advance()
+            if (isroot) rootkind = "object"
+            return
+        }
+        if (c != "\"") { err = 1; return }
+        parse_string()
+        if (err) return
+        key = strval
+        skip_ws()
+        if (cur() != ":") { err = 1; return }
+        advance()
+        if (isroot && key == "schema") {
+            skip_ws()
+            if (cur() != "\"") { err = 1; return }
+            parse_string()
+            if (err) return
+            rootschema = strval
+            roothas = 1
+        } else {
+            parse_value(d + 1, 0)
+            if (err) return
+        }
+        skip_ws()
+        c = cur()
+        if (c == ",") { advance(); continue }
+        if (c == "}") {
+            advance()
+            if (isroot) rootkind = "object"
+            return
+        }
+        err = 1
+        return
+    }
+}
+function parse_array(d,   c) {
+    if (err) return
+    advance()
+    skip_ws()
+    if (cur() == "]") { advance(); return }
+    for (;;) {
+        parse_value(d + 1, 0)
+        if (err) return
+        skip_ws()
+        c = cur()
+        if (c == ",") { advance(); continue }
+        if (c == "]") { advance(); return }
+        err = 1
+        return
+    }
+}
+function parse_string(   c, out, hex, code) {
+    if (err) return
+    advance()
+    out = ""
+    for (;;) {
+        c = cur()
+        if (c == "") { err = 1; break }
+        if (c == "\"") { advance(); strval = out; return }
+        if (c != "\\") {
+            if (c < " ") { err = 1; break }
+            out = out c
+            advance()
+            continue
+        }
+        advance()
+        c = cur()
+        if (c == "") { err = 1; break }
+        if (c == "\"") { out = out "\""; advance() }
+        else if (c == "\\") { out = out "\\"; advance() }
+        else if (c == "/") { out = out "/"; advance() }
+        else if (c == "b") { out = out "\b"; advance() }
+        else if (c == "f") { out = out "\f"; advance() }
+        else if (c == "n") { out = out "\n"; advance() }
+        else if (c == "r") { out = out "\r"; advance() }
+        else if (c == "t") { out = out "\t"; advance() }
+        else if (c == "u") {
+            advance()
+            hex = peek(4)
+            if (hex !~ /^[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$/) { err = 1; break }
+            code = hex2dec(hex)
+            if (code >= 55296 && code <= 56319) {
+                saved()
+                if (peek(6) !~ /^\\u[DEde][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]$/) restore()
+                out = out mark
+            } else if (code >= 32 && code <= 126) out = out sprintf("%c", code)
+            else out = out mark
+        }
+        else { err = 1; break }
+    }
+}
+    ' "$1"
+}
+
 bundles_se=0
 if [ -f "$pkgroot/stateengine/native-payload.json" ]; then
-    grep -q '"schema": "stateengine.native-payload/v1"' "$pkgroot/stateengine/native-payload.json" \
+    json_manifest_schema_is "$pkgroot/stateengine/native-payload.json" 'stateengine.native-payload/v1' \
         || fail 'the package carries a native StateEngine payload that is not a readable stateengine.native-payload/v1 manifest; do not install it'
     bundles_se=1
 elif [ -f "$pkgroot/stateengine/stateengine-payload.json" ]; then
-    grep -q '"schema": "stateengine.se-payload.v1"' "$pkgroot/stateengine/stateengine-payload.json" \
+    json_manifest_schema_is "$pkgroot/stateengine/stateengine-payload.json" 'stateengine.se-payload.v1' \
         || fail 'the package carries a StateEngine payload that is not a readable stateengine.se-payload.v1 manifest; do not install it'
     bundles_se=1
 fi

@@ -89,14 +89,19 @@ class ReleaseServer:
         ``legacy`` and ``native`` are the documents written at
         ``stateengine/stateengine-payload.json`` and
         ``stateengine/native-payload.json`` respectively; ``None`` omits a
-        file. The archive, its signature and the index are rebuilt from the
-        new bytes so the release stays verified.
+        file. A mapping is serialized with two-space indent; a ``str`` or
+        ``bytes`` value is written verbatim, so a mix may carry a compact,
+        malformed or otherwise shaped manifest. The archive, its signature
+        and the index are rebuilt from the new bytes so the release stays
+        verified.
         """
         for name, document in (("stateengine-payload.json", legacy), ("native-payload.json", native)):
             payload_path = self.package / "stateengine" / name
             if document is None:
                 if payload_path.exists():
                     payload_path.unlink()
+            elif isinstance(document, (str, bytes)):
+                payload_path.write_bytes(document)
             else:
                 payload_path.write_text(json.dumps(document, indent=2) + "\n")
         self.archive = self.releases / ARCHIVE_NAME
