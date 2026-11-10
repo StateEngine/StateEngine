@@ -45,7 +45,8 @@ def numbers(value, prefix=""):
                 for key, number in numbers(item, f"{prefix}[{i}]").items()}
     if isinstance(value, dict):
         return {key: number for name, item in value.items()
-                if name not in {"processes", "added", "before", "after", "pid", "parent", "birth"}
+                if name not in {"processes", "added", "before", "after", "pid", "parent", "birth",
+                                "samples", "rows", "agent", "event", "arguments", "receipt"}
                 for key, number in numbers(item, f"{prefix}.{name}" if prefix else name).items()}
     return {}
 
@@ -60,13 +61,13 @@ def budget_numbers(budget, row):
     }
     return {path: value for path, value in numbers(row).items()
             if any(part in path for part in selectors[budget])
-            and (budget not in {"B2", "B7", "B9"} or path.endswith(("_ms", ".ms")))}
+            and (budget not in {"B2", "B7", "B9"} or path.endswith(("_ms", ".ms")) or ".p95_ms." in path)}
 
 
 def invocation(inv, directory):
     mode, expected = SELECTIONS.get(inv.get("selection"), ("unsupported", set(range(1, 6))))
     entry = {**inv, "mode": mode, "expected": sorted(expected), "results": [],
-             "receipt_complete": False, "outcome": "UNKNOWN", "problems": [],
+             "receipt_complete": False, "journeys": {}, "outcome": "UNKNOWN", "problems": [],
              "judge_outcome": "FAIL" if type(inv.get("exit")) is int and inv["exit"] != 0
                               else "PASS" if type(inv.get("exit")) is int and inv["exit"] == 0 else "UNKNOWN"}
     receipt, error = read(directory / inv["output"] / "results.json")
@@ -114,6 +115,12 @@ def invocation(inv, directory):
     entry.update(results=rows, scope=scope, cleanup=cleanup, qualification=qualification,
                  receipt_complete=budget_error is None and cleanup_known and qualified)
     code = inv.get("exit")
+    # Judge exit 1 includes budget misses. Journey verdicts depend only on
+    # witnessed behavior and their own cleanup, with receipt identity intact.
+    if (cleanup_known and qualified and inv.get("state") == "finished"
+            and type(code) is int and code in (0, 1) and not inv.get("error")):
+        entry["journeys"] = {str(row["journey"]): "FAIL" if row["result"] == "FAIL" or
+            (bool(cleanup) if mode == "first-hour" else bool(row["cleanup"])) else "PASS" for row in rows}
     if type(code) is not int or inv.get("error") or inv.get("state") in {"planned", "running", "timed-out"}:
         entry["problems"].append(inv.get("error", "judge exit not witnessed"))
     elif code != 0 or cleanup_failed or any(row["result"] == "FAIL" for row in rows):
@@ -139,7 +146,10 @@ def summarize(run, directory):
     outcome = "FAIL" if run.get("errors") or any(entry["judge_outcome"] == "FAIL" or entry["outcome"] == "FAIL" for entry in entries) else "UNKNOWN"
     if complete and all(entry["outcome"] == "PASS" for entry in entries):
         outcome = "PASS"
-    status = {"state": "complete" if complete else "partial", "complete": complete, "outcome": outcome,
+    interrupted = run.get("state") == "interrupted"
+    if interrupted:
+        outcome = "INTERRUPTED"
+    status = {"state": "interrupted" if interrupted else "complete" if complete else "partial", "complete": complete, "outcome": outcome,
               "producer_state": run.get("state", "unavailable"), "errors": errors, "notes": run.get("annotations", [])}
     tables = []
     for mode in sorted({entry["mode"] for entry in entries} or {"unavailable"}):
@@ -155,9 +165,12 @@ def summarize(run, directory):
                     "invocation_outcome": entry["outcome"], "exit": entry.get("exit"),
                     "problems": entry["problems"], "row": next((row for row in entry["results"]
                         if row["journey"] == number), None)} for entry in expected]
-                values = [entry["outcome"] for entry in expected]
+                values = [entry["journeys"].get(str(number), "INTERRUPTED" if interrupted or
+                          entry.get("state") == "timed-out" else "UNKNOWN") for entry in expected]
                 state = "NOT RUN" if not expected else "FAIL" if "FAIL" in values else "UNKNOWN"
-                if expected and all(value == "PASS" for value in values) and complete:
+                if "FAIL" not in values and "INTERRUPTED" in values:
+                    state = "INTERRUPTED"
+                if expected and all(value == "PASS" for value in values):
                     state = "PASS"
                 cells[platform] = {"state": state, "evidence": evidence}
             rows.append({"journey": number, "name": name, "platforms": cells})
@@ -180,8 +193,10 @@ def summarize(run, directory):
                 numeric = budget_numbers(budget, row)
                 slots[budget].append({"output": entry["output"], "surface": entry["surface"],
                     "label": row["label"], "numbers": numeric,
+                    "box_load": entry.get("box_load"),
                     "sample_state": "observed" if numeric else row.get("state", "unavailable"),
-                    "probe_result": "PASS" if row.get("passed") is True else "FAIL" if row.get("passed") is False else "UNKNOWN",
+                    "probe_result": "NOT MEASURED" if not numeric or row.get("state") == "unavailable" else
+                                    "PASS" if row.get("passed") is True else "MISS" if row.get("passed") is False else "NOT MEASURED",
                     "invocation_outcome": entry["outcome"], "reason": row.get("reason"), "limits": measured.get("limits")})
     gaps = [f"{key}: {label}" for key, labels in LABELS.items() for label in labels
             if not any(row["label"] == label and row["numbers"] for row in slots[key])]
@@ -189,10 +204,10 @@ def summarize(run, directory):
     budgets = []
     for key, probes in slots.items():
         missing = any(gap.startswith(key + ":") for gap in gaps)
-        state = "NOT MEASURED" if not any(p["numbers"] for p in probes) else "UNQUALIFIED"
-        if any(p["probe_result"] == "FAIL" for p in probes):
-            state = "FAIL"
-        elif not missing and probes and all(p["probe_result"] == "PASS" and p["invocation_outcome"] == "PASS" for p in probes):
+        state = "NOT MEASURED"
+        if any(p["probe_result"] == "MISS" for p in probes):
+            state = "MISS"
+        elif not missing and probes and all(p["probe_result"] == "PASS" for p in probes):
             state = "PASS"
         budgets.append({"id": key, "state": state, "probes": probes})
     return {"schema": "se.nightly-proof/v2", "started_at": run["started_at"], "status": status,
@@ -206,7 +221,9 @@ def grid(report):
              f"Run: {status['state'].upper()}; outcome: {status['outcome']}; producer: {status['producer_state']}",
              f"Product: `{(report.get('product') or {}).get('commit', 'unavailable')}`",
              f"Judge: `{(report.get('judge') or {}).get('commit', 'unavailable')}`", "",
-             "PASS requires the whole judge invocation to exit zero with complete receipts, clean cleanup and supported qualification.",
+             "A journey PASS requires witnessed behavior, clean cleanup and a matching scoped receipt; budgets are separate.",
+             "Budget measurements and limits are in budgets.json with PASS, MISS or NOT MEASURED verdicts.",
+             "INTERRUPTED identifies an interrupted producer or an unfinished journey in that attempt.",
              "UNKNOWN means the configured observation is unavailable; NOT RUN means this platform/journey was not configured.", ""]
     for table in report["tables"]:
         lines += [f"Scope: {table['mode']}", "", "| Journey | Linux | Windows | macOS |", "| --- | --- | --- | --- |"]
@@ -218,6 +235,11 @@ def grid(report):
     if status["errors"]:
         lines += ["Run issues:", *[f"- {error}" for error in status["errors"]], ""]
     return "\n".join(lines) + "\n"
+
+
+def exit_status(report):
+    """The producer can finish normally while reporting failed observations."""
+    return 0 if report["status"]["outcome"] == "PASS" and report["status"]["complete"] else 1
 
 
 def publish(directory):
