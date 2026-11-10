@@ -198,11 +198,43 @@ fn real_http_refuses_a_replaced_inode_even_after_its_first_refusal_empties_idle(
             result
         };
         let (exit, result) = join(host.serve(listener), consumer).await;
+        // The channel worker may read while this test deliberately replaces the
+        // database. Its retained refusal is expected; it is not a drain failure.
+        let expected_reason = format!(
+            "transcript pathname no longer names the retained source at {}: SourceChanged",
+            f.options.state_directory.join("state.db").display(),
+        );
+        let expected = match &exit.failure {
+            None => Ok(Vec::new()),
+            Some(error)
+                if matches!(error.body.detail(), se_types::Detail::SourceUnreadable(detail)
+                    if detail.subject == "store SourceChanged" && detail.reason == expected_reason) =>
+            {
+                eprintln!("retained injected database replacement refusal observed");
+                Ok(vec![error.to_string()])
+            }
+            Some(error) => Err(format!("unexpected host failure: {error}")),
+        };
         let report = exit.finish(&bound()?).await;
+        let expected = expected?;
         require(
-            report.pending.is_empty() && report.transport_closed && report.endpoint_retired,
-            "replacement fixture cleanup incomplete",
+            report.transport_closed
+                && report.endpoint_retired
+                && report.pending == expected
+                && report.errors.iter().map(ToString::to_string).collect::<Vec<_>>() == expected
+                && matches!(&report.storage, Read::Present { value }
+                    if value.writer_joined && value.pending.is_empty()
+                        && matches!(&value.backup, Read::Present { .. })),
+            format!("replacement fixture cleanup incomplete: {:?}", report.pending),
         )?;
+        drop(report);
+        // Reacquire the native lease after the returned runtime is dropped.
+        // A retained writer or native owner must still make this fail.
+        let lease = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(f.options.state_directory.join("runtime.lock"))?;
+        lease.try_lock()?;
         result
     })
 }
