@@ -221,7 +221,11 @@ fn nullable_enums_keep_null_outside_the_enum_constraint() -> Check {
             .iter()
             .find(|tool| tool.name == tool_name)
             .ok_or("tool absent")?;
-        let schema = &tool.input_schema["properties"][field];
+        let schema = shape(
+            &tool.input_schema,
+            &tool.input_schema["properties"][field],
+            &mut BTreeSet::new(),
+        )?;
         let variants = schema["anyOf"]
             .as_array()
             .ok_or("nullable enum union absent")?;
