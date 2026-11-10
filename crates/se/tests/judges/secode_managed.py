@@ -154,6 +154,8 @@ class Consumer(Fixture):
                 'launch', self.agent, '--task', text, '--detach']
         if options.get('override'):
             args.append('--override-live')
+        if options.get('new'):
+            args.append('--new')
         result = self.ok(*args)
         self.bind()
         return result
@@ -335,20 +337,141 @@ def lifecycle_case(f, case):
         shutdown = f.call('down')
         value = json.loads(shutdown.stdout)
         (f.root / 'crash-down.json').write_text(json.dumps(value, indent=2))
-        if case == 'service-crash':
-            assert shutdown.returncode != 0 and value['complete'] is False
-            assert 'capture' in value['witness']['detail']
-            assert f.profile.joinpath('registration').exists(), 'uncertain cleanup discarded registration'
-            until(lambda: closed(f.runtime), 'incomplete owner exits without claiming cleanup')
-            assert closed(service) and f.journal_path.exists()
-            f.up = False
-            return
         assert shutdown.returncode == 0
         assert value['complete'] and value['witness']['state'] == 'witnessed'
         assert not (f.home / 'endpoint.json').exists()
         assert closed(f.runtime) and closed(service)
         assert not (f.profile / 'registration').exists()
+        assert f.profile.is_dir() and f.journal_path.is_file(), 'shutdown discarded original history'
+        if case == 'service-crash':
+            journal = document(f.journal_path)
+            assert journal['lost'] is True and journal['retired'] is True
+            assert journal['client_closed']['capture_complete'] is False, 'loss invented final capture'
         f.up = False
+
+
+def restart_owner(f):
+    previous = f.runtime
+    terminate(previous, signal.SIGKILL)
+    until(lambda: closed(previous), 'original owner closed')
+    f.ok('up')
+    f.runtime = identity(document(f.home / 'endpoint.json')['epoch']['owner']['pid'])
+    assert f.runtime != previous and f.runtime['image'] == str(f.se)
+
+
+def service_new_case(f, cold=False):
+    original = 'Original lost conversation input must never be replayed.'
+    conversation = f.launch(original)['conversation_id']
+    sid, key, profile, service = f.sid, f.key, f.profile, f.service_identity
+    registration = (profile / 'registration').read_bytes()
+    assert f.api('input/' + key)['data']['text'] == original
+    until(lambda: any(x.get('type') == 'assistant' and x.get('finish') == 'stop'
+                      for x in f.messages()), 'finite lost conversation turn')
+    terminate(service, signal.SIGKILL)
+    until(lambda: closed(service), 'lost original service scope')
+    if cold:
+        restart_owner(f)
+    request, deadline = str(uuid.uuid4()), time.monotonic() + 20
+    while True:
+        stopped = f.call('--key', request, '--project', f.project, 'stop', f.agent)
+        journal = document(f.journal_path)
+        if journal.get('client_closed'):
+            break
+        # A simultaneous native checkpoint publication can refuse acquisition.
+        # Preserve that result and retry only its documented original identity.
+        detail = json.loads(stopped.stdout)['witness']['detail']
+        assert 'installation object is in use' in detail, detail
+        assert time.monotonic() < deadline, 'client closure did not converge after acquisition contention'
+        time.sleep(.05)
+    row = f.row()
+    (f.root / 'lost-stop-row.json').write_text(json.dumps(row, indent=2))
+    assert not row['resume']['ready'] and '--new' in row['resume']['reason']
+    assert not row['resume'].get('conversation_id'), 'loss invented a resumable conversation'
+    journal = document(f.journal_path)
+    assert journal['lost'] and not journal['client_closed']['capture_complete']
+    (f.root / 'lost-original-journal.json').write_text(json.dumps(journal, indent=2))
+    refused = f.call('--key', str(uuid.uuid4()), '--project', f.project,
+                     'launch', f.agent, '--task', 'Unadmitted implicit replacement.', '--detach')
+    assert refused.returncode != 0, 'lost conversation implicitly resumed'
+    assert document(f.journal_path)['vendor_session'] == sid
+    f.service_identity = None  # A deliberate --new may bind a different service birth.
+    fresh = 'Distinct explicitly requested new conversation input.'
+    launched = f.launch(fresh, new=True)
+    assert launched['conversation_id'] != conversation and f.sid != sid and f.key != key
+    assert f.service_identity != service and profile.is_dir()
+    assert (profile / 'registration').read_bytes() != registration, 'old registration reused'
+    assert f.api('input/' + f.key)['data']['text'] == fresh
+    messages = f.messages()
+    assert any(x.get('type') == 'user' and x.get('text') == fresh for x in messages)
+    assert all(x.get('text') != original for x in messages), 'original input replayed into --new'
+    previous = f.observer.request('GET', f'/api/session/{sid}/message?limit=100&order=asc')['data']
+    assert len(previous) < 100
+    assert sum(x.get('type') == 'user' and x.get('text') == original for x in previous) == 1
+    f.stop()
+
+
+def unavailable_case(f):
+    original = 'Live unavailable HTTP is not an exited native service.'
+    f.launch(original)
+    until(lambda: any(x.get('type') == 'assistant' and x.get('finish') == 'stop'
+                      for x in f.messages()), 'finite unavailable-service turn')
+    service, sid = f.service_identity, f.sid
+    terminate(service, signal.SIGSTOP)
+    try:
+        assert not closed(service)
+        f.call('--key', str(uuid.uuid4()), '--project', f.project, 'stop', f.agent)
+        journal = document(f.journal_path)
+        assert journal.get('lost', False) is False, 'unavailable HTTP manufactured scope exit'
+        assert journal.get('retired', False) is False and (f.profile / 'registration').exists()
+        refused = f.call('--key', str(uuid.uuid4()), '--project', f.project,
+                         'launch', f.agent, '--task', 'Must not replace a live scope.', '--detach', '--new')
+        assert refused.returncode != 0 and document(f.journal_path)['vendor_session'] == sid
+        assert identity(service['pid']) == service
+    finally:
+        if not closed(service):
+            terminate(service, signal.SIGCONT)
+    assert f.api('input/' + f.key)['data']['text'] == original
+    f.stop()
+
+
+def artifact_case(f):
+    f.launch('Owned inventory recovery input.')
+    directory = f.journal_path.parent
+    artifacts = []
+    for prefix in ('.se-stage-', '.se-edit-backup-', '.se-edit-'):
+        path = directory / (prefix + uuid.uuid4().hex)
+        path.write_bytes(b'Preserved staging bytes are never service authority.')
+        path.chmod(0o600)
+        artifacts.append((path, path.read_bytes(), path.stat().st_ino))
+    service = f.service_identity
+    restart_owner(f)
+    assert identity(service['pid']) == service
+    f.stop()
+    for path, contents, inode in artifacts:
+        assert path.read_bytes() == contents and path.stat().st_ino == inode
+    target = f.root / 'unrelated-protected-input'
+    target.write_bytes(b'Unrelated fixture bytes must remain unchanged.')
+    target.chmod(0o600)
+    for name, link in [('unknown-file', False), ('.se-stage-' + uuid.uuid4().hex, True)]:
+        path = directory / name
+        if link:
+            path.symlink_to(target)
+        else:
+            path.write_bytes(b'Unknown inventory is not authority.')
+            path.chmod(0o600)
+        try:
+            restart_owner(f)
+            result = f.call('--key', str(uuid.uuid4()), '--project', f.project,
+                            'launch', f.agent, '--task', 'Must refuse unsafe inventory.', '--detach')
+            assert result.returncode != 0, 'unknown or unsafe artifact granted service authority'
+            if link:
+                assert path.is_symlink()
+            else:
+                assert path.read_bytes() == b'Unknown inventory is not authority.'
+            assert target.read_bytes() == b'Unrelated fixture bytes must remain unchanged.'
+        finally:
+            path.unlink()
+    restart_owner(f)
 
 
 def uncertain_case(f):
@@ -438,7 +561,7 @@ def main():
     global HOST, PROVIDER
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--case', choices=['mail', 'takeover', 'host-crash', 'service-crash', 'settled-service-crash', 'uncertain', 'reader'], default='mail')
+    parser.add_argument('--case', choices=['mail', 'takeover', 'host-crash', 'service-crash', 'settled-service-crash', 'service-new', 'cold-service-new', 'service-unavailable', 'artifacts', 'uncertain', 'reader'], default='mail')
     parser.add_argument('--se', type=Path, required=True)
     parser.add_argument('--secode', type=Path, required=True)
     parser.add_argument('--pin', default=PIN)
@@ -467,7 +590,13 @@ def main():
     fixture = Consumer(args.output, preload=preload, fault=args.case)
     print('1..1', flush=True)
     try:
-        if args.case == 'reader':
+        if args.case in ('service-new', 'cold-service-new'):
+            service_new_case(fixture, cold=args.case == 'cold-service-new')
+        elif args.case == 'service-unavailable':
+            unavailable_case(fixture)
+        elif args.case == 'artifacts':
+            artifact_case(fixture)
+        elif args.case == 'reader':
             reader_case(fixture)
         elif args.case == 'uncertain':
             uncertain_case(fixture)
