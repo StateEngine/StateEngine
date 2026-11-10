@@ -2,6 +2,7 @@ use super::connection::{Guard, QueuedBatch};
 use super::*;
 use se_types::{Omission, OmissionReason};
 use tokio::sync::mpsc;
+mod batch;
 
 pub(super) struct Watch {
     client: Client,
@@ -209,6 +210,10 @@ impl Watch {
             }
         };
         self.call.check_current()?;
+        let received = match received {
+            Some(Ok(first)) => Some(self.drain_ready(first)),
+            other => other,
+        };
         match received {
             Some(Ok(value)) => {
                 self.retry_step = 0;
@@ -234,6 +239,7 @@ impl Watch {
             }
             Some(Err(error)) => {
                 self.attached = None;
+                self.prefetched = None;
                 if retryable(&error) {
                     self.defer_retry(error.body.retry())?;
                     self.retry_error = Some(error.body);
@@ -245,9 +251,44 @@ impl Watch {
             }
             None => {
                 self.attached = None;
+                self.prefetched = None;
                 Ok(self.gap())
             }
         }
+    }
+
+    fn drain_ready(&mut self, mut first: QueuedBatch) -> Result<QueuedBatch> {
+        // Keep the existing byte permits until this bounded output is released.
+        // New arrivals cannot turn this synchronous drain into an unlimited read.
+        let mut consumed = Vec::new();
+        for _ in 0..REMOTE_CLIENT_QUEUE_FRAMES {
+            self.call.check_current()?;
+            if batch::boundary(&first.batch) {
+                break;
+            }
+            let Some((_, _, rx)) = &mut self.attached else {
+                return Err(unavailable("watch subscription absent during drain"));
+            };
+            let mut next = match rx.try_recv() {
+                Ok(value) => value?,
+                Err(mpsc::error::TryRecvError::Empty) => break,
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    return Err(unavailable("watch disconnected during drain"));
+                }
+            };
+            if !batch::append(&mut first.batch, &mut next.batch, self.request.budget)? {
+                // This page has not been consumed: retain its byte permit and
+                // exact cursors for the next call, including reset/gap barriers.
+                self.prefetched = Some(next);
+                break;
+            }
+            consumed.push(next);
+        }
+        self.call.check_current()?;
+        if self.attached.as_ref().is_none_or(|(c, _, _)| c.closed()) {
+            return Err(unavailable("watch connection closed before output release"));
+        }
+        Ok(first)
     }
 }
 impl RemoteWatchStream for Watch {
