@@ -3,7 +3,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const config = JSON.parse(fs.readFileSync('/etc/stateengine-ci/self-hosted.json', 'utf8'));
 const request = JSON.parse(fs.readFileSync(0, 'utf8'));
 const work = fs.realpathSync(config.runner_work);
@@ -27,17 +27,53 @@ if (request.command === 'run_script_step') {
 }
 request.context = Object.fromEntries(['GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT']
   .map(name => [name, process.env[name]]));
-const child = spawnSync('/usr/bin/sudo', ['-n', '-u', 'stateengine-ci-controller', '/usr/local/libexec/stateengine-ci-hook'],
-  { input: JSON.stringify(request), encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, stdio: ['pipe', 'pipe', 'inherit'] });
-if (child.error) throw child.error;
-const result = JSON.parse(child.stdout);
-if (result.response) fs.writeFileSync(runnerFile(request.responseFile, '_runner_hook_responses'), JSON.stringify(result.response));
-if (result.outputs) {
-  const output = runnerFile(request.args.environmentVariables.GITHUB_OUTPUT, '_runner_file_commands');
-  for (const [name, value] of Object.entries(result.outputs)) {
-    if (!/^(rust|windows|route|status)$/.test(name) || !/^(true|false|box|passed|failed)$/.test(value)) throw Error('invalid fixed output');
-    fs.appendFileSync(output, `${name}=${value}\n`);
+async function execute() {
+  let child, canceled = false, overflow = false;
+  const forward = signal => {
+    canceled = true;
+    if (child?.pid) {
+      try { child.kill(signal); }
+      catch (error) { console.error(`Controller signal failed: ${error.code}; custody remains unresolved until join`); }
+    }
+  };
+  const interrupt = () => forward('SIGINT'), terminate = () => forward('SIGTERM');
+  process.on('SIGINT', interrupt); process.on('SIGTERM', terminate);
+  let result, status, output = '', bytes = 0;
+  try {
+    child = spawn('/usr/bin/sudo', ['-n', '-u', 'stateengine-ci-controller', '/usr/local/libexec/stateengine-ci-hook'],
+      { stdio: ['pipe', 'pipe', 'inherit'] });
+    child.stdin.on('error', () => {});
+    child.stdout.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > 2 * 1024 * 1024) {
+        if (!overflow) { overflow = true; forward('SIGTERM'); }
+      } else output += chunk.toString();
+    });
+    const joined = new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    child.once('spawn', () => { if (canceled) forward('SIGTERM'); });
+    child.stdin.end(JSON.stringify(request));
+    // A runner cancellation targets this hook PID. Keep the handler and exact
+    // sudo child alive until it forwards the signal and joins its controller.
+    status = await joined;
+    if (canceled || overflow) {
+      console.error(`Canceled controller joined: code=${status.code} signal=${status.signal}`);
+      return 1;
+    }
+    result = JSON.parse(output);
+  } finally {
+    process.removeListener('SIGINT', interrupt); process.removeListener('SIGTERM', terminate);
   }
+  if (result.response) fs.writeFileSync(runnerFile(request.responseFile, '_runner_hook_responses'), JSON.stringify(result.response));
+  if (result.outputs) {
+    const target = runnerFile(request.args.environmentVariables.GITHUB_OUTPUT, '_runner_file_commands');
+    for (const [name, value] of Object.entries(result.outputs)) {
+      if (!/^(rust|windows|route|status)$/.test(name) || !/^(true|false|box|passed|failed)$/.test(value)) throw Error('invalid fixed output');
+      fs.appendFileSync(target, `${name}=${value}\n`);
+    }
+  }
+  return status.code === 0 && result.exit_code === 0 ? 0 : 1;
 }
-
-if (child.status !== 0 || result.exit_code !== 0) process.exit(child.status || result.exit_code || 1);
+execute().then(code => { process.exitCode = code; }, error => { console.error(error.message); process.exitCode = 1; });
