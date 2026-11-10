@@ -247,6 +247,7 @@ impl Session {
             state.active = Some(turn);
             state.permission_refusal = None;
             state.cancelling = false;
+            state.cancel_written = false;
             id
         };
         self.signal();
