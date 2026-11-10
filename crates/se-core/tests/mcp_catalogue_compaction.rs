@@ -181,19 +181,14 @@ fn discovery_trims_repeated_detail_without_mutating_full_cli_schemas() -> Check 
             .get("description")
             .is_none()
     );
-    assert_eq!(
-        find.input_schema["properties"]["query"],
-        json!({"type":"string"})
-    );
+    let expanded = shape(&find.input_schema, &find.input_schema, &mut BTreeSet::new())?;
+    assert_eq!(expanded["properties"]["query"], json!({"type":"string"}));
     // "format" is a real argument and must not be mistaken for an annotation.
     assert_eq!(
-        find.input_schema["properties"]["format"]["enum"],
+        expanded["properties"]["format"]["enum"],
         json!(["compact", "json"])
     );
-    assert_eq!(
-        find.input_schema["properties"]["format"]["default"],
-        "compact"
-    );
+    assert_eq!(expanded["properties"]["format"]["default"], "compact");
     let after = schema_catalogue(Some("atlas.find"))?.ops.remove(0);
     assert_eq!(before.input, after.input);
     assert_eq!(before.output, after.output);
