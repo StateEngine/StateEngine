@@ -168,6 +168,13 @@ impl LaunchCoordinator {
                 {
                     return Err(error("SE Code service shutdown", "original input or final capture remains unresolved; its authenticated source service is retained"));
                 }
+                for auxiliary in Auxiliary::ALL {
+                    if service.owner(auxiliary).is_none()
+                        && service.journal.auxiliary(auxiliary).as_ref().is_some_and(|checkpoint|
+                            !matches!(checkpoint.checkpoint, se_proc::CheckpointKind::Exit { .. })) {
+                        self.recover_secode_auxiliary(&mut service, auxiliary, deadline).await?;
+                    }
+                }
                 // A service may have died after final client capture. Prove
                 // its native scope closed before skipping the dead endpoint;
                 // failed HTTP alone never grants registration retirement.
