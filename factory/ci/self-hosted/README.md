@@ -6,6 +6,11 @@ there is no polling job on a hosted Linux machine. One listener admits one job a
 a time, and the full chain executes six stages serially inside one disposable container.
 Compiled tests stay inside that container; no test archive crosses the host.
 
+Pull requests and pushes retain default-feature tests. Scheduled runs on `main`
+and manual runs of `main` compile and run all features, including documentation
+and custom harnesses. The bound run records its feature mode and logs the actual
+commands; a missing or failed stage still fails the complete check.
+
 The listener runs as the locked `stateengine-ci` account. Both container hooks and
 `ACTIONS_RUNNER_REQUIRE_JOB_CONTAINER=true` are mandatory service environment,
 not workflow options. Without them a changed workflow could execute on the host.

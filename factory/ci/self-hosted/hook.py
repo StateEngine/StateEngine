@@ -160,7 +160,9 @@ def prepare(request, config, report, context):
         with (directory / "source.tar.gz").open("xb") as output:
             output.write(fetch(repository, "tarball/" + source, token, raw=True))
     write(directory / "binding.json", {"repository": repository, "source": source,
-        "run": context["GITHUB_RUN_ID"], "attempt": context["GITHUB_RUN_ATTEMPT"], "policy_changed": changed})
+        "run": context["GITHUB_RUN_ID"], "attempt": context["GITHUB_RUN_ATTEMPT"], "policy_changed": changed,
+        "all_features": context.get("GITHUB_REF") == "refs/heads/main" and
+            context.get("GITHUB_EVENT_NAME") in {"schedule", "workflow_dispatch"}})
     return {"state": {"job": directory.name}, "isAlpine": False}
 
 
@@ -222,7 +224,7 @@ def script_step(request, config, report, directory):
     if operation == "route":
         return {"exit_code": 0, "outputs": {"route": "hosted" if changed else "box"}}
     if operation == "linux":
-        return linux_step(config, report, directory)
+        return linux_step(config, report, directory, all_features=binding.get("all_features", False))
     capacity(2*1024**3)
     with venue(config):
         journal = Journal()
@@ -234,7 +236,7 @@ def script_step(request, config, report, directory):
     return {"exit_code": 0 if success else 1}
 
 
-def linux_step(config, report, directory):
+def linux_step(config, report, directory, *, all_features=False):
     canceled = threading.Event()
     cohort = None
     outcomes = {}
@@ -253,7 +255,10 @@ def linux_step(config, report, directory):
         with venue(config):
             journal = Journal()
             journal.reconcile()
-            cohort = Cohort(report, journal, directory / "source.tar.gz", Path(config["cache"]), directory, canceled)
+            print("Feature coverage: " + ("all features" if all_features else "default features"),
+                  file=sys.stderr, flush=True)
+            cohort = Cohort(report, journal, directory / "source.tar.gz", Path(config["cache"]), directory,
+                            canceled, all_features=all_features)
             try:
                 for name in JOBS:
                     if name != "fmt" and not outcomes.get("fmt"):
