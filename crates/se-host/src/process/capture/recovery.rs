@@ -13,7 +13,10 @@ impl LaunchCoordinator {
         let session = work.meta.session.clone();
         let source_id =
             se_core::ops::process_commit::session_credential_id(&session, "capture-source")?;
-        let requires_verification = work.meta.provider == se_store::Provider::SeCode;
+        let requires_verification = matches!(
+            work.meta.provider,
+            se_store::Provider::SeCode | se_store::Provider::Acp
+        );
         let failure = self
             .store
             .read(work.cleanup_admission.clone(), deadline, move |cx| {

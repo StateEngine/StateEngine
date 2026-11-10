@@ -45,6 +45,7 @@ fn request(f: &Fixture, sequence: u8) -> Check<HarnessRequest> {
             checked: "fresh fixture request".into(),
         },
         transcript_roots: vec![],
+        replay: None,
         initial_input: Body::new("One synthetic fixture turn.")?,
         launch_credential: Secret::new(
             format!("sec1.synthetic-fixture-pin-{sequence}").into_bytes(),

@@ -76,6 +76,9 @@ fn running(value: &LaunchResult, out: &mut impl Write) -> io::Result<()> {
         )?;
     }
     write::profile(&value.permission_profile, out)?;
+    if let Some(notice) = &value.harness_policy_notice {
+        writeln!(out, "{notice}")?;
+    }
     write!(
         out,
         "Conversation: {} ({}",

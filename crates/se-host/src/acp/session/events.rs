@@ -8,12 +8,17 @@ impl Session {
             tokio::select! {
                 value = receiver.recv() => {
                     let Some(value)=value else { break; };
+                    let notify = !matches!(&value.message, Message::Update(_));
                     if let Err(error) = self.event(value.message).await { let _=self.fail(error.body); }
                     if let Ok(mut state)=self.lock() { state.processed=value.sequence; }
                     self.signal();
+                    if notify { self.notify_owner(); }
                 }
                 _ = changed.changed() => { if self.closing.load(Ordering::Acquire) { break; } }
-                _ = transport.changed() => self.signal(),
+                _ = transport.changed() => {
+                    self.signal();
+                    if self.connection.diagnostics().is_ok_and(|v| v.failure.is_some() || v.stdout_terminal) { self.notify_owner(); }
+                },
             }
         }
     }
@@ -113,10 +118,20 @@ impl Session {
             .ok_or_else(|| failure("ACP update", "update absent"))?;
         if update.get("sessionUpdate").and_then(Value::as_str) == Some("current_mode_update") {
             let mode = update.get("currentModeId").and_then(Value::as_str);
-            if mode != state.required_mode.as_deref() {
+            if let Some(mode) = mode {
+                valid_id(mode)?;
+            }
+            if state
+                .required_mode
+                .as_deref()
+                .is_some_and(|required| Some(required) != mode)
+            {
                 return Err(failure(
                     "ACP policy",
-                    "required mode changed; original input remains owned",
+                    format!(
+                        "Configured acp.mode {:?}, but the agent changed to {:?}. The original input remains owned; inspect its captured outcome before stopping normally. Set or omit acp.mode for the next launch.",
+                        state.required_mode, mode
+                    ),
                 ));
             }
             state.current_mode = mode.map(str::to_owned);
@@ -194,12 +209,19 @@ impl Session {
         ready(&state)?;
         match method {
             "initialize" => {
-                if !state.initializing
-                    || result.get("protocolVersion").and_then(Value::as_u64) != Some(1)
-                {
+                if !state.initializing {
                     return Err(failure(
                         "ACP initialization",
-                        "original protocol-version-1 handshake required",
+                        "The original handshake is not active; stop this agent and retry launch with a fresh connection.",
+                    ));
+                }
+                let version = result.get("protocolVersion").and_then(Value::as_u64);
+                if version != Some(1) {
+                    return Err(failure(
+                        "ACP initialization",
+                        format!(
+                            "The agent offered protocolVersion {version:?}; ACP version 1 is required. Configure providers.acp.command and acp.arguments to an ACP v1 entrypoint, then retry launch."
+                        ),
                     ));
                 }
                 state.capabilities = result
@@ -242,16 +264,26 @@ impl Session {
                 {
                     return Err(failure(
                         "ACP replay",
-                        "loaded history differs from committed text; no input offered",
+                        "Loaded history differs from committed text; no input was offered. Restore the complete original capture or use --new to start a separate conversation.",
                     ));
                 }
                 let mode = result
                     .pointer("/modes/currentModeId")
                     .and_then(Value::as_str);
-                if mode != state.required_mode.as_deref() {
+                if let Some(mode) = mode {
+                    valid_id(mode)?;
+                }
+                if state
+                    .required_mode
+                    .as_deref()
+                    .is_some_and(|required| Some(required) != mode)
+                {
                     return Err(failure(
                         "ACP policy",
-                        "agent did not echo the required qualified mode; no input offered",
+                        format!(
+                            "Configured acp.mode {:?}, but the agent reported {:?}. Set acp.mode to its reported mode or omit acp.mode to use its default, then retry launch. No input was offered.",
+                            state.required_mode, mode
+                        ),
                     ));
                 }
                 state.current_mode = mode.map(str::to_owned);

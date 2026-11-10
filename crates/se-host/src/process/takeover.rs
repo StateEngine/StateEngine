@@ -24,6 +24,9 @@ impl LaunchCoordinator {
         if plan.profile.provider == se_store::Provider::SeCode {
             self.preflight_secode(&plan, deadline).await?;
         }
+        if plan.profile.provider == se_store::Provider::Acp {
+            self.preflight_acp(&plan, &admission, deadline).await?;
+        }
         let expired_window = matches!(&plan.control.latest_session, se_types::Read::Present { value }
             if se_core::ops::agent_launch::retryable_attended_setup(value));
         if !plan.input.override_live && (plan.replayed || plan.control.processes.is_empty()) {

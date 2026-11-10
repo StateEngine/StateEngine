@@ -1,7 +1,7 @@
 //! Owned stream tasks outlive a caller's wait. A failed/partial write is never
 //! retried, and a timed-out request keeps its identity until reply or failure.
 use super::{
-    failure,
+    OfferFailure, failure,
     wire::{self, Envelope, Frames},
 };
 use crate::{CallContext, ProviderIoPlatform, ProviderStream, ProviderTransport, StreamRead};
@@ -133,7 +133,10 @@ impl Connection {
         cx: CallContext,
     ) -> Result<Value> {
         let until = until(&cx)?;
-        let (_, response) = self.offer_until(method, params, until).await?;
+        let (_, response) = self
+            .offer_until(method, params, until)
+            .await
+            .map_err(|e| e.error)?;
         tokio::time::timeout_at(until, response)
             .await
             .map_err(|_| {
@@ -158,6 +161,17 @@ impl Connection {
         params: Value,
         cx: CallContext,
     ) -> Result<u64> {
+        self.offer_tracked(method, params, cx)
+            .await
+            .map_err(|e| e.error)
+    }
+    /// Preserve whether this exact input crossed the native writer boundary.
+    pub async fn offer_tracked(
+        self: &Arc<Self>,
+        method: &'static str,
+        params: Value,
+        cx: CallContext,
+    ) -> std::result::Result<u64, OfferFailure> {
         let (id, _) = self.offer_until(method, params, until(&cx)?).await?;
         Ok(id)
     }
@@ -166,14 +180,13 @@ impl Connection {
         method: &'static str,
         params: Value,
         until: Instant,
-    ) -> Result<(u64, oneshot::Receiver<Result<Value>>)> {
+    ) -> std::result::Result<(u64, oneshot::Receiver<Result<Value>>), OfferFailure> {
         self.require_open()?;
         let id = self
             .next
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
             .map_err(|_| failure("ACP request identity", "identity space exhausted"))?;
-        let bytes =
-            wire::encode(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
+        let bytes = request_frame(id, method, params)?;
         let (reply, response) = oneshot::channel();
         {
             let mut pending = self
@@ -184,12 +197,21 @@ impl Connection {
                 return Err(failure(
                     "ACP requests",
                     "64 original requests remain unsettled; no new request offered",
-                ));
+                )
+                .into());
             }
             self.require_open()?;
             pending.insert(id, Pending { method, reply });
         }
-        self.send(bytes, until).await?;
+        if let Err(offer_error) = self.send_tracked(bytes, until).await {
+            if offer_error.completed_bytes == Some(0) {
+                self.pending
+                    .lock()
+                    .map_err(|_| failure("ACP requests", "poisoned state"))?
+                    .remove(&id);
+            }
+            return Err(offer_error);
+        }
         Ok((id, response))
     }
 
@@ -256,6 +278,13 @@ impl Connection {
     }
 
     async fn send(self: &Arc<Self>, bytes: Vec<u8>, until: Instant) -> Result<()> {
+        self.send_tracked(bytes, until).await.map_err(|e| e.error)
+    }
+    async fn send_tracked(
+        self: &Arc<Self>,
+        bytes: Vec<u8>,
+        until: Instant,
+    ) -> std::result::Result<(), OfferFailure> {
         self.require_open()?;
         let (completed, response) = oneshot::channel();
         let mut jobs = tokio::time::timeout_at(until, self.writes.lock())
@@ -273,7 +302,7 @@ impl Connection {
                     "owned writer panicked; partial input remains uncertain",
                 );
                 self.fail(error.body.clone())?;
-                return Err(error);
+                return Err(error.into());
             }
         }
         if jobs.len() >= 128 {
@@ -282,7 +311,7 @@ impl Connection {
                 "128 owned writes remain unsettled; no new write offered",
             );
             self.fail(error.body.clone())?;
-            return Err(error);
+            return Err(error.into());
         }
         // The accepted task already owns its position in the stream. Taking
         // this lock inside a spawned task lets scheduler order splice a later
@@ -301,7 +330,7 @@ impl Connection {
             let _serial = serial;
             let result = owned.write(bytes, until).await;
             if let Err(error) = &result {
-                let _ = owned.fail(error.body.clone());
+                let _ = owned.fail(error.error.body.clone());
             }
             let _ = completed.send(result);
         });
@@ -309,31 +338,37 @@ impl Connection {
         tokio::time::timeout_at(until, response)
             .await
             .map_err(|_| {
-                failure(
+                OfferFailure::uncertain(failure(
                     "ACP write",
                     "owned write remains uncertain after its caller's bound; do not replay",
-                )
+                ))
             })?
             .map_err(|_| {
-                failure(
+                OfferFailure::uncertain(failure(
                     "ACP write",
                     "owned writer outcome is unavailable; do not replay",
-                )
+                ))
             })?
     }
-    async fn write(&self, bytes: Vec<u8>, until: Instant) -> Result<()> {
+    async fn write(&self, bytes: Vec<u8>, until: Instant) -> std::result::Result<(), OfferFailure> {
         self.require_open()?;
         let expected = u32::try_from(bytes.len())
             .map_err(|_| failure("ACP write", "frame exceeds native byte count"))?;
         let written = self
             .io
             .write(&self.transport, bytes, context(self.generation, until)?)
-            .await?;
+            .await
+            .map_err(OfferFailure::uncertain)?;
         if written.failure.is_some() || written.completed_bytes != expected {
-            return Err(failure(
-                "ACP write",
-                "partial or failed native write; original input remains uncertain and is not replayed",
-            ));
+            return Err(OfferFailure {
+                error: written.failure.map(SeError::from).unwrap_or_else(|| {
+                    failure(
+                        "ACP write",
+                        "partial native write; preserve the original input without replay",
+                    )
+                }),
+                completed_bytes: Some(written.completed_bytes),
+            });
         }
         Ok(())
     }
@@ -395,10 +430,18 @@ impl Connection {
                         .lock()
                         .map_err(|_| failure("ACP diagnostics", "poisoned state"))?
                         .stdout_complete = true;
-                    return Err(failure(
-                        "ACP connection",
-                        "protocol EOF; unsettled requests retain uncertain input",
-                    ));
+                    if !self
+                        .pending
+                        .lock()
+                        .map_err(|_| failure("ACP requests", "poisoned state"))?
+                        .is_empty()
+                    {
+                        return Err(failure(
+                            "ACP connection",
+                            "protocol EOF; unsettled requests retain uncertain input",
+                        ));
+                    }
+                    return Ok(());
                 }
             }
         }
@@ -488,6 +531,9 @@ impl Connection {
             .await?;
         join(&self.readers, until).await
     }
+}
+pub(super) fn request_frame(id: u64, method: &str, params: Value) -> Result<Vec<u8>> {
+    wire::encode(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
 }
 async fn join(jobs: &tokio::sync::Mutex<JoinSet<()>>, until: Instant) -> Result<()> {
     let mut jobs = tokio::time::timeout_at(until, jobs.lock())

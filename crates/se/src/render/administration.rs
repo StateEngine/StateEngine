@@ -173,6 +173,12 @@ pub fn agent_status(value: &AgentStatusOutput, out: &mut impl Write) -> io::Resu
                     se_core::ops::containment_cause_description(reason)
                 )?;
             }
+            if let Some(notice) = &value.harness_policy_notice {
+                writeln!(out, "{notice}")?;
+            }
+            if let Some(runtime) = &value.acp_runtime {
+                super::acp::runtime(runtime, "", out)?;
+            }
             writeln!(out, "Conversation: {}", value.conversation.state)?;
             if let Some(conversation) = &value.conversation.id {
                 writeln!(out, "Conversation ID: {conversation}")?;

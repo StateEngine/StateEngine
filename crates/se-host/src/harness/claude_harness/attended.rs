@@ -109,6 +109,7 @@ impl ClaudeHarness {
                 claude: Some(binding),
                 codex: None,
                 secode: None,
+                acp: None,
                 _private: (),
             },
         })

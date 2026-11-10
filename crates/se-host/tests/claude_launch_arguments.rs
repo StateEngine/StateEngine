@@ -64,6 +64,8 @@ fn window_task_cannot_supply_claude_options_on_new_or_resumed_launches()
             checked: "new launch".into(),
         },
         transcript_roots: Vec::new(),
+        #[cfg(feature = "listener")]
+        replay: None,
         initial_input: Body::new(task)?,
         launch_credential: Secret::new(vec![1; 32])?,
         mcp_bearer: Secret::new(vec![2; 32])?,

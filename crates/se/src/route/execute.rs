@@ -248,7 +248,7 @@ fn dispatch_with_cold_recovery(
             service_observation = Some(observed);
         }
         if let Some(live) = service_observation {
-            output = super::session_observation::merge_secode(output, live)?;
+            output = super::session_observation::merge_runtime_observation(output, live)?;
         }
         return super::status::finish(cx, &reader, output, &caller.admission);
     }
@@ -294,7 +294,7 @@ fn dispatch_with_cold_recovery(
         });
         let prepared = finish_read(result, snapshot.close().map_err(|e| store_error(&e)))?;
         let mut output = super::session_observation::finish(prepared, &cx.home)?;
-        if super::session_observation::has_secode(&output) {
+        if super::session_observation::has_runtime_observation(&output) {
             let live = match endpoint(&files) {
                 Ok(Read::Present { .. }) => Some(super::hosted::forward(
                     cx,
@@ -315,7 +315,7 @@ fn dispatch_with_cold_recovery(
                 Err(error) => Some(Err(error)),
             };
             if let Some(live) = live {
-                output = super::session_observation::merge_secode(output, live)?;
+                output = super::session_observation::merge_runtime_observation(output, live)?;
             }
         }
         return super::status::finish(cx, &reader, output, &caller.admission);

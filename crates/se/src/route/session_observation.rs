@@ -64,10 +64,11 @@ pub(super) fn deadline() -> Result<std::time::Instant> {
         .checked_add(super::execute::options().timeout)
         .ok_or_else(|| SeError::invalid("agent observation deadline", "a finite native deadline"))
 }
-pub(super) fn has_secode(output: &AnyOutput) -> bool {
-    rows(output)
-        .iter()
-        .any(|row| matches!(&row.secode_binding, Some(Read::Present { .. })))
+pub(super) fn has_runtime_observation(output: &AnyOutput) -> bool {
+    rows(output).iter().any(|row| {
+        row.provider == se_types::Provider::Acp
+            || matches!(&row.secode_binding, Some(Read::Present { .. }))
+    })
 }
 fn rows(output: &AnyOutput) -> Vec<&AgentRow> {
     match output {
@@ -86,10 +87,25 @@ fn rows(output: &AnyOutput) -> Vec<&AgentRow> {
     }
 }
 /// Preserve the CLI's independent native observation and join only the same
-/// session's authenticated service facts after its store snapshot has closed.
-pub(super) fn merge_secode(mut output: AnyOutput, live: Result<AnyOutput>) -> Result<AnyOutput> {
+/// session's authenticated runtime facts after its store snapshot has closed.
+pub(super) fn merge_runtime_observation(
+    mut output: AnyOutput,
+    live: Result<AnyOutput>,
+) -> Result<AnyOutput> {
     let observed = live.as_ref().map(rows);
     let mut apply = |row: &mut AgentRow| -> Result<()> {
+        if row.provider == se_types::Provider::Acp {
+            row.acp_runtime = Some(match &observed {
+                Ok(rows) => rows.iter().find(|other| other.id == row.id && other.session.session_id == row.session.session_id)
+                    .and_then(|other| other.acp_runtime.clone()).unwrap_or_else(|| Read::Unknown {
+                        what: "The owning host did not return protocol facts for this exact saved session.".into(),
+                    }),
+                Err(error) => Read::Unreadable {
+                    source: "ACP runtime observation".into(), reason: error.to_string(), error: Some(Box::new(error.body.clone())),
+                },
+            });
+            return Ok(());
+        }
         if !matches!(&row.secode_binding, Some(Read::Present { .. })) {
             return Ok(());
         }

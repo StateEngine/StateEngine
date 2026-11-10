@@ -123,6 +123,7 @@ impl CodexHarness {
                 claude: None,
                 codex: Some(binding),
                 secode: None,
+                acp: None,
                 _private: (),
             })
         }

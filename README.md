@@ -194,6 +194,68 @@ se down
 This stops StateEngine's background service and its active agents while retaining
 saved work. The next launch starts the service again.
 
+## Optional protocol agents
+
+An ACP agent is a separately installed assistant that speaks Agent Client Protocol
+version 1 over standard input and output. Configure its executable and arguments
+in your state home's `config.toml`; StateEngine does not run a shell to interpret
+those arguments. The agent must support authenticated HTTP MCP connections. Resuming also requires
+loading saved sessions; agents without that capability can start with `--new`. Sign in and select a model using that agent's own setup.
+
+**This harness provides no execution sandbox in protocol mode.** It requires an
+explicitly named profile with `bypass = true` and `network = true`; choose it only
+for work where you accept unsandboxed execution with network access. The saved
+`approval = "never"` setting allows protocol
+permission requests. Other approval settings refuse each such tool request with
+a reason: a human approval interface is not implemented yet. A provider's own
+rules still apply; a protocol mode does not establish OS containment or sandboxing.
+
+After installing and configuring a protocol agent, add these sections to the
+existing configuration. Replace `protocol-agent` with its native executable and
+replace `YOUR_MODEL` with your configured model. Use the agent's documented
+protocol arguments in `acp.arguments`:
+
+```toml
+[providers.acp]
+command = "protocol-agent"
+model = "YOUR_MODEL"
+profile = "protocol-work"
+
+[profiles.protocol-work]
+bypass = true
+network = true
+approval = "never"
+
+[acp]
+arguments = ["--acp", "--model", "{model}"]
+```
+
+`{model}` expands only the saved model inside each argument. If you set
+`acp.mode`, it must match the mode the agent reports before receiving work.
+Omit it to use the agent's announced default, including agents without modes.
+For a script, including a package-manager script launcher on Windows, select its
+native interpreter as `command` and put the script's absolute path first in
+`arguments`. StateEngine does not execute `.cmd`, `.ps1` or shell shims as native
+images. If the provider needs additional environment
+variables, list their names in `acp.environment`; keep account credentials in the
+provider's own configuration.
+
+```sh
+se init --provider acp
+se launch main --task "Read the README and explain what this project does." --detach
+se agent show main
+se history --agent main
+se stop main
+se launch main --detach
+```
+
+Launch and status disclose the unsandboxed policy. Status shows current activity
+and any permission refusal; streamed text is explicitly provisional until the
+completed turn appears in saved history. Resume loads the same conversation and
+compares its complete text with captured history before offering new input. A
+missing, changed, erased or oversized history refuses resume instead of silently
+starting over. If capture was disabled, use `--new` for a new conversation.
+
 ## Help, upgrade and removal
 
 Run `se --help`, then a command's own help, such as `se launch --help` or

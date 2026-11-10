@@ -5,6 +5,7 @@ pub enum HarnessKind {
     ClaudeCode,
     CodexAppServer,
     Secode,
+    Acp,
 }
 /// Created at trusted bind, never from a hook's claimed transcript_path.
 #[derive(Clone, Debug)]

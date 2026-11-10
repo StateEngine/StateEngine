@@ -61,6 +61,7 @@ impl LaunchCoordinator {
             se_store::Provider::Codex => se_types::Provider::Codex,
             se_store::Provider::Claude => se_types::Provider::Claude,
             se_store::Provider::SeCode => se_types::Provider::SeCode,
+            se_store::Provider::Acp => se_types::Provider::Acp,
         };
         let configuration = self.options.configuration.clone();
         let configuration_file = self.configuration_file.clone();
@@ -164,6 +165,7 @@ impl LaunchCoordinator {
             mode,
             resume: plan.conversation.clone(),
             transcript_roots: plan.control.moved_from_roots.clone(),
+            replay: self.acp_replay(&plan, &work.admission, deadline).await?,
             initial_input: Body::new(plan.input.task.clone().unwrap_or_else(|| {
                 "Read your StateEngine context and continue your assigned work.".into()
             }))?,

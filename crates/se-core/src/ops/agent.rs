@@ -79,6 +79,7 @@ pub fn create<R: Snapshot>(
         Provider::Claude => &configuration.providers.claude,
         Provider::Codex => &configuration.providers.codex,
         Provider::SeCode => &configuration.providers.secode,
+        Provider::Acp => &configuration.providers.acp,
     };
     let permission = match configuration
         .resolve_profile(&defaults.profile, provider, false)?
@@ -113,6 +114,7 @@ pub fn create<R: Snapshot>(
                     Provider::Claude => se_store::Provider::Claude,
                     Provider::Codex => se_store::Provider::Codex,
                     Provider::SeCode => se_store::Provider::SeCode,
+                    Provider::Acp => se_store::Provider::Acp,
                 },
                 model,
                 permission,
@@ -193,6 +195,7 @@ pub fn committed<R: Snapshot>(
         se_store::Provider::Claude => Provider::Claude,
         se_store::Provider::Codex => Provider::Codex,
         se_store::Provider::SeCode => Provider::SeCode,
+        se_store::Provider::Acp => Provider::Acp,
     };
     Ok(super::AgentReceipt {
         commit,

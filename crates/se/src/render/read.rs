@@ -86,6 +86,12 @@ pub fn status(value: &StatusOutput, out: &mut impl Write) -> io::Result<()> {
                     se_core::ops::containment_cause_description(reason)
                 )?;
             }
+            if let Some(notice) = &agent.harness_policy_notice {
+                writeln!(out, "    {notice}")?;
+            }
+            if let Some(runtime) = &agent.acp_runtime {
+                super::acp::runtime(runtime, "    ", out)?;
+            }
             if let Some(runtime) = &agent.secode_runtime {
                 secode::runtime(runtime, "    ", out)?;
             }

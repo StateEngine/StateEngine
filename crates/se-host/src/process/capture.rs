@@ -122,6 +122,9 @@ impl LaunchCoordinator {
         if work.meta.provider == se_store::Provider::SeCode {
             return self.capture_secode(work, deadline).await;
         }
+        if work.meta.provider == se_store::Provider::Acp {
+            return self.capture_acp(work, deadline).await;
+        }
         if work.transcript.is_none() {
             let identity = crate::SessionIdentity {
                 project: work.meta.project.id.clone(),

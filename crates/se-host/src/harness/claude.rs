@@ -459,6 +459,8 @@ mod transcript_location_tests {
                 }
             },
             transcript_roots: roots,
+            #[cfg(feature = "listener")]
+            replay: None,
             initial_input: Body::new("transcript location unit")?,
             launch_credential: Secret::new(vec![1; 32])?,
             mcp_bearer: Secret::new(vec![2; 32])?,

@@ -7,6 +7,7 @@ pub(crate) fn provider(value: Provider) -> &'static str {
         Provider::Claude => "claude",
         Provider::Codex => "codex",
         Provider::SeCode => "secode",
+        Provider::Acp => "acp",
     }
 }
 pub(crate) fn parse_provider(value: &str) -> StoreResult<Provider> {
@@ -14,6 +15,7 @@ pub(crate) fn parse_provider(value: &str) -> StoreResult<Provider> {
         "claude" => Ok(Provider::Claude),
         "codex" => Ok(Provider::Codex),
         "secode" => Ok(Provider::SeCode),
+        "acp" => Ok(Provider::Acp),
         _ => Err(invalid("stored provider")),
     }
 }

@@ -44,6 +44,10 @@ pub struct ResumeCommand {
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct AgentRow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_policy_notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_runtime: Option<Read<super::AcpRuntimeView>>,
     pub id: AgentId,
     pub name: String,
     pub role: Option<String>,

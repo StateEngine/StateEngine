@@ -5,6 +5,7 @@ use se_store::{EventBody, ProjectionRecord, Snapshot};
 use se_types::{ProviderSessionId, Read, Result};
 pub const CODEX_PENDING: &str = "se-codex-pending:";
 pub const SECODE_PENDING: &str = "se-secode-pending:";
+pub const ACP_PENDING: &str = "se-acp-pending:";
 
 pub fn read<R: Snapshot>(
     read: &mut R,
@@ -27,6 +28,7 @@ pub fn read<R: Snapshot>(
     };
     let pending = match provider {
         se_store::Provider::Codex if native_ref.starts_with(CODEX_PENDING) => Some("Codex"),
+        se_store::Provider::Acp if native_ref.starts_with(ACP_PENDING) => Some("ACP"),
         se_store::Provider::SeCode
             if *surface == Some(se_store::SessionSurface::Headless)
                 && native_ref.starts_with(SECODE_PENDING) =>
@@ -78,7 +80,8 @@ pub fn read<R: Snapshot>(
             && bound == session
             && captured == consent
             && !actual.starts_with(CODEX_PENDING)
-            && !actual.starts_with(SECODE_PENDING) =>
+            && !actual.starts_with(SECODE_PENDING)
+            && !actual.starts_with(ACP_PENDING) =>
         {
             Ok(Read::Present {
                 value: ProviderSessionId::new(actual.clone())?,

@@ -249,6 +249,8 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
         // This view's provider filter admits Claude/Codex, not managed services.
         secode_binding: None,
         secode_runtime: None,
+        acp_runtime: None,
+        harness_policy_notice: None,
     };
     let recorded_session = match &facts.session {
         Read::Present { value } => Some(value),

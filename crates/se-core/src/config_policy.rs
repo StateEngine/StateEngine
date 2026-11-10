@@ -10,6 +10,8 @@ use std::{
 pub use se_types::{DEFAULT_BLOCKING_JOBS, MAX_BLOCKING_JOBS, MIN_BLOCKING_JOBS};
 
 pub use se_types::Provider;
+mod acp;
+pub use acp::AcpConfig;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Sandbox {
@@ -97,6 +99,8 @@ pub struct Providers {
     pub codex: ProviderConfig,
     #[serde(default = "default_secode")]
     pub secode: ProviderConfig,
+    #[serde(default = "default_acp", skip_serializing_if = "is_default_acp")]
+    pub acp: ProviderConfig,
 }
 fn default_claude() -> ProviderConfig {
     ProviderConfig {
@@ -122,12 +126,27 @@ fn default_secode() -> ProviderConfig {
         seed_profile: None,
     }
 }
+fn default_acp() -> ProviderConfig {
+    ProviderConfig {
+        command: None,
+        model: String::new(),
+        profile: default_profile(),
+        seed_profile: None,
+    }
+}
+fn is_default_acp(value: &ProviderConfig) -> bool {
+    value.command.is_none()
+        && value.model.is_empty()
+        && value.profile == "default"
+        && value.seed_profile.is_none()
+}
 impl Default for Providers {
     fn default() -> Self {
         Self {
             claude: default_claude(),
             codex: default_codex(),
             secode: default_secode(),
+            acp: default_acp(),
         }
     }
 }
@@ -191,6 +210,8 @@ pub struct ConfigFile {
     pub launch: LaunchConfig,
     #[serde(default)]
     pub providers: Providers,
+    #[serde(default, skip_serializing_if = "AcpConfig::is_default")]
+    pub acp: AcpConfig,
     #[serde(default = "default_profiles")]
     pub profiles: BTreeMap<String, Profile>,
     #[serde(default)]
@@ -206,6 +227,7 @@ impl Default for ConfigFile {
             runtime: RuntimeConfig::default(),
             launch: LaunchConfig::default(),
             providers: Providers::default(),
+            acp: AcpConfig::default(),
             profiles: default_profiles(),
             atlas: AtlasConfig::default(),
             capture: CaptureConfig::default(),
@@ -287,10 +309,12 @@ impl ConfigFile {
                 ));
             }
         }
+        self.acp.validate()?;
         for (name, provider) in [
             ("claude", &self.providers.claude),
             ("codex", &self.providers.codex),
             ("secode", &self.providers.secode),
+            ("acp", &self.providers.acp),
         ] {
             if let Some(seed) = &provider.seed_profile
                 && (name != "secode"
@@ -328,6 +352,7 @@ impl ConfigFile {
             Provider::Claude => &self.providers.claude,
             Provider::Codex => &self.providers.codex,
             Provider::SeCode => &self.providers.secode,
+            Provider::Acp => &self.providers.acp,
         }
     }
     pub fn provider_command(&self, provider: Provider) -> &str {
@@ -338,6 +363,7 @@ impl ConfigFile {
                 Provider::Claude => "claude",
                 Provider::Codex => "codex",
                 Provider::SeCode => "secode",
+                Provider::Acp => "",
             })
     }
     pub fn resolve_profile(
@@ -414,8 +440,9 @@ pub fn key_metadata(key: &str) -> Result<ConfigKeyMeta> {
     let (human_only, agent_record) = match parts.as_slice() {
         ["default_project"] | ["launch", "provider" | "terminal"] | ["atlas", "enabled" | "hooks"] => (false, false),
         ["runtime", "listen_port" | "blocking_jobs"] | ["capture", "enabled"] => (true, false),
-        ["providers", "claude" | "codex" | "secode", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
+        ["providers", "claude" | "codex" | "secode" | "acp", "command" | "model" | "profile"] => (matches!(parts[2], "command" | "profile"), false),
         ["providers", "secode", "seed_profile"] => (true, false),
+        ["acp", "arguments" | "environment" | "mode"] => (true, false),
         ["profiles", name, "sandbox" | "network" | "approval" | "bypass" | "git_write"] if !name.is_empty() => (true, false),
         _ => return Err(SeError::new(Detail::InputUnknownField(details::InputUnknownField { op: "config".into(), field: key.into(), next_step: "Use se help config for available commands; saved agent fields are model, profile and can-create.".into() }))),
     };

@@ -297,7 +297,7 @@ pub(super) fn apply(
                     "turn requires its active consented provider/agent binding",
                 ));
             }
-            if (evidence.path.is_none() && backend != Provider::SeCode)
+            if (evidence.path.is_none() && !matches!(backend, Provider::SeCode | Provider::Acp))
                 || vendor_ref.is_empty()
                 || vendor_ref.len() > 4096
                 || evidence.incarnation.is_empty()

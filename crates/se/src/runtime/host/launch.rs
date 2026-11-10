@@ -130,7 +130,7 @@ fn start_recorded(
             arguments
         };
         log.note("Preparing protected runtime temporary storage");
-        let environment = super::environment::prepare(&files)?;
+        let environment = super::environment::prepare(&files, configuration)?;
         log.note("Protected runtime temporary storage ready");
         let spec = se_proc::RuntimeLaunchSpec {
             machine,

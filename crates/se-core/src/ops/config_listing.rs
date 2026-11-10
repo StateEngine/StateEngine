@@ -72,6 +72,7 @@ pub fn list(
         ("claude", &configuration.providers.claude),
         ("codex", &configuration.providers.codex),
         ("secode", &configuration.providers.secode),
+        ("acp", &configuration.providers.acp),
     ] {
         row(
             &mut rows,
@@ -94,6 +95,13 @@ pub fn list(
         "providers.secode.seed_profile",
         option(&configuration.providers.secode.seed_profile),
     );
+    for (key, value) in [
+        ("acp.arguments", json!(configuration.acp.arguments)),
+        ("acp.environment", json!(configuration.acp.environment)),
+        ("acp.mode", json!(configuration.acp.mode)),
+    ] {
+        row(&mut rows, key, present(value));
+    }
     for (name, profile) in &configuration.profiles {
         row(
             &mut rows,
@@ -258,6 +266,7 @@ fn provider_wire(provider: Provider) -> &'static str {
         Provider::Claude => "claude",
         Provider::Codex => "codex",
         Provider::SeCode => "secode",
+        Provider::Acp => "acp",
     }
 }
 fn sandbox_wire(sandbox: Sandbox) -> &'static str {
@@ -281,6 +290,57 @@ fn approval_wire(approval: Approval) -> &'static str {
 mod list_tests {
     use super::*;
     use crate::config_policy::Profile;
+
+    const EXPECTED_KEYS: &[&str] = &[
+        "default_project",
+        "launch.provider",
+        "launch.terminal",
+        "runtime.listen_port",
+        "runtime.blocking_jobs",
+        "providers.claude.command",
+        "providers.claude.model",
+        "providers.claude.profile",
+        "providers.codex.command",
+        "providers.codex.model",
+        "providers.codex.profile",
+        "providers.secode.command",
+        "providers.secode.model",
+        "providers.secode.profile",
+        "providers.acp.command",
+        "providers.acp.model",
+        "providers.acp.profile",
+        "providers.secode.seed_profile",
+        "acp.arguments",
+        "acp.environment",
+        "acp.mode",
+        "profiles.default.sandbox",
+        "profiles.default.network",
+        "profiles.default.approval",
+        "profiles.default.bypass",
+        "profiles.default.git_write",
+        "atlas.enabled",
+        "atlas.hooks",
+        "capture.enabled",
+    ];
+
+    fn expected_keys(configuration: &ConfigFile) -> Vec<String> {
+        let mut expected: Vec<String> = EXPECTED_KEYS.iter().map(|key| (*key).to_owned()).collect();
+        let start = EXPECTED_KEYS
+            .iter()
+            .position(|key| key.starts_with("profiles.default."))
+            .expect("closed key set contains the default profile");
+        let fields: Vec<&str> = EXPECTED_KEYS
+            .iter()
+            .filter_map(|key| key.strip_prefix("profiles.default."))
+            .collect();
+        let profiles = configuration.profiles.keys().flat_map(|name| {
+            fields
+                .iter()
+                .map(move |field| format!("profiles.{name}.{field}"))
+        });
+        expected.splice(start..start + fields.len(), profiles);
+        expected
+    }
 
     fn value<'a>(page: &'a super::super::ConfigPageOutput, key: &'a str) -> &'a Read<Value> {
         &page
@@ -309,34 +369,7 @@ mod list_tests {
             .iter()
             .map(|row| row.key.as_str())
             .collect();
-        assert_eq!(
-            keys,
-            [
-                "default_project",
-                "launch.provider",
-                "launch.terminal",
-                "runtime.listen_port",
-                "runtime.blocking_jobs",
-                "providers.claude.command",
-                "providers.claude.model",
-                "providers.claude.profile",
-                "providers.codex.command",
-                "providers.codex.model",
-                "providers.codex.profile",
-                "providers.secode.command",
-                "providers.secode.model",
-                "providers.secode.profile",
-                "providers.secode.seed_profile",
-                "profiles.default.sandbox",
-                "profiles.default.network",
-                "profiles.default.approval",
-                "profiles.default.bypass",
-                "profiles.default.git_write",
-                "atlas.enabled",
-                "atlas.hooks",
-                "capture.enabled",
-            ]
-        );
+        assert_eq!(keys, EXPECTED_KEYS);
         assert!(page.page.window().complete());
         assert!(page.page.next().is_none());
         assert!(page.page.items().iter().all(|row| row.origin.is_none()));
@@ -464,34 +497,7 @@ mod list_tests {
                 .profiles
                 .insert(format!("profile-{index:03}"), Profile::default());
         }
-        let mut expected: Vec<String> = [
-            "default_project",
-            "launch.provider",
-            "launch.terminal",
-            "runtime.listen_port",
-            "runtime.blocking_jobs",
-            "providers.claude.command",
-            "providers.claude.model",
-            "providers.claude.profile",
-            "providers.codex.command",
-            "providers.codex.model",
-            "providers.codex.profile",
-            "providers.secode.command",
-            "providers.secode.model",
-            "providers.secode.profile",
-            "providers.secode.seed_profile",
-        ]
-        .iter()
-        .map(|key| (*key).to_string())
-        .collect();
-        for name in configuration.profiles.keys() {
-            for field in ["sandbox", "network", "approval", "bypass", "git_write"] {
-                expected.push(format!("profiles.{name}.{field}"));
-            }
-        }
-        for key in ["atlas.enabled", "atlas.hooks", "capture.enabled"] {
-            expected.push((*key).to_string());
-        }
+        let expected = expected_keys(&configuration);
         let mut collected: Vec<String> = Vec::new();
         let mut cursor = None;
         let mut pages = 0;
@@ -530,7 +536,7 @@ mod list_tests {
             assert_eq!(page.page.window().exit_code(false), 0);
             cursor = Some(page.page.next().cloned().expect("continuation cursor"));
         }
-        assert_eq!(pages, 31);
+        assert_eq!(pages, expected.len().div_ceil(100));
         assert_eq!(collected, expected);
         Ok(())
     }
@@ -635,7 +641,7 @@ mod list_tests {
             }
             cursor = page.page.next().cloned().expect("continuation cursor");
         }
-        assert_eq!(seen, 18 + 5 * 301);
+        assert_eq!(seen, expected_keys(&configuration).len());
         Ok(())
     }
 

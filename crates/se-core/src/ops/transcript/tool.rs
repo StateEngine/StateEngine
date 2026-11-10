@@ -54,6 +54,10 @@ pub enum NativeIdentity {
         item_id: Option<String>,
         call_id: Option<String>,
     },
+    AcpCall {
+        request: u64,
+        tool_call_id: String,
+    },
     Unknown(UnknownReason),
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -176,6 +180,18 @@ impl Observation {
                 for id in [turn_id, item_id, call_id].into_iter().flatten() {
                     label(id, 256)?;
                 }
+            }
+            (
+                NativeIdentity::AcpCall {
+                    request,
+                    tool_call_id,
+                },
+                Provider::Acp,
+            ) => {
+                if *request == 0 {
+                    return Err(invalid("the original protocol prompt request"));
+                }
+                label(tool_call_id, 512)?;
             }
             (NativeIdentity::Unknown(_), _) => (),
             _ => return Err(invalid("native identity namespace matching its provider")),

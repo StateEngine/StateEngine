@@ -101,5 +101,5 @@ pub(crate) fn resumed(event: &NewEvent, old: &StoredEvent) -> bool {
         EventBody::SessionTurn { session: new_session, agent, provider, vendor_ref, role, text: InputText::Inline(text), evidence, .. },
         EventBody::SessionTurn { session: old_session, agent: old_agent, provider: old_provider, vendor_ref: old_vendor, role: old_role, text: StoredText::Present(old_text), evidence: old_evidence, .. }
     ) if new_session != old_session && agent == old_agent && provider==old_provider && vendor_ref == old_vendor && role == old_role && (*provider != Provider::Claude || matches!(role,Role::User|Role::Assistant)) && text == old_text
-        && (*provider != Provider::SeCode || (evidence.sha256.is_some() && evidence.sha256==old_evidence.sha256 && evidence.offset==old_evidence.offset && evidence.length==old_evidence.length)))
+        && (!matches!(provider,Provider::SeCode|Provider::Acp) || (evidence.sha256.is_some() && evidence.sha256==old_evidence.sha256 && evidence.offset==old_evidence.offset && evidence.length==old_evidence.length)))
 }

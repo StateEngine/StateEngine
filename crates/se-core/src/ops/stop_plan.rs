@@ -159,6 +159,7 @@ pub fn control<R: Snapshot>(
             se_store::Provider::Claude => se_types::Provider::Claude,
             se_store::Provider::Codex => se_types::Provider::Codex,
             se_store::Provider::SeCode => se_types::Provider::SeCode,
+            se_store::Provider::Acp => se_types::Provider::Acp,
         },
         _ => return Err(scope::unreadable("stop profile", "wrong profile metadata")),
     };

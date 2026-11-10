@@ -149,7 +149,7 @@ fn capture_case(provider: Provider) -> Check {
                         NativeIdentity::CodexItem {ref item_id,ref call_id,..} => provider==Provider::Codex &&
                             (item_id.as_deref()==Some("actual-file-item") && call_id.is_none() ||
                              item_id.as_deref()==Some("actual-mcp-item") && call_id.as_deref()==Some("actual-call")),
-                        NativeIdentity::Unknown(_) => false,
+                        NativeIdentity::AcpCall { .. } | NativeIdentity::Unknown(_) => false,
                     }, "actual native identities were relabeled")?;
                 }
                 require(completed == 2, "actual outcomes missing")?;

@@ -30,6 +30,9 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
     plan.row.resume.command = None;
     plan.row.resume.argv = None;
     let verified = match &plan.capture {
+        Read::Present { value } if plan.row.provider == se_types::Provider::Acp => {
+            verify_acp(plan, value)
+        }
         Read::Present { value } => verify(value, deadline),
         Read::Absent { checked } => Err(invalid(checked)),
         Read::Unknown { what } => Err(invalid(what)),
@@ -52,7 +55,7 @@ pub(super) fn observe(plan: &mut AgentObservationPlan, deadline: Instant) -> Res
             } else if let Read::Unreadable { reason, .. } = &plan.row.session.liveness {
                 Some(reason.clone())
             } else {
-                Some("The captured conversation prefix is verified; stop or reconcile the existing scope before resuming its saved conversation.".into())
+                Some(if plan.row.provider==se_types::Provider::Acp { "The canonical protocol prefix is retained; stop or reconcile the existing scope before loading and verifying its saved conversation." } else { "The captured conversation prefix is verified; stop or reconcile the existing scope before resuming its saved conversation." }.into())
             };
             if stopped {
                 let command = se_core::ops::AgentCommand::launch(
@@ -131,4 +134,30 @@ fn verify(evidence: &SourceEvidence, deadline: Instant) -> Result<()> {
     pin.validate_path(&path)
         .map_err(|e| invalid(&e.to_string()))?;
     bound(deadline)
+}
+
+// Structured protocol facts are committed by the owned adapter, not a vendor file.
+// A later load still has to match the complete committed text before new input.
+fn verify_acp(plan: &AgentObservationPlan, evidence: &SourceEvidence) -> Result<()> {
+    if evidence.path.is_some() || evidence.length == 0 || evidence.sha256.is_none() {
+        return Err(invalid("the original complete structured protocol range"));
+    }
+    let source: serde_json::Value = serde_json::from_slice(&evidence.incarnation)
+        .map_err(|_| invalid("the original protocol binding"))?;
+    let identity = plan
+        .identity
+        .as_ref()
+        .ok_or_else(|| invalid("a saved protocol session"))?;
+    if source["schema"] != "se.acp-completed-source/v1"
+        || source["project"].as_str() != Some(identity.project.as_str())
+        || source["agent"].as_str() != Some(identity.agent.as_str())
+        || source["session"].as_str() != Some(identity.session.as_str())
+        || source["conversation"].as_str() != plan.row.conversation.id.as_deref()
+        || source["root"].is_null()
+    {
+        return Err(invalid(
+            "the exact original protocol conversation and native instance",
+        ));
+    }
+    Ok(())
 }
