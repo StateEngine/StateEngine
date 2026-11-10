@@ -122,6 +122,9 @@ pub use state_files::user_path::{
 mod entropy;
 pub use entropy::{NativeEntropyError, fill_entropy, random_secret};
 
+mod monotonic;
+pub use monotonic::monotonic_micros;
+
 mod birth_time;
 pub use birth_time::{ProcessBirthTime, observe_process_birth};
 

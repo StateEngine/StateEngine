@@ -38,6 +38,13 @@ pub(super) fn release(
     }
     let bracket = saved.as_ref().ok_or_else(poisoned)?;
     clock.source_bracket_us = Some(bracket.width_us);
+    // Sample before calculating age: the terminal includes all subsequent
+    // work, IPC, rendering and flush without charging an earlier long poll.
+    clock.source_released_at_us = Some(se_proc::monotonic_micros().map_err(|cause| {
+        refused(&format!(
+            "native observation clock unavailable: {cause}; timing is unqualified"
+        ))
+    })?);
     let elapsed = i128::from(micros(bracket.opened_at.elapsed())?);
     for record in &mut page.records {
         if let RemoteWatchRecord::Provisional { observation, .. } = record {

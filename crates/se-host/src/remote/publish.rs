@@ -139,6 +139,7 @@ impl LivePublisher {
             epoch: self.epoch,
             sampled_at_us: self.clock_us(Instant::now())?,
             source_bracket_us: None,
+            source_released_at_us: None,
         })
     }
     pub(crate) fn clock_us(&self, observed: Instant) -> Result<i64> {

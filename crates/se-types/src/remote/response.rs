@@ -107,13 +107,17 @@ pub struct RemoteObservationClock {
     pub epoch: [u8; 16],
     pub sampled_at_us: i64,
     pub source_bracket_us: Option<u64>,
+    /// Native source-machine clock sampled immediately before broker release.
+    /// Only a native client on that same machine may subtract this timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_released_at_us: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteObservationTime {
     pub at_us: i64,
     /// Filled at the source broker's release, including stream queue delay.
-    /// The terminal adds its complete request-to-flush span to this upper bound.
+    /// The native terminal adds broker-release-to-flush time to this upper bound.
     pub age_upper_bound_us: Option<u64>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]

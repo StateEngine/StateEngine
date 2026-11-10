@@ -13,6 +13,19 @@ pub(super) fn flushed(
 ) -> io::Result<()> {
     let request_us = u64::try_from(started.elapsed().as_micros().saturating_add(1))
         .map_err(|_| io::Error::other("terminal measurement interval overflow"))?;
+    let after_release = page
+        .observation_clock
+        .as_ref()
+        .and_then(|clock| clock.source_released_at_us)
+        .map(|released| {
+            se_proc::monotonic_micros()?
+                .checked_sub(released)
+                .and_then(|elapsed| elapsed.checked_add(2))
+                .ok_or_else(|| {
+                    io::Error::other("native terminal observation clock is inconsistent")
+                })
+        })
+        .transpose()?;
     let header = serde_json::json!({
         "schema":"stateengine.client-flush/v1","boundary":"stdout_flushed",
         "request_elapsed_us":request_us,"clock":page.observation_clock,
@@ -32,8 +45,9 @@ pub(super) fn flushed(
             let upper = observation
                 .as_ref()
                 .and_then(|v| v.age_upper_bound_us)
-                .map(|age| {
-                    age.checked_add(request_us).ok_or_else(|| {
+                .zip(after_release)
+                .map(|(age, elapsed)| {
+                    age.checked_add(elapsed).ok_or_else(|| {
                         io::Error::other("terminal observation upper bound overflow")
                     })
                 })
