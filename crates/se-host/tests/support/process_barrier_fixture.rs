@@ -121,6 +121,7 @@ impl Harness {
                 task: Some("real consumer fixture".into()),
                 detach: true,
                 override_live: false,
+                force_selection: None,
                 idempotency_key: se_types::IdempotencyKey::new(format!("launch-{}", serial()))?,
                 owner_agent: None,
                 owner_provider: None,

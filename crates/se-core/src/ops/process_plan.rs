@@ -24,29 +24,6 @@ fn imported_reference(reference: Read<ProviderSessionId>) -> Result<Read<Provide
     Ok(reference)
 }
 
-pub(crate) fn require_managed_control(control: &se_store::ControlTarget) -> Result<()> {
-    for record in &control.sessions {
-        let EventBody::SessionPrepared {
-            provider, surface, ..
-        } = &record.original.as_deref().unwrap_or(&record.current).body
-        else {
-            return Err(scope::unreadable(
-                "managed session control",
-                "the original active session preparation is unavailable",
-            ));
-        };
-        if *provider == se_store::Provider::SeCode
-            && *surface != Some(se_store::SessionSurface::Headless)
-        {
-            return Err(SeError::invalid(
-                "managed session control",
-                "stop the embedded SE Code session through its owning SE Code service first",
-            ));
-        }
-    }
-    Ok(())
-}
-
 pub fn target<R: Snapshot>(
     selected: Option<&AgentId>,
     selector: Option<&str>,
@@ -76,7 +53,7 @@ pub fn target<R: Snapshot>(
 }
 pub fn launch<R: Snapshot>(
     kernel: &Kernel,
-    input: AgentLaunch,
+    mut input: AgentLaunch,
     configuration: &ConfigFile,
     cx: &mut Cx<'_, R>,
 ) -> Result<LaunchPlan> {
@@ -104,7 +81,6 @@ pub fn launch<R: Snapshot>(
             ));
         }
     };
-    require_managed_control(&control)?;
     let saved = scope::require_present(
         control.profile.clone(),
         "saved launch profile",
@@ -122,11 +98,11 @@ pub fn launch<R: Snapshot>(
         se_store::Provider::SeCode => Provider::SeCode,
         se_store::Provider::Acp => Provider::Acp,
     };
-    if matches!(provider, Provider::SeCode | Provider::Acp) && !input.detach {
-        return Err(SeError::invalid(
-            "protocol launch mode",
-            "headless launch with --detach",
-        ));
+    if matches!(provider, Provider::SeCode | Provider::Acp) && input.override_live {
+        input.detach = true;
+    }
+    if control.processes.is_empty() && control.sessions.is_empty() {
+        input.require_launch_mode(profile.provider)?;
     }
     if input
         .owner_provider
@@ -205,20 +181,22 @@ pub fn launch<R: Snapshot>(
             .map(|_| unreachable!());
         }
     };
-    let conversation = if replayed {
-        // The host reuses the retained outcome or refuses an unavailable retry.
-        // Selecting a new conversation here also reads a child's private capture
-        // source for Codex, which its creator is not entitled to inspect.
-        Read::Unknown {
-            what: "a launch retry reuses its original outcome; no new conversation was selected"
-                .into(),
-        }
-    } else if input.fresh {
-        Read::Absent {
-            checked: "an explicitly new provider conversation was requested".into(),
-        }
-    } else {
-        match &control.resume_session {
+    let conversation = match (|| -> Result<Read<ProviderSessionId>> {
+        let conversation = if replayed {
+            // The host reuses the retained outcome or refuses an unavailable retry.
+            // Selecting a new conversation here also reads a child's private capture
+            // source for Codex, which its creator is not entitled to inspect.
+            Read::Unknown {
+                what:
+                    "a launch retry reuses its original outcome; no new conversation was selected"
+                        .into(),
+            }
+        } else if input.fresh {
+            Read::Absent {
+                checked: "an explicitly new provider conversation was requested".into(),
+            }
+        } else {
+            match &control.resume_session {
             Read::Absent { checked } => Read::Absent {
                 checked: checked.clone(),
             },
@@ -284,6 +262,22 @@ pub fn launch<R: Snapshot>(
                 ));
             }
         }
+        };
+        Ok(conversation)
+    })() {
+        Ok(conversation) => conversation,
+        Err(failure) if input.override_live => Read::Absent {
+            checked: format!(
+                "Forced relaunch preserves the previous history and starts a new conversation because the saved binding could not be resumed: {failure}"
+            ),
+        },
+        Err(failure) if !control.processes.is_empty() || !control.sessions.is_empty() => Read::Unknown {
+            what: format!("Saved conversation unavailable before live-launch confirmation: {failure}"),
+        },
+        Err(failure) => return Err(SeError::new(se_types::Detail::LaunchFailed(se_types::details::LaunchFailed {
+            subject: name.clone(), reason: failure.to_string(),
+            next_step: "Repeat this launch with --force to preserve the old history and start a new conversation when its saved binding cannot be resumed.".into(),
+        }))),
     };
     let saved_conversation_age = match &conversation {
         Read::Present { .. } => match &control.resume_session {

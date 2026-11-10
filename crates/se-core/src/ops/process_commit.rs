@@ -2,6 +2,8 @@
 //! admitted writer and its canonical FULL commit; native effects occur between
 //! these barriers, never inside a snapshot.
 mod capture;
+mod embedded;
+pub use embedded::{embedded_session, retire_embedded};
 mod launch;
 pub use capture::{capture_failure, capture_verified, final_capture_failure};
 pub use launch::{

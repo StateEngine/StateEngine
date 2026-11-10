@@ -162,11 +162,24 @@ impl LaunchCoordinator {
     ) -> AgentStopResult {
         let retained = self.find_job(&target.target.project.id, &target.target.agent.id);
         let mut row = empty_row(target, &self.options.home);
+        let mut external = Vec::new();
         let result=async{
             // A refused target becomes one result row; it cannot suppress the
             // independent targets selected by --all.
             let agent=row.target.agent.id.clone();
             let current=self.store.read(admission.clone(),deadline,move |cx| se_core::scope::require_present(cx.read.control_target(agent).map_err(|e|se_core::store_error::store_error(&e))?,"current stop control","Restore the current create grant or use the owner's terminal.")).await?;
+            external = self.retire_embedded_bindings(&current, &row.target.agent.id, key, &admission, deadline).await?;
+            if !external.is_empty() && current.processes.is_empty() {
+                let changed = external.iter().any(|binding| binding.changed);
+                row.result = if changed { "stopped" } else { "already-stopped" }.into();
+                row.target.session_id = external.last().map(|binding| binding.session.clone());
+                row.event_id = external.iter().rev().find(|binding| binding.changed).map(|binding| binding.event.clone());
+                row.method = Some("engine-binding-retirement".into());
+                row.witness.state = "binding-retired".into();
+                row.witness.method = row.method.clone();
+                row.enumeration = "external-service-not-inventoried".into();
+                return Ok(());
+            }
             if current.processes.len()>1 {return Err(error("stop lifecycle inventory","more than one unreleased lifecycle belongs to this agent; retain the full inventory for owner reconciliation"));}
             let job=match retained? {Some(job)=>Some(job),None=>self.cold_stop_job(&current,&row.target.project.id,deadline).await?};
             let Some(job)=job else {
@@ -221,7 +234,43 @@ impl LaunchCoordinator {
             row.witness.detail = Some(refusal_detail(&error, &cx));
             row.population_reason=Some("Native closure or retained cleanup is incomplete; an empty diagnostic list proves nothing.".into());
         }
+        if !external.is_empty() {
+            let detail = external
+                .iter()
+                .map(|binding| {
+                    format!(
+                        "Engine binding {} retired; jobs in {} were not stopped",
+                        binding.session, binding.service
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            row.witness.detail = Some(match row.witness.detail.take() {
+                Some(previous) => format!("{previous}; {detail}"),
+                None => detail.clone(),
+            });
+            row.population = "unknown".into();
+            row.population_reason = Some(detail);
+        }
         row
+    }
+    pub(super) fn find_lifecycle_job(
+        &self,
+        project: &se_types::ProjectId,
+        agent: &se_types::AgentId,
+        lifecycle: &se_types::LifecycleId,
+    ) -> Result<Option<Arc<Job>>> {
+        let jobs = self
+            .jobs
+            .0
+            .lock()
+            .map_err(|_| error("process supervisors", "poisoned retained registry"))?;
+        Ok(jobs
+            .values()
+            .find(|job| {
+                &job.target.0 == project && &job.target.1 == agent && &job.lifecycle == lifecycle
+            })
+            .cloned())
     }
     pub(super) fn find_job(
         &self,

@@ -7,7 +7,7 @@ mod status;
 impl LaunchCoordinator {
     pub(in crate::process) async fn preflight_acp(
         &self,
-        plan: &se_core::ops::agent_launch::LaunchPlan,
+        plan: &mut se_core::ops::agent_launch::LaunchPlan,
         admission: &se_store::Admission,
         deadline: &crate::client::lease::Deadline,
     ) -> se_types::Result<()> {
@@ -30,7 +30,12 @@ impl LaunchCoordinator {
             .await?;
         // Refuse known capture/budget failures before stopping an incumbent.
         // Launch reads again after final capture; a live tail is never frozen here.
-        self.acp_replay(plan, admission, deadline).await?;
+        if let Err(failure) = self.acp_replay(plan, admission, deadline).await {
+            if !plan.input.override_live {
+                return Err(failure);
+            }
+            plan.start_new_conversation(format!("Forced relaunch preserved the previous history and starts a new conversation because complete protocol replay was unavailable: {failure}"));
+        }
         Ok(())
     }
 }

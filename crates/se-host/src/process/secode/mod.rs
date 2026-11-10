@@ -108,12 +108,15 @@ impl Service {
             return Ok(());
         };
         let path = self.path.clone();
+        let custody_deadline = deadline.clone();
         self.digest = Some(
             coordinator
                 .store
                 .pool
                 .run_owned(deadline, move || {
-                    pending.journal.save(&path, pending.expected)
+                    pending
+                        .journal
+                        .save(&path, pending.expected, &custody_deadline)
                 })
                 .await?,
         );
@@ -157,8 +160,8 @@ impl Service {
 impl LaunchCoordinator {
     /// Direct down/uninstall must recover auxiliary custody even if no client
     /// process remains in the ordinary session inventory.
-    pub fn secode_recovery_required(home: &std::path::Path) -> Result<bool> {
-        Ok(recovery::inventory(home)?
+    pub fn secode_recovery_required(home: &std::path::Path, deadline: &Deadline) -> Result<bool> {
+        Ok(recovery::inventory(home, deadline)?
             .iter()
             .any(|(_, journal, _)| !journal.retired))
     }

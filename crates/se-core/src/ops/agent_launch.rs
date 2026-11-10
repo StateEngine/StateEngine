@@ -25,8 +25,17 @@ pub struct AgentLaunch {
     #[serde(default = "headless")]
     pub detach: bool,
     /// Explicit consent to stop the existing managed lifecycle and its jobs.
-    #[serde(default, skip_serializing_if = "no_override")]
+    #[serde(
+        default,
+        rename = "force",
+        alias = "override_live",
+        skip_serializing_if = "no_override"
+    )]
     pub override_live: bool,
+    /// Optional selection returned by the confirmation inventory. A changed
+    /// target must be inspected again instead of stopping a newer session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_selection: Option<ForceSelection>,
     pub idempotency_key: IdempotencyKey,
     /// Only the core's decoded CLI selection layer supplies these values.
     #[serde(skip)]
@@ -36,6 +45,13 @@ pub struct AgentLaunch {
     #[schemars(skip)]
     pub owner_provider: Option<Provider>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForceSelection {
+    pub lifecycles: Vec<LifecycleId>,
+    pub sessions: Vec<SessionId>,
+}
+
 fn headless() -> bool {
     true
 }
@@ -78,6 +94,22 @@ fn attended_setup_reason(record: &se_store::ProjectionRecord) -> Option<&str> {
     }
 }
 impl AgentLaunch {
+    /// A busy target is inventoried before this launch-mode refusal. The host
+    /// rechecks it before any preflight or native replacement can take effect.
+    pub fn require_launch_mode(&self, provider: se_store::Provider) -> Result<()> {
+        if matches!(
+            provider,
+            se_store::Provider::SeCode | se_store::Provider::Acp
+        ) && !self.detach
+        {
+            return Err(se_types::SeError::invalid(
+                "protocol launch mode",
+                "headless launch with --detach, or --force for a forced headless relaunch",
+            ));
+        }
+        Ok(())
+    }
+
     /// Route syntax is not request identity: CLI selectors and MCP IDs bind to
     /// the same admitted agent. Keep every other caller argument unchanged.
     pub fn intent(&self, selected: &AgentId) -> Result<serde_json::Value> {
@@ -88,8 +120,26 @@ impl AgentLaunch {
         Ok(value)
     }
 }
+impl LaunchPlan {
+    pub fn start_new_conversation(&mut self, reason: String) {
+        self.conversation = Read::Absent {
+            checked: reason.clone(),
+        };
+        self.saved_conversation_age = Read::Absent { checked: reason };
+    }
+}
 impl Validate for AgentLaunch {
     fn validate(&self) -> Result<()> {
+        if let Some(selection) = &self.force_selection
+            && (!self.override_live
+                || selection.lifecycles.len() > 4096
+                || selection.sessions.len() > 4096)
+        {
+            return Err(se_types::SeError::invalid(
+                "force selection",
+                "a bounded confirmation selection supplied with force",
+            ));
+        }
         if let Some(value) = &self.model {
             bounded("model", value, 256, false)?;
         }
@@ -163,13 +213,26 @@ pub struct LaunchResult {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TakeoverReport {
     pub previous_session: SessionId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_sessions: Vec<SessionId>,
+    #[serde(default, skip_serializing_if = "no_override")]
+    pub new_conversation: bool,
     pub scope: String,
+    /// An unavailable diagnostic inventory is not an observation of zero jobs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory_failure: Option<String>,
+    /// Externally owned services whose jobs were not stopped by this operation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub external_services: Vec<String>,
     /// Jobs observed before stop and separately observed no longer executing
     /// afterward. Later spawns are not individually listed by this receipt.
     pub jobs_stopped: Vec<TakeoverJob>,
     /// Observed descendants still live outside the stopped native scope.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub jobs_remaining: Vec<TakeoverJob>,
+    /// Recorded jobs whose individual post-stop observation was unreadable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs_unproved: Vec<TakeoverJob>,
     pub witness: String,
 }
 

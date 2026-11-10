@@ -148,7 +148,6 @@ pub fn control<R: Snapshot>(
         }
         _ => return Err(scope::unreadable("stop target", "wrong principal metadata")),
     };
-    process_plan::require_managed_control(&control)?;
     let profile = scope::require_present(
         control.profile.clone(),
         "stop profile",

@@ -67,7 +67,7 @@ def pending(value, project, agent, key, task, override=False):
     retry = value["retry"]
     assert retry["target_agent_id"] == agent and retry["idempotency_key"] == key, value
     assert retry["task"] == task and retry["detach"] is False, value
-    assert retry.get("override_live", False) == override, value
+    assert retry.get("force", False) == override, value
     # These are activation/native facts, not required metadata for a pending job.
     for name in ("event_id", "conversation_id", "process", "containment"):
         assert name not in value, ("pending invented an unproved fact", name, value)

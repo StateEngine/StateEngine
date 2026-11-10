@@ -481,22 +481,38 @@ impl LaunchCoordinator {
         )
         .filter(|_| plan.profile.provider != se_store::Provider::SeCode)
         .map(|command| command.with_detach(plan.input.detach));
+        let forced_notice = if plan.input.override_live
+            && !plan.input.fresh
+            && matches!(plan.control.resume_session, Read::Present { .. })
+        {
+            match &plan.conversation {
+                Read::Absent { checked } => Some(checked.clone()),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let policy_notice = if plan.profile.provider == se_store::Provider::Acp {
+            Some(
+                crate::harness::acp::bound(
+                    work.binding
+                        .as_ref()
+                        .ok_or_else(|| error("ACP launch status", "binding absent"))?,
+                )?
+                .session
+                .observe()?
+                .policy_notice
+                .into(),
+            )
+        } else {
+            None
+        };
+        let harness_policy_notice = match (policy_notice, forced_notice) {
+            (Some(policy), Some(replacement)) => Some(format!("{policy} {replacement}")),
+            (policy, replacement) => policy.or(replacement),
+        };
         Ok(LaunchResult {
-            harness_policy_notice: if plan.profile.provider == se_store::Provider::Acp {
-                Some(
-                    crate::harness::acp::bound(
-                        work.binding
-                            .as_ref()
-                            .ok_or_else(|| error("ACP launch status", "binding absent"))?,
-                    )?
-                    .session
-                    .observe()?
-                    .policy_notice
-                    .into(),
-                )
-            } else {
-                None
-            },
+            harness_policy_notice,
             secode_binding: secode_binding.map(|value| Read::Present { value }),
             takeover: work.takeover.clone(),
             idempotency_key: plan.input.idempotency_key.clone(),

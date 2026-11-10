@@ -54,7 +54,8 @@ impl LaunchCoordinator {
                 .pool
                 .run_owned(deadline, {
                     let path = path.clone();
-                    move || Journal::read(&path)
+                    let custody_deadline = deadline.clone();
+                    move || Journal::read(&path, &custody_deadline)
                 })
                 .await?;
             if retained.is_some() {

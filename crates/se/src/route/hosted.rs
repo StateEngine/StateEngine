@@ -11,7 +11,7 @@ use se_host::client::{ClientOptions, lease::Deadline};
 use se_types::{Read, Result, SeError};
 use std::sync::Arc;
 
-pub fn forward<R: se_store::ReadStore>(
+fn forward_once<R: se_store::ReadStore>(
     cx: &Bootstrap,
     files: &Files,
     reader: &R,
@@ -97,4 +97,71 @@ pub fn forward<R: se_store::ReadStore>(
     } else {
         Ok(output)
     }
+}
+
+/// Human confirmation changes only explicit takeover consent and binds the
+/// second request to the inventory that was shown before the answer.
+pub fn forward<R: se_store::ReadStore>(
+    cx: &Bootstrap,
+    files: &Files,
+    reader: &R,
+    caller: &Caller,
+    operation: AnyOp,
+    selections: &CliSelections,
+    diagnostic: &mut dyn FnMut(&str) -> std::io::Result<()>,
+) -> Result<AnyOutput> {
+    let retry = match &operation {
+        AnyOp::AgentLaunch(input) if !input.override_live => Some(input.clone()),
+        _ => None,
+    };
+    let result = forward_once(cx, files, reader, caller, operation, selections, diagnostic);
+    let (Some(mut input), Err(failure)) = (retry, &result) else {
+        return result;
+    };
+    let se_types::Detail::LaunchConfirmationRequired(inventory) = failure.body.detail() else {
+        return result;
+    };
+    use std::io::IsTerminal;
+    if cx.json
+        || !std::io::stdin().is_terminal()
+        || !std::io::stderr().is_terminal()
+        || !matches!(
+            caller.terminal,
+            se_core::admission::HumanTerminal::OutsideAgentTree
+        )
+    {
+        return result;
+    }
+    diagnostic(&failure.body.message())
+        .map_err(|error| scope::unreadable("launch inventory output", &error.to_string()))?;
+    diagnostic("Stop these sessions and all their managed jobs, then relaunch? [y/N]")
+        .map_err(|error| scope::unreadable("launch confirmation output", &error.to_string()))?;
+    use std::io::{BufRead, Read};
+    let mut answer = String::new();
+    std::io::stdin()
+        .lock()
+        .take(32)
+        .read_line(&mut answer)
+        .map_err(|error| scope::unreadable("launch confirmation input", &error.to_string()))?;
+    if !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        return Err(se_types::SeError::new(se_types::Detail::Cancelled(
+            se_types::details::Cancelled {
+                op: "launch confirmation".into(),
+            },
+        )));
+    }
+    input.override_live = true;
+    input.force_selection = Some(se_core::ops::agent_launch::ForceSelection {
+        lifecycles: inventory.lifecycles.clone(),
+        sessions: inventory.sessions.clone(),
+    });
+    forward_once(
+        cx,
+        files,
+        reader,
+        caller,
+        AnyOp::AgentLaunch(input),
+        selections,
+        diagnostic,
+    )
 }

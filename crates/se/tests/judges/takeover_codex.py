@@ -96,7 +96,7 @@ def main():
         rows.append("real Codex launches and executes a tool through the owned model")
 
         refused = f.call("--project", f.project, "launch", f.agent, "--detach")
-        assert refused.returncode != 0 and b"--override-live" in refused.stderr and live(root)
+        assert refused.returncode != 0 and b"--force" in refused.stderr and live(root)
         rows.append("default real Codex relaunch refuses before stopping the exact native root")
         second = f.ok("--project", f.project, "--key", "codex-takeover", "launch", f.agent, "--detach", "--override-live")
         assert second["conversation_id"] == first["conversation_id"]
