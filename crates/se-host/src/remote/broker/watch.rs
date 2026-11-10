@@ -125,12 +125,29 @@ impl Watches {
         let entry = {
             let mut entries = self.entries.lock().map_err(|_| poisoned())?;
             if !entries.contains_key(&key) {
-                if entries.values().map(|e| e.target_count).sum::<usize>() + request.targets.len()
+                while entries.values().map(|e| e.target_count).sum::<usize>()
+                    + request.targets.len()
                     > 64
                 {
-                    return Err(refused(
-                        "64 retained source watches are already active; close an older selection",
-                    ));
+                    // A stopped terminal must not reserve capacity for the full
+                    // idle TTL. Evict only entries no read currently owns; their
+                    // sealed cursors reconstruct the view if a reader returns.
+                    let mut oldest = None;
+                    for (key, entry) in entries
+                        .iter()
+                        .filter(|(_, entry)| Arc::strong_count(entry) == 1)
+                    {
+                        let touched = *entry.touched.lock().map_err(|_| poisoned())?;
+                        if oldest.as_ref().is_none_or(|(_, prior)| touched < *prior) {
+                            oldest = Some((key.clone(), touched));
+                        }
+                    }
+                    let Some((key, _)) = oldest else {
+                        return Err(refused(
+                            "64 source watch targets are in flight; retry after a reader finishes",
+                        ));
+                    };
+                    entries.remove(&key);
                 }
                 entries.insert(
                     key.clone(),
