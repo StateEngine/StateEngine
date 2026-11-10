@@ -27,12 +27,15 @@ def plan(config):
 
 
 def latest(state, directory, record, status):
+    if record.get("publish_latest") is False:
+        return
     previous, _ = read(state / "latest.json")
     # A late finalizer must not replace a newer attempt's pointer.
     if previous and isinstance(previous.get("started_at"), str) and previous["started_at"] > record["started_at"]:
         return
     save(state / "latest.json", {"directory": str(directory), "started_at": record["started_at"],
-        "grid": str(directory / "grid.md"), "budgets": str(directory / "budgets.json"), "status": status})
+        "grid": str(directory / "grid.md"), "budgets": str(directory / "budgets.json"),
+        "service_invocation_id": record.get("service_invocation_id"), "status": status})
 
 
 def checkpoint(state, directory, record):
@@ -51,7 +54,7 @@ def checkpoint(state, directory, record):
     return report
 
 
-def begin(config, activate=True):
+def begin(config, activate=True, bind_service=True):
     state = Path(config["state"])
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     now = datetime.now(timezone.utc)
@@ -59,12 +62,13 @@ def begin(config, activate=True):
     directory = state / stamp[:8] / stamp
     directory.mkdir(parents=True, mode=0o700)
     record = {"started_at": now.isoformat(), "state": "running", "invocations": plan(config), "errors": [],
-              "service_invocation_id": os.environ.get("INVOCATION_ID")}
-    pointer = {"directory": str(directory), "service_invocation_id": record["service_invocation_id"]}
+              "service_invocation_id": os.environ.get("INVOCATION_ID"), "publish_latest": activate}
+    pointer = {"directory": str(directory), "started_at": record["started_at"],
+               "service_invocation_id": record["service_invocation_id"]}
     identity = record["service_invocation_id"]
-    if identity:
-        if not re.fullmatch(r"[a-f0-9]{32}", identity):
-            raise RuntimeError("invalid service invocation identity")
+    if identity and not re.fullmatch(r"[a-f0-9]{32}", identity):
+        raise RuntimeError("invalid service invocation identity")
+    if identity and bind_service:
         services = state / "services"
         services.mkdir(exist_ok=True, mode=0o700)
         save(services / (identity + ".json"), pointer)
@@ -91,9 +95,25 @@ def service_exit(config):
             error = "attempt mapping is outside its configured spool"
     record, record_error = read(directory / "run.json") if directory else (None, error or "invalid attempt mapping")
     if record is None or record.get("service_invocation_id") != identity:
-        # This service died before binding an attempt, or its record became
-        # unreadable. Publish its own failure without mutating another run.
-        state, directory, record = begin(config, activate=False)
+        # A corrupt old record must not turn its late finalizer into a new
+        # attempt. Recover its original ordering from the separate mapping or
+        # its own latest pointer. Without either, retain a detached failure.
+        previous, previous_error = read(state / "latest.json")
+        owns_latest = previous and (previous.get("service_invocation_id") == identity or
+                                   directory and previous.get("directory") == str(directory))
+        origin = current.get("started_at") if directory and current else None
+        if origin is None and owns_latest:
+            origin = previous.get("started_at")
+        try:
+            comparable = isinstance(origin, str) and datetime.fromisoformat(origin).tzinfo is not None
+        except ValueError:
+            comparable = False
+        original_directory = str(directory) if directory else None
+        state, directory, record = begin(config, activate=False, bind_service=False)
+        record["original_attempt_directory"] = original_directory
+        record["publish_latest"] = comparable or previous_error == "absent"
+        if comparable:
+            record["started_at"] = datetime.fromisoformat(origin).astimezone(timezone.utc).isoformat()
         record["errors"].append("service ended before a readable owned attempt record: " + str(record_error))
     result = os.environ["SERVICE_RESULT"]
     if result != "success" or record.get("state") != "finished":

@@ -74,9 +74,13 @@ def invocation(inv, directory):
         entry["problems"].append("results.json: " + error)
         return entry
     scope = receipt.get("scope")
+    selected = scope.get("selected") if isinstance(scope, dict) else None
     rows = receipt.get("results")
     if (receipt.get("platform") != inv.get("platform") or receipt.get("implementation") != "rust"
-            or not isinstance(scope, dict) or scope.get("mode") != mode or mode == "unsupported"):
+            or receipt.get("surface") != inv.get("surface")
+            or not isinstance(scope, dict) or scope.get("mode") != mode or mode == "unsupported"
+            or not isinstance(selected, list) or any(type(number) is not int for number in selected)
+            or len(selected) != len(expected) or set(selected) != expected):
         entry["problems"].append("identity, selection or scope mismatch")
         return entry
     if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
