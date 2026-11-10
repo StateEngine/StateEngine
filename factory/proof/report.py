@@ -8,7 +8,8 @@ PLATFORMS = ("linux", "win32", "darwin")
 NAMES = ("Install", "Adopt", "Come back", "Two agents", "Remove")
 FIRST_HOUR = ("Install", "Adopt", "Work", "Restart and recall", "Remove")
 SELECTIONS = {"first-hour": ("first-hour", {1, 2, 3, 4, 5}),
-              "wave-2": ("rust-wave-2", {1, 2, 3, 5})}
+              "wave-2": ("rust-wave-2", {1, 2, 3, 5}),
+              "4": ("selected", {4})}
 LABELS = {
     "B1": ("embedded A/B",), "B2": ("embedded A/B",),
     "B3": ("standalone persistent processes", "persistent processes after 1 seat(s)",
