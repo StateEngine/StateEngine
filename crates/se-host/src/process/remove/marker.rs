@@ -47,7 +47,15 @@ pub(super) fn remove(root: &Path, project: &str) -> Cleanup {
     };
     let marker = folder.join(format!("project-{project}"));
     match retire_marker(&marker, project) {
-        Ok(()) => result.removed(&marker, "git identity marker"),
+        Ok(true) => result.removed(&marker, "git identity marker"),
+        Ok(false) => {
+            result.keep(
+                &folder,
+                "git identity folder",
+                "The marker is absent; the state folder was left untouched.",
+            );
+            return result;
+        }
         Err(reason) => {
             // In particular, absence never authorizes removing the parent.
             result.keep(&marker, "git identity marker", reason);
@@ -75,13 +83,12 @@ pub(super) fn remove(root: &Path, project: &str) -> Cleanup {
     result
 }
 
-fn retire_marker(marker: &Path, project: &str) -> Result<(), String> {
-    let marker = checked_path(marker, false)?;
-    let mut file = OwnedFile::open(&marker)
-        .map_err(|error| format!("Marker kept: {error}"))?
-        .ok_or_else(|| {
-            "The marker is absent; repository directories were left untouched.".to_owned()
-        })?;
+fn retire_marker(marker: &Path, project: &str) -> Result<bool, String> {
+    let Some(mut file) =
+        OwnedFile::open(marker).map_err(|error| format!("Marker kept: {error}"))?
+    else {
+        return Ok(false);
+    };
     let bytes = file
         .read(MARKER_BOUND)
         .map_err(|error| format!("Marker kept: {error}"))?;
@@ -92,7 +99,8 @@ fn retire_marker(marker: &Path, project: &str) -> Result<(), String> {
     }
     checked_path(&marker, false)?;
     file.remove(Sha256::digest(&bytes).into())
-        .map_err(|error| format!("Marker removal could not be witnessed: {error}"))
+        .map_err(|error| format!("Marker removal could not be witnessed: {error}"))?;
+    Ok(true)
 }
 
 // Match the complete record emitted by init, rather than just its filename or
