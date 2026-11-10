@@ -32,6 +32,10 @@ exact process custody after a controller crash, and reconciliation must join kno
 native tasks before another container runs. Keep the dedicated App dispatcher
 stopped during this cutover.
 
+The adapter follows the pinned runner v2.338.2 protocol: `prepare_job` receives
+`args.container`. Cleanup after failed preparation may have null state and only
+reconciles previously recorded native custody under the CI lock.
+
 Root installation:
 
 1. Install a pinned official Linux x64 runner archive and verify its published
