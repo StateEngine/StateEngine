@@ -28,7 +28,7 @@ pub fn identifier_tokens(name: &str) -> Vec<&str> {
         }
     }
     if let Some(start) = start {
-        tokens.push(&name[start..]);
+        tokens.push(&name[..start]);
     }
     tokens
 }
