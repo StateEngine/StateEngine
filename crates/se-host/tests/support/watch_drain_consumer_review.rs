@@ -75,7 +75,7 @@ fn open(
         stopped: Arc::new(AtomicBool::new(false)),
     };
     let mut watch = Watch::new(client, call, request);
-    watch.attached = Some(queue.take());
+    watch.attached = Some(queue.take()?);
     Ok((watch, queue, fenced))
 }
 fn page(index: usize, text: usize, complete: bool) -> Result<RemoteWatchBatch> {
@@ -228,7 +228,8 @@ async fn a_fenced_source_or_closed_connection_releases_no_queued_private_records
         watch
             .next(Duration::ZERO)
             .await
-            .expect_err("revoked source")
+            .err()
+            .ok_or("revoked source unexpectedly returned output")?
             .code(),
         se_types::Code::CapabilityInvalid
     );

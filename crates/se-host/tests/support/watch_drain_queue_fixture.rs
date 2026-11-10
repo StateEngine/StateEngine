@@ -34,12 +34,18 @@ impl Queue {
             _outgoing: receiver,
         })
     }
-    pub fn take(&mut self) -> (Arc<Connection>, Guard, mpsc::Receiver<Result<QueuedBatch>>) {
-        (
+    pub fn take(
+        &mut self,
+    ) -> Result<(Arc<Connection>, Guard, mpsc::Receiver<Result<QueuedBatch>>)> {
+        Ok((
             self.connection.clone(),
-            self.guard.take().expect("one attachment"),
-            self.receiver.take().expect("one receiver"),
-        )
+            self.guard
+                .take()
+                .ok_or_else(|| unavailable("fixture attachment already taken"))?,
+            self.receiver
+                .take()
+                .ok_or_else(|| unavailable("fixture receiver already taken"))?,
+        ))
     }
     pub fn feed(&self, batch: RemoteWatchBatch) -> Result<()> {
         let frame = ServerFrame::WatchEvent {
