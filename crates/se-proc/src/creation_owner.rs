@@ -3,19 +3,6 @@
 //! that default even when its directory DACL is correctly owner-only.
 use std::io;
 
-// Preserve the native choice before startup normalizes future files to the user.
-// This admits that exact creator identity, never arbitrary token group membership.
-#[cfg(windows)]
-static CREATION_OWNER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-
-#[cfg(windows)]
-pub(crate) fn default_file_owner() -> Result<String, FileOwnerError> {
-    if let Some(owner) = CREATION_OWNER.get() {
-        return Ok(owner.clone());
-    }
-    windows::default_owner()
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileOwnerInitialization {
     NotRequired,
@@ -112,18 +99,6 @@ mod windows {
             source: e.source,
         })
     }
-    pub(super) fn default_owner() -> Result<String, FileOwnerError> {
-        let mut raw = ptr::null_mut();
-        // SAFETY: current-process pseudo handle, query rights and writable output.
-        if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut raw) } == 0 {
-            return Err(last("open process default-owner token"));
-        }
-        // SAFETY: successful OpenProcessToken transfers one unique owned handle.
-        let token = unsafe { OwnedHandle::from_raw_handle(raw) };
-        let owner = information(&token, TokenOwner, size_of::<TOKEN_OWNER>())?;
-        // SAFETY: successful aligned native output is retained through conversion.
-        text(unsafe { (&*owner.as_ptr().cast::<TOKEN_OWNER>()).Owner })
-    }
     pub(super) fn initialize() -> Result<FileOwnerInitialization, FileOwnerError> {
         let mut raw = ptr::null_mut();
         // SAFETY: current-process pseudo handle, requested query/default-adjust
@@ -157,9 +132,6 @@ mod windows {
             return Err(refuse("invalid native token owner/user SID"));
         }
         let sid = text(user_sid)?;
-        // Retain the process token's original native creation owner before the
-        // existing startup-only normalization. Repeated startup calls retain it.
-        let _ = CREATION_OWNER.set(text(owner_sid)?);
         // SAFETY: both valid SIDs remain inside their retained token buffers.
         if unsafe { EqualSid(owner_sid, user_sid) } != 0 {
             return Ok(FileOwnerInitialization::AlreadyUser { sid });

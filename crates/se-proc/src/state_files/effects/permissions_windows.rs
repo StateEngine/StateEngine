@@ -66,9 +66,9 @@ fn snapshot(file: &File, path: &Path) -> Result<PermissionSnapshot> {
     .map_err(|e| io_error("read repair object security", path, e))?;
     let owner = crate::windows_native::sid_text(descriptor.owner)
         .map_err(|e| io_error(e.operation, path, e.source))?;
-    if !security::is_current_owner_sid(&owner, path)? {
+    if owner != security::current_owner_sid(path)? {
         return Err(unsafe_path(
-            "repair requires process user or default creation ownership",
+            "repair requires current OS user ownership",
             path,
         ));
     }
