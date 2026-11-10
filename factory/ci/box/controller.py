@@ -73,10 +73,10 @@ def run(args):
             try:
                 status, outcomes = cohort.run()
                 result["jobs"] = outcomes
-                result["success"] = status == "passed"
             finally:
                 result["jobs"] = cohort.outcomes
                 journal.reconcile()
+            result["success"] = status == "passed"
     except Exception as error:
         result["error"] = type(error).__name__ + ": " + str(error)
     finally:
