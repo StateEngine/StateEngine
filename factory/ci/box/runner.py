@@ -48,7 +48,7 @@ def run(job, all_features=False):
         return code or call(["cargo", "test", "--target", target, "--workspace", *features, "--locked", "--doc"], 900)
     if job.startswith("test-"):
         partition = job[-1]
-        filters = subprocess.check_output(["python3", "scripts/ci/custom.py", "filter"], cwd=ROOT, text=True).strip()
+        filters = subprocess.check_output(["python3", "scripts/ci/custom.py", "filter", *features], cwd=ROOT, text=True).strip()
         code = call(["cargo", "nextest", "run", "--target", target, "--workspace", *features, "--locked", "--profile", "ci", "--test-threads", "4", "--partition", "slice:" + partition + "/2", "-E", filters], 360)
         custom = call(["python3", "scripts/ci/custom.py", "run"], 1080) if partition == "1" else 0
         return int(bool(code or custom))

@@ -109,3 +109,25 @@ failure, workflow/container rejection, cancellation with a surviving container,
 free-memory refusal and exact cleanup. Syntax checks and isolated hook
 requests do not qualify these deployed effects. Native Windows runtime and macOS qualification remain separate; a successful
 MSVC-target cross-check makes no claim about native runtime behavior.
+
+### External judge inputs
+
+All-features checks still compile every test target. Before either test shard,
+`scripts/ci/custom.py filter` reports externally supplied judges as `NOT RUN`
+when a required input variable is absent or empty. It names each missing input
+in the job log and writes `target/nextest/input-judges.json` separately from
+nextest failures. Default-feature checks retain their existing filter. The box
+passes the feature mode explicitly; hosted shards use the same scheduled/manual
+main selection as their archive build.
+
+The report covers the CLI selectors (`SE_SELECTOR_SE`), shutdown
+(`SE_SHUTDOWN_JUDGE_SE`), lifecycle (`JUDGE_H13_ROOT`, `JUDGE_H13_SE`,
+`JUDGE_H14_ROOT`, `JUDGE_H14_SE`), runtime status (`SE_RUNTIME_JUDGE_SE`,
+`SE_RUNTIME_JUDGE_OUT`), and W3 CLI (`SE_W3_SE_BIN`) consumers. The W3 native-task
+case additionally needs `SE_W3_NATIVE_DRIVER`, `SE_W3_SECODE_SERVER` and
+`SE_W3_PRODUCT_COMMIT`; missing those does not exclude other W3 cases when their
+CLI is supplied. Platform-specific judges are reported only on their platform.
+
+A supplied but incorrect path, unreadable artifact, invalid commit, or product
+failure remains a real test failure. This selection does not infer success from
+missing input, change an assertion, or alter the exit status of executed tests.
