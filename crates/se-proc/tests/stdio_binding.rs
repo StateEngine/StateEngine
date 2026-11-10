@@ -19,6 +19,9 @@ mod stop_census_review;
 #[cfg(target_os = "linux")]
 #[path = "support/stop_dispatch_review.rs"]
 mod stop_dispatch_review;
+#[cfg(target_os = "linux")]
+#[path = "support/tracked_capacity_review.rs"]
+mod tracked_capacity_review;
 fn error(value: ProcError) -> String {
     format!("{value:?}")
 }

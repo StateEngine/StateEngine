@@ -113,14 +113,17 @@ impl Scope {
             .root_identity()
             .ok_or_else(|| input("scope", "missing root"))?;
         let mut anchored = false;
-        for member in &self.tracked {
-            if let Some(live) = live_member(member, &root)?
-                && in_group(&live, group)?
-            {
-                anchored = true;
-                break;
+        let mut retained = Vec::with_capacity(self.tracked.len());
+        for expected in &self.tracked {
+            if let Some(live) = live_member(expected, &root)? {
+                anchored |= in_group(&live, group)?;
+                retained.push(expected.clone());
             }
         }
+        // Reclaim only natively finished instances, before admitting new members.
+        // Commit the replacement after every read succeeds: an unreadable member
+        // retains the entire previous custody set, including known escapes.
+        self.tracked = retained;
         let mut live = Vec::new();
         // Enumerate PID names, then query this exact process group without
         // opening every process on the machine. No executable-name filter;

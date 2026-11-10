@@ -120,14 +120,17 @@ impl Scope {
             .root_identity()
             .ok_or_else(|| input("group observation", "original root unavailable"))?;
         let mut anchored = false;
+        let mut retained = Vec::with_capacity(self.tracked.len());
         for expected in &self.tracked {
-            if let Some(live) = live_member(expected, &root)?
-                && in_group(&live.identity, group)?
-            {
-                anchored = true;
-                break;
+            if let Some(live) = live_member(expected, &root)? {
+                anchored |= in_group(&live.identity, group)?;
+                retained.push(expected.clone());
             }
         }
+        // Reclaim only natively finished instances, before admitting new members.
+        // Commit the replacement after every read succeeds: an unreadable member
+        // retains the entire previous custody set, including known escapes.
+        self.tracked = retained;
         let mut live = Vec::new();
         for pid in members(group, self.max_members, self.max_bytes)? {
             let ProcessRead::Present(found) = crate::read_process(root.machine.clone(), pid)?
