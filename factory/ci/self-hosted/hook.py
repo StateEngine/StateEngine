@@ -62,12 +62,17 @@ def fetch(repository, path, token, raw=False):
     for attempt in range(3):
         try:
             return fetch_once(repository, path, token, raw)
-        except http.client.IncompleteRead:
+        except (http.client.IncompleteRead, TimeoutError, urllib.error.URLError) as error:
+            short = isinstance(error, http.client.IncompleteRead)
+            if isinstance(error, urllib.error.URLError) and not isinstance(error.reason, TimeoutError):
+                raise
             if attempt == 2:
-                raise RuntimeError("repository response ended early after three attempts") from None
+                reason = "response ended early" if short else "read timed out"
+                raise RuntimeError(f"repository {reason} after three attempts") from None
             # Repeat the complete idempotent GET; partial bytes never become a
             # source archive or a successful metadata observation.
-            print("Short repository response; retrying GET", file=sys.stderr, flush=True)
+            message = "Short repository response" if short else "Repository read timed out"
+            print(message + "; retrying GET", file=sys.stderr, flush=True)
             time.sleep(0.25 * (2**attempt))
 
 
