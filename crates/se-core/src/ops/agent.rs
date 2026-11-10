@@ -384,6 +384,7 @@ pub fn rename_committed<R: Snapshot>(
         se_store::Provider::Claude => Provider::Claude,
         se_store::Provider::Codex => Provider::Codex,
         se_store::Provider::SeCode => Provider::SeCode,
+        se_store::Provider::Acp => Provider::Acp,
     };
     let outcome = match receipt.state {
         se_store::CommitState::Committed if name != then.previous_name => {
