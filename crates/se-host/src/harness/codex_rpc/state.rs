@@ -119,9 +119,16 @@ impl Binding {
         }
         self.completion.nudge();
     }
-    pub(super) fn observe(&self, method: String, params: Value) -> Result<()> {
+    pub(super) fn observe_at(
+        &self,
+        method: String,
+        params: Value,
+        observed_at: std::time::Instant,
+    ) -> Result<()> {
         #[cfg(feature = "remote")]
-        self.observe_live(&method, &params);
+        self.observe_live(&method, &params, observed_at);
+        #[cfg(not(feature = "remote"))]
+        let _ = observed_at;
         if self
             .state
             .lock()

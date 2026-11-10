@@ -16,7 +16,10 @@ use image::hash_image;
 mod executable;
 pub use executable::ExecutableStamp;
 mod image_cache;
-pub use image_cache::{ImageCacheRead, publish_image_cache, restore_image_cache};
+pub use image_cache::{
+    ImageCacheRead, publish_image_cache, publish_remote_image_cache, restore_image_cache,
+    restore_remote_image_cache,
+};
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

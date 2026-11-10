@@ -3,7 +3,12 @@
 use super::*;
 use crate::remote::RemoteTurnRole;
 impl Binding {
-    pub(super) fn observe_live(&self, method: &str, params: &Value) {
+    pub(super) fn observe_live(
+        &self,
+        method: &str,
+        params: &Value,
+        observed_at: std::time::Instant,
+    ) {
         let source = match self.live.lock() {
             Ok(live) => live.clone(),
             Err(_) => return,
@@ -42,7 +47,7 @@ impl Binding {
                 return;
             };
             if let Ok(vendor) = serde_json::to_string(&[turn.as_str(), item]) {
-                source.delta(&vendor, RemoteTurnRole::Assistant, delta);
+                source.delta_at(&vendor, RemoteTurnRole::Assistant, delta, observed_at);
             }
         } else if params.get("threadId").and_then(Value::as_str) == Some(conversation.as_str())
             && let Some(item) = params.get("item")
@@ -54,7 +59,7 @@ impl Binding {
                 se_store::Role::Tool => RemoteTurnRole::Tool,
                 _ => return,
             };
-            source.complete(&record.vendor, role, record.text.as_str());
+            source.complete_at(&record.vendor, role, record.text.as_str(), observed_at);
         }
     }
 }

@@ -195,6 +195,111 @@ fn changed_image_child() -> Result<()> {
     Ok(())
 }
 
+/// Protects: uploaded copies get a separate hint, without replacing the host's
+/// hint or allowing restored mtime to hide a same-file content change.
+#[test]
+fn remote_image_hint_keeps_host_hint_and_changed_file_proof() -> Result<()> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let root = std::env::temp_dir().join(format!("se-remote-cache-{}", std::process::id()));
+    let files = NativeStateFiles::create(&root)?;
+    let expected = observe_ipc_self_bounded(&bound())?.image_sha256();
+    publish_image_cache(&root, expected, &bound())?;
+    let host = fs::read(root.join("ipc-image-cache.json"))?;
+    let image = root.join(if cfg!(windows) {
+        "uploaded.exe"
+    } else {
+        "uploaded"
+    });
+    fs::copy(std::env::current_exe()?, &image)?;
+    let run = |mode: &str| -> Result<()> {
+        let output = Command::new(&image)
+            .args(["--ignored", "--exact", "remote_image_hint_child"])
+            .env("SE_REMOTE_CACHE_ROOT", &root)
+            .env("SE_REMOTE_CACHE_DIGEST", serde_json::to_string(&expected)?)
+            .env("SE_REMOTE_CACHE_MODE", mode)
+            .output_executable()?;
+        assert!(output.status.success(), "{mode}: {output:?}");
+        Ok(())
+    };
+    run("publish")?;
+    assert_eq!(fs::read(root.join("ipc-image-cache.json"))?, host);
+    let remote_path = root.join("ipc-remote-image-cache.json");
+    let remote = fs::read(&remote_path)?;
+    assert!(remote.len() <= 4096);
+    assert_ne!(
+        remote, host,
+        "uploaded file identity was not independently observed"
+    );
+    run("restore")?;
+    let metadata = fs::metadata(&image)?;
+    let mut file = fs::OpenOptions::new().read(true).write(true).open(&image)?;
+    file.seek(SeekFrom::End(-1))?;
+    let mut last = [0];
+    file.read_exact(&mut last)?;
+    file.seek(SeekFrom::End(-1))?;
+    file.write_all(&[last[0] ^ 1])?;
+    file.sync_all()?;
+    file.set_modified(metadata.modified()?)?;
+    drop(file);
+    assert_eq!(fs::metadata(&image)?.len(), metadata.len());
+    assert_eq!(fs::metadata(&image)?.modified()?, metadata.modified()?);
+    // Different bytes cannot publish a hint tied to the incumbent's digest.
+    run("different-image")?;
+    assert_eq!(fs::read(&remote_path)?, remote);
+    fs::write(&remote_path, b"{broken")?;
+    assert!(restore_remote_image_cache(&root, expected, &bound()).is_err());
+    fs::write(&remote_path, vec![b' '; 4097])?;
+    assert!(restore_remote_image_cache(&root, expected, &bound()).is_err());
+    let cancelled = bound();
+    cancelled
+        .cancelled
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(restore_remote_image_cache(&root, expected, &cancelled).is_err());
+    drop(files);
+    fs::remove_file(root.join("ipc-image-cache.json"))?;
+    fs::remove_file(remote_path)?;
+    fs::remove_file(image)?;
+    fs::remove_dir(root)?;
+    Ok(())
+}
+#[test]
+#[ignore = "fresh-process helper invoked by remote_image_hint_keeps_host_hint_and_changed_file_proof"]
+fn remote_image_hint_child() -> Result<()> {
+    let root = std::env::var_os("SE_REMOTE_CACHE_ROOT").ok_or("missing remote hint home")?;
+    let root = Path::new(&root);
+    let expected: Sha256 = serde_json::from_str(&std::env::var("SE_REMOTE_CACHE_DIGEST")?)?;
+    match std::env::var("SE_REMOTE_CACHE_MODE")?.as_str() {
+        "publish" => assert_eq!(
+            publish_remote_image_cache(root, expected, &bound())?,
+            ImageCacheRead::Current
+        ),
+        "restore" => {
+            assert_eq!(
+                restore_image_cache(root, expected, &bound())?,
+                ImageCacheRead::Current
+            );
+            assert_eq!(
+                restore_remote_image_cache(root, expected, &bound())?,
+                ImageCacheRead::Current
+            );
+            assert_eq!(observe_ipc_self_bounded(&bound())?.image_sha256(), expected);
+        }
+        "different-image" => {
+            assert_eq!(
+                restore_remote_image_cache(root, expected, &bound())?,
+                ImageCacheRead::Current
+            );
+            assert_ne!(observe_ipc_self_bounded(&bound())?.image_sha256(), expected);
+            assert_eq!(
+                publish_remote_image_cache(root, expected, &bound())?,
+                ImageCacheRead::Stale
+            );
+        }
+        _ => return Err("unknown remote hint action".into()),
+    }
+    Ok(())
+}
+
 #[path = "../../test-support/executable.rs"]
 mod executable;
 use executable::ExecutableCommand;

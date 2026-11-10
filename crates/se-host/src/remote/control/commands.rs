@@ -48,7 +48,16 @@ pub(crate) async fn execute(
                 .bootstrap(router, owner, source_host, deadline)
                 .await?
         }
-        OwnerInput::MachineIdentity => serde_json::json!({"host":control.security.host()}),
+        OwnerInput::MachineIdentity => {
+            let files = control.files.clone();
+            let root = router.execution.state_directory.clone();
+            let enabled = router
+                .execution
+                .blocking
+                .run_owned(deadline, move || policy::enabled(&*files, &root))
+                .await?;
+            serde_json::json!({"host":control.security.host(), "enabled":enabled})
+        }
         OwnerInput::Disable => {
             let _configure = control.configure.lock().await;
             control.security.owner(&owner)?;

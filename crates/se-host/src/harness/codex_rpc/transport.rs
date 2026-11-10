@@ -27,8 +27,15 @@ pub struct Reader {
     offset: usize,
     terminal: Option<Terminal>,
     failed: bool,
+    chunk_observed_at: Option<Instant>,
+    frame_observed_at: Option<Instant>,
+    last_observed_at: Option<Instant>,
 }
 impl Reader {
+    pub(crate) fn observed_at(&self) -> Result<Instant> {
+        self.last_observed_at
+            .ok_or_else(|| invalid("a received native frame before its observation clock"))
+    }
     /// Cancelling this future between reads leaves all received bytes in this
     /// reader. A retry uses the original binding and cannot shift a frame.
     pub fn next<'a>(
@@ -44,6 +51,7 @@ impl Reader {
                     return Err(invalid("a new binding after an output failure"));
                 }
                 if self.offset < self.bytes.len() {
+                    self.frame_observed_at = self.frame_observed_at.or(self.chunk_observed_at);
                     let framed = self.lines.feed(&self.bytes[self.offset..]);
                     let (consumed, message) = match framed {
                         Ok(framed) => framed,
@@ -54,6 +62,7 @@ impl Reader {
                     };
                     self.offset += consumed;
                     if let Some(message) = message {
+                        self.last_observed_at = self.frame_observed_at.take();
                         return Ok(Some(message));
                     }
                 }
@@ -100,6 +109,7 @@ impl Reader {
                         },
                     )
                     .await;
+                self.chunk_observed_at = Some(Instant::now());
                 let read = match read {
                     Ok(read) => read,
                     Err(error) => {

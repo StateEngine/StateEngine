@@ -1,5 +1,5 @@
 //! Scoped metadata reads, then existing exact-birth native observation after closing SQL.
-use super::{auth::AuthorizedRemoteRequest, session::SecurityStore, *};
+use super::{session::SecurityStore, *};
 use se_core::{
     ops::{AgentRow, ConversationView, ResumeCommand},
     scope,
@@ -11,98 +11,70 @@ use std::time::Instant;
 impl SecurityStore {
     pub(crate) fn watch_position(
         &self,
-        request: &AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         target: &RemoteTarget,
     ) -> Result<Option<se_store::StorePosition>> {
-        let permit = request.admission();
-        if *permit.verb() != RemoteVerb::Watch || !permit.targets().contains(target) {
+        if request.verb() != RemoteVerb::Watch || !request.targets().contains(target) {
             return Err(scope::unreadable(
-                "remote watch",
+                "client watch",
                 "target outside the admitted selection",
             ));
         }
-        let at = super::session::now()?;
-        self.read(|phase| {
-            phase.remote_watch_position(
-                &permit.grant().grant,
-                permit.grant().authority_revision,
-                target,
-                at,
-            )
-        })
+        let now = super::session::now()?;
+        self.read(|phase| request.position(phase, target, now))
     }
 
-    /// Bounded durable replay, retaining typed private positions for the shared cursor codec.
-    pub fn changes(
+    pub(crate) fn changes(
         &self,
-        request: &AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         target: &RemoteTarget,
         query: se_store::remote::ChangeRequest<'_>,
     ) -> Result<se_store::remote::ChangePage> {
-        let permit = request.admission();
-        if *permit.verb() != RemoteVerb::Watch || !permit.targets().contains(target) {
+        if request.verb() != RemoteVerb::Watch || !request.targets().contains(target) {
             return Err(scope::unreadable(
-                "remote replay",
+                "client replay",
                 "watch target is outside this admitted selection",
             ));
         }
-        let at = super::session::now()?;
-        self.read(|phase| {
-            Ok(phase.remote_changes(
-                &permit.grant().grant,
-                permit.grant().authority_revision,
-                target,
-                query,
-                at,
-            ))
-        })?
-        .map_err(|error| {
-            if error.code != se_store::StoreErrorCode::ReadIncomplete {
-                return se_core::store_error::store_error(&error);
-            }
-            let mut timed = se_types::SeError::new(se_types::Detail::DeadlineExceeded(
-                se_types::details::DeadlineExceeded {
-                    op: "remote replay read; original cursor retained".into(),
-                    deadline_ms: 250,
-                },
-            ));
-            timed.body = timed
-                .body
-                .with_retry(se_types::Retry::AfterReread)
-                .with_remedy(se_types::Remedy {
-                    text: "Retry this read with the same scoped cursor.".into(),
-                    command: None,
-                });
-            timed.with_cause(error)
-        })
+        let now = super::session::now()?;
+        self.read(|phase| Ok(request.changes(phase, target, query, now)))?
+            .map_err(|error| {
+                if error.code != se_store::StoreErrorCode::ReadIncomplete {
+                    return se_core::store_error::store_error(&error);
+                }
+                let mut timed = se_types::SeError::new(se_types::Detail::DeadlineExceeded(
+                    se_types::details::DeadlineExceeded {
+                        op: "client replay read; original cursor retained".into(),
+                        deadline_ms: 250,
+                    },
+                ));
+                timed.body = timed
+                    .body
+                    .with_retry(se_types::Retry::AfterReread)
+                    .with_remedy(se_types::Remedy {
+                        text: "Retry this read with the same scoped cursor.".into(),
+                        command: None,
+                    });
+                timed.with_cause(error)
+            })
     }
-    /// Called on the existing bounded blocking pool. This method opens no network stream.
-    pub fn targets(
+    pub(crate) fn targets(
         &self,
-        request: &AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         deadline: Instant,
     ) -> Result<Vec<RemoteAgentView>> {
-        let permit = request.admission();
-        if !matches!(permit.verb(), RemoteVerb::List | RemoteVerb::Watch) {
+        if !matches!(request.verb(), RemoteVerb::List | RemoteVerb::Watch) {
             return Err(scope::unreadable(
-                "remote metadata",
+                "client metadata",
                 "list/watch permit required",
             ));
         }
         let now = super::session::now()?;
         let facts = self.read(|phase| {
-            permit
+            request
                 .targets()
                 .iter()
-                .map(|target| {
-                    phase.remote_target(
-                        &permit.grant().grant,
-                        permit.grant().authority_revision,
-                        *permit.verb(),
-                        target,
-                        now,
-                    )
-                })
+                .map(|target| request.target(phase, target, request.verb(), now))
                 .collect::<se_store::StoreResult<Vec<_>>>()
         })?;
         facts
@@ -290,44 +262,19 @@ fn observe(facts: TargetFacts, deadline: Instant) -> Result<RemoteAgentView> {
 }
 
 impl SecurityStore {
-    pub fn target_page(
+    pub(crate) fn target_page(
         &self,
-        request: &AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         after: Option<&RemoteTarget>,
         limit: u16,
         deadline: Instant,
     ) -> Result<Vec<RemoteAgentView>> {
-        let permit = request.admission();
         let now = super::session::now()?;
         let facts = self.read(|phase| {
-            let targets = if permit.targets().is_empty() {
-                phase.remote_list_targets(
-                    &permit.grant().grant,
-                    permit.grant().authority_revision,
-                    after,
-                    limit,
-                    now,
-                )?
-            } else {
-                let mut targets = permit.targets().to_vec();
-                targets.sort();
-                targets
-                    .into_iter()
-                    .filter(|t| after.is_none_or(|a| t > a))
-                    .take(usize::from(limit))
-                    .collect()
-            };
-            targets
+            request
+                .page_targets(phase, after, limit, now)?
                 .iter()
-                .map(|target| {
-                    phase.remote_target(
-                        &permit.grant().grant,
-                        permit.grant().authority_revision,
-                        RemoteVerb::List,
-                        target,
-                        now,
-                    )
-                })
+                .map(|target| request.target(phase, target, RemoteVerb::List, now))
                 .collect::<se_store::StoreResult<Vec<_>>>()
         })?;
         facts

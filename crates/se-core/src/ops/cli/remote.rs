@@ -1,11 +1,14 @@
 use super::*;
 use se_types::remote::*;
 pub(super) fn command(name: &str, c: Command) -> Command {
-    let c = c.arg(
-        value("host")
-            .required(true)
-            .help("Saved nonsecret remote host alias configured by the Owner; never a URL or key"),
-    );
+    let c =
+        if name.starts_with("remote.") {
+            c.arg(value("host").required(true).help(
+                "Saved nonsecret remote host alias configured by the Owner; never a URL or key",
+            ))
+        } else {
+            c
+        };
     if name == "remote.send" {
         c.arg(
             value("expected_host")
@@ -52,6 +55,10 @@ pub(super) fn command(name: &str, c: Command) -> Command {
             .arg(value("cursor").help("Opaque continuation from this same remote grant"))
         } else {
             c.arg(
+                toggle("measure")
+                    .help("Include host observation ages for matched terminal timing comparisons"),
+            )
+            .arg(
                 toggle("once")
                     .help("Return one page and exit; otherwise follow with bounded waits"),
             )
@@ -80,7 +87,11 @@ pub(super) fn decode(
     m: &ArgMatches,
     key: impl FnOnce() -> Result<IdempotencyKey>,
 ) -> Result<AnyOp> {
-    let host = required(m, "host")?;
+    let host = if name.starts_with("remote.") {
+        required(m, "host")?
+    } else {
+        String::new()
+    };
     let number = |id| {
         required(m, id)?
             .parse::<u32>()
@@ -99,32 +110,46 @@ pub(super) fn decode(
                 budget: number("budget")?,
             },
         }),
-        "remote.watch" => AnyOp::RemoteWatch(RemoteWatchCall {
-            host,
-            request: RemoteWatch {
-                targets: many(m, "target")
-                    .iter()
-                    .map(|s| parse_remote_target(s))
-                    .collect::<Result<_>>()?,
-                cursors: text(m, "cursors")
-                    .map(|s| {
-                        serde_json::from_str(&s).map_err(|_| {
-                            SeError::invalid(
-                                "remote cursors",
-                                "the preceding typed watch cursor set",
-                            )
+        "remote.watch" | "client.watch" => {
+            let input = RemoteWatchCall {
+                host,
+                reader_id: None,
+                request: RemoteWatch {
+                    measure: flag(m, "measure"),
+                    targets: many(m, "target")
+                        .iter()
+                        .map(|s| parse_remote_target(s))
+                        .collect::<Result<_>>()?,
+                    cursors: text(m, "cursors")
+                        .map(|s| {
+                            serde_json::from_str(&s).map_err(|_| {
+                                SeError::invalid(
+                                    "remote cursors",
+                                    "the preceding typed watch cursor set",
+                                )
+                            })
                         })
-                    })
-                    .transpose()?
-                    .unwrap_or_default(),
-                visible: text(m, "visible")
-                    .map(|s| parse_remote_target(&s))
-                    .transpose()?,
-                budget: number("budget")?,
-            },
-            follow: !flag(m, "once"),
-            wait_ms: number("wait_ms")?,
-        }),
+                        .transpose()?
+                        .unwrap_or_default(),
+                    visible: text(m, "visible")
+                        .map(|s| parse_remote_target(&s))
+                        .transpose()?,
+                    budget: number("budget")?,
+                },
+                follow: !flag(m, "once"),
+                wait_ms: number("wait_ms")?,
+            };
+            if name == "client.watch" {
+                AnyOp::ClientWatch(ClientWatchCall {
+                    request: input.request,
+                    reader_id: input.reader_id,
+                    wait_ms: input.wait_ms,
+                    follow: input.follow,
+                })
+            } else {
+                AnyOp::RemoteWatch(input)
+            }
+        }
         "remote.send" => AnyOp::RemoteSend(RemoteSendCall {
             expected_binding: text(m, "expected_host")
                 .map(|host| {

@@ -6,35 +6,59 @@ use se_core::ops::{AnyOp, AnyOutput, remote::*};
 use se_types::{Result, SeError};
 use serde::Serialize;
 use std::io::{self, Write};
+mod measure;
 type Dispatch<'a> =
     dyn FnMut(&Bootstrap, AnyOp, &mut dyn FnMut(&str) -> io::Result<()>) -> Result<AnyOutput> + 'a;
 #[derive(Serialize)]
-struct SendStatus<'a> {
+struct SendStatus<'a, T> {
     schema: &'static str,
     status: &'static str,
     #[serde(flatten)]
-    binding: &'a RemoteSendPreparation,
+    binding: &'a T,
 }
-fn pending(p: &RemoteSendPreparation, json: bool, out: &mut impl Write) -> io::Result<()> {
+fn pending<T: Serialize>(
+    schema: &'static str,
+    binding: &T,
+    description: std::fmt::Arguments<'_>,
+    json: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
     if json {
         serde_json::to_writer(
             &mut *out,
             &SendStatus {
-                schema: "stateengine.remote-send-status/v1",
+                schema,
                 status: "local_pending",
-                binding: p,
+                binding,
             },
         )
         .map_err(io::Error::other)?;
         writeln!(out)?;
     } else {
-        writeln!(
-            out,
-            "Pending remote send {} to {}/{} session {} (host {:?}, grant {}); no durable receipt yet",
-            p.idempotency_key, p.target.project, p.target.agent, p.session, p.host, p.grant
-        )?;
+        writeln!(out, "Pending {description}; no durable receipt yet")?;
     }
     out.flush()
+}
+/// This is presentation only. Native mail retains its ordinary admission,
+/// transaction, notification completion and final receipt/error renderer.
+pub(crate) fn pending_native(
+    cx: &Bootstrap,
+    input: &se_core::ops::MessageSend,
+    json: bool,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    let binding = serde_json::json!({
+        "idempotency_key":input.idempotency_key,
+        "project_selector":cx.project,"recipient_selector":input.to,
+        "body_bytes":input.body.len(),
+    });
+    pending(
+        "stateengine.send-status/v1",
+        &binding,
+        format_args!("send {} to {}", input.idempotency_key, input.to),
+        json,
+        out,
+    )
 }
 fn error(
     error: &SeError,
@@ -177,7 +201,16 @@ pub(crate) fn run(
                 host: p.host,
                 grant: p.grant.clone(),
             }));
-            pending(&p, json, stderr)?;
+            pending(
+                "stateengine.remote-send-status/v1",
+                &p,
+                format_args!(
+                    "remote send {} to {}/{} session {} (host {:?}, grant {})",
+                    p.idempotency_key, p.target.project, p.target.agent, p.session, p.host, p.grant
+                ),
+                json,
+                stderr,
+            )?;
             match dispatch(cx, AnyOp::RemoteSend(input), &mut diagnostic) {
                 Ok(AnyOutput::RemoteSend(v)) => {
                     if let se_types::Receipt::Refused { error: body } = &v.value.receipt {
@@ -194,48 +227,104 @@ pub(crate) fn run(
                 Err(e) => error(&e, json, Some(&p), stderr),
             }
         }
-        AnyOp::RemoteWatch(mut input) => loop {
-            let follow = input.follow;
-            let output = dispatch(cx, AnyOp::RemoteWatch(input.clone()), &mut diagnostic);
-            match output {
-                Ok(AnyOutput::RemoteWatch(v)) => {
-                    let reset = v.value.reset_required;
-                    if reset {
-                        input.request.cursors.clear();
-                    }
-                    for cursor in &v.value.cursors {
-                        if let Some(saved) = input
-                            .request
-                            .cursors
-                            .iter_mut()
-                            .find(|saved| saved.target == cursor.target)
-                        {
-                            *saved = cursor.clone();
-                        } else {
-                            input.request.cursors.push(cursor.clone());
-                        }
-                    }
-                    let code =
-                        crate::render::output(&AnyOutput::RemoteWatch(v), json, quiet, stdout)?;
-                    stdout.flush()?;
-                    if !follow || input.wait_ms == 0 || reset {
-                        return Ok(code);
-                    }
-                }
-                Ok(_) => {
-                    return error(
-                        &SeError::invalid("remote watch", "the typed watch batch"),
-                        json,
-                        None,
-                        stderr,
-                    );
-                }
-                Err(e) => return error(&e, json, None, stderr),
-            }
-        },
+        AnyOp::RemoteWatch(input) => watch(
+            cx,
+            (
+                se_core::ops::ClientWatchCall {
+                    request: input.request,
+                    reader_id: input.reader_id,
+                    wait_ms: input.wait_ms,
+                    follow: input.follow,
+                },
+                Some(input.host),
+            ),
+            json,
+            quiet,
+            stdout,
+            stderr,
+            dispatch,
+        ),
+        AnyOp::ClientWatch(input) => {
+            watch(cx, (input, None), json, quiet, stdout, stderr, dispatch)
+        }
         operation => match dispatch(cx, operation, &mut diagnostic) {
             Ok(output) => crate::render::output(&output, json, quiet, stdout),
             Err(e) => error(&e, json, None, stderr),
         },
+    }
+}
+
+fn watch(
+    cx: &Bootstrap,
+    selection: (se_core::ops::ClientWatchCall, Option<String>),
+    json: bool,
+    quiet: bool,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+    dispatch: &mut Dispatch<'_>,
+) -> io::Result<u8> {
+    let (mut input, host) = selection;
+    // Each terminal keeps its own bounded subscription, including when another
+    // terminal has the same targets and cursors and is waiting on a long poll.
+    input.reader_id = input.follow.then(|| *uuid::Uuid::new_v4().as_bytes());
+    let mut diagnostic = |_: &str| {
+        Err(io::Error::other(
+            "client watch requires typed status/errors",
+        ))
+    };
+    loop {
+        let started = std::time::Instant::now();
+        let follow = input.follow;
+        let operation = match &host {
+            Some(host) => AnyOp::RemoteWatch(RemoteWatchCall {
+                host: host.clone(),
+                request: input.request.clone(),
+                reader_id: input.reader_id,
+                wait_ms: input.wait_ms,
+                follow: input.follow,
+            }),
+            None => AnyOp::ClientWatch(input.clone()),
+        };
+        let output = dispatch(cx, operation, &mut diagnostic);
+        match output {
+            Ok(AnyOutput::RemoteWatch(v)) => {
+                let reset = v.value.reset_required;
+                if reset {
+                    input.request.cursors.clear();
+                }
+                for cursor in &v.value.cursors {
+                    if let Some(saved) = input
+                        .request
+                        .cursors
+                        .iter_mut()
+                        .find(|saved| saved.target == cursor.target)
+                    {
+                        *saved = cursor.clone();
+                    } else {
+                        input.request.cursors.push(cursor.clone());
+                    }
+                }
+                let measured = input.request.measure;
+                let output = AnyOutput::RemoteWatch(v);
+                let code = crate::render::output(&output, json, quiet, stdout)?;
+                stdout.flush()?;
+                if measured && let AnyOutput::RemoteWatch(v) = &output {
+                    measure::flushed(&v.value, started, stderr)?;
+                }
+                if !follow || input.wait_ms == 0 || reset {
+                    return Ok(code);
+                }
+            }
+            Ok(_) => {
+                return self::error(
+                    &SeError::invalid("remote watch", "the typed watch batch"),
+                    json,
+                    None,
+                    None,
+                    stderr,
+                );
+            }
+            Err(e) => return self::error(&e, json, None, None, stderr),
+        }
     }
 }

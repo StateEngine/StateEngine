@@ -25,20 +25,21 @@ impl Cursors {
     }
     fn associated(
         &self,
-        request: &auth::AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         target: Option<&RemoteTarget>,
         purpose: &str,
     ) -> Result<Vec<u8>> {
-        let mut selected = request.admission().targets().to_vec();
+        let mut selected = request.targets().to_vec();
         selected.sort();
         let filter = serde_json::to_vec(&selected).map_err(|_| invalid())?;
         let filter: [u8; 32] = Sha256::digest(filter).into();
-        let grant = request.admission().grant();
-        serde_json::to_vec(&serde_json::json!({"schema":"stateengine.remote-cursor/v1","host":self.host,"store":self.store.id,"incarnation":self.store.incarnation,"grant":grant.grant,"authority_revision":grant.authority_revision,"target":target,"filter":filter,"purpose":purpose})).map_err(|_|invalid())
+        let mut associated = serde_json::json!({"schema":"stateengine.remote-cursor/v1","host":self.host,"store":self.store.id,"incarnation":self.store.incarnation,"target":target,"filter":filter,"purpose":purpose});
+        request.cursor_authority(&mut associated);
+        serde_json::to_vec(&associated).map_err(|_| invalid())
     }
     pub fn seal(
         &self,
-        request: &auth::AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         target: Option<&RemoteTarget>,
         purpose: &str,
         payload: &[u8],
@@ -58,7 +59,7 @@ impl Cursors {
     }
     pub fn open(
         &self,
-        request: &auth::AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         target: Option<&RemoteTarget>,
         purpose: &str,
         cursor: &Cursor,
@@ -84,7 +85,7 @@ impl Cursors {
     }
     pub fn json<T: Serialize>(
         &self,
-        request: &auth::AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         target: Option<&RemoteTarget>,
         purpose: &str,
         value: &T,
@@ -98,7 +99,7 @@ impl Cursors {
     }
     pub fn decoded<T: DeserializeOwned>(
         &self,
-        request: &auth::AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         target: Option<&RemoteTarget>,
         purpose: &str,
         cursor: &Cursor,
@@ -107,7 +108,7 @@ impl Cursors {
     }
     pub fn durable(
         &self,
-        request: &auth::AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         target: &RemoteTarget,
         position: &se_store::StorePosition,
     ) -> Result<Cursor> {
@@ -120,7 +121,7 @@ impl Cursors {
     }
     pub fn position(
         &self,
-        request: &auth::AuthorizedRemoteRequest,
+        request: &view_request::ViewRequest,
         target: &RemoteTarget,
         cursor: &Cursor,
     ) -> Result<se_store::StorePosition> {

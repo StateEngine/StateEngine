@@ -33,6 +33,9 @@ pub struct StartRequest {
 #[serde(deny_unknown_fields)]
 pub struct StartResult {
     pub host: RemoteHostId,
+    /// Older far hosts did not report their listener policy. Unknown is not enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 pub(super) async fn restart(config: &super::ForwardConfig) -> se_types::Result<()> {
@@ -45,6 +48,23 @@ pub(super) async fn restart(config: &super::ForwardConfig) -> se_types::Result<(
         return Err(super::unavailable(
             "SSH host restart changed the saved machine identity",
         ));
+    }
+    match result.enabled {
+        Some(true) => {}
+        Some(false) => {
+            return Err(se_types::SeError::new(se_types::Detail::CapabilityInvalid(
+                se_types::details::CapabilityInvalid {
+                    subject: "remote machine connection".into(),
+                    reason: "Remote access is disabled on the destination machine.".into(),
+                    next_step: "Ask its owner to reconnect explicitly with remote add if access should be restored; ordinary retries never enable access.".into(),
+                },
+            )));
+        }
+        None => {
+            return Err(super::super::auth::refused(
+                "The destination does not report its listener policy; update its StateEngine installation and reconnect explicitly.",
+            ));
+        }
     }
     Ok(())
 }
@@ -117,6 +137,19 @@ async fn exchange(
         let status = child.wait().await
             .map_err(|_| unavailable("SSH authorization exit could not be observed"))?;
         if !status.success() {
+            // The native CLI's bounded public envelope retains its actual start
+            // refusal and remedy. Never echo unstructured SSH diagnostics, which
+            // may contain terminal control bytes or private command arguments.
+            if let Some(error) = [&response, &diagnostics].into_iter().find_map(|bytes| {
+                serde_json::from_slice::<se_types::ErrorEnvelope>(bytes).ok()
+            }) {
+                let body = error.body().clone();
+                let mut remedy = body.remedy(&se_types::RenderCx::default())?;
+                remedy.text = format!("On the destination machine: {}", remedy.text);
+                // A far-side native command must never run against the source's home.
+                remedy.command = None;
+                return Err(body.with_remedy(remedy).into());
+            }
             return Err(unavailable("SSH authorization refused; check the saved SSH destination and native owner access"));
         }
         Ok(response)

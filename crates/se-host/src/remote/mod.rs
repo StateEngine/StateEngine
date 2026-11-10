@@ -136,3 +136,6 @@ pub mod read;
 pub mod bindings;
 #[cfg(feature = "listener")]
 pub mod broker;
+
+#[cfg(feature = "remote")]
+mod view_request;

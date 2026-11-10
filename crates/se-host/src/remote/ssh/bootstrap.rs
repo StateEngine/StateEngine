@@ -288,5 +288,5 @@ pub async fn connect(
             "remote bootstrap changed the authenticated source machine",
         ));
     }
-    Ok((session, invoke("remote __authorize")))
+    Ok((session, invoke("remote __authorize --json")))
 }

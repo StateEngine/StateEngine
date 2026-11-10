@@ -261,6 +261,7 @@ impl Shared {
                         RemoteWatchBatch {
                             schema: RemoteWatchBatch::SCHEMA.into(),
                             body: RemoteWatchBody {
+                                observation_clock: None,
                                 records: vec![RemoteWatchRecord::Gap {
                                     target,
                                     reason,

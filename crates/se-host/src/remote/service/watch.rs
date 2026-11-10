@@ -1,6 +1,9 @@
 use super::*;
 use se_types::{Cursor, Omission, OmissionReason};
 use std::collections::BTreeMap;
+#[cfg(test)]
+#[path = "../../../tests/support/watch_batch_independent.rs"]
+mod batch_independent;
 mod manifest;
 mod start;
 #[derive(Clone, Default)]
@@ -10,7 +13,7 @@ struct Position {
     wire: Option<RemoteCursorSet>,
 }
 struct State {
-    request: Arc<auth::AuthorizedRemoteRequest>,
+    request: Arc<view_request::ViewRequest>,
     input: RemoteWatch,
     positions: BTreeMap<RemoteTarget, Position>,
     manifest: bool,
@@ -20,17 +23,30 @@ struct State {
     durable_revision: Option<u64>,
 }
 pub(super) struct Watch {
-    _work: super::super::activity::Work,
+    _work: Option<super::super::activity::Work>,
     service: Service,
     state: Option<State>,
 }
 impl Watch {
     pub fn new(service: Service, request: auth::AuthorizedRemoteRequest) -> Result<Self> {
+        Self::from_request(
+            service,
+            view_request::ViewRequest::Remote(Box::new(request)),
+        )
+    }
+    pub(crate) fn from_request(
+        service: Service,
+        request: view_request::ViewRequest,
+    ) -> Result<Self> {
         let RemoteRequest::Watch(input) = request.request() else {
             return Err(SeError::invalid("watch", "an authorized watch request"));
         };
         let input = input.clone();
-        let work = service.router.execution.mail_waits.remote_work()?;
+        // Remote wire subscriptions stay open until cancellation. A local view
+        // cache survives individual IPC calls, so only those calls own activity.
+        let work = matches!(&request, view_request::ViewRequest::Remote(_))
+            .then(|| service.router.execution.mail_waits.remote_work())
+            .transpose()?;
         Ok(Self {
             _work: work,
             service,
@@ -92,6 +108,11 @@ impl State {
         let mut batch = RemoteWatchBatch {
             schema: RemoteWatchBatch::SCHEMA.into(),
             body: RemoteWatchBody {
+                observation_clock: self
+                    .input
+                    .measure
+                    .then(|| service.live.clock())
+                    .transpose()?,
                 records: vec![],
                 cursors: vec![],
                 complete: true,
@@ -108,17 +129,20 @@ impl State {
         if self.manifest {
             return self.manifest_page(service);
         }
-        let mut targets = self.request.admission().targets().to_vec();
+        let mut targets = self.request.targets().to_vec();
         targets.sort();
-        if !targets.is_empty() {
-            let len = targets.len();
-            targets.rotate_left(self.offset % len);
-        }
         if let Some(visible) = &self.input.visible
             && let Some(at) = targets.iter().position(|target| target == visible)
         {
             let target = targets.remove(at);
             targets.insert(0, target);
+        }
+        // The visible target seeds the order. Rotate once per page so a
+        // backlog that fills this page cannot starve the other selections.
+        if !targets.is_empty() {
+            let len = targets.len();
+            targets.rotate_left(self.offset % len);
+            self.offset = (self.offset + 1) % len;
         }
         let revision = service.live.commit_revision();
         let durable = self.durable_revision != Some(revision) || revision == u64::MAX;
@@ -173,7 +197,7 @@ impl State {
                 // No provisional sequence or fake empty-history count is invented.
                 next.live = None;
             }
-            for observation in live.items.iter().take(1) {
+            for observation in &live.items {
                 let cursor = service.cursors.json(
                     &self.request,
                     Some(target),
@@ -191,6 +215,16 @@ impl State {
                         target: target.clone(),
                         cursor,
                         item: observation.item.clone(),
+                        observation: self
+                            .input
+                            .measure
+                            .then(|| {
+                                Ok::<_, SeError>(RemoteObservationTime {
+                                    at_us: service.live.clock_us(observation.observed_at)?,
+                                    age_estimate_us: None,
+                                })
+                            })
+                            .transpose()?,
                     },
                     Some(set.clone()),
                     self.input.budget,
@@ -201,7 +235,7 @@ impl State {
                 next.live = Some(observation.position.clone());
                 next.wire = Some(set);
             }
-            more |= live.more || live.items.len() > 1;
+            more |= live.more;
             if live.items.is_empty() {
                 next.live = live.position;
             }
@@ -292,7 +326,6 @@ impl State {
             }
             self.positions.insert(target.clone(), next);
             visited += 1;
-            self.offset = (self.offset + 1) % targets.len().max(1);
         }
         // A bounded page may stop before a target or its next durable row.
         // Do not acknowledge the wake until every selected target was drained.
@@ -353,7 +386,21 @@ fn push(
         }
     }
     // Reserve space for the explicit incomplete marker before advancing any cursor.
-    let bytes = wire::encode(batch, wire::Phase::Authenticated)?.len() + 96;
+    let measured = batch
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record,
+                RemoteWatchRecord::Provisional {
+                    observation: Some(_),
+                    ..
+                }
+            )
+        })
+        .count();
+    // A source release replaces null with up to twenty age digits.
+    let bytes = wire::encode(batch, wire::Phase::Authenticated)?.len() + 96 + measured * 16;
     if bytes <= budget as usize {
         return Ok(true);
     }

@@ -67,6 +67,11 @@ pub struct RemoteWatch {
     pub visible: Option<RemoteTarget>,
     #[serde(default = "default_budget")]
     pub budget: u32,
+    /// Opt-in producer age at response release. Add the measured release-to-flush
+    /// span for an estimate without counting the long-poll wait. Independent
+    /// machine suspend and clock-rate drift prevent a guaranteed upper bound.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub measure: bool,
 }
 impl RemoteWatch {
     pub fn validate(&self) -> Result<()> {

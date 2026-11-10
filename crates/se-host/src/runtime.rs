@@ -112,3 +112,6 @@ mod atlas_owner;
 pub(crate) mod test_support;
 #[cfg(all(feature = "listener", target_os = "linux"))]
 pub use atlas_owner::NativeAtlasQualification;
+
+#[cfg(feature = "listener")]
+mod local_client;

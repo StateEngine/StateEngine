@@ -175,7 +175,7 @@ impl RemoteClient for Client {
         Box::pin(async move {
             self.invocation(&call, RemoteRequest::Watch(request.clone()))?;
             let mut stream = watch::Watch::new(self.clone(), Arc::new(call), request);
-            stream.attach().await?;
+            stream.start().await?;
             Ok(Box::new(stream) as Box<dyn RemoteWatchStream>)
         })
     }

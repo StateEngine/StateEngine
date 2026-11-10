@@ -4,7 +4,7 @@
 mod bindings;
 mod call;
 use bindings::{BindingResolver, Connections};
-mod watch;
+pub(crate) mod watch;
 use super::*;
 use se_core::{
     admission::HumanTerminal,

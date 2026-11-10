@@ -96,7 +96,7 @@ pub fn run(
         .resolve_stdin(&mut bootstrap::text_input)
         .and_then(|()| operation.validate())
     {
-        if operation.is_remote() {
+        if operation.is_client() {
             return remote::refusal(&error, &operation, common.json, &mut stderr);
         }
         return render::error::write(
@@ -125,7 +125,7 @@ pub fn run(
     }) {
         Ok(context) => context,
         Err(error) => {
-            if operation.is_remote() {
+            if operation.is_client() {
                 return remote::refusal(&error, &operation, common.json, &mut stderr);
             }
             return render::error::write(
@@ -148,13 +148,13 @@ pub fn run(
     context.retry_invocation = Some(retry_invocation);
     // Remote structured stderr is reserved for keyed status/error records.
     // Legacy variables never contribute input or authority to these calls.
-    if context.legacy_environment_present && !(operation.is_remote() && common.json) {
+    if context.legacy_environment_present && !(operation.is_client() && common.json) {
         writeln!(
             stderr,
             "warning[w-legacy-env-present]: legacy STATEENGINE_* variables are present and ignored"
         )?;
     }
-    if operation.is_remote() {
+    if operation.is_client() {
         return remote::run(
             &context,
             operation,
@@ -164,6 +164,9 @@ pub fn run(
             &mut stderr,
             &mut dispatch,
         );
+    }
+    if let AnyOp::MessageSend(input) = &operation {
+        remote::pending_native(&context, input, common.json, &mut stderr)?;
     }
     #[cfg(any(target_os = "linux", windows))]
     if matches!(&operation, AnyOp::RuntimeUp(input) if input.foreground) {

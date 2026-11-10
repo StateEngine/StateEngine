@@ -10,10 +10,7 @@ fn fact<T: serde::Serialize>(v: &Read<T>) -> io::Result<String> {
     })
 }
 pub(super) fn list(value: &RemoteListOutput, out: &mut impl Write) -> io::Result<()> {
-    writeln!(
-        out,
-        "Remote agents (project = workspace; agent = saved worker):"
-    )?;
+    writeln!(out, "Agents (project = workspace; agent = saved worker):")?;
     for row in value.agents.items() {
         writeln!(
             out,
@@ -41,7 +38,7 @@ pub(super) fn list(value: &RemoteListOutput, out: &mut impl Write) -> io::Result
 pub(super) fn watch(value: &RemoteWatchOutput, out: &mut impl Write) -> io::Result<()> {
     writeln!(
         out,
-        "Remote watch: durable = committed history; provisional/live = uncommitted observation."
+        "Watch: durable = committed history; provisional/live = uncommitted observation."
     )?;
     for record in &value.records {
         match record {
@@ -62,6 +59,7 @@ pub(super) fn watch(value: &RemoteWatchOutput, out: &mut impl Write) -> io::Resu
                 target,
                 cursor,
                 item,
+                ..
             } => writeln!(
                 out,
                 "  provisional/live {}/{} item {} cursor {}: {} (complete: {}; omitted UTF-8 bytes: {:?})",

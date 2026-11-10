@@ -18,6 +18,11 @@ impl State {
             let mut batch = RemoteWatchBatch {
                 schema: RemoteWatchBatch::SCHEMA.into(),
                 body: RemoteWatchBody {
+                    observation_clock: self
+                        .input
+                        .measure
+                        .then(|| service.live.clock())
+                        .transpose()?,
                     records: vec![],
                     cursors: vec![],
                     complete: next.is_none(),

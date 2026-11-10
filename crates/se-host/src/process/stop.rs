@@ -27,7 +27,7 @@ impl LaunchCoordinator {
                 if state.released {
                     return;
                 }
-                let deadline = match Deadline::idle() {
+                let mut deadline = match Deadline::idle() {
                     Ok(value) => value,
                     Err(error) => {
                         state.cleanup_failure = Some(error.body);
@@ -86,12 +86,13 @@ impl LaunchCoordinator {
                     .and_then(|binding| binding.claude.as_ref())
                 {
                     match binding.completion.take() {
-                        Ok(true) => {
+                        Ok(Some(observed_at)) => {
+                            deadline = deadline.observed_since(observed_at);
                             state.mail.idle = true;
                             job.mail_pending.store(true, Ordering::Release);
                             capture_pending = true;
                         }
-                        Ok(false) => (),
+                        Ok(None) => (),
                         Err(error) => {
                             let reported = self.report_capture_failure(&state, &error).await;
                             state.cleanup_failure = Some(reported.err().unwrap_or(error).body);

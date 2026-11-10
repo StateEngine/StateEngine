@@ -56,6 +56,7 @@ pub(crate) struct LiveRead {
     pub available: bool,
 }
 pub struct LivePublisher {
+    clock_origin: Instant,
     instance: RemoteInstanceId,
     epoch: [u8; 16],
     state: Mutex<State>,
@@ -119,6 +120,7 @@ impl LivePublisher {
     pub fn new(instance: RemoteInstanceId) -> Result<Arc<Self>> {
         let (pending, receiver) = std::sync::mpsc::sync_channel(PENDING_OBSERVATIONS);
         Ok(Arc::new(Self {
+            clock_origin: Instant::now(),
             instance,
             epoch: session::entropy()?,
             state: Mutex::new(State {
@@ -131,6 +133,24 @@ impl LivePublisher {
             changed: tokio::sync::Notify::new(),
             committed: AtomicU64::new(0),
         }))
+    }
+    pub(crate) fn clock(&self) -> Result<RemoteObservationClock> {
+        Ok(RemoteObservationClock {
+            epoch: self.epoch,
+            sampled_at_us: self.clock_us(Instant::now())?,
+            source_bracket_us: None,
+            source_released_at_us: None,
+        })
+    }
+    pub(crate) fn clock_us(&self, observed: Instant) -> Result<i64> {
+        let (negative, duration) = match observed.checked_duration_since(self.clock_origin) {
+            Some(duration) => (false, duration),
+            None => (true, self.clock_origin.duration_since(observed)),
+        };
+        let us = i64::try_from(duration.as_micros()).map_err(|_| {
+            SeError::invalid("observation clock", "a representable monotonic interval")
+        })?;
+        Ok(if negative { -us } else { us })
     }
     /// Only owned native launch/re-adoption and pinned capture call this seam.
     /// No remote/wire caller can register a producer or supply its attribution.
@@ -263,6 +283,7 @@ impl LivePublisher {
         item_id: &str,
         role: RemoteTurnRole,
         text: &str,
+        observed_at: Instant,
     ) {
         let source = self
             .state
@@ -272,7 +293,7 @@ impl LivePublisher {
         if let Some(source) = source
             && source.stamp.session == *session
         {
-            LiveSource(source).complete(item_id, role, text);
+            LiveSource(source).complete_at(item_id, role, text, observed_at);
         }
     }
     pub(crate) fn changed(&self) -> tokio::sync::futures::Notified<'_> {
@@ -294,12 +315,30 @@ impl LivePublisher {
 }
 impl LiveSource {
     pub fn complete(&self, item_id: &str, role: RemoteTurnRole, text: &str) {
-        self.emit(item_id, role, text, true, 0);
+        self.complete_at(item_id, role, text, Instant::now());
+    }
+    pub(crate) fn complete_at(
+        &self,
+        item_id: &str,
+        role: RemoteTurnRole,
+        text: &str,
+        observed_at: Instant,
+    ) {
+        self.emit(item_id, role, text, true, 0, observed_at);
         if let Ok(mut current) = self.0.current.try_lock() {
             current.retain(|(id, _, _)| id != item_id);
         }
     }
     pub fn delta(&self, item_id: &str, role: RemoteTurnRole, delta: &str) {
+        self.delta_at(item_id, role, delta, Instant::now());
+    }
+    pub(crate) fn delta_at(
+        &self,
+        item_id: &str,
+        role: RemoteTurnRole,
+        delta: &str,
+        observed_at: Instant,
+    ) {
         if item_id.is_empty() || item_id.len() > 2048 || item_id.chars().any(char::is_control) {
             self.0.lost();
             return;
@@ -314,7 +353,7 @@ impl LiveSource {
                 return;
             };
             append(text, omitted, delta);
-            self.emit(item_id, role, text, false, *omitted);
+            self.emit(item_id, role, text, false, *omitted, observed_at);
         } else {
             if current.len() == 2 {
                 current.pop_front();
@@ -323,7 +362,7 @@ impl LiveSource {
             let mut text = String::new();
             let mut omitted = 0;
             append(&mut text, &mut omitted, delta);
-            self.emit(item_id, role, &text, false, omitted);
+            self.emit(item_id, role, &text, false, omitted, observed_at);
             current.push_back((item_id.into(), text, omitted));
         }
     }
@@ -334,6 +373,7 @@ impl LiveSource {
         text: &str,
         complete: bool,
         prior_omitted: u64,
+        observed_at: Instant,
     ) {
         if self.0.broken.load(Ordering::Acquire) || !self.0.active.load(Ordering::Acquire) {
             return;
@@ -375,7 +415,7 @@ impl LiveSource {
             item,
             digest,
             complete,
-            observed_at: Instant::now(),
+            observed_at,
         };
         if publisher.pending.try_send(pending).is_err() {
             if self.0.active.load(Ordering::Acquire) {

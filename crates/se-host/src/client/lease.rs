@@ -17,6 +17,7 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
 pub struct Deadline {
+    started: Instant,
     at: Instant,
     budget: Duration,
     cancelled: Arc<AtomicBool>,
@@ -33,10 +34,12 @@ impl Deadline {
         Self::new(timeout, Arc::clone(&options.cancelled))
     }
     fn new(timeout: Duration, cancelled: Arc<AtomicBool>) -> Result<Self> {
-        let at = Instant::now()
+        let started = Instant::now();
+        let at = started
             .checked_add(timeout)
             .ok_or_else(|| SeError::invalid("IPC deadline", "a representable absolute deadline"))?;
         let deadline = Self {
+            started,
             at,
             budget: timeout,
             cancelled,
@@ -57,18 +60,32 @@ impl Deadline {
     #[cfg(feature = "listener")]
     pub(crate) fn retained(&self) -> Self {
         Self {
+            started: self.started,
             at: self.at,
             budget: self.budget,
             cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
+    /// Include the producer notification before any supervisor scheduling delay.
+    #[cfg(feature = "listener")]
+    pub(crate) fn observed_since(mut self, observed_at: Instant) -> Self {
+        self.started = self.started.min(observed_at);
+        self
+    }
     pub fn at(&self) -> Instant {
         self.at
+    }
+    /// Stages and retained cleanup preserve the originating native request's
+    /// start so decoding and admission never disappear from a visible clock.
+    #[cfg(feature = "remote")]
+    pub(crate) fn started(&self) -> Instant {
+        self.started
     }
     /// Share a shutdown clock without discarding this caller's cancellation.
     #[cfg(feature = "listener")]
     pub(crate) fn capped_by(&self, limit: &Self) -> Self {
         Self {
+            started: self.started.min(limit.started),
             at: self.at.min(limit.at),
             budget: self.budget.min(limit.budget),
             cancelled: Arc::clone(&self.cancelled),
@@ -81,6 +98,7 @@ impl Deadline {
             .ok_or_else(|| SeError::invalid("IPC stage", "a representable deadline"))?
             .min(self.at);
         Ok(Self {
+            started: self.started,
             at,
             budget,
             cancelled: Arc::clone(&self.cancelled),

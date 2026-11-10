@@ -1,8 +1,9 @@
 use super::*;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex as AsyncMutex;
+mod measure;
 #[derive(Default)]
-pub(super) struct Watches {
+pub(crate) struct Watches {
     entries: Mutex<BTreeMap<String, Arc<Entry>>>,
 }
 struct Entry {
@@ -13,6 +14,8 @@ struct Entry {
     state: AsyncMutex<State>,
 }
 struct State {
+    opened_at: Instant,
+    clock: Option<measure::Bracket>,
     request: RemoteWatch,
     stream: Option<Box<dyn RemoteWatchStream>>,
     cursors: Vec<RemoteCursorSet>,
@@ -29,7 +32,7 @@ impl Entry {
     }
 }
 impl Watches {
-    pub(super) fn close(&self) -> Result<()> {
+    pub(crate) fn close(&self) -> Result<()> {
         self.entries.lock().map_err(|_| poisoned())?.clear();
         Ok(())
     }
@@ -54,28 +57,108 @@ impl Watches {
         device: &MachineSession,
         source: Option<&VerifiedSourceSession>,
         client: Arc<dyn RemoteClient>,
-        request: RemoteWatch,
+        selection: (RemoteWatch, Option<[u8; 16]>),
         wait_ms: u32,
         deadline: &crate::client::lease::Deadline,
     ) -> Result<RemoteWatchBatch> {
-        self.remove_fenced()?;
+        let (request, reader_id) = selection;
         let key = serde_json::to_string(&(
             device.host,
             &device.grant,
             source.map(|s| (&s.source, s.credential)),
             &request.targets,
             &request.visible,
+            request.measure,
+            reader_id,
         ))
         .map_err(|_| poisoned())?;
+        self.read_with(
+            key,
+            source,
+            request,
+            wait_ms,
+            deadline,
+            move |context, request| Box::pin(async move { client.watch(context, request).await }),
+        )
+        .await
+    }
+
+    #[cfg(feature = "remote")]
+    pub(crate) async fn read_local(
+        &self,
+        admission: &se_store::Admission,
+        service: service::Service,
+        selection: (RemoteWatch, Option<[u8; 16]>),
+        wait_ms: u32,
+        deadline: &crate::client::lease::Deadline,
+    ) -> Result<RemoteWatchBatch> {
+        let (request, reader_id) = selection;
+        let key = serde_json::to_string(&serde_json::json!({
+            "native_owner":admission.actor,"generation":admission.generation,
+            "targets":request.targets,"visible":request.visible,"measure":request.measure,"reader":reader_id,
+        }))
+        .map_err(|_| poisoned())?;
+        let admission = admission.clone();
+        self.read_with(key, None, request, wait_ms, deadline, move |_, request| {
+            Box::pin(async move { service.watch_local(admission, request) })
+        })
+        .await
+    }
+
+    async fn read_with<F>(
+        &self,
+        key: String,
+        source: Option<&VerifiedSourceSession>,
+        request: RemoteWatch,
+        wait_ms: u32,
+        deadline: &crate::client::lease::Deadline,
+        open: F,
+    ) -> Result<RemoteWatchBatch>
+    where
+        F: FnOnce(
+                RemoteCallContext,
+                RemoteWatch,
+            ) -> RemoteFuture<'static, Box<dyn RemoteWatchStream>>
+            + Send,
+    {
+        self.remove_fenced()?;
         let entry = {
             let mut entries = self.entries.lock().map_err(|_| poisoned())?;
             if !entries.contains_key(&key) {
-                if entries.values().map(|e| e.target_count).sum::<usize>() + request.targets.len()
+                while entries.values().map(|e| e.target_count).sum::<usize>()
+                    + request.targets.len()
                     > 64
+                    || entries.len() >= REMOTE_MAX_REQUESTS / 2
                 {
-                    return Err(refused(
-                        "64 retained source watches are already active; close an older selection",
-                    ));
+                    // Leave request slots for active list/send calls as well as
+                    // readers: inactive subscriptions also occupy far-side slots.
+                    // A stopped terminal must not reserve capacity for the full
+                    // idle TTL. Evict only entries no read currently owns; their
+                    // sealed cursors reconstruct the view if a reader returns.
+                    let mut oldest = None;
+                    for (key, entry) in entries
+                        .iter()
+                        .filter(|(_, entry)| Arc::strong_count(entry) == 1)
+                    {
+                        let touched = *entry.touched.lock().map_err(|_| poisoned())?;
+                        if oldest.as_ref().is_none_or(|(_, prior)| touched < *prior) {
+                            oldest = Some((key.clone(), touched));
+                        }
+                    }
+                    let Some((key, _)) = oldest else {
+                        if entries.values().map(|e| e.target_count).sum::<usize>()
+                            + request.targets.len()
+                            > 64
+                        {
+                            return Err(refused(
+                                "64 source watch targets are in flight; retry after a reader finishes",
+                            ));
+                        }
+                        // The smaller threshold trims idle cache entries only;
+                        // it never interrupts or limits an active reader.
+                        break;
+                    };
+                    entries.remove(&key);
                 }
                 entries.insert(
                     key.clone(),
@@ -85,6 +168,8 @@ impl Watches {
                         source: source.map(|s| s.source.clone()),
                         fence: source.map(|s| Arc::clone(&s.fence)),
                         state: AsyncMutex::new(State {
+                            opened_at: Instant::now(),
+                            clock: None,
                             request: request.clone(),
                             stream: None,
                             cursors: request.cursors.clone(),
@@ -123,8 +208,10 @@ impl Watches {
         let same_cursors = incoming
             == serde_json::to_vec(&state.returned_cursors).map_err(|_| poisoned())?
             || incoming == serde_json::to_vec(&state.cursors).map_err(|_| poisoned())?;
-        if request.cursors.is_empty() || !same_cursors {
+        if (request.cursors.is_empty() && !state.cursors.is_empty()) || !same_cursors {
             // An explicitly different continuation requests a new starting view.
+            // Before the first view, retain the stream: reopening an empty
+            // cursor page would renew its initial connection retry budget.
             state.cursors = request.cursors.clone();
             state.stream = None;
         }
@@ -132,9 +219,11 @@ impl Watches {
             state.stream = None;
         }
         if state.stream.is_none() {
+            state.opened_at = Instant::now();
+            state.clock = None;
             let mut resumed = request.clone();
             resumed.cursors = state.cursors.clone();
-            state.stream = Some(client.watch(entry.context(), resumed).await?);
+            state.stream = Some(open(entry.context(), resumed).await?);
             state.request = request.clone();
         }
         entry.context().check_current()?;
@@ -148,7 +237,11 @@ impl Watches {
         // Take ownership across the await. Cancellation/error drops this read
         // subscription, leaving the last verified cursors for a safe replay.
         let mut stream = state.stream.take().ok_or_else(poisoned)?;
-        let result = stream.next(wait).await?;
+        let mut result = stream.next(wait).await?;
+        if request.measure {
+            let opened_at = state.opened_at;
+            measure::release(&mut state.clock, opened_at, &mut result)?;
+        }
         let validated = (|| {
             entry.context().check_current()?;
             check_size(&result, request.budget)?;

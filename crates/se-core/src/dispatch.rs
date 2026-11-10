@@ -390,7 +390,8 @@ impl Kernel {
             AnyOp::AtlasOutline(input) => OpStep::Custody(CustodyPlan::AtlasRead(Box::new(
                 crate::ops::AtlasRead::Outline(input),
             ))),
-            AnyOp::RemotePrepareSend(_)
+            AnyOp::ClientWatch(_)
+            | AnyOp::RemotePrepareSend(_)
             | AnyOp::RemoteList(_)
             | AnyOp::RemoteWatch(_)
             | AnyOp::RemoteSend(_) => {

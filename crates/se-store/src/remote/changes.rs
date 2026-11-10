@@ -44,6 +44,36 @@ impl ReadPhase {
         request: ChangeRequest<'_>,
         now: i64,
     ) -> StoreResult<ChangePage> {
+        self.remote_target(grant_id, revision, RemoteVerb::Watch, target, now)?;
+        self.client_changes(target, request)
+    }
+
+    /// The local consumer uses the same indexed records and bounds, after its
+    /// native human/project authority is checked on this very snapshot.
+    pub fn local_client_changes(
+        &self,
+        admission: &crate::Admission,
+        target: &RemoteTarget,
+        request: ChangeRequest<'_>,
+    ) -> StoreResult<ChangePage> {
+        self.local_client_target(admission, target)?;
+        self.client_changes(target, request)
+    }
+
+    pub fn local_client_position(
+        &self,
+        admission: &crate::Admission,
+        target: &RemoteTarget,
+    ) -> StoreResult<Option<StorePosition>> {
+        self.local_client_target(admission, target)?;
+        Ok(self.info.head.clone())
+    }
+
+    fn client_changes(
+        &self,
+        target: &RemoteTarget,
+        request: ChangeRequest<'_>,
+    ) -> StoreResult<ChangePage> {
         let ChangeRequest {
             after,
             limit,
@@ -52,7 +82,6 @@ impl ReadPhase {
         if !(1..=100).contains(&limit) || !(1024..=65536).contains(&budget) {
             return Err(invalid("remote replay budget"));
         }
-        self.remote_target(grant_id, revision, RemoteVerb::Watch, target, now)?;
         if after.is_some_and(|p| !p.belongs(&self.info)) {
             return Err(fail(
                 StoreErrorCode::CursorStale,

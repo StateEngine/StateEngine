@@ -100,6 +100,27 @@ pub struct RemoteLiveItem {
     pub role: RemoteTurnRole,
     pub preview: RemotePreview,
 }
+/// Optional monotonic calibration; no wall-clock synchronization is assumed.
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteObservationClock {
+    pub epoch: [u8; 16],
+    pub sampled_at_us: i64,
+    pub source_bracket_us: Option<u64>,
+    /// Native source-machine clock sampled immediately before broker release.
+    /// Only a native client on that same machine may subtract this timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_released_at_us: Option<u64>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteObservationTime {
+    pub at_us: i64,
+    /// Filled at the source broker's release, including stream queue delay.
+    /// The native terminal adds broker-release-to-flush time to this estimate.
+    /// Clock drift and independent suspend are unbounded; None means unavailable.
+    pub age_estimate_us: Option<u64>,
+}
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RemoteWatchRecord {
@@ -115,6 +136,8 @@ pub enum RemoteWatchRecord {
         target: RemoteTarget,
         cursor: Cursor,
         item: RemoteLiveItem,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        observation: Option<RemoteObservationTime>,
     },
     Gap {
         target: RemoteTarget,
@@ -125,6 +148,8 @@ pub enum RemoteWatchRecord {
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteWatchBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_clock: Option<RemoteObservationClock>,
     pub records: Vec<RemoteWatchRecord>,
     pub cursors: Vec<RemoteCursorSet>,
     pub complete: bool,

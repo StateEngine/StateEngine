@@ -5,6 +5,8 @@ pub mod atlas;
 pub mod atlas_hook;
 pub use atlas::*;
 pub use atlas_hook::{AtlasAugment, AtlasHookOutput, AtlasHookTarget};
+pub mod client;
+pub use client::ClientWatchCall;
 pub mod remote;
 pub use remote::{
     RemoteListCall, RemoteListOutput, RemotePrepareSendCall, RemoteSendCall, RemoteSendOutput,
@@ -200,6 +202,7 @@ ops! {
     AtlasImpact => AtlasImpact, AtlasImpactOutput, ("atlas.impact",leaf(&["atlas","impact"]),tool("stateengine_atlas_impact","Atlas impact","What could this change affect? Follow bounded code and file dependencies with linked records; for example depth=1 callers or depth=2 tests."),Either,false,Never,Read,Project,Host,"se.impact",Impact,&["J3"]);
     AtlasChanges => AtlasChanges, AtlasChangesOutput, ("atlas.changes",leaf(&["atlas","changes"]),tool("stateengine_atlas_changes","Atlas changes","What changed since this observed baseline? Read code changes and honest attribution; use an Atlas cursor, observed commit, or observation time."),Either,false,Never,Read,Project,Host,"se.code-changes",CodeChanges,&["J3"]);
     AtlasOutline => AtlasOutline, AtlasOutlineOutput, ("atlas.outline",leaf(&["atlas","outline"]),tool("stateengine_atlas_outline","Atlas outline","What is in this file, and what records mention it? Read declarations with source positions and linked decisions or messages."),Either,false,Never,Read,Project,Host,"se.outline",Outline,&["J3"]);
+    ClientWatch => ClientWatchCall, RemoteWatchOutput, ("client.watch",leaf(&["watch"]),no_mcp("Native human inspection; agents keep their admitted local or remote read tools."),Owner,false,Never,Read,Home,Host,"stateengine.remote-watch",RemoteWatch,&[]);
     RemotePrepareSend => RemotePrepareSendCall, RemoteSendPreparation, ("remote.prepare_send",CliExposure::None{reason:"Internal protected source IPC prepares CLI pending output; no remote capability or public tool."},no_mcp("MCP has only a final send result, never early pending output."),Either,false,Never,Read,Home,Host,"stateengine.remote-send-preparation",RemoteSend,&[]);
     RemoteList => RemoteListCall, RemoteListOutput, ("remote.list",leaf(&["remote","list"]),tool("stateengine_remote_list","List remote agents","List agents on a configured remote machine. Empty targets discover its allowed agents; explicit targets narrow the selection."),Either,false,Never,Read,Home,Host,"stateengine.remote-list",RemoteList,&[]);
     RemoteWatch => RemoteWatchCall, RemoteWatchOutput, ("remote.watch",leaf(&["remote","watch"]),tool("stateengine_remote_watch","Watch remote agents","Wait up to30000 ms for a bounded page on this source session's retained subscription. Supply returned cursors for continuation; provisional live items are not durable receipts. Disconnect never stops an agent."),Either,false,Never,Read,Home,Host,"stateengine.remote-watch",RemoteWatch,&[]);
@@ -257,6 +260,9 @@ impl AnyOp {
                 | Self::RemoteWatch(_)
                 | Self::RemoteSend(_)
         )
+    }
+    pub fn is_client(&self) -> bool {
+        self.is_remote() || matches!(self, Self::ClientWatch(_))
     }
     /// Shared per-operation/per-key classification for CLI and host admission.
     pub fn requires_human_terminal(&self) -> Result<bool> {

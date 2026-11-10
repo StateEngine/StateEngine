@@ -6,7 +6,7 @@ use se_types::{
 use std::num::NonZeroU32;
 pub(super) fn page(
     service: &Service,
-    request: &auth::AuthorizedRemoteRequest,
+    request: &view_request::ViewRequest,
     input: &RemoteList,
 ) -> Result<RemoteListResult> {
     let after: Option<RemoteTarget> = input

@@ -45,7 +45,7 @@ impl State {
         }
         // Establish both high waters before the metadata view. Commits
         // concurrent with its read remain replayable after this cut.
-        for target in self.request.admission().targets() {
+        for target in self.request.targets() {
             if self.positions.contains_key(target) {
                 continue;
             }
