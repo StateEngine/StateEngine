@@ -368,8 +368,12 @@ def user_history_families(f):
     events = f.history()
     kinds = {event["kind"] for event in events}
     for kind in ["principal.registered", "profile.saved", "message.sent", "working_state.set",
-                 "decision.proposed", "decision.ratified", "session.turn"]:
+                 "session.turn"]:
         assert kind in kinds, ("history family not available to real reader", kind, kinds)
+    # Live decision operations are retired (9fbb20013, #104): the seeded decision
+    # rows stay readable as retained source rows, not as decision families.
+    assert any(e["kind"] == "legacy.retained" and decision in json.dumps(e["payload"])
+               for e in events), ("retired decision rows are not retained", kinds)
     for text in ["HISTORICAL DIRECT MAIL", "HISTORICAL WORKING STATE", "HISTORICAL DECISION",
                  "HISTORICAL USER", "HISTORICAL ASSISTANT"]:
         assert any(text in json.dumps(event["payload"]) for event in events), text
