@@ -285,44 +285,45 @@ fn eligible_broker_runtime_outlives_strict_job_and_public_down_closes_it() -> Re
 }
 
 #[test]
-fn no_eligible_broker_reports_named_refusal_and_current_legal_alternatives() -> Result {
+fn no_eligible_broker_uses_reported_foreground_until_public_down() -> Result {
     let mut f = Fixture::new("no-broker")?;
     f.run_strict(true)?;
     assert!(
         f.host.is_none(),
-        "rights-mismatched caller published a host"
+        "foreground host survived its joined public down"
     );
+    let witness: serde_json::Value = serde_json::from_slice(&fs::read(f.root.join("job.json"))?)?;
+    let cases = witness["foreground_cases"]
+        .as_array()
+        .ok_or("missing foreground cases")?;
+    assert_eq!(cases.len(), 2);
     for mode in ["json", "plain"] {
         let (exit, stdout, stderr) = f.result(mode)?;
-        assert_eq!(exit, "1", "refusal must use Refused exit status");
+        assert_eq!(exit, "0", "foreground startup/down failed: {stderr}");
         assert!(
-            stderr.contains("job-breakaway-refused") && stderr.contains("caller process PID"),
-            "lost native refusal: {stderr}"
+            stderr.contains("starting in the foreground")
+                && stderr.contains("Keep this terminal open")
+                && stderr.contains("same home"),
+            "foreground lifetime was hidden: {stderr}"
         );
-        assert!(
-            stderr.contains("directly from Start") && stderr.contains("this Windows account"),
-            "lost current legal alternative: {stderr}"
-        );
-        assert!(
-            !stderr.contains("restore access"),
-            "native refusal misreported as storage"
-        );
+        let observed = cases
+            .iter()
+            .find(|row| row["mode"] == mode)
+            .ok_or("missing mode witness")?;
+        assert_eq!(observed["in_job"], true);
+        assert_eq!(observed["down_exit"], 0);
         if mode == "json" {
             let value: serde_json::Value = serde_json::from_slice(&stdout)?;
-            assert_eq!(value["code"], "job-breakaway-refused");
-            assert_eq!(value["exit"], 1);
-            assert!(
-                value["remedy"]["text"]
-                    .as_str()
-                    .ok_or("missing remedy")?
-                    .contains("directly from Start")
-            );
+            assert_eq!(value["state"], "running");
+            assert_eq!(value["process"]["pid"], observed["pid"]);
         } else {
-            assert!(stdout.is_empty(), "human refusal contaminated stdout");
+            let text = String::from_utf8(stdout)?;
+            assert!(
+                text.contains("Runtime running")
+                    && text.contains(&format!("PID {}", observed["pid"])),
+                "wrong foreground output: {text}"
+            );
         }
-        println!(
-            "PASS {mode}: actual strict job and removed caller privilege; named refusal, current legal alternative, no host"
-        );
     }
     f.finish()
 }
